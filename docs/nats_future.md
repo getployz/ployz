@@ -19,6 +19,16 @@ No tier in subjects. Encode three things structurally: `<installation>`,
 `<authority>`, and `<plane>`. Tier is policy metadata on the authority registry
 record; it changes, subjects don't.
 
+Product hierarchy:
+
+- **Installation** is the compute, trust, and substrate boundary. Use a separate
+  installation when compute pools, credentials, operators, or blast radius should
+  be separated.
+- **Namespace** is the deploy/environment boundary inside an installation. Prod,
+  staging, preview, and PR environments are normally namespaces.
+- **Authority** is an internal durable write/quorum/failure domain. It is not
+  the normal way to separate prod from staging or one compute pool from another.
+
 Region is also not a subject dimension. A region is a placement, latency,
 routing, and machine-grouping concept. An authority is a write/trust/quorum/
 failure domain. A region can exist without owning durable authority state; it
@@ -36,9 +46,13 @@ owner-local grant records + route export streams, not by subject prefix
 wildcards.
 
 Authority means write/trust/quorum/failure domain. It does not mean
-environment. Most production, staging, PR, and dev environments are namespaces
-under an authority. A PR or dev session becomes its own authority only when it
-must keep making progress while partitioned from the parent authority.
+environment, compute pool, or org boundary. Most production, staging, PR, and
+dev environments are namespaces inside an installation. If a user wants compute
+separation, create or join a separate installation. A PR or dev session becomes
+its own authority only when it must keep making progress while partitioned from
+the parent authority and sharing an installation is still the right trust model;
+otherwise it is usually a namespace in the org installation or a namespace in a
+personal/local installation.
 A region becomes an authority only when it owns durable writes and quorum, not
 when a machine merely exists there.
 
@@ -272,15 +286,14 @@ Replica policy is **per authority**, not global or per region:
 - `auth-dev-nick` (laptop): R=1, local-only domain.
 - `auth-sin` (regional data authority after promotion): R=3 within `sin`;
   exports selected routes to the installation serving view.
-- Installation-root/substrate authority: R=3 on the canonical hub/home data
-  region.
+- Installation-root/substrate authority: R=3 on the canonical home/data region.
 
 This is the existing "homogeneous substrate, storage eligibility per machine,
 replica count is operator intent" model from `nats-native-control-plane.md`,
-extended from one implicit hub to N domains, one per authority. Regions that
-are only compute/edge regions do not have a per-region replica policy because
-they do not own durable authority state. The promotion guardrails apply when a
-region is promoted into an authority.
+extended from one implicit home/data authority to N domains, one per authority.
+Regions that are only compute/edge regions do not have a per-region replica
+policy because they do not own durable authority state. The promotion guardrails
+apply when a region is promoted into an authority.
 
 ## Global deploys, regional execution
 
@@ -413,10 +426,10 @@ Per-authority domains make this nearly free:
 - A dev domain is its own JetStream cluster. Partitioned dev keeps reading and
   writing its own `cp.*`, `route.journal.*`, local `route.export.*`, and
   `work.cert.*`. Local R=1 means quorum is the laptop itself.
-- The root/hub side stops seeing the dev's export events; that lag shows up as
-  `sync_authority_<grantee>` source freshness on the hub side.
-- The dev side stops seeing hub `cp.*` updates and `sync_public_routes`
-  deliveries; that shows up as mirror lag on the dev side.
+- The installation-root/home side stops seeing the dev's export events; that lag
+  shows up as `sync_authority_<grantee>` source freshness on the root side.
+- The dev side stops seeing home-authority `cp.*` updates and
+  `sync_public_routes` deliveries; that shows up as mirror lag on the dev side.
 - **No subject is written by two authorities.** Mirrors are unidirectional.
   There is nothing to merge on heal — each domain catches up on the other's
   appends.

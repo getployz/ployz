@@ -3,6 +3,9 @@
 This is the long-term target for making ployz NATS-native. It is intentionally
 about product and failure semantics, not a porting checklist.
 
+For the long-term subject, authority, route-export, and regional topology shape,
+read [`nats_future.md`](nats_future.md).
+
 ## Target
 
 Ployz uses NATS as its native control plane. Durable state, coordination, node
@@ -14,14 +17,35 @@ designed around NATS primitives first:
 - Request/reply for bounded node commands.
 - Work queues for exactly-one background work.
 - Scheduled messages for broker-owned timers.
-- Mirrors/sources for read locality and disaster recovery.
+- Sources for intentional projections, and mirrors for read locality,
+  migration, and disaster recovery.
 
 Direct TCP remains only for true byte streams such as ZFS send/receive payloads.
+
+The product topology separates regions from authorities:
+
+- **installation** — compute, trust, and substrate boundary. Separate compute
+  pools usually mean separate installations.
+- **namespace** — deploy/environment boundary inside an installation. Prod,
+  staging, preview, and PR environments are normally namespaces.
+- **region** — placement, latency, route serving, and machine grouping,
+- **authority** — durable write ownership, quorum, and failure domain,
+- **home/data region** — the region hosting an authority's HA JetStream state,
+- **compute-only region** — a region that can run workloads and gateways but
+  does not own independent durable control-plane state yet.
+
+For the MVP, ployz can have many regions but one HA home/data authority. Global
+deploys are still allowed; they fan out regional execution while committing
+durable truth to the owning authority. A later regional data authority is created
+only by an explicit promotion operation.
 
 ## Non-Negotiables
 
 - Machine add does not change storage authority.
+- Machine add in a new region does not create a new data authority unless the
+  operator explicitly promotes that region.
 - Promotion to R=3 or R=5 is an explicit operator operation.
+- Regional data-authority promotion is an explicit operator operation.
 - No background loop silently changes quorum, placement, or operator intent.
 - Every mutation has a foreground caller or an operator-visible failure surface.
 - The data plane keeps serving last good runtime state when control-plane writes
@@ -32,18 +56,21 @@ Direct TCP remains only for true byte streams such as ZFS send/receive payloads.
 
 ### Machine Add
 
-`machine add` admits a new member and establishes connectivity. It starts the
-local NATS server according to node capabilities and defaults to
-`storage=true`, but it does not:
+`machine add` admits a new member, records its region, and establishes
+connectivity. It starts the local NATS server according to node capabilities and
+defaults to `storage=true`, but it does not:
 
 - increase JetStream replica count,
 - add a Raft voter to authoritative streams,
 - change write quorum,
 - rebalance storage,
-- promote the node to storage authority.
+- promote the node or its region to storage authority.
 
 The operation succeeds when the machine has published its membership, local NATS
-connectivity is observable, and the operator can see its eligible roles.
+connectivity is observable, and the operator can see its eligibility, capacity,
+and region. If the region did not exist, creating the region record is substrate
+metadata only; durable control-plane state stays in the current home/data
+authority.
 
 ### Storage Promotion
 
@@ -74,6 +101,32 @@ configured replica count, current replica count, offline replica count, maximum
 reported follower lag, and leader when NATS exposes one. A replica-count match
 alone is not enough to call promotion healthy; the status row must show the
 requested replicas current, zero offline replicas, and zero lag.
+
+### Regional Data Promotion
+
+A compute-only region becomes a data authority only through an explicit
+foreground operation, conceptually:
+
+```text
+ployzctl region promote sin --data --replicas 3
+```
+
+The plan must show:
+
+- selected storage-enabled machines in that region,
+- current home/data authority and the state selected for transfer or
+  initialization,
+- NATS account/domain changes,
+- stream/KV/Object Store assets to create or reconfigure,
+- route export/projection changes,
+- expected write downtime or quiescence if ownership moves,
+- rollback/demotion instructions.
+
+Promotion succeeds only after the new regional authority/domain exists, selected
+assets are healthy at the requested replica count, and any route projections
+needed for serving are observable. It does not automatically move all workloads,
+volumes, streams, or namespaces. Those remain explicit placement, fork, migrate,
+or promote operations.
 
 ### Storage Demotion And Removal
 
@@ -135,21 +188,29 @@ must change before retrying.
 | Unplanned storage loss | Stored intent remains; status marks loss. | Operator chooses replace, demote, or wait. |
 | Network partition with quorum side | Quorum side accepts writes; minority cannot. | Minority reports below quorum/unavailable. |
 | Cross-region latency | Writes pay quorum RTT. | Plan warns or requires cross-region acknowledgement. |
-| Region loss | No automatic opposite-region takeover. | Operator promotes mirror/failover explicitly. |
+| Compute-only region loss | Home/data authority remains writable; replicas/routes in that region go unavailable. | Regional placement and route freshness show degraded. |
+| Home/data region loss | Durable writes unavailable unless another authority was explicitly prepared/promoted. Last-good data plane may keep serving where it still has routes/backends. | Operator restores home region, promotes prepared DR, or accepts data-loss recovery. |
 
 ## Regional Shape
 
 Default regional guidance:
 
-- Prefer one regional R=3 hub for authoritative writes.
-- Use mirrors for remote read locality and disaster recovery.
+- Keep regions in the model from day one.
+- Keep one HA home/data authority for the MVP.
+- Let compute-only regions run workloads, gateways, and regional route serving
+  without owning durable control-plane writes.
 - Avoid cross-region quorum unless the operator explicitly accepts latency and
   failure-mode tradeoffs.
-- Treat mirror promotion as disaster recovery, not load balancing.
+- Use sources for public/shared route projections.
+- Use mirrors for read locality, migration, and disaster recovery, not as the
+  normal way to make regions equal.
+- Promote a region into a data authority only through an explicit foreground
+  operation.
 
-The hard product question is workload ownership. NATS can mirror and promote;
-ployz must decide which region owns writes for a workload at any moment, and that
-ownership change should be an explicit operation.
+The hard product question is ownership. NATS can route, source, mirror, and
+promote; ployz must decide which authority owns writes for a workload, stream,
+volume, or namespace at any moment, and that ownership change must be an
+explicit operation.
 
 ## Latency Semantics
 
@@ -171,22 +232,24 @@ fault injection and record observed p50/p95/p99.
 
 | Data | Authority | Physical location | Read path | Write path |
 |------|-----------|-------------------|-----------|------------|
-| Machine membership | NATS KV `machines` | authoritative hub JetStream replicas | local daemon projection or KV direct get | KV CAS/put to hub quorum |
-| Invites | NATS KV `invites` | authoritative hub JetStream replicas | direct KV | KV create/update to hub quorum |
-| Deploy commits | JetStream stream `deploy_commits` | authoritative hub replicas | daemon projection from stream | append one immutable commit to hub quorum |
-| Deploy status | NATS KV `deploy_status` | authoritative hub replicas | direct KV/projection | mutable KV update to hub quorum |
-| Instance status | NATS KV `instances` | authoritative hub replicas | routing projection or direct KV | participant writes status to hub quorum |
+| Region registry | NATS KV `regions` | installation-root/home authority replicas | local daemon projection or KV direct get | KV CAS/put to home authority quorum |
+| Machine membership | NATS KV `machines` | installation-root/home authority replicas | local daemon projection or KV direct get | KV CAS/put to home authority quorum |
+| Invites | NATS KV `invites` | home/data authority replicas | direct KV | KV create/update to home authority quorum |
+| Deploy commits | JetStream stream `deploy_commits` | owning authority replicas | daemon projection from stream | append one immutable commit to owning authority quorum |
+| Deploy status | NATS KV `deploy_status` | owning authority replicas | direct KV/projection | mutable KV update to owning authority quorum |
+| Instance status | NATS KV `instances` | owning authority replicas | routing projection or direct KV | participant writes status to owning authority quorum |
 | Routing snapshot | local projection | each gateway/DNS/daemon process memory | in-process memory | rebuilt from authoritative NATS state |
-| Routing events | JetStream stream `routing_events` | authoritative hub replicas | durable or temporary consumer | atomic batch publish to hub quorum |
-| Certificates metadata | NATS KV `certificates` | authoritative hub replicas | direct KV/subscription | KV put to hub quorum |
-| Certificate PEM blobs | NATS Object Store | authoritative hub replicas | object get, often cached by consumers | object put to hub quorum |
-| ACME challenges | NATS KV `acme_challenges` | authoritative hub replicas | gateway/cert reader projection | KV put/delete to hub quorum |
-| Locks/leases | NATS KV `locks` | authoritative hub replicas | direct KV only for diagnostics | CAS create/update/delete to hub quorum |
-| Cert jobs | JetStream work queue | authoritative hub replicas | worker pull consumer | publish to hub quorum, ack to hub quorum |
-| Scheduled renewals | JetStream scheduled message | broker-owned in hub | delivered to work queue at due time | scheduled publish to hub quorum |
+| Routing events | JetStream stream `routing_events` | owning authority replicas | durable or temporary consumer | atomic batch publish to owning authority quorum |
+| Public/shared route projections | JetStream source streams | installation-root projection authority | public/shared gateways consume projections | source only from explicit owner exports |
+| Certificates metadata | NATS KV `certificates` | owning authority replicas | direct KV/subscription | KV put to owning authority quorum |
+| Certificate PEM blobs | NATS Object Store | owning authority replicas | object get, often cached by consumers | object put to owning authority quorum |
+| ACME challenges | NATS KV `acme_challenges` | owning authority replicas | gateway/cert reader projection | KV put/delete to owning authority quorum |
+| Locks/leases | NATS KV `locks` | owning authority replicas | direct KV only for diagnostics | CAS create/update/delete to owning authority quorum |
+| Cert jobs | JetStream work queue | owning authority replicas | worker pull consumer | publish to owning authority quorum, ack to owning authority quorum |
+| Scheduled renewals | JetStream scheduled message | broker-owned in owning authority | delivered to work queue at due time | scheduled publish to owning authority quorum |
 | Node commands | core NATS request/reply | not durable; target daemon subscription | request travels to target daemon | reply from target daemon |
 | ZFS datasets/snapshots | local node disk | node that owns the volume | local zfs command or node RPC metadata | local zfs command; transfer bytes over TCP |
-| Mirror read copies | mirror streams/KV in leaf domain | mirror node local disk | local mirror read | async replication from hub; not write authority |
+| Mirror read copies | mirror streams/KV in another domain | mirror node/region local disk | local mirror read | async replication from owner; not write authority |
 
 The important split:
 
@@ -248,7 +311,7 @@ The important split:
   subscription closes or reports a watcher failure, the task exits, the mesh task
   set cancels, and status preserves which local projection task went stale.
 
-- **authority** lives in hub JetStream/KV/Object Store,
+- **authority** lives in the owning authority's JetStream/KV/Object Store,
 - **hot read models** live in process memory and are rebuilt from authority,
 - **node-local reality** lives on the node and is queried by request/reply,
 - **payload bytes** live in the substrate that owns them, such as ZFS.
@@ -263,6 +326,7 @@ The important split:
 | KV/stream write at R=3 same region | Raft quorum | fastest follower RTT + broker work | one follower can be slow/offline without blocking after election |
 | KV/stream write at R=3 cross-region | Raft quorum across WAN | WAN RTT to fastest quorum | high tail latency; should require explicit operator acceptance |
 | NATS node request/reply same region | core NATS route/leaf path | round trip to target daemon | no durable write unless command performs one |
+| NATS placement probe cross-region | core NATS request/reply | round trip to candidate machines | live capacity signal only; no placement intent until deploy commits |
 | NATS request/reply to offline node | core NATS no responder or timeout | subscription absence or timeout | foreground failure; caller decides retry/abort |
 | NATS node listener subscription loss | daemon edge task | local NATS client reconnect/resubscribe | daemon resubscribes; callers see no responder/timeout while absent; local status records listener staleness |
 | Work queue dispatch | JetStream write + consumer delivery | stream write plus consumer pull/ack | exactly-one-worker behavior, not zero-latency signaling |
@@ -277,7 +341,8 @@ The important split:
 Data touched:
 
 1. `locks.deploy.<namespace>` KV CAS acquire.
-2. Current deployment/routing state read from local projection or hub.
+2. Current deployment/routing state read from local projection or owning
+   authority.
 3. Participant runtime commands over NATS request/reply.
 4. Participant writes `instances` status records as candidates become ready.
 5. One append to `deploy_commits`.
@@ -286,10 +351,11 @@ Data touched:
 
 Latency shape:
 
-- lock acquire: one hub quorum write,
+- lock acquire: one owning-authority quorum write,
+- placement probes: request/reply RTT to candidate regions/machines,
 - each participant command: request/reply RTT to that node plus runtime work,
 - readiness: dominated by container startup/probe time,
-- commit: one hub quorum stream append,
+- commit: one owning-authority quorum stream append,
 - route visibility: watcher/projection delivery plus local rebuild.
 
 For small same-region clusters, the NATS portions should be low-ms to tens of
@@ -309,7 +375,8 @@ Data touched:
 Latency shape:
 
 - bootstrap/install is out-of-band and dominates,
-- bootstrap and self-published membership writes are hub quorum writes,
+- bootstrap and self-published membership writes are installation-root/home
+  authority quorum writes,
 - visibility is subscription delivery plus local projection,
 - no stream/KV replica reconfiguration occurs.
 
@@ -358,7 +425,8 @@ Data touched:
 
 Latency shape:
 
-- NATS coordination is a scheduled work queue delivery plus a few hub writes,
+- NATS coordination is a scheduled work queue delivery plus a few
+  owning-authority writes,
 - external ACME and HTTP-01 validation dominate,
 - scheduled renewal timing is broker-owned and survives daemon restart.
 
@@ -380,7 +448,7 @@ Latency shape:
 
 - setup is request/reply RTT plus local zfs command time,
 - payload transfer is bandwidth/disk/RTT dependent,
-- final metadata publish is one hub quorum write.
+- final metadata publish is one owning-authority quorum write.
 
 ### Common Operator Operations
 
@@ -391,8 +459,10 @@ Latency shape:
 | `deploy preview` | reads + live reachability probes | should not write; fails if required live facts cannot be checked |
 | `deploy apply` | deploy lock KV write + participant commands + commit stream write | lock/commit pay quorum; runtime start/readiness dominates total time |
 | `machine add` | bootstrap out-of-band + membership write | does not pay storage-promotion cost |
+| `machine add --region <new>` | bootstrap out-of-band + region/membership writes | creates substrate region metadata, not a data authority |
 | `storage promote R=3 plan` | live probes + NATS metadata reads | read/probe-heavy; no mutation until apply |
 | `storage promote R=3 apply` | stream/KV reconfiguration and catch-up | proportional to data size and slowest selected candidate catch-up |
+| `region promote --data` | live probes + account/domain setup + selected state transfer/init | explicit future operation; does not move all state by default |
 | `machine remove non-storage` | membership/workload operations | no quorum demotion unless the node owns storage authority |
 | `machine remove storage` | demotion plan + replica reconfiguration + membership update | must preserve quorum or require explicit degradation |
 | `cert renew` | work queue delivery + ACME network + KV writes | ACME dominates; lock/write latency should be small |
@@ -442,6 +512,7 @@ The e2e suite should record latency observations for:
 - below-quorum failed mutation,
 - mirror lag under normal load,
 - cross-region quorum write with explicit acceptance,
+- global deploy placement probes to remote regions,
 - ZFS transfer setup latency separately from transfer throughput.
 
 ## E2E Target
@@ -460,10 +531,13 @@ E2E scenarios should prove product primitives and failure guarantees:
 - `storage_node_rejoin_catches_up_without_intent_rewrite`
 - `planned_storage_removal_requires_demote`
 - `rolling_upgrade_checks_quorum_between_nodes`
-- `regional_mirror_read_local_write_owner_explicit`
-- `region_failover_requires_operator_promotion`
+- `global_deploy_uses_region_capacity_offers`
+- `compute_region_loss_preserves_home_authority`
+- `regional_authority_promotion_requires_operator`
+- `regional_projection_read_local_write_owner_explicit`
+- `home_region_failover_requires_operator_promotion`
 
 Tests should assert NATS-visible behavior where that is the product contract:
 stream replica count, KV/stream write failure, request/reply no responders,
-consumer catch-up, mirror lag, and operator-visible status. Direct TCP assertions
-belong only to bulk transfer scenarios.
+consumer catch-up, projection/mirror lag, and operator-visible status. Direct
+TCP assertions belong only to bulk transfer scenarios.

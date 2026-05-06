@@ -12,7 +12,9 @@ features we depend on live here.
 
 For the product target and failure semantics, read
 [`docs/nats-native-control-plane.md`](nats-native-control-plane.md). For the
-system-test plan, read [`docs/testing/e2e.md`](testing/e2e.md).
+long-term regional/authority subject shape, read
+[`docs/nats_future.md`](nats_future.md). For the system-test plan, read
+[`docs/testing/e2e.md`](testing/e2e.md).
 
 ## Version baseline
 
@@ -239,7 +241,7 @@ Config sketch:
   "name": "deploy_commits_local",
   "mirror": {
     "name": "deploy_commits",
-    "external": { "api": "$JS.hub.API" }
+    "external": { "api": "$JS.auth-default.API" }
   },
   "storage": "file"
 }
@@ -254,8 +256,9 @@ KV mirrors work the same way (KV is a stream).
 ### Mirror promotion to primary (2.12+)
 
 A mirror can be promoted to be the primary. Disaster-recovery move: if the
-hub cluster is permanently lost, promote a mirror, redirect writes there.
-Before 2.12 this required manual data extraction and re-publication.
+owning authority is permanently lost and the operator accepts the failover,
+promote a prepared mirror and redirect writes there. Before 2.12 this required
+manual data extraction and re-publication.
 
 ### Sources
 
@@ -264,20 +267,46 @@ optionally filtering by subject and remapping subjects on ingest:
 
 ```json
 {
-  "name": "all_namespaces_view",
+  "name": "sync_public_routes",
   "sources": [
-    { "name": "deploy_commits", "filter_subject": "deploy_commits.prod.>" },
-    { "name": "deploy_commits", "filter_subject": "deploy_commits.staging.>" }
+    { "name": "route_exports_auth_default", "filter_subject": "ployz.v1.acme.auth-default.route.export.public.global.>" },
+    { "name": "route_exports_auth_sin", "filter_subject": "ployz.v1.acme.auth-sin.route.export.public.global.>" }
   ]
 }
 ```
 
-Useful for fan-in patterns. Less obvious application to ployz unless we
-end up sharding by namespace.
+Useful for intentional projections. The long-term route model uses sources for
+installation-level public/shared route views fed only by owner-authority export
+subjects. Sources are not a way to make every region co-authoritative.
 
 ## Topology
 
-Three primitives compose the cluster shape:
+The topology vocabulary starts with Ployz product concepts, then maps them onto
+NATS routes, leafnodes, accounts/domains, mirrors, and sources.
+
+### Ployz terms
+
+NATS has clusters, accounts, domains, routes, and leafnodes. Ployz maps those
+onto product concepts deliberately:
+
+- **Installation** — compute, trust, and substrate boundary. Use another
+  installation when servers, credentials, operators, or blast radius should be
+  separated.
+- **Namespace** — deploy/environment boundary inside an installation. Prod,
+  staging, preview, and PR environments are normally namespaces.
+- **Region** — placement, latency, routing, and machine grouping. A region can
+  run workloads and gateways without owning durable control-plane state.
+- **Authority** — internal write/quorum/failure domain. An authority maps to a
+  NATS account and JetStream domain once it exists; it is not the normal way to
+  separate prod from staging or split compute pools.
+- **Home/data region** — the region currently hosting an authority's HA
+  JetStream state.
+- **Compute-only region** — a region that participates in the mesh and can run
+  containers/gateways, but has no independent durable authority yet.
+
+The MVP shape is many regions in the substrate registry, one home/data
+authority, and optional compute-only regions. A later `region promote --data`
+operation creates a new regional authority/domain explicitly.
 
 ### Routes
 
@@ -297,10 +326,14 @@ cluster {
 }
 ```
 
-Routes connect storage-enabled nodes to each other. Adding/removing routes
-historically required restart; 2.14 may improve that — verify before
-relying on it for routes (the documented reload support specifically calls
-out leafnodes).
+Routes connect nodes inside the same NATS cluster and, when JetStream is
+enabled for that cluster, carry Raft consensus. Use routes for nodes that are
+part of the same low-latency authority/domain. Do not use routes to casually
+stretch one JetStream quorum across distant regions.
+
+Adding/removing routes historically required restart; 2.14 may improve that —
+verify before relying on it for routes (the documented reload support
+specifically calls out leafnodes).
 
 ### Leafnodes
 
@@ -311,14 +344,17 @@ but the leafnode is **not** part of the cluster's Raft consensus.
 Two patterns:
 
 1. **Leafnode without local JetStream** — bridge only. Every read crosses
-   the leafnode to the hub.
+   the leafnode to the home/data authority. This is the natural shape for an
+   MVP compute-only region.
 2. **Leafnode with local JetStream in a separate domain** — bridge plus
-   local durable storage. With mirrors of hub streams, reads are local.
+   local durable storage. Use only when the node/region owns an authority-local
+   domain or an explicit projection/DR copy; the local copy is not write
+   authority unless promoted by an operator command.
 
 Configured under `leafnodes {}`:
 
 ```
-# on a hub storage-enabled node (server side)
+# on a home/data authority node (server side)
 leafnodes {
   listen: [fd00::1]:7422
 }
@@ -333,8 +369,15 @@ leafnodes {
 
 **Runtime reload (2.14+)**: leafnode `remotes` can be updated without
 restart. This is the primitive that makes dynamic peer reconfig
-practical — adding a new hub member and pushing the new remote list to
-all leaves no longer drops their connections.
+practical — adding a new home/data authority member and pushing the new remote
+list to all leaves no longer drops their connections.
+
+### NATS accounts
+
+Accounts provide the hard broker-enforced boundary between authorities. A
+promoted data authority should have its own account and grant only intentional
+exports/imports for RPC, route projections, or operator-approved sharing.
+Subject prefixes are useful organization; accounts are the security boundary.
 
 ### JetStream domains
 
@@ -343,7 +386,7 @@ clusters even within a single physical NATS deployment.
 
 ```
 jetstream {
-  domain: hub
+  domain: auth-default
   store_dir: /data/jetstream
 }
 ```
@@ -351,9 +394,12 @@ jetstream {
 The API prefix changes per domain: `$JS.API.>` becomes `$JS.<domain>.API.>`.
 Mirrors and sources reference the domain via `external.api`.
 
-For ployz the natural shape is one `hub` domain on the storage-enabled nodes,
-plus per-machine leaf domains (`leaf-<machine_id>`) on mirror nodes. The
-hub holds authoritative streams; leaf domains hold mirrors of them.
+For ployz, the long-term shape is one JetStream domain per data authority. In
+the MVP that is effectively one `auth-default` domain in the home/data region.
+Compute-only regions do not need a local JetStream domain just to run
+containers or gateways. A promoted region gets its own domain, such as
+`auth-sin`, and owns only the durable state explicitly moved or initialized
+there.
 
 ## Replication semantics
 
@@ -509,14 +555,17 @@ used to reject the plan.
 
 Nodes are homogeneous substrate. A machine record carries storage eligibility
 as `storage: true` or `storage: false`; it does not carry a permanent storage
-role. When `storage=true`, the local NATS server runs JetStream in the hub
-domain and can host stream replicas. When `storage=false`, the node may still
-run NATS for command routing, but it is not selected for JetStream replicas.
+role. When a `storage=true` node participates in a data authority, its local
+NATS server can run JetStream for that authority's domain and host stream
+replicas. When `storage=false`, the node may still run NATS for command routing
+and regional workload placement, but it is not selected for JetStream replicas.
 
 Machine init and machine add both default to `storage=true`. Adding machines
 does not change stream replica counts or write quorum by itself. R=3/R=5 still
 requires an explicit guarded operator operation that chooses the current replica
-placement from the storage-enabled pool.
+placement from the storage-enabled pool. Adding a machine in a compute-only
+region can increase deploy capacity there without creating a regional data
+authority.
 
 ### Cluster lifecycle
 
@@ -662,11 +711,14 @@ Tracked in code comments and the implementation plan. Highlights:
 ### Long-term target
 
 Ployz's control-plane target is documented in
-[`docs/nats-native-control-plane.md`](nats-native-control-plane.md). The short
-version: NATS is the native authority for state, coordination, node commands,
-membership changes, and failure visibility. Machine add does not promote storage
-authority; R=3/R=5 promotion is an explicit guarded operator operation. TCP
-remains only for true byte streams such as ZFS send/receive payloads.
+[`docs/nats-native-control-plane.md`](nats-native-control-plane.md), and the
+long-term regional/authority shape is documented in
+[`docs/nats_future.md`](nats_future.md). The short version: NATS is the native
+authority for state, coordination, node commands, membership changes, and
+failure visibility. Machine add does not promote storage authority; R=3/R=5
+promotion and regional data-authority promotion are explicit guarded operator
+operations. TCP remains only for true byte streams such as ZFS send/receive
+payloads.
 
 ### Storage Placement
 
@@ -728,22 +780,34 @@ are both first-class. Comes off the shelf when needed.
 
 ### Multi-region
 
-Cross-region R=3 has 30–160ms write latency. Single-region clusters with
-async cross-region mirrors are usually the better shape.
+Cross-region R=3 has 30–160ms write latency. The default shape should avoid
+cross-region quorum: keep durable writes in a home/data authority and use
+regional execution plus explicit route projections.
 
-Sketch:
+MVP sketch:
 
-- Region A: 3 storage-enabled nodes, hub domain, full R=3.
-- Region B: 3 storage-enabled nodes in a separate cluster + JetStream
-  domain, R=3 within Region B.
-- Cross-region: each region's `deploy_commits` mirrors the other's. Reads
-  are local; writes are local-first, replicated async to the other region.
-- Failover: if Region A is lost, promote Region B's mirrors to primary
-  (2.12+ feature). Writes resume in Region B.
+- `us-west`: home/data region, `auth-default`, R=3 JetStream assets.
+- `sin`: compute-only region, NATS leaf/mesh connectivity, containers and
+  gateways allowed, no independent durable authority.
+- `eu`: same as `sin`.
+- `ployz deploy`: global placement intent; planner probes regions for capacity,
+  starts selected replicas, and writes durable deploy/route truth to
+  `auth-default`.
 
-This is more about ployz's product story than NATS — NATS handles
-multi-region cleanly with mirrors and domain APIs. The hard part is
-deciding which region "owns" a workload at any given time.
+Promotion sketch:
+
+- `ployzctl region promote sin --data --replicas 3` verifies storage-enabled
+  candidates, creates the `auth-sin` account/domain, initializes or transfers
+  selected state, and starts route export into the installation serving view.
+- Volumes, streams, and namespaces move only by explicit fork/migrate/promote
+  operations. A region does not become co-owner because it runs app replicas.
+- Mirrors and sources are for read locality, route projections, migration, and
+  disaster recovery. They are not the mechanism for equality between regions.
+
+This is more about ployz's product story than NATS. NATS gives the primitives:
+routes for low-latency clusters, leafnodes for bridges, domains/accounts for
+authority boundaries, sources for projections, and mirror promotion for DR.
+Ployz must still own the explicit operation that decides where writes live.
 
 ### Scheduled cert renewal
 

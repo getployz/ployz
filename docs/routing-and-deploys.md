@@ -12,16 +12,20 @@ and what their keys and overlay IPs are.
 
 **Service versioning & placement** — an append-only ledger of service spec versions
 (content-addressed, immutable), a mutable head pointer per service (which version is
-active), and slot records that bind replicas to machines. This is the scheduling layer.
+active), region placement policy, and slot records that bind replicas to machines.
+This is the scheduling layer.
 
 **Runtime state** — per-instance lifecycle records (phase, readiness, drain state, ports)
 and deploy lifecycle tracking. This is what routing reads to decide who's healthy.
 
 ### Design Rationale
 
-Deploy commits are append-only authority events. Readers project those commits into
-routing state in stream order, which keeps deploy visibility atomic without exposing
-partially-published release/volume state.
+Deploy commits are append-only events in the owning NATS authority. Readers
+project those commits into routing state in stream order, which keeps deploy
+visibility atomic without exposing partially-published release/volume state.
+Regions are placement and routing groups; they are not necessarily independent
+write authorities. In the MVP, most deploys can be global while durable deploy
+truth still commits to one home/data authority.
 
 ---
 
@@ -42,7 +46,7 @@ machine. Placement depends on the service's strategy:
 | Strategy | Behavior |
 |----------|----------|
 | Replicated(N) | N slots, distributed across available machines. `replicated(1)` is the single-instance case. |
-| Global | One slot per machine in the mesh |
+| Global | Slots across every eligible region, with per-region replica policy and live capacity offers deciding the actual machines. |
 
 A slot points to an **active instance** (a Docker container). During a deploy, new
 instances run alongside old ones. The slot pointer flips atomically at commit time —
@@ -59,7 +63,8 @@ Planning -> Applying -> Committed
 ### Target Apply Model
 
 The apply phase is an operator-triggered distributed operation with NATS as the
-coordination authority:
+coordination substrate and the namespace's owning authority as the durable write
+authority:
 
 **Lock** — The coordinator acquires one namespace lease in NATS KV
 (`locks.deploy.<namespace>`) using CAS. The lease carries owner, nonce, and expiry.
@@ -68,6 +73,11 @@ Participants do not own the deploy lock.
 **Discover** — Reconcile live container state with the store on every participant.
 Orphaned containers get re-registered. This recovers from any prior inconsistency.
 
+**Probe placement** — For global or regional deploys, the coordinator sends
+bounded NATS request/reply probes to eligible regions/machines: "I need N
+replicas of this revision with these resources." Machines reply with expiring
+capacity offers. Offers are live signals, not durable ownership.
+
 **Revalidate** — Recompute the plan while holding locks. If machines changed between
 preview and apply (e.g. one went down), abort with a retry error rather than deploying
 to a stale plan.
@@ -75,9 +85,9 @@ to a stale plan.
 **Register** — Upsert immutable, content-addressed revision records. Duplicate publishes
 are no-ops by design.
 
-**Create** — For each slot in the plan: reuse unchanged instances, or start new candidate
-containers and wait for readiness probes (TCP/HTTP/exec). Readiness is non-negotiable —
-nothing enters routing until it passes.
+**Create** — For each selected slot in the plan: reuse unchanged instances, or
+start new candidate containers and wait for readiness probes (TCP/HTTP/exec).
+Readiness is non-negotiable — nothing enters routing until it passes.
 
 **Commit** — A single immutable deploy commit publishes the new release, volume, and
 deploy envelope. This is the point of no return. NATS persists the event and readers
@@ -90,9 +100,12 @@ but old containers linger. This is a recoverable state, not a failure.
 ### Remote Deploy Protocol
 
 The target protocol for small participant commands is NATS request/reply on
-`node.<machine>.cmd.deploy.*` subjects. Commands include inspect namespace, start
-candidate, drain instance, and remove instance. No-responder and timeout errors
-fail the foreground deploy operation.
+per-machine command subjects. The current implementation uses
+`node.<machine>.cmd.deploy.*`; the long-term subject shape moves those under the
+installation substrate/authority planes described in `nats_future.md`. Commands
+include inspect namespace, placement probe, prepare/reserve, start candidate,
+drain instance, and remove instance. No-responder and timeout errors fail the
+foreground deploy operation.
 
 The implementation models participants as explicit command targets, not long-lived
 sessions. Each runtime action is its own NATS request/reply command. Namespace lock
@@ -175,14 +188,16 @@ drained instances.
 1. User runs `ployzd deploy manifest.toml`
 
 2. Preview: diff manifest against current state
-   -> "api" needs 3 new slots on machines A, B, C
+   -> "api" wants global placement, with 2 replicas in us-west and 1 in sin
 
 3. Apply:
    a. Acquire one NATS deploy lease for the namespace
-   b. Register revision (content-addressed, idempotent)
-   c. Start containers on A, B, C, wait for readiness probes
-   d. Atomic commit — single transaction flips all routing pointers
-   e. NATS replicates the commit to the selected storage-enabled stream peers
+   b. Probe eligible regions/machines for live capacity offers
+   c. Register revision (content-addressed, idempotent)
+   d. Prepare selected machines, start containers, wait for readiness probes
+   e. Atomic commit — single transaction flips all routing pointers
+   f. NATS replicates the commit to the selected storage-enabled stream peers
+      in the owning home/data authority
 
 4. Gateway reloads:
    - Loads snapshot, projects routes, finds 3 healthy backends

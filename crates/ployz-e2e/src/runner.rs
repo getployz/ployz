@@ -3,8 +3,7 @@ use crate::error::{Error, Result};
 use crate::scenarios;
 use crate::support::{
     CommandOutput, DaemonJsonPayload, docker_outer, docker_outer_raw, parse_daemon_json_response,
-    parse_ready, parse_ready_payload, pick_free_port, run_command, run_command_expect_ok,
-    wait_until,
+    parse_ready, pick_free_port, run_command, run_command_expect_ok, wait_until,
 };
 use std::fmt::Write as _;
 use std::fs;
@@ -70,7 +69,6 @@ pub(crate) struct ScenarioRun {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SubnetExpectation {
     Present,
-    Absent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,80 +387,6 @@ impl ScenarioRun {
         self.wait_mesh_ready_default(self.node(node_name)?)
     }
 
-    pub(crate) fn wait_mesh_standby_name(&self, node_name: &str) -> Result<()> {
-        let node = self.node(node_name)?;
-        self.log_progress(&format!("wait_mesh_standby start node={node_name}"));
-        wait_until(READY_WAIT_TIMEOUT, || {
-            let Ok(output) = self.ssh_run(node, "ployzd --plain mesh ready --json") else {
-                return Ok(false);
-            };
-            if !output.status.success() {
-                return Ok(false);
-            }
-            let payload = parse_ready_payload(output.stdout.trim())?;
-            Ok(payload.ready && !payload.workload_subnet_present)
-        })
-        .map_err(|error| {
-            Error::Message(format!(
-                "mesh did not become standby-ready on {}: {error}",
-                node.name
-            ))
-        })?;
-        self.log_progress(&format!("wait_mesh_standby complete node={node_name}"));
-        Ok(())
-    }
-
-    pub(crate) fn wait_mesh_absent_name(&self, node_name: &str) -> Result<()> {
-        let node = self.node(node_name)?;
-        self.log_progress(&format!("wait_mesh_absent start node={node_name}"));
-        wait_until(READY_WAIT_TIMEOUT, || {
-            let Ok(output) = self.ssh_run(node, "ployzd --plain mesh ready --json") else {
-                return Ok(false);
-            };
-            if output.status.success() {
-                return Ok(false);
-            }
-            let combined = output.combined();
-            Ok(combined.contains("NO_RUNNING_NETWORK") || combined.contains("no mesh running"))
-        })
-        .map_err(|error| {
-            Error::Message(format!(
-                "mesh did not become absent on {}: {error}",
-                node.name
-            ))
-        })?;
-        self.log_progress(&format!("wait_mesh_absent complete node={node_name}"));
-        Ok(())
-    }
-
-    pub(crate) fn wait_network_dir_absent_name(
-        &self,
-        node_name: &str,
-        network: &str,
-    ) -> Result<()> {
-        let node = self.node(node_name)?;
-        self.log_progress(&format!(
-            "wait_network_dir_absent start node={node_name} network={network}"
-        ));
-        wait_until(READY_WAIT_TIMEOUT, || {
-            let output = self.ssh_run(
-                node,
-                &format!("test ! -d /var/lib/ployz/networks/{network}"),
-            )?;
-            Ok(output.status.success())
-        })
-        .map_err(|error| {
-            Error::Message(format!(
-                "network directory did not disappear on {} for {}: {error}",
-                node.name, network
-            ))
-        })?;
-        self.log_progress(&format!(
-            "wait_network_dir_absent complete node={node_name} network={network}"
-        ));
-        Ok(())
-    }
-
     pub(crate) fn machine_add(&self, controller_name: &str, target_name: &str) -> Result<()> {
         self.machine_add_many(controller_name, &[target_name])
     }
@@ -482,69 +406,6 @@ impl ScenarioRun {
         self.log_progress(&format!(
             "machine_add complete controller={controller_name}"
         ));
-        Ok(())
-    }
-
-    pub(crate) fn machine_activate(&self, controller_name: &str, target_name: &str) -> Result<()> {
-        self.log_progress(&format!(
-            "machine_activate controller={controller_name} target={target_name}"
-        ));
-        self.ssh_expect_ok_name(
-            controller_name,
-            &format!("ployzd machine activate {target_name}"),
-        )?;
-        self.log_progress(&format!("machine_activate complete target={target_name}"));
-        Ok(())
-    }
-
-    pub(crate) fn machine_drain(&self, controller_name: &str, target_name: &str) -> Result<()> {
-        self.log_progress(&format!(
-            "machine_drain controller={controller_name} target={target_name}"
-        ));
-        self.ssh_expect_ok_name(
-            controller_name,
-            &format!("ployzd machine drain {target_name}"),
-        )?;
-        self.log_progress(&format!("machine_drain complete target={target_name}"));
-        Ok(())
-    }
-
-    pub(crate) fn machine_standby(
-        &self,
-        controller_name: &str,
-        target_name: &str,
-        force: bool,
-    ) -> Result<()> {
-        self.log_progress(&format!(
-            "machine_standby controller={controller_name} target={target_name} force={force}"
-        ));
-        let command = if force {
-            format!("ployzd machine standby {target_name} --force")
-        } else {
-            format!("ployzd machine standby {target_name}")
-        };
-        self.ssh_expect_ok_name(controller_name, &command)?;
-        self.log_progress(&format!("machine_standby complete target={target_name}"));
-        Ok(())
-    }
-
-    pub(crate) fn machine_rm(
-        &self,
-        controller_name: &str,
-        target_name: &str,
-        force: bool,
-    ) -> Result<()> {
-        let command = if force {
-            format!("ployzd machine rm {target_name} --force")
-        } else {
-            format!("ployzd machine rm {target_name}")
-        };
-        self.ssh_expect_ok_name(controller_name, &command)?;
-        Ok(())
-    }
-
-    pub(crate) fn mesh_destroy(&self, node_name: &str, network: &str) -> Result<()> {
-        self.ssh_expect_ok_name(node_name, &format!("ployzd mesh destroy {network}"))?;
         Ok(())
     }
 
@@ -586,7 +447,6 @@ impl ScenarioRun {
             .map(|expected| {
                 let subnet = match expected.subnet {
                     SubnetExpectation::Present => "subnet=present",
-                    SubnetExpectation::Absent => "subnet=absent",
                 };
                 format!("{}:{}:{subnet}", expected.id, expected.lifecycle)
             })
@@ -676,91 +536,6 @@ impl ScenarioRun {
                 return Err(Error::Message(format!(
                     "doctor on {node_name} reports peer '{peer_id}' storage={}, expected {expected_storage}",
                     peer.storage
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn assert_nats_asset_replicas(
-        &self,
-        node_name: &str,
-        expected_replicas: usize,
-    ) -> Result<()> {
-        use crate::support::{DaemonJsonPayload, parse_daemon_json_response};
-        const REQUIRED_ASSETS: &[&str] = &[
-            "cp_deploy_commits_auth-default",
-            "route_journal_auth-default",
-            "cp_revisions_auth-default",
-            "work_cert_auth-default",
-            "machines_local",
-            "cp_invites_auth-default",
-            "cp_deploy_status_auth-default",
-            "cp_instances_auth-default",
-            "cp_locks_auth-default",
-            "cp_coordinator_lease_auth-default",
-        ];
-
-        self.log_progress(&format!(
-            "assert_nats_asset_replicas node={node_name} replicas={expected_replicas}"
-        ));
-        let output = self.ssh_expect_ok_name(node_name, "ployzd --json status")?;
-        let response = parse_daemon_json_response(&output.stdout)?;
-        if !response.ok {
-            return Err(Error::Message(format!(
-                "status on {node_name} returned non-ok response: {}",
-                response.message
-            )));
-        }
-        let Some(DaemonJsonPayload::Status(payload)) = response.payload else {
-            return Err(Error::Message(format!(
-                "status on {node_name} missing status payload"
-            )));
-        };
-        for asset_name in REQUIRED_ASSETS {
-            let Some(asset) = payload
-                .nats_assets
-                .iter()
-                .find(|asset| asset.name == *asset_name)
-            else {
-                return Err(Error::Message(format!(
-                    "status on {node_name} has no NATS asset row for '{asset_name}'"
-                )));
-            };
-            if let Some(error) = asset.error.as_deref() {
-                return Err(Error::Message(format!(
-                    "status on {node_name} reports NATS asset '{}' error: {error}",
-                    asset.name
-                )));
-            }
-            if asset.replicas != Some(expected_replicas) {
-                return Err(Error::Message(format!(
-                    "status on {node_name} reports NATS asset '{}' kind='{}' replicas={:?}, expected {expected_replicas}",
-                    asset.name, asset.kind, asset.replicas
-                )));
-            }
-            if asset.healthy != Some(true) {
-                return Err(Error::Message(format!(
-                    "status on {node_name} reports NATS asset '{}' kind='{}' healthy={:?}, expected true",
-                    asset.name, asset.kind, asset.healthy
-                )));
-            }
-            if asset.current_replicas != Some(expected_replicas) {
-                return Err(Error::Message(format!(
-                    "status on {node_name} reports NATS asset '{}' kind='{}' current_replicas={:?}, expected {expected_replicas}",
-                    asset.name, asset.kind, asset.current_replicas
-                )));
-            }
-            if asset.offline_replicas != Some(0) {
-                return Err(Error::Message(format!(
-                    "status on {node_name} reports NATS asset '{}' kind='{}' offline_replicas={:?}, expected 0",
-                    asset.name, asset.kind, asset.offline_replicas
-                )));
-            }
-            if asset.max_lag != Some(0) {
-                return Err(Error::Message(format!(
-                    "status on {node_name} reports NATS asset '{}' kind='{}' max_lag={:?}, expected 0",
-                    asset.name, asset.kind, asset.max_lag
                 )));
             }
         }
@@ -1545,7 +1320,6 @@ impl MachineRow {
         }
         match expected.subnet {
             SubnetExpectation::Present => self.subnet != "—",
-            SubnetExpectation::Absent => self.subnet == "—",
         }
     }
 }
