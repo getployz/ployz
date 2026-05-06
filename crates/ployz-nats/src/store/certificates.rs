@@ -13,7 +13,7 @@ use crate::buckets::{
     ACME_ACCOUNTS_BUCKET, ACME_CHALLENGE_READINESS_BUCKET, ACME_CHALLENGES_BUCKET,
     CERTIFICATES_BUCKET,
 };
-use crate::coord::jobs::{JobSchedule, publish_cert_renewal_job};
+use crate::coord::jobs::{JobSchedule, publish_cert_renewal_job_in};
 use crate::store::kv_json;
 use crate::store::kv_watch;
 use crate::subjects;
@@ -203,7 +203,7 @@ async fn schedule_certificate_renewal(store: &NatsStore, record: &CertificateRec
     let Some(schedule) = certificate_renewal_job_schedule(record) else {
         return Ok(());
     };
-    publish_cert_renewal_job(store.jetstream(), &record.hostname, schedule).await
+    publish_cert_renewal_job_in(store.jetstream(), store.scope(), &record.hostname, schedule).await
 }
 
 fn certificate_renewal_job_schedule(record: &CertificateRecord) -> Option<JobSchedule> {

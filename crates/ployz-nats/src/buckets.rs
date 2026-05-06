@@ -7,7 +7,8 @@ use ployz_types::error::{Error, Result};
 
 use crate::role::{ReplicaPreference, desired_replicas};
 use crate::subjects::{
-    CERT_JOBS_STREAM, DEPLOY_COMMITS_STREAM, REVISIONS_STREAM, ROUTING_EVENTS_STREAM,
+    self, CERT_JOBS_STREAM, DEPLOY_COMMITS_STREAM, NatsScope, REVISIONS_STREAM,
+    ROUTING_EVENTS_STREAM,
 };
 
 pub const AUTHORITIES_BUCKET: &str = "authorities_local";
@@ -177,12 +178,17 @@ pub struct AssetConfigs {
 
 #[must_use]
 pub fn asset_configs(policy: AssetPolicy) -> AssetConfigs {
+    asset_configs_in(&NatsScope::default(), policy)
+}
+
+#[must_use]
+pub fn asset_configs_in(scope: &NatsScope, policy: AssetPolicy) -> AssetConfigs {
     let replicas = policy.replicas();
     AssetConfigs {
-        deploy_commits: deploy_commits_stream(replicas),
-        route_journal: route_journal_stream(replicas),
-        revisions: revisions_stream(replicas),
-        cert_jobs: cert_jobs_stream(replicas),
+        deploy_commits: deploy_commits_stream(scope, replicas),
+        route_journal: route_journal_stream(scope, replicas),
+        revisions: revisions_stream(scope, replicas),
+        cert_jobs: cert_jobs_stream(scope, replicas),
         authority_durable_kv: authority_durable_buckets(replicas),
         root_durable_kv: root_durable_buckets(replicas),
         authority_lease_kv: authority_lease_buckets(replicas),
@@ -190,7 +196,15 @@ pub fn asset_configs(policy: AssetPolicy) -> AssetConfigs {
 }
 
 pub async fn ensure_assets(js: &jetstream::Context, policy: AssetPolicy) -> Result<()> {
-    let configs = asset_configs(policy);
+    ensure_assets_in(js, &NatsScope::default(), policy).await
+}
+
+pub async fn ensure_assets_in(
+    js: &jetstream::Context,
+    scope: &NatsScope,
+    policy: AssetPolicy,
+) -> Result<()> {
+    let configs = asset_configs_in(scope, policy);
     ensure_stream(js, configs.deploy_commits).await?;
     ensure_stream(js, configs.route_journal).await?;
     ensure_stream(js, configs.revisions).await?;
@@ -262,10 +276,10 @@ fn ttl_policy_needs_update(
     }
 }
 
-fn deploy_commits_stream(replicas: usize) -> stream::Config {
+fn deploy_commits_stream(scope: &NatsScope, replicas: usize) -> stream::Config {
     stream::Config {
         name: DEPLOY_COMMITS_STREAM.into(),
-        subjects: vec!["ployz.v1.local.auth-default.cp.deploy.commit.>".into()],
+        subjects: vec![subjects::deploy_commit_filter_in(scope)],
         retention: stream::RetentionPolicy::Limits,
         storage: stream::StorageType::File,
         num_replicas: replicas,
@@ -279,10 +293,10 @@ fn deploy_commits_stream(replicas: usize) -> stream::Config {
     }
 }
 
-fn route_journal_stream(replicas: usize) -> stream::Config {
+fn route_journal_stream(scope: &NatsScope, replicas: usize) -> stream::Config {
     stream::Config {
         name: ROUTING_EVENTS_STREAM.into(),
-        subjects: vec!["ployz.v1.local.auth-default.route.journal.>".into()],
+        subjects: vec![subjects::route_journal_filter_in(scope)],
         retention: stream::RetentionPolicy::Limits,
         storage: stream::StorageType::File,
         num_replicas: replicas,
@@ -297,10 +311,10 @@ fn route_journal_stream(replicas: usize) -> stream::Config {
     }
 }
 
-fn revisions_stream(replicas: usize) -> stream::Config {
+fn revisions_stream(scope: &NatsScope, replicas: usize) -> stream::Config {
     stream::Config {
         name: REVISIONS_STREAM.into(),
-        subjects: vec!["ployz.v1.local.auth-default.cp.revision.>".into()],
+        subjects: vec![subjects::revision_filter_in(scope)],
         retention: stream::RetentionPolicy::Limits,
         storage: stream::StorageType::File,
         num_replicas: replicas,
@@ -311,10 +325,10 @@ fn revisions_stream(replicas: usize) -> stream::Config {
     }
 }
 
-fn cert_jobs_stream(replicas: usize) -> stream::Config {
+fn cert_jobs_stream(scope: &NatsScope, replicas: usize) -> stream::Config {
     stream::Config {
         name: CERT_JOBS_STREAM.into(),
-        subjects: vec!["ployz.v1.local.auth-default.work.cert.>".into()],
+        subjects: vec![subjects::cert_work_filter_in(scope)],
         retention: stream::RetentionPolicy::WorkQueue,
         storage: stream::StorageType::File,
         num_replicas: replicas,
@@ -489,6 +503,34 @@ mod tests {
                 .iter()
                 .any(|asset| asset.name == MACHINES_BUCKET
                     && asset.role == NatsAssetRole::InstallationRoot)
+        );
+    }
+
+    #[test]
+    fn asset_configs_use_provided_scope_for_subject_filters() {
+        let scope = NatsScope::new(
+            ployz_types::model::InstallationId("inst-acme".into()),
+            ployz_types::model::AuthorityId("auth-sin".into()),
+        );
+        let configs = asset_configs_in(
+            &scope,
+            AssetPolicy {
+                storage_nodes: 3,
+                replica_preference: ReplicaPreference::Three,
+            },
+        );
+
+        assert_eq!(
+            configs.deploy_commits.subjects,
+            vec!["ployz.v1.inst-acme.auth-sin.cp.deploy.commit.>".to_string()]
+        );
+        assert_eq!(
+            configs.route_journal.subjects,
+            vec!["ployz.v1.inst-acme.auth-sin.route.journal.>".to_string()]
+        );
+        assert_eq!(
+            configs.cert_jobs.subjects,
+            vec!["ployz.v1.inst-acme.auth-sin.work.cert.>".to_string()]
         );
     }
 

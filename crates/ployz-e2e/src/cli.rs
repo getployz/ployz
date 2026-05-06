@@ -61,44 +61,29 @@ impl ZfsMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "snake_case")]
 pub(crate) enum Scenario {
-    SingleNodeInit,
-    MachineAddBasic,
-    MachineAddDoesNotPromoteStorage,
-    MachineDrainStandbyActivateCycle,
-    MeshRestartFromSeedCache,
-    OfflineLeafNodeCommandFailsLoudly,
-    DestroyWithDeadPeer,
-    WireguardReconnect,
-    DeploySmoke,
-    BridgeForwardSmoke,
-    VolumeSmoke,
-    ZfsTransferSmoke,
+    MeshBootstrapJoinSmoke,
+    NodeRestartAdoptsDataPlane,
+    WireguardPartitionReconnect,
+    DeployHttpAcmeGatewaySmoke,
+    DockerBridgeForwardSmoke,
+    ZfsTransferRealSmoke,
 }
 
 impl Scenario {
-    const DEFAULT: [Self; 10] = [
-        Self::SingleNodeInit,
-        Self::MachineAddBasic,
-        Self::MachineAddDoesNotPromoteStorage,
-        Self::MachineDrainStandbyActivateCycle,
-        Self::MeshRestartFromSeedCache,
-        Self::OfflineLeafNodeCommandFailsLoudly,
-        Self::DestroyWithDeadPeer,
-        Self::WireguardReconnect,
-        Self::DeploySmoke,
-        Self::BridgeForwardSmoke,
+    const DEFAULT: [Self; 5] = [
+        Self::MeshBootstrapJoinSmoke,
+        Self::NodeRestartAdoptsDataPlane,
+        Self::WireguardPartitionReconnect,
+        Self::DeployHttpAcmeGatewaySmoke,
+        Self::DockerBridgeForwardSmoke,
     ];
 
     #[must_use]
     pub(crate) fn default_order(zfs_mode: ZfsMode) -> Vec<Self> {
         let mut scenarios = Self::DEFAULT.to_vec();
         match zfs_mode {
-            ZfsMode::Off => {}
-            ZfsMode::Fake => scenarios.push(Self::VolumeSmoke),
-            ZfsMode::Real => {
-                scenarios.push(Self::VolumeSmoke);
-                scenarios.push(Self::ZfsTransferSmoke);
-            }
+            ZfsMode::Off | ZfsMode::Fake => {}
+            ZfsMode::Real => scenarios.push(Self::ZfsTransferRealSmoke),
         }
         scenarios
     }
@@ -106,91 +91,62 @@ impl Scenario {
     #[must_use]
     pub(crate) fn ci_zfs_mode(self) -> ZfsMode {
         match self {
-            Self::VolumeSmoke | Self::ZfsTransferSmoke => ZfsMode::Real,
-            Self::SingleNodeInit
-            | Self::MachineAddBasic
-            | Self::MachineAddDoesNotPromoteStorage
-            | Self::MachineDrainStandbyActivateCycle
-            | Self::MeshRestartFromSeedCache
-            | Self::OfflineLeafNodeCommandFailsLoudly
-            | Self::DestroyWithDeadPeer
-            | Self::WireguardReconnect
-            | Self::DeploySmoke
-            | Self::BridgeForwardSmoke => ZfsMode::Off,
+            Self::ZfsTransferRealSmoke => ZfsMode::Real,
+            Self::MeshBootstrapJoinSmoke
+            | Self::NodeRestartAdoptsDataPlane
+            | Self::WireguardPartitionReconnect
+            | Self::DeployHttpAcmeGatewaySmoke
+            | Self::DockerBridgeForwardSmoke => ZfsMode::Off,
         }
     }
 
     pub(crate) fn validate_zfs_mode(self, zfs_mode: ZfsMode) -> Result<(), String> {
         match self {
-            Self::VolumeSmoke if zfs_mode == ZfsMode::Off => {
-                Err("volume_smoke requires --zfs fake or --zfs real".into())
+            Self::ZfsTransferRealSmoke if zfs_mode != ZfsMode::Real => {
+                Err("zfs_transfer_real_smoke requires --zfs real".into())
             }
-            Self::ZfsTransferSmoke if zfs_mode != ZfsMode::Real => {
-                Err("zfs_transfer_smoke requires --zfs real".into())
-            }
-            Self::SingleNodeInit
-            | Self::MachineAddBasic
-            | Self::MachineAddDoesNotPromoteStorage
-            | Self::MachineDrainStandbyActivateCycle
-            | Self::MeshRestartFromSeedCache
-            | Self::OfflineLeafNodeCommandFailsLoudly
-            | Self::DestroyWithDeadPeer
-            | Self::WireguardReconnect
-            | Self::DeploySmoke
-            | Self::BridgeForwardSmoke
-            | Self::VolumeSmoke
-            | Self::ZfsTransferSmoke => Ok(()),
+            Self::MeshBootstrapJoinSmoke
+            | Self::NodeRestartAdoptsDataPlane
+            | Self::WireguardPartitionReconnect
+            | Self::DeployHttpAcmeGatewaySmoke
+            | Self::DockerBridgeForwardSmoke
+            | Self::ZfsTransferRealSmoke => Ok(()),
         }
     }
 
     #[must_use]
     pub(crate) fn node_names(self) -> &'static [&'static str] {
         match self {
-            Self::SingleNodeInit | Self::BridgeForwardSmoke | Self::VolumeSmoke => &["founder"],
-            Self::DeploySmoke | Self::ZfsTransferSmoke => &["founder", "peer"],
-            Self::MachineAddBasic => &["founder", "joiner"],
-            Self::MachineAddDoesNotPromoteStorage => &["founder", "joiner1", "joiner2"],
-            Self::MachineDrainStandbyActivateCycle
-            | Self::MeshRestartFromSeedCache
-            | Self::OfflineLeafNodeCommandFailsLoudly
-            | Self::WireguardReconnect => &["founder", "peer"],
-            Self::DestroyWithDeadPeer => &["founder", "peer1", "peer2"],
+            Self::DockerBridgeForwardSmoke => &["founder"],
+            Self::MeshBootstrapJoinSmoke
+            | Self::NodeRestartAdoptsDataPlane
+            | Self::WireguardPartitionReconnect
+            | Self::DeployHttpAcmeGatewaySmoke
+            | Self::ZfsTransferRealSmoke => &["founder", "peer"],
         }
     }
 
     #[must_use]
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::SingleNodeInit => "single_node_init",
-            Self::MachineAddBasic => "machine_add_basic",
-            Self::MachineAddDoesNotPromoteStorage => "machine_add_does_not_promote_storage",
-            Self::MachineDrainStandbyActivateCycle => "machine_drain_standby_activate_cycle",
-            Self::MeshRestartFromSeedCache => "mesh_restart_from_seed_cache",
-            Self::OfflineLeafNodeCommandFailsLoudly => "offline_leaf_node_command_fails_loudly",
-            Self::DestroyWithDeadPeer => "destroy_with_dead_peer",
-            Self::WireguardReconnect => "wireguard_reconnect",
-            Self::DeploySmoke => "deploy_smoke",
-            Self::BridgeForwardSmoke => "bridge_forward_smoke",
-            Self::VolumeSmoke => "volume_smoke",
-            Self::ZfsTransferSmoke => "zfs_transfer_smoke",
+            Self::MeshBootstrapJoinSmoke => "mesh_bootstrap_join_smoke",
+            Self::NodeRestartAdoptsDataPlane => "node_restart_adopts_data_plane",
+            Self::WireguardPartitionReconnect => "wireguard_partition_reconnect",
+            Self::DeployHttpAcmeGatewaySmoke => "deploy_http_acme_gateway_smoke",
+            Self::DockerBridgeForwardSmoke => "docker_bridge_forward_smoke",
+            Self::ZfsTransferRealSmoke => "zfs_transfer_real_smoke",
         }
     }
 
     #[must_use]
     pub(crate) fn runtime(self) -> &'static str {
         match self {
-            Self::BridgeForwardSmoke => "docker",
-            Self::SingleNodeInit
-            | Self::MachineAddBasic
-            | Self::MachineAddDoesNotPromoteStorage
-            | Self::MachineDrainStandbyActivateCycle
-            | Self::MeshRestartFromSeedCache
-            | Self::OfflineLeafNodeCommandFailsLoudly
-            | Self::DestroyWithDeadPeer
-            | Self::WireguardReconnect
-            | Self::DeploySmoke
-            | Self::VolumeSmoke
-            | Self::ZfsTransferSmoke => "host",
+            Self::DockerBridgeForwardSmoke => "docker",
+            Self::MeshBootstrapJoinSmoke
+            | Self::NodeRestartAdoptsDataPlane
+            | Self::WireguardPartitionReconnect
+            | Self::DeployHttpAcmeGatewaySmoke
+            | Self::ZfsTransferRealSmoke => "host",
         }
     }
 }
@@ -200,38 +156,27 @@ mod tests {
     use super::{Scenario, ZfsMode};
 
     #[test]
-    fn real_ci_order_includes_machine_add_without_storage_promotion() {
+    fn real_ci_order_only_adds_real_zfs_transfer() {
         let scenarios = Scenario::default_order(ZfsMode::Real);
 
-        assert!(scenarios.contains(&Scenario::MachineAddDoesNotPromoteStorage));
         assert_eq!(
             scenarios,
             vec![
-                Scenario::SingleNodeInit,
-                Scenario::MachineAddBasic,
-                Scenario::MachineAddDoesNotPromoteStorage,
-                Scenario::MachineDrainStandbyActivateCycle,
-                Scenario::MeshRestartFromSeedCache,
-                Scenario::OfflineLeafNodeCommandFailsLoudly,
-                Scenario::DestroyWithDeadPeer,
-                Scenario::WireguardReconnect,
-                Scenario::DeploySmoke,
-                Scenario::BridgeForwardSmoke,
-                Scenario::VolumeSmoke,
-                Scenario::ZfsTransferSmoke,
+                Scenario::MeshBootstrapJoinSmoke,
+                Scenario::NodeRestartAdoptsDataPlane,
+                Scenario::WireguardPartitionReconnect,
+                Scenario::DeployHttpAcmeGatewaySmoke,
+                Scenario::DockerBridgeForwardSmoke,
+                Scenario::ZfsTransferRealSmoke,
             ]
         );
     }
 
     #[test]
-    fn machine_add_without_promotion_uses_three_nodes_and_no_zfs() {
+    fn fake_zfs_does_not_add_e2e_storage_scenarios() {
         assert_eq!(
-            Scenario::MachineAddDoesNotPromoteStorage.node_names(),
-            ["founder", "joiner1", "joiner2"]
-        );
-        assert_eq!(
-            Scenario::MachineAddDoesNotPromoteStorage.ci_zfs_mode(),
-            ZfsMode::Off
+            Scenario::default_order(ZfsMode::Fake),
+            Scenario::default_order(ZfsMode::Off)
         );
     }
 }

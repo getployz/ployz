@@ -82,6 +82,11 @@ pub fn deploy_commit_in(scope: &NatsScope, namespace: &Namespace, deploy_id: &De
 }
 
 #[must_use]
+pub fn deploy_commit_filter_in(scope: &NatsScope) -> String {
+    format!("{}.cp.deploy.commit.>", scope.authority_prefix())
+}
+
+#[must_use]
 pub fn route_journal_event(batch_id: &str, index: usize) -> String {
     route_journal_event_in(&NatsScope::default(), batch_id, index)
 }
@@ -99,6 +104,11 @@ pub fn route_journal_event_in(scope: &NatsScope, batch_id: &str, index: usize) -
 #[must_use]
 pub fn routing_event(batch_id: &str, index: usize) -> String {
     route_journal_event(batch_id, index)
+}
+
+#[must_use]
+pub fn route_journal_filter_in(scope: &NatsScope) -> String {
+    format!("{}.route.journal.>", scope.authority_prefix())
 }
 
 #[must_use]
@@ -120,6 +130,11 @@ pub fn revision_in(
         subject_token(service),
         subject_token(revision_hash)
     )
+}
+
+#[must_use]
+pub fn revision_filter_in(scope: &NatsScope) -> String {
+    format!("{}.cp.revision.>", scope.authority_prefix())
 }
 
 #[must_use]
@@ -160,6 +175,11 @@ pub fn cert_renewal_job_in(scope: &NatsScope, hostname: &str) -> String {
 }
 
 #[must_use]
+pub fn cert_renewal_filter_in(scope: &NatsScope) -> String {
+    format!("{}.work.cert.renew.>", scope.authority_prefix())
+}
+
+#[must_use]
 pub fn cert_renewal_schedule(hostname: &str) -> String {
     cert_renewal_schedule_in(&NatsScope::default(), hostname)
 }
@@ -171,6 +191,11 @@ pub fn cert_renewal_schedule_in(scope: &NatsScope, hostname: &str) -> String {
         scope.authority_prefix(),
         subject_token(&hostname.to_ascii_lowercase())
     )
+}
+
+#[must_use]
+pub fn cert_work_filter_in(scope: &NatsScope) -> String {
+    format!("{}.work.cert.>", scope.authority_prefix())
 }
 
 #[must_use]
