@@ -143,6 +143,7 @@ mod tests {
     use super::*;
     use ployz_types::model::{
         MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
+        StorageParticipation,
     };
 
     #[test]
@@ -248,6 +249,7 @@ mod tests {
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
             storage: true,
+            storage_participation: StorageParticipation::default_authority(),
             created_at: 1,
             updated_at: 1,
             labels: Default::default(),

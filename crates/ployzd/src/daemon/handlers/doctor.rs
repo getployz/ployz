@@ -104,6 +104,7 @@ fn build_doctor_payload(
             network_lifecycle: active.config.lifecycle.to_string(),
             machine_lifecycle: format_lifecycle(local_record).to_string(),
             storage: local_record.storage,
+            storage_participation: format_storage_participation(local_record),
             config_subnet: active.config.subnet.map(|subnet| subnet.to_string()),
             record_subnet: local_record.subnet.map(|subnet| subnet.to_string()),
             runtime_running: true,
@@ -133,12 +134,13 @@ fn render_doctor_report(report: &DoctorPayload) -> String {
     }
     lines.push(String::new());
     lines.push(format!(
-        "local: machine={} network={} network_lifecycle={} machine_lifecycle={} storage={} runtime_running={}",
+        "local: machine={} network={} network_lifecycle={} machine_lifecycle={} storage={} storage_participation={} runtime_running={}",
         report.local.machine_id,
         report.local.network,
         report.local.network_lifecycle,
         report.local.machine_lifecycle,
         report.local.storage,
+        report.local.storage_participation,
         report.local.runtime_running,
     ));
     if report.local.config_subnet != report.local.record_subnet {
@@ -205,11 +207,21 @@ fn append_peer_section(lines: &mut Vec<String>, rows: &[&DoctorPeer], include_ca
 
 fn store_status_column(row: &DoctorPeer) -> String {
     format!(
-        "store={} storage={} subnet={}",
+        "store={} storage={} storage_participation={} subnet={}",
         row.store_lifecycle,
         row.storage,
+        row.storage_participation,
         row.subnet.as_deref().unwrap_or("none")
     )
+}
+
+fn format_storage_participation(machine: &MachineMembership) -> String {
+    match &machine.storage_participation {
+        ployz_types::model::StorageParticipation::Candidate => String::from("candidate"),
+        ployz_types::model::StorageParticipation::Authority { authority_id } => {
+            format!("authority:{}", authority_id.as_str())
+        }
+    }
 }
 
 fn wg_status_column(row: &DoctorPeer) -> String {
@@ -270,6 +282,7 @@ fn build_participation_rows(
                 machine_id: machine.id.0.clone(),
                 role: diagnostic_role_name(role).to_string(),
                 storage: machine.storage,
+                storage_participation: format_storage_participation(machine),
                 blocking: role == DiagnosticRole::Blocking && !healthy,
                 store_lifecycle: format_lifecycle(machine).to_string(),
                 subnet: machine.subnet.map(|subnet| subnet.to_string()),
@@ -629,6 +642,7 @@ mod tests {
             endpoints: vec![String::from("127.0.0.1:51820")],
             lifecycle,
             storage: true,
+            storage_participation: ployz_types::model::StorageParticipation::default_authority(),
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),

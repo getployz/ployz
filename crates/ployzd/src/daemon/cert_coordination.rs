@@ -411,6 +411,7 @@ mod tests {
             endpoints: Vec::new(),
             lifecycle,
             storage: true,
+            storage_participation: ployz_types::model::StorageParticipation::default_authority(),
             created_at: 1,
             updated_at: 1,
             labels: Default::default(),

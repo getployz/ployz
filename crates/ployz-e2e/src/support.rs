@@ -91,12 +91,14 @@ pub(crate) struct DoctorOverall {
 #[derive(Debug, Deserialize)]
 pub(crate) struct DoctorLocal {
     pub(crate) storage: bool,
+    pub(crate) storage_participation: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct DoctorPeer {
     pub(crate) machine_id: String,
     pub(crate) storage: bool,
+    pub(crate) storage_participation: String,
     pub(crate) blocking: bool,
     pub(crate) store_lifecycle: String,
     pub(crate) wg_state: String,

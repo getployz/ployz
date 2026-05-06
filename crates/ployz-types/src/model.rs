@@ -162,6 +162,35 @@ pub struct AuthorityParticipationRecord {
     pub updated_at: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StorageParticipation {
+    Candidate,
+    Authority { authority_id: AuthorityId },
+}
+
+impl StorageParticipation {
+    #[must_use]
+    pub fn default_authority() -> Self {
+        Self::Authority {
+            authority_id: AuthorityId::default_authority(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_authority(&self) -> bool {
+        matches!(self, Self::Authority { .. })
+    }
+
+    #[must_use]
+    pub fn authority_id(&self) -> Option<&AuthorityId> {
+        match self {
+            Self::Candidate => None,
+            Self::Authority { authority_id } => Some(authority_id),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
 pub struct RegionName(pub String);
 
@@ -362,6 +391,7 @@ pub struct MachineMembership {
     #[serde(default)]
     pub lifecycle: MachineLifecycle,
     pub storage: bool,
+    pub storage_participation: StorageParticipation,
     pub created_at: u64,
     pub updated_at: u64,
     pub labels: BTreeMap<String, String>,
@@ -390,6 +420,7 @@ impl MachineMembership {
             endpoints,
             lifecycle: MachineLifecycle::Standby,
             storage: true,
+            storage_participation: StorageParticipation::Candidate,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -1294,6 +1325,7 @@ mod tests {
             endpoints: vec!["1.2.3.4:51820".into(), "5.6.7.8:51820".into()],
             lifecycle: MachineLifecycle::Active,
             storage: true,
+            storage_participation: StorageParticipation::default_authority(),
             created_at: 100,
             updated_at: 200,
             labels,

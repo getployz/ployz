@@ -521,6 +521,7 @@ mod tests {
                 .collect(),
             lifecycle: MachineLifecycle::Standby,
             storage: true,
+            storage_participation: crate::model::StorageParticipation::default_authority(),
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),

@@ -148,7 +148,9 @@ fn decode_machine(key: &str, bytes: &[u8]) -> Result<MachineMembership> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{MachineLifecycle, MachineTopology, OverlayIp, PublicKey};
+    use ployz_types::model::{
+        MachineLifecycle, MachineTopology, OverlayIp, PublicKey, StorageParticipation,
+    };
 
     #[test]
     fn machine_kv_decode_failure_is_subscription_failure() {
@@ -183,6 +185,7 @@ mod tests {
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
             storage: true,
+            storage_participation: StorageParticipation::default_authority(),
             created_at: 1,
             updated_at: 1,
             labels: Default::default(),
