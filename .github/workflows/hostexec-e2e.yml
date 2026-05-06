@@ -203,7 +203,19 @@ jobs:
       - name: Build E2E runner
         run: cargo build -p ployz-e2e
 
+      - name: Restore payload build cache
+        id: payload-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .payload-build-cache
+          key: ${{ runner.os }}-${{ matrix.arch.suffix }}-payload-${{ hashFiles('Cargo.lock', '.nats-version', 'scripts/build-install-payload.sh', 'Dockerfile.payload-builder') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch.suffix }}-payload-${{ hashFiles('Cargo.lock', '.nats-version', 'scripts/build-install-payload.sh', 'Dockerfile.payload-builder') }}-
+            ${{ runner.os }}-${{ matrix.arch.suffix }}-payload-
+
       - name: Build E2E payload
+        env:
+          PLOYZ_PAYLOAD_HOST_CACHE_DIR: ${{ github.workspace }}/.payload-build-cache
         run: |
           set -euo pipefail
           bash scripts/build-install-payload.sh \
@@ -212,6 +224,13 @@ jobs:
             --profile debug
           bash scripts/payload-stamp.sh "$(pwd)" "${{ matrix.arch.platform }}" debug \
             > e2e-artifacts/payload-cache/.payload-stamp
+
+      - name: Save payload build cache
+        if: always() && steps.payload-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .payload-build-cache
+          key: ${{ steps.payload-cache.outputs.cache-primary-key }}
 
       - name: Upload E2E runner binary
         uses: actions/upload-artifact@v4
