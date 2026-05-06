@@ -432,6 +432,24 @@ build_binaries() {
   cargo build "${cargo_args[@]}" -p ployz-gateway -p ployz-dns
 }
 
+configure_host_payload_cache() {
+  local repo_dir=$1
+  local target_platform=$2
+  local build_profile=$3
+  local host_cache_dir cache_suffix host_target
+
+  host_cache_dir="${PLOYZ_PAYLOAD_HOST_CACHE_DIR:-}"
+  if [[ -z "${host_cache_dir}" || -n "${CARGO_TARGET_DIR:-}" ]]; then
+    return
+  fi
+
+  repo_dir="$(cd "${repo_dir}" && pwd)"
+  cache_suffix="$(cache_key "${repo_dir}")-${target_platform//\//-}-${build_profile}"
+  host_target="${host_cache_dir}/${cache_suffix}/target"
+  mkdir -p "${host_target}"
+  export CARGO_TARGET_DIR="${host_target}"
+}
+
 binary_build_dir() {
   local profile_dir
   profile_dir="${BUILD_PROFILE}"
@@ -501,6 +519,7 @@ if [[ -z "${PLOYZ_PAYLOAD_BUILD_INTERNAL:-}" && "${TARGET_PLATFORM}" != "$(curre
   esac
 fi
 
+configure_host_payload_cache "${REPO_DIR}" "${TARGET_PLATFORM}" "${BUILD_PROFILE}"
 mkdir -p "${OUTPUT_DIR}"
 install -d "${OUTPUT_DIR}/bin"
 install_nats_server "${OUTPUT_DIR}"
