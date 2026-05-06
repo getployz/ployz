@@ -1,8 +1,8 @@
 use ipnet::Ipv4Net;
 use ployz_types::model::{
-    InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, NetworkId,
-    NetworkLifecycle, PublicKey, RoutingEvent, RoutingState, ServiceReleaseRecord,
-    ServiceRevisionRecord,
+    AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord, InstanceStatusRecord,
+    MachineId, MachineLifecycle, MachineMembership, NetworkId, NetworkLifecycle, PublicKey,
+    RoutingEvent, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -191,6 +191,9 @@ pub enum DaemonRequest {
         hostname: String,
         token: String,
     },
+    AcmeHttp01Status {
+        hostname: String,
+    },
     MeshSelfRecord,
     DeployPreview {
         manifest_json: String,
@@ -286,6 +289,7 @@ pub enum DaemonPayload {
     MachineInviteList(MachineInviteListPayload),
     MachineOperationList(MachineOperationListPayload),
     MachineOperation(MachineOperationPayload),
+    AcmeHttp01Status(AcmeHttp01StatusPayload),
     DeployNamespaceSnapshot(DeployNamespaceSnapshotPayload),
     DeployCandidateStarted(DeployCandidateStartedPayload),
     VolumeZfsInspect(VolumeZfsInspectPayload),
@@ -294,6 +298,19 @@ pub enum DaemonPayload {
     VolumeZfsTransfer(VolumeZfsTransferPayload),
     VolumeZfsTransferList(VolumeZfsTransferListPayload),
     RuntimeState(RuntimeStatePayload),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeHttp01StatusPayload {
+    pub hostname: String,
+    pub certificate: Option<CertificateRecord>,
+    pub challenges: Vec<AcmeHttp01ChallengeStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeHttp01ChallengeStatus {
+    pub challenge: AcmeChallengeRecord,
+    pub readiness: Vec<AcmeChallengeReadinessRecord>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

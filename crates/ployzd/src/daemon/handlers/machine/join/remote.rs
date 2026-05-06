@@ -4,17 +4,17 @@ use ployz_api::{
 };
 use ployz_nats::coord::rpc::{NatsNodeRpcClient, NodeCommandSubject};
 use ployz_sdk::Transport;
-use ployz_store_api::StoreDriver;
-use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership, PublicKey};
+use ployz_store_api::{MachineRegistry, StoreDriver};
+use ployz_types::model::{MachineEvent, MachineId, MachineLifecycle, MachineMembership, PublicKey};
 use tokio::time::{Duration, Instant, sleep, timeout};
 
 use crate::daemon::ssh::{SshOptions, ssh_stdio_transport};
 
 const REMOTE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const NATS_READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const REMOTE_READY_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 const MACHINE_STATE_SYNC_TIMEOUT: Duration = Duration::from_secs(20);
-const MACHINE_STATE_SYNC_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const REMOTE_RPC_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployzctl\" rpc-stdio";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,7 +194,7 @@ pub(super) async fn wait_for_nats_command_responder(
             ));
         }
 
-        sleep(REMOTE_READY_POLL_INTERVAL).await;
+        sleep(NATS_READY_POLL_INTERVAL).await;
     }
 }
 
@@ -294,7 +294,7 @@ pub(super) async fn wait_for_nats_ready(
             ));
         }
 
-        sleep(REMOTE_READY_POLL_INTERVAL).await;
+        sleep(NATS_READY_POLL_INTERVAL).await;
     }
 }
 
@@ -305,44 +305,111 @@ pub(super) async fn wait_for_machine_projection(
     expected_subnet: ExpectedSubnetState,
 ) -> Result<(), String> {
     let deadline = Instant::now() + MACHINE_STATE_SYNC_TIMEOUT;
+    let (snapshot, mut events) = store
+        .subscribe_machines()
+        .await
+        .map_err(|err| format!("subscribe to machine projection: {err}"))?;
+
+    if machine_projection_matches(
+        snapshot.iter().find(|record| record.id == *machine_id),
+        expected_lifecycle,
+        expected_subnet,
+    ) {
+        return Ok(());
+    }
 
     loop {
-        let Some(record) = super::super::list::find_machine_record(store, machine_id).await? else {
-            if Instant::now() >= deadline {
-                return Err(format!(
-                    "timed out waiting for machine '{}' to appear in local store",
-                    machine_id
-                ));
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return Err(machine_projection_timeout(
+                store,
+                machine_id,
+                expected_lifecycle,
+                expected_subnet,
+            )
+            .await);
+        };
+
+        match timeout(remaining, events.recv()).await {
+            Ok(Some(Ok(MachineEvent::Added(record) | MachineEvent::Updated(record)))) => {
+                if record.id == *machine_id
+                    && machine_projection_matches(
+                        Some(&record),
+                        expected_lifecycle,
+                        expected_subnet,
+                    )
+                {
+                    return Ok(());
+                }
             }
-            sleep(MACHINE_STATE_SYNC_POLL_INTERVAL).await;
-            continue;
-        };
-
-        let subnet_matches = match expected_subnet {
-            ExpectedSubnetState::Present => record.subnet.is_some(),
-            ExpectedSubnetState::Absent => record.subnet.is_none(),
-        };
-        if record.lifecycle == expected_lifecycle && subnet_matches {
-            return Ok(());
+            Ok(Some(Ok(MachineEvent::Removed(_)))) => {}
+            Ok(Some(Err(err))) => {
+                return Err(format!("machine projection subscription failed: {err}"));
+            }
+            Ok(None) => return Err("machine projection subscription closed".into()),
+            Err(_) => {
+                return Err(machine_projection_timeout(
+                    store,
+                    machine_id,
+                    expected_lifecycle,
+                    expected_subnet,
+                )
+                .await);
+            }
         }
+    }
+}
 
-        if Instant::now() >= deadline {
-            let expected_subnet = match expected_subnet {
-                ExpectedSubnetState::Present => "present",
-                ExpectedSubnetState::Absent => "absent",
-            };
+fn machine_projection_matches(
+    record: Option<&MachineMembership>,
+    expected_lifecycle: MachineLifecycle,
+    expected_subnet: ExpectedSubnetState,
+) -> bool {
+    let Some(record) = record else {
+        return false;
+    };
+    let subnet_matches = match expected_subnet {
+        ExpectedSubnetState::Present => record.subnet.is_some(),
+        ExpectedSubnetState::Absent => record.subnet.is_none(),
+    };
+    record.lifecycle == expected_lifecycle && subnet_matches
+}
+
+async fn machine_projection_timeout(
+    store: &StoreDriver,
+    machine_id: &MachineId,
+    expected_lifecycle: MachineLifecycle,
+    expected_subnet: ExpectedSubnetState,
+) -> String {
+    match super::super::list::find_machine_record(store, machine_id).await {
+        Ok(Some(record)) => {
+            let expected_subnet = expected_subnet.label();
             let actual_subnet = if record.subnet.is_some() {
                 "present"
             } else {
                 "absent"
             };
-            return Err(format!(
+            format!(
                 "timed out waiting for machine '{}' to reach lifecycle='{}' subnet={expected_subnet}; observed lifecycle='{}' subnet={actual_subnet}",
                 machine_id, expected_lifecycle, record.lifecycle,
-            ));
+            )
         }
+        Ok(None) => format!(
+            "timed out waiting for machine '{}' to appear in local store",
+            machine_id
+        ),
+        Err(err) => format!(
+            "timed out waiting for machine '{}' projection and failed to inspect final state: {err}",
+            machine_id
+        ),
+    }
+}
 
-        sleep(MACHINE_STATE_SYNC_POLL_INTERVAL).await;
+impl ExpectedSubnetState {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Present => "present",
+            Self::Absent => "absent",
+        }
     }
 }
 

@@ -80,7 +80,7 @@ impl Mesh {
             task_cancel: None,
             endpoint_maintainer_tx: None,
             self_record_tx: None,
-            bootstrap_interval: Duration::from_millis(500),
+            bootstrap_interval: Duration::from_millis(100),
             connection_timeout: Duration::from_secs(30),
             service_ready_timeout: Duration::from_secs(15),
             machine_id,

@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use ployz_api::{AcmeHttp01ChallengeStatus, AcmeHttp01StatusPayload, DaemonPayload};
 use ployz_nats::coord::locks::{Lease, NatsLocks};
 use ployz_nats::subjects;
 use ployz_orchestrator::certificates::{
@@ -462,6 +463,53 @@ mod tests {
 }
 
 impl DaemonState {
+    pub(crate) async fn handle_acme_http01_status(
+        &self,
+        hostname: &str,
+    ) -> ployz_api::DaemonResponse {
+        let active = match self.require_active("NO_MESH", "no mesh is running") {
+            Ok(active) => active,
+            Err(response) => return *response,
+        };
+
+        let certificate = match active.mesh.store.get_certificate(hostname).await {
+            Ok(certificate) => certificate,
+            Err(error) => return self.err("ACME_HTTP01_STATUS_FAILED", error.to_string()),
+        };
+        let challenges = match active.mesh.store.list_acme_challenges().await {
+            Ok(challenges) => challenges,
+            Err(error) => return self.err("ACME_HTTP01_STATUS_FAILED", error.to_string()),
+        };
+
+        let mut statuses = Vec::new();
+        for challenge in challenges.into_iter().filter(|challenge| {
+            normalize_hostname(&challenge.hostname) == normalize_hostname(hostname)
+        }) {
+            let readiness = match active
+                .mesh
+                .store
+                .list_acme_challenge_readiness(&challenge.hostname, &challenge.token)
+                .await
+            {
+                Ok(readiness) => readiness,
+                Err(error) => return self.err("ACME_HTTP01_STATUS_FAILED", error.to_string()),
+            };
+            statuses.push(AcmeHttp01ChallengeStatus {
+                challenge,
+                readiness,
+            });
+        }
+
+        self.ok_with_payload(
+            format!("ACME HTTP-01 status for {hostname}"),
+            Some(DaemonPayload::AcmeHttp01Status(AcmeHttp01StatusPayload {
+                hostname: hostname.to_string(),
+                certificate,
+                challenges: statuses,
+            })),
+        )
+    }
+
     pub(crate) async fn handle_acme_challenge_ready(
         &self,
         hostname: &str,
