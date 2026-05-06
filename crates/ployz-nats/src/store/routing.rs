@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::NatsStore;
 use crate::subjects::{self, ROUTING_EVENTS_STREAM};
 
+const NATS_BATCH_ID_MAX_LEN: usize = 64;
 pub const NATS_BATCH_ID: &str = "Nats-Batch-Id";
 pub const NATS_BATCH_SEQUENCE: &str = "Nats-Batch-Sequence";
 pub const NATS_BATCH_COMMIT: &str = "Nats-Batch-Commit";
@@ -96,7 +97,7 @@ pub(crate) fn routing_publish_specs(
         return Ok(Vec::new());
     }
 
-    let atomic_batch_id = format!("{batch_id}:{}", unique_routing_publish_id());
+    let atomic_batch_id = unique_routing_publish_id();
     events
         .iter()
         .enumerate()
@@ -128,10 +129,13 @@ pub(crate) fn routing_publish_specs(
 fn unique_routing_publish_id() -> String {
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
     let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(duration) => format!("{:x}-{sequence:x}", duration.as_nanos()),
-        Err(error) => format!("clock-error-{}-{sequence:x}", error.duration().as_nanos()),
-    }
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or_else(|error| error.duration().as_nanos() as u64);
+    let id = format!("rt-{now_nanos:016x}-{sequence:016x}");
+    debug_assert!(id.len() <= NATS_BATCH_ID_MAX_LEN);
+    id
 }
 
 #[cfg(test)]
@@ -152,7 +156,7 @@ mod tests {
             routing_publish_specs("batch-1", "machine.upsert", &events).expect("build specs");
 
         assert_eq!(specs.len(), 2);
-        assert!(header(&specs[0].headers, NATS_BATCH_ID).starts_with("batch-1:"));
+        assert!(header(&specs[0].headers, NATS_BATCH_ID).starts_with("rt-"));
         assert_eq!(
             header(&specs[0].headers, PLOYZ_ROUTING_LOGICAL_BATCH_ID),
             "batch-1"
@@ -172,6 +176,24 @@ mod tests {
         assert_eq!(header(&specs[1].headers, PLOYZ_ROUTING_SEQUENCE), "2");
         assert_eq!(header(&specs[1].headers, NATS_BATCH_COMMIT), "1");
         assert_eq!(header(&specs[1].headers, PLOYZ_ROUTING_COUNT), "2");
+    }
+
+    #[test]
+    fn nats_batch_id_is_bounded_independent_of_logical_batch_id() {
+        let long_logical_batch_id = format!("instance:{}", "a".repeat(200));
+        let specs = routing_publish_specs(
+            &long_logical_batch_id,
+            "instance.status",
+            &[RoutingEvent::MachineAdded(test_machine("machine-1"))],
+        )
+        .expect("build specs");
+
+        let nats_batch_id = header(&specs[0].headers, NATS_BATCH_ID);
+        assert!(nats_batch_id.len() <= NATS_BATCH_ID_MAX_LEN);
+        assert_eq!(
+            header(&specs[0].headers, PLOYZ_ROUTING_LOGICAL_BATCH_ID),
+            long_logical_batch_id
+        );
     }
 
     #[test]
