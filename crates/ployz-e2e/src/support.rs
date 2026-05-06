@@ -185,6 +185,17 @@ pub(crate) fn wait_until<F>(timeout: Duration, mut predicate: F) -> Result<()>
 where
     F: FnMut() -> Result<bool>,
 {
+    wait_until_with_interval(timeout, POLL_INTERVAL, &mut predicate)
+}
+
+pub(crate) fn wait_until_with_interval<F>(
+    timeout: Duration,
+    poll_interval: Duration,
+    mut predicate: F,
+) -> Result<()>
+where
+    F: FnMut() -> Result<bool>,
+{
     let deadline = Instant::now() + timeout;
     loop {
         if predicate()? {
@@ -196,7 +207,7 @@ where
                 timeout.as_secs()
             )));
         }
-        thread::sleep(POLL_INTERVAL);
+        thread::sleep(poll_interval);
     }
 }
 

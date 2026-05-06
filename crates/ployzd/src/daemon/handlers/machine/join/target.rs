@@ -242,20 +242,30 @@ pub(super) async fn run_machine_add_target(
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: remote ready");
 
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: activating lifecycle");
-    if let Err(err) = activate_joiner_lifecycle(&context, &record, subnet_claim.subnet()).await {
-        tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: activate lifecycle failed");
-        let _ = release_reserved_subnet(&mut subnet_claim).await;
-        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
-        let _ = operation_store.update_status(
-            &mut operation,
-            MachineOperationStatus::Failed,
-            Some(err.clone()),
+    if record.lifecycle == MachineLifecycle::Active && record.subnet == Some(subnet_claim.subnet())
+    {
+        tracing::info!(
+            %target,
+            joiner_id = %machine_id,
+            "machine add target: lifecycle already active"
         );
-        return MachineAddTargetResult::Failed {
-            target,
-            failure: MachineAddFailure::Enable { reason: err },
-        };
+    } else {
+        tracing::info!(%target, joiner_id = %machine_id, "machine add target: activating lifecycle");
+        if let Err(err) = activate_joiner_lifecycle(&context, &record, subnet_claim.subnet()).await
+        {
+            tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: activate lifecycle failed");
+            let _ = release_reserved_subnet(&mut subnet_claim).await;
+            let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
+            let _ = operation_store.update_status(
+                &mut operation,
+                MachineOperationStatus::Failed,
+                Some(err.clone()),
+            );
+            return MachineAddTargetResult::Failed {
+                target,
+                failure: MachineAddFailure::Enable { reason: err },
+            };
+        }
     }
 
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for lifecycle projection");
