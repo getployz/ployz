@@ -40,8 +40,6 @@ impl Default for CommandOutput {
 #[derive(Debug, Deserialize)]
 pub(crate) struct ReadyPayload {
     pub(crate) ready: bool,
-    #[serde(default)]
-    pub(crate) workload_subnet_present: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,33 +59,8 @@ pub(crate) struct DaemonJsonResponse {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub(crate) enum DaemonJsonPayload {
     Doctor(DoctorPayload),
-    Status(StatusPayload),
     MachineList(MachineListPayload),
     VolumeZfsTransfer(VolumeZfsTransferPayload),
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct StatusPayload {
-    #[serde(default)]
-    pub(crate) nats_assets: Vec<NatsAssetStatus>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct NatsAssetStatus {
-    pub(crate) name: String,
-    pub(crate) kind: String,
-    #[serde(default)]
-    pub(crate) replicas: Option<usize>,
-    #[serde(default)]
-    pub(crate) healthy: Option<bool>,
-    #[serde(default)]
-    pub(crate) current_replicas: Option<usize>,
-    #[serde(default)]
-    pub(crate) offline_replicas: Option<usize>,
-    #[serde(default)]
-    pub(crate) max_lag: Option<u64>,
-    #[serde(default)]
-    pub(crate) error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
