@@ -103,7 +103,7 @@ fn build_doctor_payload(
             network: active.config.name.0.clone(),
             network_lifecycle: active.config.lifecycle.to_string(),
             machine_lifecycle: format_lifecycle(local_record).to_string(),
-            machine_role: local_record.role.to_string(),
+            storage: local_record.storage,
             config_subnet: active.config.subnet.map(|subnet| subnet.to_string()),
             record_subnet: local_record.subnet.map(|subnet| subnet.to_string()),
             runtime_running: true,
@@ -133,12 +133,12 @@ fn render_doctor_report(report: &DoctorPayload) -> String {
     }
     lines.push(String::new());
     lines.push(format!(
-        "local: machine={} network={} network_lifecycle={} machine_lifecycle={} machine_role={} runtime_running={}",
+        "local: machine={} network={} network_lifecycle={} machine_lifecycle={} storage={} runtime_running={}",
         report.local.machine_id,
         report.local.network,
         report.local.network_lifecycle,
         report.local.machine_lifecycle,
-        report.local.machine_role,
+        report.local.storage,
         report.local.runtime_running,
     ));
     if report.local.config_subnet != report.local.record_subnet {
@@ -205,9 +205,9 @@ fn append_peer_section(lines: &mut Vec<String>, rows: &[&DoctorPeer], include_ca
 
 fn store_status_column(row: &DoctorPeer) -> String {
     format!(
-        "store={} role={} subnet={}",
+        "store={} storage={} subnet={}",
         row.store_lifecycle,
-        row.machine_role,
+        row.storage,
         row.subnet.as_deref().unwrap_or("none")
     )
 }
@@ -269,7 +269,7 @@ fn build_participation_rows(
             Some(DoctorPeer {
                 machine_id: machine.id.0.clone(),
                 role: diagnostic_role_name(role).to_string(),
-                machine_role: machine.role.to_string(),
+                storage: machine.storage,
                 blocking: role == DiagnosticRole::Blocking && !healthy,
                 store_lifecycle: format_lifecycle(machine).to_string(),
                 subnet: machine.subnet.map(|subnet| subnet.to_string()),
@@ -405,8 +405,7 @@ mod tests {
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
     use ployz_types::model::{
-        MachineId, MachineLifecycle, MachineRole, MachineTopology, NetworkLifecycle, OverlayIp,
-        PublicKey,
+        MachineId, MachineLifecycle, MachineTopology, NetworkLifecycle, OverlayIp, PublicKey,
     };
     use std::net::{IpAddr, Ipv6Addr, SocketAddr};
     use std::path::PathBuf;
@@ -629,7 +628,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
             lifecycle,
-            role: MachineRole::StorageCandidate,
+            storage: true,
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),

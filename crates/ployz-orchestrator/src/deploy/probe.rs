@@ -147,7 +147,7 @@ pub(super) fn warnings_from_reachability(reachability: &ParticipantReachability)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MachineLifecycle, MachineRole, MachineTopology, OverlayIp, PublicKey};
+    use crate::model::{MachineLifecycle, MachineTopology, OverlayIp, PublicKey};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
     use std::sync::Mutex;
@@ -185,7 +185,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
-            role: MachineRole::StorageCandidate,
+            storage: true,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),

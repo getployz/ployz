@@ -138,8 +138,7 @@ fn unique_routing_publish_id() -> String {
 mod tests {
     use super::*;
     use ployz_types::model::{
-        MachineId, MachineLifecycle, MachineMembership, MachineRole, MachineTopology, OverlayIp,
-        PublicKey,
+        MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
     };
 
     #[test]
@@ -226,7 +225,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
-            role: MachineRole::StorageCandidate,
+            storage: true,
             created_at: 1,
             updated_at: 1,
             labels: Default::default(),

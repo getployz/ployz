@@ -117,13 +117,13 @@ pub(crate) struct DoctorOverall {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct DoctorLocal {
-    pub(crate) machine_role: String,
+    pub(crate) storage: bool,
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct DoctorPeer {
     pub(crate) machine_id: String,
-    pub(crate) machine_role: String,
+    pub(crate) storage: bool,
     pub(crate) blocking: bool,
     pub(crate) store_lifecycle: String,
     pub(crate) wg_state: String,

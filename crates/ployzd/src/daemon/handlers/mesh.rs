@@ -45,7 +45,7 @@ mod tests {
     use ployz_store_api::MachineRegistry;
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
-    use ployz_types::model::{MachineId, MachineLifecycle, MachineRole, MachineTopology};
+    use ployz_types::model::{MachineId, MachineLifecycle, MachineTopology};
     use ployz_types::time::now_unix_secs;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -242,7 +242,7 @@ mod tests {
                 bridge_ip: None,
                 endpoints: vec!["127.0.0.1:51820".into()],
                 lifecycle: MachineLifecycle::Standby,
-                role: MachineRole::StorageCandidate,
+                storage: true,
                 created_at: 0,
                 updated_at: 0,
                 labels: std::collections::BTreeMap::new(),

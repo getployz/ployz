@@ -7,7 +7,7 @@ use ployz_api::{
     MeshSelfRecordPayload,
 };
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
-use ployz_types::model::{MachineRole, NetworkLifecycle, NetworkName};
+use ployz_types::model::{NetworkLifecycle, NetworkName};
 
 use super::DaemonState;
 
@@ -46,7 +46,7 @@ impl DaemonState {
             request.assigned_subnet,
         );
         net_config.id = request.network_id.clone();
-        net_config.machine_role = MachineRole::Mirror;
+        net_config.storage = true;
 
         let config_path = NetworkConfig::path(&self.data_dir, network);
         if config_path.exists() {

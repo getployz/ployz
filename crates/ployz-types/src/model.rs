@@ -52,6 +52,116 @@ impl NetworkId {
     }
 }
 
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, JsonSchema,
+)]
+pub struct InstallationId(pub String);
+
+impl InstallationId {
+    #[must_use]
+    pub fn local() -> Self {
+        Self("local".into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for InstallationId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, JsonSchema,
+)]
+pub struct AuthorityId(pub String);
+
+impl AuthorityId {
+    #[must_use]
+    pub fn default_authority() -> Self {
+        Self("auth-default".into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for AuthorityId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema)]
+pub enum AuthorityTier {
+    #[display("stable")]
+    Stable,
+    #[display("dev")]
+    Dev,
+    #[display("lab")]
+    Lab,
+    #[display("edge")]
+    Edge,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AuthorityRecord {
+    pub id: AuthorityId,
+    pub tier: AuthorityTier,
+    pub home_region: RegionName,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema)]
+pub enum RegionRole {
+    #[display("home_data")]
+    HomeData,
+    #[display("compute")]
+    Compute,
+    #[display("disabled")]
+    Disabled,
+    #[display("draining")]
+    Draining,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RegionRecord {
+    pub id: RegionName,
+    pub role: RegionRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<AuthorityId>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema)]
+pub enum AuthorityParticipationRole {
+    #[display("participant")]
+    Participant,
+    #[display("storage")]
+    Storage,
+    #[display("gateway")]
+    Gateway,
+    #[display("dns")]
+    Dns,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AuthorityParticipationRecord {
+    pub authority: AuthorityId,
+    pub machine_id: MachineId,
+    pub role: AuthorityParticipationRole,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
 pub struct RegionName(pub String);
 
@@ -227,21 +337,6 @@ pub enum MachineLifecycle {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, JsonSchema,
-)]
-pub enum MachineRole {
-    #[display("storage_candidate")]
-    #[strum(serialize = "storage_candidate")]
-    StorageCandidate,
-    #[display("mirror")]
-    #[strum(serialize = "mirror")]
-    Mirror,
-    #[display("leaf")]
-    #[strum(serialize = "leaf")]
-    Leaf,
-}
-
-#[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, Default,
 )]
 pub enum NetworkLifecycle {
@@ -266,7 +361,7 @@ pub struct MachineMembership {
     pub endpoints: Vec<String>,
     #[serde(default)]
     pub lifecycle: MachineLifecycle,
-    pub role: MachineRole,
+    pub storage: bool,
     pub created_at: u64,
     pub updated_at: u64,
     pub labels: BTreeMap<String, String>,
@@ -294,7 +389,7 @@ impl MachineMembership {
             bridge_ip: None,
             endpoints,
             lifecycle: MachineLifecycle::Standby,
-            role: MachineRole::StorageCandidate,
+            storage: true,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -592,6 +687,52 @@ pub struct RoutingState {
     pub revisions: Vec<ServiceRevisionRecord>,
     pub releases: Vec<ServiceReleaseRecord>,
     pub instances: Vec<InstanceStatusRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum RouteAudience {
+    PublicGlobal,
+    Authority(AuthorityId),
+    Group(String),
+    Gateway(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RouteGrantRecord {
+    pub grant_id: String,
+    pub owner_authority: AuthorityId,
+    pub audience: RouteAudience,
+    pub namespace: Namespace,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    pub created_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum RouteExportLifecycleEvent {
+    GrantCreated(RouteGrantRecord),
+    GrantRevoked {
+        grant_id: String,
+        owner_authority: AuthorityId,
+        revoked_at: u64,
+    },
+    GrantExpired {
+        grant_id: String,
+        owner_authority: AuthorityId,
+        expired_at: u64,
+    },
+    RouteWithdrawn {
+        owner_authority: AuthorityId,
+        audience: RouteAudience,
+        namespace: Namespace,
+        route_id: String,
+        reason: String,
+        sequence: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -964,6 +1105,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn authority_region_and_participation_records_serialize_explicitly() {
+        let authority = AuthorityRecord {
+            id: AuthorityId::default_authority(),
+            tier: AuthorityTier::Stable,
+            home_region: RegionName::local(),
+            created_at: 1,
+            updated_at: 2,
+        };
+        let region = RegionRecord {
+            id: RegionName::local(),
+            role: RegionRole::HomeData,
+            authority: Some(AuthorityId::default_authority()),
+            created_at: 1,
+            updated_at: 2,
+        };
+        let participation = AuthorityParticipationRecord {
+            authority: AuthorityId::default_authority(),
+            machine_id: MachineId("node-1".into()),
+            role: AuthorityParticipationRole::Participant,
+            created_at: 1,
+            updated_at: 2,
+        };
+
+        assert!(
+            serde_json::to_string(&authority)
+                .expect("authority json")
+                .contains("Stable")
+        );
+        assert!(
+            serde_json::to_string(&region)
+                .expect("region json")
+                .contains("HomeData")
+        );
+        assert!(
+            serde_json::to_string(&participation)
+                .expect("participation json")
+                .contains("Participant")
+        );
+    }
+
     // -------------------------------------------------------------------
     // CertificateRecord::installed_version — installable-material lookup
     //
@@ -1111,7 +1293,7 @@ mod tests {
             bridge_ip: Some(OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 8))),
             endpoints: vec!["1.2.3.4:51820".into(), "5.6.7.8:51820".into()],
             lifecycle: MachineLifecycle::Active,
-            role: MachineRole::StorageCandidate,
+            storage: true,
             created_at: 100,
             updated_at: 200,
             labels,

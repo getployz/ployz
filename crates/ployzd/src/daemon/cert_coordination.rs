@@ -313,9 +313,7 @@ fn format_exclusions(exclusions: &[ChallengeReadinessExclusion]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{
-        DeployId, MachineRole, MachineTopology, OverlayIp, PublicKey, ServiceRelease,
-    };
+    use ployz_types::model::{DeployId, MachineTopology, OverlayIp, PublicKey, ServiceRelease};
     use ployz_types::spec::Namespace;
     use std::net::Ipv6Addr;
 
@@ -412,7 +410,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle,
-            role: MachineRole::StorageCandidate,
+            storage: true,
             created_at: 1,
             updated_at: 1,
             labels: Default::default(),

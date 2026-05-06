@@ -49,62 +49,62 @@ impl NodeCommandSubject {
 
     #[must_use]
     pub fn ping(machine_id: &MachineId) -> Self {
-        Self::new(machine_id, "ping")
+        Self::new_substrate(machine_id, "ping")
     }
 
     #[must_use]
     pub fn status(machine_id: &MachineId) -> Self {
-        Self::new(machine_id, "status")
+        Self::new_substrate(machine_id, "status")
     }
 
     #[must_use]
     pub fn mesh_self_record(machine_id: &MachineId) -> Self {
-        Self::new(machine_id, "mesh.self_record")
+        Self::new_substrate(machine_id, "mesh.self_record")
     }
 
     #[must_use]
     pub fn mesh_ready(machine_id: &MachineId) -> Self {
-        Self::new(machine_id, "mesh.ready")
+        Self::new_substrate(machine_id, "mesh.ready")
     }
 
     #[must_use]
     pub fn mesh_prepare_destroy(machine_id: &MachineId) -> Self {
-        Self::new(machine_id, "mesh.prepare_destroy")
+        Self::new_substrate(machine_id, "mesh.prepare_destroy")
     }
 
     #[must_use]
     pub fn mesh_cancel_destroy(machine_id: &MachineId) -> Self {
-        Self::new(machine_id, "mesh.cancel_destroy")
+        Self::new_substrate(machine_id, "mesh.cancel_destroy")
     }
 
     #[must_use]
     pub fn mesh_execute_destroy(machine_id: &MachineId) -> Self {
-        Self::new(machine_id, "mesh.execute_destroy")
+        Self::new_substrate(machine_id, "mesh.execute_destroy")
     }
 
     #[must_use]
     pub fn mesh_remove_machine(machine_id: &MachineId) -> Self {
-        Self::new(machine_id, "mesh.remove_machine")
+        Self::new_substrate(machine_id, "mesh.remove_machine")
     }
 
     #[must_use]
     pub fn machine_transition_self(machine_id: &MachineId) -> Self {
-        Self::new(machine_id, "machine.transition_self")
+        Self::new_substrate(machine_id, "machine.transition_self")
     }
 
     #[must_use]
     pub fn machine_update_prepare(machine_id: &MachineId) -> Self {
-        Self::new(machine_id, "machine.update.prepare")
+        Self::new_substrate(machine_id, "machine.update.prepare")
     }
 
     #[must_use]
     pub fn machine_update_execute(machine_id: &MachineId) -> Self {
-        Self::new(machine_id, "machine.update.execute")
+        Self::new_substrate(machine_id, "machine.update.execute")
     }
 
     #[must_use]
     pub fn machine_operation_get(machine_id: &MachineId) -> Self {
-        Self::new(machine_id, "machine.operation.get")
+        Self::new_substrate(machine_id, "machine.operation.get")
     }
 
     #[must_use]
@@ -134,7 +134,13 @@ impl NodeCommandSubject {
 
     fn new(machine_id: &MachineId, command: &str) -> Self {
         Self {
-            subject: subjects::node_command(machine_id, command),
+            subject: subjects::authority_node_command(machine_id, command),
+        }
+    }
+
+    fn new_substrate(machine_id: &MachineId, command: &str) -> Self {
+        Self {
+            subject: subjects::substrate_node_command(machine_id, command),
         }
     }
 }
@@ -312,11 +318,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn node_command_subject_uses_machine_command_namespace() {
+    fn node_command_subject_uses_substrate_for_whole_node_commands() {
         let machine_id = MachineId("machine.a".into());
         let subject = NodeCommandSubject::status(&machine_id);
 
-        assert_eq!(subject.as_str(), "node.machine%2Ea.cmd.status");
+        assert_eq!(
+            subject.as_str(),
+            "ployz.v1.local.substrate.rpc.node.machine%2Ea.status"
+        );
         assert_eq!(
             subjects::node_command_queue_group(&machine_id),
             "ployzd-node-machine%2Ea"
@@ -329,15 +338,25 @@ mod tests {
 
         assert_eq!(
             NodeCommandSubject::mesh_prepare_destroy(&machine_id).as_str(),
-            "node.machine-a.cmd.mesh.prepare_destroy"
+            "ployz.v1.local.substrate.rpc.node.machine-a.mesh.prepare_destroy"
         );
         assert_eq!(
             NodeCommandSubject::mesh_execute_destroy(&machine_id).as_str(),
-            "node.machine-a.cmd.mesh.execute_destroy"
+            "ployz.v1.local.substrate.rpc.node.machine-a.mesh.execute_destroy"
         );
         assert_eq!(
             NodeCommandSubject::mesh_ready(&machine_id).as_str(),
-            "node.machine-a.cmd.mesh.ready"
+            "ployz.v1.local.substrate.rpc.node.machine-a.mesh.ready"
+        );
+    }
+
+    #[test]
+    fn deploy_command_subjects_remain_authority_scoped() {
+        let machine_id = MachineId("machine-a".into());
+
+        assert_eq!(
+            NodeCommandSubject::deploy_start_candidate(&machine_id).as_str(),
+            "ployz.v1.local.auth-default.rpc.node.machine-a.deploy.start_candidate"
         );
     }
 

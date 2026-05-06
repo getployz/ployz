@@ -21,7 +21,7 @@ use ployz_types::error::Error;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineMembership, MachineRole, OverlayIp, RoutingState, ServiceReleaseRecord, VolumeRecord,
+    MachineMembership, OverlayIp, RoutingState, ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -39,7 +39,7 @@ pub async fn nats_docker(
     network_dir: &Path,
     bootstrap: &[String],
     network_id: &str,
-    machine_role: MachineRole,
+    storage: bool,
     image: &str,
 ) -> std::result::Result<StoreDriver, String> {
     let paths = config::Paths::new(network_dir);
@@ -54,7 +54,7 @@ pub async fn nats_docker(
         overlay_ip,
         bootstrap,
         network_id,
-        machine_role,
+        storage,
     )
     .map_err(|error| format!("write nats config: {error}"))?;
 
@@ -78,18 +78,11 @@ pub fn nats_host(
     network_dir: &Path,
     bootstrap: &[String],
     network_id: &str,
-    machine_role: MachineRole,
+    storage: bool,
 ) -> std::result::Result<StoreDriver, String> {
     let paths = config::Paths::new(network_dir);
-    write_node_config(
-        &paths,
-        &paths,
-        overlay_ip,
-        bootstrap,
-        network_id,
-        machine_role,
-    )
-    .map_err(|error| format!("write nats config: {error}"))?;
+    write_node_config(&paths, &paths, overlay_ip, bootstrap, network_id, storage)
+        .map_err(|error| format!("write nats config: {error}"))?;
     let service = HostNats::new(
         which_nats_server()?,
         paths.config.clone(),
@@ -121,7 +114,7 @@ fn write_node_config(
     overlay_ip: OverlayIp,
     bootstrap: &[String],
     network_id: &str,
-    machine_role: MachineRole,
+    storage: bool,
 ) -> std::io::Result<()> {
     let storage_peers: Vec<_> = bootstrap
         .iter()
@@ -135,7 +128,7 @@ fn write_node_config(
             overlay_ip.0.to_string().replace(':', "-")
         ),
         cluster_name: format!("ployz-{network_id}"),
-        role: machine_role,
+        storage,
         overlay_ip: overlay_ip.0,
         storage_peers,
         data_dir: runtime_paths.data.clone(),
@@ -757,7 +750,6 @@ fn nats_data_volume_name(network_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{OverlayIp, config, nats_data_volume_name, parse_peer_route, write_node_config};
-    use ployz_types::model::MachineRole;
 
     #[test]
     fn parses_bootstrap_peer_route_from_socket() {
@@ -782,7 +774,7 @@ mod tests {
             overlay_ip,
             &["[fd00::10]:6222".into()],
             "alpha",
-            MachineRole::StorageCandidate,
+            true,
         )
         .expect("config should write");
 
@@ -793,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_bootstrap_address_configures_mirror_node() {
+    fn remote_bootstrap_address_configures_storage_node() {
         let root = std::env::temp_dir().join(format!(
             "ployz-nats-config-test-{}-{}",
             std::process::id(),
@@ -809,16 +801,16 @@ mod tests {
             overlay_ip,
             &["[fd00::10]:6222".into()],
             "alpha",
-            MachineRole::Mirror,
+            true,
         )
         .expect("config should write");
 
         let rendered = std::fs::read_to_string(&host_paths.config).expect("config should read");
         std::fs::remove_dir_all(&root).ok();
         assert!(rendered.contains("jetstream {"));
-        assert!(rendered.contains("domain: leaf-fd00--11"));
-        assert!(rendered.contains("url: \"nats://[fd00::10]:7422\""));
-        assert!(!rendered.contains("cluster {"));
+        assert!(rendered.contains("domain: dom-auth-default"));
+        assert!(rendered.contains("cluster {"));
+        assert!(rendered.contains("nats://[fd00::10]:6222"));
     }
 
     #[test]

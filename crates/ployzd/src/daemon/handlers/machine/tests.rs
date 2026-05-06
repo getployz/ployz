@@ -17,8 +17,8 @@ use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{InviteRepository, MachineRegistry};
 use ployz_types::model::{
-    MachineId, MachineLifecycle, MachineMembership, MachineRole, MachineTopology, NetworkLifecycle,
-    OverlayIp, PublicKey,
+    MachineId, MachineLifecycle, MachineMembership, MachineTopology, NetworkLifecycle, OverlayIp,
+    PublicKey,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -144,7 +144,7 @@ async fn machine_add_activates_joiner_lifecycle() {
         PublicKey([4; 32]),
     );
     joiner_record.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
-    joiner_record.role = MachineRole::Mirror;
+    joiner_record.storage = true;
     joiner_record.endpoints = vec!["203.0.113.10:51820".into()];
 
     let ssh_dir = unique_temp_dir("ployz-fake-ssh");
@@ -223,7 +223,7 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
         PublicKey([5; 32]),
     );
     joiner_record.overlay_ip = "fd00::5".parse().map(OverlayIp).expect("valid overlay");
-    joiner_record.role = MachineRole::Mirror;
+    joiner_record.storage = true;
     joiner_record.endpoints = vec!["203.0.113.11:51820".into()];
 
     let ssh_dir = unique_temp_dir("ployz-fake-ssh");
@@ -558,7 +558,7 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
         PublicKey([14; 32]),
     );
     joiner_record.overlay_ip = "fd00::14".parse().map(OverlayIp).expect("valid overlay");
-    joiner_record.role = MachineRole::Mirror;
+    joiner_record.storage = true;
     joiner_record.endpoints = vec!["203.0.113.14:51820".into()];
 
     let ssh_dir = unique_temp_dir("ployz-fake-ssh-mismatch");
@@ -874,7 +874,7 @@ fn test_machine_record(
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],
         lifecycle,
-        role: MachineRole::StorageCandidate,
+        storage: true,
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),

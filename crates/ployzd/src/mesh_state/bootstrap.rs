@@ -3,7 +3,7 @@ use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_runtime_api::Identity;
 use ployz_store_api::{MachineRegistry, StoreDriver};
 use ployz_types::model::{
-    MachineEvent, MachineId, MachineMembership, MachineRole, MachineTopology, OverlayIp, PublicKey,
+    MachineEvent, MachineId, MachineMembership, MachineTopology, OverlayIp, PublicKey,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -31,7 +31,7 @@ pub struct BootstrapPeerRecord {
     pub subnet: Option<ipnet::Ipv4Net>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_ip: Option<OverlayIp>,
-    pub role: MachineRole,
+    pub storage: bool,
     pub endpoints: Vec<String>,
 }
 
@@ -57,7 +57,7 @@ impl BootstrapPeerRecord {
             self.endpoints,
         );
         record.bridge_ip = self.bridge_ip;
-        record.role = self.role;
+        record.storage = self.storage;
         record
     }
 
@@ -69,7 +69,7 @@ impl BootstrapPeerRecord {
             overlay_ip: record.overlay_ip,
             subnet: record.subnet,
             bridge_ip: record.bridge_ip,
-            role: record.role,
+            storage: record.storage,
             endpoints: record.endpoints.clone(),
         }
     }
@@ -95,7 +95,7 @@ impl BootstrapPeerRecord {
             overlay_ip: OverlayIp(overlay_ip),
             subnet: None,
             bridge_ip: None,
-            role: MachineRole::StorageCandidate,
+            storage: true,
             endpoints: invite.issuer_endpoints.clone(),
         })
     }
@@ -268,7 +268,7 @@ pub fn resolve_bootstrap_addrs(
     peers
         .iter()
         .filter(|peer| peer.machine_id != *local_machine_id)
-        .filter(|peer| peer.role == MachineRole::StorageCandidate)
+        .filter(|peer| peer.storage)
         .map(|peer| format!("[{}]:{}", peer.overlay_ip.0, bootstrap_gossip_port))
         .collect()
 }
@@ -295,7 +295,7 @@ pub async fn build_seed_records(
         net_config.subnet,
         endpoints,
     );
-    self_record.role = net_config.machine_role;
+    self_record.storage = net_config.storage;
     if let Some(topology) = configured_topology {
         self_record.topology = topology.clone();
     }
@@ -640,7 +640,7 @@ mod tests {
             overlay_ip: OverlayIp("fd00::5".parse().expect("valid overlay")),
             subnet: Some("10.210.5.0/24".parse().expect("valid subnet")),
             bridge_ip: Some(OverlayIp("fd00::55".parse().expect("valid bridge"))),
-            role: MachineRole::Mirror,
+            storage: true,
             endpoints: vec!["peer:51820".into()],
         };
 
@@ -681,7 +681,7 @@ mod tests {
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay")),
             subnet: None,
             bridge_ip: None,
-            role: MachineRole::StorageCandidate,
+            storage: true,
             endpoints: Vec::new(),
         };
         let remote_peer = BootstrapPeerRecord {
@@ -690,7 +690,7 @@ mod tests {
             overlay_ip: OverlayIp("fd00::2".parse().expect("valid overlay")),
             subnet: None,
             bridge_ip: None,
-            role: MachineRole::StorageCandidate,
+            storage: true,
             endpoints: Vec::new(),
         };
 
@@ -714,7 +714,7 @@ mod tests {
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay")),
             subnet: Some("10.210.2.0/24".parse().expect("valid subnet")),
             bridge_ip: Some(OverlayIp("fd00::22".parse().expect("valid bridge"))),
-            role: MachineRole::StorageCandidate,
+            storage: true,
             endpoints: vec!["bootstrap:51820".into()],
         };
         let seed_records = build_seed_records(

@@ -236,13 +236,13 @@ truth in the background from stale observations.
 
 NATS is the cluster state substrate. Anything written to a replicated stream
 or KV bucket — including TLS private keys, ACME account keys, and invite
-tokens — must be treated as cluster-private material. For now, storage
-candidates are trusted with the full control-plane store; leaf and mirror
-roles should receive only the state they need for their runtime role.
+tokens — must be treated as cluster-private material. For now, nodes with
+`storage=true` are trusted with the full control-plane store; nodes with
+`storage=false` should receive only the state they need for their runtime role.
 
 The consequences follow from that:
 
-- Storage candidates must be treated as trusted with the cluster's secrets.
+- Storage-enabled nodes must be treated as trusted with the cluster's secrets.
 - Store data-directory backups contain private key material in effect at the
   time of the backup unless encryption-at-rest says otherwise.
 - Recovering from a suspected compromise means rotating the affected

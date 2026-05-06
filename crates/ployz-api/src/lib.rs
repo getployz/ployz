@@ -500,6 +500,14 @@ pub struct NatsAssetStatus {
     pub name: String,
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replicas: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub healthy: Option<bool>,
@@ -546,7 +554,7 @@ pub struct DoctorLocal {
     pub network: String,
     pub network_lifecycle: String,
     pub machine_lifecycle: String,
-    pub machine_role: String,
+    pub storage: bool,
     pub config_subnet: Option<String>,
     pub record_subnet: Option<String>,
     pub runtime_running: bool,
@@ -559,7 +567,7 @@ pub struct DoctorLocal {
 pub struct DoctorPeer {
     pub machine_id: String,
     pub role: String,
-    pub machine_role: String,
+    pub storage: bool,
     pub blocking: bool,
     pub store_lifecycle: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -985,7 +993,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
             lifecycle: MachineLifecycle::Active,
-            role: ployz_types::model::MachineRole::StorageCandidate,
+            storage: true,
             created_at: 1,
             updated_at: 2,
             labels: BTreeMap::new(),

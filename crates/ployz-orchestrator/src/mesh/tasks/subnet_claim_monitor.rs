@@ -98,9 +98,7 @@ pub(crate) fn duplicate_subnet_claims(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{
-        MachineId, MachineLifecycle, MachineRole, MachineTopology, OverlayIp, PublicKey,
-    };
+    use crate::model::{MachineId, MachineLifecycle, MachineTopology, OverlayIp, PublicKey};
     use ipnet::Ipv4Net;
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
@@ -115,7 +113,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec![],
             lifecycle: MachineLifecycle::Standby,
-            role: MachineRole::StorageCandidate,
+            storage: true,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),

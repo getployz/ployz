@@ -10,39 +10,169 @@ use crate::subjects::{
     CERT_JOBS_STREAM, DEPLOY_COMMITS_STREAM, REVISIONS_STREAM, ROUTING_EVENTS_STREAM,
 };
 
-pub const MACHINES_BUCKET: &str = "machines";
-pub const INVITES_BUCKET: &str = "invites";
-pub const DEPLOY_STATUS_BUCKET: &str = "deploy_status";
-pub const INSTANCES_BUCKET: &str = "instances";
-pub const ACME_ACCOUNTS_BUCKET: &str = "acme_accounts";
-pub const CERTIFICATES_BUCKET: &str = "certificates";
-pub const ACME_CHALLENGES_BUCKET: &str = "acme_challenges";
-pub const ACME_CHALLENGE_READINESS_BUCKET: &str = "acme_challenge_readiness";
-pub const LOCKS_BUCKET: &str = "locks";
-pub const COORDINATOR_LEASE_BUCKET: &str = "coordinator_lease";
+pub const AUTHORITIES_BUCKET: &str = "authorities_local";
+pub const REGIONS_BUCKET: &str = "regions_local";
+pub const MACHINES_BUCKET: &str = "machines_local";
+pub const GATEWAYS_BUCKET: &str = "gateways_local";
+pub const DNS_BUCKET: &str = "dns_local";
+pub const INVITES_BUCKET: &str = "cp_invites_auth-default";
+pub const DEPLOY_STATUS_BUCKET: &str = "cp_deploy_status_auth-default";
+pub const PARTICIPANTS_BUCKET: &str = "cp_participants_auth-default";
+pub const INSTANCES_BUCKET: &str = "cp_instances_auth-default";
+pub const ACME_ACCOUNTS_BUCKET: &str = "cp_acme_accounts_auth-default";
+pub const CERTIFICATES_BUCKET: &str = "cp_certificates_auth-default";
+pub const ACME_CHALLENGES_BUCKET: &str = "cp_acme_challenges_auth-default";
+pub const ACME_CHALLENGE_READINESS_BUCKET: &str = "cp_acme_challenge_readiness_auth-default";
+pub const LOCKS_BUCKET: &str = "cp_locks_auth-default";
+pub const COORDINATOR_LEASE_BUCKET: &str = "cp_coordinator_lease_auth-default";
 const LEASE_DELETE_MARKER_TTL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NatsAssetRole {
+    AuthorityLocal,
+    InstallationRoot,
+}
+
+impl NatsAssetRole {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthorityLocal => "authority_local",
+            Self::InstallationRoot => "installation_root",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NatsAssetSpec {
+    pub name: &'static str,
+    pub kind: &'static str,
+    pub role: NatsAssetRole,
+}
+
+pub const NATS_STREAM_ASSETS: &[NatsAssetSpec] = &[
+    NatsAssetSpec {
+        name: DEPLOY_COMMITS_STREAM,
+        kind: "stream",
+        role: NatsAssetRole::AuthorityLocal,
+    },
+    NatsAssetSpec {
+        name: ROUTING_EVENTS_STREAM,
+        kind: "stream",
+        role: NatsAssetRole::AuthorityLocal,
+    },
+    NatsAssetSpec {
+        name: REVISIONS_STREAM,
+        kind: "stream",
+        role: NatsAssetRole::AuthorityLocal,
+    },
+    NatsAssetSpec {
+        name: CERT_JOBS_STREAM,
+        kind: "stream",
+        role: NatsAssetRole::AuthorityLocal,
+    },
+];
+
+pub const NATS_KV_ASSETS: &[NatsAssetSpec] = &[
+    NatsAssetSpec {
+        name: AUTHORITIES_BUCKET,
+        kind: "kv",
+        role: NatsAssetRole::InstallationRoot,
+    },
+    NatsAssetSpec {
+        name: REGIONS_BUCKET,
+        kind: "kv",
+        role: NatsAssetRole::InstallationRoot,
+    },
+    NatsAssetSpec {
+        name: MACHINES_BUCKET,
+        kind: "kv",
+        role: NatsAssetRole::InstallationRoot,
+    },
+    NatsAssetSpec {
+        name: GATEWAYS_BUCKET,
+        kind: "kv",
+        role: NatsAssetRole::InstallationRoot,
+    },
+    NatsAssetSpec {
+        name: DNS_BUCKET,
+        kind: "kv",
+        role: NatsAssetRole::InstallationRoot,
+    },
+    NatsAssetSpec {
+        name: INVITES_BUCKET,
+        kind: "kv",
+        role: NatsAssetRole::AuthorityLocal,
+    },
+    NatsAssetSpec {
+        name: DEPLOY_STATUS_BUCKET,
+        kind: "kv",
+        role: NatsAssetRole::AuthorityLocal,
+    },
+    NatsAssetSpec {
+        name: PARTICIPANTS_BUCKET,
+        kind: "kv",
+        role: NatsAssetRole::AuthorityLocal,
+    },
+    NatsAssetSpec {
+        name: INSTANCES_BUCKET,
+        kind: "kv",
+        role: NatsAssetRole::AuthorityLocal,
+    },
+    NatsAssetSpec {
+        name: ACME_ACCOUNTS_BUCKET,
+        kind: "kv",
+        role: NatsAssetRole::AuthorityLocal,
+    },
+    NatsAssetSpec {
+        name: CERTIFICATES_BUCKET,
+        kind: "kv",
+        role: NatsAssetRole::AuthorityLocal,
+    },
+    NatsAssetSpec {
+        name: ACME_CHALLENGES_BUCKET,
+        kind: "kv",
+        role: NatsAssetRole::AuthorityLocal,
+    },
+    NatsAssetSpec {
+        name: ACME_CHALLENGE_READINESS_BUCKET,
+        kind: "kv",
+        role: NatsAssetRole::AuthorityLocal,
+    },
+    NatsAssetSpec {
+        name: LOCKS_BUCKET,
+        kind: "kv",
+        role: NatsAssetRole::AuthorityLocal,
+    },
+    NatsAssetSpec {
+        name: COORDINATOR_LEASE_BUCKET,
+        kind: "kv",
+        role: NatsAssetRole::AuthorityLocal,
+    },
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AssetPolicy {
-    pub storage_candidates: usize,
+    pub storage_nodes: usize,
     pub replica_preference: ReplicaPreference,
 }
 
 impl AssetPolicy {
     #[must_use]
     pub fn replicas(self) -> usize {
-        desired_replicas(self.storage_candidates, self.replica_preference)
+        desired_replicas(self.storage_nodes, self.replica_preference)
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct AssetConfigs {
     pub deploy_commits: stream::Config,
-    pub routing_events: stream::Config,
+    pub route_journal: stream::Config,
     pub revisions: stream::Config,
     pub cert_jobs: stream::Config,
-    pub durable_kv: Vec<kv::Config>,
-    pub lease_kv: Vec<kv::Config>,
+    pub authority_durable_kv: Vec<kv::Config>,
+    pub root_durable_kv: Vec<kv::Config>,
+    pub authority_lease_kv: Vec<kv::Config>,
 }
 
 #[must_use]
@@ -50,21 +180,27 @@ pub fn asset_configs(policy: AssetPolicy) -> AssetConfigs {
     let replicas = policy.replicas();
     AssetConfigs {
         deploy_commits: deploy_commits_stream(replicas),
-        routing_events: routing_events_stream(replicas),
+        route_journal: route_journal_stream(replicas),
         revisions: revisions_stream(replicas),
         cert_jobs: cert_jobs_stream(replicas),
-        durable_kv: durable_buckets(replicas),
-        lease_kv: lease_buckets(replicas),
+        authority_durable_kv: authority_durable_buckets(replicas),
+        root_durable_kv: root_durable_buckets(replicas),
+        authority_lease_kv: authority_lease_buckets(replicas),
     }
 }
 
 pub async fn ensure_assets(js: &jetstream::Context, policy: AssetPolicy) -> Result<()> {
     let configs = asset_configs(policy);
     ensure_stream(js, configs.deploy_commits).await?;
-    ensure_stream(js, configs.routing_events).await?;
+    ensure_stream(js, configs.route_journal).await?;
     ensure_stream(js, configs.revisions).await?;
     ensure_stream(js, configs.cert_jobs).await?;
-    for config in configs.durable_kv.into_iter().chain(configs.lease_kv) {
+    for config in configs
+        .authority_durable_kv
+        .into_iter()
+        .chain(configs.root_durable_kv)
+        .chain(configs.authority_lease_kv)
+    {
         ensure_kv(js, config).await?;
     }
     Ok(())
@@ -129,7 +265,7 @@ fn ttl_policy_needs_update(
 fn deploy_commits_stream(replicas: usize) -> stream::Config {
     stream::Config {
         name: DEPLOY_COMMITS_STREAM.into(),
-        subjects: vec!["deploy_commits.>".into()],
+        subjects: vec!["ployz.v1.local.auth-default.cp.deploy.commit.>".into()],
         retention: stream::RetentionPolicy::Limits,
         storage: stream::StorageType::File,
         num_replicas: replicas,
@@ -143,10 +279,10 @@ fn deploy_commits_stream(replicas: usize) -> stream::Config {
     }
 }
 
-fn routing_events_stream(replicas: usize) -> stream::Config {
+fn route_journal_stream(replicas: usize) -> stream::Config {
     stream::Config {
         name: ROUTING_EVENTS_STREAM.into(),
-        subjects: vec!["routing.events.>".into()],
+        subjects: vec!["ployz.v1.local.auth-default.route.journal.>".into()],
         retention: stream::RetentionPolicy::Limits,
         storage: stream::StorageType::File,
         num_replicas: replicas,
@@ -164,7 +300,7 @@ fn routing_events_stream(replicas: usize) -> stream::Config {
 fn revisions_stream(replicas: usize) -> stream::Config {
     stream::Config {
         name: REVISIONS_STREAM.into(),
-        subjects: vec!["revisions.>".into()],
+        subjects: vec!["ployz.v1.local.auth-default.cp.revision.>".into()],
         retention: stream::RetentionPolicy::Limits,
         storage: stream::StorageType::File,
         num_replicas: replicas,
@@ -178,7 +314,7 @@ fn revisions_stream(replicas: usize) -> stream::Config {
 fn cert_jobs_stream(replicas: usize) -> stream::Config {
     stream::Config {
         name: CERT_JOBS_STREAM.into(),
-        subjects: vec!["cert.jobs.>".into()],
+        subjects: vec!["ployz.v1.local.auth-default.work.cert.>".into()],
         retention: stream::RetentionPolicy::WorkQueue,
         storage: stream::StorageType::File,
         num_replicas: replicas,
@@ -188,11 +324,11 @@ fn cert_jobs_stream(replicas: usize) -> stream::Config {
     }
 }
 
-fn durable_buckets(replicas: usize) -> Vec<kv::Config> {
+fn authority_durable_buckets(replicas: usize) -> Vec<kv::Config> {
     [
-        MACHINES_BUCKET,
         INVITES_BUCKET,
         DEPLOY_STATUS_BUCKET,
+        PARTICIPANTS_BUCKET,
         INSTANCES_BUCKET,
         ACME_ACCOUNTS_BUCKET,
         CERTIFICATES_BUCKET,
@@ -211,7 +347,27 @@ fn durable_buckets(replicas: usize) -> Vec<kv::Config> {
     .collect()
 }
 
-fn lease_buckets(replicas: usize) -> Vec<kv::Config> {
+fn root_durable_buckets(replicas: usize) -> Vec<kv::Config> {
+    [
+        AUTHORITIES_BUCKET,
+        REGIONS_BUCKET,
+        MACHINES_BUCKET,
+        GATEWAYS_BUCKET,
+        DNS_BUCKET,
+    ]
+    .into_iter()
+    .map(|bucket| kv::Config {
+        bucket: bucket.into(),
+        history: 1,
+        max_age: Duration::ZERO,
+        storage: stream::StorageType::File,
+        num_replicas: replicas,
+        ..Default::default()
+    })
+    .collect()
+}
+
+fn authority_lease_buckets(replicas: usize) -> Vec<kv::Config> {
     [LOCKS_BUCKET, COORDINATOR_LEASE_BUCKET]
         .into_iter()
         .map(|bucket| kv::Config {
@@ -232,7 +388,7 @@ mod tests {
     #[test]
     fn deploy_commit_stream_is_unpruned_and_not_collapsed() {
         let config = asset_configs(AssetPolicy {
-            storage_candidates: 3,
+            storage_nodes: 3,
             replica_preference: ReplicaPreference::Three,
         })
         .deploy_commits;
@@ -243,14 +399,17 @@ mod tests {
     }
 
     #[test]
-    fn routing_events_stream_allows_atomic_publish() {
+    fn route_journal_stream_allows_atomic_publish() {
         let config = asset_configs(AssetPolicy {
-            storage_candidates: 3,
+            storage_nodes: 3,
             replica_preference: ReplicaPreference::Three,
         })
-        .routing_events;
+        .route_journal;
         assert_eq!(config.name, ROUTING_EVENTS_STREAM);
-        assert_eq!(config.subjects, vec!["routing.events.>".to_string()]);
+        assert_eq!(
+            config.subjects,
+            vec!["ployz.v1.local.auth-default.route.journal.>".to_string()]
+        );
         assert_eq!(config.retention, stream::RetentionPolicy::Limits);
         assert_eq!(config.num_replicas, 3);
         assert!(config.allow_direct);
@@ -260,12 +419,15 @@ mod tests {
     #[test]
     fn cert_jobs_stream_allows_scheduled_messages() {
         let config = asset_configs(AssetPolicy {
-            storage_candidates: 3,
+            storage_nodes: 3,
             replica_preference: ReplicaPreference::Three,
         })
         .cert_jobs;
         assert_eq!(config.name, CERT_JOBS_STREAM);
-        assert_eq!(config.subjects, vec!["cert.jobs.>".to_string()]);
+        assert_eq!(
+            config.subjects,
+            vec!["ployz.v1.local.auth-default.work.cert.>".to_string()]
+        );
         assert_eq!(config.retention, stream::RetentionPolicy::WorkQueue);
         assert_eq!(config.num_replicas, 3);
         assert_eq!(config.duplicate_window, Duration::from_secs(60 * 60));
@@ -275,11 +437,15 @@ mod tests {
     #[test]
     fn durable_buckets_have_no_ttl() {
         let configs = asset_configs(AssetPolicy {
-            storage_candidates: 2,
+            storage_nodes: 2,
             replica_preference: ReplicaPreference::Default,
         });
         assert_eq!(configs.deploy_commits.num_replicas, 1);
-        for bucket in configs.durable_kv {
+        for bucket in configs
+            .authority_durable_kv
+            .into_iter()
+            .chain(configs.root_durable_kv)
+        {
             assert_eq!(bucket.max_age, Duration::ZERO);
             assert_eq!(bucket.history, 1);
         }
@@ -288,15 +454,42 @@ mod tests {
     #[test]
     fn lease_buckets_enable_per_message_ttl() {
         let configs = asset_configs(AssetPolicy {
-            storage_candidates: 3,
+            storage_nodes: 3,
             replica_preference: ReplicaPreference::Three,
         });
 
-        for bucket in configs.lease_kv {
+        for bucket in configs.authority_lease_kv {
             assert_eq!(bucket.history, 1);
             assert_eq!(bucket.num_replicas, 3);
             assert_eq!(bucket.limit_markers, Some(LEASE_DELETE_MARKER_TTL));
         }
+    }
+
+    #[test]
+    fn asset_configs_split_authority_and_installation_root_kv() {
+        let configs = asset_configs(AssetPolicy {
+            storage_nodes: 3,
+            replica_preference: ReplicaPreference::Three,
+        });
+
+        assert!(
+            configs
+                .root_durable_kv
+                .iter()
+                .any(|bucket| bucket.bucket == MACHINES_BUCKET)
+        );
+        assert!(
+            configs
+                .authority_durable_kv
+                .iter()
+                .any(|bucket| bucket.bucket == PARTICIPANTS_BUCKET)
+        );
+        assert!(
+            NATS_KV_ASSETS
+                .iter()
+                .any(|asset| asset.name == MACHINES_BUCKET
+                    && asset.role == NatsAssetRole::InstallationRoot)
+        );
     }
 
     #[test]

@@ -7,14 +7,7 @@ use ployz_api::{
 };
 use ployz_config::RuntimeTarget;
 use ployz_nats::NatsStore;
-use ployz_nats::buckets::{
-    ACME_ACCOUNTS_BUCKET, ACME_CHALLENGE_READINESS_BUCKET, ACME_CHALLENGES_BUCKET,
-    CERTIFICATES_BUCKET, COORDINATOR_LEASE_BUCKET, DEPLOY_STATUS_BUCKET, INSTANCES_BUCKET,
-    INVITES_BUCKET, LOCKS_BUCKET, MACHINES_BUCKET,
-};
-use ployz_nats::subjects::{
-    CERT_JOBS_STREAM, DEPLOY_COMMITS_STREAM, REVISIONS_STREAM, ROUTING_EVENTS_STREAM,
-};
+use ployz_nats::buckets::{NATS_KV_ASSETS, NATS_STREAM_ASSETS, NatsAssetRole, NatsAssetSpec};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -22,25 +15,6 @@ use super::super::DaemonState;
 
 const EDGE_SYNC_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const NATS_ASSET_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
-const NATS_STREAM_ASSETS: &[&str] = &[
-    DEPLOY_COMMITS_STREAM,
-    ROUTING_EVENTS_STREAM,
-    REVISIONS_STREAM,
-    CERT_JOBS_STREAM,
-];
-const NATS_KV_ASSETS: &[&str] = &[
-    MACHINES_BUCKET,
-    INVITES_BUCKET,
-    DEPLOY_STATUS_BUCKET,
-    INSTANCES_BUCKET,
-    ACME_ACCOUNTS_BUCKET,
-    CERTIFICATES_BUCKET,
-    ACME_CHALLENGES_BUCKET,
-    ACME_CHALLENGE_READINESS_BUCKET,
-    LOCKS_BUCKET,
-    COORDINATOR_LEASE_BUCKET,
-];
-
 impl DaemonState {
     pub(crate) async fn handle_status(&self) -> DaemonResponse {
         let id = &self.identity;
@@ -244,22 +218,29 @@ async fn read_nats_asset_status(client_url: &str) -> Vec<NatsAssetStatus> {
         Err(error) => return nats_asset_probe_error(error.to_string()),
     };
     let mut status = Vec::new();
-    for stream in NATS_STREAM_ASSETS {
-        status.push(read_stream_status(&store, stream, "stream").await);
+    for asset in NATS_STREAM_ASSETS {
+        status.push(read_stream_status(&store, asset).await);
     }
-    for bucket in NATS_KV_ASSETS {
-        let stream = format!("KV_{bucket}");
-        status.push(read_stream_status(&store, &stream, "kv").await);
+    for asset in NATS_KV_ASSETS {
+        status.push(read_stream_status(&store, asset).await);
     }
     status
 }
 
-async fn read_stream_status(store: &NatsStore, stream: &str, kind: &str) -> NatsAssetStatus {
-    match store.jetstream().get_stream(stream).await {
+async fn read_stream_status(store: &NatsStore, asset: &NatsAssetSpec) -> NatsAssetStatus {
+    let stream = match asset.kind {
+        "kv" => format!("KV_{}", asset.name),
+        _ => asset.name.to_string(),
+    };
+    match store.jetstream().get_stream(stream.as_str()).await {
         Ok(mut stream_handle) => match stream_handle.info().await {
             Ok(info) => NatsAssetStatus {
-                name: stream.to_string(),
-                kind: kind.to_string(),
+                name: asset.name.to_string(),
+                kind: asset.kind.to_string(),
+                installation: Some(store.scope().installation.to_string()),
+                authority: nats_asset_authority(store, asset.role),
+                domain: Some(nats_asset_domain(store, asset.role)),
+                role: Some(asset.role.as_str().to_string()),
                 replicas: Some(info.config.num_replicas),
                 healthy: Some(nats_asset_is_healthy(
                     info.config.num_replicas,
@@ -281,8 +262,12 @@ async fn read_stream_status(store: &NatsStore, stream: &str, kind: &str) -> Nats
                 error: None,
             },
             Err(error) => NatsAssetStatus {
-                name: stream.to_string(),
-                kind: kind.to_string(),
+                name: asset.name.to_string(),
+                kind: asset.kind.to_string(),
+                installation: Some(store.scope().installation.to_string()),
+                authority: nats_asset_authority(store, asset.role),
+                domain: Some(nats_asset_domain(store, asset.role)),
+                role: Some(asset.role.as_str().to_string()),
                 replicas: None,
                 healthy: None,
                 current_replicas: None,
@@ -293,8 +278,12 @@ async fn read_stream_status(store: &NatsStore, stream: &str, kind: &str) -> Nats
             },
         },
         Err(error) => NatsAssetStatus {
-            name: stream.to_string(),
-            kind: kind.to_string(),
+            name: asset.name.to_string(),
+            kind: asset.kind.to_string(),
+            installation: Some(store.scope().installation.to_string()),
+            authority: nats_asset_authority(store, asset.role),
+            domain: Some(nats_asset_domain(store, asset.role)),
+            role: Some(asset.role.as_str().to_string()),
             replicas: None,
             healthy: None,
             current_replicas: None,
@@ -303,6 +292,20 @@ async fn read_stream_status(store: &NatsStore, stream: &str, kind: &str) -> Nats
             leader: None,
             error: Some(format!("{error:?}")),
         },
+    }
+}
+
+fn nats_asset_authority(store: &NatsStore, role: NatsAssetRole) -> Option<String> {
+    match role {
+        NatsAssetRole::AuthorityLocal => Some(store.scope().authority.to_string()),
+        NatsAssetRole::InstallationRoot => None,
+    }
+}
+
+fn nats_asset_domain(store: &NatsStore, role: NatsAssetRole) -> String {
+    match role {
+        NatsAssetRole::AuthorityLocal => store.scope().authority_domain(),
+        NatsAssetRole::InstallationRoot => store.scope().root_domain(),
     }
 }
 
@@ -361,6 +364,10 @@ fn nats_asset_probe_error(error: String) -> Vec<NatsAssetStatus> {
     vec![NatsAssetStatus {
         name: String::from("hub"),
         kind: String::from("connection"),
+        installation: Some(String::from("local")),
+        authority: Some(String::from("auth-default")),
+        domain: Some(String::from("dom-auth-default")),
+        role: Some(String::from("authority_local")),
         replicas: None,
         healthy: None,
         current_replicas: None,

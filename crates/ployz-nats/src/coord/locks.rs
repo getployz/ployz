@@ -353,10 +353,10 @@ mod tests {
     }
 
     #[test]
-    fn kv_subject_uses_hub_prefix_for_domain_scoped_bucket() {
+    fn kv_subject_uses_authority_domain_prefix_for_domain_scoped_bucket() {
         assert_eq!(
             kv_put_subject_parts(true, None, "$KV.locks.", "locks.deploy.default"),
-            "$JS.hub.API.$KV.locks.locks.deploy.default"
+            "$JS.dom-auth-default.API.$KV.locks.locks.deploy.default"
         );
     }
 

@@ -3,9 +3,7 @@ use ployz_api::{DaemonRequest, MachineTransitionGoal, MeshBootstrapRequest};
 use ployz_nats::coord::rpc::NodeCommandSubject;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_store_api::MachineRegistry;
-use ployz_types::model::{
-    MachineLifecycle, MachineMembership, MachineRole, management_ip_from_key,
-};
+use ployz_types::model::{MachineLifecycle, MachineMembership, management_ip_from_key};
 
 use super::super::operations::{
     MachineOperationRecord, MachineOperationStatus, MachineOperationStore,
@@ -79,7 +77,7 @@ pub(super) async fn run_machine_add_target(
         Some(subnet_claim.subnet),
         bootstrap_wireguard_endpoints(&target),
     );
-    bootstrap_record.role = MachineRole::Mirror;
+    bootstrap_record.storage = true;
     bootstrap_record.created_at = ployz_types::time::now_unix_secs();
     bootstrap_record.updated_at = bootstrap_record.created_at;
     joiner_id = Some(remote_identity.machine_id.clone());
