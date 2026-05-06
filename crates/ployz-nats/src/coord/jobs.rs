@@ -12,7 +12,7 @@ use ployz_types::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::subjects;
-use crate::subjects::CERT_JOBS_STREAM;
+use crate::subjects::{CERT_JOBS_STREAM, NatsScope};
 
 pub const NATS_SCHEDULE: &str = "Nats-Schedule";
 pub const NATS_SCHEDULE_TARGET: &str = "Nats-Schedule-Target";
@@ -30,10 +30,15 @@ pub struct CertRenewalJob {
 impl CertRenewalJob {
     #[must_use]
     pub fn new(hostname: impl Into<String>) -> Self {
+        Self::new_in(&NatsScope::default(), hostname)
+    }
+
+    #[must_use]
+    pub fn new_in(scope: &NatsScope, hostname: impl Into<String>) -> Self {
         let hostname = hostname.into().to_ascii_lowercase();
         Self {
-            renewal_subject: subjects::cert_renewal_job(&hostname),
-            schedule_subject: subjects::cert_renewal_schedule(&hostname),
+            renewal_subject: subjects::cert_renewal_job_in(scope, &hostname),
+            schedule_subject: subjects::cert_renewal_schedule_in(scope, &hostname),
             hostname,
         }
     }
@@ -60,7 +65,15 @@ pub struct CertRenewalPublishSpec {
 
 impl CertRenewalPublishSpec {
     pub fn build(hostname: impl Into<String>, schedule: JobSchedule) -> Result<Self> {
-        let job = CertRenewalJob::new(hostname);
+        Self::build_in(&NatsScope::default(), hostname, schedule)
+    }
+
+    pub fn build_in(
+        scope: &NatsScope,
+        hostname: impl Into<String>,
+        schedule: JobSchedule,
+    ) -> Result<Self> {
+        let job = CertRenewalJob::new_in(scope, hostname);
         let mut headers = HeaderMap::new();
         headers.insert(NATS_EXPECTED_STREAM, CERT_JOBS_STREAM);
         let message_id = cert_renewal_message_id(&job.hostname, &schedule);
@@ -98,7 +111,16 @@ pub async fn publish_cert_renewal_job(
     hostname: impl Into<String>,
     schedule: JobSchedule,
 ) -> Result<()> {
-    let spec = CertRenewalPublishSpec::build(hostname, schedule)?;
+    publish_cert_renewal_job_in(js, &NatsScope::default(), hostname, schedule).await
+}
+
+pub async fn publish_cert_renewal_job_in(
+    js: &jetstream::Context,
+    scope: &NatsScope,
+    hostname: impl Into<String>,
+    schedule: JobSchedule,
+) -> Result<()> {
+    let spec = CertRenewalPublishSpec::build_in(scope, hostname, schedule)?;
     let ack = js
         .send_publish(spec.subject.clone(), spec.publish_message())
         .await
@@ -109,6 +131,13 @@ pub async fn publish_cert_renewal_job(
 }
 
 pub fn cert_renewal_consumer_config(policy: WorkQueuePolicy) -> Result<pull::Config> {
+    cert_renewal_consumer_config_in(&NatsScope::default(), policy)
+}
+
+pub fn cert_renewal_consumer_config_in(
+    scope: &NatsScope,
+    policy: WorkQueuePolicy,
+) -> Result<pull::Config> {
     let max_deliver = i64::try_from(policy.max_deliver)
         .map_err(|error| Error::operation("nats_cert_job_consumer_config", error.to_string()))?;
     Ok(pull::Config {
@@ -119,7 +148,7 @@ pub fn cert_renewal_consumer_config(policy: WorkQueuePolicy) -> Result<pull::Con
         ack_policy: AckPolicy::Explicit,
         ack_wait: policy.ack_wait,
         max_deliver,
-        filter_subject: "ployz.v1.local.auth-default.work.cert.renew.>".to_string(),
+        filter_subject: subjects::cert_renewal_filter_in(scope),
         replay_policy: ReplayPolicy::Instant,
         max_ack_pending: CERT_RENEWAL_MAX_ACK_PENDING,
         max_batch: CERT_RENEWAL_MAX_ACK_PENDING,
@@ -135,12 +164,23 @@ pub struct NatsCertRenewalJobConsumer {
 
 impl NatsCertRenewalJobConsumer {
     pub async fn connect(js: &jetstream::Context, policy: WorkQueuePolicy) -> Result<Self> {
+        Self::connect_in(js, &NatsScope::default(), policy).await
+    }
+
+    pub async fn connect_in(
+        js: &jetstream::Context,
+        scope: &NatsScope,
+        policy: WorkQueuePolicy,
+    ) -> Result<Self> {
         let stream = js
             .get_stream(CERT_JOBS_STREAM)
             .await
             .map_err(|error| Error::operation("nats_cert_job_stream", format!("{error:?}")))?;
         let consumer = stream
-            .get_or_create_consumer(CERT_RENEWAL_CONSUMER, cert_renewal_consumer_config(policy)?)
+            .get_or_create_consumer(
+                CERT_RENEWAL_CONSUMER,
+                cert_renewal_consumer_config_in(scope, policy)?,
+            )
             .await
             .map_err(|error| Error::operation("nats_cert_job_consumer", format!("{error:?}")))?;
         Ok(Self {
@@ -408,6 +448,21 @@ mod tests {
         );
         assert_eq!(config.max_ack_pending, 1);
         assert_eq!(config.max_batch, 1);
+    }
+
+    #[test]
+    fn renewal_consumer_config_uses_scope() {
+        let scope = NatsScope::new(
+            ployz_types::model::InstallationId("inst-acme".into()),
+            ployz_types::model::AuthorityId("auth-sin".into()),
+        );
+        let config = cert_renewal_consumer_config_in(&scope, WorkQueuePolicy::default())
+            .expect("consumer config");
+
+        assert_eq!(
+            config.filter_subject,
+            "ployz.v1.inst-acme.auth-sin.work.cert.renew.>"
+        );
     }
 
     #[test]

@@ -26,14 +26,14 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::NatsStore;
-use crate::buckets::ensure_assets;
+use crate::buckets::ensure_assets_in;
 use crate::store::instances::list_all_instance_status;
 use crate::store::kv_json;
 use crate::store::routing::{
     NATS_BATCH_COMMIT, NATS_BATCH_ID, NATS_BATCH_SEQUENCE, PLOYZ_ROUTING_CAUSE,
     PLOYZ_ROUTING_COUNT, PLOYZ_ROUTING_SEQUENCE,
 };
-use crate::subjects::ROUTING_EVENTS_STREAM;
+use crate::subjects::{NatsScope, ROUTING_EVENTS_STREAM};
 
 const ROUTING_CONSUMER_CHANNEL_CAPACITY: usize = 128;
 const ROUTING_CONSUMER_ACK_WAIT: Duration = Duration::from_secs(30);
@@ -43,7 +43,7 @@ const ROUTING_EPHEMERAL_INACTIVE_THRESHOLD: Duration = Duration::from_secs(60);
 #[async_trait]
 impl StoreBackend for NatsStore {
     async fn init(&self) -> Result<()> {
-        ensure_assets(self.jetstream(), self.asset_policy()).await
+        ensure_assets_in(self.jetstream(), self.scope(), self.asset_policy()).await
     }
 
     async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
@@ -251,6 +251,7 @@ impl RoutingSnapshotReader for NatsStore {
                 &consumer_name,
                 start_sequence,
                 self.client().new_inbox(),
+                self.scope(),
             ))
             .await
             .map_err(|error| Error::operation("nats_routing_consumer", format!("{error:?}")))?;
@@ -327,6 +328,7 @@ fn routing_consumer_config(
     consumer_name: &str,
     start_sequence: u64,
     deliver_subject: String,
+    scope: &NatsScope,
 ) -> push::Config {
     let mut config = push::Config {
         deliver_subject,
@@ -335,7 +337,7 @@ fn routing_consumer_config(
         ack_wait: ROUTING_CONSUMER_ACK_WAIT,
         idle_heartbeat: ROUTING_CONSUMER_IDLE_HEARTBEAT,
         max_ack_pending: ROUTING_CONSUMER_CHANNEL_CAPACITY as i64,
-        filter_subject: "ployz.v1.local.auth-default.route.journal.>".to_string(),
+        filter_subject: crate::subjects::route_journal_filter_in(scope),
         ..Default::default()
     };
     match subscription {
@@ -548,7 +550,7 @@ impl PeerRttStore for NatsStore {}
 #[async_trait]
 impl StoreRuntimeControl for NatsStore {
     async fn start(&self) -> Result<()> {
-        ensure_assets(self.jetstream(), self.asset_policy()).await
+        ensure_assets_in(self.jetstream(), self.scope(), self.asset_policy()).await
     }
 
     async fn stop(&self) -> Result<()> {
@@ -590,8 +592,13 @@ mod tests {
     #[test]
     fn temporary_routing_consumers_are_ephemeral() {
         let subscription = RoutingSubscription::temporary("ployzd.runtime.founder.1");
-        let config =
-            routing_consumer_config(&subscription, "unused", 42, "_INBOX.runtime.1".to_string());
+        let config = routing_consumer_config(
+            &subscription,
+            "unused",
+            42,
+            "_INBOX.runtime.1".to_string(),
+            &NatsScope::default(),
+        );
 
         assert_eq!(config.durable_name, None);
         assert_eq!(config.name, None);
@@ -615,6 +622,7 @@ mod tests {
             &consumer_name,
             99,
             "_INBOX.gateway.1".to_string(),
+            &NatsScope::default(),
         );
 
         assert_eq!(config.durable_name.as_deref(), Some("gateway%2Efounder"));
@@ -625,6 +633,27 @@ mod tests {
         );
         assert!(!config.memory_storage);
         assert_eq!(config.inactive_threshold, Duration::ZERO);
+    }
+
+    #[test]
+    fn routing_consumer_filter_uses_scope() {
+        let scope = NatsScope::new(
+            ployz_types::model::InstallationId("inst-acme".into()),
+            ployz_types::model::AuthorityId("auth-sin".into()),
+        );
+        let subscription = RoutingSubscription::temporary("runtime");
+        let config = routing_consumer_config(
+            &subscription,
+            "unused",
+            1,
+            "_INBOX.runtime.1".to_string(),
+            &scope,
+        );
+
+        assert_eq!(
+            config.filter_subject,
+            "ployz.v1.inst-acme.auth-sin.route.journal.>"
+        );
     }
 
     #[test]

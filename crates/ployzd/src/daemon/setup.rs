@@ -77,12 +77,13 @@ async fn start_nats_certificate_renewal_worker(
     account_coordinator: Arc<dyn AcmeAccountCoordinator>,
     health_path: PathBuf,
 ) -> Result<CertificateRenewalTask, StartMeshError> {
-    let consumer =
-        NatsCertRenewalJobConsumer::connect(nats_store.jetstream(), WorkQueuePolicy::default())
-            .await
-            .map_err(|error| {
-                StartMeshError::MeshUp(format!("nats cert renewal consumer: {error}"))
-            })?;
+    let consumer = NatsCertRenewalJobConsumer::connect_in(
+        nats_store.jetstream(),
+        nats_store.scope(),
+        WorkQueuePolicy::default(),
+    )
+    .await
+    .map_err(|error| StartMeshError::MeshUp(format!("nats cert renewal consumer: {error}")))?;
     Ok(CertificateRenewalTask::spawn(
         "nats certificate renewal worker",
         |cancel| async move {

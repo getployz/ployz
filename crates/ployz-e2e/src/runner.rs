@@ -195,7 +195,7 @@ impl ScenarioRun {
 
     pub(crate) fn cleanup(&self, failed: bool) {
         if self.zfs_mode == ZfsMode::Real {
-            self.cleanup_volume_smoke_zfs();
+            self.cleanup_real_zfs();
         }
 
         if failed && self.keep_failed {
@@ -205,14 +205,14 @@ impl ScenarioRun {
         for node in &self.nodes {
             let _ = docker_outer(["rm", "-f", node.container_name.as_str()]);
         }
-        if self.scenario == Scenario::DeploySmoke {
+        if self.scenario == Scenario::DeployHttpAcmeGatewaySmoke {
             let _ = docker_outer(["rm", "-f", self.pebble_container_name().as_str()]);
             let _ = docker_outer(["rm", "-f", self.challtestsrv_container_name().as_str()]);
         }
         let _ = docker_outer(["network", "rm", self.outer_network.as_str()]);
     }
 
-    fn cleanup_volume_smoke_zfs(&self) {
+    fn cleanup_real_zfs(&self) {
         let command = "mode=$(cat /var/lib/ployz-e2e-zfs/mode 2>/dev/null || true); \
                        if [ \"$mode\" != real ]; then exit 0; fi; \
                        docker rm -f $(docker ps -aq --filter label=dev.ployz.namespace=default --filter label=dev.ployz.service=db) >/dev/null 2>&1 || true; \
@@ -326,7 +326,7 @@ impl ScenarioRun {
             let _ = docker_outer_raw(["cp", source.as_str(), destination.as_str()]);
         }
 
-        if self.scenario == Scenario::DeploySmoke {
+        if self.scenario == Scenario::DeployHttpAcmeGatewaySmoke {
             for container_name in [
                 self.challtestsrv_container_name(),
                 self.pebble_container_name(),
@@ -1215,7 +1215,7 @@ impl ScenarioRun {
             run_id,
         ];
 
-        if self.scenario == Scenario::DeploySmoke {
+        if self.scenario == Scenario::DeployHttpAcmeGatewaySmoke {
             args.push("-e".to_string());
             args.push(format!(
                 "PLOYZ_ACME_DIRECTORY_URL=https://{}:14000/dir",
