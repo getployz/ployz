@@ -423,13 +423,19 @@ build_binaries() {
     if [[ ! -f "${REPO_DIR}/ebpf/target/bpfel-unknown-none/release/ployz-ebpf-tc" ]]; then
       "${REPO_DIR}/scripts/install-ebpf-bytecode.sh"
     fi
-    cargo build "${cargo_args[@]}" -p ployzd --features ebpf-native --bins
-    cargo build "${cargo_args[@]}" -p ployzctl -p ployz-gateway -p ployz-dns
+    cargo build "${cargo_args[@]}" \
+      -p ployzd --features ployzd/ebpf-native --bins \
+      -p ployzctl \
+      -p ployz-gateway \
+      -p ployz-dns
     return
   fi
 
-  cargo build "${cargo_args[@]}" -p ployzctl -p ployzd --bins
-  cargo build "${cargo_args[@]}" -p ployz-gateway -p ployz-dns
+  cargo build "${cargo_args[@]}" \
+    -p ployzctl \
+    -p ployzd --bins \
+    -p ployz-gateway \
+    -p ployz-dns
 }
 
 configure_host_payload_cache() {
