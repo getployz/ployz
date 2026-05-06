@@ -669,6 +669,8 @@ impl ScenarioRun {
             pebble_name.clone(),
             "--network".to_string(),
             self.outer_network.clone(),
+            "--network-alias".to_string(),
+            "pebble".to_string(),
             "-v".to_string(),
             pebble_mount,
             "-e".to_string(),
@@ -688,7 +690,7 @@ impl ScenarioRun {
         wait_until(PEBBLE_WAIT_TIMEOUT, || {
             let output = self.ssh_run(
                 node,
-                &format!("curl -kfsS https://{}:14000/dir >/dev/null", pebble_name),
+                "curl --cacert /e2e-pebble/pebble.minica.pem -fsS https://pebble:14000/dir >/dev/null",
             )?;
             Ok(output.status.success())
         })?;
@@ -1005,10 +1007,7 @@ impl ScenarioRun {
 
         if self.scenario == Scenario::DeployHttpAcmeGatewaySmoke {
             args.push("-e".to_string());
-            args.push(format!(
-                "PLOYZ_ACME_DIRECTORY_URL=https://{}:14000/dir",
-                self.pebble_container_name()
-            ));
+            args.push("PLOYZ_ACME_DIRECTORY_URL=https://pebble:14000/dir".to_string());
             args.push("-e".to_string());
             args.push("PLOYZ_ACME_ROOT_CA_PATH=/e2e-pebble/pebble.minica.pem".to_string());
             args.push("-e".to_string());
