@@ -501,14 +501,25 @@ pub struct StatusPayload {
 pub struct EdgeSyncStatus {
     pub service: String,
     pub stream: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub healthy: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stale_since_unix_secs: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failures_total: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    #[serde(flatten)]
+    pub state: EdgeSyncHealthState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum EdgeSyncHealthState {
+    Healthy {
+        failures_total: u64,
+    },
+    Stale {
+        stale_since_unix_secs: u64,
+        failures_total: u64,
+    },
+    Unknown {
+        error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failures_total: Option<u64>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -523,33 +534,47 @@ pub struct NatsAssetStatus {
     pub domain: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replicas: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub healthy: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_replicas: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub offline_replicas: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_lag: Option<u64>,
+    #[serde(flatten)]
+    pub state: NatsAssetHealthState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum NatsAssetHealthState {
+    Healthy(NatsAssetReplicaStatus),
+    Stale(NatsAssetReplicaStatus),
+    Unknown { error: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NatsAssetReplicaStatus {
+    pub replicas: usize,
+    pub current_replicas: usize,
+    pub offline_replicas: usize,
+    pub max_lag: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leader: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlPlaneStatus {
     pub component: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub healthy: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stale_since_unix_secs: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub consecutive_failures: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    #[serde(flatten)]
+    pub state: ControlPlaneHealthState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ControlPlaneHealthState {
+    Healthy,
+    Stale {
+        stale_since_unix_secs: u64,
+        consecutive_failures: u64,
+        error: String,
+    },
+    Unknown {
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -834,9 +859,10 @@ pub struct DaemonResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        ControlPlaneStatus, DaemonPayload, DaemonResponse, EdgeSyncStatus, MachineOperationInfo,
-        MachineOperationPayload, MachineUpdatePayload, MachineUpdateRow, RuntimeCollection,
-        RuntimeRecord, RuntimeWatchFrame, StatusPayload, instance_runtime_key, machine_runtime_key,
+        ControlPlaneHealthState, ControlPlaneStatus, DaemonPayload, DaemonResponse,
+        EdgeSyncHealthState, EdgeSyncStatus, MachineOperationInfo, MachineOperationPayload,
+        MachineUpdatePayload, MachineUpdateRow, RuntimeCollection, RuntimeRecord,
+        RuntimeWatchFrame, StatusPayload, instance_runtime_key, machine_runtime_key,
         release_runtime_key, revision_runtime_key, runtime_frame_from_event, sort_routing_state,
     };
     use ployz_types::model::{
@@ -1266,18 +1292,17 @@ mod tests {
                 edge_sync: vec![EdgeSyncStatus {
                     service: String::from("gateway"),
                     stream: String::from("routing"),
-                    healthy: Some(false),
-                    stale_since_unix_secs: Some(1_777_646_000),
-                    failures_total: Some(7),
-                    error: None,
+                    state: EdgeSyncHealthState::Stale {
+                        stale_since_unix_secs: 1_777_646_000,
+                        failures_total: 7,
+                    },
                 }],
                 nats_assets: Vec::new(),
                 control_plane: vec![ControlPlaneStatus {
                     component: String::from("mesh_peer_sync"),
-                    healthy: None,
-                    stale_since_unix_secs: None,
-                    consecutive_failures: None,
-                    error: Some(String::from("machine subscription closed")),
+                    state: ControlPlaneHealthState::Unknown {
+                        error: String::from("machine subscription closed"),
+                    },
                 }],
             })),
         };
@@ -1303,12 +1328,13 @@ mod tests {
                     "edge_sync": [{
                         "service": "gateway",
                         "stream": "routing",
-                        "healthy": false,
+                        "state": "stale",
                         "stale_since_unix_secs": 1777646000u64,
                         "failures_total": 7u64
                     }],
                     "control_plane": [{
                         "component": "mesh_peer_sync",
+                        "state": "unknown",
                         "error": "machine subscription closed"
                     }]
                 }
@@ -1323,17 +1349,25 @@ mod tests {
         let [edge] = payload.edge_sync.as_slice() else {
             panic!("expected one edge sync row");
         };
-        assert_eq!(edge.healthy, Some(false));
-        assert_eq!(edge.stale_since_unix_secs, Some(1_777_646_000));
-        assert_eq!(edge.failures_total, Some(7));
+        match &edge.state {
+            EdgeSyncHealthState::Stale {
+                stale_since_unix_secs,
+                failures_total,
+            } => {
+                assert_eq!(*stale_since_unix_secs, 1_777_646_000);
+                assert_eq!(*failures_total, 7);
+            }
+            other => panic!("expected stale edge sync state, got {other:?}"),
+        }
         let [control] = payload.control_plane.as_slice() else {
             panic!("expected one control-plane row");
         };
-        assert_eq!(control.healthy, None);
-        assert_eq!(
-            control.error.as_deref(),
-            Some("machine subscription closed")
-        );
+        match &control.state {
+            ControlPlaneHealthState::Unknown { error } => {
+                assert_eq!(error, "machine subscription closed");
+            }
+            other => panic!("expected unknown control-plane state, got {other:?}"),
+        }
     }
 
     fn machine_record(id: &str) -> MachineMembership {

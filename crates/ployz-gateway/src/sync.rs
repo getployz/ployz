@@ -160,21 +160,21 @@ where
 
         loop {
             tokio::select! {
-                batch = routing_rx.recv() => {
-                    let Some(batch) = batch else {
+                envelope = routing_rx.recv() => {
+                    let Some(envelope) = envelope else {
                         set_store_sync_generation_healthy(false);
                         warn!("gateway routing event stream closed; resubscribing");
                         break;
                     };
-                    let batch = match batch {
-                        Ok(batch) => batch,
+                    let envelope = match envelope {
+                        Ok(envelope) => envelope,
                         Err(error) => {
                             set_store_sync_generation_healthy(false);
                             warn!(%error, "gateway routing event stream failed; resubscribing");
                             break;
                         }
                     };
-                    apply_routing_envelope(&mut projector, batch, &snapshot).await;
+                    apply_routing_envelope(&mut projector, envelope, &snapshot).await;
                 }
                 event = cert_rx.recv() => {
                     let Some(event) = event else {
@@ -190,7 +190,7 @@ where
                             break;
                         }
                     };
-                    if apply_certificate_batch(&mut projector, event, &mut cert_rx, &snapshot) {
+                    if drain_certificate_events(&mut projector, event, &mut cert_rx, &snapshot) {
                         set_store_sync_generation_healthy(false);
                         break;
                     }
@@ -209,7 +209,7 @@ where
                             break;
                         }
                     };
-                    let (ready_challenges, challenge_stream_failed) = apply_challenge_batch(&mut projector, event, &mut chal_rx, &snapshot);
+                    let (ready_challenges, challenge_stream_failed) = drain_challenge_events(&mut projector, event, &mut chal_rx, &snapshot);
                     publish_challenge_readiness(&store, &machine_id, &ready_challenges).await;
                     if challenge_stream_failed {
                         set_store_sync_generation_healthy(false);
@@ -290,7 +290,7 @@ async fn apply_routing_envelope(
     }
 }
 
-fn apply_certificate_batch(
+fn drain_certificate_events(
     projector: &mut GatewayProjector,
     event: CertificateEvent,
     cert_rx: &mut mpsc::Receiver<CertificateSubscriptionUpdate>,
@@ -320,7 +320,7 @@ fn apply_certificate_batch(
     stream_failed
 }
 
-fn apply_challenge_batch(
+fn drain_challenge_events(
     projector: &mut GatewayProjector,
     event: AcmeChallengeEvent,
     chal_rx: &mut mpsc::Receiver<AcmeChallengeSubscriptionUpdate>,
@@ -581,7 +581,7 @@ mod tests {
         };
         let mut rx = mpsc::channel(1).1;
 
-        let (ready, stream_failed) = apply_challenge_batch(
+        let (ready, stream_failed) = drain_challenge_events(
             &mut projector,
             AcmeChallengeEvent::Updated(record.clone()),
             &mut rx,
@@ -590,6 +590,50 @@ mod tests {
 
         assert_eq!(ready, vec![record]);
         assert!(!stream_failed);
+    }
+
+    #[test]
+    fn challenge_drain_publishes_applied_events_before_reporting_stream_failure() {
+        let _metrics_guard = crate::metrics::ROUTE_METRICS_TEST_LOCK
+            .lock()
+            .expect("route metrics test lock should not be poisoned");
+        let mut projector = GatewayProjector::new(RoutingState {
+            machines: Vec::new(),
+            revisions: Vec::new(),
+            releases: Vec::new(),
+            instances: Vec::new(),
+        })
+        .expect("empty routing state projects");
+        let snapshot = SharedSnapshot::new(projector.snapshot_value());
+        let record = AcmeChallengeRecord {
+            hostname: "example.com".into(),
+            token: "token-a".into(),
+            key_authorization: "token-a.auth".into(),
+            expires_at: 100,
+            created_at: 1,
+        };
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(Err(ployz_types::error::Error::operation(
+            "test_stream_failure",
+            "challenge stream failed",
+        )))
+        .expect("queue stream error");
+
+        let (ready, stream_failed) = drain_challenge_events(
+            &mut projector,
+            AcmeChallengeEvent::Added(record.clone()),
+            &mut rx,
+            &snapshot,
+        );
+
+        assert_eq!(ready, vec![record]);
+        assert!(stream_failed);
+        let view = snapshot.load().to_view_snapshot();
+        assert!(
+            view.acme_challenges
+                .contains_key(&("example.com".into(), "token-a".into())),
+            "applied challenge should remain visible before resubscribe"
+        );
     }
 
     #[test]

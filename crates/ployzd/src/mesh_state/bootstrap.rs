@@ -789,9 +789,7 @@ mod tests {
         let health = load_bootstrap_seed_cache_health(&network_dir)
             .expect("load health")
             .expect("health");
-        assert!(health.is_healthy());
-        assert_eq!(health.consecutive_failures(), 0);
-        assert!(health.stale_since_unix_secs().is_none());
+        assert_eq!(health.state, crate::health::ComponentHealthState::Healthy);
         let _ = std::fs::remove_dir_all(&network_dir);
     }
 

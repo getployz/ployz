@@ -232,7 +232,6 @@ fault injection and record observed p50/p95/p99.
 
 | Data | Authority | Physical location | Read path | Write path |
 |------|-----------|-------------------|-----------|------------|
-| Region registry | NATS KV `regions` | installation-root/home authority replicas | local daemon projection or KV direct get | KV CAS/put to home authority quorum |
 | Machine membership | NATS KV `machines` | installation-root/home authority replicas | local daemon projection or KV direct get | KV CAS/put to home authority quorum |
 | Invites | NATS KV `invites` | home/data authority replicas | direct KV | KV create/update to home authority quorum |
 | Deploy commits | JetStream stream `deploy_commits` | owning authority replicas | daemon projection from stream | append one immutable commit to owning authority quorum |

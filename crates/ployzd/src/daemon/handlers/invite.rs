@@ -218,6 +218,130 @@ fn random_hex_id() -> String {
     value
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon::ActiveMesh;
+    use crate::mesh_state::network::NetworkConfig;
+    use ployz_api::DaemonPayload;
+    use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
+    use ployz_orchestrator::{Mesh, WireguardDriver};
+    use ployz_runtime_api::Identity;
+    use ployz_store_api::memory::{MemoryService, MemoryStore};
+    use ployz_store_api::{InviteRepository, StoreDriver};
+    use ployz_types::model::{MachineId, NetworkId};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[tokio::test]
+    async fn invite_list_reports_status_from_durable_lifecycle_fields() {
+        let (state, store) = make_active_state();
+        let now = now_unix_secs();
+        let active = test_invite("invite-active", now + 600);
+        let expired = test_invite("invite-expired", now.saturating_sub(1));
+        let mut consumed = test_invite("invite-consumed", now + 600);
+        consumed.consumed_by = Some(MachineId("machine-consumer".into()));
+        consumed.consumed_at = Some(now);
+        let mut revoked = test_invite("invite-revoked", now + 600);
+        revoked.revoked_at = Some(now);
+
+        for invite in [&revoked, &expired, &consumed, &active] {
+            store.create_invite(invite).await.expect("seed invite");
+        }
+
+        let response = state.handle_machine_invite_list().await;
+
+        assert!(response.ok, "invite list should succeed");
+        let Some(DaemonPayload::MachineInviteList(payload)) = response.payload else {
+            panic!("invite list should include structured payload");
+        };
+        assert_eq!(
+            payload
+                .invites
+                .iter()
+                .map(|invite| (
+                    invite.invite_id.as_str(),
+                    invite.status.as_str(),
+                    invite.consumed_by.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("invite-active", "active", None),
+                ("invite-consumed", "consumed", Some("machine-consumer")),
+                ("invite-expired", "expired", None),
+                ("invite-revoked", "revoked", None),
+            ]
+        );
+    }
+
+    fn make_active_state() -> (DaemonState, Arc<MemoryStore>) {
+        let identity = Identity::generate(MachineId("founder".into()), [19; 32]);
+        let machine_id = identity.machine_id.clone();
+        let config = NetworkConfig::new(
+            ployz_types::model::NetworkName("alpha".into()),
+            &identity.public_key,
+            "10.210.0.0/16",
+            "10.210.0.0/24".parse().expect("valid subnet"),
+        );
+        let store = Arc::new(MemoryStore::new());
+        let mesh = Mesh::new(
+            WireguardDriver::memory_with(Arc::new(MemoryWireGuard::new())),
+            StoreDriver::memory_with(store.clone(), Arc::new(MemoryService::new())),
+            None,
+            machine_id,
+            51820,
+        );
+        let data_dir = unique_temp_dir("ployz-invite-list");
+        let mut state = DaemonState::new_for_tests(
+            &data_dir,
+            identity,
+            "10.210.0.0/16".into(),
+            24,
+            4319,
+            "127.0.0.1:0".into(),
+            None,
+            1,
+        );
+        state.active = Some(ActiveMesh {
+            cached_subnet: config.subnet,
+            config,
+            mesh,
+            nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            certificate_renewal: None,
+            bootstrap_seed_cache: None,
+        });
+        (state, store)
+    }
+
+    fn test_invite(invite_id: &str, expires_at: u64) -> InviteRecord {
+        InviteRecord {
+            invite_id: invite_id.into(),
+            network_id: NetworkId("network-a".into()),
+            issuer_machine_id: MachineId("founder".into()),
+            issuer_verify_key: "verify".into(),
+            expires_at,
+            consumed_by: None,
+            consumed_at: None,
+            revoked_at: None,
+            signature: "signature".into(),
+        }
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_nanos();
+        path.push(format!("{prefix}-{nanos}"));
+        path
+    }
+}
+
 fn issuer_verify_key(private_key: &[u8; 32]) -> String {
     let signing_key = SigningKey::from_bytes(private_key);
     URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_bytes())

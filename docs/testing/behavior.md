@@ -88,6 +88,9 @@ cargo test -p ployz-sim
 - Deploy preview tests pin the operator distinction between observation and
   mutation: unreachable participants are surfaced as warnings without writing
   deploy state.
+- Mesh readiness tests pin operator-facing live health: a running mesh with an
+  unhealthy store reports not-ready instead of inferring readiness from phase
+  alone.
 - Managed-domain tests pin operator-facing TLS warning behavior: active
   certificates stay quiet, pending/issuing/missing certificates warn, and
   failed certificates include the stored `last_error`.
@@ -106,14 +109,19 @@ cargo test -p ployz-sim
   whose payloads preserve old/new identity and satisfy acknowledgement
   semantics.
 - Memory deploy commit tests pin backend write semantics: removed services emit
-  release-removal events, and removed volumes are scoped to the deploy
-  namespace.
+  release-removal events, removed volumes are scoped to the deploy namespace,
+  and deploy snapshots return revisions, releases, and instances in stable
+  contract-identity order.
+- Memory instance status tests pin direct status-list reads: instance rows are
+  returned in stable contract-identity order, matching deploy snapshots.
 - Memory machine registry tests pin removal visibility: deleting a machine
   updates the routing snapshot and emits both machine and routing removal
-  events.
+  events; machine lists, routing snapshots, and machine subscription snapshots
+  return records in stable machine-id order.
 - Memory certificate store tests pin subscriber visibility for certificate and
   ACME challenge changes: initial snapshots, updates, and challenge removals
-  are observable by background consumers.
+  are observable by background consumers, and certificate/challenge/readiness
+  lists and snapshots return rows in stable contract-identity order.
 - Store API routing acknowledgement tests pin foreground failure visibility:
   untracked events are no-ops, while closed ack receivers return an error to
   the caller instead of being hidden.
@@ -122,22 +130,28 @@ cargo test -p ployz-sim
   messages become subscriber errors instead of ambiguous projection input.
 - NATS machine registry tests pin key/payload identity checks: malformed
   records and mismatched KV keys fail visibly instead of corrupting durable
-  routing truth.
+  routing truth, and machine subscription snapshots preserve KV revisions while
+  returning records in stable machine-id order.
 - NATS instance store tests pin key/payload identity checks: malformed instance
   records and mismatched KV keys fail visibly instead of emitting misleading
-  routing updates or removals.
+  routing updates or removals, and instance status rows are returned in stable
+  contract-identity order.
 - Routing event projection tests pin key-only removals: removal events carry
   contract identity instead of stale record payloads, so deletes can be replayed
   idempotently from the explicit key.
 - NATS deploy status tests pin key/payload identity checks: malformed or
   mismatched deploy status records fail visibly instead of being returned for
   the wrong deploy id.
+- NATS deploy projection tests pin deterministic backend output: revisions,
+  releases, and volumes are returned in contract-identity order for namespace
+  and global snapshots rather than hash-map iteration order.
 - NATS invite store tests pin key/payload identity checks: malformed or
   mismatched invite records fail visibly before invite redemption or revocation
   mutates control-plane state.
 - NATS certificate store tests pin key/payload identity checks for ACME
   accounts, certificate metadata, challenges, and readiness rows, so KV keys
-  remain authoritative identities rather than untrusted decoded payload fields.
+  remain authoritative identities rather than untrusted decoded payload fields;
+  certificate, challenge, and readiness rows are sorted by contract identity.
 - NATS routing journal tests pin the NATS-native shape: each routing fact is a
   directly acknowledged JetStream message, with no staged batch/commit protocol
   or route-journal atomic publish dependency; event subjects are keyed directly
@@ -150,7 +164,8 @@ cargo test -p ployz-sim
   swallowed by the daemon relay.
 - Edge routing subscription tests pin failure visibility for DNS and gateway:
   applied routing events whose acknowledgements fail mark store-sync health
-  unhealthy after publishing the latest snapshot.
+  unhealthy after publishing the latest snapshot, and gateway ACME challenge
+  stream errors still preserve already-applied observations before resubscribe.
 - Daemon handler tests pin operator-facing lifecycle failures: invalid machine
   transitions return actionable errors and leave stored machine state unchanged.
 - Machine remove tests pin mutating control-plane failure behavior: unreachable
@@ -186,6 +201,9 @@ cargo test -p ployz-sim
   transfers preserve the prior failure error in operator-facing payloads.
 - Machine add tests pin invite/precondition ordering: remote subnet mismatches
   fail before invite consumption.
+- Machine invite list tests pin operator-facing lifecycle state: durable invite
+  fields are reported as active, expired, consumed, or revoked without relying
+  on hidden reconciliation.
 - Mesh stop tests pin durable lifecycle truth under partial teardown failure:
   once the mesh runtime is destroyed, the stopped network lifecycle is
   persisted even if later sidecar shutdown reports an operator-visible error.

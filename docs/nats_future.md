@@ -145,7 +145,6 @@ ployz.v1.<installation>.<authority>.<plane>.<plane-specific>
 ```
 ployz.v1.<inst>.<auth>.cp.deploy.commit.<namespace>.<deploy_id>
 ployz.v1.<inst>.<auth>.cp.deploy.status.<namespace>.<deploy_id>      (KV)
-ployz.v1.<inst>.<auth>.cp.participant.<machine_id>                   (KV)
 ployz.v1.<inst>.<auth>.cp.invite.<invite_id>                         (KV)
 ployz.v1.<inst>.<auth>.cp.cert.meta.<hostname>                       (KV)
 ployz.v1.<inst>.<auth>.cp.acme.account.<hash>                        (KV)
@@ -180,11 +179,11 @@ workloads, volumes, and participants.
 ### Route plane (journal and exports)
 
 ```
-ployz.v1.<inst>.<auth>.route.journal.event.<namespace>.<route_id>.<batch>.<seq>
+ployz.v1.<inst>.<auth>.route.journal.event.<event_id>
 ployz.v1.<inst>.<auth>.route.journal.snapshot.<namespace>.<rev>
 
-ployz.v1.<inst>.<auth>.route.export.<audience_kind>.<audience_id>.event.<namespace>.<route_id>.<batch>.<seq>
-ployz.v1.<inst>.<auth>.route.export.<audience_kind>.<audience_id>.withdraw.<namespace>.<route_id>.<reason>.<seq>
+ployz.v1.<inst>.<auth>.route.export.<audience_kind>.<audience_id>.event.<event_id>
+ployz.v1.<inst>.<auth>.route.export.<audience_kind>.<audience_id>.withdraw.<event_id>
 ployz.v1.<inst>.<auth>.route.export.<audience_kind>.<audience_id>.snapshot.<namespace>.<rev>
 ```
 
@@ -231,10 +230,10 @@ ployz.v1.<inst>.<auth>.work.cert.schedule.<hostname>
 The only place subjects span authorities:
 
 ```
-ployz.v1.<inst>.sync.route.public.global.event.<owner_auth>.<namespace>.<route_id>.<batch>.<seq>
-ployz.v1.<inst>.sync.route.public.global.withdraw.<owner_auth>.<namespace>.<route_id>.<reason>.<seq>
-ployz.v1.<inst>.sync.route.authority.<grantee_auth>.event.<owner_auth>.<namespace>.<route_id>.<batch>.<seq>
-ployz.v1.<inst>.sync.route.authority.<grantee_auth>.withdraw.<owner_auth>.<namespace>.<route_id>.<reason>.<seq>
+ployz.v1.<inst>.sync.route.public.global.event.<owner_auth>.<event_id>
+ployz.v1.<inst>.sync.route.public.global.withdraw.<owner_auth>.<event_id>
+ployz.v1.<inst>.sync.route.authority.<grantee_auth>.event.<owner_auth>.<event_id>
+ployz.v1.<inst>.sync.route.authority.<grantee_auth>.withdraw.<owner_auth>.<event_id>
 ```
 
 Populated by JetStream sources owned by an installation-root account, gated by

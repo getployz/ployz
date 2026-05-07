@@ -177,7 +177,7 @@ impl Mesh {
                         Ok(SyncStatus::Disconnected) => {
                             consecutive_errors = 0;
                         }
-                        Ok(_) => return Ok(true),
+                        Ok(SyncStatus::Synced) => return Ok(true),
                         Err(e) => {
                             consecutive_errors += 1;
                             if consecutive_errors <= 3 {

@@ -196,44 +196,43 @@ fn render_plain_status(payload: &StatusPayload) -> String {
         payload.mesh_phase
     )];
     for sync in &payload.edge_sync {
-        let mut state = match (sync.healthy, sync.error.as_deref()) {
-            (Some(true), _) => "healthy".to_string(),
-            (Some(false), _) => "stale".to_string(),
-            (None, Some(error)) => format!("unknown error={error}"),
-            (None, None) => "unknown".to_string(),
+        let state = match &sync.state {
+            ployz_api::EdgeSyncHealthState::Healthy { failures_total } => {
+                format!("healthy failures_total={failures_total}")
+            }
+            ployz_api::EdgeSyncHealthState::Stale {
+                stale_since_unix_secs,
+                failures_total,
+            } => {
+                format!("stale stale_since={stale_since_unix_secs} failures_total={failures_total}")
+            }
+            ployz_api::EdgeSyncHealthState::Unknown {
+                error,
+                failures_total,
+            } => match failures_total {
+                Some(failures_total) => {
+                    format!("unknown error={error} failures_total={failures_total}")
+                }
+                None => format!("unknown error={error}"),
+            },
         };
-        if let Some(stale_since) = sync.stale_since_unix_secs {
-            state.push_str(&format!(" stale_since={stale_since}"));
-        }
-        if let Some(failures) = sync.failures_total {
-            state.push_str(&format!(" failures_total={failures}"));
-        }
         lines.push(format!(
             "edge_sync service={} stream={} state={}",
             sync.service, sync.stream, state
         ));
     }
     for asset in &payload.nats_assets {
-        let mut state = match (asset.healthy, asset.replicas, asset.error.as_deref()) {
-            (Some(true), Some(replicas), _) => format!("healthy replicas={replicas}"),
-            (Some(false), Some(replicas), _) => format!("stale replicas={replicas}"),
-            (None, Some(replicas), _) => format!("replicas={replicas}"),
-            (None, None, Some(error)) => format!("unknown error={error}"),
-            (Some(_), None, Some(error)) => format!("unknown error={error}"),
-            (Some(_), None, None) | (None, None, None) => "unknown".to_string(),
+        let state = match &asset.state {
+            ployz_api::NatsAssetHealthState::Healthy(status) => {
+                render_nats_asset_state("healthy", status)
+            }
+            ployz_api::NatsAssetHealthState::Stale(status) => {
+                render_nats_asset_state("stale", status)
+            }
+            ployz_api::NatsAssetHealthState::Unknown { error } => {
+                format!("unknown error={error}")
+            }
         };
-        if let Some(current) = asset.current_replicas {
-            state.push_str(&format!(" current={current}"));
-        }
-        if let Some(offline) = asset.offline_replicas {
-            state.push_str(&format!(" offline={offline}"));
-        }
-        if let Some(max_lag) = asset.max_lag {
-            state.push_str(&format!(" max_lag={max_lag}"));
-        }
-        if let Some(leader) = asset.leader.as_deref() {
-            state.push_str(&format!(" leader={leader}"));
-        }
         let mut scope = String::new();
         if let Some(installation) = asset.installation.as_deref() {
             scope.push_str(&format!(" installation={installation}"));
@@ -253,24 +252,40 @@ fn render_plain_status(payload: &StatusPayload) -> String {
         ));
     }
     for control in &payload.control_plane {
-        let mut state = match (control.healthy, control.error.as_deref()) {
-            (Some(true), _) => "healthy".to_string(),
-            (Some(false), _) => "stale".to_string(),
-            (None, Some(error)) => format!("unknown error={error}"),
-            (None, None) => "unknown".to_string(),
+        let state = match &control.state {
+            ployz_api::ControlPlaneHealthState::Healthy => {
+                "healthy consecutive_failures=0".to_string()
+            }
+            ployz_api::ControlPlaneHealthState::Stale {
+                stale_since_unix_secs,
+                consecutive_failures,
+                ..
+            } => {
+                format!(
+                    "stale stale_since={stale_since_unix_secs} consecutive_failures={consecutive_failures}"
+                )
+            }
+            ployz_api::ControlPlaneHealthState::Unknown { error } => {
+                format!("unknown error={error}")
+            }
         };
-        if let Some(stale_since) = control.stale_since_unix_secs {
-            state.push_str(&format!(" stale_since={stale_since}"));
-        }
-        if let Some(failures) = control.consecutive_failures {
-            state.push_str(&format!(" consecutive_failures={failures}"));
-        }
         lines.push(format!(
             "control_plane component={} state={}",
             control.component, state
         ));
     }
     lines.join("\n")
+}
+
+fn render_nats_asset_state(state: &str, status: &ployz_api::NatsAssetReplicaStatus) -> String {
+    let mut rendered = format!(
+        "{state} replicas={} current={} offline={} max_lag={}",
+        status.replicas, status.current_replicas, status.offline_replicas, status.max_lag
+    );
+    if let Some(leader) = status.leader.as_deref() {
+        rendered.push_str(&format!(" leader={leader}"));
+    }
+    rendered
 }
 
 fn render_plain_machine_update(payload: &ployz_api::MachineUpdatePayload) -> String {
@@ -691,26 +706,23 @@ mod tests {
                     ployz_api::EdgeSyncStatus {
                         service: String::from("gateway"),
                         stream: String::from("routing"),
-                        healthy: Some(true),
-                        stale_since_unix_secs: None,
-                        failures_total: Some(0),
-                        error: None,
+                        state: ployz_api::EdgeSyncHealthState::Healthy { failures_total: 0 },
                     },
                     ployz_api::EdgeSyncStatus {
                         service: String::from("dns"),
                         stream: String::from("routing"),
-                        healthy: Some(false),
-                        stale_since_unix_secs: Some(1_777_646_000),
-                        failures_total: Some(3),
-                        error: None,
+                        state: ployz_api::EdgeSyncHealthState::Stale {
+                            stale_since_unix_secs: 1_777_646_000,
+                            failures_total: 3,
+                        },
                     },
                     ployz_api::EdgeSyncStatus {
                         service: String::from("gateway"),
                         stream: String::from("certificates"),
-                        healthy: None,
-                        stale_since_unix_secs: None,
-                        failures_total: None,
-                        error: Some(String::from("connect metrics endpoint: refused")),
+                        state: ployz_api::EdgeSyncHealthState::Unknown {
+                            error: String::from("connect metrics endpoint: refused"),
+                            failures_total: None,
+                        },
                     },
                 ],
                 nats_assets: Vec::new(),
@@ -719,7 +731,11 @@ mod tests {
         };
 
         let rendered = render_plain_success(&response);
-        assert!(rendered.contains("edge_sync service=gateway stream=routing state=healthy"));
+        assert!(
+            rendered.contains(
+                "edge_sync service=gateway stream=routing state=healthy failures_total=0"
+            )
+        );
         assert!(rendered.contains(
             "edge_sync service=dns stream=routing state=stale stale_since=1777646000 failures_total=3"
         ));
@@ -751,13 +767,15 @@ mod tests {
                     authority: Some(String::from("auth-default")),
                     domain: Some(String::from("dom-auth-default")),
                     role: Some(String::from("authority_local")),
-                    replicas: Some(1),
-                    healthy: Some(true),
-                    current_replicas: Some(1),
-                    offline_replicas: Some(0),
-                    max_lag: Some(0),
-                    leader: Some(String::from("nats-a")),
-                    error: None,
+                    state: ployz_api::NatsAssetHealthState::Healthy(
+                        ployz_api::NatsAssetReplicaStatus {
+                            replicas: 1,
+                            current_replicas: 1,
+                            offline_replicas: 0,
+                            max_lag: 0,
+                            leader: Some(String::from("nats-a")),
+                        },
+                    ),
                 }],
                 control_plane: Vec::new(),
             })),
@@ -789,33 +807,31 @@ mod tests {
                 control_plane: vec![
                     ployz_api::ControlPlaneStatus {
                         component: String::from("node_rpc_listener"),
-                        healthy: Some(false),
-                        stale_since_unix_secs: Some(1_777_646_100),
-                        consecutive_failures: Some(2),
-                        error: Some(String::from(
-                            "nats node rpc resubscribe failed: disconnected",
-                        )),
+                        state: ployz_api::ControlPlaneHealthState::Stale {
+                            stale_since_unix_secs: 1_777_646_100,
+                            consecutive_failures: 2,
+                            error: String::from("nats node rpc resubscribe failed: disconnected"),
+                        },
                     },
                     ployz_api::ControlPlaneStatus {
                         component: String::from("cert_renewal_worker"),
-                        healthy: Some(false),
-                        stale_since_unix_secs: Some(1_777_646_200),
-                        consecutive_failures: Some(3),
-                        error: Some(String::from("certificate renewal worker fetch failed")),
+                        state: ployz_api::ControlPlaneHealthState::Stale {
+                            stale_since_unix_secs: 1_777_646_200,
+                            consecutive_failures: 3,
+                            error: String::from("certificate renewal worker fetch failed"),
+                        },
                     },
                     ployz_api::ControlPlaneStatus {
                         component: String::from("bootstrap_seed_cache"),
-                        healthy: Some(true),
-                        stale_since_unix_secs: None,
-                        consecutive_failures: Some(0),
-                        error: None,
+                        state: ployz_api::ControlPlaneHealthState::Healthy,
                     },
                     ployz_api::ControlPlaneStatus {
                         component: String::from("mesh_peer_sync"),
-                        healthy: Some(false),
-                        stale_since_unix_secs: Some(1_777_646_300),
-                        consecutive_failures: Some(1),
-                        error: Some(String::from("task exited unexpectedly")),
+                        state: ployz_api::ControlPlaneHealthState::Stale {
+                            stale_since_unix_secs: 1_777_646_300,
+                            consecutive_failures: 1,
+                            error: String::from("task exited unexpectedly"),
+                        },
                     },
                 ],
             })),

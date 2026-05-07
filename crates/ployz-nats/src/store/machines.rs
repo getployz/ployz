@@ -13,13 +13,14 @@ use crate::store::kv_watch;
 impl MachineRegistry for NatsStore {
     async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         let kv = machines_bucket(self).await?;
-        let keys = kv
+        let mut keys = kv
             .keys()
             .await
             .map_err(|error| Error::operation("nats_machines_keys", format!("{error:?}")))?
             .try_collect::<Vec<String>>()
             .await
             .map_err(|error| Error::operation("nats_machines_keys", format!("{error:?}")))?;
+        keys.sort();
         let mut machines = Vec::new();
         for key in keys {
             let Some(bytes) = kv
@@ -116,6 +117,7 @@ fn machine_snapshot_parts(
         snapshot_revisions.insert(entry.key, entry.revision);
         snapshot.push(machine);
     }
+    snapshot.sort_by(|left, right| left.id.cmp(&right.id));
     Ok((snapshot, snapshot_revisions))
 }
 
@@ -211,18 +213,33 @@ mod tests {
 
     #[test]
     fn machine_snapshot_parts_keep_entry_revisions() {
-        let machine = test_machine("machine-a");
-        let entries = vec![kv_json::JsonEntry {
-            key: String::from("machine-a"),
-            revision: 42,
-            value: machine.clone(),
-        }];
+        let machine_a = test_machine("machine-a");
+        let machine_b = test_machine("machine-b");
+        let entries = vec![
+            kv_json::JsonEntry {
+                key: String::from("machine-b"),
+                revision: 41,
+                value: machine_b,
+            },
+            kv_json::JsonEntry {
+                key: String::from("machine-a"),
+                revision: 42,
+                value: machine_a,
+            },
+        ];
 
         let (snapshot, revisions) =
             machine_snapshot_parts(entries).expect("snapshot parts should decode");
 
-        assert_eq!(snapshot, vec![machine]);
+        assert_eq!(
+            snapshot
+                .iter()
+                .map(|machine| machine.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["machine-a", "machine-b"]
+        );
         assert_eq!(revisions.get("machine-a"), Some(&42));
+        assert_eq!(revisions.get("machine-b"), Some(&41));
     }
 
     #[test]

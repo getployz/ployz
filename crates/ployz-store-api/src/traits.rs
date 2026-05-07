@@ -34,7 +34,7 @@ pub type RoutingEventSubscription = (RoutingState, mpsc::Receiver<RoutingEventSu
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingSubscription {
     Durable { consumer_id: String },
-    Temporary { consumer_id: String },
+    Temporary,
 }
 
 impl RoutingSubscription {
@@ -46,22 +46,21 @@ impl RoutingSubscription {
     }
 
     #[must_use]
-    pub fn temporary(consumer_id: impl Into<String>) -> Self {
-        Self::Temporary {
-            consumer_id: consumer_id.into(),
-        }
+    pub fn temporary() -> Self {
+        Self::Temporary
     }
 
     #[must_use]
-    pub fn consumer_id(&self) -> &str {
+    pub fn durable_consumer_id(&self) -> Option<&str> {
         match self {
-            Self::Durable { consumer_id } | Self::Temporary { consumer_id } => consumer_id,
+            Self::Durable { consumer_id } => Some(consumer_id),
+            Self::Temporary => None,
         }
     }
 
     #[must_use]
     pub fn is_temporary(&self) -> bool {
-        matches!(self, Self::Temporary { .. })
+        matches!(self, Self::Temporary)
     }
 }
 
@@ -209,11 +208,11 @@ mod tests {
     #[test]
     fn routing_subscription_kind_tracks_consumer_lifetime() {
         let durable = RoutingSubscription::durable("gateway.founder");
-        let temporary = RoutingSubscription::temporary("ployzd.runtime.founder.1");
+        let temporary = RoutingSubscription::temporary();
 
-        assert_eq!(durable.consumer_id(), "gateway.founder");
+        assert_eq!(durable.durable_consumer_id(), Some("gateway.founder"));
         assert!(!durable.is_temporary());
-        assert_eq!(temporary.consumer_id(), "ployzd.runtime.founder.1");
+        assert_eq!(temporary.durable_consumer_id(), None);
         assert!(temporary.is_temporary());
     }
 
@@ -750,7 +749,6 @@ pub trait CertificateStore: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncStatus {
     Disconnected,
-    Syncing { gaps: u64 },
     Synced,
 }
 

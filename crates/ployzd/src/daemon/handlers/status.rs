@@ -2,8 +2,9 @@ use std::time::Duration;
 
 use async_nats::jetstream::stream::ClusterInfo;
 use ployz_api::{
-    ControlPlaneStatus, DaemonPayload, DaemonResponse, EdgeSyncStatus, NatsAssetStatus,
-    StatusPayload,
+    ControlPlaneHealthState, ControlPlaneStatus, DaemonPayload, DaemonResponse,
+    EdgeSyncHealthState, EdgeSyncStatus, NatsAssetHealthState, NatsAssetReplicaStatus,
+    NatsAssetStatus, StatusPayload,
 };
 use ployz_config::RuntimeTarget;
 use ployz_nats::NatsStore;
@@ -97,56 +98,54 @@ impl DaemonState {
             Ok(health) => status.push(component_health_status("node_rpc_listener", &health)),
             Err(error) => status.push(ControlPlaneStatus {
                 component: String::from("node_rpc_listener"),
-                healthy: None,
-                stale_since_unix_secs: None,
-                consecutive_failures: None,
-                error: Some(format!("read listener health: {error}")),
+                state: ControlPlaneHealthState::Unknown {
+                    error: format!("read listener health: {error}"),
+                },
             }),
         }
         match crate::daemon::cert_renewal_health::load_health(cert_renewal_health_path).await {
             Ok(health) => status.push(component_health_status("cert_renewal_worker", &health)),
             Err(error) => status.push(ControlPlaneStatus {
                 component: String::from("cert_renewal_worker"),
-                healthy: None,
-                stale_since_unix_secs: None,
-                consecutive_failures: None,
-                error: Some(format!("read cert renewal health: {error}")),
+                state: ControlPlaneHealthState::Unknown {
+                    error: format!("read cert renewal health: {error}"),
+                },
             }),
         }
         match crate::mesh_state::bootstrap::load_bootstrap_seed_cache_health(&network_dir) {
-            Ok(Some(health)) => status.push(ControlPlaneStatus {
-                component: String::from("bootstrap_seed_cache"),
-                healthy: Some(health.is_healthy()),
-                stale_since_unix_secs: health.stale_since_unix_secs(),
-                consecutive_failures: Some(health.consecutive_failures()),
-                error: health.last_error().map(String::from),
-            }),
+            Ok(Some(health)) => {
+                status.push(component_health_status("bootstrap_seed_cache", &health))
+            }
             Ok(None) => status.push(ControlPlaneStatus {
                 component: String::from("bootstrap_seed_cache"),
-                healthy: None,
-                stale_since_unix_secs: None,
-                consecutive_failures: None,
-                error: Some(String::from("bootstrap seed cache health file missing")),
+                state: ControlPlaneHealthState::Unknown {
+                    error: String::from("bootstrap seed cache health file missing"),
+                },
             }),
             Err(error) => status.push(ControlPlaneStatus {
                 component: String::from("bootstrap_seed_cache"),
-                healthy: None,
-                stale_since_unix_secs: None,
-                consecutive_failures: None,
-                error: Some(format!("read bootstrap seed cache health: {error}")),
+                state: ControlPlaneHealthState::Unknown {
+                    error: format!("read bootstrap seed cache health: {error}"),
+                },
             }),
         }
         for health in active.mesh.task_health() {
-            let healthy = health.is_healthy();
-            let stale_since_unix_secs = health.stale_since_unix_secs();
-            let consecutive_failures = health.consecutive_failures();
-            let error = health.last_error().map(String::from);
             status.push(ControlPlaneStatus {
                 component: health.name,
-                healthy: Some(healthy),
-                stale_since_unix_secs,
-                consecutive_failures: Some(consecutive_failures),
-                error,
+                state: match health.state {
+                    ployz_orchestrator::mesh::tasks::MeshTaskHealthState::Healthy => {
+                        ControlPlaneHealthState::Healthy
+                    }
+                    ployz_orchestrator::mesh::tasks::MeshTaskHealthState::Stale {
+                        stale_since_unix_secs,
+                        consecutive_failures,
+                        last_error,
+                    } => ControlPlaneHealthState::Stale {
+                        stale_since_unix_secs,
+                        consecutive_failures,
+                        error: last_error,
+                    },
+                },
             });
         }
         status
@@ -208,12 +207,21 @@ fn component_health_status(
     component: impl Into<String>,
     health: &crate::health::ComponentHealth,
 ) -> ControlPlaneStatus {
+    let state = match &health.state {
+        crate::health::ComponentHealthState::Healthy => ControlPlaneHealthState::Healthy,
+        crate::health::ComponentHealthState::Stale {
+            stale_since_unix_secs,
+            consecutive_failures,
+            last_error,
+        } => ControlPlaneHealthState::Stale {
+            stale_since_unix_secs: *stale_since_unix_secs,
+            consecutive_failures: *consecutive_failures,
+            error: last_error.clone(),
+        },
+    };
     ControlPlaneStatus {
         component: component.into(),
-        healthy: Some(health.is_healthy()),
-        stale_since_unix_secs: health.stale_since_unix_secs(),
-        consecutive_failures: Some(health.consecutive_failures()),
-        error: health.last_error().map(String::from),
+        state,
     }
 }
 
@@ -239,33 +247,7 @@ async fn read_stream_status(store: &NatsStore, asset: &NatsAssetSpec) -> NatsAss
     };
     match store.jetstream().get_stream(stream.as_str()).await {
         Ok(mut stream_handle) => match stream_handle.info().await {
-            Ok(info) => NatsAssetStatus {
-                name: asset.name.to_string(),
-                kind: asset.kind.to_string(),
-                installation: Some(store.scope().installation.to_string()),
-                authority: nats_asset_authority(store, asset.role),
-                domain: Some(nats_asset_domain(store, asset.role)),
-                role: Some(asset.role.as_str().to_string()),
-                replicas: Some(info.config.num_replicas),
-                healthy: Some(nats_asset_is_healthy(
-                    info.config.num_replicas,
-                    info.cluster.as_ref(),
-                )),
-                current_replicas: Some(nats_current_replicas(
-                    info.config.num_replicas,
-                    info.cluster.as_ref(),
-                )),
-                offline_replicas: Some(nats_offline_replicas(
-                    info.config.num_replicas,
-                    info.cluster.as_ref(),
-                )),
-                max_lag: Some(nats_max_lag(info.cluster.as_ref())),
-                leader: info
-                    .cluster
-                    .as_ref()
-                    .and_then(|cluster| cluster.leader.clone()),
-                error: None,
-            },
+            Ok(info) => nats_asset_status_from_info(store, asset, &info),
             Err(error) => NatsAssetStatus {
                 name: asset.name.to_string(),
                 kind: asset.kind.to_string(),
@@ -273,13 +255,9 @@ async fn read_stream_status(store: &NatsStore, asset: &NatsAssetSpec) -> NatsAss
                 authority: nats_asset_authority(store, asset.role),
                 domain: Some(nats_asset_domain(store, asset.role)),
                 role: Some(asset.role.as_str().to_string()),
-                replicas: None,
-                healthy: None,
-                current_replicas: None,
-                offline_replicas: None,
-                max_lag: None,
-                leader: None,
-                error: Some(format!("{error:?}")),
+                state: NatsAssetHealthState::Unknown {
+                    error: format!("{error:?}"),
+                },
             },
         },
         Err(error) => NatsAssetStatus {
@@ -289,14 +267,41 @@ async fn read_stream_status(store: &NatsStore, asset: &NatsAssetSpec) -> NatsAss
             authority: nats_asset_authority(store, asset.role),
             domain: Some(nats_asset_domain(store, asset.role)),
             role: Some(asset.role.as_str().to_string()),
-            replicas: None,
-            healthy: None,
-            current_replicas: None,
-            offline_replicas: None,
-            max_lag: None,
-            leader: None,
-            error: Some(format!("{error:?}")),
+            state: NatsAssetHealthState::Unknown {
+                error: format!("{error:?}"),
+            },
         },
+    }
+}
+
+fn nats_asset_status_from_info(
+    store: &NatsStore,
+    asset: &NatsAssetSpec,
+    info: &async_nats::jetstream::stream::Info,
+) -> NatsAssetStatus {
+    let replica_status = NatsAssetReplicaStatus {
+        replicas: info.config.num_replicas,
+        current_replicas: nats_current_replicas(info.config.num_replicas, info.cluster.as_ref()),
+        offline_replicas: nats_offline_replicas(info.config.num_replicas, info.cluster.as_ref()),
+        max_lag: nats_max_lag(info.cluster.as_ref()),
+        leader: info
+            .cluster
+            .as_ref()
+            .and_then(|cluster| cluster.leader.clone()),
+    };
+    let state = if nats_asset_is_healthy(&replica_status) {
+        NatsAssetHealthState::Healthy(replica_status)
+    } else {
+        NatsAssetHealthState::Stale(replica_status)
+    };
+    NatsAssetStatus {
+        name: asset.name.to_string(),
+        kind: asset.kind.to_string(),
+        installation: Some(store.scope().installation.to_string()),
+        authority: nats_asset_authority(store, asset.role),
+        domain: Some(nats_asset_domain(store, asset.role)),
+        role: Some(asset.role.as_str().to_string()),
+        state,
     }
 }
 
@@ -314,10 +319,10 @@ fn nats_asset_domain(store: &NatsStore, role: NatsAssetRole) -> String {
     }
 }
 
-fn nats_asset_is_healthy(replicas: usize, cluster: Option<&ClusterInfo>) -> bool {
-    nats_current_replicas(replicas, cluster) == replicas
-        && nats_offline_replicas(replicas, cluster) == 0
-        && nats_max_lag(cluster) == 0
+fn nats_asset_is_healthy(status: &NatsAssetReplicaStatus) -> bool {
+    status.current_replicas == status.replicas
+        && status.offline_replicas == 0
+        && status.max_lag == 0
 }
 
 fn nats_current_replicas(replicas: usize, cluster: Option<&ClusterInfo>) -> usize {
@@ -373,13 +378,7 @@ fn nats_asset_probe_error(error: String) -> Vec<NatsAssetStatus> {
         authority: Some(String::from("auth-default")),
         domain: Some(String::from("dom-auth-default")),
         role: Some(String::from("authority_local")),
-        replicas: None,
-        healthy: None,
-        current_replicas: None,
-        offline_replicas: None,
-        max_lag: None,
-        leader: None,
-        error: Some(error),
+        state: NatsAssetHealthState::Unknown { error },
     }]
 }
 
@@ -429,33 +428,38 @@ fn metric_status(
         Ok(body) => match parse_sync_metric(body, healthy_metric, stream) {
             Some(healthy) => {
                 let state_since = parse_sync_metric_u64(body, state_since_metric, stream);
+                let failures_total =
+                    parse_sync_metric_u64(body, failures_metric, stream).unwrap_or(0);
+                let state = if healthy {
+                    EdgeSyncHealthState::Healthy { failures_total }
+                } else {
+                    EdgeSyncHealthState::Stale {
+                        stale_since_unix_secs: state_since.unwrap_or(0),
+                        failures_total,
+                    }
+                };
                 EdgeSyncStatus {
                     service: service.to_string(),
                     stream: stream.to_string(),
-                    healthy: Some(healthy),
-                    stale_since_unix_secs: if healthy { None } else { state_since },
-                    failures_total: parse_sync_metric_u64(body, failures_metric, stream),
-                    error: None,
+                    state,
                 }
             }
             None => EdgeSyncStatus {
                 service: service.to_string(),
                 stream: stream.to_string(),
-                healthy: None,
-                stale_since_unix_secs: None,
-                failures_total: parse_sync_metric_u64(body, failures_metric, stream),
-                error: Some(format!(
-                    "metric {healthy_metric} for stream {stream} was absent"
-                )),
+                state: EdgeSyncHealthState::Unknown {
+                    error: format!("metric {healthy_metric} for stream {stream} was absent"),
+                    failures_total: parse_sync_metric_u64(body, failures_metric, stream),
+                },
             },
         },
         Err(error) => EdgeSyncStatus {
             service: service.to_string(),
             stream: stream.to_string(),
-            healthy: None,
-            stale_since_unix_secs: None,
-            failures_total: None,
-            error: Some(error.clone()),
+            state: EdgeSyncHealthState::Unknown {
+                error: error.clone(),
+                failures_total: None,
+            },
         },
     }
 }
@@ -501,6 +505,7 @@ mod tests {
     };
     use crate::health::ComponentHealth;
     use async_nats::jetstream::stream::{ClusterInfo, PeerInfo};
+    use ployz_api::{ControlPlaneHealthState, EdgeSyncHealthState, NatsAssetReplicaStatus};
     use std::time::Duration;
 
     fn peer(name: &str, current: bool, offline: bool, lag: Option<u64>) -> PeerInfo {
@@ -521,6 +526,16 @@ mod tests {
             leader_since: None,
             replicas,
             ..ClusterInfo::default()
+        }
+    }
+
+    fn replica_status(replicas: usize, cluster: Option<&ClusterInfo>) -> NatsAssetReplicaStatus {
+        NatsAssetReplicaStatus {
+            replicas,
+            current_replicas: nats_current_replicas(replicas, cluster),
+            offline_replicas: nats_offline_replicas(replicas, cluster),
+            max_lag: nats_max_lag(cluster),
+            leader: cluster.and_then(|cluster| cluster.leader.clone()),
         }
     }
 
@@ -588,14 +603,16 @@ ployz_gateway_store_sync_failures_total{stream="routing"} 4
 
         assert_eq!(status.service, "gateway");
         assert_eq!(status.stream, "routing");
-        assert_eq!(status.healthy, None);
-        assert_eq!(status.failures_total, Some(4));
-        assert!(
-            status
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains("was absent"))
-        );
+        match status.state {
+            EdgeSyncHealthState::Unknown {
+                error,
+                failures_total,
+            } => {
+                assert!(error.contains("was absent"));
+                assert_eq!(failures_total, Some(4));
+            }
+            other => panic!("expected unknown sidecar sync state, got {other:?}"),
+        }
     }
 
     #[test]
@@ -619,10 +636,16 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
 
         assert_eq!(status.service, "gateway");
         assert_eq!(status.stream, "certificates");
-        assert_eq!(status.healthy, Some(false));
-        assert_eq!(status.stale_since_unix_secs, Some(1_777_646_000));
-        assert_eq!(status.failures_total, Some(7));
-        assert_eq!(status.error, None);
+        match status.state {
+            EdgeSyncHealthState::Stale {
+                stale_since_unix_secs,
+                failures_total,
+            } => {
+                assert_eq!(stale_since_unix_secs, 1_777_646_000);
+                assert_eq!(failures_total, 7);
+            }
+            other => panic!("expected stale sidecar sync state, got {other:?}"),
+        }
     }
 
     #[test]
@@ -640,10 +663,16 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
 
         assert_eq!(status.service, "dns");
         assert_eq!(status.stream, "routing");
-        assert_eq!(status.healthy, None);
-        assert_eq!(status.stale_since_unix_secs, None);
-        assert_eq!(status.failures_total, None);
-        assert_eq!(status.error.as_deref(), Some("connection refused"));
+        match status.state {
+            EdgeSyncHealthState::Unknown {
+                error,
+                failures_total,
+            } => {
+                assert_eq!(error, "connection refused");
+                assert_eq!(failures_total, None);
+            }
+            other => panic!("expected unknown sidecar sync state, got {other:?}"),
+        }
     }
 
     #[test]
@@ -654,10 +683,18 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
         let status = component_health_status("node_rpc_listener", &health);
 
         assert_eq!(status.component, "node_rpc_listener");
-        assert_eq!(status.healthy, Some(false));
-        assert_eq!(status.stale_since_unix_secs, Some(1_777_646_000));
-        assert_eq!(status.consecutive_failures, Some(2));
-        assert_eq!(status.error.as_deref(), Some("ack failed"));
+        match status.state {
+            ControlPlaneHealthState::Stale {
+                stale_since_unix_secs,
+                consecutive_failures,
+                error,
+            } => {
+                assert_eq!(stale_since_unix_secs, 1_777_646_000);
+                assert_eq!(consecutive_failures, 2);
+                assert_eq!(error, "ack failed");
+            }
+            other => panic!("expected stale component health, got {other:?}"),
+        }
     }
 
     #[test]
