@@ -260,3 +260,77 @@ fn tls_warnings_for_domain(domain: &str, certificates: &[CertificateRecord]) -> 
 fn normalize_hostname(hostname: &str) -> String {
     hostname.trim().trim_end_matches('.').to_ascii_lowercase()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{build_domain_warnings, normalize_hostname};
+    use ployz_types::model::{CertificateRecord, CertificateState};
+
+    #[test]
+    fn domain_warnings_are_quiet_for_active_certificates() {
+        let warnings = build_domain_warnings(
+            &[String::from("api.example.com")],
+            &[certificate(
+                "api.example.com",
+                CertificateState::Active,
+                None,
+            )],
+        );
+
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn domain_warnings_surface_pending_and_failed_certificate_state() {
+        let warnings = build_domain_warnings(
+            &[
+                String::from("pending.example.com"),
+                String::from("failed.example.com"),
+                String::from("missing.example.com"),
+            ],
+            &[
+                certificate("pending.example.com", CertificateState::Issuing, None),
+                certificate(
+                    "failed.example.com",
+                    CertificateState::Failed,
+                    Some("dns challenge timed out"),
+                ),
+            ],
+        );
+
+        assert_eq!(
+            warnings,
+            vec![
+                "TLS for pending.example.com is issuing; HTTPS will activate when the certificate is ready",
+                "TLS for failed.example.com failed: dns challenge timed out",
+                "TLS for missing.example.com is pending; HTTPS will activate when the certificate is ready",
+            ]
+        );
+    }
+
+    #[test]
+    fn normalize_hostname_matches_route_ownership_contract() {
+        assert_eq!(normalize_hostname(" API.Example.COM. "), "api.example.com");
+        assert_eq!(normalize_hostname("*.Example.COM"), "*.example.com");
+    }
+
+    fn certificate(
+        hostname: &str,
+        state: CertificateState,
+        last_error: Option<&str>,
+    ) -> CertificateRecord {
+        CertificateRecord {
+            hostname: hostname.into(),
+            issuer_url: "https://acme.example/directory".into(),
+            account_id: "acct".into(),
+            state,
+            active_version_id: None,
+            versions: Vec::new(),
+            order_url: None,
+            last_error: last_error.map(String::from),
+            requested_at: 1,
+            updated_at: 1,
+            next_renewal_at: None,
+        }
+    }
+}

@@ -1,10 +1,10 @@
 use crate::memory::{MemoryService, MemoryStore};
 use crate::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
-    DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
-    InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
-    PeerRttObservation, PeerRttStore, RoutingEventSubscription, RoutingSnapshotReader,
-    RoutingSubscription, StoreBackend, StoreRuntimeControl, SyncProbe, SyncStatus,
+    DeployRecordUpdate, DeployRepository, DeploySnapshot, InstanceStatusRepository,
+    InviteRepository, MachineRegistry, MachineSubscription, PeerRttObservation, PeerRttStore,
+    RoutingEventSubscription, RoutingSnapshotReader, RoutingSubscription, StoreBackend,
+    StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::Result;
@@ -173,10 +173,6 @@ impl DeployRepository for StoreDriver {
         volume_name: &str,
     ) -> Result<Option<VolumeRecord>> {
         self.backend.get_volume(namespace, volume_name).await
-    }
-
-    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
-        self.backend.record_service_revision(command).await
     }
 
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
@@ -366,10 +362,6 @@ impl StoreBackend for MemoryStoreBackend {
         volume_name: &str,
     ) -> Result<Option<VolumeRecord>> {
         self.store.get_volume(namespace, volume_name).await
-    }
-
-    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
-        self.store.record_service_revision(command).await
     }
 
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {

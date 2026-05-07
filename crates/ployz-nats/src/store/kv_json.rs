@@ -35,35 +35,6 @@ pub fn next_sequence(sequence: u64) -> u64 {
     sequence.saturating_add(1)
 }
 
-pub async fn list_json<T>(
-    store: &kv::Store,
-    decode_operation: &'static str,
-    get_operation: &'static str,
-) -> Result<Vec<T>>
-where
-    T: DeserializeOwned,
-{
-    let keys = store
-        .keys()
-        .await
-        .map_err(|error| Error::operation(get_operation, format!("{error:?}")))?
-        .try_collect::<Vec<String>>()
-        .await
-        .map_err(|error| Error::operation(get_operation, format!("{error:?}")))?;
-    let mut records = Vec::with_capacity(keys.len());
-    for key in keys {
-        let Some(bytes) = store
-            .get(key)
-            .await
-            .map_err(|error| Error::operation(get_operation, format!("{error:?}")))?
-        else {
-            continue;
-        };
-        records.push(decode_json(decode_operation, bytes.as_ref())?);
-    }
-    Ok(records)
-}
-
 pub async fn list_json_entries<T>(
     store: &kv::Store,
     decode_operation: &'static str,

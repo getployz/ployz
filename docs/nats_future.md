@@ -145,7 +145,6 @@ ployz.v1.<installation>.<authority>.<plane>.<plane-specific>
 ```
 ployz.v1.<inst>.<auth>.cp.deploy.commit.<namespace>.<deploy_id>
 ployz.v1.<inst>.<auth>.cp.deploy.status.<namespace>.<deploy_id>      (KV)
-ployz.v1.<inst>.<auth>.cp.revision.<namespace>.<service>.<hash>
 ployz.v1.<inst>.<auth>.cp.participant.<machine_id>                   (KV)
 ployz.v1.<inst>.<auth>.cp.invite.<invite_id>                         (KV)
 ployz.v1.<inst>.<auth>.cp.cert.meta.<hostname>                       (KV)
@@ -252,11 +251,10 @@ dev work and authority-local serving do not depend on root reachability.
 | Asset | Subjects | Notes |
 |---|---|---|
 | `cp_deploy_commits_<auth>` (stream) | `ployz.v1.<inst>.<auth>.cp.deploy.commit.>` | append-only; replica policy per authority |
-| `cp_revisions_<auth>` (stream, MaxMsgsPerSubject=1) | `ployz.v1.<inst>.<auth>.cp.revision.>` | audit-only |
 | `route_journal_<auth>` (stream) | `ployz.v1.<inst>.<auth>.route.journal.>` | authority-private source truth |
 | `route_exports_<auth>` (stream) | `ployz.v1.<inst>.<auth>.route.export.>` | owner-grant-derived audience feeds, including withdraw events |
 | `work_cert_<auth>` (stream, WorkQueue) | `ployz.v1.<inst>.<auth>.work.cert.>` | |
-| `participants_<auth>` … `locks_<auth>` (KV) | per `cp.*` resource | authority-local participation, placement, and locks |
+| `instances_<auth>` … `locks_<auth>` (KV) | per `cp.*` resource | authority-local lifecycle status and locks |
 
 ### Installation-root domain (`dom-<inst>-root`)
 

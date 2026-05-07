@@ -315,7 +315,7 @@ pub struct AcmeHttp01ChallengeStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimeTable {
+pub enum RuntimeCollection {
     Machine,
     Revision,
     Release,
@@ -338,14 +338,13 @@ pub enum RuntimeWatchFrame {
         state: RoutingState,
     },
     Upsert {
-        table: RuntimeTable,
+        collection: RuntimeCollection,
         key: String,
         record: RuntimeRecord,
     },
     Remove {
-        table: RuntimeTable,
+        collection: RuntimeCollection,
         key: String,
-        record: RuntimeRecord,
     },
     Error {
         code: String,
@@ -395,50 +394,50 @@ pub fn runtime_frame_from_event(event: RoutingEvent) -> RuntimeWatchFrame {
         RoutingEvent::MachineAdded(record) | RoutingEvent::MachineUpdated { new: record, .. } => {
             RuntimeWatchFrame::Upsert {
                 key: machine_runtime_key(&record),
-                table: RuntimeTable::Machine,
+                collection: RuntimeCollection::Machine,
                 record: RuntimeRecord::Machine(record),
             }
         }
-        RoutingEvent::MachineRemoved(record) => RuntimeWatchFrame::Remove {
-            key: machine_runtime_key(&record),
-            table: RuntimeTable::Machine,
-            record: RuntimeRecord::Machine(record),
+        RoutingEvent::MachineRemoved { id } => RuntimeWatchFrame::Remove {
+            key: id.0,
+            collection: RuntimeCollection::Machine,
         },
         RoutingEvent::RevisionAdded(record) | RoutingEvent::RevisionUpdated { new: record, .. } => {
             RuntimeWatchFrame::Upsert {
                 key: revision_runtime_key(&record),
-                table: RuntimeTable::Revision,
+                collection: RuntimeCollection::Revision,
                 record: RuntimeRecord::Revision(record),
             }
         }
-        RoutingEvent::RevisionRemoved(record) => RuntimeWatchFrame::Remove {
-            key: revision_runtime_key(&record),
-            table: RuntimeTable::Revision,
-            record: RuntimeRecord::Revision(record),
+        RoutingEvent::RevisionRemoved {
+            namespace,
+            service,
+            revision_hash,
+        } => RuntimeWatchFrame::Remove {
+            key: format!("{namespace}:{service}:{revision_hash}"),
+            collection: RuntimeCollection::Revision,
         },
         RoutingEvent::ReleaseAdded(record) | RoutingEvent::ReleaseUpdated { new: record, .. } => {
             RuntimeWatchFrame::Upsert {
                 key: release_runtime_key(&record),
-                table: RuntimeTable::Release,
+                collection: RuntimeCollection::Release,
                 record: RuntimeRecord::Release(record),
             }
         }
-        RoutingEvent::ReleaseRemoved(record) => RuntimeWatchFrame::Remove {
-            key: release_runtime_key(&record),
-            table: RuntimeTable::Release,
-            record: RuntimeRecord::Release(record),
+        RoutingEvent::ReleaseRemoved { namespace, service } => RuntimeWatchFrame::Remove {
+            key: format!("{namespace}:{service}"),
+            collection: RuntimeCollection::Release,
         },
         RoutingEvent::InstanceAdded(record) | RoutingEvent::InstanceUpdated { new: record, .. } => {
             RuntimeWatchFrame::Upsert {
                 key: instance_runtime_key(&record),
-                table: RuntimeTable::Instance,
+                collection: RuntimeCollection::Instance,
                 record: RuntimeRecord::Instance(record),
             }
         }
-        RoutingEvent::InstanceRemoved(record) => RuntimeWatchFrame::Remove {
-            key: instance_runtime_key(&record),
-            table: RuntimeTable::Instance,
-            record: RuntimeRecord::Instance(record),
+        RoutingEvent::InstanceRemoved { instance_id } => RuntimeWatchFrame::Remove {
+            key: instance_id.0,
+            collection: RuntimeCollection::Instance,
         },
     }
 }
@@ -835,23 +834,24 @@ pub struct DaemonResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        DaemonPayload, DaemonResponse, MachineOperationInfo, MachineOperationPayload,
-        MachineUpdatePayload, MachineUpdateRow, RuntimeRecord, RuntimeTable, RuntimeWatchFrame,
-        instance_runtime_key, machine_runtime_key, release_runtime_key, revision_runtime_key,
-        runtime_frame_from_event, sort_routing_state,
+        ControlPlaneStatus, DaemonPayload, DaemonResponse, EdgeSyncStatus, MachineOperationInfo,
+        MachineOperationPayload, MachineUpdatePayload, MachineUpdateRow, RuntimeCollection,
+        RuntimeRecord, RuntimeWatchFrame, StatusPayload, instance_runtime_key, machine_runtime_key,
+        release_runtime_key, revision_runtime_key, runtime_frame_from_event, sort_routing_state,
     };
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
-        MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey, RoutingEvent,
-        RoutingState, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
-        ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, StorageParticipation,
+        MachineLifecycle, MachineMembership, MachineTopology, NetworkLifecycle, OverlayIp,
+        PublicKey, RoutingEvent, RoutingState, ServiceRelease, ServiceReleaseRecord,
+        ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId,
+        StorageParticipation,
     };
     use ployz_types::spec::Namespace;
     use std::collections::BTreeMap;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
-    fn sort_routing_state_orders_all_tables_by_runtime_key() {
+    fn sort_routing_state_orders_all_collections_by_runtime_key() {
         let mut state = RoutingState {
             machines: vec![machine_record("machine-b"), machine_record("machine-a")],
             revisions: vec![
@@ -912,12 +912,14 @@ mod tests {
             old: old.clone(),
             new: new.clone(),
         });
-        let removed = runtime_frame_from_event(RoutingEvent::InstanceRemoved(new.clone()));
+        let removed = runtime_frame_from_event(RoutingEvent::InstanceRemoved {
+            instance_id: new.instance_id.clone(),
+        });
 
         assert_eq!(
             added,
             RuntimeWatchFrame::Upsert {
-                table: RuntimeTable::Instance,
+                collection: RuntimeCollection::Instance,
                 key: String::from("instance-1"),
                 record: RuntimeRecord::Instance(old.clone()),
             }
@@ -925,7 +927,7 @@ mod tests {
         assert_eq!(
             updated,
             RuntimeWatchFrame::Upsert {
-                table: RuntimeTable::Instance,
+                collection: RuntimeCollection::Instance,
                 key: String::from("instance-1"),
                 record: RuntimeRecord::Instance(new.clone()),
             }
@@ -933,15 +935,14 @@ mod tests {
         assert_eq!(
             removed,
             RuntimeWatchFrame::Remove {
-                table: RuntimeTable::Instance,
+                collection: RuntimeCollection::Instance,
                 key: String::from("instance-1"),
-                record: RuntimeRecord::Instance(new),
             }
         );
     }
 
     #[test]
-    fn routing_events_for_all_tables_map_to_runtime_watch_frames() {
+    fn routing_events_for_all_collections_map_to_runtime_watch_frames() {
         let old_machine = machine_record("machine-1");
         let mut new_machine = old_machine.clone();
         new_machine.lifecycle = MachineLifecycle::Draining;
@@ -959,17 +960,18 @@ mod tests {
                     new: new_machine.clone(),
                 }),
                 RuntimeWatchFrame::Upsert {
-                    table: RuntimeTable::Machine,
+                    collection: RuntimeCollection::Machine,
                     key: String::from("machine-1"),
                     record: RuntimeRecord::Machine(new_machine.clone()),
                 },
             ),
             (
-                runtime_frame_from_event(RoutingEvent::MachineRemoved(new_machine.clone())),
+                runtime_frame_from_event(RoutingEvent::MachineRemoved {
+                    id: new_machine.id.clone(),
+                }),
                 RuntimeWatchFrame::Remove {
-                    table: RuntimeTable::Machine,
+                    collection: RuntimeCollection::Machine,
                     key: String::from("machine-1"),
-                    record: RuntimeRecord::Machine(new_machine),
                 },
             ),
             (
@@ -978,17 +980,20 @@ mod tests {
                     new: new_revision.clone(),
                 }),
                 RuntimeWatchFrame::Upsert {
-                    table: RuntimeTable::Revision,
+                    collection: RuntimeCollection::Revision,
                     key: String::from("prod:api:rev-1"),
                     record: RuntimeRecord::Revision(new_revision.clone()),
                 },
             ),
             (
-                runtime_frame_from_event(RoutingEvent::RevisionRemoved(new_revision.clone())),
+                runtime_frame_from_event(RoutingEvent::RevisionRemoved {
+                    namespace: new_revision.namespace.clone(),
+                    service: new_revision.service.clone(),
+                    revision_hash: new_revision.revision_hash.clone(),
+                }),
                 RuntimeWatchFrame::Remove {
-                    table: RuntimeTable::Revision,
+                    collection: RuntimeCollection::Revision,
                     key: String::from("prod:api:rev-1"),
-                    record: RuntimeRecord::Revision(new_revision),
                 },
             ),
             (
@@ -997,17 +1002,19 @@ mod tests {
                     new: new_release.clone(),
                 }),
                 RuntimeWatchFrame::Upsert {
-                    table: RuntimeTable::Release,
+                    collection: RuntimeCollection::Release,
                     key: String::from("prod:api"),
                     record: RuntimeRecord::Release(new_release.clone()),
                 },
             ),
             (
-                runtime_frame_from_event(RoutingEvent::ReleaseRemoved(new_release.clone())),
+                runtime_frame_from_event(RoutingEvent::ReleaseRemoved {
+                    namespace: new_release.namespace.clone(),
+                    service: new_release.service.clone(),
+                }),
                 RuntimeWatchFrame::Remove {
-                    table: RuntimeTable::Release,
+                    collection: RuntimeCollection::Release,
                     key: String::from("prod:api"),
-                    record: RuntimeRecord::Release(new_release),
                 },
             ),
         ];
@@ -1040,7 +1047,7 @@ mod tests {
     #[test]
     fn runtime_watch_frame_serialization_roundtrips() {
         let frame = RuntimeWatchFrame::Upsert {
-            table: RuntimeTable::Instance,
+            collection: RuntimeCollection::Instance,
             key: String::from("instance-1"),
             record: RuntimeRecord::Instance(instance_record("instance-1", "prod", "api")),
         };
@@ -1051,7 +1058,7 @@ mod tests {
             json,
             serde_json::json!({
                 "kind": "upsert",
-                "table": "instance",
+                "collection": "instance",
                 "key": "instance-1",
                 "record": {
                     "instance_id": "instance-1",
@@ -1078,6 +1085,29 @@ mod tests {
 
         let decoded: RuntimeWatchFrame =
             serde_json::from_value(json).expect("deserialize runtime watch frame");
+        assert_eq!(decoded, frame);
+    }
+
+    #[test]
+    fn runtime_watch_remove_frame_serialization_is_key_only() {
+        let frame = RuntimeWatchFrame::Remove {
+            collection: RuntimeCollection::Release,
+            key: String::from("prod:api"),
+        };
+
+        let json = serde_json::to_value(&frame).expect("serialize runtime remove frame");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "remove",
+                "collection": "release",
+                "key": "prod:api"
+            })
+        );
+
+        let decoded: RuntimeWatchFrame =
+            serde_json::from_value(json).expect("deserialize runtime remove frame");
         assert_eq!(decoded, frame);
     }
 
@@ -1215,6 +1245,94 @@ mod tests {
         assert_eq!(
             payload.operation.last_error.as_deref(),
             Some("daemon restarted before operation completed")
+        );
+    }
+
+    #[test]
+    fn daemon_status_response_preserves_edge_and_control_plane_uncertainty() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("status"),
+            payload: Some(DaemonPayload::Status(StatusPayload {
+                machine_id: String::from("founder"),
+                public_key: PublicKey([1; 32]),
+                version: String::from("0.5.5"),
+                network: Some(String::from("alpha")),
+                overlay_ip: Some(String::from("fd00::1")),
+                network_lifecycle: Some(NetworkLifecycle::Running),
+                local_machine_lifecycle: Some(MachineLifecycle::Active),
+                mesh_phase: String::from("Running"),
+                edge_sync: vec![EdgeSyncStatus {
+                    service: String::from("gateway"),
+                    stream: String::from("routing"),
+                    healthy: Some(false),
+                    stale_since_unix_secs: Some(1_777_646_000),
+                    failures_total: Some(7),
+                    error: None,
+                }],
+                nats_assets: Vec::new(),
+                control_plane: vec![ControlPlaneStatus {
+                    component: String::from("mesh_peer_sync"),
+                    healthy: None,
+                    stale_since_unix_secs: None,
+                    consecutive_failures: None,
+                    error: Some(String::from("machine subscription closed")),
+                }],
+            })),
+        };
+
+        let json = serde_json::to_value(&response).expect("serialize status response");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "ok": true,
+                "code": "OK",
+                "message": "status",
+                "payload": {
+                    "kind": "status",
+                    "machine_id": "founder",
+                    "public_key": PublicKey([1; 32]),
+                    "version": "0.5.5",
+                    "network": "alpha",
+                    "overlay_ip": "fd00::1",
+                    "network_lifecycle": "Running",
+                    "local_machine_lifecycle": "Active",
+                    "mesh_phase": "Running",
+                    "edge_sync": [{
+                        "service": "gateway",
+                        "stream": "routing",
+                        "healthy": false,
+                        "stale_since_unix_secs": 1777646000u64,
+                        "failures_total": 7u64
+                    }],
+                    "control_plane": [{
+                        "component": "mesh_peer_sync",
+                        "error": "machine subscription closed"
+                    }]
+                }
+            })
+        );
+
+        let decoded: DaemonResponse =
+            serde_json::from_value(json).expect("deserialize status response");
+        let Some(DaemonPayload::Status(payload)) = decoded.payload else {
+            panic!("expected status payload");
+        };
+        let [edge] = payload.edge_sync.as_slice() else {
+            panic!("expected one edge sync row");
+        };
+        assert_eq!(edge.healthy, Some(false));
+        assert_eq!(edge.stale_since_unix_secs, Some(1_777_646_000));
+        assert_eq!(edge.failures_total, Some(7));
+        let [control] = payload.control_plane.as_slice() else {
+            panic!("expected one control-plane row");
+        };
+        assert_eq!(control.healthy, None);
+        assert_eq!(
+            control.error.as_deref(),
+            Some("machine subscription closed")
         );
     }
 

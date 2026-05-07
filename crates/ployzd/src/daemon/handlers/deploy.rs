@@ -611,7 +611,7 @@ async fn export_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_store_api::{DeployCommit, DeployRepository, DeployRevisionUpsert};
+    use ployz_store_api::{DeployCommit, DeployRepository};
     use ployz_types::model::{
         DeployId, DeployRecord, DeployState, MachineId, ServiceRelease, ServiceReleaseRecord,
         ServiceRevisionRecord, ServiceRoutingPolicy, VolumeRecord,
@@ -691,23 +691,16 @@ mod tests {
         let deploy_id = DeployId("deploy-1".into());
 
         store
-            .record_service_revision(&DeployRevisionUpsert {
-                revision: ServiceRevisionRecord {
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: vec![ServiceRevisionRecord {
                     namespace: namespace.clone(),
                     service: service.name.clone(),
                     revision_hash: revision_hash.clone(),
                     spec_json: serde_json::to_string(&service).expect("serialize service"),
                     created_by: MachineId("local".into()),
                     created_at: 1,
-                },
-            })
-            .await
-            .expect("seed revision");
-
-        store
-            .commit_deploy(&DeployCommit {
-                namespace: namespace.clone(),
-                revisions: Vec::new(),
+                }],
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
@@ -828,23 +821,16 @@ mod tests {
         let deploy_id = DeployId("deploy-1".into());
 
         store
-            .record_service_revision(&DeployRevisionUpsert {
-                revision: ServiceRevisionRecord {
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: vec![ServiceRevisionRecord {
                     namespace: namespace.clone(),
                     service: "api".into(),
                     revision_hash: revision_hash.clone(),
                     spec_json: serde_json::to_string(&service).expect("serialize service"),
                     created_by: MachineId("local".into()),
                     created_at: 1,
-                },
-            })
-            .await
-            .expect("seed mismatched revision");
-
-        store
-            .commit_deploy(&DeployCommit {
-                namespace: namespace.clone(),
-                revisions: Vec::new(),
+                }],
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
                 releases: vec![ServiceReleaseRecord {

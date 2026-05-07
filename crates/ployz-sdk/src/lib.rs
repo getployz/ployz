@@ -7,8 +7,8 @@ pub use ployz_api::{
     MachineAwaitingSelfPublication, MachineInstallOptions, MachineListPayload, MachineListRow,
     MachineOperationInfo, MachineOperationListPayload, MachineOperationPayload,
     MachineRemovePayload, MachineUpdatePayload, MachineUpdateRow, MeshListEntry, MeshListPayload,
-    MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload, RuntimeRecord, RuntimeStatePayload,
-    RuntimeTable, RuntimeWatchFrame, StatusPayload,
+    MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload, RuntimeCollection, RuntimeRecord,
+    RuntimeStatePayload, RuntimeWatchFrame, StatusPayload,
 };
 pub use ployz_types::{Error, Result};
 pub use ployz_types::{error, model, spec};

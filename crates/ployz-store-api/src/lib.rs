@@ -15,11 +15,11 @@ pub use driver::StoreDriver;
 pub use traits::{
     AcmeChallengeSubscription, AcmeChallengeSubscriptionUpdate, CertificateStore,
     CertificateSubscription, CertificateSubscriptionUpdate, DeployCommit, DeployRecordUpdate,
-    DeployRepository, DeployRevisionUpsert, DeploySnapshot, InstanceStatusRepository,
-    InviteRepository, MachineRegistry, MachineSubscription, MachineSubscriptionUpdate,
-    PeerRttObservation, PeerRttStore, RoutingEventEnvelope, RoutingEventSubscription,
-    RoutingEventSubscriptionUpdate, RoutingSnapshotReader, RoutingSubscription,
-    StoreRuntimeControl, SyncProbe, SyncStatus, apply_routing_event, apply_routing_events,
+    DeployRepository, DeploySnapshot, InstanceStatusRepository, InviteRepository, MachineRegistry,
+    MachineSubscription, MachineSubscriptionUpdate, PeerRttObservation, PeerRttStore,
+    RoutingEventEnvelope, RoutingEventSubscription, RoutingEventSubscriptionUpdate,
+    RoutingSnapshotReader, RoutingSubscription, StoreRuntimeControl, SyncProbe, SyncStatus,
+    apply_routing_event, apply_routing_events,
 };
 
 #[async_trait]
@@ -58,7 +58,6 @@ pub trait StoreBackend: Send + Sync {
         namespace: &Namespace,
         volume_name: &str,
     ) -> Result<Option<VolumeRecord>>;
-    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()>;
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()>;
     async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()>;
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>>;

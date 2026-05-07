@@ -67,22 +67,13 @@ impl MachineRegistry for NatsStore {
 
     async fn delete_machine(&self, id: &MachineId) -> Result<()> {
         let kv = machines_bucket(self).await?;
-        let old = kv
-            .get(id.0.as_str())
-            .await
-            .map_err(|error| Error::operation("nats_machine_get", format!("{error:?}")))?
-            .map(|bytes| decode_machine(id.0.as_str(), bytes.as_ref()))
-            .transpose()?;
-        let Some(old) = old else {
-            return Ok(());
-        };
+        kv_json::delete(&kv, id.0.as_str(), "nats_machine_delete").await?;
         self.publish_routing_events(
             format!("machine:delete:{}", id.0),
             "machine.delete",
-            &[RoutingEvent::MachineRemoved(old)],
+            &[RoutingEvent::MachineRemoved { id: id.clone() }],
         )
-        .await?;
-        kv_json::delete(&kv, id.0.as_str(), "nats_machine_delete").await
+        .await
     }
 
     async fn subscribe_machines(&self) -> Result<MachineSubscription> {
@@ -161,6 +152,28 @@ mod tests {
 
         assert!(result.is_err());
         assert!(last_seen.is_empty());
+    }
+
+    #[test]
+    fn machine_kv_key_mismatch_is_visible() {
+        let machine = test_machine("payload-machine");
+        let bytes = serde_json::to_vec(&machine).expect("encode machine");
+
+        let error =
+            decode_machine("key-machine", &bytes).expect_err("key mismatch should fail visibly");
+
+        assert!(error.to_string().contains("key-machine"));
+        assert!(error.to_string().contains("payload-machine"));
+    }
+
+    #[test]
+    fn machine_kv_decode_accepts_matching_key() {
+        let machine = test_machine("machine-a");
+        let bytes = serde_json::to_vec(&machine).expect("encode machine");
+
+        let decoded = decode_machine("machine-a", &bytes).expect("matching key decodes");
+
+        assert_eq!(decoded, machine);
     }
 
     #[test]

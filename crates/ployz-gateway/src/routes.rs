@@ -421,9 +421,9 @@ impl GatewayProjector {
                 self.machines.insert(new.id.clone(), new);
                 services.extend(self.services_for_machine(&old.id));
             }
-            RoutingEvent::MachineRemoved(machine) => {
-                self.machines.remove(&machine.id);
-                services.extend(self.services_for_machine(&machine.id));
+            RoutingEvent::MachineRemoved { id } => {
+                services.extend(self.services_for_machine(&id));
+                self.machines.remove(&id);
             }
             RoutingEvent::RevisionAdded(revision)
             | RoutingEvent::RevisionUpdated { new: revision, .. } => {
@@ -436,9 +436,12 @@ impl GatewayProjector {
                 self.revisions.insert(key.clone(), revision);
                 services.extend(self.services_using_revision(&key));
             }
-            RoutingEvent::RevisionRemoved(revision) => {
-                let key =
-                    RevisionKey::new(revision.namespace, revision.service, revision.revision_hash);
+            RoutingEvent::RevisionRemoved {
+                namespace,
+                service,
+                revision_hash,
+            } => {
+                let key = RevisionKey::new(namespace, service, revision_hash);
                 self.revisions.remove(&key);
                 self.specs.remove(&key);
                 services.extend(self.services_using_revision(&key));
@@ -458,8 +461,8 @@ impl GatewayProjector {
                 self.releases.insert(service.clone(), new);
                 services.insert(service);
             }
-            RoutingEvent::ReleaseRemoved(release) => {
-                let service = ServiceKey::from_release(&release);
+            RoutingEvent::ReleaseRemoved { namespace, service } => {
+                let service = ServiceKey::new(namespace, service);
                 self.releases.remove(&service);
                 services.insert(service);
             }
@@ -472,9 +475,11 @@ impl GatewayProjector {
                 services.insert(ServiceKey::from_instance(&new));
                 self.insert_instance(new);
             }
-            RoutingEvent::InstanceRemoved(instance) => {
-                services.insert(ServiceKey::from_instance(&instance));
-                self.remove_instance(&instance.instance_id);
+            RoutingEvent::InstanceRemoved { instance_id } => {
+                if let Some(instance) = self.instances.get(&instance_id) {
+                    services.insert(ServiceKey::from_instance(instance));
+                }
+                self.remove_instance(&instance_id);
             }
         }
         self.reproject_services(services.into_iter().collect())
@@ -1888,7 +1893,10 @@ mod tests {
 
         let delta = projector
             .apply(GatewayProjectionEvent::Routing(
-                RoutingEvent::ReleaseRemoved(release),
+                RoutingEvent::ReleaseRemoved {
+                    namespace: release.namespace,
+                    service: release.service,
+                },
             ))
             .expect("release removal should apply");
 

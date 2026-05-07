@@ -593,6 +593,37 @@ async fn mesh_stop_restores_local_record_when_destroy_fails() {
 }
 
 #[tokio::test]
+async fn mesh_stop_persists_stopped_lifecycle_before_gateway_shutdown_failure() {
+    let (mut state, _, _) = make_state(true).await;
+    let active = state.active.as_mut().expect("active mesh");
+    active.gateway = Box::new(FailingShutdownHandle {
+        message: "injected gateway shutdown failure".into(),
+    });
+
+    let response = state.handle_mesh_stop(true).await;
+
+    assert!(!response.ok);
+    assert_eq!(response.code, "NETWORK_STOP_FAILED");
+    assert!(
+        response
+            .message
+            .contains("injected gateway shutdown failure")
+    );
+    assert!(
+        state.active.is_none(),
+        "mesh runtime was already destroyed, so active state must not be restored"
+    );
+
+    let persisted =
+        NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha")).expect("load config");
+    assert_eq!(persisted.lifecycle, NetworkLifecycle::Stopped);
+    assert_eq!(
+        persisted.subnet,
+        Some("10.210.0.0/24".parse().expect("valid subnet"))
+    );
+}
+
+#[tokio::test]
 async fn machine_add_releases_reserved_subnet_when_remote_bootstrap_fails() {
     let _guard = test_ssh_env_lock().lock().await;
     let (state, _, _) = make_state(true).await;
@@ -924,6 +955,17 @@ async fn teardown_state(state: &mut DaemonState) {
         return;
     };
     active.mesh.destroy().await.expect("destroy mesh");
+}
+
+struct FailingShutdownHandle {
+    message: String,
+}
+
+#[async_trait::async_trait]
+impl ployz_runtime_api::RuntimeHandle for FailingShutdownHandle {
+    async fn shutdown(self: Box<Self>) -> Result<(), String> {
+        Err(self.message)
+    }
 }
 
 fn test_machine_record(

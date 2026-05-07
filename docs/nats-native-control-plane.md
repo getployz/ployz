@@ -257,8 +257,8 @@ The important split:
 - Short-lived watches use ephemeral memory-backed consumers with an inactivity
   threshold and do not leave durable cursor state behind if the watcher exits or
   the daemon crashes.
-- Routing batch subscriptions carry complete atomic batches or explicit
-  consumer failures, so projection consumers can reload instead of silently
+- Routing event subscriptions carry one acknowledged routing fact or an explicit
+  consumer failure, so projection consumers can reload instead of silently
   continuing from a stale event stream. Durable subscription setup replaces any
   old consumer with the same id after reading the routing stream sequence and
   loading a fresh snapshot; the new consumer starts from the next stream

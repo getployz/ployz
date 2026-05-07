@@ -175,17 +175,6 @@ impl DaemonState {
         if let Err(error) = persist_stopped_self_record(&mut active, &previous_self_record).await {
             warn!(%error, "failed to persist standby self record after mesh stop");
         }
-        let _ = active.nats_control.shutdown().await;
-        if let Err(error) = active.dns.shutdown().await {
-            warn!(?error, "dns stop failed during mesh stop");
-        }
-        if let Err(error) = active.gateway.shutdown().await {
-            return self.err(
-                "NETWORK_STOP_FAILED",
-                format!("gateway stop failed: {error}"),
-            );
-        }
-
         let mut persisted = active.config.clone();
         let persisted_network_name = persisted.name.clone();
         let _ = persisted
@@ -203,6 +192,17 @@ impl DaemonState {
             return self.err(
                 "IO_ERROR",
                 format!("failed to persist stopped network config: {error}"),
+            );
+        }
+
+        let _ = active.nats_control.shutdown().await;
+        if let Err(error) = active.dns.shutdown().await {
+            warn!(?error, "dns stop failed during mesh stop");
+        }
+        if let Err(error) = active.gateway.shutdown().await {
+            return self.err(
+                "NETWORK_STOP_FAILED",
+                format!("gateway stop failed: {error}"),
             );
         }
 

@@ -99,11 +99,55 @@ impl TaskSet {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeshTaskHealth {
     pub name: String,
-    pub healthy: bool,
     pub updated_at_unix_secs: u64,
-    pub stale_since_unix_secs: Option<u64>,
-    pub consecutive_failures: u64,
-    pub last_error: Option<String>,
+    pub state: MeshTaskHealthState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MeshTaskHealthState {
+    Healthy,
+    Stale {
+        stale_since_unix_secs: u64,
+        consecutive_failures: u64,
+        last_error: String,
+    },
+}
+
+impl MeshTaskHealth {
+    #[must_use]
+    pub fn is_healthy(&self) -> bool {
+        matches!(self.state, MeshTaskHealthState::Healthy)
+    }
+
+    #[must_use]
+    pub fn stale_since_unix_secs(&self) -> Option<u64> {
+        match self.state {
+            MeshTaskHealthState::Healthy => None,
+            MeshTaskHealthState::Stale {
+                stale_since_unix_secs,
+                ..
+            } => Some(stale_since_unix_secs),
+        }
+    }
+
+    #[must_use]
+    pub fn consecutive_failures(&self) -> u64 {
+        match self.state {
+            MeshTaskHealthState::Healthy => 0,
+            MeshTaskHealthState::Stale {
+                consecutive_failures,
+                ..
+            } => consecutive_failures,
+        }
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        match self.state {
+            MeshTaskHealthState::Healthy => None,
+            MeshTaskHealthState::Stale { ref last_error, .. } => Some(last_error),
+        }
+    }
 }
 
 fn mark_task_healthy(health: &Arc<Mutex<BTreeMap<String, MeshTaskHealth>>>, name: &str) {
@@ -115,11 +159,8 @@ fn mark_task_healthy(health: &Arc<Mutex<BTreeMap<String, MeshTaskHealth>>>, name
             name.to_string(),
             MeshTaskHealth {
                 name: name.to_string(),
-                healthy: true,
                 updated_at_unix_secs: now,
-                stale_since_unix_secs: None,
-                consecutive_failures: 0,
-                last_error: None,
+                state: MeshTaskHealthState::Healthy,
             },
         );
 }
@@ -133,17 +174,26 @@ fn mark_task_unhealthy(
     let mut health = health.lock().expect("mesh task health lock poisoned");
     let current = health.entry(name.to_string()).or_insert(MeshTaskHealth {
         name: name.to_string(),
-        healthy: true,
         updated_at_unix_secs: now,
-        stale_since_unix_secs: None,
-        consecutive_failures: 0,
-        last_error: None,
+        state: MeshTaskHealthState::Healthy,
     });
-    current.healthy = false;
+    let (stale_since_unix_secs, consecutive_failures) = match current.state {
+        MeshTaskHealthState::Healthy => (now, 1),
+        MeshTaskHealthState::Stale {
+            stale_since_unix_secs,
+            consecutive_failures,
+            ..
+        } => (
+            stale_since_unix_secs,
+            consecutive_failures.saturating_add(1),
+        ),
+    };
     current.updated_at_unix_secs = now;
-    current.stale_since_unix_secs = Some(current.stale_since_unix_secs.unwrap_or(now));
-    current.consecutive_failures = current.consecutive_failures.saturating_add(1);
-    current.last_error = Some(error.into());
+    current.state = MeshTaskHealthState::Stale {
+        stale_since_unix_secs,
+        consecutive_failures,
+        last_error: error.into(),
+    };
 }
 
 #[cfg(test)]
@@ -178,12 +228,15 @@ mod tests {
             panic!("expected one health row, got {health:?}");
         };
         assert_eq!(peer_sync.name, "peer_sync");
-        assert!(!peer_sync.healthy);
-        assert_eq!(peer_sync.consecutive_failures, 1);
-        assert!(peer_sync.stale_since_unix_secs.is_some());
-        assert_eq!(
-            peer_sync.last_error.as_deref(),
-            Some("task exited unexpectedly")
-        );
+        let MeshTaskHealthState::Stale {
+            consecutive_failures,
+            last_error,
+            ..
+        } = &peer_sync.state
+        else {
+            panic!("expected stale health, got {peer_sync:?}");
+        };
+        assert_eq!(*consecutive_failures, 1);
+        assert_eq!(last_error, "task exited unexpectedly");
     }
 }

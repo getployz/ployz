@@ -78,7 +78,7 @@ pub(crate) fn routing_publish_specs_in(
                 Error::operation("nats_routing_event_encode", error.to_string())
             })?;
             Ok(RoutingPublishSpec {
-                subject: subjects::route_journal_event_in(scope, operation_id, index + 1),
+                subject: subjects::route_journal_event_in(scope, &event_id),
                 headers,
                 payload,
             })
@@ -144,7 +144,7 @@ mod tests {
 
         assert_eq!(
             specs[0].subject,
-            "ployz.v1.inst-acme.auth-sin.route.journal.event.default.machine%3Amachine-1.1"
+            "ployz.v1.inst-acme.auth-sin.route.journal.event.machine%3Amachine-1%3A1"
         );
     }
 

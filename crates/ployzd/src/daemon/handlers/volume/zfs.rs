@@ -1349,4 +1349,35 @@ mod tests {
         assert_eq!(loaded.last_error.as_deref(), Some("boom"));
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn interrupted_transfer_preserves_prior_failure_error() {
+        let root = tmp_root("interrupt-after-failure");
+        let store = TransferStore::new(root.clone());
+        let mut transfer = begin(&store);
+        store
+            .update_status(
+                &mut transfer,
+                TransferStatus::Failed,
+                Some("send failed".into()),
+            )
+            .expect("record transfer failure");
+
+        store
+            .update_status(&mut transfer, TransferStatus::Interrupted, None)
+            .expect("record interruption");
+
+        let loaded = store
+            .load(&transfer.id)
+            .expect("load")
+            .expect("record exists");
+        assert_eq!(loaded.status, TransferStatus::Interrupted);
+        assert_eq!(loaded.last_error.as_deref(), Some("send failed"));
+        assert_eq!(
+            loaded.info().last_error.as_deref(),
+            Some("send failed"),
+            "operator-facing payload should preserve the failure audience"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

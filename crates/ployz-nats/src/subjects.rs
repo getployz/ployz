@@ -4,7 +4,6 @@ use ployz_types::model::{AuthorityId, DeployId, InstallationId, MachineId};
 use ployz_types::spec::Namespace;
 
 pub const DEPLOY_COMMITS_STREAM: &str = "cp_deploy_commits_auth-default";
-pub const REVISIONS_STREAM: &str = "cp_revisions_auth-default";
 pub const CERT_JOBS_STREAM: &str = "work_cert_auth-default";
 pub const ROUTE_JOURNAL_STREAM: &str = "route_journal_auth-default";
 pub const ROUTING_EVENTS_STREAM: &str = ROUTE_JOURNAL_STREAM;
@@ -87,54 +86,27 @@ pub fn deploy_commit_filter_in(scope: &NatsScope) -> String {
 }
 
 #[must_use]
-pub fn route_journal_event(operation_id: &str, index: usize) -> String {
-    route_journal_event_in(&NatsScope::default(), operation_id, index)
+pub fn route_journal_event(event_id: &str) -> String {
+    route_journal_event_in(&NatsScope::default(), event_id)
 }
 
 #[must_use]
-pub fn route_journal_event_in(scope: &NatsScope, operation_id: &str, index: usize) -> String {
+pub fn route_journal_event_in(scope: &NatsScope, event_id: &str) -> String {
     format!(
-        "{}.route.journal.event.default.{}.{}",
+        "{}.route.journal.event.{}",
         scope.authority_prefix(),
-        subject_token(operation_id),
-        index
+        subject_token(event_id),
     )
 }
 
 #[must_use]
-pub fn routing_event(operation_id: &str, index: usize) -> String {
-    route_journal_event(operation_id, index)
+pub fn routing_event(event_id: &str) -> String {
+    route_journal_event(event_id)
 }
 
 #[must_use]
 pub fn route_journal_filter_in(scope: &NatsScope) -> String {
     format!("{}.route.journal.>", scope.authority_prefix())
-}
-
-#[must_use]
-pub fn revision(namespace: &Namespace, service: &str, revision_hash: &str) -> String {
-    revision_in(&NatsScope::default(), namespace, service, revision_hash)
-}
-
-#[must_use]
-pub fn revision_in(
-    scope: &NatsScope,
-    namespace: &Namespace,
-    service: &str,
-    revision_hash: &str,
-) -> String {
-    format!(
-        "{}.cp.revision.{}.{}.{}",
-        scope.authority_prefix(),
-        subject_token(&namespace.0),
-        subject_token(service),
-        subject_token(revision_hash)
-    )
-}
-
-#[must_use]
-pub fn revision_filter_in(scope: &NatsScope) -> String {
-    format!("{}.cp.revision.>", scope.authority_prefix())
 }
 
 #[must_use]
@@ -303,12 +275,8 @@ mod tests {
             "ployz.v1.local.auth-default.cp.deploy.commit.prod.deploy-1"
         );
         assert_eq!(
-            revision_in(&scope, &namespace, "api", "rev.1"),
-            "ployz.v1.local.auth-default.cp.revision.prod.api.rev%2E1"
-        );
-        assert_eq!(
-            route_journal_event_in(&scope, "batch.1", 2),
-            "ployz.v1.local.auth-default.route.journal.event.default.batch%2E1.2"
+            route_journal_event_in(&scope, "deploy:deploy-1:2"),
+            "ployz.v1.local.auth-default.route.journal.event.deploy%3Adeploy-1%3A2"
         );
         assert_eq!(
             cert_renewal_job_in(&scope, "API.Example.COM"),

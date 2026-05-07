@@ -145,9 +145,9 @@ js.publish_with_headers(subject, headers_with_batch_commit, payload).await?;
 ```
 
 Useful when you have multi-message logical operations that must either all
-land or all fail. We don't need it for `DeployCommit` (single self-
-contained envelope), but it's the right tool if a future design splits a
-commit into multiple events.
+land or all fail. Ployz does not use this for the route journal: routing
+facts are intentionally one JetStream message per event, with per-message
+acknowledgement by each projection consumer.
 
 ### Scheduled messages (2.14+)
 
@@ -504,9 +504,10 @@ let response = client
 
 `commit_deploy` publishes the envelope with `Nats-Expected-Last-Subject-Sequence: 0`
 (create-only). Retries with the same `deploy_id` are idempotent.
-If the durable commit exists but the following routing batch failed, the retry
-verifies the stored payload and republishes repair events for touched keys that
-still match the authoritative projection; superseded releases are not replayed.
+If the durable commit exists but publishing the derived routing events failed,
+the retry verifies the stored payload and republishes repair events for touched
+keys that still match the authoritative projection; superseded releases are not
+replayed.
 `update_deploy_record` writes a separate `deploy_status` KV, never the
 stream — keeps the commit log immutable and replay-safe.
 
@@ -597,9 +598,6 @@ Streams:
 - `deploy_commits` — append-only `DeployCommit` envelopes.
   Subject `deploy_commits.<ns>.<deploy_id>`. Retention=Limits, no
   `max_age`, no `max_messages_per_subject` collapse. R per policy.
-- `revisions` — audit-only history of `ServiceRevisionRecord`. Subject
-  `revisions.<ns>.<svc>.<hash>`, `MaxMsgsPerSubject=1`. Not on the
-  projection critical path (revisions are inlined in commits).
 - `cert_jobs` — Workqueue retention with `allow_msg_schedules=true`.
   Subjects under `cert.jobs.renew.<hostname>`.
 
@@ -637,15 +635,15 @@ KV buckets:
 
 Tracked in code comments and the implementation plan. Highlights:
 
-1. Routing events are live JetStream atomic batches. Gateway/DNS use durable
-   per-machine consumers; runtime watches and readiness probes use ephemeral
-   memory-backed push consumers with an inactivity threshold, so short-lived
-   reads do not leave durable cursor state behind. Durable routing subscription
-   setup reads the routing stream sequence, loads a fresh snapshot, then
-   replaces any old consumer with the same id and starts delivery from the next
-   stream sequence. Updates carry either a complete batch or an explicit
-   consumer failure. Runtime watch clients receive that failure as an explicit
-   error frame before the watch stream closes.
+1. Routing events are live JetStream messages with one routing fact per
+   message. Gateway/DNS use durable per-machine consumers; runtime watches and
+   readiness probes use ephemeral memory-backed push consumers with an
+   inactivity threshold, so short-lived reads do not leave durable cursor state
+   behind. Durable routing subscription setup reads the routing stream sequence,
+   loads a fresh snapshot, then replaces any old consumer with the same id and
+   starts delivery from the next stream sequence. Updates carry either one event
+   envelope or an explicit consumer failure. Runtime watch clients receive that
+   failure as an explicit error frame before the watch stream closes.
    Routing consumer `max_ack_pending` is bounded to the local bridge-channel
    capacity, and idle heartbeats surface broken delivery paths as failures.
 2. Machine/certificate/ACME challenge subscriptions are KV watchers that carry

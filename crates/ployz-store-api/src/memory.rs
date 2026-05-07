@@ -1,8 +1,8 @@
 use crate::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
-    DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
-    InstanceStatusRepository, InviteRepository, MachineRegistry, RoutingEventEnvelope,
-    RoutingEventSubscription, RoutingSnapshotReader, StoreRuntimeControl, SyncProbe, SyncStatus,
+    DeployRecordUpdate, DeployRepository, DeploySnapshot, InstanceStatusRepository,
+    InviteRepository, MachineRegistry, RoutingEventEnvelope, RoutingEventSubscription,
+    RoutingSnapshotReader, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
@@ -240,7 +240,7 @@ impl MachineRegistry for MemoryStore {
                 &mut inner,
                 format!("memory:machine:delete:{id}"),
                 Some("machine.delete".to_string()),
-                RoutingEvent::MachineRemoved(record),
+                RoutingEvent::MachineRemoved { id: record.id },
             );
         }
         Ok(())
@@ -435,25 +435,6 @@ impl DeployRepository for MemoryStore {
             .cloned())
     }
 
-    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
-        let mut inner = self.lock_inner();
-        let old = Self::record_service_revision_inner(&mut inner, &command.revision);
-        if let Some(event) = revision_event(old, &command.revision) {
-            Self::broadcast_routing_event(
-                &mut inner,
-                format!(
-                    "memory:revision:{}:{}:{}",
-                    command.revision.namespace,
-                    command.revision.service,
-                    command.revision.revision_hash
-                ),
-                Some("deploy.revision".to_string()),
-                event,
-            );
-        }
-        Ok(())
-    }
-
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
         let mut inner = self.lock_inner();
         let events = Self::commit_deploy_inner(&mut inner, command);
@@ -520,7 +501,9 @@ impl InstanceStatusRepository for MemoryStore {
                 &mut inner,
                 format!("memory:instance:remove:{instance_id}"),
                 Some("instance.remove".to_string()),
-                RoutingEvent::InstanceRemoved(record),
+                RoutingEvent::InstanceRemoved {
+                    instance_id: record.instance_id,
+                },
             );
         }
         Ok(())
@@ -619,7 +602,10 @@ impl MemoryStore {
         }
 
         for record in removed {
-            events.push(RoutingEvent::ReleaseRemoved(record));
+            events.push(RoutingEvent::ReleaseRemoved {
+                namespace: record.namespace,
+                service: record.service,
+            });
         }
 
         for volume in &command.volumes {
@@ -812,16 +798,25 @@ impl MemoryStore {
         let mut events = Vec::new();
         for record in removed {
             Self::broadcast_machine(&mut inner, MachineEvent::Removed(record.clone()));
-            events.push(RoutingEvent::MachineRemoved(record));
+            events.push(RoutingEvent::MachineRemoved { id: record.id });
         }
         for record in removed_revisions {
-            events.push(RoutingEvent::RevisionRemoved(record));
+            events.push(RoutingEvent::RevisionRemoved {
+                namespace: record.namespace,
+                service: record.service,
+                revision_hash: record.revision_hash,
+            });
         }
         for record in removed_releases {
-            events.push(RoutingEvent::ReleaseRemoved(record));
+            events.push(RoutingEvent::ReleaseRemoved {
+                namespace: record.namespace,
+                service: record.service,
+            });
         }
         for record in removed_instances {
-            events.push(RoutingEvent::InstanceRemoved(record));
+            events.push(RoutingEvent::InstanceRemoved {
+                instance_id: record.instance_id,
+            });
         }
         Self::broadcast_routing_events(
             &mut inner,
@@ -979,41 +974,6 @@ mod tests {
                 ..
             })
         ));
-    }
-
-    #[tokio::test]
-    async fn record_service_revision_updates_routing_snapshot_and_emits_event() {
-        let store = MemoryStore::new();
-        let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
-
-        let namespace = Namespace("prod".into());
-        let revision = ServiceRevisionRecord {
-            namespace: namespace.clone(),
-            service: "api".into(),
-            revision_hash: "rev-1".into(),
-            spec_json: "{}".into(),
-            created_by: MachineId("machine-1".into()),
-            created_at: 1,
-        };
-
-        store
-            .record_service_revision(&DeployRevisionUpsert { revision })
-            .await
-            .expect("record revision");
-
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
-            .await
-            .expect("refresh event deadline");
-        assert!(matches!(
-            event,
-            Some(RoutingEvent::RevisionAdded(ServiceRevisionRecord { .. }))
-        ));
-
-        let snapshot = store
-            .load_routing_state()
-            .await
-            .expect("load routing state");
-        assert_eq!(snapshot.revisions.len(), 1);
     }
 
     #[tokio::test]
@@ -1192,7 +1152,13 @@ mod tests {
             .await
             .expect("await removal event")
             .expect("event present");
-        assert_eq!(event, RoutingEvent::ReleaseRemoved(removed));
+        assert_eq!(
+            event,
+            RoutingEvent::ReleaseRemoved {
+                namespace: removed.namespace,
+                service: removed.service,
+            }
+        );
     }
 
     #[tokio::test]
@@ -1284,7 +1250,7 @@ mod tests {
             .expect("remove refresh deadline");
         assert!(matches!(
             event,
-            Some(RoutingEvent::InstanceRemoved(InstanceStatusRecord { .. }))
+            Some(RoutingEvent::InstanceRemoved { instance_id }) if instance_id == status.instance_id
         ));
 
         let snapshot = store
@@ -1616,7 +1582,10 @@ mod tests {
                 .await
                 .expect("routing removal event deadline")
                 .expect("routing removal event");
-        assert_eq!(routing_event, RoutingEvent::MachineRemoved(machine));
+        assert_eq!(
+            routing_event,
+            RoutingEvent::MachineRemoved { id: machine.id }
+        );
 
         let state = store.load_routing_state().await.expect("routing state");
         assert!(state.machines.is_empty());
@@ -1671,8 +1640,9 @@ mod tests {
         let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
 
         for index in 0..1030 {
+            let namespace = Namespace("prod".into());
             let revision = ServiceRevisionRecord {
-                namespace: Namespace("prod".into()),
+                namespace: namespace.clone(),
                 service: format!("api-{index}"),
                 revision_hash: "rev-1".into(),
                 spec_json: "{}".into(),
@@ -1680,9 +1650,17 @@ mod tests {
                 created_at: 1,
             };
             store
-                .record_service_revision(&DeployRevisionUpsert { revision })
+                .commit_deploy(&DeployCommit {
+                    namespace: namespace.clone(),
+                    revisions: vec![revision],
+                    removed_services: Vec::new(),
+                    removed_volumes: Vec::new(),
+                    releases: Vec::new(),
+                    volumes: Vec::new(),
+                    deploy: test_deploy(&namespace, &format!("deploy-{index}")),
+                })
                 .await
-                .expect("record revision");
+                .expect("commit deploy");
         }
 
         let mut received = 0;
