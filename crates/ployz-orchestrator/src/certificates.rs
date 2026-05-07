@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use ployz_store_api::{CertificateStore, StoreDriver};
 use ployz_types::error::{Error, Result};
-use ployz_types::model::{CertificateRecord, CertificateState, CertificateVersion};
+use ployz_types::model::{
+    CertificateRecord, CertificateState, CertificateStateGoal, CertificateStateTransition,
+    CertificateTransitionEvidence, CertificateVersion,
+};
 use ployz_types::time::now_unix_secs;
 use rand::RngExt;
 use std::collections::BTreeSet;
@@ -442,56 +445,71 @@ where
     // critical section publish-coherent.
     // Keep a single lock-release point, similar to Go's `defer`: everything in
     // this critical section exits through `'under_lock`, then we release.
-    let warning =
-        'under_lock: {
-            let current = match store.get_certificate(&hostname).await {
-                Ok(Some(current)) if needs_start_order(&current) => current,
-                Ok(_) => break 'under_lock None,
-                Err(error) => {
-                    break 'under_lock Some(format!(
-                        "Could not re-read certificate {hostname} before ACME order: {error}"
-                    ));
-                }
-            };
-            let mut record = current;
-
-            // Prune stale challenge rows for this hostname before opening a new
-            // order. Tokens are scoped to the order ACME issued them under, so rows
-            // left over from a prior failed order can no longer be validated. The
-            // success path of `finalize_order` deletes challenges per token, but
-            // failure paths leave them behind — without this prune, repeated retries
-            // would grow `acme_challenges` without bound, replicate the leak across
-            // the cluster, and bloat every gateway snapshot rebuild. Done under the
-            // cluster lock so a peer can't be mid-validation against a token we're
-            // about to delete.
-            if let Err(error) = prune_acme_challenges_for(store, &hostname).await {
+    let warning = 'under_lock: {
+        let current = match store.get_certificate(&hostname).await {
+            Ok(Some(current)) if needs_start_order(&current) => current,
+            Ok(_) => break 'under_lock None,
+            Err(error) => {
                 break 'under_lock Some(format!(
-                    "Could not prune stale ACME challenges for {hostname}: {error}"
+                    "Could not re-read certificate {hostname} before ACME order: {error}"
                 ));
             }
-
-            let outcome = issuer.start_order(store, &hostname).await;
-            break 'under_lock match outcome {
-                Ok(started) => {
-                    record.state = CertificateState::Issuing;
-                    record.order_url = Some(started.order_url);
-                    record.updated_at = now_unix_secs();
-                    record.last_error = None;
-                    store.upsert_certificate(&record).await.err().map(|error| {
-                        format!("Could not persist ACME order for {hostname}: {error}")
-                    })
-                }
-                Err(error) => {
-                    let detail = error.to_string();
-                    record.state = CertificateState::Failed;
-                    record.last_error = Some(detail.clone());
-                    record.order_url = None;
-                    record.updated_at = now_unix_secs();
-                    let _ = store.upsert_certificate(&record).await;
-                    Some(format!("ACME order for {hostname} failed: {detail}"))
-                }
-            };
         };
+        let mut record = current;
+        let hostname_for_transition = hostname.clone();
+
+        // Prune stale challenge rows for this hostname before opening a new
+        // order. Tokens are scoped to the order ACME issued them under, so rows
+        // left over from a prior failed order can no longer be validated. The
+        // success path of `finalize_order` deletes challenges per token, but
+        // failure paths leave them behind — without this prune, repeated retries
+        // would grow `acme_challenges` without bound, replicate the leak across
+        // the cluster, and bloat every gateway snapshot rebuild. Done under the
+        // cluster lock so a peer can't be mid-validation against a token we're
+        // about to delete.
+        if let Err(error) = prune_acme_challenges_for(store, &hostname).await {
+            break 'under_lock Some(format!(
+                "Could not prune stale ACME challenges for {hostname}: {error}"
+            ));
+        }
+
+        let outcome = issuer.start_order(store, &hostname).await;
+        break 'under_lock match outcome {
+            Ok(started) => {
+                let transition_result = record.apply_state_transition(CertificateStateTransition {
+                    goal: CertificateStateGoal::StartIssuing {
+                        order_url: started.order_url,
+                    },
+                    evidence: CertificateTransitionEvidence::AcmeOrderStart {
+                        hostname: hostname_for_transition.clone(),
+                    },
+                    at_unix_secs: now_unix_secs(),
+                });
+                match transition_result {
+                    Ok(_) => store.upsert_certificate(&record).await.err().map(|error| {
+                        format!("Could not persist ACME order for {hostname}: {error}")
+                    }),
+                    Err(error) => Some(format!(
+                        "Could not transition certificate {hostname} after ACME order: {error}"
+                    )),
+                }
+            }
+            Err(error) => {
+                let detail = error.to_string();
+                let _ = record.apply_state_transition(CertificateStateTransition {
+                    goal: CertificateStateGoal::MarkOrderFailed {
+                        error: detail.clone(),
+                    },
+                    evidence: CertificateTransitionEvidence::AcmeOrderStart {
+                        hostname: hostname_for_transition,
+                    },
+                    at_unix_secs: now_unix_secs(),
+                });
+                let _ = store.upsert_certificate(&record).await;
+                Some(format!("ACME order for {hostname} failed: {detail}"))
+            }
+        };
+    };
 
     // Release AFTER persistence so the lock covers both the external order
     // creation and the row update. Releasing earlier opens a window where
@@ -645,23 +663,62 @@ where
                 not_after,
                 issued_at: now,
             });
-            current.active_version_id = Some(version_id);
-            current.state = CertificateState::Active;
-            current.updated_at = now;
-            current.next_renewal_at = next_renewal_at;
-            current.order_url = None;
-            current.last_error = None;
+            current
+                .apply_state_transition(CertificateStateTransition {
+                    goal: CertificateStateGoal::FinalizeActive {
+                        active_version_id: version_id,
+                        next_renewal_at,
+                    },
+                    evidence: CertificateTransitionEvidence::AcmeFinalize {
+                        hostname: hostname.to_string(),
+                    },
+                    at_unix_secs: now,
+                })
+                .map_err(|error| {
+                    Error::operation(
+                        "certificate_transition",
+                        format!("finalize active {hostname}: {error}"),
+                    )
+                })?;
         }
         Err(error) => {
+            let detail = error.to_string();
             if is_retryable_challenge_visibility(&error) {
-                current.state = CertificateState::Issuing;
+                current
+                    .apply_state_transition(CertificateStateTransition {
+                        goal: CertificateStateGoal::KeepIssuingAfterRetryableFailure {
+                            error: detail,
+                        },
+                        evidence: CertificateTransitionEvidence::AcmeFinalize {
+                            hostname: hostname.to_string(),
+                        },
+                        at_unix_secs: now_unix_secs(),
+                    })
+                    .map_err(|error| {
+                        Error::operation(
+                            "certificate_transition",
+                            format!("retryable finalize failure {hostname}: {error}"),
+                        )
+                    })?;
             } else {
-                current.state = CertificateState::Failed;
-                current.active_version_id = previous_active_version_id;
-                current.order_url = None;
+                current
+                    .apply_state_transition(CertificateStateTransition {
+                        goal: CertificateStateGoal::MarkFinalizeFailed {
+                            error: detail,
+                            previous_active_version_id,
+                        },
+                        evidence: CertificateTransitionEvidence::AcmeFinalize {
+                            hostname: hostname.to_string(),
+                        },
+                        at_unix_secs: now_unix_secs(),
+                    })
+                    .map_err(|error| {
+                        Error::operation(
+                            "certificate_transition",
+                            format!("finalize failure {hostname}: {error}"),
+                        )
+                    })?;
             }
-            current.updated_at = now_unix_secs();
-            current.last_error = Some(error.to_string());
         }
     }
 
@@ -882,8 +939,20 @@ where
             if now < threshold {
                 return Ok(());
             }
-            record.state = CertificateState::RenewalDue;
-            record.updated_at = now;
+            record
+                .apply_state_transition(CertificateStateTransition {
+                    goal: CertificateStateGoal::MarkRenewalDue,
+                    evidence: CertificateTransitionEvidence::RenewalScheduler {
+                        hostname: hostname.to_string(),
+                    },
+                    at_unix_secs: now,
+                })
+                .map_err(|error| {
+                    Error::operation(
+                        "certificate_transition",
+                        format!("mark renewal due {hostname}: {error}"),
+                    )
+                })?;
             store.upsert_certificate(&record).await?;
             true
         }
@@ -891,10 +960,22 @@ where
             if now.saturating_sub(record.updated_at) < STUCK_ISSUING_MAX_AGE_SECS {
                 return Ok(());
             }
-            record.state = CertificateState::Pending;
-            record.order_url = None;
-            record.last_error = Some("previous order stalled; re-ordering".into());
-            record.updated_at = now;
+            record
+                .apply_state_transition(CertificateStateTransition {
+                    goal: CertificateStateGoal::ResetStalledIssuing {
+                        error: "previous order stalled; re-ordering".into(),
+                    },
+                    evidence: CertificateTransitionEvidence::RenewalScheduler {
+                        hostname: hostname.to_string(),
+                    },
+                    at_unix_secs: now,
+                })
+                .map_err(|error| {
+                    Error::operation(
+                        "certificate_transition",
+                        format!("reset stalled issuing {hostname}: {error}"),
+                    )
+                })?;
             store.upsert_certificate(&record).await?;
             true
         }

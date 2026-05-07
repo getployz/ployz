@@ -4,7 +4,11 @@ use ployz_nats::coord::rpc::{NodeCommandSubject, RpcPolicy};
 use ployz_orchestrator::ipam::pick_candidate_subnet;
 use ployz_store_api::MachineRegistry;
 use ployz_types::model::MachineMembership;
-use ployz_types::model::{MachineId, MachineLifecycle, NetworkId, NetworkLifecycle, NetworkName};
+use ployz_types::model::{
+    MachineId, MachineLifecycle, MachineLifecycleGoal, MachineLifecycleTransition,
+    MachineTransitionEvidence, NetworkId, NetworkLifecycle, NetworkLifecycleGoal,
+    NetworkLifecycleTransition, NetworkName, NetworkTransitionEvidence, StandbyTransitionClearance,
+};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -183,7 +187,16 @@ impl DaemonState {
         }
 
         let mut persisted = active.config.clone();
-        persisted.lifecycle = NetworkLifecycle::Stopped;
+        let persisted_network_name = persisted.name.clone();
+        let _ = persisted
+            .lifecycle
+            .apply_transition(NetworkLifecycleTransition {
+                goal: NetworkLifecycleGoal::Stop,
+                evidence: NetworkTransitionEvidence::MeshTeardown {
+                    network: persisted_network_name,
+                },
+                at_unix_secs: ployz_types::time::now_unix_secs(),
+            });
         persisted.subnet = cached_subnet;
         let config_path = NetworkConfig::path(&self.data_dir, &network_name);
         if let Err(error) = persisted.save(&config_path) {
@@ -574,7 +587,20 @@ impl DaemonState {
         };
 
         let mut running_config = net_config.clone();
-        running_config.lifecycle = NetworkLifecycle::Running;
+        running_config
+            .lifecycle
+            .apply_transition(NetworkLifecycleTransition {
+                goal: NetworkLifecycleGoal::Start,
+                evidence: NetworkTransitionEvidence::OperatorCommand {
+                    command: if initialized {
+                        "mesh init".into()
+                    } else {
+                        "mesh start".into()
+                    },
+                },
+                at_unix_secs: ployz_types::time::now_unix_secs(),
+            })
+            .map_err(|error| error.message().to_string())?;
         let network_name = running_config.name.clone();
         let overlay_ip = running_config.overlay_ip;
         self.start_mesh(running_config.clone())
@@ -595,7 +621,22 @@ impl DaemonState {
 
         let config_path = NetworkConfig::path(&self.data_dir, &network_name.0);
         if let Some(active) = self.active.as_mut() {
-            active.config.lifecycle = NetworkLifecycle::Running;
+            let active_command = if initialized {
+                "mesh init".into()
+            } else {
+                "mesh start".into()
+            };
+            active
+                .config
+                .lifecycle
+                .apply_transition(NetworkLifecycleTransition {
+                    goal: NetworkLifecycleGoal::Start,
+                    evidence: NetworkTransitionEvidence::OperatorCommand {
+                        command: active_command,
+                    },
+                    at_unix_secs: ployz_types::time::now_unix_secs(),
+                })
+                .map_err(|error| error.message().to_string())?;
             if let Err(error) = active.config.save(&config_path) {
                 self.stop_started_mesh_after_transition_failure().await;
                 return Err(format!("save network config: {error}"));
@@ -647,9 +688,17 @@ async fn persist_stopped_self_record(
     previous_self_record: &MachineMembership,
 ) -> Result<(), String> {
     let mut standby = previous_self_record.clone();
-    standby.lifecycle = MachineLifecycle::Standby;
-    standby.subnet = None;
-    standby.updated_at = ployz_types::time::now_unix_secs();
+    standby
+        .apply_lifecycle_transition(MachineLifecycleTransition {
+            goal: MachineLifecycleGoal::Standby {
+                clearance: StandbyTransitionClearance::OperatorForced,
+            },
+            evidence: MachineTransitionEvidence::MeshStop {
+                network: active.config.name.clone(),
+            },
+            at_unix_secs: ployz_types::time::now_unix_secs(),
+        })
+        .map_err(|err| format!("build standby self record: {err}"))?;
 
     if let Err(error) = active.mesh.store.upsert_self_machine(&standby).await {
         return Err(format!("persist standby self record in store: {error}"));

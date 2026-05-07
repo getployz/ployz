@@ -130,7 +130,16 @@ impl LocalDeployRuntime {
 
         let mut instances = Vec::new();
         for obs in observed {
-            let Some(wl) = extract_workload_labels(&obs.labels) else {
+            let Some(labels) = obs.labels.as_observed() else {
+                continue;
+            };
+            let Some(wl) = extract_workload_labels(labels) else {
+                continue;
+            };
+            let Some(container_id) = obs.container_id.as_observed() else {
+                continue;
+            };
+            let Some(ip_address) = obs.ip_address.as_observed() else {
                 continue;
             };
             instances.push(ManagedInstance {
@@ -140,8 +149,8 @@ impl LocalDeployRuntime {
                 machine_id: MachineId(wl.machine_id),
                 revision_hash: wl.revision_hash,
                 deploy_id: DeployId(wl.deploy_id),
-                docker_container_id: obs.container_id,
-                ip_address: obs.ip_address,
+                docker_container_id: container_id.clone(),
+                ip_address: *ip_address,
                 backend_ports: BTreeMap::new(),
             });
         }

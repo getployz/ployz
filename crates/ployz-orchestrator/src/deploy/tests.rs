@@ -1,10 +1,15 @@
 use super::execute::{
-    ParticipantSet, apply_with_initial_plan, ensure_plan_stable, run_phase_startup,
+    ParticipantSet, apply_with_certificate_coordination, apply_with_initial_plan,
+    ensure_plan_stable, run_phase_startup,
 };
 use super::plan::{deployable_machines, desired_slots, resolve_plan};
 use super::preview;
-use super::probe::NoopParticipantProbe;
+use super::probe::{NoopParticipantProbe, ParticipantProbe, ProbeError, ProbeErrorKind};
 use super::transaction::PreparedDeploy;
+use crate::certificates::{
+    LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, NoopAcmeIssuerFactory,
+    NoopIssuanceCoordinator,
+};
 use crate::deploy::participant::{DeployParticipantClient, StartCandidateRequest};
 use crate::error::Result;
 use crate::model::{
@@ -1168,6 +1173,43 @@ async fn apply_rejects_hostname_owned_by_another_namespace_before_commit() {
 }
 
 #[tokio::test]
+async fn apply_rejects_unreachable_participant_before_inspect_or_commit() {
+    let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 2 },
+        "nginx:1.27",
+    )]);
+    let controller = FakeController::default();
+    let participant_client = FakeParticipantClient::new(controller.clone());
+    let prober = FailingParticipantProbe {
+        machine_id: MachineId("machine-b".into()),
+    };
+
+    let error = apply_with_certificate_coordination(
+        &store,
+        &participant_client,
+        &local_machine_id,
+        &manifest,
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &prober,
+    )
+    .await
+    .expect_err("unreachable participant should block deploy");
+
+    assert!(error.to_string().contains("deploy blocked"));
+    assert!(error.to_string().contains("machine-b"));
+    assert_eq!(backend.upsert_deploy_count(), 0);
+    assert_eq!(backend.commit_count(), 0);
+    assert_eq!(controller.max_open_seen(), 0);
+    assert_eq!(controller.start_count(), 0);
+}
+
+#[tokio::test]
 async fn preview_allows_hostname_reuse_within_same_namespace() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
     seed_committed_http_release(&store, "test", "api", "api.example.com").await;
@@ -1189,6 +1231,33 @@ async fn preview_allows_hostname_move_within_same_namespace() {
     preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
         .await
         .expect("same-namespace ownership move should be valid");
+}
+
+#[tokio::test]
+async fn preview_surfaces_unreachable_participants_without_mutating_deploy_state() {
+    let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 2 },
+        "nginx:1.27",
+    )]);
+    backend.reset_counts();
+    let prober = FailingParticipantProbe {
+        machine_id: MachineId("machine-b".into()),
+    };
+
+    let preview = preview(&store, &local_machine_id, &manifest, &prober)
+        .await
+        .expect("preview should surface reachability as warnings");
+
+    assert!(preview.warnings.iter().any(|warning| {
+        warning.contains("machine-b")
+            && warning.contains("timeout")
+            && warning.contains("injected probe timeout")
+    }));
+    assert_eq!(backend.upsert_deploy_count(), 0);
+    assert_eq!(backend.commit_count(), 0);
 }
 
 #[tokio::test]
@@ -1690,6 +1759,23 @@ impl DeployParticipantClient for FakeParticipantClient {
                 "fake_remove",
                 format!("injected remove failure for '{}'", instance_id),
             ));
+        }
+        Ok(())
+    }
+}
+
+struct FailingParticipantProbe {
+    machine_id: MachineId,
+}
+
+#[async_trait]
+impl ParticipantProbe for FailingParticipantProbe {
+    async fn ping(&self, machine: &MachineMembership) -> std::result::Result<(), ProbeError> {
+        if machine.id == self.machine_id {
+            return Err(ProbeError {
+                kind: ProbeErrorKind::Timeout,
+                detail: "injected probe timeout".into(),
+            });
         }
         Ok(())
     }

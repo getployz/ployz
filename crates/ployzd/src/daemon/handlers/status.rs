@@ -491,8 +491,8 @@ fn parse_sync_metric_value(metrics: &str, metric: &str, stream: &str) -> Option<
 #[cfg(test)]
 mod tests {
     use super::{
-        nats_asset_is_healthy, nats_current_replicas, nats_max_lag, nats_offline_replicas,
-        parse_sync_metric, parse_sync_metric_u64,
+        metric_status, nats_asset_is_healthy, nats_current_replicas, nats_max_lag,
+        nats_offline_replicas, parse_sync_metric, parse_sync_metric_u64,
     };
     use async_nats::jetstream::stream::{ClusterInfo, PeerInfo};
     use std::time::Duration;
@@ -561,6 +561,56 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 3
             ),
             Some(3)
         );
+    }
+
+    #[test]
+    fn sidecar_sync_status_reports_missing_health_metric_as_unknown() {
+        let metrics = String::from(
+            r#"
+ployz_gateway_store_sync_failures_total{stream="routing"} 4
+"#,
+        );
+
+        let status = metric_status(
+            "gateway",
+            "routing",
+            "ployz_gateway_store_sync_healthy",
+            "ployz_gateway_store_sync_state_since_unix_seconds",
+            "ployz_gateway_store_sync_failures_total",
+            Ok(&metrics),
+        );
+
+        assert_eq!(status.service, "gateway");
+        assert_eq!(status.stream, "routing");
+        assert_eq!(status.healthy, None);
+        assert_eq!(status.failures_total, Some(4));
+        assert!(
+            status
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("was absent"))
+        );
+    }
+
+    #[test]
+    fn sidecar_sync_status_reports_unreadable_metrics_as_unknown() {
+        let error = String::from("connection refused");
+
+        let status = metric_status(
+            "dns",
+            "routing",
+            "ployz_dns_store_sync_healthy",
+            "ployz_dns_store_sync_state_since_unix_seconds",
+            "ployz_dns_store_sync_failures_total",
+            Err(&error),
+        );
+
+        assert_eq!(status.service, "dns");
+        assert_eq!(status.stream, "routing");
+        assert_eq!(status.healthy, None);
+        assert_eq!(status.stale_since_unix_secs, None);
+        assert_eq!(status.failures_total, None);
+        assert_eq!(status.error.as_deref(), Some("connection refused"));
     }
 
     #[test]

@@ -58,6 +58,39 @@ impl MachineOperationStatus {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MachineOperationTransition {
+    status: MachineOperationStatus,
+    last_error: Option<String>,
+    at_unix_secs: u64,
+}
+
+impl MachineOperationTransition {
+    fn succeed(at_unix_secs: u64) -> Self {
+        Self {
+            status: MachineOperationStatus::Succeeded,
+            last_error: None,
+            at_unix_secs,
+        }
+    }
+
+    fn fail(last_error: String, at_unix_secs: u64) -> Self {
+        Self {
+            status: MachineOperationStatus::Failed,
+            last_error: Some(last_error),
+            at_unix_secs,
+        }
+    }
+
+    fn interrupt(last_error: Option<String>, at_unix_secs: u64) -> Self {
+        Self {
+            status: MachineOperationStatus::Interrupted,
+            last_error,
+            at_unix_secs,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(super) struct MachineOperationArtifacts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -109,6 +142,26 @@ impl MachineOperationRecord {
             invite_id: self.artifacts.invite_id.clone(),
             allocated_subnet: self.artifacts.allocated_subnet.clone(),
         }
+    }
+
+    fn apply_transition(&mut self, transition: MachineOperationTransition) {
+        let MachineOperationTransition {
+            status,
+            last_error,
+            at_unix_secs,
+        } = transition;
+        self.status = status;
+        match status {
+            MachineOperationStatus::Succeeded => self.last_error = None,
+            MachineOperationStatus::Failed
+            | MachineOperationStatus::Interrupted
+            | MachineOperationStatus::Running => {
+                if let Some(last_error) = last_error {
+                    self.last_error = Some(last_error);
+                }
+            }
+        }
+        self.updated_at = at_unix_secs;
     }
 }
 
@@ -191,11 +244,22 @@ impl MachineOperationStore {
         status: MachineOperationStatus,
         last_error: Option<String>,
     ) -> Result<(), String> {
-        record.status = status;
-        if let Some(last_error) = last_error {
-            record.last_error = Some(last_error);
-        }
-        record.updated_at = now_unix_secs();
+        let at_unix_secs = now_unix_secs();
+        let transition = match status {
+            MachineOperationStatus::Running => MachineOperationTransition {
+                status,
+                last_error,
+                at_unix_secs,
+            },
+            MachineOperationStatus::Succeeded => MachineOperationTransition::succeed(at_unix_secs),
+            MachineOperationStatus::Failed => {
+                MachineOperationTransition::fail(last_error.unwrap_or_default(), at_unix_secs)
+            }
+            MachineOperationStatus::Interrupted => {
+                MachineOperationTransition::interrupt(last_error, at_unix_secs)
+            }
+        };
+        record.apply_transition(transition);
         self.save(record)
     }
 
@@ -405,9 +469,7 @@ impl DaemonState {
             requested_version == env!("CARGO_PKG_VERSION")
         };
         if version_matches {
-            current.status = MachineOperationStatus::Succeeded;
-            current.last_error = None;
-            current.updated_at = now_unix_secs();
+            current.apply_transition(MachineOperationTransition::succeed(now_unix_secs()));
             store.save(&current)?;
             return Ok(None);
         }
@@ -539,7 +601,7 @@ fn merge_operation_notes(existing: Option<&str>, next: &str) -> String {
 mod tests {
     use super::{
         MAX_OPERATION_ID_LEN, MachineOperationArtifacts, MachineOperationKind,
-        MachineOperationStore, unique_operation_id, validate_operation_id,
+        MachineOperationStatus, MachineOperationStore, unique_operation_id, validate_operation_id,
     };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -601,5 +663,56 @@ mod tests {
     fn store_load_rejects_traversal_id() {
         let store = MachineOperationStore::new(unique_temp_dir("ployz-machine-ops-test"));
         assert!(store.load("../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn operation_failure_remains_visible_until_success() {
+        let store = MachineOperationStore::new(unique_temp_dir("ployz-machine-ops-test"));
+        let mut record = store
+            .begin_with_id(
+                "op-visible-failure".into(),
+                MachineOperationKind::Add,
+                Some("alpha".into()),
+                vec!["machine-a".into()],
+                "bootstrap",
+                MachineOperationArtifacts::default(),
+            )
+            .expect("begin operation");
+
+        store
+            .update_status(
+                &mut record,
+                MachineOperationStatus::Failed,
+                Some("bootstrap failed".into()),
+            )
+            .expect("mark failed");
+        store
+            .update_status(&mut record, MachineOperationStatus::Running, None)
+            .expect("mark running");
+        store
+            .update_stage(&mut record, "cleanup")
+            .expect("update stage");
+
+        let loaded = store
+            .load("op-visible-failure")
+            .expect("load operation")
+            .expect("operation present");
+        assert_eq!(loaded.status, MachineOperationStatus::Running);
+        assert_eq!(loaded.stage, "cleanup");
+        assert_eq!(loaded.last_error.as_deref(), Some("bootstrap failed"));
+        assert_eq!(
+            loaded.info().last_error.as_deref(),
+            Some("bootstrap failed")
+        );
+
+        store
+            .update_status(&mut record, MachineOperationStatus::Succeeded, None)
+            .expect("mark succeeded");
+        let succeeded = store
+            .load("op-visible-failure")
+            .expect("load succeeded operation")
+            .expect("operation present");
+        assert_eq!(succeeded.status, MachineOperationStatus::Succeeded);
+        assert_eq!(succeeded.last_error, None);
     }
 }

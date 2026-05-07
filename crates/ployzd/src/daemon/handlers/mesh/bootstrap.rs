@@ -7,7 +7,10 @@ use ployz_api::{
     MeshSelfRecordPayload,
 };
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
-use ployz_types::model::{NetworkLifecycle, NetworkName, StorageParticipation};
+use ployz_types::model::{
+    NetworkLifecycleGoal, NetworkLifecycleTransition, NetworkName, NetworkTransitionEvidence,
+    StorageParticipation,
+};
 
 use super::DaemonState;
 
@@ -78,7 +81,18 @@ impl DaemonState {
             );
         }
 
-        net_config.lifecycle = NetworkLifecycle::Running;
+        if let Err(error) = net_config
+            .lifecycle
+            .apply_transition(NetworkLifecycleTransition {
+                goal: NetworkLifecycleGoal::Start,
+                evidence: NetworkTransitionEvidence::BootstrapJoin {
+                    network: net_config.name.clone(),
+                },
+                at_unix_secs: ployz_types::time::now_unix_secs(),
+            })
+        {
+            return self.err("INVALID_TRANSITION", error.message().to_string());
+        }
         match self.start_mesh(net_config.clone()).await {
             Ok(_) => {
                 if let Err(error) = self
@@ -94,7 +108,22 @@ impl DaemonState {
                 }
                 let config_path = NetworkConfig::path(&self.data_dir, network);
                 if let Some(active) = self.active.as_mut() {
-                    active.config.lifecycle = NetworkLifecycle::Running;
+                    let active_network_name = active.config.name.clone();
+                    if let Err(error) =
+                        active
+                            .config
+                            .lifecycle
+                            .apply_transition(NetworkLifecycleTransition {
+                                goal: NetworkLifecycleGoal::Start,
+                                evidence: NetworkTransitionEvidence::BootstrapJoin {
+                                    network: active_network_name,
+                                },
+                                at_unix_secs: ployz_types::time::now_unix_secs(),
+                            })
+                    {
+                        self.stop_started_mesh_after_transition_failure().await;
+                        return self.err("INVALID_TRANSITION", error.message().to_string());
+                    }
                     if let Err(error) = active.config.save(&config_path) {
                         self.stop_started_mesh_after_transition_failure().await;
                         return self.err(

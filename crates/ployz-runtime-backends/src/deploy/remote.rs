@@ -5,7 +5,8 @@ use std::sync::Arc;
 use crate::StoreDriver;
 use crate::error::{Error, Result};
 use crate::model::{
-    DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, SlotId,
+    DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusEvidence, InstanceStatusGoal,
+    InstanceStatusRecord, InstanceStatusTransition, MachineId, SlotId,
 };
 use crate::spec::{Namespace, ServiceSpec, VolumeDeclaration};
 use crate::storage::{TokioShellRunner, ZfsDriver};
@@ -145,10 +146,15 @@ impl DeployAgent {
         if status.phase == InstancePhase::Draining {
             return Ok(());
         }
-        status.phase = InstancePhase::Draining;
-        status.ready = false;
-        status.drain_state = DrainState::Requested;
-        status.updated_at = now_unix_secs();
+        status
+            .apply_status_transition(InstanceStatusTransition {
+                goal: InstanceStatusGoal::MarkDraining,
+                evidence: InstanceStatusEvidence::DeployCleanup {
+                    deploy_id: status.deploy_id.clone(),
+                },
+                at_unix_secs: now_unix_secs(),
+            })
+            .map_err(|error| Error::operation("instance_status_transition", error.to_string()))?;
         self.store.record_instance_status(&status).await?;
         Ok(())
     }

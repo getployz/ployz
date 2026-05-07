@@ -479,9 +479,15 @@ async fn activate_joiner_lifecycle(
     #[cfg(test)]
     {
         let mut active_record = record.clone();
-        active_record.lifecycle = MachineLifecycle::Active;
-        active_record.subnet = Some(assigned_subnet);
-        active_record.updated_at = ployz_types::time::now_unix_secs();
+        active_record
+            .apply_lifecycle_transition(ployz_types::model::MachineLifecycleTransition {
+                goal: ployz_types::model::MachineLifecycleGoal::Activate { assigned_subnet },
+                evidence: ployz_types::model::MachineTransitionEvidence::BootstrapActivation {
+                    operation_id: None,
+                },
+                at_unix_secs: ployz_types::time::now_unix_secs(),
+            })
+            .map_err(|err| format!("activate joined machine: {err}"))?;
         return context
             .store
             .upsert_self_machine(&active_record)

@@ -361,7 +361,19 @@ async fn machine_remove_refuses_offline_peer_without_force() {
 
     let response = state.handle_machine_remove("peer-1", false).await;
     assert!(!response.ok);
+    assert_eq!(response.code, "MACHINE_REMOVE_PEER_UNREACHABLE");
     assert!(response.message.contains("--force"));
+
+    let machines = store.list_machines().await.expect("list machines");
+    let peer = machines
+        .into_iter()
+        .find(|machine| machine.id.0 == "peer-1")
+        .expect("failed unforced remove must preserve registry record");
+    assert_eq!(peer.lifecycle, MachineLifecycle::Active);
+    assert_eq!(
+        peer.subnet,
+        Some("10.210.1.0/24".parse().expect("valid subnet"))
+    );
 }
 
 #[tokio::test]
@@ -436,6 +448,56 @@ async fn local_standby_requires_draining_without_force() {
         .transition_local_machine(MachineTransitionGoal::Standby, None, false)
         .await;
     assert!(response.is_err());
+
+    let local = store
+        .list_machines()
+        .await
+        .expect("list machines")
+        .into_iter()
+        .find(|machine| machine.id == state.identity.machine_id)
+        .expect("local machine present");
+    assert_eq!(local.lifecycle, MachineLifecycle::Active);
+    assert_eq!(
+        local.subnet,
+        Some("10.210.0.0/24".parse().expect("valid subnet"))
+    );
+}
+
+#[tokio::test]
+async fn machine_transition_self_surfaces_actionable_invalid_transition() {
+    let (mut state, store, _) = make_state(true).await;
+    {
+        let active = state.active.as_mut().expect("active mesh");
+        let Some(record) = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.lifecycle = MachineLifecycle::Active;
+                record.subnet = Some("10.210.0.0/24".parse().expect("valid subnet"));
+            })
+            .await
+        else {
+            panic!("self record missing");
+        };
+        active
+            .mesh
+            .store
+            .upsert_self_machine(&record)
+            .await
+            .expect("persist active self");
+    }
+
+    let response = state
+        .handle_machine_transition_self(MachineTransitionGoal::Standby, None, false)
+        .await;
+
+    assert!(!response.ok);
+    assert_eq!(response.code, "INVALID_TRANSITION");
+    assert!(
+        response
+            .message
+            .contains("machine must be draining before standby")
+    );
+    assert!(response.message.contains("--force"));
 
     let local = store
         .list_machines()

@@ -1,6 +1,9 @@
 use ipnet::Ipv4Net;
 use ployz_api::MachineTransitionGoal;
-use ployz_types::model::MachineLifecycle;
+use ployz_types::model::{
+    MachineLifecycleGoal, MachineLifecycleTransition, MachineTransitionEvidence,
+    MachineTransitionOutcome, StandbyTransitionClearance,
+};
 
 use crate::mesh_state::network::NetworkConfig;
 
@@ -67,17 +70,20 @@ impl DaemonState {
                         "machine activate requires an assigned subnet",
                     ));
                 };
-                if current.lifecycle == MachineLifecycle::Active
-                    && current.subnet == Some(assigned_subnet)
-                {
+                let transition = MachineLifecycleTransition {
+                    goal: MachineLifecycleGoal::Activate { assigned_subnet },
+                    evidence: MachineTransitionEvidence::OperatorCommand {
+                        command: "machine transition activate".into(),
+                    },
+                    at_unix_secs: ployz_types::time::now_unix_secs(),
+                };
+                let mut validated = current.clone();
+                let outcome = validated
+                    .apply_lifecycle_transition(transition.clone())
+                    .map_err(|error| TransitionError::new(error.code(), error.message()))?;
+                if outcome == MachineTransitionOutcome::AlreadyInState {
                     return Ok(format!(
                         "machine already active with subnet {assigned_subnet}"
-                    ));
-                }
-                if current.lifecycle == MachineLifecycle::Draining {
-                    return Err(TransitionError::new(
-                        "INVALID_TRANSITION",
-                        "cannot activate a draining machine without first entering standby",
                     ));
                 }
 
@@ -107,7 +113,6 @@ impl DaemonState {
                     ));
                 }
 
-                let now = ployz_types::time::now_unix_secs();
                 let Some(active) = self.active.as_mut() else {
                     return Err(TransitionError::new(
                         "NO_RUNNING_NETWORK",
@@ -116,12 +121,9 @@ impl DaemonState {
                 };
                 let Some(record) = active
                     .mesh
-                    .update_authoritative_self_record(|record| {
-                        record.lifecycle = MachineLifecycle::Active;
-                        record.subnet = Some(assigned_subnet);
-                        record.updated_at = now;
-                    })
+                    .transition_authoritative_self_record(transition)
                     .await
+                    .map_err(|error| TransitionError::new(error.code(), error.message()))?
                 else {
                     return Err(TransitionError::new(
                         "SELF_RECORD_MISSING",
@@ -136,17 +138,21 @@ impl DaemonState {
                 ))
             }
             MachineTransitionGoal::Drain => {
-                if current.lifecycle == MachineLifecycle::Draining {
+                let transition = MachineLifecycleTransition {
+                    goal: MachineLifecycleGoal::Drain,
+                    evidence: MachineTransitionEvidence::OperatorCommand {
+                        command: "machine transition drain".into(),
+                    },
+                    at_unix_secs: ployz_types::time::now_unix_secs(),
+                };
+                let mut validated = current.clone();
+                let outcome = validated
+                    .apply_lifecycle_transition(transition.clone())
+                    .map_err(|error| TransitionError::new(error.code(), error.message()))?;
+                if outcome == MachineTransitionOutcome::AlreadyInState {
                     return Ok(format!("machine '{}' already draining", current.id));
                 }
-                if current.lifecycle == MachineLifecycle::Standby {
-                    return Err(TransitionError::new(
-                        "INVALID_TRANSITION",
-                        "cannot drain a standby machine",
-                    ));
-                }
 
-                let now = ployz_types::time::now_unix_secs();
                 let Some(active) = self.active.as_mut() else {
                     return Err(TransitionError::new(
                         "NO_RUNNING_NETWORK",
@@ -155,11 +161,9 @@ impl DaemonState {
                 };
                 let Some(record) = active
                     .mesh
-                    .update_authoritative_self_record(|record| {
-                        record.lifecycle = MachineLifecycle::Draining;
-                        record.updated_at = now;
-                    })
+                    .transition_authoritative_self_record(transition)
                     .await
+                    .map_err(|error| TransitionError::new(error.code(), error.message()))?
                 else {
                     return Err(TransitionError::new(
                         "SELF_RECORD_MISSING",
@@ -169,14 +173,31 @@ impl DaemonState {
                 Ok(format!("machine '{}' draining", record.id))
             }
             MachineTransitionGoal::Standby => {
-                if current.lifecycle == MachineLifecycle::Standby && current.subnet.is_none() {
+                let clearance = if force {
+                    StandbyTransitionClearance::OperatorForced
+                } else {
+                    StandbyTransitionClearance::DrainingComplete
+                };
+                let transition = MachineLifecycleTransition {
+                    goal: MachineLifecycleGoal::Standby { clearance },
+                    evidence: MachineTransitionEvidence::OperatorCommand {
+                        command: "machine transition standby".into(),
+                    },
+                    at_unix_secs: ployz_types::time::now_unix_secs(),
+                };
+                let mut validated = current.clone();
+                let outcome = validated
+                    .apply_lifecycle_transition(transition.clone())
+                    .map_err(|error| {
+                        let message = if !force {
+                            format!("{}; rerun with --force to bypass", error.message())
+                        } else {
+                            error.message().to_string()
+                        };
+                        TransitionError::new(error.code(), message)
+                    })?;
+                if outcome == MachineTransitionOutcome::AlreadyInState {
                     return Ok(format!("machine '{}' already standby", current.id));
-                }
-                if !force && current.lifecycle != MachineLifecycle::Draining {
-                    return Err(TransitionError::new(
-                        "INVALID_TRANSITION",
-                        "machine must be draining before standby; rerun with --force to bypass",
-                    ));
                 }
 
                 let config_path = NetworkConfig::path(&self.data_dir, &network_name);
@@ -205,7 +226,6 @@ impl DaemonState {
                     ));
                 }
 
-                let now = ployz_types::time::now_unix_secs();
                 let Some(active) = self.active.as_mut() else {
                     return Err(TransitionError::new(
                         "NO_RUNNING_NETWORK",
@@ -214,12 +234,9 @@ impl DaemonState {
                 };
                 let Some(record) = active
                     .mesh
-                    .update_authoritative_self_record(|record| {
-                        record.lifecycle = MachineLifecycle::Standby;
-                        record.subnet = None;
-                        record.updated_at = now;
-                    })
+                    .transition_authoritative_self_record(transition)
                     .await
+                    .map_err(|error| TransitionError::new(error.code(), error.message()))?
                 else {
                     return Err(TransitionError::new(
                         "SELF_RECORD_MISSING",

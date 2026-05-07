@@ -18,7 +18,9 @@ use crate::metrics::{
     spawn_container_resource_metrics_loop,
 };
 use ployz_types::model::MachineTopology;
-use ployz_types::model::NetworkLifecycle;
+use ployz_types::model::{
+    NetworkLifecycle, NetworkLifecycleGoal, NetworkLifecycleTransition, NetworkTransitionEvidence,
+};
 
 pub fn init_tracing() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -275,7 +277,16 @@ async fn resume_running_network(state: &Arc<RwLock<DaemonState>>) {
         Err(error) => {
             tracing::warn!(%error, %network, "failed to resume network");
             let mut stopped = config.clone();
-            stopped.lifecycle = NetworkLifecycle::Stopped;
+            let stopped_network_name = stopped.name.clone();
+            let _ = stopped
+                .lifecycle
+                .apply_transition(NetworkLifecycleTransition {
+                    goal: NetworkLifecycleGoal::Stop,
+                    evidence: NetworkTransitionEvidence::StartupResumeFailure {
+                        network: stopped_network_name,
+                    },
+                    at_unix_secs: ployz_types::time::now_unix_secs(),
+                });
             let path = NetworkConfig::path(&state_guard.data_dir, &network);
             if let Err(save_error) = stopped.save(&path) {
                 tracing::warn!(?save_error, %network, "failed to persist stopped lifecycle after resume failure");

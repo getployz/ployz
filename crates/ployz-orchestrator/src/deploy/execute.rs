@@ -358,7 +358,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
         let final_state = if cleanup.errors.is_empty() {
             DeployState::Committed
         } else {
-            let cleanup_pending_record = committed.cleanup_pending_record(now_unix_secs());
+            let cleanup_pending_record = committed.cleanup_pending_record(now_unix_secs())?;
             store
                 .update_deploy_record(&DeployRecordUpdate {
                     deploy: cleanup_pending_record,

@@ -21,7 +21,7 @@ impl AsRef<str> for MachineId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display, JsonSchema)]
 pub struct NetworkName(pub String);
 
 impl AsRef<str> for NetworkName {
@@ -365,6 +365,72 @@ pub enum MachineLifecycle {
     Draining,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MachineLifecycleTransition {
+    pub goal: MachineLifecycleGoal,
+    pub evidence: MachineTransitionEvidence,
+    pub at_unix_secs: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "goal", rename_all = "snake_case")]
+pub enum MachineLifecycleGoal {
+    Activate {
+        #[schemars(with = "String")]
+        assigned_subnet: Ipv4Net,
+    },
+    Drain,
+    Standby {
+        clearance: StandbyTransitionClearance,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum StandbyTransitionClearance {
+    DrainingComplete,
+    OperatorForced,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MachineTransitionEvidence {
+    OperatorCommand { command: String },
+    BootstrapActivation { operation_id: Option<String> },
+    MeshStop { network: NetworkName },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineTransitionOutcome {
+    Applied,
+    AlreadyInState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct MachineTransitionError {
+    code: &'static str,
+    message: String,
+}
+
+impl MachineTransitionError {
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            code: "INVALID_TRANSITION",
+            message: message.into(),
+        }
+    }
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, Default,
 )]
@@ -376,6 +442,80 @@ pub enum NetworkLifecycle {
     #[display("running")]
     #[strum(serialize = "running")]
     Running,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct NetworkLifecycleTransition {
+    pub goal: NetworkLifecycleGoal,
+    pub evidence: NetworkTransitionEvidence,
+    pub at_unix_secs: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum NetworkLifecycleGoal {
+    Start,
+    Stop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NetworkTransitionEvidence {
+    OperatorCommand { command: String },
+    BootstrapJoin { network: NetworkName },
+    StartupResumeFailure { network: NetworkName },
+    MeshTeardown { network: NetworkName },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkTransitionOutcome {
+    Applied,
+    AlreadyInState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct NetworkTransitionError {
+    code: &'static str,
+    message: String,
+}
+
+impl NetworkTransitionError {
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl NetworkLifecycle {
+    pub fn apply_transition(
+        &mut self,
+        transition: NetworkLifecycleTransition,
+    ) -> Result<NetworkTransitionOutcome, NetworkTransitionError> {
+        let NetworkLifecycleTransition {
+            goal,
+            evidence: _,
+            at_unix_secs: _,
+        } = transition;
+        match (*self, goal) {
+            (NetworkLifecycle::Stopped, NetworkLifecycleGoal::Start) => {
+                *self = NetworkLifecycle::Running;
+                Ok(NetworkTransitionOutcome::Applied)
+            }
+            (NetworkLifecycle::Running, NetworkLifecycleGoal::Stop) => {
+                *self = NetworkLifecycle::Stopped;
+                Ok(NetworkTransitionOutcome::Applied)
+            }
+            (NetworkLifecycle::Running, NetworkLifecycleGoal::Start)
+            | (NetworkLifecycle::Stopped, NetworkLifecycleGoal::Stop) => {
+                Ok(NetworkTransitionOutcome::AlreadyInState)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -476,6 +616,70 @@ impl MachineMembership {
             bridge_ip: self.bridge_ip,
             endpoints: self.endpoints.clone(),
         }
+    }
+
+    pub fn apply_lifecycle_transition(
+        &mut self,
+        transition: MachineLifecycleTransition,
+    ) -> Result<MachineTransitionOutcome, MachineTransitionError> {
+        let MachineLifecycleTransition {
+            goal,
+            evidence: _,
+            at_unix_secs,
+        } = transition;
+
+        match goal {
+            MachineLifecycleGoal::Activate { assigned_subnet } => {
+                if self.lifecycle == MachineLifecycle::Active
+                    && self.subnet == Some(assigned_subnet)
+                {
+                    return Ok(MachineTransitionOutcome::AlreadyInState);
+                }
+                if self.lifecycle == MachineLifecycle::Draining {
+                    return Err(MachineTransitionError::invalid(
+                        "cannot activate a draining machine without first entering standby",
+                    ));
+                }
+                self.lifecycle = MachineLifecycle::Active;
+                self.subnet = Some(assigned_subnet);
+            }
+            MachineLifecycleGoal::Drain => {
+                if self.lifecycle == MachineLifecycle::Draining {
+                    return Ok(MachineTransitionOutcome::AlreadyInState);
+                }
+                if self.lifecycle == MachineLifecycle::Standby {
+                    return Err(MachineTransitionError::invalid(
+                        "cannot drain a standby machine",
+                    ));
+                }
+                self.lifecycle = MachineLifecycle::Draining;
+            }
+            MachineLifecycleGoal::Standby { clearance } => {
+                if self.lifecycle == MachineLifecycle::Standby && self.subnet.is_none() {
+                    return Ok(MachineTransitionOutcome::AlreadyInState);
+                }
+                match (self.lifecycle, clearance) {
+                    (MachineLifecycle::Draining, StandbyTransitionClearance::DrainingComplete)
+                    | (MachineLifecycle::Standby, StandbyTransitionClearance::OperatorForced)
+                    | (MachineLifecycle::Active, StandbyTransitionClearance::OperatorForced)
+                    | (MachineLifecycle::Draining, StandbyTransitionClearance::OperatorForced) => {
+                        self.lifecycle = MachineLifecycle::Standby;
+                        self.subnet = None;
+                    }
+                    (
+                        MachineLifecycle::Standby | MachineLifecycle::Active,
+                        StandbyTransitionClearance::DrainingComplete,
+                    ) => {
+                        return Err(MachineTransitionError::invalid(
+                            "machine must be draining before standby",
+                        ));
+                    }
+                }
+            }
+        }
+
+        self.updated_at = at_unix_secs;
+        Ok(MachineTransitionOutcome::Applied)
     }
 }
 
@@ -828,6 +1032,79 @@ pub enum CertificateState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertificateStateTransition {
+    pub goal: CertificateStateGoal,
+    pub evidence: CertificateTransitionEvidence,
+    pub at_unix_secs: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "goal", rename_all = "snake_case")]
+pub enum CertificateStateGoal {
+    StartIssuing {
+        order_url: String,
+    },
+    MarkOrderFailed {
+        error: String,
+    },
+    FinalizeActive {
+        active_version_id: String,
+        next_renewal_at: Option<u64>,
+    },
+    KeepIssuingAfterRetryableFailure {
+        error: String,
+    },
+    MarkFinalizeFailed {
+        error: String,
+        previous_active_version_id: Option<String>,
+    },
+    MarkRenewalDue,
+    ResetStalledIssuing {
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CertificateTransitionEvidence {
+    AcmeOrderStart { hostname: String },
+    AcmeFinalize { hostname: String },
+    RenewalScheduler { hostname: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertificateTransitionOutcome {
+    Applied,
+    AlreadyInState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct CertificateTransitionError {
+    code: &'static str,
+    message: String,
+}
+
+impl CertificateTransitionError {
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            code: "INVALID_TRANSITION",
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CertificateVersion {
     pub version_id: String,
     pub fullchain_pem: String,
@@ -857,6 +1134,111 @@ pub struct CertificateRecord {
 }
 
 impl CertificateRecord {
+    pub fn apply_state_transition(
+        &mut self,
+        transition: CertificateStateTransition,
+    ) -> Result<CertificateTransitionOutcome, CertificateTransitionError> {
+        let CertificateStateTransition {
+            goal,
+            evidence: _,
+            at_unix_secs,
+        } = transition;
+        match goal {
+            CertificateStateGoal::StartIssuing { order_url } => {
+                if self.state == CertificateState::Issuing
+                    && self.order_url.as_deref() == Some(order_url.as_str())
+                {
+                    return Ok(CertificateTransitionOutcome::AlreadyInState);
+                }
+                match self.state {
+                    CertificateState::Pending
+                    | CertificateState::Failed
+                    | CertificateState::RenewalDue => {
+                        self.state = CertificateState::Issuing;
+                        self.order_url = Some(order_url);
+                        self.last_error = None;
+                    }
+                    CertificateState::Issuing | CertificateState::Active => {
+                        return Err(CertificateTransitionError::invalid(format!(
+                            "certificate '{}' cannot start issuing from state {}",
+                            self.hostname, self.state
+                        )));
+                    }
+                }
+            }
+            CertificateStateGoal::MarkOrderFailed { error } => {
+                self.state = CertificateState::Failed;
+                self.order_url = None;
+                self.last_error = Some(error);
+            }
+            CertificateStateGoal::FinalizeActive {
+                active_version_id,
+                next_renewal_at,
+            } => {
+                if self.state != CertificateState::Issuing {
+                    return Err(CertificateTransitionError::invalid(format!(
+                        "certificate '{}' must be issuing before finalize; current state is {}",
+                        self.hostname, self.state
+                    )));
+                }
+                self.state = CertificateState::Active;
+                self.active_version_id = Some(active_version_id);
+                self.next_renewal_at = next_renewal_at;
+                self.order_url = None;
+                self.last_error = None;
+            }
+            CertificateStateGoal::KeepIssuingAfterRetryableFailure { error } => {
+                if self.state != CertificateState::Issuing {
+                    return Err(CertificateTransitionError::invalid(format!(
+                        "certificate '{}' must be issuing before retryable finalize failure; current state is {}",
+                        self.hostname, self.state
+                    )));
+                }
+                self.last_error = Some(error);
+            }
+            CertificateStateGoal::MarkFinalizeFailed {
+                error,
+                previous_active_version_id,
+            } => {
+                if self.state != CertificateState::Issuing {
+                    return Err(CertificateTransitionError::invalid(format!(
+                        "certificate '{}' must be issuing before finalize failure; current state is {}",
+                        self.hostname, self.state
+                    )));
+                }
+                self.state = CertificateState::Failed;
+                self.active_version_id = previous_active_version_id;
+                self.order_url = None;
+                self.last_error = Some(error);
+            }
+            CertificateStateGoal::MarkRenewalDue => {
+                if self.state == CertificateState::RenewalDue {
+                    return Ok(CertificateTransitionOutcome::AlreadyInState);
+                }
+                if self.state != CertificateState::Active {
+                    return Err(CertificateTransitionError::invalid(format!(
+                        "certificate '{}' must be active before renewal due; current state is {}",
+                        self.hostname, self.state
+                    )));
+                }
+                self.state = CertificateState::RenewalDue;
+            }
+            CertificateStateGoal::ResetStalledIssuing { error } => {
+                if self.state != CertificateState::Issuing {
+                    return Err(CertificateTransitionError::invalid(format!(
+                        "certificate '{}' must be issuing before stalled reset; current state is {}",
+                        self.hostname, self.state
+                    )));
+                }
+                self.state = CertificateState::Pending;
+                self.order_url = None;
+                self.last_error = Some(error);
+            }
+        }
+        self.updated_at = at_unix_secs;
+        Ok(CertificateTransitionOutcome::Applied)
+    }
+
     /// The currently-installable version, if any. Independent of `state`:
     /// renewal transitions a healthy cert through `RenewalDue → Issuing` and
     /// `active_version_id` keeps pointing at the existing leaf the whole way;
@@ -959,6 +1341,93 @@ pub struct InstanceStatusRecord {
     pub updated_at: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InstanceStatusTransition {
+    pub goal: InstanceStatusGoal,
+    pub evidence: InstanceStatusEvidence,
+    pub at_unix_secs: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "goal", rename_all = "snake_case")]
+pub enum InstanceStatusGoal {
+    MarkDraining,
+    MarkFailed { error: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InstanceStatusEvidence {
+    DeployCleanup { deploy_id: DeployId },
+    RuntimeStart { deploy_id: DeployId },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstanceStatusTransitionOutcome {
+    Applied,
+    AlreadyInState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct InstanceStatusTransitionError {
+    code: &'static str,
+    message: String,
+}
+
+impl InstanceStatusTransitionError {
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl InstanceStatusRecord {
+    pub fn apply_status_transition(
+        &mut self,
+        transition: InstanceStatusTransition,
+    ) -> Result<InstanceStatusTransitionOutcome, InstanceStatusTransitionError> {
+        let InstanceStatusTransition {
+            goal,
+            evidence: _,
+            at_unix_secs,
+        } = transition;
+        match goal {
+            InstanceStatusGoal::MarkDraining => {
+                if self.phase == InstancePhase::Draining
+                    && !self.ready
+                    && self.drain_state == DrainState::Requested
+                {
+                    return Ok(InstanceStatusTransitionOutcome::AlreadyInState);
+                }
+                self.phase = InstancePhase::Draining;
+                self.ready = false;
+                self.drain_state = DrainState::Requested;
+                self.error = None;
+            }
+            InstanceStatusGoal::MarkFailed { error } => {
+                if self.phase == InstancePhase::Failed
+                    && !self.ready
+                    && self.error.as_deref() == Some(error.as_str())
+                {
+                    return Ok(InstanceStatusTransitionOutcome::AlreadyInState);
+                }
+                self.phase = InstancePhase::Failed;
+                self.ready = false;
+                self.drain_state = DrainState::None;
+                self.error = Some(error);
+            }
+        }
+        self.updated_at = at_unix_secs;
+        Ok(InstanceStatusTransitionOutcome::Applied)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
 pub enum DeployState {
     #[display("planning")]
@@ -978,6 +1447,58 @@ pub enum DeployState {
     Failed,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DeployStateTransition {
+    pub goal: DeployStateGoal,
+    pub evidence: DeployTransitionEvidence,
+    pub at_unix_secs: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "goal", rename_all = "snake_case")]
+pub enum DeployStateGoal {
+    Commit { summary_json: String },
+    MarkCleanupPending,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeployTransitionEvidence {
+    DeployExecutor { coordinator_machine_id: MachineId },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeployTransitionOutcome {
+    Applied,
+    AlreadyInState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct DeployTransitionError {
+    code: &'static str,
+    message: String,
+}
+
+impl DeployTransitionError {
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            code: "INVALID_TRANSITION",
+            message: message.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployRecord {
     pub deploy_id: DeployId,
@@ -989,6 +1510,50 @@ pub struct DeployRecord {
     pub committed_at: Option<u64>,
     pub finished_at: Option<u64>,
     pub summary_json: String,
+}
+
+impl DeployRecord {
+    pub fn apply_state_transition(
+        &mut self,
+        transition: DeployStateTransition,
+    ) -> Result<DeployTransitionOutcome, DeployTransitionError> {
+        let DeployStateTransition {
+            goal,
+            evidence: _,
+            at_unix_secs,
+        } = transition;
+        match goal {
+            DeployStateGoal::Commit { summary_json } => {
+                if self.state == DeployState::Committed {
+                    return Ok(DeployTransitionOutcome::AlreadyInState);
+                }
+                if self.state != DeployState::Applying {
+                    return Err(DeployTransitionError::invalid(format!(
+                        "deploy '{}' must be applying before commit; current state is {}",
+                        self.deploy_id, self.state
+                    )));
+                }
+                self.state = DeployState::Committed;
+                self.committed_at = Some(at_unix_secs);
+                self.finished_at = Some(at_unix_secs);
+                self.summary_json = summary_json;
+            }
+            DeployStateGoal::MarkCleanupPending => {
+                if self.state == DeployState::CleanupPending {
+                    return Ok(DeployTransitionOutcome::AlreadyInState);
+                }
+                if self.state != DeployState::Committed {
+                    return Err(DeployTransitionError::invalid(format!(
+                        "deploy '{}' must be committed before cleanup pending; current state is {}",
+                        self.deploy_id, self.state
+                    )));
+                }
+                self.state = DeployState::CleanupPending;
+                self.finished_at = Some(at_unix_secs);
+            }
+        }
+        Ok(DeployTransitionOutcome::Applied)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1124,6 +1689,133 @@ mod tests {
     }
 
     #[test]
+    fn machine_transition_activates_with_evidence_and_timestamp() {
+        let mut record = sample_record();
+        record.lifecycle = MachineLifecycle::Standby;
+        record.subnet = None;
+        let assigned_subnet = "10.42.1.0/24".parse().expect("valid subnet");
+
+        let outcome = record
+            .apply_lifecycle_transition(MachineLifecycleTransition {
+                goal: MachineLifecycleGoal::Activate { assigned_subnet },
+                evidence: MachineTransitionEvidence::OperatorCommand {
+                    command: "machine transition activate".into(),
+                },
+                at_unix_secs: 42,
+            })
+            .expect("activation is valid");
+
+        assert_eq!(outcome, MachineTransitionOutcome::Applied);
+        assert_eq!(record.lifecycle, MachineLifecycle::Active);
+        assert_eq!(record.subnet, Some(assigned_subnet));
+        assert_eq!(record.updated_at, 42);
+    }
+
+    #[test]
+    fn machine_transition_idempotent_activation_preserves_timestamp() {
+        let mut record = sample_record();
+        record.lifecycle = MachineLifecycle::Active;
+        record.subnet = Some("10.42.1.0/24".parse().expect("valid subnet"));
+        record.updated_at = 7;
+
+        let outcome = record
+            .apply_lifecycle_transition(MachineLifecycleTransition {
+                goal: MachineLifecycleGoal::Activate {
+                    assigned_subnet: "10.42.1.0/24".parse().expect("valid subnet"),
+                },
+                evidence: MachineTransitionEvidence::OperatorCommand {
+                    command: "machine transition activate".into(),
+                },
+                at_unix_secs: 42,
+            })
+            .expect("idempotent activation is valid");
+
+        assert_eq!(outcome, MachineTransitionOutcome::AlreadyInState);
+        assert_eq!(record.lifecycle, MachineLifecycle::Active);
+        assert_eq!(record.updated_at, 7);
+    }
+
+    #[test]
+    fn machine_transition_draining_preserves_subnet_until_standby_clearance() {
+        let mut record = sample_record();
+        let assigned_subnet = "10.42.1.0/24".parse().expect("valid subnet");
+        record.lifecycle = MachineLifecycle::Active;
+        record.subnet = Some(assigned_subnet);
+
+        let drain = record
+            .apply_lifecycle_transition(MachineLifecycleTransition {
+                goal: MachineLifecycleGoal::Drain,
+                evidence: MachineTransitionEvidence::OperatorCommand {
+                    command: "machine transition drain".into(),
+                },
+                at_unix_secs: 42,
+            })
+            .expect("drain is valid");
+
+        assert_eq!(drain, MachineTransitionOutcome::Applied);
+        assert_eq!(record.lifecycle, MachineLifecycle::Draining);
+        assert_eq!(record.subnet, Some(assigned_subnet));
+
+        let standby = record
+            .apply_lifecycle_transition(MachineLifecycleTransition {
+                goal: MachineLifecycleGoal::Standby {
+                    clearance: StandbyTransitionClearance::DrainingComplete,
+                },
+                evidence: MachineTransitionEvidence::OperatorCommand {
+                    command: "machine transition standby".into(),
+                },
+                at_unix_secs: 43,
+            })
+            .expect("standby after drain is valid");
+
+        assert_eq!(standby, MachineTransitionOutcome::Applied);
+        assert_eq!(record.lifecycle, MachineLifecycle::Standby);
+        assert!(record.subnet.is_none());
+    }
+
+    #[test]
+    fn machine_transition_rejects_drain_from_standby() {
+        let mut record = sample_record();
+        record.lifecycle = MachineLifecycle::Standby;
+
+        let error = record
+            .apply_lifecycle_transition(MachineLifecycleTransition {
+                goal: MachineLifecycleGoal::Drain,
+                evidence: MachineTransitionEvidence::OperatorCommand {
+                    command: "machine transition drain".into(),
+                },
+                at_unix_secs: 42,
+            })
+            .expect_err("standby cannot drain");
+
+        assert_eq!(error.code(), "INVALID_TRANSITION");
+        assert_eq!(record.lifecycle, MachineLifecycle::Standby);
+    }
+
+    #[test]
+    fn machine_transition_requires_clearance_for_standby() {
+        let mut record = sample_record();
+        record.lifecycle = MachineLifecycle::Active;
+        record.subnet = Some("10.42.1.0/24".parse().expect("valid subnet"));
+
+        let error = record
+            .apply_lifecycle_transition(MachineLifecycleTransition {
+                goal: MachineLifecycleGoal::Standby {
+                    clearance: StandbyTransitionClearance::DrainingComplete,
+                },
+                evidence: MachineTransitionEvidence::OperatorCommand {
+                    command: "machine transition standby".into(),
+                },
+                at_unix_secs: 42,
+            })
+            .expect_err("active requires force or drain first");
+
+        assert_eq!(error.code(), "INVALID_TRANSITION");
+        assert_eq!(record.lifecycle, MachineLifecycle::Active);
+        assert!(record.subnet.is_some());
+    }
+
+    #[test]
     fn network_lifecycle_display_is_explicit() {
         assert_eq!(NetworkLifecycle::Stopped.to_string(), "stopped");
     }
@@ -1134,6 +1826,146 @@ mod tests {
             NetworkLifecycle::from_str("running"),
             Ok(NetworkLifecycle::Running)
         );
+    }
+
+    #[test]
+    fn network_transition_starts_and_stops_explicitly() {
+        let mut lifecycle = NetworkLifecycle::Stopped;
+
+        let start = lifecycle
+            .apply_transition(NetworkLifecycleTransition {
+                goal: NetworkLifecycleGoal::Start,
+                evidence: NetworkTransitionEvidence::OperatorCommand {
+                    command: "mesh start".into(),
+                },
+                at_unix_secs: 42,
+            })
+            .expect("start transition is valid");
+        assert_eq!(start, NetworkTransitionOutcome::Applied);
+        assert_eq!(lifecycle, NetworkLifecycle::Running);
+
+        let stop = lifecycle
+            .apply_transition(NetworkLifecycleTransition {
+                goal: NetworkLifecycleGoal::Stop,
+                evidence: NetworkTransitionEvidence::MeshTeardown {
+                    network: NetworkName("alpha".into()),
+                },
+                at_unix_secs: 43,
+            })
+            .expect("stop transition is valid");
+        assert_eq!(stop, NetworkTransitionOutcome::Applied);
+        assert_eq!(lifecycle, NetworkLifecycle::Stopped);
+    }
+
+    #[test]
+    fn deploy_transition_commits_from_applying() {
+        let mut record = deploy_record(DeployState::Applying);
+
+        let outcome = record
+            .apply_state_transition(DeployStateTransition {
+                goal: DeployStateGoal::Commit {
+                    summary_json: "{}".into(),
+                },
+                evidence: DeployTransitionEvidence::DeployExecutor {
+                    coordinator_machine_id: MachineId("m1".into()),
+                },
+                at_unix_secs: 42,
+            })
+            .expect("commit is valid");
+
+        assert_eq!(outcome, DeployTransitionOutcome::Applied);
+        assert_eq!(record.state, DeployState::Committed);
+        assert_eq!(record.committed_at, Some(42));
+        assert_eq!(record.finished_at, Some(42));
+        assert_eq!(record.summary_json, "{}");
+    }
+
+    #[test]
+    fn deploy_transition_rejects_cleanup_pending_before_commit() {
+        let mut record = deploy_record(DeployState::Applying);
+
+        let error = record
+            .apply_state_transition(DeployStateTransition {
+                goal: DeployStateGoal::MarkCleanupPending,
+                evidence: DeployTransitionEvidence::DeployExecutor {
+                    coordinator_machine_id: MachineId("m1".into()),
+                },
+                at_unix_secs: 42,
+            })
+            .expect_err("cleanup pending requires committed");
+
+        assert_eq!(error.code(), "INVALID_TRANSITION");
+        assert_eq!(record.state, DeployState::Applying);
+    }
+
+    #[test]
+    fn certificate_transition_starts_issuing_from_pending() {
+        let mut record = cert_record(CertificateState::Pending);
+
+        let outcome = record
+            .apply_state_transition(CertificateStateTransition {
+                goal: CertificateStateGoal::StartIssuing {
+                    order_url: "https://issuer/order/1".into(),
+                },
+                evidence: CertificateTransitionEvidence::AcmeOrderStart {
+                    hostname: "example.com".into(),
+                },
+                at_unix_secs: 42,
+            })
+            .expect("pending certificate can issue");
+
+        assert_eq!(outcome, CertificateTransitionOutcome::Applied);
+        assert_eq!(record.state, CertificateState::Issuing);
+        assert_eq!(record.order_url.as_deref(), Some("https://issuer/order/1"));
+        assert_eq!(record.updated_at, 42);
+        assert!(record.last_error.is_none());
+    }
+
+    #[test]
+    fn certificate_transition_finalize_failure_preserves_previous_active_version() {
+        let mut record = cert_record(CertificateState::Issuing);
+        record.active_version_id = Some("v1".into());
+        record.order_url = Some("https://issuer/order/1".into());
+
+        record
+            .apply_state_transition(CertificateStateTransition {
+                goal: CertificateStateGoal::MarkFinalizeFailed {
+                    error: "bad challenge".into(),
+                    previous_active_version_id: Some("v1".into()),
+                },
+                evidence: CertificateTransitionEvidence::AcmeFinalize {
+                    hostname: "example.com".into(),
+                },
+                at_unix_secs: 43,
+            })
+            .expect("issuing certificate can fail finalization");
+
+        assert_eq!(record.state, CertificateState::Failed);
+        assert_eq!(record.active_version_id.as_deref(), Some("v1"));
+        assert!(record.order_url.is_none());
+        assert_eq!(record.last_error.as_deref(), Some("bad challenge"));
+    }
+
+    #[test]
+    fn instance_transition_marks_draining_consistently() {
+        let mut record = instance_record();
+
+        let outcome = record
+            .apply_status_transition(InstanceStatusTransition {
+                goal: InstanceStatusGoal::MarkDraining,
+                evidence: InstanceStatusEvidence::DeployCleanup {
+                    deploy_id: DeployId("deploy-1".into()),
+                },
+                at_unix_secs: 42,
+            })
+            .expect("ready instance can drain");
+
+        assert_eq!(outcome, InstanceStatusTransitionOutcome::Applied);
+        assert_eq!(record.phase, InstancePhase::Draining);
+        assert!(!record.ready);
+        assert_eq!(record.drain_state, DrainState::Requested);
+        assert_eq!(record.updated_at, 42);
+        assert!(record.error.is_none());
     }
 
     #[test]
@@ -1320,7 +2152,7 @@ mod tests {
             public_key: PublicKey([0x11; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 7)),
             topology: MachineTopology::local(),
-            subnet: Some("10.42.7.0/24".parse().unwrap()),
+            subnet: Some("10.42.7.0/24".parse().expect("valid subnet")),
             bridge_ip: Some(OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 8))),
             endpoints: vec!["1.2.3.4:51820".into(), "5.6.7.8:51820".into()],
             lifecycle: MachineLifecycle::Active,
@@ -1329,6 +2161,41 @@ mod tests {
             created_at: 100,
             updated_at: 200,
             labels,
+        }
+    }
+
+    fn deploy_record(state: DeployState) -> DeployRecord {
+        DeployRecord {
+            deploy_id: DeployId("deploy-1".into()),
+            namespace: Namespace("default".into()),
+            coordinator_machine_id: MachineId("m1".into()),
+            manifest_hash: "hash".into(),
+            state,
+            started_at: 1,
+            committed_at: None,
+            finished_at: None,
+            summary_json: "null".into(),
+        }
+    }
+
+    fn instance_record() -> InstanceStatusRecord {
+        InstanceStatusRecord {
+            instance_id: InstanceId("instance-1".into()),
+            namespace: Namespace("default".into()),
+            service: "api".into(),
+            slot_id: SlotId("slot-1".into()),
+            machine_id: MachineId("m1".into()),
+            revision_hash: "rev1".into(),
+            deploy_id: DeployId("deploy-1".into()),
+            docker_container_id: "container-1".into(),
+            overlay_ip: None,
+            backend_ports: BTreeMap::new(),
+            phase: InstancePhase::Ready,
+            ready: true,
+            drain_state: DrainState::None,
+            error: Some("old transient error".into()),
+            started_at: 1,
+            updated_at: 1,
         }
     }
 
