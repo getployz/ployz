@@ -5,7 +5,7 @@ How services get deployed onto machines and how traffic finds its way to them.
 ## Data Model
 
 The distributed store holds all the state that drives both routing and
-deployment. The tables divide into three conceptual groups:
+deployment. The routing collections divide into three conceptual groups:
 
 **Mesh infrastructure** — the machine registry and join tokens. Who's in the mesh
 and what their keys and overlay IPs are.
@@ -117,15 +117,15 @@ runtime action.
 
 ## Routing
 
-### Snapshot Plus Durable Batches
+### Snapshot Plus Durable Events
 
 All routing decisions start from one snapshot of the distributed store's routing
-tables. After the snapshot, live consumers apply ordered routing event batches from
-the `routing_events` JetStream stream.
+collections. After the snapshot, live consumers apply ordered routing events from the
+`routing_events` JetStream stream.
 
 The snapshot is the catch-up boundary. If a process restarts or loses its local
 projection, it subscribes again, replaces any old consumer with the same id,
-reads a fresh snapshot, then receives only new batches (`DeliverPolicy::New`) for
+reads a fresh snapshot, then receives only new events (`DeliverPolicy::New`) for
 that subscription.
 
 ### Subscription Model
@@ -134,7 +134,7 @@ Routing event consumers declare their durability explicitly:
 
 - **Durable subscriptions** are used by long-lived service projections such as
   gateway and DNS. Their consumer ids are stable per machine, so each process
-  receives every routing batch independently. The consumer's
+  receives every routing event independently. The consumer's
   `max_ack_pending` matches the process bridge-channel capacity, and idle
   heartbeats turn a broken delivery path into an explicit subscription failure.
 - **Temporary subscriptions** are used by live watch clients such as
@@ -143,8 +143,8 @@ Routing event consumers declare their durability explicitly:
 
 Properties:
 
-- Atomic batches — related routing events are published as one JetStream atomic
-  batch, and consumers ack the batch only after applying it.
+- Plain event journal — each routing fact is one JetStream message, and
+  consumers ack each event only after applying it.
 - Per-consumer cursors — gateway, DNS, runtime watch, and readiness probes do not
   share a cursor.
 - Graceful degradation — projection errors log and keep the previous snapshot;

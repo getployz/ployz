@@ -73,15 +73,24 @@ cargo test -p ployz-sim
   and invalid-transition behavior in `ployz-types`.
 - Deploy lifecycle tests pin explicit commit and cleanup-pending transitions,
   including idempotent retries that preserve the original completion evidence.
+- Certificate lifecycle tests pin renewal failure visibility: retryable
+  finalize failures keep the certificate issuing and serving the previous
+  active version until an explicit successful finalize clears the error.
 - Instance status tests pin drain and runtime-failure transitions: drain clears
   stale errors, idempotent repeats preserve timestamps, and changed runtime
   failures update the visible error.
 - Deploy orchestration tests pin that unreachable participants block before
   inspect, start, or commit, so reachability is checked at decision time rather
   than inferred from stored freshness.
+- Machine placement policy and deploy-plan tests pin lifecycle semantics for
+  orchestration: draining machines keep existing slots and remain blocking
+  peers, but never receive new placements.
 - Deploy preview tests pin the operator distinction between observation and
   mutation: unreachable participants are surfaced as warnings without writing
   deploy state.
+- Managed-domain tests pin operator-facing TLS warning behavior: active
+  certificates stay quiet, pending/issuing/missing certificates warn, and
+  failed certificates include the stored `last_error`.
 - Deploy export tests pin corrupt-state failure visibility: missing referenced
   revisions and mismatched stored service specs fail with explicit
   `deploy_export` errors.
@@ -90,7 +99,8 @@ cargo test -p ployz-sim
   payload.
 - Store API routing projection tests pin backend-independent event semantics
   across machines, revisions, releases, and instances: emitted routing events
-  must update subscriber state the same way a fresh snapshot would.
+  must update subscriber state the same way a fresh snapshot would, and replayed
+  removals are idempotent by each collection's contract identity.
 - Memory store routing event tests pin the reference backend contract:
   subscribers receive an initial snapshot followed by metadata-rich events
   whose payloads preserve old/new identity and satisfy acknowledgement
@@ -110,9 +120,31 @@ cargo test -p ployz-sim
 - NATS routing subscription tests pin transport failure visibility: routing
   events must carry event IDs and valid payloads, and malformed transport
   messages become subscriber errors instead of ambiguous projection input.
+- NATS machine registry tests pin key/payload identity checks: malformed
+  records and mismatched KV keys fail visibly instead of corrupting durable
+  routing truth.
+- NATS instance store tests pin key/payload identity checks: malformed instance
+  records and mismatched KV keys fail visibly instead of emitting misleading
+  routing updates or removals.
+- Routing event projection tests pin key-only removals: removal events carry
+  contract identity instead of stale record payloads, so deletes can be replayed
+  idempotently from the explicit key.
+- NATS deploy status tests pin key/payload identity checks: malformed or
+  mismatched deploy status records fail visibly instead of being returned for
+  the wrong deploy id.
+- NATS invite store tests pin key/payload identity checks: malformed or
+  mismatched invite records fail visibly before invite redemption or revocation
+  mutates control-plane state.
+- NATS certificate store tests pin key/payload identity checks for ACME
+  accounts, certificate metadata, challenges, and readiness rows, so KV keys
+  remain authoritative identities rather than untrusted decoded payload fields.
 - NATS routing journal tests pin the NATS-native shape: each routing fact is a
   directly acknowledged JetStream message, with no staged batch/commit protocol
-  or route-journal atomic publish dependency.
+  or route-journal atomic publish dependency; event subjects are keyed directly
+  by routing event id rather than a database-style batch/index pair.
+- NATS asset manifest tests pin operator-visible control-plane inventory:
+  every stream and KV bucket created by asset setup must appear in the status
+  manifest with the correct stream/KV role.
 - Runtime subscription tests pin that routing event acknowledgement failures
   are forwarded to the runtime reader as subscription errors instead of being
   swallowed by the daemon relay.
@@ -133,19 +165,29 @@ cargo test -p ployz-sim
 - ZFS inspection tests pin storage failure visibility: snapshot listing backend
   errors fail inspection instead of being reported as empty lineage.
 - Status surface tests pin live-observation failures: missing or unreadable
-  sidecar sync metrics report unknown health with an explicit error instead of
+  sidecar sync metrics report unknown health with an explicit error, while
+  unhealthy metrics preserve stale-since and failure counts instead of
   pretending the edge is healthy.
 - API serialization tests pin structured failure/status contracts: daemon
   responses preserve typed payloads, machine operation status, runtime
-  subscription error frames, and `last_error` across JSON roundtrips.
+  subscription error frames, edge/control-plane uncertainty, and `last_error`
+  across JSON roundtrips.
+- SDK transport tests pin external-consumer contracts: stdio and Unix socket
+  transports preserve the line protocol, malformed daemon output returns
+  `std::io::Error`, and failed child processes do not become synthetic success.
 - Runtime watch API tests pin backend-independent routing frames for all
-  subscriber tables: machine, revision, release, and instance events map to
+  subscriber collections: machine, revision, release, and instance events map to
   stable upsert/remove keys.
 - Machine operation tests pin durable failure visibility: a recorded operation
   failure remains visible through later running/stage updates and is cleared
   only by success.
+- Volume transfer tests pin durable failure visibility: interrupted ZFS
+  transfers preserve the prior failure error in operator-facing payloads.
 - Machine add tests pin invite/precondition ordering: remote subnet mismatches
   fail before invite consumption.
+- Mesh stop tests pin durable lifecycle truth under partial teardown failure:
+  once the mesh runtime is destroyed, the stopped network lifecycle is
+  persisted even if later sidecar shutdown reports an operator-visible error.
 - Deploy apply tests pin commit boundaries: releases are not committed before
   required starts complete, and cleanup failures preserve a committed deploy
   while surfacing cleanup-pending state.

@@ -121,8 +121,8 @@ pub fn apply_routing_event(state: &mut RoutingState, event: RoutingEvent) {
         RoutingEvent::MachineAdded(record) | RoutingEvent::MachineUpdated { new: record, .. } => {
             upsert_by(&mut state.machines, record, |record| record.id.clone());
         }
-        RoutingEvent::MachineRemoved(record) => {
-            state.machines.retain(|candidate| candidate.id != record.id);
+        RoutingEvent::MachineRemoved { id } => {
+            state.machines.retain(|candidate| candidate.id != id);
         }
         RoutingEvent::RevisionAdded(record) | RoutingEvent::RevisionUpdated { new: record, .. } => {
             upsert_by(&mut state.revisions, record, |record| {
@@ -133,11 +133,15 @@ pub fn apply_routing_event(state: &mut RoutingState, event: RoutingEvent) {
                 )
             });
         }
-        RoutingEvent::RevisionRemoved(record) => {
+        RoutingEvent::RevisionRemoved {
+            namespace,
+            service,
+            revision_hash,
+        } => {
             state.revisions.retain(|candidate| {
-                candidate.namespace != record.namespace
-                    || candidate.service != record.service
-                    || candidate.revision_hash != record.revision_hash
+                candidate.namespace != namespace
+                    || candidate.service != service
+                    || candidate.revision_hash != revision_hash
             });
         }
         RoutingEvent::ReleaseAdded(record) | RoutingEvent::ReleaseUpdated { new: record, .. } => {
@@ -145,9 +149,9 @@ pub fn apply_routing_event(state: &mut RoutingState, event: RoutingEvent) {
                 (record.namespace.clone(), record.service.clone())
             });
         }
-        RoutingEvent::ReleaseRemoved(record) => {
+        RoutingEvent::ReleaseRemoved { namespace, service } => {
             state.releases.retain(|candidate| {
-                candidate.namespace != record.namespace || candidate.service != record.service
+                candidate.namespace != namespace || candidate.service != service
             });
         }
         RoutingEvent::InstanceAdded(record) | RoutingEvent::InstanceUpdated { new: record, .. } => {
@@ -155,10 +159,10 @@ pub fn apply_routing_event(state: &mut RoutingState, event: RoutingEvent) {
                 record.instance_id.clone()
             });
         }
-        RoutingEvent::InstanceRemoved(record) => {
+        RoutingEvent::InstanceRemoved { instance_id } => {
             state
                 .instances
-                .retain(|candidate| candidate.instance_id != record.instance_id);
+                .retain(|candidate| candidate.instance_id != instance_id);
         }
     }
 }
@@ -290,7 +294,13 @@ mod tests {
             instances: Vec::new(),
         };
 
-        apply_routing_event(&mut state, RoutingEvent::ReleaseRemoved(prod_api));
+        apply_routing_event(
+            &mut state,
+            RoutingEvent::ReleaseRemoved {
+                namespace: prod_api.namespace,
+                service: prod_api.service,
+            },
+        );
 
         assert_eq!(state.releases, vec![staging_api]);
     }
@@ -326,7 +336,14 @@ mod tests {
             Some(r#"{"image":"nginx:2"}"#)
         );
 
-        apply_routing_event(&mut state, RoutingEvent::RevisionRemoved(worker));
+        apply_routing_event(
+            &mut state,
+            RoutingEvent::RevisionRemoved {
+                namespace: worker.namespace,
+                service: worker.service,
+                revision_hash: worker.revision_hash,
+            },
+        );
 
         assert_eq!(state.revisions.len(), 1);
         assert_eq!(state.revisions[0].service, "api");
@@ -363,7 +380,12 @@ mod tests {
             Some(true)
         );
 
-        apply_routing_event(&mut state, RoutingEvent::InstanceRemoved(worker));
+        apply_routing_event(
+            &mut state,
+            RoutingEvent::InstanceRemoved {
+                instance_id: worker.instance_id,
+            },
+        );
 
         assert_eq!(state.instances.len(), 1);
         assert_eq!(
@@ -394,11 +416,69 @@ mod tests {
                     old: machine_a,
                     new: machine_a_draining.clone(),
                 },
-                RoutingEvent::MachineRemoved(machine_b),
+                RoutingEvent::MachineRemoved { id: machine_b.id },
             ],
         );
 
         assert_eq!(state.machines, vec![machine_a_draining]);
+    }
+
+    #[test]
+    fn routing_event_removals_are_idempotent_by_contract_identity() {
+        let namespace = Namespace("prod".into());
+        let machine_a = machine("machine-a", MachineLifecycle::Active);
+        let machine_b = machine("machine-b", MachineLifecycle::Active);
+        let revision_a = revision(&namespace, "api", "rev-a", "{}");
+        let revision_b = revision(&namespace, "worker", "rev-b", "{}");
+        let release_a = release(&namespace, "api", "rev-a");
+        let release_b = release(&namespace, "worker", "rev-b");
+        let instance_a = instance(&namespace, "inst-a", true);
+        let instance_b = instance(&namespace, "inst-b", true);
+        let mut state = RoutingState {
+            machines: vec![machine_a.clone(), machine_b.clone()],
+            revisions: vec![revision_a.clone(), revision_b.clone()],
+            releases: vec![release_a.clone(), release_b.clone()],
+            instances: vec![instance_a.clone(), instance_b.clone()],
+        };
+
+        apply_routing_events(
+            &mut state,
+            [
+                RoutingEvent::MachineRemoved {
+                    id: machine_a.id.clone(),
+                },
+                RoutingEvent::MachineRemoved { id: machine_a.id },
+                RoutingEvent::RevisionRemoved {
+                    namespace: revision_a.namespace.clone(),
+                    service: revision_a.service.clone(),
+                    revision_hash: revision_a.revision_hash.clone(),
+                },
+                RoutingEvent::RevisionRemoved {
+                    namespace: revision_a.namespace,
+                    service: revision_a.service,
+                    revision_hash: revision_a.revision_hash,
+                },
+                RoutingEvent::ReleaseRemoved {
+                    namespace: release_a.namespace.clone(),
+                    service: release_a.service.clone(),
+                },
+                RoutingEvent::ReleaseRemoved {
+                    namespace: release_a.namespace,
+                    service: release_a.service,
+                },
+                RoutingEvent::InstanceRemoved {
+                    instance_id: instance_a.instance_id.clone(),
+                },
+                RoutingEvent::InstanceRemoved {
+                    instance_id: instance_a.instance_id,
+                },
+            ],
+        );
+
+        assert_eq!(state.machines, vec![machine_b]);
+        assert_eq!(state.revisions, vec![revision_b]);
+        assert_eq!(state.releases, vec![release_b]);
+        assert_eq!(state.instances, vec![instance_b]);
     }
 
     fn release(namespace: &Namespace, service: &str, revision_hash: &str) -> ServiceReleaseRecord {
@@ -483,11 +563,6 @@ pub struct DeployCommit {
     pub releases: Vec<ServiceReleaseRecord>,
     pub volumes: Vec<VolumeRecord>,
     pub deploy: DeployRecord,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeployRevisionUpsert {
-    pub revision: ServiceRevisionRecord,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -579,11 +654,6 @@ pub trait DeployRepository: Send + Sync {
         namespace: &'a Namespace,
         volume_name: &'a str,
     ) -> impl Future<Output = Result<Option<VolumeRecord>>> + Send + 'a;
-
-    fn record_service_revision<'a>(
-        &'a self,
-        command: &'a DeployRevisionUpsert,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
 
     fn commit_deploy<'a>(
         &'a self,

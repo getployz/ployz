@@ -35,8 +35,8 @@ impl CertificateStore for NatsStore {
         else {
             return Ok(None);
         };
-        Ok(Some(kv_json::decode_json(
-            "nats_acme_account_decode",
+        Ok(Some(decode_acme_account(
+            &acme_account_key(issuer_url),
             bytes.as_ref(),
         )?))
     }
@@ -60,7 +60,7 @@ impl CertificateStore for NatsStore {
 
     async fn list_certificates(&self) -> Result<Vec<CertificateRecord>> {
         let bucket = certificates_bucket(self).await?;
-        kv_json::list_json(&bucket, "nats_certificate_decode", "nats_certificates_list").await
+        list_certificates(&bucket).await
     }
 
     async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>> {
@@ -74,8 +74,8 @@ impl CertificateStore for NatsStore {
         else {
             return Ok(None);
         };
-        Ok(Some(kv_json::decode_json(
-            "nats_certificate_decode",
+        Ok(Some(decode_certificate(
+            &certificate_key(hostname),
             bytes.as_ref(),
         )?))
     }
@@ -95,12 +95,7 @@ impl CertificateStore for NatsStore {
 
     async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
         let bucket = challenges_bucket(self).await?;
-        kv_json::list_json(
-            &bucket,
-            "nats_acme_challenge_decode",
-            "nats_acme_challenges_list",
-        )
-        .await
+        list_challenges(&bucket).await
     }
 
     async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
@@ -142,8 +137,8 @@ impl CertificateStore for NatsStore {
             .collect::<HashMap<_, _>>();
         let snapshot = snapshot_entries
             .into_iter()
-            .map(|entry| entry.value)
-            .collect::<Vec<_>>();
+            .map(|entry| validate_certificate_key(&entry.key, entry.value))
+            .collect::<Result<Vec<_>>>()?;
         kv_watch::subscribe_all_with_snapshot_revisions(
             &bucket,
             snapshot,
@@ -169,6 +164,7 @@ impl CertificateStore for NatsStore {
         )
         .await?;
         let (snapshot, snapshot_revisions) = acme_challenge_snapshot_parts(snapshot_entries);
+        let snapshot = snapshot?;
         kv_watch::subscribe_all_with_snapshot_revisions(
             &bucket,
             snapshot,
@@ -204,12 +200,7 @@ impl CertificateStore for NatsStore {
         token: &str,
     ) -> Result<Vec<AcmeChallengeReadinessRecord>> {
         let bucket = readiness_bucket(self).await?;
-        let records = kv_json::list_json::<AcmeChallengeReadinessRecord>(
-            &bucket,
-            "nats_acme_readiness_decode",
-            "nats_acme_readiness_list",
-        )
-        .await?;
+        let records = list_readiness(&bucket).await?;
         let normalized_hostname = certificate_key(hostname);
         Ok(records
             .into_iter()
@@ -285,6 +276,83 @@ fn readiness_key_prefix(hostname: &str, token: &str) -> String {
     format!("{}.", challenge_key(hostname, token))
 }
 
+async fn list_certificates(bucket: &kv::Store) -> Result<Vec<CertificateRecord>> {
+    kv_json::list_json_entries::<CertificateRecord>(
+        bucket,
+        "nats_certificate_decode",
+        "nats_certificates_list",
+    )
+    .await?
+    .into_iter()
+    .map(|entry| validate_certificate_key(&entry.key, entry.value))
+    .collect()
+}
+
+fn decode_certificate(key: &str, bytes: &[u8]) -> Result<CertificateRecord> {
+    let record: CertificateRecord = kv_json::decode_json("nats_certificate_decode", bytes)?;
+    validate_certificate_key(key, record)
+}
+
+fn validate_certificate_key(key: &str, record: CertificateRecord) -> Result<CertificateRecord> {
+    let expected_key = certificate_key(&record.hostname);
+    if expected_key != key {
+        return Err(Error::operation(
+            "nats_certificate_decode",
+            format!("certificate key {key} does not match payload key {expected_key}"),
+        ));
+    }
+    Ok(record)
+}
+
+async fn list_challenges(bucket: &kv::Store) -> Result<Vec<AcmeChallengeRecord>> {
+    kv_json::list_json_entries::<AcmeChallengeRecord>(
+        bucket,
+        "nats_acme_challenge_decode",
+        "nats_acme_challenges_list",
+    )
+    .await?
+    .into_iter()
+    .map(|entry| validate_challenge_key(&entry.key, entry.value))
+    .collect()
+}
+
+fn validate_challenge_key(key: &str, record: AcmeChallengeRecord) -> Result<AcmeChallengeRecord> {
+    let expected_key = challenge_key(&record.hostname, &record.token);
+    if expected_key != key {
+        return Err(Error::operation(
+            "nats_acme_challenge_decode",
+            format!("ACME challenge key {key} does not match payload key {expected_key}"),
+        ));
+    }
+    Ok(record)
+}
+
+async fn list_readiness(bucket: &kv::Store) -> Result<Vec<AcmeChallengeReadinessRecord>> {
+    kv_json::list_json_entries::<AcmeChallengeReadinessRecord>(
+        bucket,
+        "nats_acme_readiness_decode",
+        "nats_acme_readiness_list",
+    )
+    .await?
+    .into_iter()
+    .map(|entry| validate_readiness_key(&entry.key, entry.value))
+    .collect()
+}
+
+fn validate_readiness_key(
+    key: &str,
+    record: AcmeChallengeReadinessRecord,
+) -> Result<AcmeChallengeReadinessRecord> {
+    let expected_key = readiness_key(&record.hostname, &record.token, &record.machine_id);
+    if expected_key != key {
+        return Err(Error::operation(
+            "nats_acme_readiness_decode",
+            format!("ACME readiness key {key} does not match payload key {expected_key}"),
+        ));
+    }
+    Ok(record)
+}
+
 fn certificate_event_from_kv_entry(
     last_seen: &mut HashMap<String, CertificateRecord>,
     key: &str,
@@ -293,15 +361,7 @@ fn certificate_event_from_kv_entry(
 ) -> Result<Option<CertificateEvent>> {
     match operation {
         kv::Operation::Put => {
-            let record =
-                kv_json::decode_json::<CertificateRecord>("nats_certificate_decode", bytes)?;
-            let expected_key = certificate_key(&record.hostname);
-            if expected_key != key {
-                return Err(Error::operation(
-                    "nats_certificate_decode",
-                    format!("certificate key {key} does not match payload key {expected_key}"),
-                ));
-            }
+            let record = decode_certificate(key, bytes)?;
             let event = match last_seen.get(key) {
                 Some(existing) if existing == &record => return Ok(None),
                 Some(_) => CertificateEvent::Updated(record.clone()),
@@ -326,13 +386,7 @@ fn challenge_event_from_kv_entry(
         kv::Operation::Put => {
             let record =
                 kv_json::decode_json::<AcmeChallengeRecord>("nats_acme_challenge_decode", bytes)?;
-            let expected_key = challenge_key(&record.hostname, &record.token);
-            if expected_key != key {
-                return Err(Error::operation(
-                    "nats_acme_challenge_decode",
-                    format!("ACME challenge key {key} does not match payload key {expected_key}"),
-                ));
-            }
+            let record = validate_challenge_key(key, record)?;
             let event = match last_seen.get(key) {
                 Some(existing) if existing == &record => return Ok(None),
                 Some(_) => AcmeChallengeEvent::Updated(record.clone()),
@@ -349,15 +403,15 @@ fn challenge_event_from_kv_entry(
 
 fn acme_challenge_snapshot_parts(
     entries: Vec<kv_json::JsonEntry<AcmeChallengeRecord>>,
-) -> (Vec<AcmeChallengeRecord>, HashMap<String, u64>) {
+) -> (Result<Vec<AcmeChallengeRecord>>, HashMap<String, u64>) {
     let snapshot_revisions = entries
         .iter()
         .map(|entry| (entry.key.clone(), entry.revision))
         .collect::<HashMap<_, _>>();
     let snapshot = entries
         .into_iter()
-        .map(|entry| entry.value)
-        .collect::<Vec<_>>();
+        .map(|entry| validate_challenge_key(&entry.key, entry.value))
+        .collect::<Result<Vec<_>>>();
     (snapshot, snapshot_revisions)
 }
 
@@ -387,6 +441,18 @@ async fn delete_acme_challenge_readiness(
 
 fn acme_account_key(issuer_url: &str) -> String {
     subjects::kv_key_token(issuer_url)
+}
+
+fn decode_acme_account(key: &str, bytes: &[u8]) -> Result<AcmeAccountRecord> {
+    let record: AcmeAccountRecord = kv_json::decode_json("nats_acme_account_decode", bytes)?;
+    let expected_key = acme_account_key(&record.issuer_url);
+    if expected_key != key {
+        return Err(Error::operation(
+            "nats_acme_account_decode",
+            format!("ACME account key {key} does not match payload key {expected_key}"),
+        ));
+    }
+    Ok(record)
 }
 
 #[cfg(test)]
@@ -615,8 +681,30 @@ mod tests {
             value: record.clone(),
         }]);
 
-        assert_eq!(snapshot, vec![record]);
+        assert_eq!(snapshot.expect("valid snapshot"), vec![record]);
         assert_eq!(revisions.get(&key), Some(&42));
+    }
+
+    #[test]
+    fn acme_account_kv_key_mismatch_is_visible() {
+        let record = AcmeAccountRecord {
+            account_id: "account-1".into(),
+            issuer_url: "https://issuer.example/acme".into(),
+            contact_email: None,
+            account_credentials_json: "{}".into(),
+            created_at: 1,
+            updated_at: 1,
+        };
+        let bytes = serde_json::to_vec(&record).expect("encode account");
+
+        let error = decode_acme_account("wrong-key", &bytes).expect_err("key mismatch should fail");
+
+        assert!(error.to_string().contains("wrong-key"));
+        assert!(
+            error
+                .to_string()
+                .contains(&acme_account_key(&record.issuer_url))
+        );
     }
 
     fn certificate(hostname: &str) -> CertificateRecord {

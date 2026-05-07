@@ -14,13 +14,11 @@ use crate::deploy::transaction::{CleanupPlan, PreparedDeploy};
 use crate::error::{Error, Result};
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPreview, DeployRecord,
-    DeployState, InstanceId, InstanceStatusRecord, MachineId, MachineMembership,
-    ServiceRevisionRecord, VolumeRecord,
+    DeployState, InstanceId, InstanceStatusRecord, MachineId, MachineMembership, VolumeRecord,
 };
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use ployz_store_api::{
-    DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, InstanceStatusRepository,
-    StoreDriver,
+    DeployRecordUpdate, DeployRepository, InstanceStatusRepository, StoreDriver,
 };
 use ployz_types::time::now_unix_secs;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -300,7 +298,6 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
             .await?;
         last_written_deploy_record = Some(prepared.applying_record().clone());
 
-        upsert_revisions(store, prepared.revisions()).await?;
         let startup =
             run_phase_startup(store, participant_client, &participants, prepared.plan()).await?;
         events.extend(startup.events);
@@ -416,17 +413,6 @@ fn failed_deploy_record(mut record: DeployRecord, error: &Error) -> DeployRecord
         }
     }
     record
-}
-
-async fn upsert_revisions(store: &StoreDriver, revisions: &[ServiceRevisionRecord]) -> Result<()> {
-    for revision in revisions {
-        store
-            .record_service_revision(&DeployRevisionUpsert {
-                revision: revision.clone(),
-            })
-            .await?;
-    }
-    Ok(())
 }
 
 pub(super) async fn run_phase_startup(

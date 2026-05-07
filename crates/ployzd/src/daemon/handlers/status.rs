@@ -149,12 +149,16 @@ impl DaemonState {
             }),
         }
         for health in active.mesh.task_health() {
+            let healthy = health.is_healthy();
+            let stale_since_unix_secs = health.stale_since_unix_secs();
+            let consecutive_failures = health.consecutive_failures();
+            let error = health.last_error().map(String::from);
             status.push(ControlPlaneStatus {
                 component: health.name,
-                healthy: Some(health.healthy),
-                stale_since_unix_secs: health.stale_since_unix_secs,
-                consecutive_failures: Some(health.consecutive_failures),
-                error: health.last_error,
+                healthy: Some(healthy),
+                stale_since_unix_secs,
+                consecutive_failures: Some(consecutive_failures),
+                error,
             });
         }
         status

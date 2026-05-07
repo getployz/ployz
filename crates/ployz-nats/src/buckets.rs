@@ -7,18 +7,12 @@ use ployz_types::error::{Error, Result};
 
 use crate::role::{ReplicaPreference, desired_replicas};
 use crate::subjects::{
-    self, CERT_JOBS_STREAM, DEPLOY_COMMITS_STREAM, NatsScope, REVISIONS_STREAM,
-    ROUTING_EVENTS_STREAM,
+    self, CERT_JOBS_STREAM, DEPLOY_COMMITS_STREAM, NatsScope, ROUTING_EVENTS_STREAM,
 };
 
-pub const AUTHORITIES_BUCKET: &str = "authorities_local";
-pub const REGIONS_BUCKET: &str = "regions_local";
 pub const MACHINES_BUCKET: &str = "machines_local";
-pub const GATEWAYS_BUCKET: &str = "gateways_local";
-pub const DNS_BUCKET: &str = "dns_local";
 pub const INVITES_BUCKET: &str = "cp_invites_auth-default";
 pub const DEPLOY_STATUS_BUCKET: &str = "cp_deploy_status_auth-default";
-pub const PARTICIPANTS_BUCKET: &str = "cp_participants_auth-default";
 pub const INSTANCES_BUCKET: &str = "cp_instances_auth-default";
 pub const ACME_ACCOUNTS_BUCKET: &str = "cp_acme_accounts_auth-default";
 pub const CERTIFICATES_BUCKET: &str = "cp_certificates_auth-default";
@@ -63,11 +57,6 @@ pub const NATS_STREAM_ASSETS: &[NatsAssetSpec] = &[
         role: NatsAssetRole::AuthorityLocal,
     },
     NatsAssetSpec {
-        name: REVISIONS_STREAM,
-        kind: "stream",
-        role: NatsAssetRole::AuthorityLocal,
-    },
-    NatsAssetSpec {
         name: CERT_JOBS_STREAM,
         kind: "stream",
         role: NatsAssetRole::AuthorityLocal,
@@ -76,27 +65,7 @@ pub const NATS_STREAM_ASSETS: &[NatsAssetSpec] = &[
 
 pub const NATS_KV_ASSETS: &[NatsAssetSpec] = &[
     NatsAssetSpec {
-        name: AUTHORITIES_BUCKET,
-        kind: "kv",
-        role: NatsAssetRole::InstallationRoot,
-    },
-    NatsAssetSpec {
-        name: REGIONS_BUCKET,
-        kind: "kv",
-        role: NatsAssetRole::InstallationRoot,
-    },
-    NatsAssetSpec {
         name: MACHINES_BUCKET,
-        kind: "kv",
-        role: NatsAssetRole::InstallationRoot,
-    },
-    NatsAssetSpec {
-        name: GATEWAYS_BUCKET,
-        kind: "kv",
-        role: NatsAssetRole::InstallationRoot,
-    },
-    NatsAssetSpec {
-        name: DNS_BUCKET,
         kind: "kv",
         role: NatsAssetRole::InstallationRoot,
     },
@@ -107,11 +76,6 @@ pub const NATS_KV_ASSETS: &[NatsAssetSpec] = &[
     },
     NatsAssetSpec {
         name: DEPLOY_STATUS_BUCKET,
-        kind: "kv",
-        role: NatsAssetRole::AuthorityLocal,
-    },
-    NatsAssetSpec {
-        name: PARTICIPANTS_BUCKET,
         kind: "kv",
         role: NatsAssetRole::AuthorityLocal,
     },
@@ -169,7 +133,6 @@ impl AssetPolicy {
 pub struct AssetConfigs {
     pub deploy_commits: stream::Config,
     pub route_journal: stream::Config,
-    pub revisions: stream::Config,
     pub cert_jobs: stream::Config,
     pub authority_durable_kv: Vec<kv::Config>,
     pub root_durable_kv: Vec<kv::Config>,
@@ -187,7 +150,6 @@ pub fn asset_configs_in(scope: &NatsScope, policy: AssetPolicy) -> AssetConfigs 
     AssetConfigs {
         deploy_commits: deploy_commits_stream(scope, replicas),
         route_journal: route_journal_stream(scope, replicas),
-        revisions: revisions_stream(scope, replicas),
         cert_jobs: cert_jobs_stream(scope, replicas),
         authority_durable_kv: authority_durable_buckets(replicas),
         root_durable_kv: root_durable_buckets(replicas),
@@ -207,7 +169,6 @@ pub async fn ensure_assets_in(
     let configs = asset_configs_in(scope, policy);
     ensure_stream(js, configs.deploy_commits).await?;
     ensure_stream(js, configs.route_journal).await?;
-    ensure_stream(js, configs.revisions).await?;
     ensure_stream(js, configs.cert_jobs).await?;
     for config in configs
         .authority_durable_kv
@@ -310,21 +271,6 @@ fn route_journal_stream(scope: &NatsScope, replicas: usize) -> stream::Config {
     }
 }
 
-fn revisions_stream(scope: &NatsScope, replicas: usize) -> stream::Config {
-    stream::Config {
-        name: REVISIONS_STREAM.into(),
-        subjects: vec![subjects::revision_filter_in(scope)],
-        retention: stream::RetentionPolicy::Limits,
-        storage: stream::StorageType::File,
-        num_replicas: replicas,
-        max_messages_per_subject: 1,
-        discard: stream::DiscardPolicy::New,
-        duplicate_window: Duration::from_secs(60 * 60),
-        allow_direct: true,
-        ..Default::default()
-    }
-}
-
 fn cert_jobs_stream(scope: &NatsScope, replicas: usize) -> stream::Config {
     stream::Config {
         name: CERT_JOBS_STREAM.into(),
@@ -342,7 +288,6 @@ fn authority_durable_buckets(replicas: usize) -> Vec<kv::Config> {
     [
         INVITES_BUCKET,
         DEPLOY_STATUS_BUCKET,
-        PARTICIPANTS_BUCKET,
         INSTANCES_BUCKET,
         ACME_ACCOUNTS_BUCKET,
         CERTIFICATES_BUCKET,
@@ -362,23 +307,17 @@ fn authority_durable_buckets(replicas: usize) -> Vec<kv::Config> {
 }
 
 fn root_durable_buckets(replicas: usize) -> Vec<kv::Config> {
-    [
-        AUTHORITIES_BUCKET,
-        REGIONS_BUCKET,
-        MACHINES_BUCKET,
-        GATEWAYS_BUCKET,
-        DNS_BUCKET,
-    ]
-    .into_iter()
-    .map(|bucket| kv::Config {
-        bucket: bucket.into(),
-        history: 1,
-        max_age: Duration::ZERO,
-        storage: stream::StorageType::File,
-        num_replicas: replicas,
-        ..Default::default()
-    })
-    .collect()
+    [MACHINES_BUCKET]
+        .into_iter()
+        .map(|bucket| kv::Config {
+            bucket: bucket.into(),
+            history: 1,
+            max_age: Duration::ZERO,
+            storage: stream::StorageType::File,
+            num_replicas: replicas,
+            ..Default::default()
+        })
+        .collect()
 }
 
 fn authority_lease_buckets(replicas: usize) -> Vec<kv::Config> {
@@ -431,23 +370,6 @@ mod tests {
     }
 
     #[test]
-    fn revisions_stream_allows_direct_projection_replay() {
-        let config = asset_configs(AssetPolicy {
-            storage_nodes: 3,
-            replica_preference: ReplicaPreference::Three,
-        })
-        .revisions;
-        assert_eq!(config.name, REVISIONS_STREAM);
-        assert_eq!(
-            config.subjects,
-            vec!["ployz.v1.local.auth-default.cp.revision.>".to_string()]
-        );
-        assert_eq!(config.retention, stream::RetentionPolicy::Limits);
-        assert_eq!(config.max_messages_per_subject, 1);
-        assert!(config.allow_direct);
-    }
-
-    #[test]
     fn cert_jobs_stream_allows_scheduled_messages() {
         let config = asset_configs(AssetPolicy {
             storage_nodes: 3,
@@ -497,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn asset_configs_split_authority_and_installation_root_kv() {
+    fn asset_configs_keep_only_live_authority_and_installation_kv() {
         let configs = asset_configs(AssetPolicy {
             storage_nodes: 3,
             replica_preference: ReplicaPreference::Three,
@@ -513,7 +435,7 @@ mod tests {
             configs
                 .authority_durable_kv
                 .iter()
-                .any(|bucket| bucket.bucket == PARTICIPANTS_BUCKET)
+                .any(|bucket| bucket.bucket == INSTANCES_BUCKET)
         );
         assert!(
             NATS_KV_ASSETS
@@ -521,6 +443,50 @@ mod tests {
                 .any(|asset| asset.name == MACHINES_BUCKET
                     && asset.role == NatsAssetRole::InstallationRoot)
         );
+        assert_eq!(configs.root_durable_kv.len(), 1);
+    }
+
+    #[test]
+    fn asset_manifest_matches_ensured_streams_and_buckets() {
+        let configs = asset_configs(AssetPolicy {
+            storage_nodes: 3,
+            replica_preference: ReplicaPreference::Three,
+        });
+        let mut configured_streams = vec![
+            configs.deploy_commits.name.as_str().to_string(),
+            configs.route_journal.name.as_str().to_string(),
+            configs.cert_jobs.name.as_str().to_string(),
+        ];
+        configured_streams.sort();
+        let mut manifest_streams = NATS_STREAM_ASSETS
+            .iter()
+            .map(|asset| {
+                assert_eq!(asset.kind, "stream");
+                assert_eq!(asset.role, NatsAssetRole::AuthorityLocal);
+                asset.name.to_string()
+            })
+            .collect::<Vec<_>>();
+        manifest_streams.sort();
+
+        let mut configured_buckets = configs
+            .authority_durable_kv
+            .iter()
+            .chain(&configs.root_durable_kv)
+            .chain(&configs.authority_lease_kv)
+            .map(|bucket| bucket.bucket.clone())
+            .collect::<Vec<_>>();
+        configured_buckets.sort();
+        let mut manifest_buckets = NATS_KV_ASSETS
+            .iter()
+            .map(|asset| {
+                assert_eq!(asset.kind, "kv");
+                asset.name.to_string()
+            })
+            .collect::<Vec<_>>();
+        manifest_buckets.sort();
+
+        assert_eq!(manifest_streams, configured_streams);
+        assert_eq!(manifest_buckets, configured_buckets);
     }
 
     #[test]

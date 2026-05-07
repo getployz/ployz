@@ -37,18 +37,13 @@ impl InviteRepository for NatsStore {
         else {
             return Ok(None);
         };
-        Ok(Some(kv_json::decode_json(
-            "nats_invite_decode",
-            bytes.as_ref(),
-        )?))
+        Ok(Some(decode_invite(invite_id, bytes.as_ref())?))
     }
 
     async fn list_invites(&self) -> Result<Vec<InviteRecord>> {
         let bucket =
             kv_json::get_bucket(self.jetstream(), INVITES_BUCKET, "nats_invites_bucket").await?;
-        let mut invites =
-            kv_json::list_json::<InviteRecord>(&bucket, "nats_invite_decode", "nats_invites_list")
-                .await?;
+        let mut invites = list_invites(&bucket).await?;
         invites.sort_by(|left, right| left.invite_id.cmp(&right.invite_id));
         Ok(invites)
     }
@@ -71,8 +66,7 @@ impl InviteRepository for NatsStore {
                 format!("invite '{invite_id}' not found"),
             ));
         };
-        let invite: InviteRecord =
-            kv_json::decode_json("nats_invite_decode", entry.value.as_ref())?;
+        let invite = decode_invite(invite_id, entry.value.as_ref())?;
         validate_redeemable(invite_id, &invite, machine_id, now_unix_secs)?;
         if invite.consumed_by.as_ref() == Some(machine_id) {
             return Ok(invite);
@@ -98,8 +92,7 @@ impl InviteRepository for NatsStore {
                 format!("invite '{invite_id}' not found"),
             ));
         };
-        let invite: InviteRecord =
-            kv_json::decode_json("nats_invite_decode", entry.value.as_ref())?;
+        let invite = decode_invite(invite_id, entry.value.as_ref())?;
         if invite.consumed_by.is_some() {
             return Err(Error::operation(
                 "invite_consumed",
@@ -155,4 +148,78 @@ async fn update_invite(
         .await
         .map(|_| ())
         .map_err(|error| Error::operation("nats_invite_update", format!("{error:?}")))
+}
+
+async fn list_invites(bucket: &async_nats::jetstream::kv::Store) -> Result<Vec<InviteRecord>> {
+    kv_json::list_json_entries::<InviteRecord>(bucket, "nats_invite_decode", "nats_invites_list")
+        .await?
+        .into_iter()
+        .map(|entry| validate_invite_key(&entry.key, entry.value))
+        .collect()
+}
+
+fn decode_invite(key: &str, bytes: &[u8]) -> Result<InviteRecord> {
+    let invite: InviteRecord = kv_json::decode_json("nats_invite_decode", bytes)?;
+    validate_invite_key(key, invite)
+}
+
+fn validate_invite_key(key: &str, invite: InviteRecord) -> Result<InviteRecord> {
+    if invite.invite_id != key {
+        return Err(Error::operation(
+            "nats_invite_decode",
+            format!(
+                "invite key {key} does not match payload id {}",
+                invite.invite_id
+            ),
+        ));
+    }
+    Ok(invite)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_invite;
+    use ployz_types::model::{InviteRecord, MachineId, NetworkId};
+
+    #[test]
+    fn invite_kv_decode_failure_is_visible() {
+        let error = decode_invite("invite-a", b"{").expect_err("invalid JSON should fail");
+
+        assert!(error.to_string().contains("nats_invite_decode"));
+    }
+
+    #[test]
+    fn invite_kv_key_mismatch_is_visible() {
+        let invite = test_invite("payload-invite");
+        let bytes = serde_json::to_vec(&invite).expect("encode invite");
+
+        let error = decode_invite("key-invite", &bytes).expect_err("key mismatch should fail");
+
+        assert!(error.to_string().contains("key-invite"));
+        assert!(error.to_string().contains("payload-invite"));
+    }
+
+    #[test]
+    fn invite_kv_decode_accepts_matching_key() {
+        let invite = test_invite("invite-a");
+        let bytes = serde_json::to_vec(&invite).expect("encode invite");
+
+        let decoded = decode_invite("invite-a", &bytes).expect("matching invite key");
+
+        assert_eq!(decoded, invite);
+    }
+
+    fn test_invite(id: &str) -> InviteRecord {
+        InviteRecord {
+            invite_id: id.into(),
+            network_id: NetworkId("net-a".into()),
+            issuer_machine_id: MachineId("issuer".into()),
+            issuer_verify_key: "verify".into(),
+            expires_at: 100,
+            consumed_by: None,
+            consumed_at: None,
+            revoked_at: None,
+            signature: "signature".into(),
+        }
+    }
 }

@@ -977,25 +977,36 @@ pub enum RoutingEvent {
         old: MachineMembership,
         new: MachineMembership,
     },
-    MachineRemoved(MachineMembership),
+    MachineRemoved {
+        id: MachineId,
+    },
     RevisionAdded(ServiceRevisionRecord),
     RevisionUpdated {
         old: ServiceRevisionRecord,
         new: ServiceRevisionRecord,
     },
-    RevisionRemoved(ServiceRevisionRecord),
+    RevisionRemoved {
+        namespace: Namespace,
+        service: String,
+        revision_hash: String,
+    },
     ReleaseAdded(ServiceReleaseRecord),
     ReleaseUpdated {
         old: ServiceReleaseRecord,
         new: ServiceReleaseRecord,
     },
-    ReleaseRemoved(ServiceReleaseRecord),
+    ReleaseRemoved {
+        namespace: Namespace,
+        service: String,
+    },
     InstanceAdded(InstanceStatusRecord),
     InstanceUpdated {
         old: InstanceStatusRecord,
         new: InstanceStatusRecord,
     },
-    InstanceRemoved(InstanceStatusRecord),
+    InstanceRemoved {
+        instance_id: InstanceId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1994,6 +2005,53 @@ mod tests {
         assert_eq!(record.active_version_id.as_deref(), Some("v1"));
         assert!(record.order_url.is_none());
         assert_eq!(record.last_error.as_deref(), Some("bad challenge"));
+    }
+
+    #[test]
+    fn certificate_transition_retryable_failure_stays_issuing_until_success_clears_error() {
+        let mut record = cert_record(CertificateState::Issuing);
+        record.active_version_id = Some("v1".into());
+        record.order_url = Some("https://issuer/order/1".into());
+
+        let outcome = record
+            .apply_state_transition(CertificateStateTransition {
+                goal: CertificateStateGoal::KeepIssuingAfterRetryableFailure {
+                    error: "acme rate limited".into(),
+                },
+                evidence: CertificateTransitionEvidence::AcmeFinalize {
+                    hostname: "example.com".into(),
+                },
+                at_unix_secs: 43,
+            })
+            .expect("retryable finalize failure remains in issuing");
+
+        assert_eq!(outcome, CertificateTransitionOutcome::Applied);
+        assert_eq!(record.state, CertificateState::Issuing);
+        assert_eq!(record.active_version_id.as_deref(), Some("v1"));
+        assert_eq!(record.order_url.as_deref(), Some("https://issuer/order/1"));
+        assert_eq!(record.last_error.as_deref(), Some("acme rate limited"));
+        assert_eq!(record.updated_at, 43);
+
+        let outcome = record
+            .apply_state_transition(CertificateStateTransition {
+                goal: CertificateStateGoal::FinalizeActive {
+                    active_version_id: "v2".into(),
+                    next_renewal_at: Some(90),
+                },
+                evidence: CertificateTransitionEvidence::AcmeFinalize {
+                    hostname: "example.com".into(),
+                },
+                at_unix_secs: 44,
+            })
+            .expect("successful finalize resolves the visible retryable error");
+
+        assert_eq!(outcome, CertificateTransitionOutcome::Applied);
+        assert_eq!(record.state, CertificateState::Active);
+        assert_eq!(record.active_version_id.as_deref(), Some("v2"));
+        assert!(record.order_url.is_none());
+        assert!(record.last_error.is_none());
+        assert_eq!(record.next_renewal_at, Some(90));
+        assert_eq!(record.updated_at, 44);
     }
 
     #[test]

@@ -22,10 +22,10 @@ use crate::model::{
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{
-    CertificateStore, DeployCommit, DeployRecordUpdate, DeployRepository, DeployRevisionUpsert,
-    DeploySnapshot, InstanceStatusRepository, InviteRepository, MachineRegistry,
-    MachineSubscription, RoutingEventSubscription, RoutingSnapshotReader, RoutingSubscription,
-    StoreBackend, StoreDriver, StoreRuntimeControl,
+    CertificateStore, DeployCommit, DeployRecordUpdate, DeployRepository, DeploySnapshot,
+    InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
+    RoutingEventSubscription, RoutingSnapshotReader, RoutingSubscription, StoreBackend,
+    StoreDriver, StoreRuntimeControl,
 };
 use ployz_types::Result as PloyzResult;
 use ployz_types::spec::{
@@ -125,6 +125,38 @@ fn replicated_one_reuses_existing_slot_machine() {
     };
     assert_eq!(slot.slot_id, SlotId("slot-0001".into()));
     assert_eq!(slot.machine_id, MachineId("machine-b".into()));
+}
+
+#[test]
+fn replicated_slot_stays_on_draining_machine_instead_of_replacing_lifecycle_truth() {
+    let spec = test_service_spec("api", Placement::Replicated { count: 2 }, "nginx:latest");
+    let machines = vec![MachineId("machine-a".into())];
+    let current_slots = [ServiceReleaseSlot {
+        slot_id: SlotId("slot-0001".into()),
+        machine_id: MachineId("machine-b".into()),
+        active_instance_id: InstanceId("inst-1".into()),
+        revision_hash: "rev-1".into(),
+    }];
+
+    let machine_map = HashMap::from([
+        (
+            MachineId("machine-a".into()),
+            test_machine("machine-a", MachineLifecycle::Active),
+        ),
+        (
+            MachineId("machine-b".into()),
+            test_machine("machine-b", MachineLifecycle::Draining),
+        ),
+    ]);
+
+    let desired = desired_slots(&spec, &machines, Some(&current_slots), &machine_map, None)
+        .expect("desired slots");
+
+    assert_eq!(desired.len(), 2);
+    assert_eq!(desired[0].slot_id, SlotId("slot-0001".into()));
+    assert_eq!(desired[0].machine_id, MachineId("machine-b".into()));
+    assert_eq!(desired[1].slot_id, SlotId("slot-0002".into()));
+    assert_eq!(desired[1].machine_id, MachineId("machine-a".into()));
 }
 
 #[tokio::test]
@@ -1315,6 +1347,14 @@ async fn apply_with_initial_plan_does_not_commit_when_start_candidate_fails() {
         .await
         .expect("list releases");
     assert!(releases.is_empty());
+    let deploy_snapshot = store
+        .load_deploy_snapshot(&manifest.namespace)
+        .await
+        .expect("load deploy snapshot");
+    assert!(
+        deploy_snapshot.revisions.is_empty(),
+        "failed deploy must not publish uncommitted revision facts"
+    );
     let last_update = backend
         .last_deploy_update()
         .await
@@ -1975,8 +2015,9 @@ async fn seed_committed_http_release(
     let spec = http_route_service_spec(service, hostname);
     let revision_hash = spec.revision_hash().expect("revision hash");
     store
-        .record_service_revision(&DeployRevisionUpsert {
-            revision: crate::model::ServiceRevisionRecord {
+        .commit_deploy(&DeployCommit {
+            namespace: namespace.clone(),
+            revisions: vec![crate::model::ServiceRevisionRecord {
                 namespace: namespace.clone(),
                 service: service.into(),
                 revision_hash: revision_hash.clone(),
@@ -1985,17 +2026,18 @@ async fn seed_committed_http_release(
                     .expect("canonical revision json"),
                 created_by: MachineId("seed".into()),
                 created_at: 0,
-            },
+            }],
+            removed_services: Vec::new(),
+            removed_volumes: Vec::new(),
+            releases: vec![test_release(
+                &namespace,
+                service,
+                &revision_hash,
+                Vec::new(),
+            )],
+            volumes: Vec::new(),
+            deploy: test_deploy_record(&namespace, "seed-deploy"),
         })
-        .await
-        .expect("seed revision");
-    store
-        .upsert_service_release(&test_release(
-            &namespace,
-            service,
-            &revision_hash,
-            Vec::new(),
-        ))
         .await
         .expect("seed release");
 }
@@ -2277,10 +2319,6 @@ impl StoreBackend for CountingBackend {
         namespace: &Namespace,
     ) -> PloyzResult<Vec<InstanceStatusRecord>> {
         self.store.list_instance_status(namespace).await
-    }
-
-    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> PloyzResult<()> {
-        self.store.record_service_revision(command).await
     }
 
     async fn record_instance_status(&self, record: &InstanceStatusRecord) -> PloyzResult<()> {

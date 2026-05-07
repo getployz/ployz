@@ -6,11 +6,10 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use ployz_store_api::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
-    DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
-    InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
-    PeerRttObservation, PeerRttStore, RoutingEventEnvelope, RoutingEventSubscription,
-    RoutingSnapshotReader, RoutingSubscription, StoreBackend, StoreRuntimeControl, SyncProbe,
-    SyncStatus,
+    DeployRecordUpdate, DeployRepository, DeploySnapshot, InstanceStatusRepository,
+    InviteRepository, MachineRegistry, MachineSubscription, PeerRttObservation, PeerRttStore,
+    RoutingEventEnvelope, RoutingEventSubscription, RoutingSnapshotReader, RoutingSubscription,
+    StoreBackend, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
@@ -114,10 +113,6 @@ impl StoreBackend for NatsStore {
         volume_name: &str,
     ) -> Result<Option<VolumeRecord>> {
         DeployRepository::get_volume(self, namespace, volume_name).await
-    }
-
-    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
-        DeployRepository::record_service_revision(self, command).await
     }
 
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {

@@ -110,6 +110,7 @@ impl PreparedDeploy {
         &self.applying_record
     }
 
+    #[cfg(test)]
     pub(super) fn revisions(&self) -> &[ServiceRevisionRecord] {
         &self.revisions
     }

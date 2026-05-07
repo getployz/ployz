@@ -125,7 +125,7 @@ pub async fn stream_runtime_frames(
 #[cfg(test)]
 mod tests {
     use super::{relay_runtime_events, runtime_subscription_consumer_id, stream_runtime_frames};
-    use ployz_api::{RuntimeRecord, RuntimeTable, RuntimeWatchFrame};
+    use ployz_api::{RuntimeCollection, RuntimeRecord, RuntimeWatchFrame};
     use ployz_store_api::RoutingEventEnvelope;
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
@@ -179,7 +179,7 @@ mod tests {
         assert_eq!(
             second,
             RuntimeWatchFrame::Upsert {
-                table: RuntimeTable::Instance,
+                collection: RuntimeCollection::Instance,
                 key: String::from("instance-c"),
                 record: RuntimeRecord::Instance(instance_record("instance-c", "prod", "worker")),
             }

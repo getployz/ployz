@@ -1,20 +1,10 @@
-use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, warn};
 
 pub const NATS_CERT_RENEWAL_HEALTH_FILE: &str = "nats-cert-renewal-health.json";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CertRenewalWorkerHealth {
-    pub healthy: bool,
-    pub updated_at_unix_secs: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stale_since_unix_secs: Option<u64>,
-    pub consecutive_failures: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
-}
+pub type CertRenewalWorkerHealth = crate::health::ComponentHealth;
 
 pub async fn load_health(path: impl AsRef<Path>) -> std::io::Result<CertRenewalWorkerHealth> {
     let bytes = tokio::fs::read(path).await?;
@@ -28,34 +18,17 @@ pub async fn record_healthy(path: &Path) {
 
 pub async fn record_unhealthy(
     path: &Path,
-    consecutive_failures: &mut u64,
-    stale_since_unix_secs: &mut Option<u64>,
+    health_state: &mut Option<CertRenewalWorkerHealth>,
     error: impl Into<String>,
 ) {
-    *consecutive_failures = consecutive_failures.saturating_add(1);
     let now = unix_secs();
-    let stale_since = *stale_since_unix_secs.get_or_insert(now);
-    write_health(
-        path,
-        CertRenewalWorkerHealth {
-            healthy: false,
-            updated_at_unix_secs: now,
-            stale_since_unix_secs: Some(stale_since),
-            consecutive_failures: *consecutive_failures,
-            last_error: Some(error.into()),
-        },
-    )
-    .await;
+    let next = CertRenewalWorkerHealth::stale(now, health_state.as_ref(), error);
+    *health_state = Some(next.clone());
+    write_health(path, next).await;
 }
 
 fn healthy_health() -> CertRenewalWorkerHealth {
-    CertRenewalWorkerHealth {
-        healthy: true,
-        updated_at_unix_secs: unix_secs(),
-        stale_since_unix_secs: None,
-        consecutive_failures: 0,
-        last_error: None,
-    }
+    CertRenewalWorkerHealth::healthy(unix_secs())
 }
 
 async fn write_health(path: &Path, health: CertRenewalWorkerHealth) {
@@ -95,13 +68,12 @@ mod tests {
     #[tokio::test]
     async fn cert_renewal_health_roundtrip() {
         let path = temp_path("cert-renewal-health-roundtrip").join("health.json");
-        let health = CertRenewalWorkerHealth {
-            healthy: false,
-            updated_at_unix_secs: 1_777_646_000,
-            stale_since_unix_secs: Some(1_777_646_000),
-            consecutive_failures: 2,
-            last_error: Some(String::from("fetch failed")),
-        };
+        let first = CertRenewalWorkerHealth::stale(1_777_646_000, None, "first");
+        let health = CertRenewalWorkerHealth::stale(
+            1_777_646_100,
+            Some(&first),
+            "fetch failed",
+        );
 
         write_health(&path, health.clone()).await;
 
@@ -112,27 +84,29 @@ mod tests {
     #[tokio::test]
     async fn cert_renewal_unhealthy_keeps_original_stale_since() {
         let path = temp_path("cert-renewal-health-stale").join("health.json");
-        let mut failures = 0;
-        let mut stale_since = None;
+        let mut health_state = None;
 
-        record_unhealthy(&path, &mut failures, &mut stale_since, "first").await;
+        record_unhealthy(&path, &mut health_state, "first").await;
         let first = load_health(path.clone()).await.expect("load first health");
-        record_unhealthy(&path, &mut failures, &mut stale_since, "second").await;
+        record_unhealthy(&path, &mut health_state, "second").await;
         let second = load_health(path).await.expect("load second health");
 
-        assert_eq!(first.stale_since_unix_secs, second.stale_since_unix_secs);
-        assert_eq!(second.consecutive_failures, 2);
-        assert_eq!(second.last_error.as_deref(), Some("second"));
+        assert_eq!(
+            first.stale_since_unix_secs(),
+            second.stale_since_unix_secs()
+        );
+        assert_eq!(second.consecutive_failures(), 2);
+        assert_eq!(second.last_error(), Some("second"));
     }
 
     #[test]
     fn cert_renewal_healthy_state_is_fresh() {
         let health = healthy_health();
 
-        assert!(health.healthy);
-        assert_eq!(health.consecutive_failures, 0);
-        assert_eq!(health.stale_since_unix_secs, None);
-        assert_eq!(health.last_error, None);
+        assert!(health.is_healthy());
+        assert_eq!(health.consecutive_failures(), 0);
+        assert_eq!(health.stale_since_unix_secs(), None);
+        assert_eq!(health.last_error(), None);
     }
 
     fn temp_path(label: &str) -> PathBuf {

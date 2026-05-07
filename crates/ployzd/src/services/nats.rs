@@ -13,8 +13,8 @@ use ployz_runtime_backends::runtime::{
 };
 use ployz_store_api::{
     AcmeChallengeSubscription, CertificateSubscription, DeployCommit, DeployRecordUpdate,
-    DeployRevisionUpsert, DeploySnapshot, MachineSubscription, PeerRttObservation,
-    RoutingEventSubscription, StoreBackend, StoreDriver, StoreRuntimeControl, SyncStatus,
+    DeploySnapshot, MachineSubscription, PeerRttObservation, RoutingEventSubscription,
+    StoreBackend, StoreDriver, StoreRuntimeControl, SyncStatus,
 };
 use ployz_types::Result;
 use ployz_types::error::Error;
@@ -356,10 +356,6 @@ where
         volume_name: &str,
     ) -> Result<Option<VolumeRecord>> {
         self.store().await?.get_volume(namespace, volume_name).await
-    }
-
-    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
-        self.store().await?.record_service_revision(command).await
     }
 
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
