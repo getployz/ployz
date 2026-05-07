@@ -11,8 +11,9 @@ use futures_util::StreamExt;
 use ployz_types::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::buckets::NatsAssetNames;
 use crate::subjects;
-use crate::subjects::{CERT_JOBS_STREAM, NatsScope};
+use crate::subjects::NatsScope;
 
 pub const NATS_SCHEDULE: &str = "Nats-Schedule";
 pub const NATS_SCHEDULE_TARGET: &str = "Nats-Schedule-Target";
@@ -60,6 +61,7 @@ pub enum JobSchedule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertRenewalPublishSpec {
     pub subject: String,
+    pub stream: String,
     pub headers: HeaderMap,
     pub payload: Vec<u8>,
 }
@@ -75,8 +77,9 @@ impl CertRenewalPublishSpec {
         schedule: JobSchedule,
     ) -> Result<Self> {
         let job = CertRenewalJob::new_in(scope, hostname);
+        let stream = NatsAssetNames::new(scope).cert_jobs_stream;
         let mut headers = HeaderMap::new();
-        headers.insert(NATS_EXPECTED_STREAM, CERT_JOBS_STREAM);
+        headers.insert(NATS_EXPECTED_STREAM, stream.as_str());
         let message_id = cert_renewal_message_id(&job.hostname, &schedule);
         headers.insert(NATS_MESSAGE_ID, message_id.as_str());
         let subject = match schedule_header_value(&schedule)? {
@@ -93,6 +96,7 @@ impl CertRenewalPublishSpec {
         .map_err(|error| Error::operation("nats_cert_job_encode", error.to_string()))?;
         Ok(Self {
             subject,
+            stream,
             headers,
             payload,
         })
@@ -103,7 +107,7 @@ impl CertRenewalPublishSpec {
         PublishMessage::build()
             .payload(self.payload.clone().into())
             .headers(self.headers.clone())
-            .expected_stream(CERT_JOBS_STREAM)
+            .expected_stream(self.stream.clone())
     }
 }
 
@@ -178,7 +182,7 @@ impl NatsCertRenewalJobConsumer {
         policy: CertRenewalConsumerPolicy,
     ) -> Result<Self> {
         let stream = js
-            .get_stream(CERT_JOBS_STREAM)
+            .get_stream(NatsAssetNames::new(scope).cert_jobs_stream.as_str())
             .await
             .map_err(|error| Error::operation("nats_cert_job_stream", format!("{error:?}")))?;
         let consumer = stream
@@ -394,7 +398,11 @@ mod tests {
         );
         assert_eq!(
             header(&spec.headers, NATS_EXPECTED_STREAM),
-            CERT_JOBS_STREAM
+            NatsAssetNames::new(&NatsScope::default()).cert_jobs_stream
+        );
+        assert_eq!(
+            spec.stream,
+            NatsAssetNames::new(&NatsScope::default()).cert_jobs_stream
         );
         assert_eq!(
             header(&spec.headers, NATS_MESSAGE_ID),

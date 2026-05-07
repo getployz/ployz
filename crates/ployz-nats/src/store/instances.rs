@@ -4,7 +4,6 @@ use ployz_types::model::{InstanceId, InstanceStatusRecord, RoutingEvent};
 use ployz_types::spec::Namespace;
 
 use crate::NatsStore;
-use crate::buckets::INSTANCES_BUCKET;
 use crate::store::kv_json;
 
 impl InstanceStatusRepository for NatsStore {
@@ -12,9 +11,7 @@ impl InstanceStatusRepository for NatsStore {
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<InstanceStatusRecord>> {
-        let bucket =
-            kv_json::get_bucket(self.jetstream(), INSTANCES_BUCKET, "nats_instances_bucket")
-                .await?;
+        let bucket = instances_bucket(self).await?;
         let records = list_instances(&bucket).await?;
         let records = records
             .into_iter()
@@ -24,9 +21,7 @@ impl InstanceStatusRepository for NatsStore {
     }
 
     async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
-        let bucket =
-            kv_json::get_bucket(self.jetstream(), INSTANCES_BUCKET, "nats_instances_bucket")
-                .await?;
+        let bucket = instances_bucket(self).await?;
         let old = bucket
             .get(&record.instance_id.0)
             .await
@@ -57,9 +52,7 @@ impl InstanceStatusRepository for NatsStore {
     }
 
     async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
-        let bucket =
-            kv_json::get_bucket(self.jetstream(), INSTANCES_BUCKET, "nats_instances_bucket")
-                .await?;
+        let bucket = instances_bucket(self).await?;
         kv_json::delete(&bucket, &instance_id.0, "nats_instance_delete").await?;
         self.publish_routing_events(
             format!("instance:remove:{}", instance_id.0),
@@ -75,11 +68,19 @@ impl InstanceStatusRepository for NatsStore {
 pub(crate) async fn list_all_instance_status(
     store: &NatsStore,
 ) -> Result<Vec<InstanceStatusRecord>> {
-    let bucket =
-        kv_json::get_bucket(store.jetstream(), INSTANCES_BUCKET, "nats_instances_bucket").await?;
+    let bucket = instances_bucket(store).await?;
     let mut records = list_instances(&bucket).await?;
     sort_instances(&mut records);
     Ok(records)
+}
+
+async fn instances_bucket(store: &NatsStore) -> Result<async_nats::jetstream::kv::Store> {
+    kv_json::get_bucket(
+        store.jetstream(),
+        store.assets().instances_bucket.as_str(),
+        "nats_instances_bucket",
+    )
+    .await
 }
 
 async fn list_instances(
