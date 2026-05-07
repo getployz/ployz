@@ -1,8 +1,8 @@
 use crate::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
     DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
-    InstanceStatusRepository, InviteRepository, MachineRegistry, RoutingBatchSubscription,
-    RoutingEventBatch, RoutingSnapshotReader, StoreRuntimeControl, SyncProbe, SyncStatus,
+    InstanceStatusRepository, InviteRepository, MachineRegistry, RoutingEventEnvelope,
+    RoutingEventSubscription, RoutingSnapshotReader, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
@@ -26,7 +26,7 @@ pub struct MemoryStore {
 struct StoreInner {
     machines: HashMap<MachineId, MachineMembership>,
     machine_subscribers: Vec<mpsc::Sender<crate::MachineSubscriptionUpdate>>,
-    routing_subscribers: Vec<mpsc::Sender<crate::RoutingBatchSubscriptionUpdate>>,
+    routing_subscribers: Vec<mpsc::Sender<crate::RoutingEventSubscriptionUpdate>>,
     invites: HashMap<String, InviteRecord>,
     service_revisions: HashMap<(Namespace, String, String), ServiceRevisionRecord>,
     service_releases: HashMap<(Namespace, String), ServiceReleaseRecord>,
@@ -96,25 +96,35 @@ impl MemoryStore {
             });
     }
 
-    fn broadcast_routing_batch(
+    fn broadcast_routing_events(
         inner: &mut StoreInner,
-        batch_id: impl Into<String> + Clone,
+        event_id: impl Into<String> + Clone,
         cause: Option<String>,
         events: Vec<RoutingEvent>,
     ) {
-        if events.is_empty() {
-            return;
+        let event_id = event_id.into();
+        for event in events {
+            Self::broadcast_routing_event(inner, event_id.clone(), cause.clone(), event);
         }
+    }
+
+    fn broadcast_routing_event(
+        inner: &mut StoreInner,
+        event_id: impl Into<String> + Clone,
+        cause: Option<String>,
+        event: RoutingEvent,
+    ) {
+        let event_id = event_id.into();
         inner.routing_subscribers.retain(|sender| {
-            match sender.try_send(Ok(RoutingEventBatch::unacked(
-                batch_id.clone(),
+            match sender.try_send(Ok(RoutingEventEnvelope::unacked(
+                event_id.clone(),
                 cause.clone(),
-                events.clone(),
+                event.clone(),
             ))) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    warn!("routing subscriber channel full, closing stale delta stream");
+                    warn!("routing subscriber channel full, closing stale event stream");
                     false
                 }
             }
@@ -139,18 +149,18 @@ impl MemoryStore {
         &self,
     ) -> Result<(RoutingState, mpsc::Receiver<RoutingEvent>)> {
         let (state, mut batches) = self
-            .subscribe_routing_batches(crate::RoutingSubscription::temporary("memory.events"))
+            .subscribe_routing_events_internal(crate::RoutingSubscription::temporary(
+                "memory.events",
+            ))
             .await?;
         let (tx, rx) = mpsc::channel(1024);
         tokio::spawn(async move {
-            while let Some(batch) = batches.recv().await {
-                let Ok(batch) = batch else {
+            while let Some(envelope) = batches.recv().await {
+                let Ok(envelope) = envelope else {
                     return;
                 };
-                for event in batch.events {
-                    if tx.send(event).await.is_err() {
-                        return;
-                    }
+                if tx.send(envelope.event).await.is_err() {
+                    return;
                 }
             }
         });
@@ -213,11 +223,11 @@ impl MachineRegistry for MemoryStore {
             None => RoutingEvent::MachineAdded(record.clone()),
         };
         Self::broadcast_machine(&mut inner, machine_event);
-        Self::broadcast_routing_batch(
+        Self::broadcast_routing_event(
             &mut inner,
             format!("memory:machine:{}", record.id),
             Some("machine.upsert".to_string()),
-            vec![routing_event],
+            routing_event,
         );
         Ok(())
     }
@@ -226,11 +236,11 @@ impl MachineRegistry for MemoryStore {
         let mut inner = self.lock_inner();
         if let Some(record) = inner.machines.remove(id) {
             Self::broadcast_machine(&mut inner, MachineEvent::Removed(record.clone()));
-            Self::broadcast_routing_batch(
+            Self::broadcast_routing_event(
                 &mut inner,
                 format!("memory:machine:delete:{id}"),
                 Some("machine.delete".to_string()),
-                vec![RoutingEvent::MachineRemoved(record)],
+                RoutingEvent::MachineRemoved(record),
             );
         }
         Ok(())
@@ -250,10 +260,19 @@ impl RoutingSnapshotReader for MemoryStore {
         self.load_routing_state().await
     }
 
-    async fn subscribe_routing_batches(
+    async fn subscribe_routing_events(
         &self,
         _subscription: crate::RoutingSubscription,
-    ) -> Result<RoutingBatchSubscription> {
+    ) -> Result<RoutingEventSubscription> {
+        self.subscribe_routing_events_internal(_subscription).await
+    }
+}
+
+impl MemoryStore {
+    async fn subscribe_routing_events_internal(
+        &self,
+        _subscription: crate::RoutingSubscription,
+    ) -> Result<RoutingEventSubscription> {
         let mut inner = self.lock_inner();
         let state = Self::routing_state(&inner);
         let (sender, receiver) = mpsc::channel(1024);
@@ -420,7 +439,7 @@ impl DeployRepository for MemoryStore {
         let mut inner = self.lock_inner();
         let old = Self::record_service_revision_inner(&mut inner, &command.revision);
         if let Some(event) = revision_event(old, &command.revision) {
-            Self::broadcast_routing_batch(
+            Self::broadcast_routing_event(
                 &mut inner,
                 format!(
                     "memory:revision:{}:{}:{}",
@@ -429,7 +448,7 @@ impl DeployRepository for MemoryStore {
                     command.revision.revision_hash
                 ),
                 Some("deploy.revision".to_string()),
-                vec![event],
+                event,
             );
         }
         Ok(())
@@ -438,7 +457,7 @@ impl DeployRepository for MemoryStore {
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
         let mut inner = self.lock_inner();
         let events = Self::commit_deploy_inner(&mut inner, command);
-        Self::broadcast_routing_batch(
+        Self::broadcast_routing_events(
             &mut inner,
             format!("memory:deploy:{}", command.deploy.deploy_id),
             Some("deploy.commit".to_string()),
@@ -485,11 +504,11 @@ impl InstanceStatusRepository for MemoryStore {
             },
             None => RoutingEvent::InstanceAdded(record.clone()),
         };
-        Self::broadcast_routing_batch(
+        Self::broadcast_routing_event(
             &mut inner,
             format!("memory:instance:{}", record.instance_id),
             Some("instance.status".to_string()),
-            vec![event],
+            event,
         );
         Ok(())
     }
@@ -497,11 +516,11 @@ impl InstanceStatusRepository for MemoryStore {
     async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
         let mut inner = self.lock_inner();
         if let Some(record) = Self::remove_instance_status_inner(&mut inner, instance_id) {
-            Self::broadcast_routing_batch(
+            Self::broadcast_routing_event(
                 &mut inner,
                 format!("memory:instance:remove:{instance_id}"),
                 Some("instance.remove".to_string()),
-                vec![RoutingEvent::InstanceRemoved(record)],
+                RoutingEvent::InstanceRemoved(record),
             );
         }
         Ok(())
@@ -804,7 +823,7 @@ impl MemoryStore {
         for record in removed_instances {
             events.push(RoutingEvent::InstanceRemoved(record));
         }
-        Self::broadcast_routing_batch(
+        Self::broadcast_routing_events(
             &mut inner,
             "memory:wipe",
             Some("store.wipe".to_string()),
@@ -1307,6 +1326,94 @@ mod tests {
         assert_eq!(records[0].machine_id, MachineId("machine-a".into()));
     }
 
+    #[tokio::test]
+    async fn certificate_subscribers_receive_snapshot_and_updates() {
+        let store = MemoryStore::new();
+        let mut certificate = test_certificate("example.com");
+        store
+            .upsert_certificate(&certificate)
+            .await
+            .expect("seed certificate");
+
+        let (snapshot, mut events) = store
+            .subscribe_certificates()
+            .await
+            .expect("subscribe certificates");
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].hostname, "example.com");
+
+        certificate.last_error = Some("renewal failed".into());
+        store
+            .upsert_certificate(&certificate)
+            .await
+            .expect("update certificate");
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .expect("certificate update event deadline")
+            .expect("certificate update event")
+            .expect("certificate update should be successful");
+        let CertificateEvent::Updated(updated) = event else {
+            panic!("expected certificate update event, got {event:?}");
+        };
+        assert_eq!(updated.hostname, "example.com");
+        assert_eq!(updated.last_error.as_deref(), Some("renewal failed"));
+    }
+
+    #[tokio::test]
+    async fn acme_challenge_subscribers_receive_snapshot_updates_and_removals() {
+        let store = MemoryStore::new();
+        let mut challenge = test_acme_challenge("example.com", "token-1");
+        store
+            .upsert_acme_challenge(&challenge)
+            .await
+            .expect("seed challenge");
+
+        let (snapshot, mut events) = store
+            .subscribe_acme_challenges()
+            .await
+            .expect("subscribe challenges");
+        assert_eq!(snapshot, vec![challenge.clone()]);
+
+        challenge.key_authorization = "updated-key-auth".into();
+        store
+            .upsert_acme_challenge(&challenge)
+            .await
+            .expect("update challenge");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .expect("challenge update event deadline")
+            .expect("challenge update event")
+            .expect("challenge update should be successful");
+        let AcmeChallengeEvent::Updated(updated) = event else {
+            panic!("expected challenge update event, got {event:?}");
+        };
+        assert_eq!(updated.key_authorization, "updated-key-auth");
+
+        store
+            .delete_acme_challenge("example.com", "token-1")
+            .await
+            .expect("delete challenge");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .expect("challenge removal event deadline")
+            .expect("challenge removal event")
+            .expect("challenge removal should be successful");
+        let AcmeChallengeEvent::Removed(removed) = event else {
+            panic!("expected challenge removal event, got {event:?}");
+        };
+        assert_eq!(removed.hostname, "example.com");
+        assert_eq!(removed.token, "token-1");
+
+        assert!(
+            store
+                .list_acme_challenges()
+                .await
+                .expect("list challenges")
+                .is_empty()
+        );
+    }
+
     fn test_release(
         namespace: &Namespace,
         service: &str,
@@ -1381,6 +1488,32 @@ mod tests {
         }
     }
 
+    fn test_certificate(hostname: &str) -> CertificateRecord {
+        CertificateRecord {
+            hostname: hostname.into(),
+            issuer_url: "https://acme.example/directory".into(),
+            account_id: "account-1".into(),
+            state: ployz_types::model::CertificateState::Pending,
+            active_version_id: None,
+            versions: Vec::new(),
+            order_url: None,
+            last_error: None,
+            requested_at: 1,
+            updated_at: 1,
+            next_renewal_at: None,
+        }
+    }
+
+    fn test_acme_challenge(hostname: &str, token: &str) -> AcmeChallengeRecord {
+        AcmeChallengeRecord {
+            hostname: hostname.into(),
+            token: token.into(),
+            key_authorization: "key-auth".into(),
+            expires_at: 100,
+            created_at: 1,
+        }
+    }
+
     #[tokio::test]
     async fn load_routing_state_includes_machines() {
         let store = MemoryStore::new();
@@ -1446,7 +1579,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routing_batch_subscription_returns_snapshot_then_metadata_rich_batches() {
+    async fn delete_machine_updates_routing_snapshot_and_emits_removal_events() {
+        let store = MemoryStore::new();
+        let machine = test_machine("machine-1");
+        store
+            .upsert_self_machine(&machine)
+            .await
+            .expect("seed machine");
+        let (_machine_snapshot, mut machine_rx) = store
+            .subscribe_machines()
+            .await
+            .expect("subscribe machines");
+        let (_routing_state, mut routing_rx) = store
+            .subscribe_routing_events()
+            .await
+            .expect("subscribe routing");
+
+        store
+            .delete_machine(&machine.id)
+            .await
+            .expect("delete machine");
+
+        let machine_event =
+            tokio::time::timeout(std::time::Duration::from_secs(1), machine_rx.recv())
+                .await
+                .expect("machine removal event deadline")
+                .expect("machine removal event")
+                .expect("machine removal event should be successful");
+        let MachineEvent::Removed(removed_machine) = machine_event else {
+            panic!("expected machine removal event, got {machine_event:?}");
+        };
+        assert_eq!(removed_machine.id, machine.id);
+
+        let routing_event =
+            tokio::time::timeout(std::time::Duration::from_secs(1), routing_rx.recv())
+                .await
+                .expect("routing removal event deadline")
+                .expect("routing removal event");
+        assert_eq!(routing_event, RoutingEvent::MachineRemoved(machine));
+
+        let state = store.load_routing_state().await.expect("routing state");
+        assert!(state.machines.is_empty());
+    }
+
+    #[tokio::test]
+    async fn routing_event_subscription_returns_snapshot_then_metadata_rich_events() {
         let store = MemoryStore::new();
         let machine = test_machine("machine-1");
         store
@@ -1455,9 +1632,9 @@ mod tests {
             .expect("seed machine");
 
         let (state, mut batches) = store
-            .subscribe_routing_batches(crate::RoutingSubscription::durable("test.consumer"))
+            .subscribe_routing_events_internal(crate::RoutingSubscription::durable("test.consumer"))
             .await
-            .expect("subscribe routing batches");
+            .expect("subscribe routing events");
 
         assert_eq!(state.machines, vec![machine.clone()]);
 
@@ -1468,24 +1645,24 @@ mod tests {
             .await
             .expect("update machine");
 
-        let batch = tokio::time::timeout(std::time::Duration::from_secs(1), batches.recv())
+        let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), batches.recv())
             .await
-            .expect("routing batch deadline")
-            .expect("routing batch")
-            .expect("routing batch should be successful");
+            .expect("routing event deadline")
+            .expect("routing event")
+            .expect("routing event should be successful");
 
-        assert_eq!(batch.batch_id, "memory:machine:machine-1");
-        assert_eq!(batch.cause.as_deref(), Some("machine.upsert"));
-        let [event] = batch.events.as_slice() else {
-            panic!("expected one routing event, got {:?}", batch.events);
-        };
-        let RoutingEvent::MachineUpdated { old, new } = event else {
-            panic!("expected machine update event, got {event:?}");
+        assert_eq!(envelope.event_id, "memory:machine:machine-1");
+        assert_eq!(envelope.cause.as_deref(), Some("machine.upsert"));
+        let RoutingEvent::MachineUpdated { old, new } = &envelope.event else {
+            panic!("expected machine update event, got {:?}", envelope.event);
         };
         assert_eq!(old.labels.get("role"), None);
         assert_eq!(new.labels.get("role").map(String::as_str), Some("gateway"));
 
-        batch.ack().await.expect("memory routing ack is a no-op");
+        envelope
+            .ack()
+            .await
+            .expect("memory routing event ack is a no-op");
     }
 
     #[tokio::test]

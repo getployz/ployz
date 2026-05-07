@@ -621,6 +621,19 @@ mod tests {
         assert!(snapshot.is_none());
     }
 
+    #[test]
+    fn workload_resource_snapshot_ignores_unknown_or_malformed_labels() {
+        let mut unknown = observed_workload_container();
+        unknown.labels = Observation::Unknown;
+        assert!(workload_resource_snapshot(&unknown, &ContainerStatsResponse::default()).is_none());
+
+        let mut malformed = observed_workload_container();
+        malformed.labels = Observation::Malformed("labels were not a map".into());
+        assert!(
+            workload_resource_snapshot(&malformed, &ContainerStatsResponse::default()).is_none()
+        );
+    }
+
     fn observed_workload_container() -> ObservedContainer {
         let mut labels = HashMap::new();
         labels.insert(LABEL_MANAGED.into(), "true".into());

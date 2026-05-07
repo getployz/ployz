@@ -87,23 +87,23 @@ pub fn deploy_commit_filter_in(scope: &NatsScope) -> String {
 }
 
 #[must_use]
-pub fn route_journal_event(batch_id: &str, index: usize) -> String {
-    route_journal_event_in(&NatsScope::default(), batch_id, index)
+pub fn route_journal_event(operation_id: &str, index: usize) -> String {
+    route_journal_event_in(&NatsScope::default(), operation_id, index)
 }
 
 #[must_use]
-pub fn route_journal_event_in(scope: &NatsScope, batch_id: &str, index: usize) -> String {
+pub fn route_journal_event_in(scope: &NatsScope, operation_id: &str, index: usize) -> String {
     format!(
         "{}.route.journal.event.default.{}.{}",
         scope.authority_prefix(),
-        subject_token(batch_id),
+        subject_token(operation_id),
         index
     )
 }
 
 #[must_use]
-pub fn routing_event(batch_id: &str, index: usize) -> String {
-    route_journal_event(batch_id, index)
+pub fn routing_event(operation_id: &str, index: usize) -> String {
+    route_journal_event(operation_id, index)
 }
 
 #[must_use]

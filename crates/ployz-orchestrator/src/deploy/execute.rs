@@ -13,8 +13,9 @@ use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_partici
 use crate::deploy::transaction::{CleanupPlan, PreparedDeploy};
 use crate::error::{Error, Result};
 use crate::model::{
-    DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployState, InstanceId,
-    InstanceStatusRecord, MachineId, MachineMembership, ServiceRevisionRecord, VolumeRecord,
+    DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPreview, DeployRecord,
+    DeployState, InstanceId, InstanceStatusRecord, MachineId, MachineMembership,
+    ServiceRevisionRecord, VolumeRecord,
 };
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use ployz_store_api::{
@@ -24,6 +25,7 @@ use ployz_store_api::{
 use ployz_types::time::now_unix_secs;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
+use tracing::warn;
 use uuid::Uuid;
 
 const PARTICIPANT_INSPECT_CONCURRENCY: usize = 64;
@@ -278,6 +280,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
     )
     .await?;
 
+    let mut last_written_deploy_record = None;
     let result = async {
         let final_plan = resolve_plan(store, local_machine_id, manifest).await?;
         let final_fingerprint = final_plan.fingerprint();
@@ -295,6 +298,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
                 deploy: prepared.applying_record().clone(),
             })
             .await?;
+        last_written_deploy_record = Some(prepared.applying_record().clone());
 
         upsert_revisions(store, prepared.revisions()).await?;
         let startup =
@@ -341,6 +345,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
                 deploy: committed.deploy_record().clone(),
             })
             .await?;
+        last_written_deploy_record = Some(committed.deploy_record().clone());
         spawn_certificate_finalization_with_coordination(
             store.clone(),
             issuer_factory.clone(),
@@ -382,7 +387,35 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
     }
     .await;
 
+    if let Err(error) = &result
+        && let Some(last_record) = last_written_deploy_record
+        && last_record.state == DeployState::Applying
+        && let Err(update_error) = store
+            .update_deploy_record(&DeployRecordUpdate {
+                deploy: failed_deploy_record(last_record, error),
+            })
+            .await
+    {
+        warn!(
+            ?update_error,
+            deploy_id = %deploy_id,
+            "failed to record terminal failed deploy state after apply error"
+        );
+    }
+
     result
+}
+
+fn failed_deploy_record(mut record: DeployRecord, error: &Error) -> DeployRecord {
+    record.state = DeployState::Failed;
+    record.finished_at = Some(now_unix_secs());
+    if let Ok(mut preview) = serde_json::from_str::<DeployPreview>(&record.summary_json) {
+        preview.warnings.push(format!("deploy failed: {error}"));
+        if let Ok(summary_json) = serde_json::to_string(&preview) {
+            record.summary_json = summary_json;
+        }
+    }
+    record
 }
 
 async fn upsert_revisions(store: &StoreDriver, revisions: &[ServiceRevisionRecord]) -> Result<()> {

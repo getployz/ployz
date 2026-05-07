@@ -14,10 +14,10 @@ use ployz_types::model::MachineId;
 // ---------------------------------------------------------------------------
 
 pub trait DnsStore: Send + Sync {
-    fn subscribe_routing_batches<'a>(
+    fn subscribe_routing_events<'a>(
         &'a self,
         subscription: RoutingSubscription,
-    ) -> impl Future<Output = Result<ployz_store_api::RoutingBatchSubscription, DnsError>> + Send + 'a;
+    ) -> impl Future<Output = Result<ployz_store_api::RoutingEventSubscription, DnsError>> + Send + 'a;
 }
 
 // ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ where
     loop {
         let consumer_id = format!("dns.{}", machine_id.0);
         let (mut state, mut routing_rx) = match store
-            .subscribe_routing_batches(RoutingSubscription::durable(consumer_id))
+            .subscribe_routing_events(RoutingSubscription::durable(consumer_id))
             .await
         {
             Ok(subscription) => subscription,
@@ -49,24 +49,33 @@ where
         replace_dns_snapshot(&state, &snapshot);
         crate::metrics::set_store_sync_healthy("routing", true);
 
-        while let Some(batch) = routing_rx.recv().await {
-            let batch = match batch {
-                Ok(batch) => batch,
+        while let Some(envelope) = routing_rx.recv().await {
+            let envelope = match envelope {
+                Ok(envelope) => envelope,
                 Err(error) => {
                     crate::metrics::set_store_sync_healthy("routing", false);
                     warn!(%error, "dns routing event stream failed; resubscribing");
                     break;
                 }
             };
-            ployz_store_api::apply_routing_events(&mut state, batch.events.clone());
-            replace_dns_snapshot(&state, &snapshot);
-            if let Err(error) = batch.ack().await {
-                warn!(?error, "dns routing batch ack failed after snapshot swap");
-            }
+            apply_routing_envelope(&mut state, envelope, &snapshot).await;
         }
         crate::metrics::set_store_sync_healthy("routing", false);
         warn!("dns routing event stream closed; resubscribing");
         tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn apply_routing_envelope(
+    state: &mut ployz_types::model::RoutingState,
+    envelope: ployz_store_api::RoutingEventEnvelope,
+    snapshot: &SharedDnsSnapshot,
+) {
+    ployz_store_api::apply_routing_event(state, envelope.event.clone());
+    replace_dns_snapshot(state, snapshot);
+    if let Err(error) = envelope.ack().await {
+        crate::metrics::set_store_sync_healthy("routing", false);
+        warn!(?error, "dns routing event ack failed after snapshot swap");
     }
 }
 
@@ -106,4 +115,55 @@ where
         })
         .map_err(|err| DnsError::Runtime(err.to_string()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prometheus::Encoder;
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn routing_ack_failure_marks_dns_sync_unhealthy_after_snapshot_swap() {
+        crate::metrics::set_store_sync_healthy("routing", true);
+        let snapshot = SharedDnsSnapshot::new(crate::DnsSnapshot::empty());
+        let mut state = ployz_types::model::RoutingState {
+            machines: Vec::new(),
+            revisions: Vec::new(),
+            releases: Vec::new(),
+            instances: Vec::new(),
+        };
+        let (ack_tx, ack_rx) = oneshot::channel();
+        drop(ack_rx);
+
+        apply_routing_envelope(
+            &mut state,
+            ployz_store_api::RoutingEventEnvelope::with_ack(
+                "event-1",
+                Some("test".into()),
+                ployz_types::model::RoutingEvent::RevisionAdded(
+                    ployz_types::model::ServiceRevisionRecord {
+                        namespace: ployz_types::spec::Namespace("prod".into()),
+                        service: "api".into(),
+                        revision_hash: "rev-1".into(),
+                        spec_json: "{}".into(),
+                        created_by: MachineId("machine-1".into()),
+                        created_at: 1,
+                    },
+                ),
+                ack_tx,
+            ),
+            &snapshot,
+        )
+        .await;
+
+        let metrics = prometheus::gather();
+        let mut buffer = Vec::new();
+        prometheus::TextEncoder::new()
+            .encode(&metrics, &mut buffer)
+            .expect("encode metrics");
+        let text = String::from_utf8(buffer).expect("metrics should be utf8");
+        assert!(text.contains("ployz_dns_store_sync_healthy{stream=\"routing\"} 0"));
+        assert!(text.contains("ployz_dns_store_sync_failures_total{stream=\"routing\"}"));
+    }
 }

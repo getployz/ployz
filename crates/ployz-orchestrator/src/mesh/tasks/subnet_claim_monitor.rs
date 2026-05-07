@@ -151,4 +151,23 @@ mod tests {
         .await
         .expect("subnet claim monitor should exit when machine subscription closes");
     }
+
+    #[tokio::test]
+    async fn exits_when_machine_subscription_reports_failure() {
+        let (event_tx, event_rx) = mpsc::channel(4);
+        event_tx
+            .send(Err(crate::error::Error::operation(
+                "test_subscription",
+                "closed",
+            )))
+            .await
+            .expect("failure event should send");
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            run_subnet_claim_monitor_task(Vec::new(), event_rx, CancellationToken::new()),
+        )
+        .await
+        .expect("subnet claim monitor should exit when machine subscription reports failure");
+    }
 }

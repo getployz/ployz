@@ -1,5 +1,4 @@
 use async_nats::jetstream::ErrorCode;
-use async_nats::jetstream::Message;
 use async_nats::jetstream::consumer::push;
 use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
 use async_nats::jetstream::stream::ConsumerErrorKind;
@@ -9,7 +8,7 @@ use ployz_store_api::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
     DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
     InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
-    PeerRttObservation, PeerRttStore, RoutingBatchSubscription, RoutingEventBatch,
+    PeerRttObservation, PeerRttStore, RoutingEventEnvelope, RoutingEventSubscription,
     RoutingSnapshotReader, RoutingSubscription, StoreBackend, StoreRuntimeControl, SyncProbe,
     SyncStatus,
 };
@@ -20,7 +19,6 @@ use ployz_types::model::{
     MachineMembership, RoutingEvent, RoutingState, ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
-use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -29,10 +27,7 @@ use crate::NatsStore;
 use crate::buckets::ensure_assets_in;
 use crate::store::instances::list_all_instance_status;
 use crate::store::kv_json;
-use crate::store::routing::{
-    NATS_BATCH_COMMIT, NATS_BATCH_ID, NATS_BATCH_SEQUENCE, PLOYZ_ROUTING_CAUSE,
-    PLOYZ_ROUTING_COUNT, PLOYZ_ROUTING_SEQUENCE,
-};
+use crate::store::routing::{PLOYZ_ROUTING_CAUSE, PLOYZ_ROUTING_EVENT_ID};
 use crate::subjects::{NatsScope, ROUTING_EVENTS_STREAM};
 
 const ROUTING_CONSUMER_CHANNEL_CAPACITY: usize = 128;
@@ -91,11 +86,11 @@ impl StoreBackend for NatsStore {
         RoutingSnapshotReader::load_routing_state(self).await
     }
 
-    async fn subscribe_routing_batches(
+    async fn subscribe_routing_events(
         &self,
         subscription: RoutingSubscription,
-    ) -> Result<RoutingBatchSubscription> {
-        RoutingSnapshotReader::subscribe_routing_batches(self, subscription).await
+    ) -> Result<RoutingEventSubscription> {
+        RoutingSnapshotReader::subscribe_routing_events(self, subscription).await
     }
 
     async fn list_deploy_releases(
@@ -227,10 +222,10 @@ impl RoutingSnapshotReader for NatsStore {
         })
     }
 
-    async fn subscribe_routing_batches(
+    async fn subscribe_routing_events(
         &self,
         subscription: RoutingSubscription,
-    ) -> Result<RoutingBatchSubscription> {
+    ) -> Result<RoutingEventSubscription> {
         let consumer_id = subscription.consumer_id().to_string();
         let consumer_name = routing_consumer_name(&consumer_id);
         let temporary = subscription.is_temporary();
@@ -261,7 +256,6 @@ impl RoutingSnapshotReader for NatsStore {
             .map_err(|error| Error::operation("nats_routing_messages", format!("{error:?}")))?;
         let (tx, rx) = mpsc::channel(ROUTING_CONSUMER_CHANNEL_CAPACITY);
         tokio::spawn(async move {
-            let mut pending = PendingRoutingBatches::default();
             loop {
                 let next = tokio::select! {
                     _ = tx.closed() => break,
@@ -274,45 +268,33 @@ impl RoutingSnapshotReader for NatsStore {
                     Ok(message) => message,
                     Err(error) => {
                         let error = Error::operation("nats_routing_consumer", format!("{error:?}"));
-                        warn!(?error, "NATS routing batch consumer failed");
+                        warn!(?error, "NATS routing event consumer failed");
                         let _ = tx.send(Err(error)).await;
                         break;
                     }
                 };
-                match pending.push(message) {
-                    Ok(None) => {}
-                    Ok(Some(complete)) => {
+                match routing_event_envelope(message) {
+                    Ok((message, event_id, cause, event)) => {
                         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-                        let batch = RoutingEventBatch::with_ack(
-                            complete.batch_id,
-                            complete.cause,
-                            complete.events,
-                            ack_tx,
-                        );
-                        if tx.send(Ok(batch)).await.is_err() {
+                        let envelope =
+                            RoutingEventEnvelope::with_ack(event_id, cause, event, ack_tx);
+                        if tx.send(Ok(envelope)).await.is_err() {
                             break;
                         }
                         if ack_rx.await.is_ok() {
-                            let mut ack_error = None;
-                            for message in complete.messages {
-                                if let Err(error) = message.ack().await {
-                                    warn!(?error, "NATS routing batch message ack failed");
-                                    ack_error.get_or_insert_with(|| {
-                                        Error::operation(
-                                            "nats_routing_ack",
-                                            format!("routing batch message ack failed: {error:?}"),
-                                        )
-                                    });
-                                }
-                            }
-                            if let Some(error) = ack_error {
+                            if let Err(error) = message.ack().await {
+                                warn!(?error, "NATS routing event message ack failed");
+                                let error = Error::operation(
+                                    "nats_routing_ack",
+                                    format!("routing event message ack failed: {error:?}"),
+                                );
                                 let _ = tx.send(Err(error)).await;
                                 break;
                             }
                         }
                     }
                     Err(error) => {
-                        warn!(?error, "NATS routing batch decode failed");
+                        warn!(?error, "NATS routing event decode failed");
                         let _ = tx.send(Err(error)).await;
                         break;
                     }
@@ -394,112 +376,32 @@ fn is_missing_consumer(error: &async_nats::jetstream::stream::ConsumerError) -> 
     }
 }
 
-#[derive(Default)]
-struct PendingRoutingBatches {
-    by_id: HashMap<String, PendingRoutingBatch>,
+fn routing_event_envelope(
+    message: async_nats::jetstream::Message,
+) -> Result<(
+    async_nats::jetstream::Message,
+    String,
+    Option<String>,
+    RoutingEvent,
+)> {
+    let (event_id, cause, event) =
+        decode_routing_event(message.headers.as_ref(), message.payload.as_ref())?;
+    Ok((message, event_id, cause, event))
 }
 
-#[derive(Default)]
-struct PendingRoutingBatch {
-    cause: Option<String>,
-    messages: Vec<Message>,
-    events: Vec<RoutingEvent>,
-}
-
-struct CompleteRoutingBatch {
-    batch_id: String,
-    cause: Option<String>,
-    messages: Vec<Message>,
-    events: Vec<RoutingEvent>,
-}
-
-impl PendingRoutingBatches {
-    fn push(&mut self, message: Message) -> Result<Option<CompleteRoutingBatch>> {
-        let headers = message.headers.as_ref().ok_or_else(|| {
-            Error::operation("nats_routing_headers", "routing event missing headers")
-        })?;
-        let batch_id = header(headers, NATS_BATCH_ID)?.to_string();
-        let sequence = routing_sequence(headers)?;
-        let batch = self.by_id.entry(batch_id.clone()).or_default();
-        if sequence == 1 && !batch.events.is_empty() {
-            *batch = PendingRoutingBatch::default();
-        }
-        let complete = batch.push(batch_id.clone(), sequence, message)?;
-        if complete.is_some() {
-            self.by_id.remove(&batch_id);
-        }
-        Ok(complete)
-    }
-}
-
-impl PendingRoutingBatch {
-    fn push(
-        &mut self,
-        batch_id: String,
-        sequence: usize,
-        message: Message,
-    ) -> Result<Option<CompleteRoutingBatch>> {
-        let headers = message.headers.as_ref().ok_or_else(|| {
-            Error::operation("nats_routing_headers", "routing event missing headers")
-        })?;
-        if sequence != self.events.len() + 1 {
-            return Err(Error::operation(
-                "nats_routing_sequence",
-                format!(
-                    "batch '{batch_id}' sequence {sequence} did not follow {}",
-                    self.events.len()
-                ),
-            ));
-        }
-        if self.events.is_empty() {
-            self.cause = headers
-                .get(PLOYZ_ROUTING_CAUSE)
-                .map(|value| value.as_str().to_string());
-        }
-        let event = serde_json::from_slice::<RoutingEvent>(message.payload.as_ref())
-            .map_err(|error| Error::operation("nats_routing_event_decode", error.to_string()))?;
-        let commit = headers
-            .get(NATS_BATCH_COMMIT)
-            .map(|value| {
-                value
-                    .as_str()
-                    .parse::<usize>()
-                    .map_err(|error| Error::operation("nats_routing_commit", error.to_string()))
-            })
-            .transpose()?;
-        let count = if commit.is_some() {
-            Some(
-                header(headers, PLOYZ_ROUTING_COUNT)?
-                    .parse::<usize>()
-                    .map_err(|error| Error::operation("nats_routing_count", error.to_string()))?,
-            )
-        } else {
-            None
-        };
-        self.events.push(event);
-        self.messages.push(message);
-        if commit.is_none() {
-            return Ok(None);
-        };
-        let Some(count) = count else {
-            return Ok(None);
-        };
-        if count != self.events.len() {
-            return Err(Error::operation(
-                "nats_routing_commit",
-                format!(
-                    "batch '{batch_id}' commit count {count} did not match {} messages",
-                    self.events.len()
-                ),
-            ));
-        }
-        Ok(Some(CompleteRoutingBatch {
-            batch_id,
-            cause: self.cause.take(),
-            messages: std::mem::take(&mut self.messages),
-            events: std::mem::take(&mut self.events),
-        }))
-    }
+fn decode_routing_event(
+    headers: Option<&async_nats::HeaderMap>,
+    payload: &[u8],
+) -> Result<(String, Option<String>, RoutingEvent)> {
+    let headers = headers
+        .ok_or_else(|| Error::operation("nats_routing_headers", "routing event missing headers"))?;
+    let event_id = header(headers, PLOYZ_ROUTING_EVENT_ID)?.to_string();
+    let cause = headers
+        .get(PLOYZ_ROUTING_CAUSE)
+        .map(|value| value.as_str().to_string());
+    let event = serde_json::from_slice::<RoutingEvent>(payload)
+        .map_err(|error| Error::operation("nats_routing_event_decode", error.to_string()))?;
+    Ok((event_id, cause, event))
 }
 
 fn header<'a>(headers: &'a async_nats::HeaderMap, name: &str) -> Result<&'a str> {
@@ -507,22 +409,6 @@ fn header<'a>(headers: &'a async_nats::HeaderMap, name: &str) -> Result<&'a str>
         .get(name)
         .map(|value| value.as_str())
         .ok_or_else(|| Error::operation("nats_routing_headers", format!("missing {name} header")))
-}
-
-fn routing_sequence(headers: &async_nats::HeaderMap) -> Result<usize> {
-    let value = headers
-        .get(PLOYZ_ROUTING_SEQUENCE)
-        .or_else(|| headers.get(NATS_BATCH_SEQUENCE))
-        .map(|value| value.as_str())
-        .ok_or_else(|| {
-            Error::operation(
-                "nats_routing_headers",
-                format!("missing {PLOYZ_ROUTING_SEQUENCE} header"),
-            )
-        })?;
-    value
-        .parse::<usize>()
-        .map_err(|error| Error::operation("nats_routing_sequence", error.to_string()))
 }
 
 fn routing_consumer_name(consumer_id: &str) -> String {
@@ -668,5 +554,76 @@ mod tests {
             async_nats::jetstream::stream::ConsumerError::new(ConsumerErrorKind::JetStream(error));
 
         assert!(is_missing_consumer(&error));
+    }
+
+    #[test]
+    fn routing_event_decode_preserves_event_metadata() {
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert(PLOYZ_ROUTING_EVENT_ID, "deploy:deploy-1:1");
+        headers.insert(PLOYZ_ROUTING_CAUSE, "deploy.commit");
+        let event = RoutingEvent::MachineAdded(test_machine("machine-1"));
+        let payload = serde_json::to_vec(&event).expect("routing event should encode");
+
+        let (event_id, cause, decoded) =
+            decode_routing_event(Some(&headers), &payload).expect("routing event should decode");
+
+        assert_eq!(event_id, "deploy:deploy-1:1");
+        assert_eq!(cause.as_deref(), Some("deploy.commit"));
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn routing_event_decode_requires_event_id_header() {
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert(PLOYZ_ROUTING_CAUSE, "deploy.commit");
+        let event = RoutingEvent::MachineAdded(test_machine("machine-1"));
+        let payload = serde_json::to_vec(&event).expect("routing event should encode");
+
+        let error = decode_routing_event(Some(&headers), &payload)
+            .expect_err("missing event id should be visible to subscriber");
+
+        assert!(error.to_string().contains("nats_routing_headers"));
+        assert!(error.to_string().contains(PLOYZ_ROUTING_EVENT_ID));
+    }
+
+    #[test]
+    fn routing_event_decode_rejects_missing_headers() {
+        let event = RoutingEvent::MachineAdded(test_machine("machine-1"));
+        let payload = serde_json::to_vec(&event).expect("routing event should encode");
+
+        let error = decode_routing_event(None, &payload)
+            .expect_err("missing headers should be visible to subscriber");
+
+        assert!(error.to_string().contains("nats_routing_headers"));
+        assert!(error.to_string().contains("missing headers"));
+    }
+
+    #[test]
+    fn routing_event_decode_rejects_malformed_payload() {
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert(PLOYZ_ROUTING_EVENT_ID, "deploy:deploy-1:1");
+
+        let error = decode_routing_event(Some(&headers), b"not json")
+            .expect_err("malformed routing payload should be visible to subscriber");
+
+        assert!(error.to_string().contains("nats_routing_event_decode"));
+    }
+
+    fn test_machine(id: &str) -> MachineMembership {
+        MachineMembership {
+            id: MachineId(id.to_string()),
+            public_key: ployz_types::model::PublicKey([0; 32]),
+            overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
+            topology: ployz_types::model::MachineTopology::local(),
+            subnet: None,
+            bridge_ip: None,
+            endpoints: Vec::new(),
+            lifecycle: ployz_types::model::MachineLifecycle::Active,
+            storage: true,
+            storage_participation: ployz_types::model::StorageParticipation::default_authority(),
+            created_at: 1,
+            updated_at: 1,
+            labels: Default::default(),
+        }
     }
 }

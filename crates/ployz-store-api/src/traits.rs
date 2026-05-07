@@ -28,8 +28,8 @@ pub type AcmeChallengeSubscription = (
     Vec<AcmeChallengeRecord>,
     mpsc::Receiver<AcmeChallengeSubscriptionUpdate>,
 );
-pub type RoutingBatchSubscriptionUpdate = Result<RoutingEventBatch>;
-pub type RoutingBatchSubscription = (RoutingState, mpsc::Receiver<RoutingBatchSubscriptionUpdate>);
+pub type RoutingEventSubscriptionUpdate = Result<RoutingEventEnvelope>;
+pub type RoutingEventSubscription = (RoutingState, mpsc::Receiver<RoutingEventSubscriptionUpdate>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingSubscription {
@@ -66,39 +66,39 @@ impl RoutingSubscription {
 }
 
 #[derive(Debug)]
-pub struct RoutingEventBatch {
-    pub batch_id: String,
+pub struct RoutingEventEnvelope {
+    pub event_id: String,
     pub cause: Option<String>,
-    pub events: Vec<RoutingEvent>,
+    pub event: RoutingEvent,
     ack: Option<oneshot::Sender<()>>,
 }
 
-impl RoutingEventBatch {
+impl RoutingEventEnvelope {
     #[must_use]
     pub fn unacked(
-        batch_id: impl Into<String>,
+        event_id: impl Into<String>,
         cause: Option<String>,
-        events: Vec<RoutingEvent>,
+        event: RoutingEvent,
     ) -> Self {
         Self {
-            batch_id: batch_id.into(),
+            event_id: event_id.into(),
             cause,
-            events,
+            event,
             ack: None,
         }
     }
 
     #[must_use]
     pub fn with_ack(
-        batch_id: impl Into<String>,
+        event_id: impl Into<String>,
         cause: Option<String>,
-        events: Vec<RoutingEvent>,
+        event: RoutingEvent,
         ack: oneshot::Sender<()>,
     ) -> Self {
         Self {
-            batch_id: batch_id.into(),
+            event_id: event_id.into(),
             cause,
-            events,
+            event,
             ack: Some(ack),
         }
     }
@@ -109,8 +109,8 @@ impl RoutingEventBatch {
         };
         ack.send(()).map_err(|()| {
             Error::operation(
-                "routing_batch_ack_failed",
-                format!("routing batch '{}' ack receiver closed", self.batch_id),
+                "routing_event_ack_failed",
+                format!("routing event '{}' ack receiver closed", self.event_id),
             )
         })
     }
@@ -190,7 +190,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        RoutingEventBatch, RoutingSubscription, apply_routing_event, apply_routing_events,
+        RoutingEventEnvelope, RoutingSubscription, apply_routing_event, apply_routing_events,
     };
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
@@ -214,24 +214,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unacked_routing_batch_ack_is_noop() {
-        RoutingEventBatch::unacked("batch-1", None, Vec::new())
-            .ack()
-            .await
-            .expect("unacked batch ack should be a no-op");
+    async fn unacked_routing_event_ack_is_noop() {
+        RoutingEventEnvelope::unacked(
+            "event-1",
+            None,
+            RoutingEvent::MachineAdded(machine("machine-1", MachineLifecycle::Active)),
+        )
+        .ack()
+        .await
+        .expect("unacked event ack should be a no-op");
     }
 
     #[tokio::test]
-    async fn routing_batch_ack_surfaces_closed_receiver() {
+    async fn routing_event_ack_surfaces_closed_receiver() {
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
         drop(ack_rx);
 
-        let error = RoutingEventBatch::with_ack("batch-1", None, Vec::new(), ack_tx)
-            .ack()
-            .await
-            .expect_err("closed ack receiver should be visible to caller");
+        let error = RoutingEventEnvelope::with_ack(
+            "event-1",
+            None,
+            RoutingEvent::MachineAdded(machine("machine-1", MachineLifecycle::Active)),
+            ack_tx,
+        )
+        .ack()
+        .await
+        .expect_err("closed ack receiver should be visible to caller");
 
-        assert!(error.to_string().contains("batch-1"));
+        assert!(error.to_string().contains("event-1"));
         assert!(error.to_string().contains("ack receiver closed"));
     }
 
@@ -364,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn routing_event_batches_project_to_the_same_state_as_a_fresh_snapshot() {
+    fn routing_events_project_to_the_same_state_as_a_fresh_snapshot() {
         let machine_a = machine("machine-a", MachineLifecycle::Active);
         let mut machine_a_draining = machine_a.clone();
         machine_a_draining.lifecycle = MachineLifecycle::Draining;
@@ -543,10 +552,10 @@ pub trait InviteRepository: Send + Sync {
 pub trait RoutingSnapshotReader: Send + Sync {
     fn load_routing_state(&self) -> impl Future<Output = Result<RoutingState>> + Send + '_;
 
-    fn subscribe_routing_batches<'a>(
+    fn subscribe_routing_events<'a>(
         &'a self,
         subscription: RoutingSubscription,
-    ) -> impl Future<Output = Result<RoutingBatchSubscription>> + Send + 'a;
+    ) -> impl Future<Output = Result<RoutingEventSubscription>> + Send + 'a;
 }
 
 pub trait DeployRepository: Send + Sync {

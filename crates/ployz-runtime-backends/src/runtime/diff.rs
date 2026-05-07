@@ -668,4 +668,15 @@ mod tests {
         let observed = base_observed();
         assert!(parent_id_matches(&observed, None));
     }
+
+    #[test]
+    fn parent_id_mismatch_when_labels_are_unknown_or_malformed() {
+        let mut unknown = base_observed();
+        unknown.labels = Observation::Unknown;
+        assert!(!parent_id_matches(&unknown, Some("container123")));
+
+        let mut malformed = base_observed();
+        malformed.labels = Observation::Malformed("labels were not a map".into());
+        assert!(!parent_id_matches(&malformed, Some("container123")));
+    }
 }

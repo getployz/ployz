@@ -79,7 +79,7 @@ impl DeployRepository for NatsStore {
             .cloned();
         publish_revision_in(self.jetstream(), self.scope(), command).await?;
         let event = revision_routing_event(existing, &command.revision);
-        self.publish_routing_batch(
+        self.publish_routing_events(
             format!(
                 "revision:{}:{}:{}",
                 command.revision.namespace.0,
@@ -103,7 +103,7 @@ impl DeployRepository for NatsStore {
             }
         };
         *self.deploy_projection.write().await = None;
-        self.publish_routing_batch(
+        self.publish_routing_events(
             format!("deploy:{}", command.deploy.deploy_id.0),
             "deploy.commit",
             &routing_events,

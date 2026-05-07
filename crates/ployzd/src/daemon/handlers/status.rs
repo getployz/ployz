@@ -593,6 +593,33 @@ ployz_gateway_store_sync_failures_total{stream="routing"} 4
     }
 
     #[test]
+    fn sidecar_sync_status_reports_unhealthy_metric_with_staleness_and_failures() {
+        let metrics = String::from(
+            r#"
+ployz_gateway_store_sync_healthy{stream="certificates"} 0
+ployz_gateway_store_sync_state_since_unix_seconds{stream="certificates"} 1777646000
+ployz_gateway_store_sync_failures_total{stream="certificates"} 7
+"#,
+        );
+
+        let status = metric_status(
+            "gateway",
+            "certificates",
+            "ployz_gateway_store_sync_healthy",
+            "ployz_gateway_store_sync_state_since_unix_seconds",
+            "ployz_gateway_store_sync_failures_total",
+            Ok(&metrics),
+        );
+
+        assert_eq!(status.service, "gateway");
+        assert_eq!(status.stream, "certificates");
+        assert_eq!(status.healthy, Some(false));
+        assert_eq!(status.stale_since_unix_secs, Some(1_777_646_000));
+        assert_eq!(status.failures_total, Some(7));
+        assert_eq!(status.error, None);
+    }
+
+    #[test]
     fn sidecar_sync_status_reports_unreadable_metrics_as_unknown() {
         let error = String::from("connection refused");
 
