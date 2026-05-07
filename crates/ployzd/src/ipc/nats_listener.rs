@@ -1,7 +1,6 @@
 use futures_util::StreamExt;
 use ployz_nats::coord::rpc::{decode_daemon_request, encode_daemon_response};
 use ployz_runtime_api::RuntimeHandle;
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,16 +16,7 @@ const RESUBSCRIBE_DELAY: Duration = Duration::from_secs(1);
 const MAX_IN_FLIGHT_COMMANDS: usize = 64;
 pub const NATS_NODE_RPC_HEALTH_FILE: &str = "nats-node-rpc-health.json";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NatsNodeRpcHealth {
-    pub healthy: bool,
-    pub updated_at_unix_secs: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stale_since_unix_secs: Option<u64>,
-    pub consecutive_failures: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
-}
+pub type NatsNodeRpcHealth = crate::health::ComponentHealth;
 
 pub struct NatsListenerHandle {
     cancel: CancellationToken,
@@ -173,8 +163,7 @@ struct NodeRpcHealthRecorder {
 
 #[derive(Debug, Default)]
 struct NodeRpcHealthState {
-    consecutive_failures: u64,
-    stale_since_unix_secs: Option<u64>,
+    health: Option<NatsNodeRpcHealth>,
 }
 
 impl NodeRpcHealthRecorder {
@@ -187,71 +176,42 @@ impl NodeRpcHealthRecorder {
 
     async fn force_healthy(&self) {
         let mut state = self.state.lock().await;
-        state.consecutive_failures = 0;
-        state.stale_since_unix_secs = None;
+        state.health = None;
         write_health(&self.path, healthy_health()).await;
     }
 
     async fn record_healthy_if_stale(&self) {
         let mut state = self.state.lock().await;
-        if state.consecutive_failures == 0 && state.stale_since_unix_secs.is_none() {
+        if state.health.is_none() {
             return;
         }
-        state.consecutive_failures = 0;
-        state.stale_since_unix_secs = None;
+        state.health = None;
         write_health(&self.path, healthy_health()).await;
     }
 
     async fn record_unhealthy(&self, error: impl Into<String>) {
         let mut state = self.state.lock().await;
-        state.consecutive_failures += 1;
         let now = unix_secs();
-        let stale_since = *state.stale_since_unix_secs.get_or_insert(now);
-        write_health(
-            &self.path,
-            NatsNodeRpcHealth {
-                healthy: false,
-                updated_at_unix_secs: now,
-                stale_since_unix_secs: Some(stale_since),
-                consecutive_failures: state.consecutive_failures,
-                last_error: Some(error.into()),
-            },
-        )
-        .await;
+        let next = NatsNodeRpcHealth::stale(now, state.health.as_ref(), error);
+        state.health = Some(next.clone());
+        write_health(&self.path, next).await;
     }
 }
 
 #[cfg(test)]
 async fn record_unhealthy(
     path: &PathBuf,
-    consecutive_failures: &mut u64,
-    stale_since_unix_secs: &mut Option<u64>,
+    health_state: &mut Option<NatsNodeRpcHealth>,
     error: impl Into<String>,
 ) {
-    *consecutive_failures += 1;
     let now = unix_secs();
-    let stale_since = *stale_since_unix_secs.get_or_insert(now);
-    write_health(
-        path,
-        NatsNodeRpcHealth {
-            healthy: false,
-            updated_at_unix_secs: now,
-            stale_since_unix_secs: Some(stale_since),
-            consecutive_failures: *consecutive_failures,
-            last_error: Some(error.into()),
-        },
-    )
-    .await;
+    let next = NatsNodeRpcHealth::stale(now, health_state.as_ref(), error);
+    *health_state = Some(next.clone());
+    write_health(path, next).await;
 }
 
 fn healthy_health() -> NatsNodeRpcHealth {
-    NatsNodeRpcHealth {
-        healthy: true,
-        updated_at_unix_secs: unix_secs(),
-        stale_since_unix_secs: None,
-        consecutive_failures: 0,
-        last_error: None,
-    }
+    NatsNodeRpcHealth::healthy(unix_secs())
 }
 
 async fn write_health(path: &PathBuf, health: NatsNodeRpcHealth) {
@@ -292,13 +252,8 @@ mod tests {
     #[tokio::test]
     async fn node_rpc_health_roundtrip() {
         let path = temp_path("node-rpc-health-roundtrip").join("health.json");
-        let health = NatsNodeRpcHealth {
-            healthy: false,
-            updated_at_unix_secs: 1_777_646_000,
-            stale_since_unix_secs: Some(1_777_646_000),
-            consecutive_failures: 2,
-            last_error: Some(String::from("subscription closed")),
-        };
+        let first = NatsNodeRpcHealth::stale(1_777_646_000, None, "first");
+        let health = NatsNodeRpcHealth::stale(1_777_646_100, Some(&first), "subscription closed");
 
         write_health(&path, health.clone()).await;
 
@@ -309,27 +264,29 @@ mod tests {
     #[tokio::test]
     async fn node_rpc_unhealthy_keeps_original_stale_since() {
         let path = temp_path("node-rpc-health-stale").join("health.json");
-        let mut failures = 0;
-        let mut stale_since = None;
+        let mut health_state = None;
 
-        record_unhealthy(&path, &mut failures, &mut stale_since, "first").await;
+        record_unhealthy(&path, &mut health_state, "first").await;
         let first = load_health(path.clone()).await.expect("load first health");
-        record_unhealthy(&path, &mut failures, &mut stale_since, "second").await;
+        record_unhealthy(&path, &mut health_state, "second").await;
         let second = load_health(path).await.expect("load second health");
 
-        assert_eq!(first.stale_since_unix_secs, second.stale_since_unix_secs);
-        assert_eq!(second.consecutive_failures, 2);
-        assert_eq!(second.last_error.as_deref(), Some("second"));
+        assert_eq!(
+            first.stale_since_unix_secs(),
+            second.stale_since_unix_secs()
+        );
+        assert_eq!(second.consecutive_failures(), 2);
+        assert_eq!(second.last_error(), Some("second"));
     }
 
     #[test]
     fn node_rpc_healthy_state_is_fresh() {
         let health = healthy_health();
 
-        assert!(health.healthy);
-        assert_eq!(health.consecutive_failures, 0);
-        assert_eq!(health.stale_since_unix_secs, None);
-        assert_eq!(health.last_error, None);
+        assert!(health.is_healthy());
+        assert_eq!(health.consecutive_failures(), 0);
+        assert_eq!(health.stale_since_unix_secs(), None);
+        assert_eq!(health.last_error(), None);
     }
 
     #[tokio::test]
@@ -341,20 +298,17 @@ mod tests {
         recorder.record_unhealthy("publish response failed").await;
         let unhealthy = load_health(path.clone()).await.expect("load unhealthy");
 
-        assert!(!unhealthy.healthy);
-        assert_eq!(unhealthy.consecutive_failures, 1);
-        assert_eq!(
-            unhealthy.last_error.as_deref(),
-            Some("publish response failed")
-        );
+        assert!(!unhealthy.is_healthy());
+        assert_eq!(unhealthy.consecutive_failures(), 1);
+        assert_eq!(unhealthy.last_error(), Some("publish response failed"));
 
         recorder.record_healthy_if_stale().await;
         let healthy = load_health(path).await.expect("load healthy");
 
-        assert!(healthy.healthy);
-        assert_eq!(healthy.consecutive_failures, 0);
-        assert_eq!(healthy.stale_since_unix_secs, None);
-        assert_eq!(healthy.last_error, None);
+        assert!(healthy.is_healthy());
+        assert_eq!(healthy.consecutive_failures(), 0);
+        assert_eq!(healthy.stale_since_unix_secs(), None);
+        assert_eq!(healthy.last_error(), None);
     }
 
     fn temp_path(label: &str) -> PathBuf {

@@ -614,8 +614,6 @@ KV buckets:
   immutable commit envelope.
 - `locks` — key=`locks.deploy.<ns>` / `locks.cert.<hostname>`. TTL leases;
   stream allows per-message TTL and retains MaxAge delete markers for one hour.
-- `coordinator_lease` — key=election lease id. TTL leases; same per-message
-  TTL/delete-marker behavior as `locks`.
 
 ### Operational details
 

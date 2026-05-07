@@ -80,10 +80,17 @@ impl MachineRegistry for NatsStore {
         let kv = machines_bucket(self).await?;
         let snapshot_boundary =
             kv_json::latest_sequence(&kv, "nats_machines_snapshot_boundary").await?;
-        let snapshot = self.list_machines().await?;
-        kv_watch::subscribe_all(
+        let snapshot_entries = kv_json::list_json_entries::<MachineMembership>(
+            &kv,
+            "nats_machine_decode",
+            "nats_machines_list",
+        )
+        .await?;
+        let (snapshot, snapshot_revisions) = machine_snapshot_parts(snapshot_entries)?;
+        kv_watch::subscribe_all_with_snapshot_revisions(
             &kv,
             snapshot,
+            snapshot_revisions,
             snapshot_boundary,
             |record: &MachineMembership| record.id.0.clone(),
             "nats_machines_watch",
@@ -97,6 +104,19 @@ impl MachineRegistry for NatsStore {
 
 async fn machines_bucket(store: &NatsStore) -> Result<kv::Store> {
     kv_json::get_bucket(store.jetstream(), MACHINES_BUCKET, "nats_machines_bucket").await
+}
+
+fn machine_snapshot_parts(
+    entries: Vec<kv_json::JsonEntry<MachineMembership>>,
+) -> Result<(Vec<MachineMembership>, HashMap<String, u64>)> {
+    let mut snapshot = Vec::with_capacity(entries.len());
+    let mut snapshot_revisions = HashMap::with_capacity(entries.len());
+    for entry in entries {
+        let machine = validate_machine_key(&entry.key, entry.value)?;
+        snapshot_revisions.insert(entry.key, entry.revision);
+        snapshot.push(machine);
+    }
+    Ok((snapshot, snapshot_revisions))
 }
 
 fn machine_event_from_kv_entry(
@@ -124,6 +144,19 @@ fn machine_event_from_kv_entry(
 
 fn decode_machine(key: &str, bytes: &[u8]) -> Result<MachineMembership> {
     let record: MachineMembership = kv_json::decode_json("nats_machine_decode", bytes)?;
+    if record.id.0 != key {
+        return Err(Error::operation(
+            "nats_machine_decode",
+            format!(
+                "machine key {key} does not match payload id {}",
+                record.id.0
+            ),
+        ));
+    }
+    Ok(record)
+}
+
+fn validate_machine_key(key: &str, record: MachineMembership) -> Result<MachineMembership> {
     if record.id.0 != key {
         return Err(Error::operation(
             "nats_machine_decode",
@@ -174,6 +207,22 @@ mod tests {
         let decoded = decode_machine("machine-a", &bytes).expect("matching key decodes");
 
         assert_eq!(decoded, machine);
+    }
+
+    #[test]
+    fn machine_snapshot_parts_keep_entry_revisions() {
+        let machine = test_machine("machine-a");
+        let entries = vec![kv_json::JsonEntry {
+            key: String::from("machine-a"),
+            revision: 42,
+            value: machine.clone(),
+        }];
+
+        let (snapshot, revisions) =
+            machine_snapshot_parts(entries).expect("snapshot parts should decode");
+
+        assert_eq!(snapshot, vec![machine]);
+        assert_eq!(revisions.get("machine-a"), Some(&42));
     }
 
     #[test]

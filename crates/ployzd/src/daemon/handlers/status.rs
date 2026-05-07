@@ -94,13 +94,7 @@ impl DaemonState {
         let network_dir = self.network_dir(&active.config.name.0);
         let mut status = Vec::new();
         match crate::ipc::nats_listener::load_health(node_rpc_health_path).await {
-            Ok(health) => status.push(ControlPlaneStatus {
-                component: String::from("node_rpc_listener"),
-                healthy: Some(health.healthy),
-                stale_since_unix_secs: health.stale_since_unix_secs,
-                consecutive_failures: Some(health.consecutive_failures),
-                error: health.last_error,
-            }),
+            Ok(health) => status.push(component_health_status("node_rpc_listener", &health)),
             Err(error) => status.push(ControlPlaneStatus {
                 component: String::from("node_rpc_listener"),
                 healthy: None,
@@ -110,13 +104,7 @@ impl DaemonState {
             }),
         }
         match crate::daemon::cert_renewal_health::load_health(cert_renewal_health_path).await {
-            Ok(health) => status.push(ControlPlaneStatus {
-                component: String::from("cert_renewal_worker"),
-                healthy: Some(health.healthy),
-                stale_since_unix_secs: health.stale_since_unix_secs,
-                consecutive_failures: Some(health.consecutive_failures),
-                error: health.last_error,
-            }),
+            Ok(health) => status.push(component_health_status("cert_renewal_worker", &health)),
             Err(error) => status.push(ControlPlaneStatus {
                 component: String::from("cert_renewal_worker"),
                 healthy: None,
@@ -128,10 +116,10 @@ impl DaemonState {
         match crate::mesh_state::bootstrap::load_bootstrap_seed_cache_health(&network_dir) {
             Ok(Some(health)) => status.push(ControlPlaneStatus {
                 component: String::from("bootstrap_seed_cache"),
-                healthy: Some(health.healthy),
-                stale_since_unix_secs: health.stale_since_unix_secs,
-                consecutive_failures: Some(health.consecutive_failures),
-                error: health.last_error,
+                healthy: Some(health.is_healthy()),
+                stale_since_unix_secs: health.stale_since_unix_secs(),
+                consecutive_failures: Some(health.consecutive_failures()),
+                error: health.last_error().map(String::from),
             }),
             Ok(None) => status.push(ControlPlaneStatus {
                 component: String::from("bootstrap_seed_cache"),
@@ -213,6 +201,19 @@ impl DaemonState {
                 nats_asset_probe_error(format!("nats asset probe timed out for {client_url}"))
             }
         }
+    }
+}
+
+fn component_health_status(
+    component: impl Into<String>,
+    health: &crate::health::ComponentHealth,
+) -> ControlPlaneStatus {
+    ControlPlaneStatus {
+        component: component.into(),
+        healthy: Some(health.is_healthy()),
+        stale_since_unix_secs: health.stale_since_unix_secs(),
+        consecutive_failures: Some(health.consecutive_failures()),
+        error: health.last_error().map(String::from),
     }
 }
 
@@ -495,9 +496,10 @@ fn parse_sync_metric_value(metrics: &str, metric: &str, stream: &str) -> Option<
 #[cfg(test)]
 mod tests {
     use super::{
-        metric_status, nats_asset_is_healthy, nats_current_replicas, nats_max_lag,
-        nats_offline_replicas, parse_sync_metric, parse_sync_metric_u64,
+        component_health_status, metric_status, nats_asset_is_healthy, nats_current_replicas,
+        nats_max_lag, nats_offline_replicas, parse_sync_metric, parse_sync_metric_u64,
     };
+    use crate::health::ComponentHealth;
     use async_nats::jetstream::stream::{ClusterInfo, PeerInfo};
     use std::time::Duration;
 
@@ -642,6 +644,20 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
         assert_eq!(status.stale_since_unix_secs, None);
         assert_eq!(status.failures_total, None);
         assert_eq!(status.error.as_deref(), Some("connection refused"));
+    }
+
+    #[test]
+    fn component_health_status_preserves_stale_failure_details() {
+        let first = ComponentHealth::stale(1_777_646_000, None, "subscription closed");
+        let health = ComponentHealth::stale(1_777_646_100, Some(&first), "ack failed");
+
+        let status = component_health_status("node_rpc_listener", &health);
+
+        assert_eq!(status.component, "node_rpc_listener");
+        assert_eq!(status.healthy, Some(false));
+        assert_eq!(status.stale_since_unix_secs, Some(1_777_646_000));
+        assert_eq!(status.consecutive_failures, Some(2));
+        assert_eq!(status.error.as_deref(), Some("ack failed"));
     }
 
     #[test]

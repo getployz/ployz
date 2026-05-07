@@ -9,36 +9,6 @@ use crate::store::kv_json;
 
 const KV_WATCH_CHANNEL_CAPACITY: usize = 128;
 
-pub(crate) async fn subscribe_all<T, E>(
-    bucket: &kv::Store,
-    snapshot: Vec<T>,
-    snapshot_boundary: u64,
-    snapshot_key: impl Fn(&T) -> String + Send + 'static,
-    watch_operation: &'static str,
-    watch_failure_message: &'static str,
-    decode_failure_message: &'static str,
-    event_from_entry: impl Fn(&mut HashMap<String, T>, &str, &[u8], kv::Operation) -> Result<Option<E>>
-    + Send
-    + 'static,
-) -> Result<(Vec<T>, mpsc::Receiver<Result<E>>)>
-where
-    T: Clone + Send + 'static,
-    E: Send + 'static,
-{
-    subscribe_all_with_snapshot_revisions(
-        bucket,
-        snapshot,
-        HashMap::new(),
-        snapshot_boundary,
-        snapshot_key,
-        watch_operation,
-        watch_failure_message,
-        decode_failure_message,
-        event_from_entry,
-    )
-    .await
-}
-
 pub(crate) async fn subscribe_all_with_snapshot_revisions<T, E>(
     bucket: &kv::Store,
     snapshot: Vec<T>,

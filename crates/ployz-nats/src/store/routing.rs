@@ -6,7 +6,7 @@ use ployz_types::error::{Error, Result};
 use ployz_types::model::RoutingEvent;
 
 use crate::NatsStore;
-use crate::subjects::{self, NatsScope, ROUTING_EVENTS_STREAM};
+use crate::subjects::{self, NatsScope, ROUTE_JOURNAL_STREAM};
 
 pub const PLOYZ_ROUTING_CAUSE: &str = "Ployz-Routing-Cause";
 pub const PLOYZ_ROUTING_EVENT_ID: &str = "Ployz-Routing-Event-Id";
@@ -39,7 +39,7 @@ pub(crate) async fn publish_routing_events_in(
         let publish = PublishMessage::build()
             .payload(spec.payload.into())
             .headers(spec.headers)
-            .expected_stream(ROUTING_EVENTS_STREAM);
+            .expected_stream(ROUTE_JOURNAL_STREAM);
         let ack = js
             .send_publish(spec.subject, publish)
             .await
@@ -71,7 +71,7 @@ pub(crate) fn routing_publish_specs_in(
         .map(|(index, event)| {
             let event_id = routing_event_id(operation_id, index + 1);
             let mut headers = HeaderMap::new();
-            headers.insert(NATS_EXPECTED_STREAM, ROUTING_EVENTS_STREAM);
+            headers.insert(NATS_EXPECTED_STREAM, ROUTE_JOURNAL_STREAM);
             headers.insert(PLOYZ_ROUTING_EVENT_ID, event_id.as_str());
             headers.insert(PLOYZ_ROUTING_CAUSE, cause);
             let payload = serde_json::to_vec(event).map_err(|error| {
@@ -120,7 +120,7 @@ mod tests {
         );
         assert_eq!(
             header(&specs[0].headers, "Nats-Expected-Stream"),
-            ROUTING_EVENTS_STREAM
+            ROUTE_JOURNAL_STREAM
         );
         assert_eq!(
             header(&specs[1].headers, PLOYZ_ROUTING_EVENT_ID),

@@ -7,7 +7,7 @@ use ployz_types::error::{Error, Result};
 
 use crate::role::{ReplicaPreference, desired_replicas};
 use crate::subjects::{
-    self, CERT_JOBS_STREAM, DEPLOY_COMMITS_STREAM, NatsScope, ROUTING_EVENTS_STREAM,
+    self, CERT_JOBS_STREAM, DEPLOY_COMMITS_STREAM, NatsScope, ROUTE_JOURNAL_STREAM,
 };
 
 pub const MACHINES_BUCKET: &str = "machines_local";
@@ -19,7 +19,6 @@ pub const CERTIFICATES_BUCKET: &str = "cp_certificates_auth-default";
 pub const ACME_CHALLENGES_BUCKET: &str = "cp_acme_challenges_auth-default";
 pub const ACME_CHALLENGE_READINESS_BUCKET: &str = "cp_acme_challenge_readiness_auth-default";
 pub const LOCKS_BUCKET: &str = "cp_locks_auth-default";
-pub const COORDINATOR_LEASE_BUCKET: &str = "cp_coordinator_lease_auth-default";
 const LEASE_DELETE_MARKER_TTL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +51,7 @@ pub const NATS_STREAM_ASSETS: &[NatsAssetSpec] = &[
         role: NatsAssetRole::AuthorityLocal,
     },
     NatsAssetSpec {
-        name: ROUTING_EVENTS_STREAM,
+        name: ROUTE_JOURNAL_STREAM,
         kind: "stream",
         role: NatsAssetRole::AuthorityLocal,
     },
@@ -106,11 +105,6 @@ pub const NATS_KV_ASSETS: &[NatsAssetSpec] = &[
     },
     NatsAssetSpec {
         name: LOCKS_BUCKET,
-        kind: "kv",
-        role: NatsAssetRole::AuthorityLocal,
-    },
-    NatsAssetSpec {
-        name: COORDINATOR_LEASE_BUCKET,
         kind: "kv",
         role: NatsAssetRole::AuthorityLocal,
     },
@@ -256,7 +250,7 @@ fn deploy_commits_stream(scope: &NatsScope, replicas: usize) -> stream::Config {
 
 fn route_journal_stream(scope: &NatsScope, replicas: usize) -> stream::Config {
     stream::Config {
-        name: ROUTING_EVENTS_STREAM.into(),
+        name: ROUTE_JOURNAL_STREAM.into(),
         subjects: vec![subjects::route_journal_filter_in(scope)],
         retention: stream::RetentionPolicy::Limits,
         storage: stream::StorageType::File,
@@ -321,7 +315,7 @@ fn root_durable_buckets(replicas: usize) -> Vec<kv::Config> {
 }
 
 fn authority_lease_buckets(replicas: usize) -> Vec<kv::Config> {
-    [LOCKS_BUCKET, COORDINATOR_LEASE_BUCKET]
+    [LOCKS_BUCKET]
         .into_iter()
         .map(|bucket| kv::Config {
             bucket: bucket.into(),
@@ -358,7 +352,7 @@ mod tests {
             replica_preference: ReplicaPreference::Three,
         })
         .route_journal;
-        assert_eq!(config.name, ROUTING_EVENTS_STREAM);
+        assert_eq!(config.name, ROUTE_JOURNAL_STREAM);
         assert_eq!(
             config.subjects,
             vec!["ployz.v1.local.auth-default.route.journal.>".to_string()]

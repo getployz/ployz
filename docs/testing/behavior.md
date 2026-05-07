@@ -167,7 +167,8 @@ cargo test -p ployz-sim
 - Status surface tests pin live-observation failures: missing or unreadable
   sidecar sync metrics report unknown health with an explicit error, while
   unhealthy metrics preserve stale-since and failure counts instead of
-  pretending the edge is healthy.
+  pretending the edge is healthy; control-plane component health preserves the
+  original stale timestamp, failure count, and latest error for status readers.
 - API serialization tests pin structured failure/status contracts: daemon
   responses preserve typed payloads, machine operation status, runtime
   subscription error frames, edge/control-plane uncertainty, and `last_error`
@@ -177,7 +178,7 @@ cargo test -p ployz-sim
   `std::io::Error`, and failed child processes do not become synthetic success.
 - Runtime watch API tests pin backend-independent routing frames for all
   subscriber collections: machine, revision, release, and instance events map to
-  stable upsert/remove keys.
+  stable upsert/remove keys, and remove frames serialize as key-only deletes.
 - Machine operation tests pin durable failure visibility: a recorded operation
   failure remains visible through later running/stage updates and is cleared
   only by success.
