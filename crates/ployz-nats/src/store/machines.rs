@@ -1,5 +1,4 @@
 use async_nats::jetstream::kv;
-use futures_util::TryStreamExt;
 use ployz_store_api::{MachineRegistry, MachineSubscription};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{MachineEvent, MachineId, MachineMembership, RoutingEvent};
@@ -13,25 +12,13 @@ use crate::store::kv_watch;
 impl MachineRegistry for NatsStore {
     async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         let kv = machines_bucket(self).await?;
-        let mut keys = kv
-            .keys()
-            .await
-            .map_err(|error| Error::operation("nats_machines_keys", format!("{error:?}")))?
-            .try_collect::<Vec<String>>()
-            .await
-            .map_err(|error| Error::operation("nats_machines_keys", format!("{error:?}")))?;
-        keys.sort();
-        let mut machines = Vec::new();
-        for key in keys {
-            let Some(bytes) = kv
-                .get(key.clone())
-                .await
-                .map_err(|error| Error::operation("nats_machine_get", format!("{error:?}")))?
-            else {
-                continue;
-            };
-            machines.push(decode_machine(&key, bytes.as_ref())?);
-        }
+        let entries = kv_json::list_json_entries::<MachineMembership>(
+            &kv,
+            "nats_machine_decode",
+            "nats_machines_list",
+        )
+        .await?;
+        let (machines, _revisions) = machine_snapshot_parts(entries)?;
         Ok(machines)
     }
 
@@ -240,6 +227,20 @@ mod tests {
         );
         assert_eq!(revisions.get("machine-a"), Some(&42));
         assert_eq!(revisions.get("machine-b"), Some(&41));
+    }
+
+    #[test]
+    fn machine_snapshot_parts_rejects_key_mismatch() {
+        let entries = vec![kv_json::JsonEntry {
+            key: String::from("key-machine"),
+            revision: 41,
+            value: test_machine("payload-machine"),
+        }];
+
+        let error = machine_snapshot_parts(entries).expect_err("key mismatch should fail");
+
+        assert!(error.to_string().contains("key-machine"));
+        assert!(error.to_string().contains("payload-machine"));
     }
 
     #[test]

@@ -111,8 +111,12 @@ cargo test -p ployz-sim
 - Memory deploy commit tests pin backend write semantics: removed services emit
   release-removal events, removed volumes are scoped to the deploy namespace,
   and deploy snapshots return revisions, releases, and instances in stable
-  contract-identity order.
-- Memory instance status tests pin direct status-list reads: instance rows are
+  contract-identity order; direct release-list and volume-list reads also
+  return stable contract-identity order. Memory and NATS deploy stores share the
+  same store API deploy projection, so commit interpretation is tested once
+  instead of drifting by backend. Memory routing notifications use one routing
+  event id per fact, matching the route journal shape.
+- Memory instance status tests pin direct status-list reads: instance records are
   returned in stable contract-identity order, matching deploy snapshots.
 - Memory machine registry tests pin removal visibility: deleting a machine
   updates the routing snapshot and emits both machine and routing removal
@@ -121,44 +125,61 @@ cargo test -p ployz-sim
 - Memory certificate store tests pin subscriber visibility for certificate and
   ACME challenge changes: initial snapshots, updates, and challenge removals
   are observable by background consumers, and certificate/challenge/readiness
-  lists and snapshots return rows in stable contract-identity order.
+  lists and snapshots return records in stable contract-identity order.
 - Store API routing acknowledgement tests pin foreground failure visibility:
   untracked events are no-ops, while closed ack receivers return an error to
   the caller instead of being hidden.
 - NATS routing subscription tests pin transport failure visibility: routing
   events must carry event IDs and valid payloads, and malformed transport
-  messages become subscriber errors instead of ambiguous projection input.
+  messages become subscriber errors instead of ambiguous projection input;
+  routing watchers use ephemeral memory-backed consumers after a fresh snapshot,
+  with no durable cursor identity to reset or delete on reconnect.
+- NATS KV JSON helper tests pin backend-independent list ordering: shared KV
+  readers consume keys in stable order before decoding records, so store
+  consumers do not inherit backend iteration nondeterminism.
 - NATS machine registry tests pin key/payload identity checks: malformed
   records and mismatched KV keys fail visibly instead of corrupting durable
   routing truth, and machine subscription snapshots preserve KV revisions while
-  returning records in stable machine-id order.
+  rejecting key/payload mismatches and returning records in stable machine-id
+  order.
 - NATS instance store tests pin key/payload identity checks: malformed instance
   records and mismatched KV keys fail visibly instead of emitting misleading
-  routing updates or removals, and instance status rows are returned in stable
+  routing updates or removals, and instance status records are returned in stable
   contract-identity order.
 - Routing event projection tests pin key-only removals: removal events carry
   contract identity instead of stale record payloads, so deletes can be replayed
-  idempotently from the explicit key.
+  idempotently from the explicit key; upserts keep routing state in
+  contract-identity order so event-applied projections match fresh snapshot
+  shape.
 - NATS deploy status tests pin key/payload identity checks: malformed or
   mismatched deploy status records fail visibly instead of being returned for
   the wrong deploy id.
-- NATS deploy projection tests pin deterministic backend output: revisions,
+- Store API deploy projection tests pin deterministic backend output: revisions,
   releases, and volumes are returned in contract-identity order for namespace
   and global snapshots rather than hash-map iteration order.
+- NATS deploy stream tests pin stream-specific behavior: routing events for a
+  committed deploy are derived from the stream-ordered prior projection.
 - NATS invite store tests pin key/payload identity checks: malformed or
   mismatched invite records fail visibly before invite redemption or revocation
-  mutates control-plane state.
+  mutates control-plane state, and invite list output preserves the shared
+  backend's stable key order.
 - NATS certificate store tests pin key/payload identity checks for ACME
-  accounts, certificate metadata, challenges, and readiness rows, so KV keys
+  accounts, certificate metadata, challenges, and readiness records, so KV keys
   remain authoritative identities rather than untrusted decoded payload fields;
-  certificate, challenge, and readiness rows are sorted by contract identity.
+  certificate, challenge, and readiness records are sorted by contract identity;
+  active certificates are persisted before renewal jobs are scheduled.
 - NATS routing journal tests pin the NATS-native shape: each routing fact is a
   directly acknowledged JetStream message, with no staged batch/commit protocol
   or route-journal atomic publish dependency; event subjects are keyed directly
-  by routing event id rather than a database-style batch/index pair.
+  by routing event id rather than a database-style batch/index pair, and the
+  same id is used as `Nats-Msg-Id` for broker-side retry dedupe. The route
+  journal stream and consumers subscribe only to `route.journal.event.>` so
+  routing watchers cannot accidentally decode unrelated journal message types.
 - NATS asset manifest tests pin operator-visible control-plane inventory:
   every stream and KV bucket created by asset setup must appear in the status
-  manifest with the correct stream/KV role.
+  manifest with the correct stream/KV role. Work streams accept only the
+  concrete subject families they process, such as certificate renewal and
+  renewal-schedule messages, instead of broad catch-all work namespaces.
 - Runtime subscription tests pin that routing event acknowledgement failures
   are forwarded to the runtime reader as subscription errors instead of being
   swallowed by the daemon relay.
@@ -171,8 +192,9 @@ cargo test -p ployz-sim
 - Machine remove tests pin mutating control-plane failure behavior: unreachable
   peers fail without `--force` and preserve the durable machine record.
 - Runtime backend diff tests pin uncertainty handling: malformed observed
-  container state must drift, and unknown liveness must recreate rather than
-  silently adopting stale or ambiguous runtime state.
+  container state must drift, unknown liveness must recreate rather than
+  silently adopting stale or ambiguous runtime state, and independent spec
+  drifts are reported together in stable field order.
 - Runtime parent-container tests pin network namespace safety: unknown or
   malformed observed parent labels do not satisfy expected parent identity.
 - Runtime metrics snapshot tests pin observation uncertainty: unknown or
@@ -182,7 +204,8 @@ cargo test -p ployz-sim
 - Status surface tests pin live-observation failures: missing or unreadable
   sidecar sync metrics report unknown health with an explicit error, while
   unhealthy metrics preserve stale-since and failure counts instead of
-  pretending the edge is healthy; control-plane component health preserves the
+  pretending the edge is healthy; NATS asset probe failures preserve asset
+  identity and scope context; control-plane component health preserves the
   original stale timestamp, failure count, and latest error for status readers.
 - API serialization tests pin structured failure/status contracts: daemon
   responses preserve typed payloads, machine operation status, runtime

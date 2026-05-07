@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use ployz_store_api::DeployCommit;
 use ployz_types::model::{
     DeployId, DeployRecord, RoutingEvent, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
+
+use crate::DeployCommit;
 
 type RevisionKey = (Namespace, String, String);
 type ReleaseKey = (Namespace, String);
@@ -12,9 +13,9 @@ type VolumeKey = (Namespace, String);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeployProjection {
-    revisions: HashMap<RevisionKey, ServiceRevisionRecord>,
-    releases: HashMap<ReleaseKey, ServiceReleaseRecord>,
-    volumes: HashMap<VolumeKey, VolumeRecord>,
+    revisions: BTreeMap<RevisionKey, ServiceRevisionRecord>,
+    releases: BTreeMap<ReleaseKey, ServiceReleaseRecord>,
+    volumes: BTreeMap<VolumeKey, VolumeRecord>,
     deploys: HashMap<DeployId, DeployRecord>,
 }
 
@@ -25,26 +26,7 @@ impl DeployProjection {
     }
 
     pub fn apply_commit(&mut self, commit: &DeployCommit) {
-        for revision in &commit.revisions {
-            self.revisions
-                .insert(revision_key(revision), revision.clone());
-        }
-        for service in &commit.removed_services {
-            self.releases
-                .remove(&(commit.namespace.clone(), service.clone()));
-        }
-        for volume in &commit.removed_volumes {
-            self.volumes
-                .remove(&(commit.namespace.clone(), volume.clone()));
-        }
-        for release in &commit.releases {
-            self.releases.insert(release_key(release), release.clone());
-        }
-        for volume in &commit.volumes {
-            self.volumes.insert(volume_key(volume), volume.clone());
-        }
-        self.deploys
-            .insert(commit.deploy.deploy_id.clone(), commit.deploy.clone());
+        let _events = self.apply_commit_events(commit);
     }
 
     pub fn apply_commit_events(&mut self, commit: &DeployCommit) -> Vec<RoutingEvent> {
@@ -95,6 +77,10 @@ impl DeployProjection {
         events
     }
 
+    pub fn update_deploy_record(&mut self, deploy: DeployRecord) {
+        self.deploys.insert(deploy.deploy_id.clone(), deploy);
+    }
+
     #[must_use]
     pub fn deploy(&self, deploy_id: &DeployId) -> Option<&DeployRecord> {
         self.deploys.get(deploy_id)
@@ -102,26 +88,20 @@ impl DeployProjection {
 
     #[must_use]
     pub fn releases(&self, namespace: &Namespace) -> Vec<ServiceReleaseRecord> {
-        let mut releases = self
-            .releases
+        self.releases
             .values()
             .filter(|release| &release.namespace == namespace)
             .cloned()
-            .collect::<Vec<_>>();
-        sort_releases(&mut releases);
-        releases
+            .collect()
     }
 
     #[must_use]
     pub fn revisions(&self, namespace: &Namespace) -> Vec<ServiceRevisionRecord> {
-        let mut revisions = self
-            .revisions
+        self.revisions
             .values()
             .filter(|revision| &revision.namespace == namespace)
             .cloned()
-            .collect::<Vec<_>>();
-        sort_revisions(&mut revisions);
-        revisions
+            .collect()
     }
 
     #[must_use]
@@ -145,14 +125,11 @@ impl DeployProjection {
 
     #[must_use]
     pub fn volumes(&self, namespace: &Namespace) -> Vec<VolumeRecord> {
-        let mut volumes = self
-            .volumes
+        self.volumes
             .values()
             .filter(|volume| &volume.namespace == namespace)
             .cloned()
-            .collect::<Vec<_>>();
-        sort_volumes(&mut volumes);
-        volumes
+            .collect()
     }
 
     #[must_use]
@@ -163,23 +140,17 @@ impl DeployProjection {
 
     #[must_use]
     pub fn all_releases(&self) -> Vec<ServiceReleaseRecord> {
-        let mut releases = self.releases.values().cloned().collect::<Vec<_>>();
-        sort_releases(&mut releases);
-        releases
+        self.releases.values().cloned().collect()
     }
 
     #[must_use]
     pub fn all_revisions(&self) -> Vec<ServiceRevisionRecord> {
-        let mut revisions = self.revisions.values().cloned().collect::<Vec<_>>();
-        sort_revisions(&mut revisions);
-        revisions
+        self.revisions.values().cloned().collect()
     }
 
     #[must_use]
     pub fn all_volumes(&self) -> Vec<VolumeRecord> {
-        let mut volumes = self.volumes.values().cloned().collect::<Vec<_>>();
-        sort_volumes(&mut volumes);
-        volumes
+        self.volumes.values().cloned().collect()
     }
 }
 
@@ -199,18 +170,6 @@ fn volume_key(record: &VolumeRecord) -> VolumeKey {
     (record.namespace.clone(), record.volume_name.clone())
 }
 
-fn sort_revisions(revisions: &mut [ServiceRevisionRecord]) {
-    revisions.sort_by(|left, right| revision_key(left).cmp(&revision_key(right)));
-}
-
-fn sort_releases(releases: &mut [ServiceReleaseRecord]) {
-    releases.sort_by(|left, right| release_key(left).cmp(&release_key(right)));
-}
-
-fn sort_volumes(volumes: &mut [VolumeRecord]) {
-    volumes.sort_by(|left, right| volume_key(left).cmp(&volume_key(right)));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,32 +182,33 @@ mod tests {
         let mut projection = DeployProjection::new();
         projection.apply_commit(&commit(
             &namespace,
-            "deploy-1",
             vec![
                 revision(&namespace, "worker", "rev-b"),
-                revision(&namespace, "api", "rev-b"),
                 revision(&namespace, "api", "rev-a"),
             ],
             vec![
                 release(&namespace, "worker", "rev-b"),
                 release(&namespace, "api", "rev-a"),
             ],
-            vec![volume(&namespace, "z-data"), volume(&namespace, "a-data")],
+            vec![
+                volume(&namespace, "z-data", "deploy-1"),
+                volume(&namespace, "a-data", "deploy-1"),
+            ],
         ));
 
         assert_eq!(
             projection
                 .revisions(&namespace)
                 .iter()
-                .map(|revision| (revision.service.as_str(), revision.revision_hash.as_str()))
+                .map(|record| record.service.as_str())
                 .collect::<Vec<_>>(),
-            [("api", "rev-a"), ("api", "rev-b"), ("worker", "rev-b")]
+            ["api", "worker"]
         );
         assert_eq!(
             projection
                 .releases(&namespace)
                 .iter()
-                .map(|release| release.service.as_str())
+                .map(|record| record.service.as_str())
                 .collect::<Vec<_>>(),
             ["api", "worker"]
         );
@@ -256,7 +216,7 @@ mod tests {
             projection
                 .volumes(&namespace)
                 .iter()
-                .map(|volume| volume.volume_name.as_str())
+                .map(|record| record.volume_name.as_str())
                 .collect::<Vec<_>>(),
             ["a-data", "z-data"]
         );
@@ -269,36 +229,30 @@ mod tests {
         let mut projection = DeployProjection::new();
         projection.apply_commit(&commit(
             &staging,
-            "deploy-staging",
             vec![revision(&staging, "worker", "rev-b")],
             vec![release(&staging, "worker", "rev-b")],
-            vec![volume(&staging, "z-data")],
+            vec![volume(&staging, "z-data", "deploy-staging")],
         ));
         projection.apply_commit(&commit(
             &prod,
-            "deploy-prod",
             vec![revision(&prod, "api", "rev-a")],
             vec![release(&prod, "api", "rev-a")],
-            vec![volume(&prod, "a-data")],
+            vec![volume(&prod, "a-data", "deploy-prod")],
         ));
 
         assert_eq!(
             projection
                 .all_revisions()
                 .iter()
-                .map(|revision| (
-                    revision.namespace.0.as_str(),
-                    revision.service.as_str(),
-                    revision.revision_hash.as_str()
-                ))
+                .map(|record| (record.namespace.0.as_str(), record.service.as_str()))
                 .collect::<Vec<_>>(),
-            [("prod", "api", "rev-a"), ("staging", "worker", "rev-b")]
+            [("prod", "api"), ("staging", "worker")]
         );
         assert_eq!(
             projection
                 .all_releases()
                 .iter()
-                .map(|release| (release.namespace.0.as_str(), release.service.as_str()))
+                .map(|record| (record.namespace.0.as_str(), record.service.as_str()))
                 .collect::<Vec<_>>(),
             [("prod", "api"), ("staging", "worker")]
         );
@@ -306,64 +260,14 @@ mod tests {
             projection
                 .all_volumes()
                 .iter()
-                .map(|volume| (volume.namespace.0.as_str(), volume.volume_name.as_str()))
+                .map(|record| (record.namespace.0.as_str(), record.volume_name.as_str()))
                 .collect::<Vec<_>>(),
             [("prod", "a-data"), ("staging", "z-data")]
         );
     }
 
-    fn revision(
-        namespace: &Namespace,
-        service: &str,
-        revision_hash: &str,
-    ) -> ServiceRevisionRecord {
-        ServiceRevisionRecord {
-            namespace: namespace.clone(),
-            service: service.into(),
-            revision_hash: revision_hash.into(),
-            spec_json: "{}".into(),
-            created_by: MachineId(String::from("founder")),
-            created_at: 1,
-        }
-    }
-
-    fn release(namespace: &Namespace, service: &str, revision_hash: &str) -> ServiceReleaseRecord {
-        ServiceReleaseRecord {
-            namespace: namespace.clone(),
-            service: service.into(),
-            release: ServiceRelease {
-                primary_revision_hash: revision_hash.into(),
-                referenced_revision_hashes: vec![revision_hash.into()],
-                routing: ServiceRoutingPolicy::Direct {
-                    revision_hash: revision_hash.into(),
-                },
-                slots: Vec::new(),
-                updated_by_deploy_id: DeployId(String::from("deploy-1")),
-                updated_at: 1,
-            },
-        }
-    }
-
-    fn volume(namespace: &Namespace, name: &str) -> VolumeRecord {
-        VolumeRecord {
-            namespace: namespace.clone(),
-            volume_name: name.into(),
-            scope: VolumeScope::Single,
-            machine_id: MachineId(String::from("machine-a")),
-            quota: String::from("1G"),
-            mode: String::from("0755"),
-            owner: String::from("1000:1000"),
-            attached_services: Vec::new(),
-            created_at: 1,
-            created_by_deploy_id: DeployId(String::from("deploy-1")),
-            last_modified_at: 1,
-            last_modified_by_deploy_id: DeployId(String::from("deploy-1")),
-        }
-    }
-
     fn commit(
         namespace: &Namespace,
-        deploy_id: &str,
         revisions: Vec<ServiceRevisionRecord>,
         releases: Vec<ServiceReleaseRecord>,
         volumes: Vec<VolumeRecord>,
@@ -376,16 +280,66 @@ mod tests {
             releases,
             volumes,
             deploy: DeployRecord {
-                deploy_id: DeployId(deploy_id.into()),
+                deploy_id: DeployId(format!("deploy-{}", namespace.0)),
                 namespace: namespace.clone(),
-                coordinator_machine_id: MachineId(String::from("founder")),
-                manifest_hash: String::from("manifest"),
+                coordinator_machine_id: MachineId("machine-1".into()),
+                manifest_hash: "manifest".into(),
                 state: DeployState::Committed,
                 started_at: 1,
                 committed_at: Some(2),
                 finished_at: Some(2),
-                summary_json: String::from("{}"),
+                summary_json: "{}".into(),
             },
+        }
+    }
+
+    fn revision(
+        namespace: &Namespace,
+        service: &str,
+        revision_hash: &str,
+    ) -> ServiceRevisionRecord {
+        ServiceRevisionRecord {
+            namespace: namespace.clone(),
+            service: service.to_string(),
+            revision_hash: revision_hash.to_string(),
+            spec_json: "{}".to_string(),
+            created_by: MachineId("machine-1".into()),
+            created_at: 1,
+        }
+    }
+
+    fn release(namespace: &Namespace, service: &str, revision_hash: &str) -> ServiceReleaseRecord {
+        ServiceReleaseRecord {
+            namespace: namespace.clone(),
+            service: service.to_string(),
+            release: ServiceRelease {
+                primary_revision_hash: revision_hash.to_string(),
+                referenced_revision_hashes: vec![revision_hash.to_string()],
+                routing: ServiceRoutingPolicy::Direct {
+                    revision_hash: revision_hash.to_string(),
+                },
+                slots: Vec::new(),
+                updated_by_deploy_id: DeployId(format!("deploy-{service}")),
+                updated_at: 1,
+            },
+        }
+    }
+
+    fn volume(namespace: &Namespace, volume_name: &str, deploy_id: &str) -> VolumeRecord {
+        let deploy_id = DeployId(deploy_id.into());
+        VolumeRecord {
+            namespace: namespace.clone(),
+            volume_name: volume_name.into(),
+            scope: VolumeScope::Single,
+            machine_id: MachineId("machine-1".into()),
+            quota: "1G".into(),
+            mode: "0750".into(),
+            owner: "999:999".into(),
+            attached_services: Vec::new(),
+            created_at: 1,
+            created_by_deploy_id: deploy_id.clone(),
+            last_modified_at: 1,
+            last_modified_by_deploy_id: deploy_id,
         }
     }
 }

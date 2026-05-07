@@ -1120,7 +1120,7 @@ pub struct CertificateVersion {
     pub version_id: String,
     pub fullchain_pem: String,
     // SECURITY: leaf private key in PEM form, replicated as plaintext JSON
-    // through the certificates table. Safe only under the WireGuard-only
+    // through the certificate store. Safe only under the WireGuard-only
     // replication + no-unencrypted-backup assumption documented on the
     // schema; revisit if either assumption changes.
     pub private_key_pem: String,
@@ -2249,7 +2249,7 @@ mod tests {
 
     #[test]
     fn installed_version_returns_none_without_active_version_id() {
-        // Brand-new Pending row with no successful issuance: nothing to serve.
+        // Brand-new Pending record with no successful issuance: nothing to serve.
         let record = cert_record(CertificateState::Pending);
         assert!(record.installed_version().is_none());
     }
@@ -2277,7 +2277,7 @@ mod tests {
 
     #[test]
     fn installed_version_serves_during_renewal_due() {
-        // The renewal ticker flips `Active → RenewalDue` without touching the
+        // The renewal job flips `Active → RenewalDue` without touching the
         // cert material. The old leaf must remain installable until a fresh
         // version is committed; otherwise the gateway drops TLS during every
         // renewal window.
@@ -2292,7 +2292,7 @@ mod tests {
 
     #[test]
     fn installed_version_serves_during_issuing_renewal() {
-        // `start_one` flips the row to `Issuing` for the renewal order while
+        // `start_one` flips the record to `Issuing` for the renewal order while
         // `active_version_id` still points at the previous valid leaf. We
         // serve the old material until finalize replaces it.
         let mut record = cert_record(CertificateState::Issuing);

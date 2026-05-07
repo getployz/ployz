@@ -220,8 +220,6 @@ Use cases for ployz:
 
 - TLS PEM material per `(hostname, not_after)` — cert chains can exceed
   KV size limits with SAN-heavy certs.
-- Compaction snapshot blobs once `deploy_commits` history grows large
-  enough that full replay becomes expensive.
 
 ## Mirrors and Sources
 
@@ -449,14 +447,16 @@ is removed; on `max_deliver` exceeded the message is dropped or DLQ'd.
 
 ```
 stream cert_jobs (retention=Workqueue, ack=explicit, max_deliver=5)
-  subjects: cert.jobs.renew.<hostname>
+  subjects:
+    ployz.v1.<inst>.<auth>.work.cert.renew.>
+    ployz.v1.<inst>.<auth>.work.cert.schedule.>
 ```
 
 Combine with KV CAS locks for "exactly one worker, with a guard against
 duplicate side effects":
 
 ```
-worker pulls cert.jobs.renew.<hostname>
+worker pulls ployz.v1.<inst>.<auth>.work.cert.renew.<hostname>
   → kv.create(locks.cert.<hostname>, …)  // bail with NACK if held
   → perform ACME, write cert KV, release lock
   → ack
@@ -503,11 +503,16 @@ let response = client
   optimization later; rebuilt from the stream on every reader start.
 
 `commit_deploy` publishes the envelope with `Nats-Expected-Last-Subject-Sequence: 0`
-(create-only). Retries with the same `deploy_id` are idempotent.
+(create-only). New-commit routing events are derived from the stream sequence
+acknowledged by JetStream, so routing output follows committed stream order
+rather than the caller's pre-append cache view. Retries with the same
+`deploy_id` are idempotent.
 If the durable commit exists but publishing the derived routing events failed,
 the retry verifies the stored payload and republishes repair events for touched
 keys that still match the authoritative projection; superseded releases are not
-replayed.
+replayed. Routing events use their event id as `Nats-Msg-Id`, so replaying the
+same repair event deduplicates inside the route journal stream's duplicate
+window instead of appending another copy.
 `update_deploy_record` writes a separate `deploy_status` KV, never the
 stream — keeps the commit log immutable and replay-safe.
 
@@ -596,10 +601,12 @@ authority.
 Streams:
 
 - `deploy_commits` — append-only `DeployCommit` envelopes.
-  Subject `deploy_commits.<ns>.<deploy_id>`. Retention=Limits, no
-  `max_age`, no `max_messages_per_subject` collapse. R per policy.
+  Subject `ployz.v1.<inst>.<auth>.cp.deploy.commit.<namespace>.<deploy_id>`.
+  Retention=Limits, no `max_age`, no `max_messages_per_subject` collapse.
+  R per policy.
 - `cert_jobs` — Workqueue retention with `allow_msg_schedules=true`.
-  Subjects under `cert.jobs.renew.<hostname>`.
+  Subjects under `work.cert.renew.<hostname>` and
+  `work.cert.schedule.<hostname>`.
 
 KV buckets:
 
@@ -634,14 +641,13 @@ KV buckets:
 Tracked in code comments and the implementation plan. Highlights:
 
 1. Routing events are live JetStream messages with one routing fact per
-   message. Gateway/DNS use durable per-machine consumers; runtime watches and
-   readiness probes use ephemeral memory-backed push consumers with an
-   inactivity threshold, so short-lived reads do not leave durable cursor state
-   behind. Durable routing subscription setup reads the routing stream sequence,
-   loads a fresh snapshot, then replaces any old consumer with the same id and
-   starts delivery from the next stream sequence. Updates carry either one event
-   envelope or an explicit consumer failure. Runtime watch clients receive that
-   failure as an explicit error frame before the watch stream closes.
+   message. Gateway, DNS, runtime watches, and readiness probes use ephemeral
+   memory-backed push consumers with an inactivity threshold after loading a
+   fresh snapshot, so watches do not leave durable cursor state behind. Routing
+   subscription setup reads the routing stream sequence, loads a fresh snapshot,
+   then starts delivery from the next stream sequence. Updates carry either one
+   event envelope or an explicit consumer failure. Runtime watch clients receive
+   that failure as an explicit error frame before the watch stream closes.
    Routing consumer `max_ack_pending` is bounded to the local bridge-channel
    capacity, and idle heartbeats surface broken delivery paths as failures.
 2. Machine/certificate/ACME challenge subscriptions are KV watchers that carry
@@ -654,7 +660,7 @@ Tracked in code comments and the implementation plan. Highlights:
    `ployzctl status` also reports each authoritative NATS stream/KV asset with
    configured replicas, current replicas, offline replicas, maximum reported
    follower lag, and leader. Replica count alone is not considered operationally
-   healthy; the row is healthy only when all configured replicas are current,
+   healthy; the entry is healthy only when all configured replicas are current,
    no replica is offline, and max lag is zero.
    KV subscriptions read the bucket stream sequence as a snapshot boundary,
    load the current snapshot, then watch from the next sequence. Updates that
@@ -757,22 +763,17 @@ identity issuance and permission policy are not. Worth doing once we want
 to support multi-operator clusters or treat node compromise as a recoverable
 event.
 
-### Compaction with checkpoint
+### Deploy commit retention
 
-`deploy_commits` is unpruned for v1 because pruning a transition log
-loses correctness — old commits represent active releases. The forward
-plan when history grows large enough to matter:
+`deploy_commits` is unpruned for v1. The stream is the durable deploy
+history, and current release/volume state is a projection of that history.
+There is no background compactor or checkpoint stream.
 
-- Periodic per-namespace snapshot blob written to Object Store. Contains
-  the full effective state (releases, volumes) at a known stream sequence.
-- Single `checkpoint.<namespace>.<seq>` event published to a separate
-  stream that readers gate on.
-- Once the checkpoint is durable, `delete_message` on `deploy_commits`
-  for sequences ≤ checkpoint is safe.
-- Readers replay from the latest checkpoint's sequence forward.
-
-This is idempotent NATS work — Object Store and stream subject deletion
-are both first-class. Comes off the shelf when needed.
+If history grows large enough to matter, compaction should be an explicit
+operator primitive: write a named snapshot artifact, prove that readers can
+rebuild from it plus later commits, then prune only the covered commit range.
+Until that primitive exists, keeping the append-only stream is simpler and
+more honest than adding an autonomous checkpoint loop.
 
 ### Multi-region
 
@@ -812,8 +813,9 @@ leader-elected ticker:
 
 ```
 on cert issued/renewed:
-  publish to cert.jobs.renew.<hostname>
+  publish to work.cert.schedule.<hostname>
     with Nats-Schedule = <renewal_due_time>
+    with Nats-Schedule-Target = work.cert.renew.<hostname>
     with Nats-Msg-Id = "renew-<hostname>-<not_after>"
 ```
 
@@ -824,32 +826,22 @@ on success. The ticker disappears entirely.
 `ployz-nats::coord::jobs` now provides the typed renewal job publish spec:
 stable `Nats-Msg-Id`, `Nats-Expected-Stream: cert_jobs`, JSON hostname payload,
 and optional schedule headers. Delayed renewals publish the holding message to
-`cert.jobs.schedule.<hostname>` with `Nats-Schedule: @at <rfc3339>` and
-`Nats-Schedule-Target: cert.jobs.renew.<hostname>` because NATS requires the
+`work.cert.schedule.<hostname>` with `Nats-Schedule: @at <rfc3339>` and
+`Nats-Schedule-Target: work.cert.renew.<hostname>` because NATS requires the
 scheduling subject and target subject to be distinct. It also defines the
-durable pull consumer `ployzd_cert_renewal`, filtered to `cert.jobs.renew.>`,
+durable pull consumer `ployzd_cert_renewal`, filtered to `work.cert.renew.>`,
 with explicit ack, single-message fetches, bounded ack pending, and malformed
-job termination. NATS-backed certificate writes schedule the next renewal before
-the active certificate row is stored, so an active row implies a broker-owned
-renewal job has been accepted. The daemon starts the durable worker instead of
-the local ticker. The orchestrator renewal logic has a per-host
-`process_renewal_job` entrypoint that re-reads the certificate row from
+job termination. NATS-backed certificate writes persist the active certificate
+record before scheduling the next renewal, so a failed schedule publish returns
+to the writer while preserving the durable certificate truth for retry. The
+daemon starts the durable worker instead of the local ticker. The orchestrator
+renewal logic has a per-host
+`process_renewal_job` entrypoint that re-reads the certificate record from
 authority before applying renewal state transitions.
 The worker writes `nats-cert-renewal-health.json` under the network data
 directory and `ployzctl status` exposes it as `control_plane
 component=cert_renewal_worker`, with stale-since, consecutive failure count, and
 the last work-queue or job error.
-
-### Consumer reset for projection migrations
-
-When `DeployCommit` gains or changes a field and the in-memory projection
-logic changes, every reader needs to rebuild its projection from sequence
-0. Today this means deleting and recreating the durable consumer. With
-2.14's reset API it's one call — preserves the consumer name and any
-attached subscribers.
-
-Worth wiring into a `ployzctl admin nats reset-consumers` operator
-command for deliberate version bumps.
 
 ## References
 

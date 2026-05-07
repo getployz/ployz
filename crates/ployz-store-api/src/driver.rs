@@ -3,8 +3,8 @@ use crate::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
     DeployRecordUpdate, DeployRepository, DeploySnapshot, InstanceStatusRepository,
     InviteRepository, MachineRegistry, MachineSubscription, PeerRttObservation, PeerRttStore,
-    RoutingEventSubscription, RoutingSnapshotReader, RoutingSubscription, StoreBackend,
-    StoreRuntimeControl, SyncProbe, SyncStatus,
+    RoutingEventSubscription, RoutingSnapshotReader, StoreBackend, StoreRuntimeControl, SyncProbe,
+    SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::Result;
@@ -143,11 +143,8 @@ impl RoutingSnapshotReader for StoreDriver {
         self.backend.load_routing_state().await
     }
 
-    async fn subscribe_routing_events(
-        &self,
-        subscription: RoutingSubscription,
-    ) -> Result<RoutingEventSubscription> {
-        self.backend.subscribe_routing_events(subscription).await
+    async fn subscribe_routing_events(&self) -> Result<RoutingEventSubscription> {
+        self.backend.subscribe_routing_events().await
     }
 }
 
@@ -334,11 +331,8 @@ impl StoreBackend for MemoryStoreBackend {
         self.store.load_routing_state().await
     }
 
-    async fn subscribe_routing_events(
-        &self,
-        subscription: RoutingSubscription,
-    ) -> Result<RoutingEventSubscription> {
-        RoutingSnapshotReader::subscribe_routing_events(self.store.as_ref(), subscription).await
+    async fn subscribe_routing_events(&self) -> Result<RoutingEventSubscription> {
+        RoutingSnapshotReader::subscribe_routing_events(self.store.as_ref()).await
     }
 
     async fn list_deploy_releases(

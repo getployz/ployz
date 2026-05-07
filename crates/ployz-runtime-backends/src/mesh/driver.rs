@@ -10,6 +10,7 @@ use ployz_types::Result;
 use ployz_types::model::{OverlayIp, PublicKey, WireGuardPeerSpec};
 #[cfg(feature = "docker")]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+#[cfg(feature = "docker")]
 use std::path::Path;
 use std::sync::Arc;
 

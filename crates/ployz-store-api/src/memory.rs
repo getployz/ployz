@@ -1,8 +1,9 @@
 use crate::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
-    DeployRecordUpdate, DeployRepository, DeploySnapshot, InstanceStatusRepository,
-    InviteRepository, MachineRegistry, RoutingEventEnvelope, RoutingEventSubscription,
-    RoutingSnapshotReader, StoreRuntimeControl, SyncProbe, SyncStatus,
+    DeployProjection, DeployRecordUpdate, DeployRepository, DeploySnapshot,
+    InstanceStatusRepository, InviteRepository, MachineRegistry, RoutingEventEnvelope,
+    RoutingEventSubscription, RoutingSnapshotReader, StoreRuntimeControl, SyncProbe, SyncStatus,
+    routing_event_id,
 };
 use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
@@ -10,10 +11,10 @@ use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     CertificateEvent, CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord,
     InviteRecord, MachineEvent, MachineId, MachineMembership, RoutingEvent, RoutingState,
-    ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
+    ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use tokio::sync::mpsc;
@@ -24,21 +25,18 @@ pub struct MemoryStore {
 }
 
 struct StoreInner {
-    machines: HashMap<MachineId, MachineMembership>,
+    machines: BTreeMap<MachineId, MachineMembership>,
     machine_subscribers: Vec<mpsc::Sender<crate::MachineSubscriptionUpdate>>,
     routing_subscribers: Vec<mpsc::Sender<crate::RoutingEventSubscriptionUpdate>>,
-    invites: HashMap<String, InviteRecord>,
-    service_revisions: HashMap<(Namespace, String, String), ServiceRevisionRecord>,
-    service_releases: HashMap<(Namespace, String), ServiceReleaseRecord>,
-    volumes: HashMap<(Namespace, String), VolumeRecord>,
+    invites: BTreeMap<String, InviteRecord>,
+    deploy_projection: DeployProjection,
     instance_status: HashMap<InstanceId, InstanceStatusRecord>,
-    deploys: HashMap<DeployId, DeployRecord>,
     acme_accounts: HashMap<String, AcmeAccountRecord>,
-    certificates: HashMap<String, CertificateRecord>,
+    certificates: BTreeMap<String, CertificateRecord>,
     certificate_subscribers: Vec<mpsc::Sender<crate::CertificateSubscriptionUpdate>>,
-    acme_challenges: HashMap<(String, String), AcmeChallengeRecord>,
+    acme_challenges: BTreeMap<(String, String), AcmeChallengeRecord>,
     acme_challenge_subscribers: Vec<mpsc::Sender<crate::AcmeChallengeSubscriptionUpdate>>,
-    acme_challenge_readiness: HashMap<(String, String, MachineId), AcmeChallengeReadinessRecord>,
+    acme_challenge_readiness: BTreeMap<(String, String, MachineId), AcmeChallengeReadinessRecord>,
     sync_status: SyncStatus,
 }
 
@@ -53,21 +51,18 @@ impl MemoryStore {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(StoreInner {
-                machines: HashMap::new(),
+                machines: BTreeMap::new(),
                 machine_subscribers: Vec::new(),
                 routing_subscribers: Vec::new(),
-                invites: HashMap::new(),
-                service_revisions: HashMap::new(),
-                service_releases: HashMap::new(),
-                volumes: HashMap::new(),
+                invites: BTreeMap::new(),
+                deploy_projection: DeployProjection::new(),
                 instance_status: HashMap::new(),
-                deploys: HashMap::new(),
                 acme_accounts: HashMap::new(),
-                certificates: HashMap::new(),
+                certificates: BTreeMap::new(),
                 certificate_subscribers: Vec::new(),
-                acme_challenges: HashMap::new(),
+                acme_challenges: BTreeMap::new(),
                 acme_challenge_subscribers: Vec::new(),
-                acme_challenge_readiness: HashMap::new(),
+                acme_challenge_readiness: BTreeMap::new(),
                 sync_status: SyncStatus::Synced,
             }),
         }
@@ -98,13 +93,18 @@ impl MemoryStore {
 
     fn broadcast_routing_events(
         inner: &mut StoreInner,
-        event_id: impl Into<String> + Clone,
+        operation_id: impl Into<String>,
         cause: Option<String>,
         events: Vec<RoutingEvent>,
     ) {
-        let event_id = event_id.into();
-        for event in events {
-            Self::broadcast_routing_event(inner, event_id.clone(), cause.clone(), event);
+        let operation_id = operation_id.into();
+        for (index, event) in events.into_iter().enumerate() {
+            Self::broadcast_routing_event(
+                inner,
+                routing_event_id(&operation_id, index + 1),
+                cause.clone(),
+                event,
+            );
         }
     }
 
@@ -134,13 +134,10 @@ impl MemoryStore {
     fn routing_state(inner: &StoreInner) -> RoutingState {
         let mut state = RoutingState {
             machines: inner.machines.values().cloned().collect(),
-            revisions: inner.service_revisions.values().cloned().collect(),
-            releases: inner.service_releases.values().cloned().collect(),
+            revisions: inner.deploy_projection.all_revisions(),
+            releases: inner.deploy_projection.all_releases(),
             instances: inner.instance_status.values().cloned().collect(),
         };
-        sort_machines(&mut state.machines);
-        sort_service_revisions(&mut state.revisions);
-        sort_service_releases(&mut state.releases);
         sort_instance_status(&mut state.instances);
         state
     }
@@ -153,9 +150,7 @@ impl MemoryStore {
     pub async fn subscribe_routing_events(
         &self,
     ) -> Result<(RoutingState, mpsc::Receiver<RoutingEvent>)> {
-        let (state, mut envelopes) = self
-            .subscribe_routing_events_internal(crate::RoutingSubscription::temporary())
-            .await?;
+        let (state, mut envelopes) = self.subscribe_routing_events_internal().await?;
         let (tx, rx) = mpsc::channel(1024);
         tokio::spawn(async move {
             while let Some(envelope) = envelopes.recv().await {
@@ -206,9 +201,7 @@ impl SyncProbe for MemoryStore {
 impl MachineRegistry for MemoryStore {
     async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         let inner = self.lock_inner();
-        let mut machines = inner.machines.values().cloned().collect::<Vec<_>>();
-        sort_machines(&mut machines);
-        Ok(machines)
+        Ok(inner.machines.values().cloned().collect())
     }
 
     async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
@@ -228,11 +221,11 @@ impl MachineRegistry for MemoryStore {
             None => RoutingEvent::MachineAdded(record.clone()),
         };
         Self::broadcast_machine(&mut inner, machine_event);
-        Self::broadcast_routing_event(
+        Self::broadcast_routing_events(
             &mut inner,
             format!("memory:machine:{}", record.id),
             Some("machine.upsert".to_string()),
-            routing_event,
+            vec![routing_event],
         );
         Ok(())
     }
@@ -241,11 +234,11 @@ impl MachineRegistry for MemoryStore {
         let mut inner = self.lock_inner();
         if let Some(record) = inner.machines.remove(id) {
             Self::broadcast_machine(&mut inner, MachineEvent::Removed(record.clone()));
-            Self::broadcast_routing_event(
+            Self::broadcast_routing_events(
                 &mut inner,
                 format!("memory:machine:delete:{id}"),
                 Some("machine.delete".to_string()),
-                RoutingEvent::MachineRemoved { id: record.id },
+                vec![RoutingEvent::MachineRemoved { id: record.id }],
             );
         }
         Ok(())
@@ -253,8 +246,7 @@ impl MachineRegistry for MemoryStore {
 
     async fn subscribe_machines(&self) -> Result<crate::MachineSubscription> {
         let mut inner = self.lock_inner();
-        let mut snapshot = inner.machines.values().cloned().collect::<Vec<_>>();
-        sort_machines(&mut snapshot);
+        let snapshot = inner.machines.values().cloned().collect::<Vec<_>>();
         let (sender, receiver) = mpsc::channel(64);
         inner.machine_subscribers.push(sender);
         Ok((snapshot, receiver))
@@ -266,19 +258,13 @@ impl RoutingSnapshotReader for MemoryStore {
         self.load_routing_state().await
     }
 
-    async fn subscribe_routing_events(
-        &self,
-        _subscription: crate::RoutingSubscription,
-    ) -> Result<RoutingEventSubscription> {
-        self.subscribe_routing_events_internal(_subscription).await
+    async fn subscribe_routing_events(&self) -> Result<RoutingEventSubscription> {
+        self.subscribe_routing_events_internal().await
     }
 }
 
 impl MemoryStore {
-    async fn subscribe_routing_events_internal(
-        &self,
-        _subscription: crate::RoutingSubscription,
-    ) -> Result<RoutingEventSubscription> {
+    async fn subscribe_routing_events_internal(&self) -> Result<RoutingEventSubscription> {
         let mut inner = self.lock_inner();
         let state = Self::routing_state(&inner);
         let (sender, receiver) = mpsc::channel(1024);
@@ -309,9 +295,7 @@ impl InviteRepository for MemoryStore {
 
     async fn list_invites(&self) -> Result<Vec<InviteRecord>> {
         let inner = self.lock_inner();
-        let mut invites = inner.invites.values().cloned().collect::<Vec<_>>();
-        invites.sort_by(|left, right| left.invite_id.cmp(&right.invite_id));
-        Ok(invites)
+        Ok(inner.invites.values().cloned().collect())
     }
 
     async fn redeem_invite(
@@ -392,19 +376,13 @@ impl DeployRepository for MemoryStore {
         namespace: &Namespace,
     ) -> Result<Vec<ServiceReleaseRecord>> {
         let inner = self.lock_inner();
-        Ok(Self::list_deploy_releases_inner(&inner, namespace))
+        Ok(inner.deploy_projection.releases(namespace))
     }
 
     async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
         let inner = self.lock_inner();
-        let mut revisions = inner
-            .service_revisions
-            .values()
-            .filter(|record| record.namespace == *namespace)
-            .cloned()
-            .collect::<Vec<_>>();
-        sort_service_revisions(&mut revisions);
-        let releases = Self::list_deploy_releases_inner(&inner, namespace);
+        let revisions = inner.deploy_projection.revisions(namespace);
+        let releases = inner.deploy_projection.releases(namespace);
         let mut instances = inner
             .instance_status
             .values()
@@ -421,14 +399,7 @@ impl DeployRepository for MemoryStore {
 
     async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
         let inner = self.lock_inner();
-        let mut volumes = inner
-            .volumes
-            .values()
-            .filter(|record| record.namespace == *namespace)
-            .cloned()
-            .collect::<Vec<_>>();
-        volumes.sort_by(|left, right| left.volume_name.cmp(&right.volume_name));
-        Ok(volumes)
+        Ok(inner.deploy_projection.volumes(namespace))
     }
 
     async fn get_volume(
@@ -438,14 +409,14 @@ impl DeployRepository for MemoryStore {
     ) -> Result<Option<VolumeRecord>> {
         let inner = self.lock_inner();
         Ok(inner
-            .volumes
-            .get(&(namespace.clone(), volume_name.to_string()))
+            .deploy_projection
+            .volume(namespace, volume_name)
             .cloned())
     }
 
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
         let mut inner = self.lock_inner();
-        let events = Self::commit_deploy_inner(&mut inner, command);
+        let events = inner.deploy_projection.apply_commit_events(command);
         Self::broadcast_routing_events(
             &mut inner,
             format!("memory:deploy:{}", command.deploy.deploy_id),
@@ -458,14 +429,14 @@ impl DeployRepository for MemoryStore {
     async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()> {
         let mut inner = self.lock_inner();
         inner
-            .deploys
-            .insert(command.deploy.deploy_id.clone(), command.deploy.clone());
+            .deploy_projection
+            .update_deploy_record(command.deploy.clone());
         Ok(())
     }
 
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
         let inner = self.lock_inner();
-        Ok(inner.deploys.get(deploy_id).cloned())
+        Ok(inner.deploy_projection.deploy(deploy_id).cloned())
     }
 }
 
@@ -495,11 +466,11 @@ impl InstanceStatusRepository for MemoryStore {
             },
             None => RoutingEvent::InstanceAdded(record.clone()),
         };
-        Self::broadcast_routing_event(
+        Self::broadcast_routing_events(
             &mut inner,
             format!("memory:instance:{}", record.instance_id),
             Some("instance.status".to_string()),
-            event,
+            vec![event],
         );
         Ok(())
     }
@@ -507,13 +478,13 @@ impl InstanceStatusRepository for MemoryStore {
     async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
         let mut inner = self.lock_inner();
         if let Some(record) = Self::remove_instance_status_inner(&mut inner, instance_id) {
-            Self::broadcast_routing_event(
+            Self::broadcast_routing_events(
                 &mut inner,
                 format!("memory:instance:remove:{instance_id}"),
                 Some("instance.remove".to_string()),
-                RoutingEvent::InstanceRemoved {
+                vec![RoutingEvent::InstanceRemoved {
                     instance_id: record.instance_id,
-                },
+                }],
             );
         }
         Ok(())
@@ -521,32 +492,6 @@ impl InstanceStatusRepository for MemoryStore {
 }
 
 impl MemoryStore {
-    fn list_deploy_releases_inner(
-        inner: &StoreInner,
-        namespace: &Namespace,
-    ) -> Vec<ServiceReleaseRecord> {
-        let mut releases = inner
-            .service_releases
-            .values()
-            .filter(|record| record.namespace == *namespace)
-            .cloned()
-            .collect::<Vec<_>>();
-        sort_service_releases(&mut releases);
-        releases
-    }
-
-    fn record_service_revision_inner(
-        inner: &mut StoreInner,
-        record: &ServiceRevisionRecord,
-    ) -> Option<ServiceRevisionRecord> {
-        let key = (
-            record.namespace.clone(),
-            record.service.clone(),
-            record.revision_hash.clone(),
-        );
-        inner.service_revisions.insert(key, record.clone())
-    }
-
     fn record_instance_status_inner(
         inner: &mut StoreInner,
         record: &InstanceStatusRecord,
@@ -562,154 +507,12 @@ impl MemoryStore {
     ) -> Option<InstanceStatusRecord> {
         inner.instance_status.remove(instance_id)
     }
-
-    fn commit_deploy_inner(inner: &mut StoreInner, command: &DeployCommit) -> Vec<RoutingEvent> {
-        let mut events = Vec::new();
-        for revision in &command.revisions {
-            let old = Self::record_service_revision_inner(inner, revision);
-            if let Some(event) = revision_event(old, revision) {
-                events.push(event);
-            }
-        }
-
-        let touched_services: HashSet<&str> = command
-            .removed_services
-            .iter()
-            .map(String::as_str)
-            .chain(
-                command
-                    .releases
-                    .iter()
-                    .map(|record| record.service.as_str()),
-            )
-            .collect();
-
-        let mut removed = inner
-            .service_releases
-            .extract_if(|(current_namespace, service), _| {
-                current_namespace == &command.namespace
-                    && touched_services.contains(service.as_str())
-            })
-            .map(|(_, record)| record)
-            .collect::<Vec<_>>();
-
-        for release in &command.releases {
-            let old = removed
-                .iter()
-                .position(|record| {
-                    record.namespace == release.namespace && record.service == release.service
-                })
-                .map(|idx| removed.swap_remove(idx));
-            inner.service_releases.insert(
-                (release.namespace.clone(), release.service.clone()),
-                release.clone(),
-            );
-            match old {
-                Some(old) => events.push(RoutingEvent::ReleaseUpdated {
-                    old,
-                    new: release.clone(),
-                }),
-                None => events.push(RoutingEvent::ReleaseAdded(release.clone())),
-            }
-        }
-
-        for record in removed {
-            events.push(RoutingEvent::ReleaseRemoved {
-                namespace: record.namespace,
-                service: record.service,
-            });
-        }
-
-        for volume in &command.volumes {
-            inner.volumes.insert(
-                (volume.namespace.clone(), volume.volume_name.clone()),
-                volume.clone(),
-            );
-        }
-
-        for volume_name in &command.removed_volumes {
-            inner
-                .volumes
-                .remove(&(command.namespace.clone(), volume_name.clone()));
-        }
-
-        inner
-            .deploys
-            .insert(command.deploy.deploy_id.clone(), command.deploy.clone());
-        events
-    }
-}
-
-fn revision_event(
-    old: Option<ServiceRevisionRecord>,
-    new: &ServiceRevisionRecord,
-) -> Option<RoutingEvent> {
-    match old {
-        Some(old) if old == *new => None,
-        Some(old) => Some(RoutingEvent::RevisionUpdated {
-            old,
-            new: new.clone(),
-        }),
-        None => Some(RoutingEvent::RevisionAdded(new.clone())),
-    }
-}
-
-fn sort_machines(machines: &mut [MachineMembership]) {
-    machines.sort_by(|left, right| left.id.cmp(&right.id));
-}
-
-fn sort_service_revisions(revisions: &mut [ServiceRevisionRecord]) {
-    revisions.sort_by(|left, right| {
-        (
-            left.namespace.clone(),
-            left.service.as_str(),
-            left.revision_hash.as_str(),
-        )
-            .cmp(&(
-                right.namespace.clone(),
-                right.service.as_str(),
-                right.revision_hash.as_str(),
-            ))
-    });
-}
-
-fn sort_service_releases(releases: &mut [ServiceReleaseRecord]) {
-    releases.sort_by(|left, right| {
-        (left.namespace.clone(), left.service.as_str())
-            .cmp(&(right.namespace.clone(), right.service.as_str()))
-    });
 }
 
 fn sort_instance_status(instances: &mut [InstanceStatusRecord]) {
     instances.sort_by(|left, right| {
         (left.namespace.clone(), left.instance_id.0.as_str())
             .cmp(&(right.namespace.clone(), right.instance_id.0.as_str()))
-    });
-}
-
-fn sort_certificates(records: &mut [CertificateRecord]) {
-    records.sort_by(|left, right| left.hostname.cmp(&right.hostname));
-}
-
-fn sort_acme_challenges(records: &mut [AcmeChallengeRecord]) {
-    records.sort_by(|left, right| {
-        (left.hostname.as_str(), left.token.as_str())
-            .cmp(&(right.hostname.as_str(), right.token.as_str()))
-    });
-}
-
-fn sort_acme_challenge_readiness(records: &mut [AcmeChallengeReadinessRecord]) {
-    records.sort_by(|left, right| {
-        (
-            left.hostname.as_str(),
-            left.token.as_str(),
-            left.machine_id.0.as_str(),
-        )
-            .cmp(&(
-                right.hostname.as_str(),
-                right.token.as_str(),
-                right.machine_id.0.as_str(),
-            ))
     });
 }
 
@@ -729,9 +532,7 @@ impl CertificateStore for MemoryStore {
 
     async fn list_certificates(&self) -> Result<Vec<CertificateRecord>> {
         let inner = self.lock_inner();
-        let mut records = inner.certificates.values().cloned().collect::<Vec<_>>();
-        sort_certificates(&mut records);
-        Ok(records)
+        Ok(inner.certificates.values().cloned().collect())
     }
 
     async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>> {
@@ -756,9 +557,7 @@ impl CertificateStore for MemoryStore {
 
     async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
         let inner = self.lock_inner();
-        let mut records = inner.acme_challenges.values().cloned().collect::<Vec<_>>();
-        sort_acme_challenges(&mut records);
-        Ok(records)
+        Ok(inner.acme_challenges.values().cloned().collect())
     }
 
     async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
@@ -788,8 +587,7 @@ impl CertificateStore for MemoryStore {
 
     async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
         let mut inner = self.lock_inner();
-        let mut snapshot = inner.certificates.values().cloned().collect::<Vec<_>>();
-        sort_certificates(&mut snapshot);
+        let snapshot = inner.certificates.values().cloned().collect::<Vec<_>>();
         let (sender, receiver) = mpsc::channel(64);
         inner.certificate_subscribers.push(sender);
         Ok((snapshot, receiver))
@@ -797,8 +595,7 @@ impl CertificateStore for MemoryStore {
 
     async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
         let mut inner = self.lock_inner();
-        let mut snapshot = inner.acme_challenges.values().cloned().collect::<Vec<_>>();
-        sort_acme_challenges(&mut snapshot);
+        let snapshot = inner.acme_challenges.values().cloned().collect::<Vec<_>>();
         let (sender, receiver) = mpsc::channel(64);
         inner.acme_challenge_subscribers.push(sender);
         Ok((snapshot, receiver))
@@ -826,7 +623,7 @@ impl CertificateStore for MemoryStore {
         token: &str,
     ) -> Result<Vec<AcmeChallengeReadinessRecord>> {
         let inner = self.lock_inner();
-        let mut records = inner
+        let records = inner
             .acme_challenge_readiness
             .values()
             .filter(|record| {
@@ -838,7 +635,6 @@ impl CertificateStore for MemoryStore {
             })
             .cloned()
             .collect::<Vec<_>>();
-        sort_acme_challenge_readiness(&mut records);
         Ok(records)
     }
 }
@@ -846,29 +642,18 @@ impl CertificateStore for MemoryStore {
 impl MemoryStore {
     pub async fn wipe_data(&self) -> Result<()> {
         let mut inner = self.lock_inner();
-        let removed = inner
-            .machines
-            .drain()
-            .map(|(_, record)| record)
+        let removed = std::mem::take(&mut inner.machines)
+            .into_values()
             .collect::<Vec<_>>();
-        let removed_revisions = inner
-            .service_revisions
-            .drain()
-            .map(|(_, record)| record)
-            .collect::<Vec<_>>();
-        let removed_releases = inner
-            .service_releases
-            .drain()
-            .map(|(_, record)| record)
-            .collect::<Vec<_>>();
+        let removed_deploy_projection = std::mem::take(&mut inner.deploy_projection);
+        let removed_revisions = removed_deploy_projection.all_revisions();
+        let removed_releases = removed_deploy_projection.all_releases();
         let removed_instances = inner
             .instance_status
             .drain()
             .map(|(_, record)| record)
             .collect::<Vec<_>>();
         inner.invites.clear();
-        inner.volumes.clear();
-        inner.deploys.clear();
         inner.acme_accounts.clear();
         inner.certificates.clear();
         inner.acme_challenges.clear();
@@ -974,6 +759,7 @@ impl StoreRuntimeControl for MemoryService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_types::model::ServiceRevisionRecord;
 
     fn test_machine(id: impl Into<String>) -> MachineMembership {
         MachineMembership {
@@ -1209,6 +995,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_deploy_releases_returns_contract_identity_order() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: Vec::new(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: vec![
+                    test_release(&namespace, "worker", "rev-b", "deploy-1"),
+                    test_release(&namespace, "api", "rev-a", "deploy-1"),
+                ],
+                volumes: Vec::new(),
+                deploy: test_deploy(&namespace, "deploy-1"),
+            })
+            .await
+            .expect("seed releases");
+
+        let releases = store
+            .list_deploy_releases(&namespace)
+            .await
+            .expect("list releases");
+
+        assert_eq!(
+            releases
+                .iter()
+                .map(|release| release.service.as_str())
+                .collect::<Vec<_>>(),
+            ["api", "worker"]
+        );
+    }
+
+    #[tokio::test]
     async fn redeploying_existing_service_emits_release_updated() {
         let store = MemoryStore::new();
         let namespace = Namespace("prod".into());
@@ -1255,6 +1076,45 @@ mod tests {
                 "redeploy of an existing (namespace, service) must emit ReleaseUpdated, got {other:?}"
             ),
         }
+    }
+
+    #[tokio::test]
+    async fn multi_event_deploy_broadcast_uses_one_event_id_per_fact() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let (_state, mut envelopes) = store
+            .subscribe_routing_events_internal()
+            .await
+            .expect("subscribe routing events");
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: vec![test_revision(&namespace, "api", "rev-a")],
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: vec![test_release(&namespace, "api", "rev-a", "deploy-new")],
+                volumes: Vec::new(),
+                deploy: test_deploy(&namespace, "deploy-new"),
+            })
+            .await
+            .expect("deploy");
+
+        let first = tokio::time::timeout(std::time::Duration::from_secs(1), envelopes.recv())
+            .await
+            .expect("first event deadline")
+            .expect("first event")
+            .expect("first event should be successful");
+        let second = tokio::time::timeout(std::time::Duration::from_secs(1), envelopes.recv())
+            .await
+            .expect("second event deadline")
+            .expect("second event")
+            .expect("second event should be successful");
+
+        assert_eq!(first.event_id, "memory:deploy:deploy-new:1");
+        assert_eq!(second.event_id, "memory:deploy:deploy-new:2");
+        assert!(matches!(first.event, RoutingEvent::RevisionAdded(_)));
+        assert!(matches!(second.event, RoutingEvent::ReleaseAdded(_)));
     }
 
     #[tokio::test]
@@ -1364,6 +1224,39 @@ mod tests {
                 .await
                 .expect("load staging volume")
                 .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn list_volumes_returns_contract_identity_order() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let deploy_id = DeployId("deploy-1".into());
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: Vec::new(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: Vec::new(),
+                volumes: vec![
+                    test_volume(&namespace, "z-data", &deploy_id),
+                    test_volume(&namespace, "a-data", &deploy_id),
+                ],
+                deploy: test_deploy(&namespace, "deploy-prod"),
+            })
+            .await
+            .expect("seed volumes");
+
+        let volumes = store.list_volumes(&namespace).await.expect("list volumes");
+
+        assert_eq!(
+            volumes
+                .iter()
+                .map(|volume| volume.volume_name.as_str())
+                .collect::<Vec<_>>(),
+            ["a-data", "z-data"]
         );
     }
 
@@ -1916,7 +1809,7 @@ mod tests {
             .expect("seed machine");
 
         let (state, mut envelopes) = store
-            .subscribe_routing_events_internal(crate::RoutingSubscription::durable("test.consumer"))
+            .subscribe_routing_events_internal()
             .await
             .expect("subscribe routing events");
 
@@ -1935,7 +1828,7 @@ mod tests {
             .expect("routing event")
             .expect("routing event should be successful");
 
-        assert_eq!(envelope.event_id, "memory:machine:machine-1");
+        assert_eq!(envelope.event_id, "memory:machine:machine-1:1");
         assert_eq!(envelope.cause.as_deref(), Some("machine.upsert"));
         let RoutingEvent::MachineUpdated { old, new } = &envelope.event else {
             panic!("expected machine update event, got {:?}", envelope.event);

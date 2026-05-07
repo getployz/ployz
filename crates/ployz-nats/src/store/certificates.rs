@@ -1,5 +1,4 @@
 use async_nats::jetstream::kv;
-use futures_util::TryStreamExt;
 use ployz_store_api::{AcmeChallengeSubscription, CertificateStore, CertificateSubscription};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
@@ -81,7 +80,6 @@ impl CertificateStore for NatsStore {
     }
 
     async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()> {
-        schedule_certificate_renewal(self, record).await?;
         let bucket = certificates_bucket(self).await?;
         kv_json::put_json(
             &bucket,
@@ -90,7 +88,12 @@ impl CertificateStore for NatsStore {
             "nats_certificate_encode",
             "nats_certificate_put",
         )
-        .await
+        .await?;
+        if let Some(schedule) = certificate_renewal_job_schedule(record) {
+            publish_cert_renewal_job_in(self.jetstream(), self.scope(), &record.hostname, schedule)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
@@ -135,11 +138,10 @@ impl CertificateStore for NatsStore {
             .iter()
             .map(|entry| (entry.key.clone(), entry.revision))
             .collect::<HashMap<_, _>>();
-        let mut snapshot = snapshot_entries
+        let snapshot = snapshot_entries
             .into_iter()
             .map(|entry| validate_certificate_key(&entry.key, entry.value))
             .collect::<Result<Vec<_>>>()?;
-        sort_certificates(&mut snapshot);
         kv_watch::subscribe_all_with_snapshot_revisions(
             &bucket,
             snapshot,
@@ -212,13 +214,6 @@ impl CertificateStore for NatsStore {
     }
 }
 
-async fn schedule_certificate_renewal(store: &NatsStore, record: &CertificateRecord) -> Result<()> {
-    let Some(schedule) = certificate_renewal_job_schedule(record) else {
-        return Ok(());
-    };
-    publish_cert_renewal_job_in(store.jetstream(), store.scope(), &record.hostname, schedule).await
-}
-
 fn certificate_renewal_job_schedule(record: &CertificateRecord) -> Option<JobSchedule> {
     if record.state != CertificateState::Active {
         return None;
@@ -278,7 +273,7 @@ fn readiness_key_prefix(hostname: &str, token: &str) -> String {
 }
 
 async fn list_certificates(bucket: &kv::Store) -> Result<Vec<CertificateRecord>> {
-    let mut records = kv_json::list_json_entries::<CertificateRecord>(
+    kv_json::list_json_entries::<CertificateRecord>(
         bucket,
         "nats_certificate_decode",
         "nats_certificates_list",
@@ -286,9 +281,7 @@ async fn list_certificates(bucket: &kv::Store) -> Result<Vec<CertificateRecord>>
     .await?
     .into_iter()
     .map(|entry| validate_certificate_key(&entry.key, entry.value))
-    .collect::<Result<Vec<_>>>()?;
-    sort_certificates(&mut records);
-    Ok(records)
+    .collect()
 }
 
 fn decode_certificate(key: &str, bytes: &[u8]) -> Result<CertificateRecord> {
@@ -308,7 +301,7 @@ fn validate_certificate_key(key: &str, record: CertificateRecord) -> Result<Cert
 }
 
 async fn list_challenges(bucket: &kv::Store) -> Result<Vec<AcmeChallengeRecord>> {
-    let mut records = kv_json::list_json_entries::<AcmeChallengeRecord>(
+    kv_json::list_json_entries::<AcmeChallengeRecord>(
         bucket,
         "nats_acme_challenge_decode",
         "nats_acme_challenges_list",
@@ -316,9 +309,7 @@ async fn list_challenges(bucket: &kv::Store) -> Result<Vec<AcmeChallengeRecord>>
     .await?
     .into_iter()
     .map(|entry| validate_challenge_key(&entry.key, entry.value))
-    .collect::<Result<Vec<_>>>()?;
-    sort_acme_challenges(&mut records);
-    Ok(records)
+    .collect()
 }
 
 fn validate_challenge_key(key: &str, record: AcmeChallengeRecord) -> Result<AcmeChallengeRecord> {
@@ -333,7 +324,7 @@ fn validate_challenge_key(key: &str, record: AcmeChallengeRecord) -> Result<Acme
 }
 
 async fn list_readiness(bucket: &kv::Store) -> Result<Vec<AcmeChallengeReadinessRecord>> {
-    let mut records = kv_json::list_json_entries::<AcmeChallengeReadinessRecord>(
+    kv_json::list_json_entries::<AcmeChallengeReadinessRecord>(
         bucket,
         "nats_acme_readiness_decode",
         "nats_acme_readiness_list",
@@ -341,9 +332,7 @@ async fn list_readiness(bucket: &kv::Store) -> Result<Vec<AcmeChallengeReadiness
     .await?
     .into_iter()
     .map(|entry| validate_readiness_key(&entry.key, entry.value))
-    .collect::<Result<Vec<_>>>()?;
-    sort_acme_challenge_readiness(&mut records);
-    Ok(records)
+    .collect()
 }
 
 fn validate_readiness_key(
@@ -358,29 +347,6 @@ fn validate_readiness_key(
         ));
     }
     Ok(record)
-}
-
-fn sort_certificates(records: &mut [CertificateRecord]) {
-    records.sort_by(|left, right| {
-        certificate_key(&left.hostname).cmp(&certificate_key(&right.hostname))
-    });
-}
-
-fn sort_acme_challenges(records: &mut [AcmeChallengeRecord]) {
-    records.sort_by(|left, right| {
-        challenge_key(&left.hostname, &left.token)
-            .cmp(&challenge_key(&right.hostname, &right.token))
-    });
-}
-
-fn sort_acme_challenge_readiness(records: &mut [AcmeChallengeReadinessRecord]) {
-    records.sort_by(|left, right| {
-        readiness_key(&left.hostname, &left.token, &left.machine_id).cmp(&readiness_key(
-            &right.hostname,
-            &right.token,
-            &right.machine_id,
-        ))
-    });
 }
 
 fn certificate_event_from_kv_entry(
@@ -438,13 +404,10 @@ fn acme_challenge_snapshot_parts(
         .iter()
         .map(|entry| (entry.key.clone(), entry.revision))
         .collect::<HashMap<_, _>>();
-    let mut snapshot = entries
+    let snapshot = entries
         .into_iter()
         .map(|entry| validate_challenge_key(&entry.key, entry.value))
         .collect::<Result<Vec<_>>>();
-    if let Ok(records) = snapshot.as_mut() {
-        sort_acme_challenges(records);
-    }
     (snapshot, snapshot_revisions)
 }
 
@@ -455,18 +418,7 @@ async fn delete_acme_challenge_readiness(
 ) -> Result<()> {
     let bucket = readiness_bucket(store).await?;
     let prefix = readiness_key_prefix(hostname, token);
-    let keys = bucket
-        .keys()
-        .await
-        .map_err(|error| {
-            ployz_types::Error::operation("nats_acme_readiness_keys", format!("{error:?}"))
-        })?
-        .try_collect::<Vec<String>>()
-        .await
-        .map_err(|error| {
-            ployz_types::Error::operation("nats_acme_readiness_keys", format!("{error:?}"))
-        })?;
-    for key in keys.into_iter().filter(|key| key.starts_with(&prefix)) {
+    for key in kv_json::list_keys_with_prefix(&bucket, &prefix, "nats_acme_readiness_keys").await? {
         kv_json::delete(&bucket, &key, "nats_acme_readiness_delete").await?;
     }
     Ok(())
@@ -617,45 +569,6 @@ mod tests {
     }
 
     #[test]
-    fn certificate_store_rows_sort_by_contract_identity() {
-        let mut certificates = vec![certificate("z.example.com"), certificate("a.example.com")];
-        sort_certificates(&mut certificates);
-        assert_eq!(
-            certificates
-                .iter()
-                .map(|record| record.hostname.as_str())
-                .collect::<Vec<_>>(),
-            ["a.example.com", "z.example.com"]
-        );
-
-        let mut challenges = vec![
-            challenge("z.example.com", "token-b"),
-            challenge("a.example.com", "token-a"),
-        ];
-        sort_acme_challenges(&mut challenges);
-        assert_eq!(
-            challenges
-                .iter()
-                .map(|record| (record.hostname.as_str(), record.token.as_str()))
-                .collect::<Vec<_>>(),
-            [("a.example.com", "token-a"), ("z.example.com", "token-b")]
-        );
-
-        let mut readiness = vec![
-            readiness("example.com", "token", "machine-b"),
-            readiness("example.com", "token", "machine-a"),
-        ];
-        sort_acme_challenge_readiness(&mut readiness);
-        assert_eq!(
-            readiness
-                .iter()
-                .map(|record| record.machine_id.0.as_str())
-                .collect::<Vec<_>>(),
-            ["machine-a", "machine-b"]
-        );
-    }
-
-    #[test]
     fn certificate_kv_put_updates_last_seen() {
         let record = certificate("example.com");
         let bytes = serde_json::to_vec(&record).expect("encode certificate");
@@ -802,15 +715,6 @@ mod tests {
             key_authorization: "authorization".into(),
             expires_at: 10,
             created_at: 1,
-        }
-    }
-
-    fn readiness(hostname: &str, token: &str, machine_id: &str) -> AcmeChallengeReadinessRecord {
-        AcmeChallengeReadinessRecord {
-            hostname: hostname.into(),
-            token: token.into(),
-            machine_id: MachineId(machine_id.into()),
-            observed_at: 1,
         }
     }
 }

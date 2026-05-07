@@ -34,9 +34,9 @@ truth still commits to one home/data authority.
 ### Concepts
 
 A **deploy** applies a manifest (a list of service specs) to a namespace. Each spec is
-content-hashed into a revision. The deploy engine diffs desired vs current state, starts
-new containers, waits for readiness, atomically commits the new routing state, then
-cleans up old containers.
+content-hashed into a revision. The deploy engine diffs desired vs current state,
+starts new containers, waits for readiness, appends one immutable deploy commit,
+publishes the derived routing facts, then cleans up old containers.
 
 ### Slot Model
 
@@ -82,16 +82,17 @@ capacity offers. Offers are live signals, not durable ownership.
 preview and apply (e.g. one went down), abort with a retry error rather than deploying
 to a stale plan.
 
-**Register** — Upsert immutable, content-addressed revision records. Duplicate publishes
-are no-ops by design.
+**Register** — Build immutable, content-addressed revision payloads. They are
+included in the deploy commit rather than written as separate mutable records.
 
 **Create** — For each selected slot in the plan: reuse unchanged instances, or
 start new candidate containers and wait for readiness probes (TCP/HTTP/exec).
 Readiness is non-negotiable — nothing enters routing until it passes.
 
-**Commit** — A single immutable deploy commit publishes the new release, volume, and
-deploy envelope. This is the point of no return. NATS persists the event and readers
-project it atomically.
+**Commit** — A single immutable deploy commit publishes the deploy envelope,
+revisions, releases, and volume changes. This is the point of no return. NATS
+persists the event and readers project it atomically; routing notifications are
+one ordered JetStream message per derived routing fact.
 
 **Cleanup** — Old instances are drained (marked unhealthy so routing drops them) then
 removed. If cleanup fails, the deploy enters CleanupPending — the new version is live
@@ -117,38 +118,35 @@ runtime action.
 
 ## Routing
 
-### Snapshot Plus Durable Events
+### Snapshot Plus Ephemeral Events
 
 All routing decisions start from one snapshot of the distributed store's routing
 collections. After the snapshot, live consumers apply ordered routing events from the
 `route_journal` JetStream stream.
 
-The snapshot is the catch-up boundary. If a process restarts or loses its local
-projection, it subscribes again, replaces any old consumer with the same id,
-reads a fresh snapshot, then receives events from the next captured stream
-sequence (`DeliverPolicy::ByStartSequence`) for that subscription.
+The snapshot is the catch-up boundary. Subscription setup reads the route
+journal's last stream sequence, loads a fresh snapshot, then starts an ephemeral
+memory-backed consumer from the next sequence (`DeliverPolicy::ByStartSequence`).
+If a process restarts, a watcher closes, or projection freshness becomes
+uncertain, the process discards the local projection and repeats that sequence.
 
 ### Subscription Model
 
-Routing event consumers declare their durability explicitly:
-
-- **Durable subscriptions** are used by long-lived service projections such as
-  gateway and DNS. Their consumer ids are stable per machine, so each process
-  receives every routing event independently. The consumer's
-  `max_ack_pending` matches the process bridge-channel capacity, and idle
-  heartbeats turn a broken delivery path into an explicit subscription failure.
-- **Temporary subscriptions** are used by live watch clients such as
-  `RuntimeSubscribe` and startup readiness probes. They are cleaned up when the
-  watcher closes.
+Routing event consumers are all temporary NATS consumers. Gateway, DNS, runtime
+watch, and readiness probes rebuild from durable state first, then consume only
+the events that occur after that snapshot boundary. The consumer's
+`max_ack_pending` matches the process bridge-channel capacity, and idle
+heartbeats turn a broken delivery path into an explicit subscription failure.
 
 Properties:
 
 - Plain event journal — each routing fact is one JetStream message, and
   consumers ack each event only after applying it.
-- Per-consumer cursors — gateway, DNS, runtime watch, and readiness probes do not
-  share a cursor.
-- Graceful degradation — projection errors log and keep the previous snapshot;
-  a restart rebuilds from durable state.
+- No durable cursors — watchers do not leave server-side routing cursor state
+  behind after exit or daemon crash.
+- Visible freshness loss — projection errors surface as subscription failures;
+  consumers reload from durable state instead of silently continuing from a stale
+  event stream.
 
 ### Gateway (HTTP/TCP Proxy)
 
@@ -193,10 +191,11 @@ drained instances.
 3. Apply:
    a. Acquire one NATS deploy lease for the namespace
    b. Probe eligible regions/machines for live capacity offers
-   c. Register revision (content-addressed, idempotent)
+   c. Build content-addressed revision payloads for the commit
    d. Prepare selected machines, start containers, wait for readiness probes
-   e. Atomic commit — single transaction flips all routing pointers
-   f. NATS replicates the commit to the selected storage-enabled stream peers
+   e. Append one immutable deploy commit
+   f. Publish one routing event per derived routing fact
+   g. NATS replicates the commit and routing events to the selected stream peers
       in the owning home/data authority
 
 4. Gateway reloads:

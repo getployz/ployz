@@ -106,7 +106,7 @@ impl AcmeIssuer for InstantAcmeIssuer {
         order_url: &str,
     ) -> Result<IssuedCertificate> {
         // The stored order URL is opaque user-influenced data once a
-        // certificate row has been written. Refuse to resume against any
+        // certificate record has been written. Refuse to resume against any
         // origin that is not the configured ACME directory so a corrupted
         // record cannot redirect the finalize step at an attacker-controlled
         // host.

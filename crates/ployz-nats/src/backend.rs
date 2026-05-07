@@ -1,15 +1,13 @@
-use async_nats::jetstream::ErrorCode;
 use async_nats::jetstream::consumer::push;
 use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
-use async_nats::jetstream::stream::ConsumerErrorKind;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use ployz_store_api::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
     DeployRecordUpdate, DeployRepository, DeploySnapshot, InstanceStatusRepository,
     InviteRepository, MachineRegistry, MachineSubscription, PeerRttObservation, PeerRttStore,
-    RoutingEventEnvelope, RoutingEventSubscription, RoutingSnapshotReader, RoutingSubscription,
-    StoreBackend, StoreRuntimeControl, SyncProbe, SyncStatus,
+    RoutingEventEnvelope, RoutingEventSubscription, RoutingSnapshotReader, StoreBackend,
+    StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
@@ -85,11 +83,8 @@ impl StoreBackend for NatsStore {
         RoutingSnapshotReader::load_routing_state(self).await
     }
 
-    async fn subscribe_routing_events(
-        &self,
-        subscription: RoutingSubscription,
-    ) -> Result<RoutingEventSubscription> {
-        RoutingSnapshotReader::subscribe_routing_events(self, subscription).await
+    async fn subscribe_routing_events(&self) -> Result<RoutingEventSubscription> {
+        RoutingSnapshotReader::subscribe_routing_events(self).await
     }
 
     async fn list_deploy_releases(
@@ -217,13 +212,7 @@ impl RoutingSnapshotReader for NatsStore {
         })
     }
 
-    async fn subscribe_routing_events(
-        &self,
-        subscription: RoutingSubscription,
-    ) -> Result<RoutingEventSubscription> {
-        let durable_consumer_name = subscription
-            .durable_consumer_id()
-            .map(routing_consumer_name);
+    async fn subscribe_routing_events(&self) -> Result<RoutingEventSubscription> {
         let stream = self
             .jetstream()
             .get_stream(ROUTE_JOURNAL_STREAM)
@@ -232,12 +221,8 @@ impl RoutingSnapshotReader for NatsStore {
         let mut stream = stream;
         let start_sequence = routing_subscription_start_sequence(&mut stream).await?;
         let state = RoutingSnapshotReader::load_routing_state(self).await?;
-        if let Some(consumer_name) = durable_consumer_name.as_deref() {
-            delete_existing_routing_consumer(&stream, consumer_name).await?;
-        }
         let consumer: async_nats::jetstream::consumer::PushConsumer = stream
             .create_consumer(routing_consumer_config(
-                &subscription,
                 start_sequence,
                 self.client().new_inbox(),
                 self.scope(),
@@ -300,34 +285,23 @@ impl RoutingSnapshotReader for NatsStore {
 }
 
 fn routing_consumer_config(
-    subscription: &RoutingSubscription,
     start_sequence: u64,
     deliver_subject: String,
     scope: &NatsScope,
 ) -> push::Config {
-    let mut config = push::Config {
+    push::Config {
         deliver_subject,
         deliver_policy: DeliverPolicy::ByStartSequence { start_sequence },
         ack_policy: AckPolicy::Explicit,
         ack_wait: ROUTING_CONSUMER_ACK_WAIT,
         idle_heartbeat: ROUTING_CONSUMER_IDLE_HEARTBEAT,
         max_ack_pending: ROUTING_CONSUMER_CHANNEL_CAPACITY as i64,
-        filter_subject: crate::subjects::route_journal_filter_in(scope),
+        filter_subject: crate::subjects::route_journal_event_filter_in(scope),
+        description: Some(String::from("temporary ployz routing subscription")),
+        memory_storage: true,
+        inactive_threshold: ROUTING_EPHEMERAL_INACTIVE_THRESHOLD,
         ..Default::default()
-    };
-    match subscription {
-        RoutingSubscription::Durable { consumer_id } => {
-            let consumer_name = routing_consumer_name(consumer_id);
-            config.durable_name = Some(consumer_name.to_string());
-            config.name = Some(consumer_name);
-        }
-        RoutingSubscription::Temporary => {
-            config.description = Some(String::from("temporary ployz routing subscription"));
-            config.memory_storage = true;
-            config.inactive_threshold = ROUTING_EPHEMERAL_INACTIVE_THRESHOLD;
-        }
     }
-    config
 }
 
 async fn routing_subscription_start_sequence(
@@ -338,34 +312,6 @@ async fn routing_subscription_start_sequence(
         .await
         .map(|info| kv_json::next_sequence(info.state.last_sequence))
         .map_err(|error| Error::operation("nats_routing_stream_info", format!("{error:?}")))
-}
-
-async fn delete_existing_routing_consumer(
-    stream: &async_nats::jetstream::stream::Stream,
-    consumer_name: &str,
-) -> Result<()> {
-    match stream.delete_consumer(consumer_name).await {
-        Ok(_) => Ok(()),
-        Err(error) if is_missing_consumer(&error) => Ok(()),
-        Err(error) => Err(Error::operation(
-            "nats_routing_consumer_delete",
-            format!("{error:?}"),
-        )),
-    }
-}
-
-fn is_missing_consumer(error: &async_nats::jetstream::stream::ConsumerError) -> bool {
-    match error.kind() {
-        ConsumerErrorKind::JetStream(error) => {
-            error.error_code() == ErrorCode::CONSUMER_DOES_NOT_EXIST
-                || error.error_code() == ErrorCode::CONSUMER_NOT_FOUND
-        }
-        ConsumerErrorKind::TimedOut
-        | ConsumerErrorKind::Request
-        | ConsumerErrorKind::InvalidConsumerType
-        | ConsumerErrorKind::InvalidName
-        | ConsumerErrorKind::Other => false,
-    }
 }
 
 fn routing_event_envelope(
@@ -401,10 +347,6 @@ fn header<'a>(headers: &'a async_nats::HeaderMap, name: &str) -> Result<&'a str>
         .get(name)
         .map(|value| value.as_str())
         .ok_or_else(|| Error::operation("nats_routing_headers", format!("missing {name} header")))
-}
-
-fn routing_consumer_name(consumer_id: &str) -> String {
-    crate::subjects::subject_token(consumer_id)
 }
 
 impl SyncProbe for NatsStore {
@@ -449,33 +391,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn routing_consumer_names_escape_subject_separators() {
-        assert_eq!(
-            routing_consumer_name("gateway.founder"),
-            "gateway%2Efounder"
-        );
-        assert_eq!(
-            routing_consumer_name("dns.machine/one"),
-            "dns%2Emachine%2Fone"
-        );
-    }
-
-    #[test]
-    fn runtime_routing_consumers_are_temporary() {
-        assert!(RoutingSubscription::temporary().is_temporary());
-        assert!(!RoutingSubscription::durable("gateway.founder").is_temporary());
-        assert!(!RoutingSubscription::durable("dns.founder").is_temporary());
-    }
-
-    #[test]
-    fn temporary_routing_consumers_are_ephemeral() {
-        let subscription = RoutingSubscription::temporary();
-        let config = routing_consumer_config(
-            &subscription,
-            42,
-            "_INBOX.runtime.1".to_string(),
-            &NatsScope::default(),
-        );
+    fn routing_consumers_are_ephemeral() {
+        let config =
+            routing_consumer_config(42, "_INBOX.runtime.1".to_string(), &NatsScope::default());
 
         assert_eq!(config.durable_name, None);
         assert_eq!(config.name, None);
@@ -491,53 +409,17 @@ mod tests {
     }
 
     #[test]
-    fn durable_routing_consumers_are_named() {
-        let subscription = RoutingSubscription::durable("gateway.founder");
-        let config = routing_consumer_config(
-            &subscription,
-            99,
-            "_INBOX.gateway.1".to_string(),
-            &NatsScope::default(),
-        );
-
-        assert_eq!(config.durable_name.as_deref(), Some("gateway%2Efounder"));
-        assert_eq!(config.name.as_deref(), Some("gateway%2Efounder"));
-        assert_eq!(
-            config.deliver_policy,
-            DeliverPolicy::ByStartSequence { start_sequence: 99 }
-        );
-        assert!(!config.memory_storage);
-        assert_eq!(config.inactive_threshold, Duration::ZERO);
-    }
-
-    #[test]
     fn routing_consumer_filter_uses_scope() {
         let scope = NatsScope::new(
             ployz_types::model::InstallationId("inst-acme".into()),
             ployz_types::model::AuthorityId("auth-sin".into()),
         );
-        let subscription = RoutingSubscription::temporary();
-        let config =
-            routing_consumer_config(&subscription, 1, "_INBOX.runtime.1".to_string(), &scope);
+        let config = routing_consumer_config(1, "_INBOX.runtime.1".to_string(), &scope);
 
         assert_eq!(
             config.filter_subject,
-            "ployz.v1.inst-acme.auth-sin.route.journal.>"
+            "ployz.v1.inst-acme.auth-sin.route.journal.event.>"
         );
-    }
-
-    #[test]
-    fn consumer_not_found_errors_are_idempotent_delete_success() {
-        let error: async_nats::jetstream::Error = serde_json::from_value(serde_json::json!({
-            "code": 404,
-            "err_code": ErrorCode::CONSUMER_NOT_FOUND.0,
-            "description": "consumer not found"
-        }))
-        .expect("valid JetStream error");
-        let error =
-            async_nats::jetstream::stream::ConsumerError::new(ConsumerErrorKind::JetStream(error));
-
-        assert!(is_missing_consumer(&error));
     }
 
     #[test]

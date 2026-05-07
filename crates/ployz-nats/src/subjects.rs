@@ -104,8 +104,8 @@ pub fn routing_event(event_id: &str) -> String {
 }
 
 #[must_use]
-pub fn route_journal_filter_in(scope: &NatsScope) -> String {
-    format!("{}.route.journal.>", scope.authority_prefix())
+pub fn route_journal_event_filter_in(scope: &NatsScope) -> String {
+    format!("{}.route.journal.event.>", scope.authority_prefix())
 }
 
 #[must_use]
@@ -165,8 +165,8 @@ pub fn cert_renewal_schedule_in(scope: &NatsScope, hostname: &str) -> String {
 }
 
 #[must_use]
-pub fn cert_work_filter_in(scope: &NatsScope) -> String {
-    format!("{}.work.cert.>", scope.authority_prefix())
+pub fn cert_renewal_schedule_filter_in(scope: &NatsScope) -> String {
+    format!("{}.work.cert.schedule.>", scope.authority_prefix())
 }
 
 #[must_use]

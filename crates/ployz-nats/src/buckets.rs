@@ -251,7 +251,7 @@ fn deploy_commits_stream(scope: &NatsScope, replicas: usize) -> stream::Config {
 fn route_journal_stream(scope: &NatsScope, replicas: usize) -> stream::Config {
     stream::Config {
         name: ROUTE_JOURNAL_STREAM.into(),
-        subjects: vec![subjects::route_journal_filter_in(scope)],
+        subjects: vec![subjects::route_journal_event_filter_in(scope)],
         retention: stream::RetentionPolicy::Limits,
         storage: stream::StorageType::File,
         num_replicas: replicas,
@@ -268,7 +268,10 @@ fn route_journal_stream(scope: &NatsScope, replicas: usize) -> stream::Config {
 fn cert_jobs_stream(scope: &NatsScope, replicas: usize) -> stream::Config {
     stream::Config {
         name: CERT_JOBS_STREAM.into(),
-        subjects: vec![subjects::cert_work_filter_in(scope)],
+        subjects: vec![
+            subjects::cert_renewal_filter_in(scope),
+            subjects::cert_renewal_schedule_filter_in(scope),
+        ],
         retention: stream::RetentionPolicy::WorkQueue,
         storage: stream::StorageType::File,
         num_replicas: replicas,
@@ -355,7 +358,7 @@ mod tests {
         assert_eq!(config.name, ROUTE_JOURNAL_STREAM);
         assert_eq!(
             config.subjects,
-            vec!["ployz.v1.local.auth-default.route.journal.>".to_string()]
+            vec!["ployz.v1.local.auth-default.route.journal.event.>".to_string()]
         );
         assert_eq!(config.retention, stream::RetentionPolicy::Limits);
         assert_eq!(config.num_replicas, 3);
@@ -373,7 +376,10 @@ mod tests {
         assert_eq!(config.name, CERT_JOBS_STREAM);
         assert_eq!(
             config.subjects,
-            vec!["ployz.v1.local.auth-default.work.cert.>".to_string()]
+            vec![
+                "ployz.v1.local.auth-default.work.cert.renew.>".to_string(),
+                "ployz.v1.local.auth-default.work.cert.schedule.>".to_string(),
+            ]
         );
         assert_eq!(config.retention, stream::RetentionPolicy::WorkQueue);
         assert_eq!(config.num_replicas, 3);
@@ -503,11 +509,14 @@ mod tests {
         );
         assert_eq!(
             configs.route_journal.subjects,
-            vec!["ployz.v1.inst-acme.auth-sin.route.journal.>".to_string()]
+            vec!["ployz.v1.inst-acme.auth-sin.route.journal.event.>".to_string()]
         );
         assert_eq!(
             configs.cert_jobs.subjects,
-            vec!["ployz.v1.inst-acme.auth-sin.work.cert.>".to_string()]
+            vec![
+                "ployz.v1.inst-acme.auth-sin.work.cert.renew.>".to_string(),
+                "ployz.v1.inst-acme.auth-sin.work.cert.schedule.>".to_string(),
+            ]
         );
     }
 

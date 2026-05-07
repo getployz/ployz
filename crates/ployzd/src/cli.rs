@@ -415,7 +415,7 @@ pub(crate) enum MachineAction {
         id: String,
         #[arg(
             long,
-            help = "Skip online target cleanup and remove only the registry row"
+            help = "Skip online target cleanup and remove only the registry record"
         )]
         force: bool,
     },

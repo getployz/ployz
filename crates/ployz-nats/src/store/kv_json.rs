@@ -43,13 +43,7 @@ pub async fn list_json_entries<T>(
 where
     T: DeserializeOwned,
 {
-    let keys = store
-        .keys()
-        .await
-        .map_err(|error| Error::operation(get_operation, format!("{error:?}")))?
-        .try_collect::<Vec<String>>()
-        .await
-        .map_err(|error| Error::operation(get_operation, format!("{error:?}")))?;
+    let keys = list_keys(store, get_operation).await?;
     let mut records = Vec::with_capacity(keys.len());
     for key in keys {
         let Some(entry) = store
@@ -69,6 +63,34 @@ where
         });
     }
     Ok(records)
+}
+
+pub async fn list_keys(store: &kv::Store, operation: &'static str) -> Result<Vec<String>> {
+    let keys = store
+        .keys()
+        .await
+        .map_err(|error| Error::operation(operation, format!("{error:?}")))?
+        .try_collect::<Vec<String>>()
+        .await
+        .map_err(|error| Error::operation(operation, format!("{error:?}")))?;
+    Ok(stable_keys(keys))
+}
+
+pub async fn list_keys_with_prefix(
+    store: &kv::Store,
+    prefix: &str,
+    operation: &'static str,
+) -> Result<Vec<String>> {
+    Ok(list_keys(store, operation)
+        .await?
+        .into_iter()
+        .filter(|key| key.starts_with(prefix))
+        .collect())
+}
+
+fn stable_keys(mut keys: Vec<String>) -> Vec<String> {
+    keys.sort();
+    keys
 }
 
 pub async fn put_json<T>(
@@ -106,11 +128,22 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::next_sequence;
+    use super::{next_sequence, stable_keys};
 
     #[test]
     fn next_sequence_saturates_at_u64_max() {
         assert_eq!(next_sequence(0), 1);
         assert_eq!(next_sequence(u64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn json_entry_keys_are_read_in_stable_order() {
+        let keys = stable_keys(vec![
+            "machine-b".to_string(),
+            "machine-a".to_string(),
+            "machine-c".to_string(),
+        ]);
+
+        assert_eq!(keys, ["machine-a", "machine-b", "machine-c"]);
     }
 }

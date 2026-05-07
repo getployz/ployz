@@ -325,14 +325,8 @@ where
         self.store().await?.load_routing_state().await
     }
 
-    async fn subscribe_routing_events(
-        &self,
-        subscription: ployz_store_api::RoutingSubscription,
-    ) -> Result<RoutingEventSubscription> {
-        self.store()
-            .await?
-            .subscribe_routing_events(subscription)
-            .await
+    async fn subscribe_routing_events(&self) -> Result<RoutingEventSubscription> {
+        self.store().await?.subscribe_routing_events().await
     }
 
     async fn list_deploy_releases(

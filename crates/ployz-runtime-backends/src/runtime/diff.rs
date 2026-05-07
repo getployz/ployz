@@ -58,130 +58,118 @@ pub fn eval_spec_change(
     }
 
     let mut fields = Vec::new();
-
-    if observed.image.as_observed() != Some(&desired.image) {
-        fields.push(ChangedField::Image);
+    macro_rules! changed {
+        ($field:ident, $changed:expr) => {
+            if $changed {
+                fields.push(ChangedField::$field);
+            }
+        };
     }
 
-    if observed.cmd.as_observed() != Some(&desired.cmd) {
-        fields.push(ChangedField::Cmd);
-    }
-
-    if !entrypoint_equal(
-        observed.entrypoint.as_observed().and_then(Option::as_ref),
-        desired.entrypoint.as_ref(),
-    ) {
-        fields.push(ChangedField::Entrypoint);
-    }
-
-    // Compare env sorted by key for stable comparison
-    if !observed
-        .env
-        .as_observed()
-        .is_some_and(|observed| env_equal(observed, &desired.env))
-    {
-        fields.push(ChangedField::Env);
-    }
-
-    if !observed
-        .labels
-        .as_observed()
-        .is_some_and(|observed| labels_match(observed, &desired.labels))
-    {
-        fields.push(ChangedField::Labels);
-    }
-
-    // Compare binds sorted
-    if !observed
-        .binds
-        .as_observed()
-        .is_some_and(|observed| sorted_eq(observed, &desired.binds))
-    {
-        fields.push(ChangedField::Binds);
-    }
-
-    if observed.tmpfs.as_observed() != Some(&desired.tmpfs) {
-        fields.push(ChangedField::Tmpfs);
-    }
-
-    if !observed
-        .dns_servers
-        .as_observed()
-        .is_some_and(|observed| sorted_eq(observed, &desired.dns_servers))
-    {
-        fields.push(ChangedField::DnsServers);
-    }
-
-    if !network_mode_equal(
-        observed
-            .network_mode
+    changed!(Image, observed.image.as_observed() != Some(&desired.image));
+    changed!(Cmd, observed.cmd.as_observed() != Some(&desired.cmd));
+    changed!(
+        Entrypoint,
+        !entrypoint_equal(
+            observed.entrypoint.as_observed().and_then(Option::as_ref),
+            desired.entrypoint.as_ref(),
+        )
+    );
+    changed!(
+        Env,
+        !observed
+            .env
             .as_observed()
-            .and_then(Option::as_deref),
-        desired.network_mode.as_deref(),
-    ) {
-        fields.push(ChangedField::NetworkMode);
-    }
-
-    if observed.port_bindings.as_observed() != Some(&desired.port_bindings) {
-        fields.push(ChangedField::PortBindings);
-    }
-
-    if !observed
-        .cap_add
-        .as_observed()
-        .is_some_and(|observed| sorted_eq(observed, &desired.cap_add))
-    {
-        fields.push(ChangedField::CapAdd);
-    }
-
-    if !observed
-        .cap_drop
-        .as_observed()
-        .is_some_and(|observed| sorted_eq(observed, &desired.cap_drop))
-    {
-        fields.push(ChangedField::CapDrop);
-    }
-
-    if observed.privileged.as_observed() != Some(&desired.privileged) {
-        fields.push(ChangedField::Privileged);
-    }
-
-    if observed.user.as_observed() != Some(&desired.user) {
-        fields.push(ChangedField::User);
-    }
-
-    if !restart_policy_equal(
-        observed
-            .restart_policy
+            .is_some_and(|observed| env_equal(observed, &desired.env))
+    );
+    changed!(
+        Labels,
+        !observed
+            .labels
             .as_observed()
-            .and_then(Option::as_ref),
-        desired.restart_policy.as_ref(),
-    ) {
-        fields.push(ChangedField::RestartPolicy);
-    }
-
-    if observed.memory_bytes.as_observed() != Some(&desired.memory_bytes) {
-        fields.push(ChangedField::MemoryBytes);
-    }
-
-    if observed.nano_cpus.as_observed() != Some(&desired.nano_cpus) {
-        fields.push(ChangedField::NanoCpus);
-    }
-
-    if observed.sysctls.as_observed() != Some(&desired.sysctls) {
-        fields.push(ChangedField::Sysctls);
-    }
-
-    if observed.stop_timeout.as_observed() != Some(&desired.stop_timeout) {
-        fields.push(ChangedField::StopTimeout);
-    }
-
-    if !pid_mode_equal(
-        observed.pid_mode.as_observed().and_then(Option::as_deref),
-        desired.pid_mode.as_deref(),
-    ) {
-        fields.push(ChangedField::PidMode);
-    }
+            .is_some_and(|observed| labels_match(observed, &desired.labels))
+    );
+    changed!(
+        Binds,
+        !observed
+            .binds
+            .as_observed()
+            .is_some_and(|observed| sorted_eq(observed, &desired.binds))
+    );
+    changed!(Tmpfs, observed.tmpfs.as_observed() != Some(&desired.tmpfs));
+    changed!(
+        DnsServers,
+        !observed
+            .dns_servers
+            .as_observed()
+            .is_some_and(|observed| sorted_eq(observed, &desired.dns_servers))
+    );
+    changed!(
+        NetworkMode,
+        !network_mode_equal(
+            observed
+                .network_mode
+                .as_observed()
+                .and_then(Option::as_deref),
+            desired.network_mode.as_deref(),
+        )
+    );
+    changed!(
+        PortBindings,
+        observed.port_bindings.as_observed() != Some(&desired.port_bindings)
+    );
+    changed!(
+        CapAdd,
+        !observed
+            .cap_add
+            .as_observed()
+            .is_some_and(|observed| sorted_eq(observed, &desired.cap_add))
+    );
+    changed!(
+        CapDrop,
+        !observed
+            .cap_drop
+            .as_observed()
+            .is_some_and(|observed| sorted_eq(observed, &desired.cap_drop))
+    );
+    changed!(
+        Privileged,
+        observed.privileged.as_observed() != Some(&desired.privileged)
+    );
+    changed!(User, observed.user.as_observed() != Some(&desired.user));
+    changed!(
+        RestartPolicy,
+        !restart_policy_equal(
+            observed
+                .restart_policy
+                .as_observed()
+                .and_then(Option::as_ref),
+            desired.restart_policy.as_ref(),
+        )
+    );
+    changed!(
+        MemoryBytes,
+        observed.memory_bytes.as_observed() != Some(&desired.memory_bytes)
+    );
+    changed!(
+        NanoCpus,
+        observed.nano_cpus.as_observed() != Some(&desired.nano_cpus)
+    );
+    changed!(
+        Sysctls,
+        observed.sysctls.as_observed() != Some(&desired.sysctls)
+    );
+    changed!(
+        StopTimeout,
+        observed.stop_timeout.as_observed() != Some(&desired.stop_timeout)
+    );
+    changed!(
+        PidMode,
+        !pid_mode_equal(
+            observed.pid_mode.as_observed().and_then(Option::as_deref),
+            desired.pid_mode.as_deref(),
+        )
+    );
 
     if fields.is_empty() {
         SpecChange::InSync

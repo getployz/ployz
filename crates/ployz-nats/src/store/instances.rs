@@ -16,11 +16,10 @@ impl InstanceStatusRepository for NatsStore {
             kv_json::get_bucket(self.jetstream(), INSTANCES_BUCKET, "nats_instances_bucket")
                 .await?;
         let records = list_instances(&bucket).await?;
-        let mut records = records
+        let records = records
             .into_iter()
             .filter(|record| &record.namespace == namespace)
             .collect::<Vec<_>>();
-        sort_instances(&mut records);
         Ok(records)
     }
 
@@ -160,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn instance_rows_sort_by_contract_identity() {
+    fn instance_records_sort_by_contract_identity() {
         let mut records = vec![
             test_instance_in_namespace("prod", "instance-b"),
             test_instance_in_namespace("staging", "instance-a"),

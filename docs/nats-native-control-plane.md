@@ -99,7 +99,7 @@ explicit status.
 `ployzctl status` reports each authoritative stream/KV-backed asset with the
 configured replica count, current replica count, offline replica count, maximum
 reported follower lag, and leader when NATS exposes one. A replica-count match
-alone is not enough to call promotion healthy; the status row must show the
+alone is not enough to call promotion healthy; the status entry must show the
 requested replicas current, zero offline replicas, and zero lag.
 
 ### Regional Data Promotion
@@ -238,7 +238,7 @@ fault injection and record observed p50/p95/p99.
 | Deploy status | NATS KV `deploy_status` | owning authority replicas | direct KV/projection | mutable KV update to owning authority quorum |
 | Instance status | NATS KV `instances` | owning authority replicas | routing projection or direct KV | participant writes status to owning authority quorum |
 | Routing snapshot | local projection | each gateway/DNS/daemon process memory | in-process memory | rebuilt from authoritative NATS state |
-| Routing events | JetStream stream `route_journal` | owning authority replicas | durable or temporary consumer | publish one ordered event per routing fact to owning authority quorum |
+| Routing events | JetStream stream `route_journal` | owning authority replicas | ephemeral consumer after fresh snapshot | publish one ordered event per routing fact to owning authority quorum |
 | Public/shared route projections | JetStream source streams | installation-root projection authority | public/shared gateways consume projections | source only from explicit owner exports |
 | Certificates metadata | NATS KV `certificates` | owning authority replicas | direct KV/subscription | KV put to owning authority quorum |
 | Certificate PEM blobs | NATS Object Store | owning authority replicas | object get, often cached by consumers | object put to owning authority quorum |
@@ -252,17 +252,15 @@ fault injection and record observed p50/p95/p99.
 
 The important split:
 
-- Durable service projections use stable per-machine consumers.
-- Short-lived watches use ephemeral memory-backed consumers with an inactivity
-  threshold and do not leave durable cursor state behind if the watcher exits or
-  the daemon crashes.
+- Routing event watchers use ephemeral memory-backed consumers with an
+  inactivity threshold after loading a fresh snapshot, so they do not leave
+  durable cursor state behind if the watcher exits or the daemon crashes.
 - Routing event subscriptions carry one acknowledged routing fact or an explicit
   consumer failure, so projection consumers can reload instead of silently
-  continuing from a stale event stream. Durable subscription setup replaces any
-  old consumer with the same id after reading the routing stream sequence and
-  loading a fresh snapshot; the new consumer starts from the next stream
-  sequence. Routing consumers bound in-flight delivery to the local bridge
-  channel and use idle heartbeats to detect broken delivery.
+  continuing from a stale event stream. Subscription setup reads the routing
+  stream sequence, loads a fresh snapshot, then starts an ephemeral consumer
+  from the next stream sequence. Routing consumers bound in-flight delivery to
+  the local bridge channel and use idle heartbeats to detect broken delivery.
 - KV watcher consumers must treat watcher failure or closure as a lost
   freshness boundary. Machine, certificate, and ACME challenge subscriptions
   carry explicit failure updates; consumers should stop using the stale stream,
@@ -276,7 +274,7 @@ The important split:
 - Edge projections expose their subscription freshness as sidecar metrics:
   gateway reports routing, certificates, and ACME challenge streams; DNS reports
   routing. When those metrics endpoints are configured, `ployzctl status`
-  includes an `edge_sync` row for each stream so an operator can distinguish
+  includes an `edge_sync` status entry for each stream so an operator can distinguish
   stale routing projection from a healthy data-plane process. The metrics also
   expose when the current health state began and a cumulative failure count, so
   stale projections have age and trend signals instead of a bare boolean.
@@ -290,7 +288,7 @@ The important split:
   stale-since time, consecutive failures, and the last listener error.
   Subscription loss, resubscribe failures, and command-path failures such as
   daemon channel closure or response publish failure all land in that health
-  row. While the listener is stale, foreground request/reply calls to that node
+  entry. While the listener is stale, foreground request/reply calls to that node
   fail with no-responder or timeout; recovery is the listener resubscribing or a
   later successful command clearing stale command-path health, not a hidden
   control-plane fallback.
