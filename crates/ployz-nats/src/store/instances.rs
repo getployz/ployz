@@ -52,7 +52,7 @@ impl InstanceStatusRepository for NatsStore {
             },
             None => RoutingEvent::InstanceAdded(record.clone()),
         };
-        self.publish_routing_batch(
+        self.publish_routing_events(
             format!("instance:{}", record.instance_id.0),
             "instance.status",
             &[event],
@@ -73,7 +73,7 @@ impl InstanceStatusRepository for NatsStore {
         let Some(old) = old else {
             return Ok(());
         };
-        self.publish_routing_batch(
+        self.publish_routing_events(
             format!("instance:remove:{}", instance_id.0),
             "instance.remove",
             &[RoutingEvent::InstanceRemoved(old)],

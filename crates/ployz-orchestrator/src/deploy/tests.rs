@@ -24,7 +24,7 @@ use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{
     CertificateStore, DeployCommit, DeployRecordUpdate, DeployRepository, DeployRevisionUpsert,
     DeploySnapshot, InstanceStatusRepository, InviteRepository, MachineRegistry,
-    MachineSubscription, RoutingBatchSubscription, RoutingSnapshotReader, RoutingSubscription,
+    MachineSubscription, RoutingEventSubscription, RoutingSnapshotReader, RoutingSubscription,
     StoreBackend, StoreDriver, StoreRuntimeControl,
 };
 use ployz_types::Result as PloyzResult;
@@ -1315,6 +1315,19 @@ async fn apply_with_initial_plan_does_not_commit_when_start_candidate_fails() {
         .await
         .expect("list releases");
     assert!(releases.is_empty());
+    let last_update = backend
+        .last_deploy_update()
+        .await
+        .expect("failed deploy record should be written");
+    assert_eq!(last_update.state, DeployState::Failed);
+    assert!(last_update.finished_at.is_some());
+    assert!(
+        last_update
+            .summary_json
+            .contains("injected start failure for 'api'"),
+        "failed deploy summary should mention the apply error: {}",
+        last_update.summary_json
+    );
 }
 
 #[tokio::test]
@@ -2088,6 +2101,7 @@ struct CountingBackend {
     service: Arc<MemoryService>,
     commit_calls: AtomicUsize,
     upsert_deploy_calls: AtomicUsize,
+    deploy_updates: Mutex<Vec<DeployRecord>>,
 }
 
 impl CountingBackend {
@@ -2097,6 +2111,7 @@ impl CountingBackend {
             service: Arc::new(MemoryService::new()),
             commit_calls: AtomicUsize::new(0),
             upsert_deploy_calls: AtomicUsize::new(0),
+            deploy_updates: Mutex::new(Vec::new()),
         }
     }
 
@@ -2111,6 +2126,10 @@ impl CountingBackend {
     fn reset_counts(&self) {
         self.commit_calls.store(0, Ordering::SeqCst);
         self.upsert_deploy_calls.store(0, Ordering::SeqCst);
+    }
+
+    async fn last_deploy_update(&self) -> Option<DeployRecord> {
+        self.deploy_updates.lock().await.last().cloned()
     }
 }
 
@@ -2174,11 +2193,11 @@ impl StoreBackend for CountingBackend {
         self.store.load_routing_state().await
     }
 
-    async fn subscribe_routing_batches(
+    async fn subscribe_routing_events(
         &self,
         subscription: RoutingSubscription,
-    ) -> PloyzResult<RoutingBatchSubscription> {
-        self.store.subscribe_routing_batches(subscription).await
+    ) -> PloyzResult<RoutingEventSubscription> {
+        RoutingSnapshotReader::subscribe_routing_events(self.store.as_ref(), subscription).await
     }
 
     async fn get_acme_account(&self, issuer_url: &str) -> PloyzResult<Option<AcmeAccountRecord>> {
@@ -2289,6 +2308,10 @@ impl StoreBackend for CountingBackend {
 
     async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> PloyzResult<()> {
         self.upsert_deploy_calls.fetch_add(1, Ordering::SeqCst);
+        self.deploy_updates
+            .lock()
+            .await
+            .push(command.deploy.clone());
         self.store.update_deploy_record(command).await
     }
 

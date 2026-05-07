@@ -1085,7 +1085,7 @@ mod tests {
     fn runtime_watch_error_frame_serialization_roundtrips() {
         let frame = RuntimeWatchFrame::Error {
             code: String::from("RUNTIME_SUBSCRIPTION_FAILED"),
-            message: String::from("routing batch 'batch-1' ack receiver closed"),
+            message: String::from("routing event 'event-1' ack receiver closed"),
         };
 
         let json = serde_json::to_value(&frame).expect("serialize runtime error frame");
@@ -1095,7 +1095,7 @@ mod tests {
             serde_json::json!({
                 "kind": "error",
                 "code": "RUNTIME_SUBSCRIPTION_FAILED",
-                "message": "routing batch 'batch-1' ack receiver closed"
+                "message": "routing event 'event-1' ack receiver closed"
             })
         );
 

@@ -17,9 +17,9 @@ pub use traits::{
     CertificateSubscription, CertificateSubscriptionUpdate, DeployCommit, DeployRecordUpdate,
     DeployRepository, DeployRevisionUpsert, DeploySnapshot, InstanceStatusRepository,
     InviteRepository, MachineRegistry, MachineSubscription, MachineSubscriptionUpdate,
-    PeerRttObservation, PeerRttStore, RoutingBatchSubscription, RoutingBatchSubscriptionUpdate,
-    RoutingEventBatch, RoutingSnapshotReader, RoutingSubscription, StoreRuntimeControl, SyncProbe,
-    SyncStatus, apply_routing_event, apply_routing_events,
+    PeerRttObservation, PeerRttStore, RoutingEventEnvelope, RoutingEventSubscription,
+    RoutingEventSubscriptionUpdate, RoutingSnapshotReader, RoutingSubscription,
+    StoreRuntimeControl, SyncProbe, SyncStatus, apply_routing_event, apply_routing_events,
 };
 
 #[async_trait]
@@ -42,10 +42,10 @@ pub trait StoreBackend: Send + Sync {
     async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord>;
 
     async fn load_routing_state(&self) -> Result<RoutingState>;
-    async fn subscribe_routing_batches(
+    async fn subscribe_routing_events(
         &self,
         subscription: RoutingSubscription,
-    ) -> Result<RoutingBatchSubscription>;
+    ) -> Result<RoutingEventSubscription>;
 
     async fn list_deploy_releases(
         &self,

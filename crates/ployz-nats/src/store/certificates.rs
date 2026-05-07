@@ -162,10 +162,17 @@ impl CertificateStore for NatsStore {
         let bucket = challenges_bucket(self).await?;
         let snapshot_boundary =
             kv_json::latest_sequence(&bucket, "nats_acme_challenges_snapshot_boundary").await?;
-        let snapshot = self.list_acme_challenges().await?;
-        kv_watch::subscribe_all(
+        let snapshot_entries = kv_json::list_json_entries::<AcmeChallengeRecord>(
+            &bucket,
+            "nats_acme_challenge_decode",
+            "nats_acme_challenges_list",
+        )
+        .await?;
+        let (snapshot, snapshot_revisions) = acme_challenge_snapshot_parts(snapshot_entries);
+        kv_watch::subscribe_all_with_snapshot_revisions(
             &bucket,
             snapshot,
+            snapshot_revisions,
             snapshot_boundary,
             |record: &AcmeChallengeRecord| challenge_key(&record.hostname, &record.token),
             "nats_acme_challenges_watch",
@@ -338,6 +345,20 @@ fn challenge_event_from_kv_entry(
             Ok(last_seen.remove(key).map(AcmeChallengeEvent::Removed))
         }
     }
+}
+
+fn acme_challenge_snapshot_parts(
+    entries: Vec<kv_json::JsonEntry<AcmeChallengeRecord>>,
+) -> (Vec<AcmeChallengeRecord>, HashMap<String, u64>) {
+    let snapshot_revisions = entries
+        .iter()
+        .map(|entry| (entry.key.clone(), entry.revision))
+        .collect::<HashMap<_, _>>();
+    let snapshot = entries
+        .into_iter()
+        .map(|entry| entry.value)
+        .collect::<Vec<_>>();
+    (snapshot, snapshot_revisions)
 }
 
 async fn delete_acme_challenge_readiness(
@@ -582,6 +603,20 @@ mod tests {
 
         assert!(event.is_none());
         assert_eq!(last_seen.get(&key), Some(&record));
+    }
+
+    #[test]
+    fn acme_challenge_snapshot_parts_keep_entry_revisions() {
+        let record = challenge("example.com", "token");
+        let key = challenge_key(&record.hostname, &record.token);
+        let (snapshot, revisions) = acme_challenge_snapshot_parts(vec![kv_json::JsonEntry {
+            key: key.clone(),
+            revision: 42,
+            value: record.clone(),
+        }]);
+
+        assert_eq!(snapshot, vec![record]);
+        assert_eq!(revisions.get(&key), Some(&42));
     }
 
     fn certificate(hostname: &str) -> CertificateRecord {

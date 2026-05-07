@@ -57,7 +57,7 @@ impl MachineRegistry for NatsStore {
             },
             None => RoutingEvent::MachineAdded(record.clone()),
         };
-        self.publish_routing_batch(
+        self.publish_routing_events(
             format!("machine:{}", record.id.0),
             "machine.upsert",
             &[event],
@@ -76,7 +76,7 @@ impl MachineRegistry for NatsStore {
         let Some(old) = old else {
             return Ok(());
         };
-        self.publish_routing_batch(
+        self.publish_routing_events(
             format!("machine:delete:{}", id.0),
             "machine.delete",
             &[RoutingEvent::MachineRemoved(old)],

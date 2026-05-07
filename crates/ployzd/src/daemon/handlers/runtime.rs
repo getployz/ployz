@@ -2,9 +2,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ployz_api::{RuntimeWatchFrame, runtime_frame_from_event, sort_routing_state};
-use ployz_store_api::{RoutingBatchSubscriptionUpdate, RoutingSnapshotReader, RoutingSubscription};
+use ployz_store_api::{RoutingEventSubscriptionUpdate, RoutingSnapshotReader, RoutingSubscription};
 use ployz_types::model::{MachineId, RoutingEvent, RoutingState};
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
@@ -23,11 +24,11 @@ impl DaemonState {
         let (state, mut batches) = active
             .mesh
             .store
-            .subscribe_routing_batches(RoutingSubscription::temporary(consumer_id))
+            .subscribe_routing_events(RoutingSubscription::temporary(consumer_id))
             .await
             .map_err(|error| Box::new(self.err("RUNTIME_SUBSCRIBE_FAILED", error.to_string())))?;
         let (tx, rx) = mpsc::channel(1024);
-        tokio::spawn(async move { relay_runtime_batches(&mut batches, tx).await });
+        tokio::spawn(async move { relay_runtime_events(&mut batches, tx).await });
         Ok((state, rx))
     }
 }
@@ -41,28 +42,31 @@ fn runtime_subscription_consumer_id(machine_id: &MachineId) -> String {
     format!("ployzd.runtime.{}.{}.{}", machine_id.0, started, sequence)
 }
 
-async fn relay_runtime_batches(
-    batches: &mut mpsc::Receiver<RoutingBatchSubscriptionUpdate>,
+async fn relay_runtime_events(
+    events: &mut mpsc::Receiver<RoutingEventSubscriptionUpdate>,
     tx: mpsc::Sender<RuntimeEventUpdate>,
 ) {
-    while let Some(batch) = batches.recv().await {
-        let batch = match batch {
-            Ok(batch) => batch,
+    while let Some(envelope) = events.recv().await {
+        let envelope = match envelope {
+            Ok(envelope) => envelope,
             Err(error) => {
-                warn!(%error, "runtime routing batch relay failed");
+                warn!(%error, "runtime routing event relay failed");
                 let _ = tx.send(Err(error.to_string())).await;
                 return;
             }
         };
-        for event in batch.events.clone() {
-            if tx.send(Ok(event)).await.is_err() {
-                let _ = batch.ack().await;
-                return;
-            }
+        if tx.send(Ok(envelope.event.clone())).await.is_err() {
+            let _ = envelope.ack().await;
+            return;
         }
-        if let Err(error) = batch.ack().await {
-            warn!(%error, "runtime routing batch ack failed");
-            let _ = tx.send(Err(error.to_string())).await;
+        if let Err(error) = envelope.ack().await {
+            warn!(%error, "runtime routing event ack failed");
+            match tx.try_send(Err(error.to_string())) {
+                Ok(()) | Err(TrySendError::Closed(_)) => {}
+                Err(TrySendError::Full(_)) => {
+                    warn!("runtime routing event channel full after ack failure");
+                }
+            }
             return;
         }
     }
@@ -120,9 +124,9 @@ pub async fn stream_runtime_frames(
 
 #[cfg(test)]
 mod tests {
-    use super::{relay_runtime_batches, runtime_subscription_consumer_id, stream_runtime_frames};
+    use super::{relay_runtime_events, runtime_subscription_consumer_id, stream_runtime_frames};
     use ployz_api::{RuntimeRecord, RuntimeTable, RuntimeWatchFrame};
-    use ployz_store_api::RoutingEventBatch;
+    use ployz_store_api::RoutingEventEnvelope;
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
         RoutingEvent, RoutingState, SlotId,
@@ -226,18 +230,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_runtime_batches_acks_and_exits_when_receiver_closes() {
+    async fn relay_runtime_events_ack_and_exit_when_receiver_closes() {
         let (batch_tx, mut batch_rx) = mpsc::channel(1);
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
         batch_tx
-            .send(Ok(RoutingEventBatch::with_ack(
-                "batch-1",
+            .send(Ok(RoutingEventEnvelope::with_ack(
+                "event-1",
                 None,
-                vec![RoutingEvent::InstanceAdded(instance_record(
-                    "instance-a",
-                    "prod",
-                    "web",
-                ))],
+                RoutingEvent::InstanceAdded(instance_record("instance-a", "prod", "web")),
                 ack_tx,
             )))
             .await
@@ -246,13 +246,13 @@ mod tests {
         let (event_tx, event_rx) = mpsc::channel(1);
         drop(event_rx);
 
-        relay_runtime_batches(&mut batch_rx, event_tx).await;
+        relay_runtime_events(&mut batch_rx, event_tx).await;
 
-        ack_rx.await.expect("batch should be acked");
+        ack_rx.await.expect("event should be acked");
     }
 
     #[tokio::test]
-    async fn relay_runtime_batches_exits_on_subscription_failure() {
+    async fn relay_runtime_events_exit_on_subscription_failure() {
         let (batch_tx, mut batch_rx) = mpsc::channel(1);
         batch_tx
             .send(Err(ployz_types::Error::operation(
@@ -264,7 +264,7 @@ mod tests {
         drop(batch_tx);
         let (event_tx, mut event_rx) = mpsc::channel(1);
 
-        relay_runtime_batches(&mut batch_rx, event_tx).await;
+        relay_runtime_events(&mut batch_rx, event_tx).await;
 
         assert_eq!(
             event_rx.recv().await,
@@ -274,30 +274,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_runtime_batches_surfaces_ack_failure_to_runtime_reader() {
+    async fn relay_runtime_events_surface_ack_failure_to_runtime_reader() {
         let (batch_tx, mut batch_rx) = mpsc::channel(1);
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
         drop(ack_rx);
         batch_tx
-            .send(Ok(RoutingEventBatch::with_ack(
-                "batch-ack-failed",
+            .send(Ok(RoutingEventEnvelope::with_ack(
+                "event-ack-failed",
                 None,
-                Vec::new(),
+                RoutingEvent::InstanceAdded(instance_record("instance-a", "prod", "web")),
                 ack_tx,
             )))
             .await
             .expect("queue batch");
         drop(batch_tx);
-        let (event_tx, mut event_rx) = mpsc::channel(1);
+        let (event_tx, mut event_rx) = mpsc::channel(2);
 
-        relay_runtime_batches(&mut batch_rx, event_tx).await;
+        relay_runtime_events(&mut batch_rx, event_tx).await;
 
+        assert!(
+            event_rx
+                .recv()
+                .await
+                .expect("event should be forwarded before ack failure")
+                .is_ok()
+        );
         let error = event_rx
             .recv()
             .await
             .expect("ack failure should be forwarded")
             .expect_err("ack failure should be visible to runtime reader");
-        assert!(error.contains("batch-ack-failed"));
+        assert!(error.contains("event-ack-failed"));
         assert!(error.contains("ack receiver closed"));
         assert!(event_rx.recv().await.is_none());
     }

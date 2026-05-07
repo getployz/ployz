@@ -306,7 +306,6 @@ fn route_journal_stream(scope: &NatsScope, replicas: usize) -> stream::Config {
         discard: stream::DiscardPolicy::New,
         duplicate_window: Duration::from_secs(60 * 60),
         allow_direct: true,
-        allow_atomic_publish: true,
         ..Default::default()
     }
 }
@@ -414,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn route_journal_stream_allows_atomic_publish() {
+    fn route_journal_stream_is_plain_event_journal() {
         let config = asset_configs(AssetPolicy {
             storage_nodes: 3,
             replica_preference: ReplicaPreference::Three,
@@ -428,7 +427,7 @@ mod tests {
         assert_eq!(config.retention, stream::RetentionPolicy::Limits);
         assert_eq!(config.num_replicas, 3);
         assert!(config.allow_direct);
-        assert!(config.allow_atomic_publish);
+        assert!(!config.allow_atomic_publish);
     }
 
     #[test]

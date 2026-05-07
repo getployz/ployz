@@ -596,4 +596,37 @@ mod tests {
         .await
         .expect("endpoint maintainer should exit when machine subscription closes");
     }
+
+    #[tokio::test]
+    async fn exits_when_machine_subscription_reports_failure() {
+        let network = crate::mesh::driver::WireguardDriver::memory_with(std::sync::Arc::new(
+            crate::mesh::wireguard::MemoryWireGuard::new(),
+        ));
+        let (event_tx, event_rx) = mpsc::channel(4);
+        let (_command_tx, command_rx) = mpsc::channel::<EndpointMaintainerCommand>(4);
+        event_tx
+            .send(Err(crate::error::Error::operation(
+                "test_subscription",
+                "closed",
+            )))
+            .await
+            .expect("failure event should send");
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            run_endpoint_maintainer_task(EndpointMaintainerTask {
+                snapshot: Vec::new(),
+                events: event_rx,
+                commands: command_rx,
+                bootstrap_peers: Vec::new(),
+                network,
+                local_machine_id: MachineId("self".into()),
+                endpoint_selections: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+                initial_device_peers: Vec::new(),
+                cancel: CancellationToken::new(),
+            }),
+        )
+        .await
+        .expect("endpoint maintainer should exit when machine subscription reports failure");
+    }
 }

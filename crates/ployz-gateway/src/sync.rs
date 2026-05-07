@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use crate::routes::{GatewayProjectionEvent, GatewayProjector, GatewaySnapshot, ProjectionDelta};
 use ployz_store_api::{
-    AcmeChallengeSubscriptionUpdate, CertificateSubscriptionUpdate, RoutingBatchSubscription,
-    RoutingEventBatch, RoutingSubscription,
+    AcmeChallengeSubscriptionUpdate, CertificateSubscriptionUpdate, RoutingEventEnvelope,
+    RoutingEventSubscription, RoutingSubscription,
 };
 use ployz_types::model::{
     AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateEvent,
@@ -34,10 +34,10 @@ pub trait RoutingSnapshotReader: Send + Sync {
         &self,
     ) -> impl Future<Output = Result<RoutingState, GatewayError>> + Send + '_;
 
-    fn subscribe_routing_batches<'a>(
+    fn subscribe_routing_events<'a>(
         &'a self,
         subscription: RoutingSubscription,
-    ) -> impl Future<Output = Result<RoutingBatchSubscription, GatewayError>> + Send + 'a;
+    ) -> impl Future<Output = Result<RoutingEventSubscription, GatewayError>> + Send + 'a;
     fn list_certificates(
         &self,
     ) -> impl Future<Output = Result<Vec<CertificateRecord>, GatewayError>> + Send + '_;
@@ -105,7 +105,7 @@ where
     loop {
         let consumer_id = format!("gateway.{}", machine_id.0);
         let (routing_state, mut routing_rx) = match store
-            .subscribe_routing_batches(RoutingSubscription::durable(consumer_id))
+            .subscribe_routing_events(RoutingSubscription::durable(consumer_id))
             .await
         {
             Ok(subscription) => subscription,
@@ -174,7 +174,7 @@ where
                             break;
                         }
                     };
-                    apply_routing_batch(&mut projector, batch, &snapshot).await;
+                    apply_routing_envelope(&mut projector, batch, &snapshot).await;
                 }
                 event = cert_rx.recv() => {
                     let Some(event) = event else {
@@ -261,34 +261,32 @@ fn apply_initial_challenges(
     applied
 }
 
-async fn apply_routing_batch(
+async fn apply_routing_envelope(
     projector: &mut GatewayProjector,
-    batch: RoutingEventBatch,
+    envelope: RoutingEventEnvelope,
     snapshot: &SharedSnapshot,
 ) {
-    let batch_id = batch.batch_id.clone();
-    let mut deltas = Vec::new();
+    let event_id = envelope.event_id.clone();
     let mut candidate = projector.clone();
-    for event in &batch.events {
-        match candidate.apply(GatewayProjectionEvent::Routing(event.clone())) {
-            Ok(ProjectionDelta::Empty) => {}
-            Ok(delta) => deltas.push(delta),
-            Err(err) => {
-                warn!(
-                    ?err,
-                    batch_id = %batch_id,
-                    "failed to apply gateway routing batch; keeping previous snapshot"
-                );
-                return;
-            }
+    let delta = match candidate.apply(GatewayProjectionEvent::Routing(envelope.event.clone())) {
+        Ok(ProjectionDelta::Empty) => None,
+        Ok(delta) => Some(delta),
+        Err(err) => {
+            warn!(
+                ?err,
+                event_id = %event_id,
+                "failed to apply gateway routing event; keeping previous snapshot"
+            );
+            return;
         }
-    }
+    };
     *projector = candidate;
-    if !deltas.is_empty() {
-        publish_deltas(snapshot, &deltas);
+    if let Some(delta) = delta {
+        publish_deltas(snapshot, &[delta]);
     }
-    if let Err(error) = batch.ack().await {
-        warn!(?error, batch_id = %batch_id, "gateway routing batch ack failed");
+    if let Err(error) = envelope.ack().await {
+        set_store_sync_generation_healthy(false);
+        warn!(?error, event_id = %event_id, "gateway routing event ack failed");
     }
 }
 
@@ -518,6 +516,7 @@ where
 mod tests {
     use super::*;
     use prometheus::Encoder;
+    use tokio::sync::oneshot;
 
     #[test]
     fn managed_tls_caps_are_nonzero() {
@@ -615,6 +614,66 @@ mod tests {
                     "ployz_gateway_store_sync_healthy{{stream=\"{stream}\"}} 0"
                 )),
                 "missing unhealthy metric for {stream}:\n{text}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn routing_ack_failure_marks_gateway_sync_unhealthy_after_snapshot_swap() {
+        let _metrics_guard = crate::metrics::ROUTE_METRICS_TEST_LOCK
+            .lock()
+            .expect("route metrics test lock should not be poisoned");
+        set_store_sync_generation_healthy(true);
+        let mut projector = GatewayProjector::new(RoutingState {
+            machines: Vec::new(),
+            revisions: Vec::new(),
+            releases: Vec::new(),
+            instances: Vec::new(),
+        })
+        .expect("empty routing state projects");
+        let snapshot = SharedSnapshot::new(projector.snapshot_value());
+        let (ack_tx, ack_rx) = oneshot::channel();
+        drop(ack_rx);
+
+        apply_routing_envelope(
+            &mut projector,
+            RoutingEventEnvelope::with_ack(
+                "event-1",
+                Some("test".into()),
+                ployz_types::model::RoutingEvent::RevisionAdded(
+                    ployz_types::model::ServiceRevisionRecord {
+                        namespace: ployz_types::spec::Namespace("prod".into()),
+                        service: "api".into(),
+                        revision_hash: "rev-1".into(),
+                        spec_json: "{}".into(),
+                        created_by: MachineId("machine-1".into()),
+                        created_at: 1,
+                    },
+                ),
+                ack_tx,
+            ),
+            &snapshot,
+        )
+        .await;
+
+        let metrics = prometheus::gather();
+        let mut buffer = Vec::new();
+        prometheus::TextEncoder::new()
+            .encode(&metrics, &mut buffer)
+            .expect("encode metrics");
+        let text = String::from_utf8(buffer).expect("metrics should be utf8");
+        for stream in STORE_SYNC_STREAMS {
+            assert!(
+                text.contains(&format!(
+                    "ployz_gateway_store_sync_healthy{{stream=\"{stream}\"}} 0"
+                )),
+                "missing unhealthy metric for {stream}:\n{text}"
+            );
+            assert!(
+                text.contains(&format!(
+                    "ployz_gateway_store_sync_failures_total{{stream=\"{stream}\"}}"
+                )),
+                "missing failure counter for {stream}:\n{text}"
             );
         }
     }

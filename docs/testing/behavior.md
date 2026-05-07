@@ -85,21 +85,40 @@ cargo test -p ployz-sim
 - Deploy export tests pin corrupt-state failure visibility: missing referenced
   revisions and mismatched stored service specs fail with explicit
   `deploy_export` errors.
+- Deploy manifest decode tests pin foreground request failure visibility:
+  invalid JSON returns an `INVALID_MANIFEST` daemon error with no misleading
+  payload.
 - Store API routing projection tests pin backend-independent event semantics
   across machines, revisions, releases, and instances: emitted routing events
   must update subscriber state the same way a fresh snapshot would.
-- Memory store routing batch tests pin the reference backend contract:
-  subscribers receive an initial snapshot followed by metadata-rich batches
-  whose events preserve old/new identity and satisfy acknowledgement semantics.
+- Memory store routing event tests pin the reference backend contract:
+  subscribers receive an initial snapshot followed by metadata-rich events
+  whose payloads preserve old/new identity and satisfy acknowledgement
+  semantics.
 - Memory deploy commit tests pin backend write semantics: removed services emit
   release-removal events, and removed volumes are scoped to the deploy
   namespace.
+- Memory machine registry tests pin removal visibility: deleting a machine
+  updates the routing snapshot and emits both machine and routing removal
+  events.
+- Memory certificate store tests pin subscriber visibility for certificate and
+  ACME challenge changes: initial snapshots, updates, and challenge removals
+  are observable by background consumers.
 - Store API routing acknowledgement tests pin foreground failure visibility:
-  untracked batches are no-ops, while closed ack receivers return an error to
+  untracked events are no-ops, while closed ack receivers return an error to
   the caller instead of being hidden.
-- Runtime subscription tests pin that routing batch acknowledgement failures
+- NATS routing subscription tests pin transport failure visibility: routing
+  events must carry event IDs and valid payloads, and malformed transport
+  messages become subscriber errors instead of ambiguous projection input.
+- NATS routing journal tests pin the NATS-native shape: each routing fact is a
+  directly acknowledged JetStream message, with no staged batch/commit protocol
+  or route-journal atomic publish dependency.
+- Runtime subscription tests pin that routing event acknowledgement failures
   are forwarded to the runtime reader as subscription errors instead of being
   swallowed by the daemon relay.
+- Edge routing subscription tests pin failure visibility for DNS and gateway:
+  applied routing events whose acknowledgements fail mark store-sync health
+  unhealthy after publishing the latest snapshot.
 - Daemon handler tests pin operator-facing lifecycle failures: invalid machine
   transitions return actionable errors and leave stored machine state unchanged.
 - Machine remove tests pin mutating control-plane failure behavior: unreachable
@@ -107,6 +126,12 @@ cargo test -p ployz-sim
 - Runtime backend diff tests pin uncertainty handling: malformed observed
   container state must drift, and unknown liveness must recreate rather than
   silently adopting stale or ambiguous runtime state.
+- Runtime parent-container tests pin network namespace safety: unknown or
+  malformed observed parent labels do not satisfy expected parent identity.
+- Runtime metrics snapshot tests pin observation uncertainty: unknown or
+  malformed workload labels do not produce resource snapshots.
+- ZFS inspection tests pin storage failure visibility: snapshot listing backend
+  errors fail inspection instead of being reported as empty lineage.
 - Status surface tests pin live-observation failures: missing or unreadable
   sidecar sync metrics report unknown health with an explicit error instead of
   pretending the edge is healthy.
@@ -129,6 +154,10 @@ cargo test -p ployz-sim
 - Component health tests pin background failure visibility: unhealthy workers
   preserve their original stale-since timestamp, increment failure counts, and
   expose the latest error to status readers.
+- Mesh background consumer tests pin subscription failure handling: peer sync,
+  endpoint maintenance, eBPF route sync, and subnet-claim monitoring exit when
+  machine subscriptions report errors instead of continuing against stale
+  input.
 - Deterministic simulator tests pin core orchestration behavior across seeded
   product event sequences: deploy lifecycle, gateway/DNS projection, volume
   ownership, node membership changes, failure/recovery, and intent/status/live
