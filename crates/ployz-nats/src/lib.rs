@@ -7,7 +7,7 @@ pub mod store;
 pub mod subjects;
 
 use async_nats::Client;
-use buckets::AssetPolicy;
+use buckets::{AssetPolicy, NatsAssetNames};
 use ployz_store_api::StoreRuntimeControl;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::OverlayIp;
@@ -24,6 +24,7 @@ pub struct NatsStore {
     client: Client,
     jetstream: async_nats::jetstream::Context,
     asset_policy: AssetPolicy,
+    assets: NatsAssetNames,
     scope: NatsScope,
     pub(crate) deploy_projection: Arc<RwLock<Option<CachedDeployProjection>>>,
 }
@@ -65,10 +66,12 @@ impl NatsStore {
     ) -> Self {
         let jetstream =
             async_nats::jetstream::with_domain(client.clone(), scope.authority_domain());
+        let assets = NatsAssetNames::new(&scope);
         Self {
             client,
             jetstream,
             asset_policy,
+            assets,
             scope,
             deploy_projection: Arc::new(RwLock::new(None)),
         }
@@ -87,6 +90,11 @@ impl NatsStore {
     #[must_use]
     pub fn asset_policy(&self) -> AssetPolicy {
         self.asset_policy
+    }
+
+    #[must_use]
+    pub fn assets(&self) -> &NatsAssetNames {
+        &self.assets
     }
 
     #[must_use]

@@ -7,13 +7,15 @@ use ployz_types::error::{Error, Result};
 use ployz_types::model::RoutingEvent;
 
 use crate::NatsStore;
-use crate::subjects::{self, NatsScope, ROUTE_JOURNAL_STREAM};
+use crate::buckets::NatsAssetNames;
+use crate::subjects::{self, NatsScope};
 
 pub const PLOYZ_ROUTING_CAUSE: &str = "Ployz-Routing-Cause";
 pub const PLOYZ_ROUTING_EVENT_ID: &str = "Ployz-Routing-Event-Id";
 
 pub(crate) struct RoutingPublishSpec {
     pub subject: String,
+    pub stream: String,
     pub headers: HeaderMap,
     pub payload: Vec<u8>,
 }
@@ -40,7 +42,7 @@ pub(crate) async fn publish_routing_events_in(
         let publish = PublishMessage::build()
             .payload(spec.payload.into())
             .headers(spec.headers)
-            .expected_stream(ROUTE_JOURNAL_STREAM);
+            .expected_stream(spec.stream);
         let ack = js
             .send_publish(spec.subject, publish)
             .await
@@ -66,13 +68,14 @@ pub(crate) fn routing_publish_specs_in(
     cause: &str,
     events: &[RoutingEvent],
 ) -> Result<Vec<RoutingPublishSpec>> {
+    let stream = NatsAssetNames::new(scope).route_journal_stream;
     events
         .iter()
         .enumerate()
         .map(|(index, event)| {
             let event_id = routing_event_id(operation_id, index + 1);
             let mut headers = HeaderMap::new();
-            headers.insert(NATS_EXPECTED_STREAM, ROUTE_JOURNAL_STREAM);
+            headers.insert(NATS_EXPECTED_STREAM, stream.as_str());
             headers.insert(NATS_MESSAGE_ID, event_id.as_str());
             headers.insert(PLOYZ_ROUTING_EVENT_ID, event_id.as_str());
             headers.insert(PLOYZ_ROUTING_CAUSE, cause);
@@ -81,6 +84,7 @@ pub(crate) fn routing_publish_specs_in(
             })?;
             Ok(RoutingPublishSpec {
                 subject: subjects::route_journal_event_in(scope, &event_id),
+                stream: stream.clone(),
                 headers,
                 payload,
             })
@@ -122,7 +126,11 @@ mod tests {
         );
         assert_eq!(
             header(&specs[0].headers, "Nats-Expected-Stream"),
-            ROUTE_JOURNAL_STREAM
+            NatsAssetNames::new(&NatsScope::default()).route_journal_stream
+        );
+        assert_eq!(
+            specs[0].stream,
+            NatsAssetNames::new(&NatsScope::default()).route_journal_stream
         );
         assert_eq!(
             header(&specs[1].headers, PLOYZ_ROUTING_EVENT_ID),

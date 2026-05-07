@@ -13,9 +13,9 @@ use ployz_types::model::{
 use ployz_types::spec::Namespace;
 
 use crate::NatsStore;
-use crate::buckets::DEPLOY_STATUS_BUCKET;
+use crate::buckets::NatsAssetNames;
 use crate::store::kv_json;
-use crate::subjects::{self, DEPLOY_COMMITS_STREAM, NatsScope};
+use crate::subjects::{self, NatsScope};
 
 #[derive(Debug, Clone)]
 pub(crate) struct CachedDeployProjection {
@@ -67,10 +67,12 @@ impl DeployRepository for NatsStore {
         *self.deploy_projection.write().await = None;
         let routing_events = match publish {
             DeployCommitPublish::Created { sequence } => {
-                committed_commit_routing_events(self.jetstream(), command, sequence).await?
+                committed_commit_routing_events(self.jetstream(), self.scope(), command, sequence)
+                    .await?
             }
             DeployCommitPublish::Existing { sequence } => {
-                duplicate_commit_repair_events(self.jetstream(), command, sequence).await?
+                duplicate_commit_repair_events(self.jetstream(), self.scope(), command, sequence)
+                    .await?
             }
         };
         self.publish_routing_events(
@@ -82,11 +84,22 @@ impl DeployRepository for NatsStore {
     }
 
     async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()> {
-        write_deploy_status(self.jetstream(), &command.deploy).await
+        write_deploy_status(
+            self.jetstream(),
+            self.assets().deploy_status_bucket.as_str(),
+            &command.deploy,
+        )
+        .await
     }
 
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        if let Some(status) = read_deploy_status(self.jetstream(), deploy_id).await? {
+        if let Some(status) = read_deploy_status(
+            self.jetstream(),
+            self.assets().deploy_status_bucket.as_str(),
+            deploy_id,
+        )
+        .await?
+        {
             return Ok(Some(status));
         }
         Ok(self
@@ -101,7 +114,7 @@ impl NatsStore {
     pub(crate) async fn deploy_projection_snapshot(&self) -> Result<DeployProjection> {
         let mut stream = self
             .jetstream()
-            .get_stream(DEPLOY_COMMITS_STREAM)
+            .get_stream(self.assets().deploy_commits_stream.as_str())
             .await
             .map_err(|error| Error::operation("nats_deploy_stream", format!("{error:?}")))?;
         let info = stream
@@ -140,11 +153,12 @@ pub async fn publish_commit_in(
     commit: &DeployCommit,
 ) -> Result<DeployCommitPublish> {
     let subject = subjects::deploy_commit_in(scope, &commit.namespace, &commit.deploy.deploy_id);
+    let stream = NatsAssetNames::new(scope).deploy_commits_stream;
     let payload = serde_json::to_vec(commit)
         .map_err(|error| Error::operation("nats_deploy_commit_encode", error.to_string()))?;
     let publish = PublishMessage::build()
         .payload(payload.into())
-        .expected_stream(DEPLOY_COMMITS_STREAM)
+        .expected_stream(stream.as_str())
         .expected_last_subject_sequence(0)
         .message_id(format!("deploy-commit:{}", commit.deploy.deploy_id.0));
     let ack = js
@@ -152,12 +166,12 @@ pub async fn publish_commit_in(
         .await
         .map_err(|error| Error::operation("nats_deploy_commit_publish", format!("{error:?}")))?;
     match ack.await {
-        Ok(ack) if ack.duplicate => existing_commit_publish(js, subject, commit).await,
+        Ok(ack) if ack.duplicate => existing_commit_publish(js, &stream, subject, commit).await,
         Ok(ack) => Ok(DeployCommitPublish::Created {
             sequence: ack.sequence,
         }),
         Err(error) if error.kind() == PublishErrorKind::WrongLastSequence => {
-            existing_commit_publish(js, subject, commit).await
+            existing_commit_publish(js, &stream, subject, commit).await
         }
         Err(error) => Err(Error::operation(
             "nats_deploy_commit_ack",
@@ -168,11 +182,12 @@ pub async fn publish_commit_in(
 
 async fn existing_commit_publish(
     js: &jetstream::Context,
+    stream_name: &str,
     subject: String,
     commit: &DeployCommit,
 ) -> Result<DeployCommitPublish> {
     let stream = js
-        .get_stream(DEPLOY_COMMITS_STREAM)
+        .get_stream(stream_name)
         .await
         .map_err(|error| Error::operation("nats_deploy_stream", format!("{error:?}")))?;
     let message = stream
@@ -197,11 +212,12 @@ async fn existing_commit_publish(
 
 async fn committed_commit_routing_events(
     js: &jetstream::Context,
+    scope: &NatsScope,
     command: &DeployCommit,
     sequence: u64,
 ) -> Result<Vec<RoutingEvent>> {
     let mut stream = js
-        .get_stream(DEPLOY_COMMITS_STREAM)
+        .get_stream(NatsAssetNames::new(scope).deploy_commits_stream.as_str())
         .await
         .map_err(|error| Error::operation("nats_deploy_stream", format!("{error:?}")))?;
     let info = stream
@@ -223,11 +239,12 @@ fn routing_events_for_committed_commit(
 
 async fn duplicate_commit_repair_events(
     js: &jetstream::Context,
+    scope: &NatsScope,
     command: &DeployCommit,
     sequence: u64,
 ) -> Result<Vec<RoutingEvent>> {
     let mut stream = js
-        .get_stream(DEPLOY_COMMITS_STREAM)
+        .get_stream(NatsAssetNames::new(scope).deploy_commits_stream.as_str())
         .await
         .map_err(|error| Error::operation("nats_deploy_stream", format!("{error:?}")))?;
     let info = stream
@@ -389,8 +406,12 @@ async fn apply_projection_range(
     Ok(())
 }
 
-async fn write_deploy_status(js: &jetstream::Context, deploy: &DeployRecord) -> Result<()> {
-    let bucket = kv_json::get_bucket(js, DEPLOY_STATUS_BUCKET, "nats_deploy_status_bucket").await?;
+async fn write_deploy_status(
+    js: &jetstream::Context,
+    bucket_name: &str,
+    deploy: &DeployRecord,
+) -> Result<()> {
+    let bucket = kv_json::get_bucket(js, bucket_name, "nats_deploy_status_bucket").await?;
     kv_json::put_json(
         &bucket,
         &deploy.deploy_id.0,
@@ -403,9 +424,10 @@ async fn write_deploy_status(js: &jetstream::Context, deploy: &DeployRecord) -> 
 
 async fn read_deploy_status(
     js: &jetstream::Context,
+    bucket_name: &str,
     deploy_id: &DeployId,
 ) -> Result<Option<DeployRecord>> {
-    let bucket = kv_json::get_bucket(js, DEPLOY_STATUS_BUCKET, "nats_deploy_status_bucket").await?;
+    let bucket = kv_json::get_bucket(js, bucket_name, "nats_deploy_status_bucket").await?;
     let Some(bytes) = bucket
         .get(deploy_id.0.as_str())
         .await

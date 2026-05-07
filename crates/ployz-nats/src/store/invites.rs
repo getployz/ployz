@@ -3,13 +3,11 @@ use ployz_types::error::{Error, Result};
 use ployz_types::model::{InviteRecord, MachineId};
 
 use crate::NatsStore;
-use crate::buckets::INVITES_BUCKET;
 use crate::store::kv_json;
 
 impl InviteRepository for NatsStore {
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
-        let bucket =
-            kv_json::get_bucket(self.jetstream(), INVITES_BUCKET, "nats_invites_bucket").await?;
+        let bucket = invites_bucket(self).await?;
         let payload = serde_json::to_vec(invite)
             .map_err(|error| Error::operation("nats_invite_encode", error.to_string()))?;
         bucket
@@ -28,8 +26,7 @@ impl InviteRepository for NatsStore {
     }
 
     async fn get_invite(&self, invite_id: &str) -> Result<Option<InviteRecord>> {
-        let bucket =
-            kv_json::get_bucket(self.jetstream(), INVITES_BUCKET, "nats_invites_bucket").await?;
+        let bucket = invites_bucket(self).await?;
         let Some(bytes) = bucket
             .get(invite_id)
             .await
@@ -41,8 +38,7 @@ impl InviteRepository for NatsStore {
     }
 
     async fn list_invites(&self) -> Result<Vec<InviteRecord>> {
-        let bucket =
-            kv_json::get_bucket(self.jetstream(), INVITES_BUCKET, "nats_invites_bucket").await?;
+        let bucket = invites_bucket(self).await?;
         list_invites(&bucket).await
     }
 
@@ -52,8 +48,7 @@ impl InviteRepository for NatsStore {
         machine_id: &MachineId,
         now_unix_secs: u64,
     ) -> Result<InviteRecord> {
-        let bucket =
-            kv_json::get_bucket(self.jetstream(), INVITES_BUCKET, "nats_invites_bucket").await?;
+        let bucket = invites_bucket(self).await?;
         let Some(entry) = bucket
             .entry(invite_id.to_string())
             .await
@@ -78,8 +73,7 @@ impl InviteRepository for NatsStore {
     }
 
     async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord> {
-        let bucket =
-            kv_json::get_bucket(self.jetstream(), INVITES_BUCKET, "nats_invites_bucket").await?;
+        let bucket = invites_bucket(self).await?;
         let Some(entry) = bucket
             .entry(invite_id.to_string())
             .await
@@ -102,6 +96,15 @@ impl InviteRepository for NatsStore {
         update_invite(&bucket, invite_id, entry.revision, &next_invite).await?;
         Ok(next_invite)
     }
+}
+
+async fn invites_bucket(store: &NatsStore) -> Result<async_nats::jetstream::kv::Store> {
+    kv_json::get_bucket(
+        store.jetstream(),
+        store.assets().invites_bucket.as_str(),
+        "nats_invites_bucket",
+    )
+    .await
 }
 
 fn validate_redeemable(
