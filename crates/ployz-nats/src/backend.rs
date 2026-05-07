@@ -221,9 +221,9 @@ impl RoutingSnapshotReader for NatsStore {
         &self,
         subscription: RoutingSubscription,
     ) -> Result<RoutingEventSubscription> {
-        let consumer_id = subscription.consumer_id().to_string();
-        let consumer_name = routing_consumer_name(&consumer_id);
-        let temporary = subscription.is_temporary();
+        let durable_consumer_name = subscription
+            .durable_consumer_id()
+            .map(routing_consumer_name);
         let stream = self
             .jetstream()
             .get_stream(ROUTE_JOURNAL_STREAM)
@@ -232,13 +232,12 @@ impl RoutingSnapshotReader for NatsStore {
         let mut stream = stream;
         let start_sequence = routing_subscription_start_sequence(&mut stream).await?;
         let state = RoutingSnapshotReader::load_routing_state(self).await?;
-        if !temporary {
-            delete_existing_routing_consumer(&stream, &consumer_name).await?;
+        if let Some(consumer_name) = durable_consumer_name.as_deref() {
+            delete_existing_routing_consumer(&stream, consumer_name).await?;
         }
         let consumer: async_nats::jetstream::consumer::PushConsumer = stream
             .create_consumer(routing_consumer_config(
                 &subscription,
-                &consumer_name,
                 start_sequence,
                 self.client().new_inbox(),
                 self.scope(),
@@ -302,7 +301,6 @@ impl RoutingSnapshotReader for NatsStore {
 
 fn routing_consumer_config(
     subscription: &RoutingSubscription,
-    consumer_name: &str,
     start_sequence: u64,
     deliver_subject: String,
     scope: &NatsScope,
@@ -318,14 +316,13 @@ fn routing_consumer_config(
         ..Default::default()
     };
     match subscription {
-        RoutingSubscription::Durable { .. } => {
+        RoutingSubscription::Durable { consumer_id } => {
+            let consumer_name = routing_consumer_name(consumer_id);
             config.durable_name = Some(consumer_name.to_string());
-            config.name = Some(consumer_name.to_string());
+            config.name = Some(consumer_name);
         }
-        RoutingSubscription::Temporary { consumer_id } => {
-            config.description = Some(format!(
-                "temporary ployz routing subscription {consumer_id}"
-            ));
+        RoutingSubscription::Temporary => {
+            config.description = Some(String::from("temporary ployz routing subscription"));
             config.memory_storage = true;
             config.inactive_threshold = ROUTING_EPHEMERAL_INACTIVE_THRESHOLD;
         }
@@ -465,17 +462,16 @@ mod tests {
 
     #[test]
     fn runtime_routing_consumers_are_temporary() {
-        assert!(RoutingSubscription::temporary("ployzd.runtime.founder.1").is_temporary());
+        assert!(RoutingSubscription::temporary().is_temporary());
         assert!(!RoutingSubscription::durable("gateway.founder").is_temporary());
         assert!(!RoutingSubscription::durable("dns.founder").is_temporary());
     }
 
     #[test]
     fn temporary_routing_consumers_are_ephemeral() {
-        let subscription = RoutingSubscription::temporary("ployzd.runtime.founder.1");
+        let subscription = RoutingSubscription::temporary();
         let config = routing_consumer_config(
             &subscription,
-            "unused",
             42,
             "_INBOX.runtime.1".to_string(),
             &NatsScope::default(),
@@ -497,10 +493,8 @@ mod tests {
     #[test]
     fn durable_routing_consumers_are_named() {
         let subscription = RoutingSubscription::durable("gateway.founder");
-        let consumer_name = routing_consumer_name(subscription.consumer_id());
         let config = routing_consumer_config(
             &subscription,
-            &consumer_name,
             99,
             "_INBOX.gateway.1".to_string(),
             &NatsScope::default(),
@@ -522,14 +516,9 @@ mod tests {
             ployz_types::model::InstallationId("inst-acme".into()),
             ployz_types::model::AuthorityId("auth-sin".into()),
         );
-        let subscription = RoutingSubscription::temporary("runtime");
-        let config = routing_consumer_config(
-            &subscription,
-            "unused",
-            1,
-            "_INBOX.runtime.1".to_string(),
-            &scope,
-        );
+        let subscription = RoutingSubscription::temporary();
+        let config =
+            routing_consumer_config(&subscription, 1, "_INBOX.runtime.1".to_string(), &scope);
 
         assert_eq!(
             config.filter_subject,

@@ -16,10 +16,12 @@ impl InstanceStatusRepository for NatsStore {
             kv_json::get_bucket(self.jetstream(), INSTANCES_BUCKET, "nats_instances_bucket")
                 .await?;
         let records = list_instances(&bucket).await?;
-        Ok(records
+        let mut records = records
             .into_iter()
             .filter(|record| &record.namespace == namespace)
-            .collect())
+            .collect::<Vec<_>>();
+        sort_instances(&mut records);
+        Ok(records)
     }
 
     async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
@@ -76,7 +78,9 @@ pub(crate) async fn list_all_instance_status(
 ) -> Result<Vec<InstanceStatusRecord>> {
     let bucket =
         kv_json::get_bucket(store.jetstream(), INSTANCES_BUCKET, "nats_instances_bucket").await?;
-    list_instances(&bucket).await
+    let mut records = list_instances(&bucket).await?;
+    sort_instances(&mut records);
+    Ok(records)
 }
 
 async fn list_instances(
@@ -111,9 +115,16 @@ fn validate_instance_key(key: &str, record: InstanceStatusRecord) -> Result<Inst
     Ok(record)
 }
 
+fn sort_instances(records: &mut [InstanceStatusRecord]) {
+    records.sort_by(|left, right| {
+        (left.namespace.clone(), left.instance_id.0.as_str())
+            .cmp(&(right.namespace.clone(), right.instance_id.0.as_str()))
+    });
+}
+
 #[cfg(test)]
 mod tests {
-    use super::decode_instance;
+    use super::{decode_instance, sort_instances};
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, SlotId,
     };
@@ -148,10 +159,37 @@ mod tests {
         assert_eq!(decoded, record);
     }
 
+    #[test]
+    fn instance_rows_sort_by_contract_identity() {
+        let mut records = vec![
+            test_instance_in_namespace("prod", "instance-b"),
+            test_instance_in_namespace("staging", "instance-a"),
+            test_instance_in_namespace("prod", "instance-a"),
+        ];
+
+        sort_instances(&mut records);
+
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| (record.namespace.0.as_str(), record.instance_id.0.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("prod", "instance-a"),
+                ("prod", "instance-b"),
+                ("staging", "instance-a"),
+            ]
+        );
+    }
+
     fn test_instance(id: &str) -> InstanceStatusRecord {
+        test_instance_in_namespace("prod", id)
+    }
+
+    fn test_instance_in_namespace(namespace: &str, id: &str) -> InstanceStatusRecord {
         InstanceStatusRecord {
             instance_id: InstanceId(id.into()),
-            namespace: Namespace("prod".into()),
+            namespace: Namespace(namespace.into()),
             service: "api".into(),
             slot_id: SlotId("slot-1".into()),
             machine_id: MachineId("machine-a".into()),

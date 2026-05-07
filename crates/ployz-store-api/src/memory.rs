@@ -132,12 +132,17 @@ impl MemoryStore {
     }
 
     fn routing_state(inner: &StoreInner) -> RoutingState {
-        RoutingState {
+        let mut state = RoutingState {
             machines: inner.machines.values().cloned().collect(),
             revisions: inner.service_revisions.values().cloned().collect(),
             releases: inner.service_releases.values().cloned().collect(),
             instances: inner.instance_status.values().cloned().collect(),
-        }
+        };
+        sort_machines(&mut state.machines);
+        sort_service_revisions(&mut state.revisions);
+        sort_service_releases(&mut state.releases);
+        sort_instance_status(&mut state.instances);
+        state
     }
 
     pub async fn load_routing_state(&self) -> Result<RoutingState> {
@@ -148,14 +153,12 @@ impl MemoryStore {
     pub async fn subscribe_routing_events(
         &self,
     ) -> Result<(RoutingState, mpsc::Receiver<RoutingEvent>)> {
-        let (state, mut batches) = self
-            .subscribe_routing_events_internal(crate::RoutingSubscription::temporary(
-                "memory.events",
-            ))
+        let (state, mut envelopes) = self
+            .subscribe_routing_events_internal(crate::RoutingSubscription::temporary())
             .await?;
         let (tx, rx) = mpsc::channel(1024);
         tokio::spawn(async move {
-            while let Some(envelope) = batches.recv().await {
+            while let Some(envelope) = envelopes.recv().await {
                 let Ok(envelope) = envelope else {
                     return;
                 };
@@ -203,7 +206,9 @@ impl SyncProbe for MemoryStore {
 impl MachineRegistry for MemoryStore {
     async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         let inner = self.lock_inner();
-        Ok(inner.machines.values().cloned().collect())
+        let mut machines = inner.machines.values().cloned().collect::<Vec<_>>();
+        sort_machines(&mut machines);
+        Ok(machines)
     }
 
     async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
@@ -248,7 +253,8 @@ impl MachineRegistry for MemoryStore {
 
     async fn subscribe_machines(&self) -> Result<crate::MachineSubscription> {
         let mut inner = self.lock_inner();
-        let snapshot = inner.machines.values().cloned().collect();
+        let mut snapshot = inner.machines.values().cloned().collect::<Vec<_>>();
+        sort_machines(&mut snapshot);
         let (sender, receiver) = mpsc::channel(64);
         inner.machine_subscribers.push(sender);
         Ok((snapshot, receiver))
@@ -391,19 +397,21 @@ impl DeployRepository for MemoryStore {
 
     async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
         let inner = self.lock_inner();
-        let revisions = inner
+        let mut revisions = inner
             .service_revisions
             .values()
             .filter(|record| record.namespace == *namespace)
             .cloned()
-            .collect();
+            .collect::<Vec<_>>();
+        sort_service_revisions(&mut revisions);
         let releases = Self::list_deploy_releases_inner(&inner, namespace);
-        let instances = inner
+        let mut instances = inner
             .instance_status
             .values()
             .filter(|record| record.namespace == *namespace)
             .cloned()
-            .collect();
+            .collect::<Vec<_>>();
+        sort_instance_status(&mut instances);
         Ok(DeploySnapshot {
             revisions,
             releases,
@@ -467,12 +475,14 @@ impl InstanceStatusRepository for MemoryStore {
         namespace: &Namespace,
     ) -> Result<Vec<InstanceStatusRecord>> {
         let inner = self.lock_inner();
-        Ok(inner
+        let mut records = inner
             .instance_status
             .values()
             .filter(|record| record.namespace == *namespace)
             .cloned()
-            .collect())
+            .collect::<Vec<_>>();
+        sort_instance_status(&mut records);
+        Ok(records)
     }
 
     async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
@@ -515,12 +525,14 @@ impl MemoryStore {
         inner: &StoreInner,
         namespace: &Namespace,
     ) -> Vec<ServiceReleaseRecord> {
-        inner
+        let mut releases = inner
             .service_releases
             .values()
             .filter(|record| record.namespace == *namespace)
             .cloned()
-            .collect()
+            .collect::<Vec<_>>();
+        sort_service_releases(&mut releases);
+        releases
     }
 
     fn record_service_revision_inner(
@@ -642,6 +654,65 @@ fn revision_event(
     }
 }
 
+fn sort_machines(machines: &mut [MachineMembership]) {
+    machines.sort_by(|left, right| left.id.cmp(&right.id));
+}
+
+fn sort_service_revisions(revisions: &mut [ServiceRevisionRecord]) {
+    revisions.sort_by(|left, right| {
+        (
+            left.namespace.clone(),
+            left.service.as_str(),
+            left.revision_hash.as_str(),
+        )
+            .cmp(&(
+                right.namespace.clone(),
+                right.service.as_str(),
+                right.revision_hash.as_str(),
+            ))
+    });
+}
+
+fn sort_service_releases(releases: &mut [ServiceReleaseRecord]) {
+    releases.sort_by(|left, right| {
+        (left.namespace.clone(), left.service.as_str())
+            .cmp(&(right.namespace.clone(), right.service.as_str()))
+    });
+}
+
+fn sort_instance_status(instances: &mut [InstanceStatusRecord]) {
+    instances.sort_by(|left, right| {
+        (left.namespace.clone(), left.instance_id.0.as_str())
+            .cmp(&(right.namespace.clone(), right.instance_id.0.as_str()))
+    });
+}
+
+fn sort_certificates(records: &mut [CertificateRecord]) {
+    records.sort_by(|left, right| left.hostname.cmp(&right.hostname));
+}
+
+fn sort_acme_challenges(records: &mut [AcmeChallengeRecord]) {
+    records.sort_by(|left, right| {
+        (left.hostname.as_str(), left.token.as_str())
+            .cmp(&(right.hostname.as_str(), right.token.as_str()))
+    });
+}
+
+fn sort_acme_challenge_readiness(records: &mut [AcmeChallengeReadinessRecord]) {
+    records.sort_by(|left, right| {
+        (
+            left.hostname.as_str(),
+            left.token.as_str(),
+            left.machine_id.0.as_str(),
+        )
+            .cmp(&(
+                right.hostname.as_str(),
+                right.token.as_str(),
+                right.machine_id.0.as_str(),
+            ))
+    });
+}
+
 impl CertificateStore for MemoryStore {
     async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {
         let inner = self.lock_inner();
@@ -658,7 +729,9 @@ impl CertificateStore for MemoryStore {
 
     async fn list_certificates(&self) -> Result<Vec<CertificateRecord>> {
         let inner = self.lock_inner();
-        Ok(inner.certificates.values().cloned().collect())
+        let mut records = inner.certificates.values().cloned().collect::<Vec<_>>();
+        sort_certificates(&mut records);
+        Ok(records)
     }
 
     async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>> {
@@ -683,7 +756,9 @@ impl CertificateStore for MemoryStore {
 
     async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
         let inner = self.lock_inner();
-        Ok(inner.acme_challenges.values().cloned().collect())
+        let mut records = inner.acme_challenges.values().cloned().collect::<Vec<_>>();
+        sort_acme_challenges(&mut records);
+        Ok(records)
     }
 
     async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
@@ -713,7 +788,8 @@ impl CertificateStore for MemoryStore {
 
     async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
         let mut inner = self.lock_inner();
-        let snapshot = inner.certificates.values().cloned().collect();
+        let mut snapshot = inner.certificates.values().cloned().collect::<Vec<_>>();
+        sort_certificates(&mut snapshot);
         let (sender, receiver) = mpsc::channel(64);
         inner.certificate_subscribers.push(sender);
         Ok((snapshot, receiver))
@@ -721,7 +797,8 @@ impl CertificateStore for MemoryStore {
 
     async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
         let mut inner = self.lock_inner();
-        let snapshot = inner.acme_challenges.values().cloned().collect();
+        let mut snapshot = inner.acme_challenges.values().cloned().collect::<Vec<_>>();
+        sort_acme_challenges(&mut snapshot);
         let (sender, receiver) = mpsc::channel(64);
         inner.acme_challenge_subscribers.push(sender);
         Ok((snapshot, receiver))
@@ -749,7 +826,7 @@ impl CertificateStore for MemoryStore {
         token: &str,
     ) -> Result<Vec<AcmeChallengeReadinessRecord>> {
         let inner = self.lock_inner();
-        Ok(inner
+        let mut records = inner
             .acme_challenge_readiness
             .values()
             .filter(|record| {
@@ -760,7 +837,9 @@ impl CertificateStore for MemoryStore {
                     && record.token == token
             })
             .cloned()
-            .collect())
+            .collect::<Vec<_>>();
+        sort_acme_challenge_readiness(&mut records);
+        Ok(records)
     }
 }
 
@@ -1064,6 +1143,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deploy_snapshot_returns_contract_identity_order() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: vec![
+                    test_revision(&namespace, "worker", "rev-b"),
+                    test_revision(&namespace, "api", "rev-b"),
+                    test_revision(&namespace, "api", "rev-a"),
+                ],
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: vec![
+                    test_release(&namespace, "worker", "rev-b", "deploy-1"),
+                    test_release(&namespace, "api", "rev-a", "deploy-1"),
+                ],
+                volumes: Vec::new(),
+                deploy: test_deploy(&namespace, "deploy-1"),
+            })
+            .await
+            .expect("seed deploy");
+        let mut instance_b = test_instance_status(&namespace, "instance-b");
+        instance_b.service = "worker".into();
+        store
+            .record_instance_status(&instance_b)
+            .await
+            .expect("record instance b");
+        store
+            .record_instance_status(&test_instance_status(&namespace, "instance-a"))
+            .await
+            .expect("record instance a");
+
+        let snapshot = store
+            .load_deploy_snapshot(&namespace)
+            .await
+            .expect("load deploy snapshot");
+
+        assert_eq!(
+            snapshot
+                .revisions
+                .iter()
+                .map(|revision| (revision.service.as_str(), revision.revision_hash.as_str()))
+                .collect::<Vec<_>>(),
+            [("api", "rev-a"), ("api", "rev-b"), ("worker", "rev-b")]
+        );
+        assert_eq!(
+            snapshot
+                .releases
+                .iter()
+                .map(|release| release.service.as_str())
+                .collect::<Vec<_>>(),
+            ["api", "worker"]
+        );
+        assert_eq!(
+            snapshot
+                .instances
+                .iter()
+                .map(|instance| instance.instance_id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["instance-a", "instance-b"]
+        );
+    }
+
+    #[tokio::test]
     async fn redeploying_existing_service_emits_release_updated() {
         let store = MemoryStore::new();
         let namespace = Namespace("prod".into());
@@ -1261,6 +1406,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn instance_status_list_returns_contract_identity_order() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        store
+            .record_instance_status(&test_instance_status(&namespace, "instance-b"))
+            .await
+            .expect("record instance b");
+        store
+            .record_instance_status(&test_instance_status(&namespace, "instance-a"))
+            .await
+            .expect("record instance a");
+
+        let records = store
+            .list_instance_status(&namespace)
+            .await
+            .expect("list instance status");
+
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.instance_id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["instance-a", "instance-b"]
+        );
+    }
+
+    #[tokio::test]
     async fn acme_readiness_is_scoped_by_hostname_token_and_machine() {
         let store = MemoryStore::new();
         store
@@ -1290,6 +1462,90 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].token, "new-token");
         assert_eq!(records[0].machine_id, MachineId("machine-a".into()));
+    }
+
+    #[tokio::test]
+    async fn certificate_lists_and_snapshots_return_contract_identity_order() {
+        let store = MemoryStore::new();
+        store
+            .upsert_certificate(&test_certificate("z.example.com"))
+            .await
+            .expect("seed z cert");
+        store
+            .upsert_certificate(&test_certificate("a.example.com"))
+            .await
+            .expect("seed a cert");
+        store
+            .upsert_acme_challenge(&test_acme_challenge("z.example.com", "token-b"))
+            .await
+            .expect("seed z challenge");
+        store
+            .upsert_acme_challenge(&test_acme_challenge("a.example.com", "token-a"))
+            .await
+            .expect("seed a challenge");
+        for machine_id in ["machine-b", "machine-a"] {
+            store
+                .upsert_acme_challenge_readiness(&AcmeChallengeReadinessRecord {
+                    hostname: "example.com".into(),
+                    token: "token".into(),
+                    machine_id: MachineId(machine_id.into()),
+                    observed_at: 1,
+                })
+                .await
+                .expect("seed readiness");
+        }
+
+        let certificates = store.list_certificates().await.expect("list certificates");
+        assert_eq!(
+            certificates
+                .iter()
+                .map(|record| record.hostname.as_str())
+                .collect::<Vec<_>>(),
+            ["a.example.com", "z.example.com"]
+        );
+        let (certificate_snapshot, _events) = store
+            .subscribe_certificates()
+            .await
+            .expect("subscribe certificates");
+        assert_eq!(
+            certificate_snapshot
+                .iter()
+                .map(|record| record.hostname.as_str())
+                .collect::<Vec<_>>(),
+            ["a.example.com", "z.example.com"]
+        );
+
+        let challenges = store.list_acme_challenges().await.expect("list challenges");
+        assert_eq!(
+            challenges
+                .iter()
+                .map(|record| (record.hostname.as_str(), record.token.as_str()))
+                .collect::<Vec<_>>(),
+            [("a.example.com", "token-a"), ("z.example.com", "token-b")]
+        );
+        let (challenge_snapshot, _events) = store
+            .subscribe_acme_challenges()
+            .await
+            .expect("subscribe challenges");
+        assert_eq!(
+            challenge_snapshot
+                .iter()
+                .map(|record| (record.hostname.as_str(), record.token.as_str()))
+                .collect::<Vec<_>>(),
+            [("a.example.com", "token-a"), ("z.example.com", "token-b")]
+        );
+
+        let readiness = store
+            .list_acme_challenge_readiness("example.com", "token")
+            .await
+            .expect("list readiness");
+        assert_eq!(
+            readiness
+                .iter()
+                .map(|record| record.machine_id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["machine-a", "machine-b"]
+        );
     }
 
     #[tokio::test]
@@ -1402,6 +1658,21 @@ mod tests {
         }
     }
 
+    fn test_revision(
+        namespace: &Namespace,
+        service: &str,
+        revision_hash: &str,
+    ) -> ServiceRevisionRecord {
+        ServiceRevisionRecord {
+            namespace: namespace.clone(),
+            service: service.into(),
+            revision_hash: revision_hash.into(),
+            spec_json: "{}".into(),
+            created_by: MachineId("machine-1".into()),
+            created_at: 1,
+        }
+    }
+
     fn test_deploy(namespace: &Namespace, deploy_id: &str) -> DeployRecord {
         DeployRecord {
             deploy_id: DeployId(deploy_id.into()),
@@ -1511,6 +1782,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn machine_lists_and_routing_snapshots_return_machine_id_order() {
+        let store = MemoryStore::new();
+        store
+            .upsert_self_machine(&test_machine("machine-b"))
+            .await
+            .expect("insert machine b");
+        store
+            .upsert_self_machine(&test_machine("machine-a"))
+            .await
+            .expect("insert machine a");
+
+        let listed = store.list_machines().await.expect("list machines");
+        assert_eq!(
+            listed
+                .iter()
+                .map(|machine| machine.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["machine-a", "machine-b"]
+        );
+
+        let routing = store.load_routing_state().await.expect("load routing");
+        assert_eq!(
+            routing
+                .machines
+                .iter()
+                .map(|machine| machine.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["machine-a", "machine-b"]
+        );
+
+        let (snapshot, _events) = store
+            .subscribe_machines()
+            .await
+            .expect("subscribe machines");
+        assert_eq!(
+            snapshot
+                .iter()
+                .map(|machine| machine.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["machine-a", "machine-b"]
+        );
+    }
+
+    #[tokio::test]
     async fn machine_changes_trigger_routing_events() {
         let store = MemoryStore::new();
         let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
@@ -1600,7 +1915,7 @@ mod tests {
             .await
             .expect("seed machine");
 
-        let (state, mut batches) = store
+        let (state, mut envelopes) = store
             .subscribe_routing_events_internal(crate::RoutingSubscription::durable("test.consumer"))
             .await
             .expect("subscribe routing events");
@@ -1614,7 +1929,7 @@ mod tests {
             .await
             .expect("update machine");
 
-        let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), batches.recv())
+        let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), envelopes.recv())
             .await
             .expect("routing event deadline")
             .expect("routing event")

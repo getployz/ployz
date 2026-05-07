@@ -135,10 +135,11 @@ impl CertificateStore for NatsStore {
             .iter()
             .map(|entry| (entry.key.clone(), entry.revision))
             .collect::<HashMap<_, _>>();
-        let snapshot = snapshot_entries
+        let mut snapshot = snapshot_entries
             .into_iter()
             .map(|entry| validate_certificate_key(&entry.key, entry.value))
             .collect::<Result<Vec<_>>>()?;
+        sort_certificates(&mut snapshot);
         kv_watch::subscribe_all_with_snapshot_revisions(
             &bucket,
             snapshot,
@@ -277,7 +278,7 @@ fn readiness_key_prefix(hostname: &str, token: &str) -> String {
 }
 
 async fn list_certificates(bucket: &kv::Store) -> Result<Vec<CertificateRecord>> {
-    kv_json::list_json_entries::<CertificateRecord>(
+    let mut records = kv_json::list_json_entries::<CertificateRecord>(
         bucket,
         "nats_certificate_decode",
         "nats_certificates_list",
@@ -285,7 +286,9 @@ async fn list_certificates(bucket: &kv::Store) -> Result<Vec<CertificateRecord>>
     .await?
     .into_iter()
     .map(|entry| validate_certificate_key(&entry.key, entry.value))
-    .collect()
+    .collect::<Result<Vec<_>>>()?;
+    sort_certificates(&mut records);
+    Ok(records)
 }
 
 fn decode_certificate(key: &str, bytes: &[u8]) -> Result<CertificateRecord> {
@@ -305,7 +308,7 @@ fn validate_certificate_key(key: &str, record: CertificateRecord) -> Result<Cert
 }
 
 async fn list_challenges(bucket: &kv::Store) -> Result<Vec<AcmeChallengeRecord>> {
-    kv_json::list_json_entries::<AcmeChallengeRecord>(
+    let mut records = kv_json::list_json_entries::<AcmeChallengeRecord>(
         bucket,
         "nats_acme_challenge_decode",
         "nats_acme_challenges_list",
@@ -313,7 +316,9 @@ async fn list_challenges(bucket: &kv::Store) -> Result<Vec<AcmeChallengeRecord>>
     .await?
     .into_iter()
     .map(|entry| validate_challenge_key(&entry.key, entry.value))
-    .collect()
+    .collect::<Result<Vec<_>>>()?;
+    sort_acme_challenges(&mut records);
+    Ok(records)
 }
 
 fn validate_challenge_key(key: &str, record: AcmeChallengeRecord) -> Result<AcmeChallengeRecord> {
@@ -328,7 +333,7 @@ fn validate_challenge_key(key: &str, record: AcmeChallengeRecord) -> Result<Acme
 }
 
 async fn list_readiness(bucket: &kv::Store) -> Result<Vec<AcmeChallengeReadinessRecord>> {
-    kv_json::list_json_entries::<AcmeChallengeReadinessRecord>(
+    let mut records = kv_json::list_json_entries::<AcmeChallengeReadinessRecord>(
         bucket,
         "nats_acme_readiness_decode",
         "nats_acme_readiness_list",
@@ -336,7 +341,9 @@ async fn list_readiness(bucket: &kv::Store) -> Result<Vec<AcmeChallengeReadiness
     .await?
     .into_iter()
     .map(|entry| validate_readiness_key(&entry.key, entry.value))
-    .collect()
+    .collect::<Result<Vec<_>>>()?;
+    sort_acme_challenge_readiness(&mut records);
+    Ok(records)
 }
 
 fn validate_readiness_key(
@@ -351,6 +358,29 @@ fn validate_readiness_key(
         ));
     }
     Ok(record)
+}
+
+fn sort_certificates(records: &mut [CertificateRecord]) {
+    records.sort_by(|left, right| {
+        certificate_key(&left.hostname).cmp(&certificate_key(&right.hostname))
+    });
+}
+
+fn sort_acme_challenges(records: &mut [AcmeChallengeRecord]) {
+    records.sort_by(|left, right| {
+        challenge_key(&left.hostname, &left.token)
+            .cmp(&challenge_key(&right.hostname, &right.token))
+    });
+}
+
+fn sort_acme_challenge_readiness(records: &mut [AcmeChallengeReadinessRecord]) {
+    records.sort_by(|left, right| {
+        readiness_key(&left.hostname, &left.token, &left.machine_id).cmp(&readiness_key(
+            &right.hostname,
+            &right.token,
+            &right.machine_id,
+        ))
+    });
 }
 
 fn certificate_event_from_kv_entry(
@@ -408,10 +438,13 @@ fn acme_challenge_snapshot_parts(
         .iter()
         .map(|entry| (entry.key.clone(), entry.revision))
         .collect::<HashMap<_, _>>();
-    let snapshot = entries
+    let mut snapshot = entries
         .into_iter()
         .map(|entry| validate_challenge_key(&entry.key, entry.value))
         .collect::<Result<Vec<_>>>();
+    if let Ok(records) = snapshot.as_mut() {
+        sort_acme_challenges(records);
+    }
     (snapshot, snapshot_revisions)
 }
 
@@ -584,6 +617,45 @@ mod tests {
     }
 
     #[test]
+    fn certificate_store_rows_sort_by_contract_identity() {
+        let mut certificates = vec![certificate("z.example.com"), certificate("a.example.com")];
+        sort_certificates(&mut certificates);
+        assert_eq!(
+            certificates
+                .iter()
+                .map(|record| record.hostname.as_str())
+                .collect::<Vec<_>>(),
+            ["a.example.com", "z.example.com"]
+        );
+
+        let mut challenges = vec![
+            challenge("z.example.com", "token-b"),
+            challenge("a.example.com", "token-a"),
+        ];
+        sort_acme_challenges(&mut challenges);
+        assert_eq!(
+            challenges
+                .iter()
+                .map(|record| (record.hostname.as_str(), record.token.as_str()))
+                .collect::<Vec<_>>(),
+            [("a.example.com", "token-a"), ("z.example.com", "token-b")]
+        );
+
+        let mut readiness = vec![
+            readiness("example.com", "token", "machine-b"),
+            readiness("example.com", "token", "machine-a"),
+        ];
+        sort_acme_challenge_readiness(&mut readiness);
+        assert_eq!(
+            readiness
+                .iter()
+                .map(|record| record.machine_id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["machine-a", "machine-b"]
+        );
+    }
+
+    #[test]
     fn certificate_kv_put_updates_last_seen() {
         let record = certificate("example.com");
         let bytes = serde_json::to_vec(&record).expect("encode certificate");
@@ -730,6 +802,15 @@ mod tests {
             key_authorization: "authorization".into(),
             expires_at: 10,
             created_at: 1,
+        }
+    }
+
+    fn readiness(hostname: &str, token: &str, machine_id: &str) -> AcmeChallengeReadinessRecord {
+        AcmeChallengeReadinessRecord {
+            hostname: hostname.into(),
+            token: token.into(),
+            machine_id: MachineId(machine_id.into()),
+            observed_at: 1,
         }
     }
 }

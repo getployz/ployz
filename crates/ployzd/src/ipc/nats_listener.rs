@@ -271,22 +271,31 @@ mod tests {
         record_unhealthy(&path, &mut health_state, "second").await;
         let second = load_health(path).await.expect("load second health");
 
-        assert_eq!(
-            first.stale_since_unix_secs(),
-            second.stale_since_unix_secs()
-        );
-        assert_eq!(second.consecutive_failures(), 2);
-        assert_eq!(second.last_error(), Some("second"));
+        let crate::health::ComponentHealthState::Stale {
+            stale_since_unix_secs: first_stale_since,
+            ..
+        } = first.state
+        else {
+            panic!("first health should be stale");
+        };
+        let crate::health::ComponentHealthState::Stale {
+            stale_since_unix_secs: second_stale_since,
+            consecutive_failures,
+            last_error,
+        } = second.state
+        else {
+            panic!("second health should be stale");
+        };
+        assert_eq!(first_stale_since, second_stale_since);
+        assert_eq!(consecutive_failures, 2);
+        assert_eq!(last_error, "second");
     }
 
     #[test]
     fn node_rpc_healthy_state_is_fresh() {
         let health = healthy_health();
 
-        assert!(health.is_healthy());
-        assert_eq!(health.consecutive_failures(), 0);
-        assert_eq!(health.stale_since_unix_secs(), None);
-        assert_eq!(health.last_error(), None);
+        assert_eq!(health.state, crate::health::ComponentHealthState::Healthy);
     }
 
     #[tokio::test]
@@ -298,17 +307,21 @@ mod tests {
         recorder.record_unhealthy("publish response failed").await;
         let unhealthy = load_health(path.clone()).await.expect("load unhealthy");
 
-        assert!(!unhealthy.is_healthy());
-        assert_eq!(unhealthy.consecutive_failures(), 1);
-        assert_eq!(unhealthy.last_error(), Some("publish response failed"));
+        let crate::health::ComponentHealthState::Stale {
+            consecutive_failures,
+            last_error,
+            ..
+        } = unhealthy.state
+        else {
+            panic!("unhealthy record should be stale");
+        };
+        assert_eq!(consecutive_failures, 1);
+        assert_eq!(last_error, "publish response failed");
 
         recorder.record_healthy_if_stale().await;
         let healthy = load_health(path).await.expect("load healthy");
 
-        assert!(healthy.is_healthy());
-        assert_eq!(healthy.consecutive_failures(), 0);
-        assert_eq!(healthy.stale_since_unix_secs(), None);
-        assert_eq!(healthy.last_error(), None);
+        assert_eq!(healthy.state, crate::health::ComponentHealthState::Healthy);
     }
 
     fn temp_path(label: &str) -> PathBuf {

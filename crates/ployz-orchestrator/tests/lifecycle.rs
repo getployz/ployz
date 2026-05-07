@@ -109,6 +109,32 @@ async fn startup_reaches_running_single_node() {
 }
 
 #[tokio::test]
+async fn ready_status_reports_store_unhealthy_without_inferring_ready_from_phase() {
+    let wg = Arc::new(MemoryWireGuard::new());
+    let svc = Arc::new(MemoryService::new());
+    let store = Arc::new(MemoryStore::new());
+
+    store
+        .upsert_self_machine(&test_record("m1", 1))
+        .await
+        .unwrap();
+
+    let mut mesh = make_mesh("m1", wg, svc.clone(), store);
+    mesh.up().await.unwrap();
+    assert_eq!(mesh.phase(), Phase::Running);
+
+    svc.set_healthy(false);
+    let ready = mesh.ready_status().await;
+
+    assert!(!ready.store_healthy);
+    assert!(!ready.ready);
+    assert!(
+        ready.sync_connected,
+        "single-node sync should stay independent from store health"
+    );
+}
+
+#[tokio::test]
 async fn startup_preserves_stored_self_state_when_seed_rebuilds_runtime_fields() {
     let wg = Arc::new(MemoryWireGuard::new());
     let svc = Arc::new(MemoryService::new());
@@ -349,8 +375,7 @@ async fn bootstrap_connection_timeout() {
     assert_eq!(mesh.phase(), Phase::Stopped);
 }
 
-/// Bootstrap gate proceeds once gossip sees a peer (any non-Disconnected status).
-/// We do NOT wait for gaps == 0 — see bootstrap_gate doc comment.
+/// Bootstrap gate proceeds once the store can complete a sync probe.
 #[tokio::test]
 async fn bootstrap_proceeds_on_membership() {
     let wg = Arc::new(MemoryWireGuard::new());
@@ -367,8 +392,7 @@ async fn bootstrap_proceeds_on_membership() {
     let s = store.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(30)).await;
-        // Syncing (with gaps) is enough — gate doesn't wait for Synced.
-        s.set_sync_status(SyncStatus::Syncing { gaps: 100 });
+        s.set_sync_status(SyncStatus::Synced);
     });
 
     let mut mesh = Mesh::new(

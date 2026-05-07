@@ -264,7 +264,7 @@ where
         }
 
         let machine_id = ployz_types::model::MachineId(config.machine_id.clone());
-        let state = wait_for_initial_routing_state(&store, &machine_id).await?;
+        let state = wait_for_initial_routing_state(&store).await?;
         let initial_snapshot = project_dns(&state);
         let shared = SharedDnsSnapshot::new(initial_snapshot);
 
@@ -298,7 +298,6 @@ where
 
 async fn wait_for_initial_routing_state<S>(
     store: &S,
-    machine_id: &ployz_types::model::MachineId,
 ) -> Result<ployz_types::model::RoutingState, DnsError>
 where
     S: DnsStore + Send + Sync,
@@ -309,10 +308,7 @@ where
             STORE_READY_ATTEMPT_TIMEOUT,
             DnsStore::subscribe_routing_events(
                 store,
-                ployz_store_api::RoutingSubscription::temporary(format!(
-                    "dns.ready.{}",
-                    machine_id.0
-                )),
+                ployz_store_api::RoutingSubscription::temporary(),
             ),
         )
         .await

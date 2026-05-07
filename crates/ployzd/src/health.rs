@@ -53,39 +53,4 @@ impl ComponentHealth {
             },
         }
     }
-
-    #[must_use]
-    pub(crate) fn is_healthy(&self) -> bool {
-        matches!(self.state, ComponentHealthState::Healthy)
-    }
-
-    #[must_use]
-    pub(crate) fn stale_since_unix_secs(&self) -> Option<u64> {
-        match self.state {
-            ComponentHealthState::Healthy => None,
-            ComponentHealthState::Stale {
-                stale_since_unix_secs,
-                ..
-            } => Some(stale_since_unix_secs),
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn consecutive_failures(&self) -> u64 {
-        match self.state {
-            ComponentHealthState::Healthy => 0,
-            ComponentHealthState::Stale {
-                consecutive_failures,
-                ..
-            } => consecutive_failures,
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn last_error(&self) -> Option<&str> {
-        match self.state {
-            ComponentHealthState::Healthy => None,
-            ComponentHealthState::Stale { ref last_error, .. } => Some(last_error),
-        }
-    }
 }

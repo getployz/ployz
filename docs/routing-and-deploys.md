@@ -125,8 +125,8 @@ collections. After the snapshot, live consumers apply ordered routing events fro
 
 The snapshot is the catch-up boundary. If a process restarts or loses its local
 projection, it subscribes again, replaces any old consumer with the same id,
-reads a fresh snapshot, then receives only new events (`DeliverPolicy::New`) for
-that subscription.
+reads a fresh snapshot, then receives events from the next captured stream
+sequence (`DeliverPolicy::ByStartSequence`) for that subscription.
 
 ### Subscription Model
 

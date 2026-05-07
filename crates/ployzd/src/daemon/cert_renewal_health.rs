@@ -87,22 +87,31 @@ mod tests {
         record_unhealthy(&path, &mut health_state, "second").await;
         let second = load_health(path).await.expect("load second health");
 
-        assert_eq!(
-            first.stale_since_unix_secs(),
-            second.stale_since_unix_secs()
-        );
-        assert_eq!(second.consecutive_failures(), 2);
-        assert_eq!(second.last_error(), Some("second"));
+        let crate::health::ComponentHealthState::Stale {
+            stale_since_unix_secs: first_stale_since,
+            ..
+        } = first.state
+        else {
+            panic!("first health should be stale");
+        };
+        let crate::health::ComponentHealthState::Stale {
+            stale_since_unix_secs: second_stale_since,
+            consecutive_failures,
+            last_error,
+        } = second.state
+        else {
+            panic!("second health should be stale");
+        };
+        assert_eq!(first_stale_since, second_stale_since);
+        assert_eq!(consecutive_failures, 2);
+        assert_eq!(last_error, "second");
     }
 
     #[test]
     fn cert_renewal_healthy_state_is_fresh() {
         let health = healthy_health();
 
-        assert!(health.is_healthy());
-        assert_eq!(health.consecutive_failures(), 0);
-        assert_eq!(health.stale_since_unix_secs(), None);
-        assert_eq!(health.last_error(), None);
+        assert_eq!(health.state, crate::health::ComponentHealthState::Healthy);
     }
 
     fn temp_path(label: &str) -> PathBuf {

@@ -222,7 +222,7 @@ impl Mesh {
         let sync_connected = if has_remote_peer {
             match self.store.sync_status().await {
                 Ok(SyncStatus::Disconnected) => false,
-                Ok(SyncStatus::Syncing { .. }) | Ok(SyncStatus::Synced) => true,
+                Ok(SyncStatus::Synced) => true,
                 Err(_) => false,
             }
         } else {

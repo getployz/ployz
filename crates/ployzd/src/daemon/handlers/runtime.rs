@@ -1,9 +1,8 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use ployz_api::{RuntimeWatchFrame, runtime_frame_from_event, sort_routing_state};
 use ployz_store_api::{RoutingEventSubscriptionUpdate, RoutingSnapshotReader, RoutingSubscription};
-use ployz_types::model::{MachineId, RoutingEvent, RoutingState};
+use ployz_types::model::{RoutingEvent, RoutingState};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio_util::sync::CancellationToken;
@@ -11,7 +10,6 @@ use tracing::warn;
 
 use crate::daemon::DaemonState;
 
-static RUNTIME_SUBSCRIPTION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 type RuntimeEventUpdate = Result<RoutingEvent, String>;
 
 impl DaemonState {
@@ -20,26 +18,16 @@ impl DaemonState {
     ) -> Result<(RoutingState, mpsc::Receiver<RuntimeEventUpdate>), Box<ployz_api::DaemonResponse>>
     {
         let active = self.require_active("NO_MESH", "no mesh is running")?;
-        let consumer_id = runtime_subscription_consumer_id(&self.identity.machine_id);
-        let (state, mut batches) = active
+        let (state, mut envelopes) = active
             .mesh
             .store
-            .subscribe_routing_events(RoutingSubscription::temporary(consumer_id))
+            .subscribe_routing_events(RoutingSubscription::temporary())
             .await
             .map_err(|error| Box::new(self.err("RUNTIME_SUBSCRIBE_FAILED", error.to_string())))?;
         let (tx, rx) = mpsc::channel(1024);
-        tokio::spawn(async move { relay_runtime_events(&mut batches, tx).await });
+        tokio::spawn(async move { relay_runtime_events(&mut envelopes, tx).await });
         Ok((state, rx))
     }
-}
-
-fn runtime_subscription_consumer_id(machine_id: &MachineId) -> String {
-    let sequence = RUNTIME_SUBSCRIPTION_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
-    let started = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    format!("ployzd.runtime.{}.{}.{}", machine_id.0, started, sequence)
 }
 
 async fn relay_runtime_events(
@@ -124,7 +112,7 @@ pub async fn stream_runtime_frames(
 
 #[cfg(test)]
 mod tests {
-    use super::{relay_runtime_events, runtime_subscription_consumer_id, stream_runtime_frames};
+    use super::{relay_runtime_events, stream_runtime_frames};
     use ployz_api::{RuntimeCollection, RuntimeRecord, RuntimeWatchFrame};
     use ployz_store_api::RoutingEventEnvelope;
     use ployz_types::model::{
@@ -217,23 +205,11 @@ mod tests {
         assert!(frame_rx.recv().await.is_none());
     }
 
-    #[test]
-    fn runtime_subscription_consumer_id_is_unique_per_subscription() {
-        let machine = MachineId(String::from("founder"));
-
-        let first = runtime_subscription_consumer_id(&machine);
-        let second = runtime_subscription_consumer_id(&machine);
-
-        assert_ne!(first, second);
-        assert!(first.starts_with("ployzd.runtime.founder."));
-        assert!(second.starts_with("ployzd.runtime.founder."));
-    }
-
     #[tokio::test]
     async fn relay_runtime_events_ack_and_exit_when_receiver_closes() {
-        let (batch_tx, mut batch_rx) = mpsc::channel(1);
+        let (envelope_tx, mut envelope_rx) = mpsc::channel(1);
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        batch_tx
+        envelope_tx
             .send(Ok(RoutingEventEnvelope::with_ack(
                 "event-1",
                 None,
@@ -241,30 +217,30 @@ mod tests {
                 ack_tx,
             )))
             .await
-            .expect("queue batch");
-        drop(batch_tx);
+            .expect("queue envelope");
+        drop(envelope_tx);
         let (event_tx, event_rx) = mpsc::channel(1);
         drop(event_rx);
 
-        relay_runtime_events(&mut batch_rx, event_tx).await;
+        relay_runtime_events(&mut envelope_rx, event_tx).await;
 
         ack_rx.await.expect("event should be acked");
     }
 
     #[tokio::test]
     async fn relay_runtime_events_exit_on_subscription_failure() {
-        let (batch_tx, mut batch_rx) = mpsc::channel(1);
-        batch_tx
+        let (envelope_tx, mut envelope_rx) = mpsc::channel(1);
+        envelope_tx
             .send(Err(ployz_types::Error::operation(
                 "test_routing_subscription",
                 "closed",
             )))
             .await
             .expect("queue failure");
-        drop(batch_tx);
+        drop(envelope_tx);
         let (event_tx, mut event_rx) = mpsc::channel(1);
 
-        relay_runtime_events(&mut batch_rx, event_tx).await;
+        relay_runtime_events(&mut envelope_rx, event_tx).await;
 
         assert_eq!(
             event_rx.recv().await,
@@ -275,10 +251,10 @@ mod tests {
 
     #[tokio::test]
     async fn relay_runtime_events_surface_ack_failure_to_runtime_reader() {
-        let (batch_tx, mut batch_rx) = mpsc::channel(1);
+        let (envelope_tx, mut envelope_rx) = mpsc::channel(1);
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
         drop(ack_rx);
-        batch_tx
+        envelope_tx
             .send(Ok(RoutingEventEnvelope::with_ack(
                 "event-ack-failed",
                 None,
@@ -286,11 +262,11 @@ mod tests {
                 ack_tx,
             )))
             .await
-            .expect("queue batch");
-        drop(batch_tx);
+            .expect("queue envelope");
+        drop(envelope_tx);
         let (event_tx, mut event_rx) = mpsc::channel(2);
 
-        relay_runtime_events(&mut batch_rx, event_tx).await;
+        relay_runtime_events(&mut envelope_rx, event_tx).await;
 
         assert!(
             event_rx
