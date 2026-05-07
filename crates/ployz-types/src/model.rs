@@ -1881,6 +1881,56 @@ mod tests {
     }
 
     #[test]
+    fn deploy_transition_idempotent_commit_preserves_original_completion() {
+        let mut record = deploy_record(DeployState::Committed);
+        record.committed_at = Some(42);
+        record.finished_at = Some(42);
+        record.summary_json = r#"{"started":1}"#.into();
+
+        let outcome = record
+            .apply_state_transition(DeployStateTransition {
+                goal: DeployStateGoal::Commit {
+                    summary_json: r#"{"started":2}"#.into(),
+                },
+                evidence: DeployTransitionEvidence::DeployExecutor {
+                    coordinator_machine_id: MachineId("m1".into()),
+                },
+                at_unix_secs: 99,
+            })
+            .expect("committed deploy commit is idempotent");
+
+        assert_eq!(outcome, DeployTransitionOutcome::AlreadyInState);
+        assert_eq!(record.state, DeployState::Committed);
+        assert_eq!(record.committed_at, Some(42));
+        assert_eq!(record.finished_at, Some(42));
+        assert_eq!(record.summary_json, r#"{"started":1}"#);
+    }
+
+    #[test]
+    fn deploy_transition_idempotent_cleanup_pending_preserves_original_timestamp() {
+        let mut record = deploy_record(DeployState::CleanupPending);
+        record.committed_at = Some(42);
+        record.finished_at = Some(50);
+        record.summary_json = "{}".into();
+
+        let outcome = record
+            .apply_state_transition(DeployStateTransition {
+                goal: DeployStateGoal::MarkCleanupPending,
+                evidence: DeployTransitionEvidence::DeployExecutor {
+                    coordinator_machine_id: MachineId("m1".into()),
+                },
+                at_unix_secs: 99,
+            })
+            .expect("cleanup-pending deploy cleanup transition is idempotent");
+
+        assert_eq!(outcome, DeployTransitionOutcome::AlreadyInState);
+        assert_eq!(record.state, DeployState::CleanupPending);
+        assert_eq!(record.committed_at, Some(42));
+        assert_eq!(record.finished_at, Some(50));
+        assert_eq!(record.summary_json, "{}");
+    }
+
+    #[test]
     fn deploy_transition_rejects_cleanup_pending_before_commit() {
         let mut record = deploy_record(DeployState::Applying);
 

@@ -19,12 +19,13 @@ use crate::NatsStore;
 use crate::buckets::DEPLOY_STATUS_BUCKET;
 use crate::store::deploys::projection::DeployProjection;
 use crate::store::kv_json;
-use crate::subjects::{self, DEPLOY_COMMITS_STREAM};
+use crate::subjects::{self, DEPLOY_COMMITS_STREAM, NatsScope, REVISIONS_STREAM};
 
 #[derive(Debug, Clone)]
 pub(crate) struct CachedDeployProjection {
     projection: DeployProjection,
-    last_sequence: u64,
+    deploy_last_sequence: u64,
+    revision_last_sequence: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +77,7 @@ impl DeployRepository for NatsStore {
                 &command.revision.revision_hash,
             )
             .cloned();
-        publish_revision(self.jetstream(), command).await?;
+        publish_revision_in(self.jetstream(), self.scope(), command).await?;
         let event = revision_routing_event(existing, &command.revision);
         self.publish_routing_batch(
             format!(
@@ -94,7 +95,7 @@ impl DeployRepository for NatsStore {
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
         let mut projection = self.deploy_projection_snapshot().await?;
         let routing_events = projection.apply_commit_events(command);
-        let publish = publish_commit(self.jetstream(), command).await?;
+        let publish = publish_commit_in(self.jetstream(), self.scope(), command).await?;
         let routing_events = match publish {
             DeployCommitPublish::Created => routing_events,
             DeployCommitPublish::Existing { sequence } => {
@@ -155,18 +156,50 @@ impl NatsStore {
             .await
             .map_err(|error| Error::operation("nats_deploy_stream_info", format!("{error:?}")))?
             .clone();
+        let mut revision_stream = self
+            .jetstream()
+            .get_stream(REVISIONS_STREAM)
+            .await
+            .map_err(|error| Error::operation("nats_revision_stream", format!("{error:?}")))?;
+        let revision_info = revision_stream
+            .info()
+            .await
+            .map_err(|error| Error::operation("nats_revision_stream_info", format!("{error:?}")))?
+            .clone();
         if let Some(cached) = self.deploy_projection.read().await.as_ref()
-            && cached.last_sequence == info.state.last_sequence
+            && cached.deploy_last_sequence == info.state.last_sequence
+            && cached.revision_last_sequence == revision_info.state.last_sequence
         {
             return Ok(cached.projection.clone());
         }
 
         let current = self.deploy_projection.read().await.clone();
         let cached = match current {
-            Some(cached) if can_extend_cached_projection(&cached, &info) => {
-                extend_projection_from_stream(&mut stream, cached, info).await?
+            Some(cached)
+                if can_extend_cached_projection(cached.deploy_last_sequence, &info)
+                    && can_extend_cached_projection(
+                        cached.revision_last_sequence,
+                        &revision_info,
+                    ) =>
+            {
+                extend_projection_from_stream(
+                    &mut stream,
+                    &mut revision_stream,
+                    cached,
+                    info,
+                    revision_info,
+                )
+                .await?
             }
-            Some(_) | None => replay_projection_from_stream(&mut stream, info).await?,
+            Some(_) | None => {
+                replay_projection_from_stream(
+                    &mut stream,
+                    &mut revision_stream,
+                    info,
+                    revision_info,
+                )
+                .await?
+            }
         };
         *self.deploy_projection.write().await = Some(cached.clone());
         Ok(cached.projection)
@@ -177,7 +210,15 @@ pub async fn publish_commit(
     js: &jetstream::Context,
     commit: &DeployCommit,
 ) -> Result<DeployCommitPublish> {
-    let subject = subjects::deploy_commit(&commit.namespace, &commit.deploy.deploy_id);
+    publish_commit_in(js, &NatsScope::default(), commit).await
+}
+
+pub async fn publish_commit_in(
+    js: &jetstream::Context,
+    scope: &NatsScope,
+    commit: &DeployCommit,
+) -> Result<DeployCommitPublish> {
+    let subject = subjects::deploy_commit_in(scope, &commit.namespace, &commit.deploy.deploy_id);
     let payload = serde_json::to_vec(commit)
         .map_err(|error| Error::operation("nats_deploy_commit_encode", error.to_string()))?;
     let publish = PublishMessage::build()
@@ -241,9 +282,19 @@ async fn duplicate_commit_repair_events(
         .map_err(|error| Error::operation("nats_deploy_stream_info", format!("{error:?}")))?
         .clone();
     let before = deploy_projection_before_sequence(&mut stream, info.clone(), sequence).await?;
-    let current = replay_projection_from_stream(&mut stream, info)
-        .await?
-        .projection;
+    let mut revision_stream = js
+        .get_stream(REVISIONS_STREAM)
+        .await
+        .map_err(|error| Error::operation("nats_revision_stream", format!("{error:?}")))?;
+    let revision_info = revision_stream
+        .info()
+        .await
+        .map_err(|error| Error::operation("nats_revision_stream_info", format!("{error:?}")))?
+        .clone();
+    let current =
+        replay_projection_from_stream(&mut stream, &mut revision_stream, info, revision_info)
+            .await?
+            .projection;
     Ok(repair_events_for_duplicate_commit(
         &before, &current, command,
     ))
@@ -301,53 +352,71 @@ fn repair_events_for_duplicate_commit(
 
 async fn replay_projection_from_stream(
     stream: &mut async_nats::jetstream::stream::Stream,
+    revision_stream: &mut async_nats::jetstream::stream::Stream,
     info: async_nats::jetstream::stream::Info,
+    revision_info: async_nats::jetstream::stream::Info,
 ) -> Result<CachedDeployProjection> {
     let mut projection = DeployProjection::new();
-    if info.state.messages == 0 {
-        return Ok(CachedDeployProjection {
-            projection,
-            last_sequence: info.state.last_sequence,
-        });
+    if info.state.messages > 0 {
+        apply_projection_range(
+            stream,
+            &mut projection,
+            info.state.first_sequence,
+            info.state.last_sequence,
+        )
+        .await?;
     }
-    apply_projection_range(
-        stream,
-        &mut projection,
-        info.state.first_sequence,
-        info.state.last_sequence,
-    )
-    .await?;
+    if revision_info.state.messages > 0 {
+        apply_revision_range(
+            revision_stream,
+            &mut projection,
+            revision_info.state.first_sequence,
+            revision_info.state.last_sequence,
+        )
+        .await?;
+    }
     Ok(CachedDeployProjection {
         projection,
-        last_sequence: info.state.last_sequence,
+        deploy_last_sequence: info.state.last_sequence,
+        revision_last_sequence: revision_info.state.last_sequence,
     })
 }
 
 async fn extend_projection_from_stream(
     stream: &mut async_nats::jetstream::stream::Stream,
+    revision_stream: &mut async_nats::jetstream::stream::Stream,
     cached: CachedDeployProjection,
     info: async_nats::jetstream::stream::Info,
+    revision_info: async_nats::jetstream::stream::Info,
 ) -> Result<CachedDeployProjection> {
     let mut projection = cached.projection;
     apply_projection_range(
         stream,
         &mut projection,
-        cached.last_sequence.saturating_add(1),
+        cached.deploy_last_sequence.saturating_add(1),
         info.state.last_sequence,
+    )
+    .await?;
+    apply_revision_range(
+        revision_stream,
+        &mut projection,
+        cached.revision_last_sequence.saturating_add(1),
+        revision_info.state.last_sequence,
     )
     .await?;
     Ok(CachedDeployProjection {
         projection,
-        last_sequence: info.state.last_sequence,
+        deploy_last_sequence: info.state.last_sequence,
+        revision_last_sequence: revision_info.state.last_sequence,
     })
 }
 
 fn can_extend_cached_projection(
-    cached: &CachedDeployProjection,
+    cached_last_sequence: u64,
     info: &async_nats::jetstream::stream::Info,
 ) -> bool {
     cached_projection_extension_start(
-        cached.last_sequence,
+        cached_last_sequence,
         info.state.first_sequence,
         info.state.last_sequence,
         info.state.messages,
@@ -395,9 +464,41 @@ async fn apply_projection_range(
     Ok(())
 }
 
-async fn publish_revision(js: &jetstream::Context, command: &DeployRevisionUpsert) -> Result<()> {
+async fn apply_revision_range(
+    stream: &mut async_nats::jetstream::stream::Stream,
+    projection: &mut DeployProjection,
+    first_sequence: u64,
+    last_sequence: u64,
+) -> Result<()> {
+    if first_sequence > last_sequence {
+        return Ok(());
+    }
+    for sequence in first_sequence..=last_sequence {
+        let message = match stream.direct_get(sequence).await {
+            Ok(message) => message,
+            Err(error) if error.kind() == DirectGetErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(Error::operation(
+                    "nats_revision_stream_replay",
+                    format!("{error:?}"),
+                ));
+            }
+        };
+        let revision: ServiceRevisionRecord = serde_json::from_slice(message.payload.as_ref())
+            .map_err(|error| Error::operation("nats_revision_decode", error.to_string()))?;
+        projection.apply_revision(&revision);
+    }
+    Ok(())
+}
+
+async fn publish_revision_in(
+    js: &jetstream::Context,
+    scope: &NatsScope,
+    command: &DeployRevisionUpsert,
+) -> Result<()> {
     let revision = &command.revision;
-    let subject = subjects::revision(
+    let subject = subjects::revision_in(
+        scope,
         &revision.namespace,
         &revision.service,
         &revision.revision_hash,
@@ -406,7 +507,7 @@ async fn publish_revision(js: &jetstream::Context, command: &DeployRevisionUpser
         .map_err(|error| Error::operation("nats_revision_encode", error.to_string()))?;
     let publish = PublishMessage::build()
         .payload(payload.into())
-        .expected_stream(crate::subjects::REVISIONS_STREAM)
+        .expected_stream(REVISIONS_STREAM)
         .message_id(format!(
             "revision:{}:{}:{}",
             revision.namespace.0, revision.service, revision.revision_hash

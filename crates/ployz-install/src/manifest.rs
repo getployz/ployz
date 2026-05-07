@@ -131,12 +131,14 @@ impl InstallManifest {
 }
 
 pub(super) fn validate_install_manifest(manifest: &InstallManifest) -> Result<(), String> {
+    let nats_server_path = manifest.bin_dir.join("nats-server");
     let required = [
-        &manifest.installer_path,
-        &manifest.ployzctl_path,
-        &manifest.ployzd_path,
-        &manifest.gateway_path,
-        &manifest.dns_path,
+        manifest.installer_path.as_path(),
+        manifest.ployzctl_path.as_path(),
+        manifest.ployzd_path.as_path(),
+        manifest.gateway_path.as_path(),
+        manifest.dns_path.as_path(),
+        nats_server_path.as_path(),
     ];
     for path in required {
         if !path.exists() {

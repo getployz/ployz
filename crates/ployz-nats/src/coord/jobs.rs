@@ -159,6 +159,7 @@ pub fn cert_renewal_consumer_config_in(
 
 pub struct NatsCertRenewalJobConsumer {
     consumer: jetstream::consumer::PullConsumer,
+    scope: NatsScope,
     fetch_timeout: Duration,
 }
 
@@ -185,6 +186,7 @@ impl NatsCertRenewalJobConsumer {
             .map_err(|error| Error::operation("nats_cert_job_consumer", format!("{error:?}")))?;
         Ok(Self {
             consumer,
+            scope: scope.clone(),
             fetch_timeout: CERT_RENEWAL_FETCH_TIMEOUT,
         })
     }
@@ -203,7 +205,7 @@ impl NatsCertRenewalJobConsumer {
         };
         let message =
             next.map_err(|error| Error::operation("nats_cert_job_message", format!("{error:?}")))?;
-        match CertRenewalJobDelivery::from_message(message) {
+        match CertRenewalJobDelivery::from_message(&self.scope, message) {
             Ok(delivery) => Ok(Some(delivery)),
             Err(failure) => {
                 let CertRenewalJobDecodeFailure { message, error } = *failure;
@@ -228,9 +230,14 @@ pub struct CertRenewalJobDelivery {
 
 impl CertRenewalJobDelivery {
     fn from_message(
+        scope: &NatsScope,
         message: jetstream::Message,
     ) -> std::result::Result<Self, Box<CertRenewalJobDecodeFailure>> {
-        match decode_cert_renewal_message(&message.message.subject, &message.message.payload) {
+        match decode_cert_renewal_message_in(
+            scope,
+            &message.message.subject,
+            &message.message.payload,
+        ) {
             Ok((subject, hostname)) => Ok(Self {
                 message,
                 subject,
@@ -271,14 +278,23 @@ struct CertRenewalJobDecodeFailure {
     error: Error,
 }
 
+#[cfg(test)]
 fn decode_cert_renewal_message(
+    subject: &async_nats::Subject,
+    payload: &[u8],
+) -> Result<(String, String)> {
+    decode_cert_renewal_message_in(&NatsScope::default(), subject, payload)
+}
+
+fn decode_cert_renewal_message_in(
+    scope: &NatsScope,
     subject: &async_nats::Subject,
     payload: &[u8],
 ) -> Result<(String, String)> {
     let payload: CertRenewalJobPayload = serde_json::from_slice(payload)
         .map_err(|error| Error::operation("nats_cert_job_decode", error.to_string()))?;
     let hostname = payload.hostname.to_ascii_lowercase();
-    let expected_subject = subjects::cert_renewal_job(&hostname);
+    let expected_subject = subjects::cert_renewal_job_in(scope, &hostname);
     let subject = subject.to_string();
     if subject != expected_subject {
         return Err(Error::operation(
@@ -478,6 +494,28 @@ mod tests {
 
         let (actual_subject, hostname) =
             decode_cert_renewal_message(&subject, &payload).expect("decode job");
+
+        assert_eq!(actual_subject, subject.to_string());
+        assert_eq!(hostname, "api.example.com");
+    }
+
+    #[test]
+    fn renewal_job_decode_accepts_scoped_subject() {
+        let scope = NatsScope::new(
+            ployz_types::model::InstallationId("inst-acme".into()),
+            ployz_types::model::AuthorityId("auth-sin".into()),
+        );
+        let subject: async_nats::Subject =
+            "ployz.v1.inst-acme.auth-sin.work.cert.renew.api%2Eexample%2Ecom"
+                .to_string()
+                .into();
+        let payload = serde_json::to_vec(&CertRenewalJobPayload {
+            hostname: "Api.Example.Com".to_string(),
+        })
+        .expect("payload");
+
+        let (actual_subject, hostname) =
+            decode_cert_renewal_message_in(&scope, &subject, &payload).expect("decode job");
 
         assert_eq!(actual_subject, subject.to_string());
         assert_eq!(hostname, "api.example.com");

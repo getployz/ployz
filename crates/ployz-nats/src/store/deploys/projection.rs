@@ -47,6 +47,11 @@ impl DeployProjection {
             .insert(commit.deploy.deploy_id.clone(), commit.deploy.clone());
     }
 
+    pub fn apply_revision(&mut self, revision: &ServiceRevisionRecord) {
+        self.revisions
+            .insert(revision_key(revision), revision.clone());
+    }
+
     pub fn apply_commit_events(&mut self, commit: &DeployCommit) -> Vec<RoutingEvent> {
         let mut events = Vec::new();
         for revision in &commit.revisions {

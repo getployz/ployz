@@ -22,6 +22,9 @@ what an operator, daemon, backend, or SDK consumer can rely on.
 
 - Pure model tests for lifecycle transitions, persisted state contracts, and
   projection helpers.
+- Deterministic simulator tests for core orchestration behavior: seeded product
+  event sequences, fake clocks/backends, projection invariants, and final
+  convergence checks.
 - Orchestrator tests with memory stores, fake participant clients, and fake
   probes for deploy planning, fail-fast coordination, and commit boundaries.
 - Daemon handler tests for command behavior, preconditions, and operator-facing
@@ -31,10 +34,45 @@ what an operator, daemon, backend, or SDK consumer can rely on.
 - E2E tests only for behavior that needs real process, network, container, or
   storage boundaries.
 
+## Deterministic Simulation Boundary
+
+The simulator goal is to protect Ployz core orchestration behavior, not to
+replace runtime backend tests. It should model product events against fake
+time, fake store/NATS, fake runtime observations, and fake WireGuard state,
+then check externally meaningful invariants over the model and projections.
+
+Good simulator coverage answers questions like:
+
+- Does a deploy expose only ready, non-draining instances through gateway and
+  DNS projection?
+- Do node membership changes leave volume ownership, release slots, endpoint
+  selections, and runtime status coherent?
+- Do failure and recovery sequences keep durable intent, stored status, and
+  live observation separate?
+- Can a seed reproduce the same operation sequence and invariant failure?
+
+The simulator should not claim that Docker, ZFS, WireGuard, iptables, NATS,
+DNS sockets, or gateway networking work correctly. Those are runtime/backend
+and E2E concerns. The simulator may use fakes for those systems only to drive
+and validate core orchestration decisions.
+
+Take inspiration from TigerBeetle's deterministic testing shape: seed-derived
+workloads, explicit fake time and I/O boundaries, continuous checkers, compact
+failure reports with the seed and operation history, and final convergence
+passes. Avoid assertions that depend on incidental internal event ordering.
+
+Run the simulator coverage with:
+
+```sh
+cargo test -p ployz-sim
+```
+
 ## Covered Behavior Slices
 
 - Machine lifecycle tests pin explicit activation, drain, standby, idempotency,
   and invalid-transition behavior in `ployz-types`.
+- Deploy lifecycle tests pin explicit commit and cleanup-pending transitions,
+  including idempotent retries that preserve the original completion evidence.
 - Deploy orchestration tests pin that unreachable participants block before
   inspect, start, or commit, so reachability is checked at decision time rather
   than inferred from stored freshness.
@@ -47,6 +85,9 @@ what an operator, daemon, backend, or SDK consumer can rely on.
 - Store API routing acknowledgement tests pin foreground failure visibility:
   untracked batches are no-ops, while closed ack receivers return an error to
   the caller instead of being hidden.
+- Runtime subscription tests pin that routing batch acknowledgement failures
+  are forwarded to the runtime reader as subscription errors instead of being
+  swallowed by the daemon relay.
 - Daemon handler tests pin operator-facing lifecycle failures: invalid machine
   transitions return actionable errors and leave stored machine state unchanged.
 - Machine remove tests pin mutating control-plane failure behavior: unreachable
@@ -73,3 +114,7 @@ what an operator, daemon, backend, or SDK consumer can rely on.
 - Component health tests pin background failure visibility: unhealthy workers
   preserve their original stale-since timestamp, increment failure counts, and
   expose the latest error to status readers.
+- Deterministic simulator tests pin core orchestration behavior across seeded
+  product event sequences: deploy lifecycle, gateway/DNS projection, volume
+  ownership, node membership changes, failure/recovery, and intent/status/live
+  observation separation.
