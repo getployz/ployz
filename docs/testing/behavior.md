@@ -82,12 +82,18 @@ cargo test -p ployz-sim
 - Deploy preview tests pin the operator distinction between observation and
   mutation: unreachable participants are surfaced as warnings without writing
   deploy state.
+- Deploy export tests pin corrupt-state failure visibility: missing referenced
+  revisions and mismatched stored service specs fail with explicit
+  `deploy_export` errors.
 - Store API routing projection tests pin backend-independent event semantics
   across machines, revisions, releases, and instances: emitted routing events
   must update subscriber state the same way a fresh snapshot would.
 - Memory store routing batch tests pin the reference backend contract:
   subscribers receive an initial snapshot followed by metadata-rich batches
   whose events preserve old/new identity and satisfy acknowledgement semantics.
+- Memory deploy commit tests pin backend write semantics: removed services emit
+  release-removal events, and removed volumes are scoped to the deploy
+  namespace.
 - Store API routing acknowledgement tests pin foreground failure visibility:
   untracked batches are no-ops, while closed ack receivers return an error to
   the caller instead of being hidden.
@@ -107,6 +113,9 @@ cargo test -p ployz-sim
 - API serialization tests pin structured failure/status contracts: daemon
   responses preserve typed payloads, machine operation status, runtime
   subscription error frames, and `last_error` across JSON roundtrips.
+- Runtime watch API tests pin backend-independent routing frames for all
+  subscriber tables: machine, revision, release, and instance events map to
+  stable upsert/remove keys.
 - Machine operation tests pin durable failure visibility: a recorded operation
   failure remains visible through later running/stage updates and is cleared
   only by success.
