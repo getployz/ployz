@@ -4,7 +4,7 @@ use crate::model::{
     DeployChangeKind, DeployPreview, MachineId, MachineMembership, ServicePlan,
     ServiceReleaseRecord, ServiceReleaseSlot, SlotId, SlotPlan, VolumeRecord,
 };
-use ployz_store_api::{DeployRepository, MachineRegistry, StoreDriver};
+use ployz_store_api::{DeployStore, MachineMembershipStore, StoreDriver};
 use ployz_types::spec::{
     DeployManifest, MountSource, Namespace, Placement, ServiceSpec, VolumeDeclaration,
     parse_quota_bytes, stable_hash_hex,

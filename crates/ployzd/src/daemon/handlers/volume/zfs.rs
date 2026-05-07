@@ -6,8 +6,9 @@ use ployz_api::{
     VolumeZfsSnapshotInfo, VolumeZfsSnapshotPayload, VolumeZfsTransferInfo,
     VolumeZfsTransferListPayload, VolumeZfsTransferPayload,
 };
+use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
 use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
-use ployz_store_api::{DeployRepository, MachineRegistry};
+use ployz_store_api::{DeployStore, MachineMembershipStore};
 use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership, VolumeRecord};
 use ployz_types::spec::{Namespace, VolumeScope};
 use ployz_types::time::now_unix_secs;
@@ -16,11 +17,11 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 use crate::daemon::DaemonState;
-use crate::daemon::handlers::peer_rpc::{overlay_rpc, overlay_rpc_zfs_transfer};
 use crate::daemon::handlers::volume::transfer_listener::{ZfsTransferOpen, ZfsTransferReceived};
 
 const TRANSFERS_DIR_NAME: &str = "zfs-transfers";
 const ACK_READ_TIMEOUT: Duration = Duration::from_secs(30);
+const ZFS_SEND_RPC_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_ACK_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy)]
@@ -45,6 +46,39 @@ impl TransferStatus {
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::Interrupted => "interrupted",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TransferTransition {
+    status: TransferStatus,
+    last_error: Option<String>,
+    at_unix_secs: u64,
+}
+
+impl TransferTransition {
+    fn succeeded(at_unix_secs: u64) -> Self {
+        Self {
+            status: TransferStatus::Succeeded,
+            last_error: None,
+            at_unix_secs,
+        }
+    }
+
+    fn failed(last_error: String, at_unix_secs: u64) -> Self {
+        Self {
+            status: TransferStatus::Failed,
+            last_error: Some(last_error),
+            at_unix_secs,
+        }
+    }
+
+    fn interrupted(at_unix_secs: u64) -> Self {
+        Self {
+            status: TransferStatus::Interrupted,
+            last_error: None,
+            at_unix_secs,
         }
     }
 }
@@ -92,6 +126,24 @@ impl TransferRecord {
             updated_at: self.updated_at,
             last_error: self.last_error.clone(),
         }
+    }
+
+    fn apply_transition(&mut self, transition: TransferTransition) {
+        let TransferTransition {
+            status,
+            last_error,
+            at_unix_secs,
+        } = transition;
+        self.status = status;
+        match status {
+            TransferStatus::Succeeded => self.last_error = None,
+            TransferStatus::Failed | TransferStatus::Interrupted | TransferStatus::Running => {
+                if let Some(last_error) = last_error {
+                    self.last_error = Some(last_error);
+                }
+            }
+        }
+        self.updated_at = at_unix_secs;
     }
 }
 
@@ -152,11 +204,20 @@ impl TransferStore {
         status: TransferStatus,
         last_error: Option<String>,
     ) -> Result<(), String> {
-        record.status = status;
-        if let Some(last_error) = last_error {
-            record.last_error = Some(last_error);
-        }
-        record.updated_at = now_unix_secs();
+        let at_unix_secs = now_unix_secs();
+        let transition = match status {
+            TransferStatus::Running => TransferTransition {
+                status,
+                last_error,
+                at_unix_secs,
+            },
+            TransferStatus::Succeeded => TransferTransition::succeeded(at_unix_secs),
+            TransferStatus::Failed => {
+                TransferTransition::failed(last_error.unwrap_or_default(), at_unix_secs)
+            }
+            TransferStatus::Interrupted => TransferTransition::interrupted(at_unix_secs),
+        };
+        record.apply_transition(transition);
         self.save(record)
     }
 
@@ -205,7 +266,7 @@ impl TransferStore {
         Ok(records)
     }
 
-    fn reconcile_startup(&self) -> Result<usize, String> {
+    fn recover_startup(&self) -> Result<usize, String> {
         let mut count = 0;
         for mut record in self.list()? {
             if record.status == TransferStatus::Running {
@@ -260,13 +321,13 @@ impl DaemonState {
         TransferStore::new(self.data_dir.clone())
     }
 
-    pub(crate) async fn reconcile_zfs_transfers_on_startup(&self) {
-        match self.zfs_transfer_store().reconcile_startup() {
+    pub(crate) async fn recover_zfs_transfers_on_startup(&self) {
+        match self.zfs_transfer_store().recover_startup() {
             Ok(count) if count > 0 => {
                 tracing::warn!(count, "marked running zfs transfers interrupted")
             }
             Ok(_) => {}
-            Err(error) => tracing::warn!(%error, "failed to reconcile zfs transfers"),
+            Err(error) => tracing::warn!(%error, "failed to recover zfs transfer startup state"),
         }
     }
 
@@ -296,7 +357,7 @@ impl DaemonState {
                 serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "ok".into()),
                 Some(DaemonPayload::VolumeZfsInspect(payload)),
             ),
-            Err(error) => self.err("VOLUME_ZFS_INSPECT_FAILED", error),
+            Err(error) => self.err("VOLUME_ZFS_INSPECT_FAILED", error.to_string()),
         }
     }
 
@@ -324,7 +385,7 @@ impl DaemonState {
                 serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "ok".into()),
                 Some(DaemonPayload::VolumeZfsSnapshot(payload)),
             ),
-            Err(error) => self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error),
+            Err(error) => self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error.to_string()),
         }
     }
 
@@ -367,13 +428,19 @@ impl DaemonState {
             } else {
                 None
             };
-        let transfer_port = match self.zfs_transfer_port() {
-            Ok(port) => port,
-            Err(error) => return self.err("VOLUME_ZFS_SEND_FAILED", error.to_string()),
+        let transfer_port = self.zfs_transfer_port;
+        let needs_nats_rpc = source.id != self.identity.machine_id
+            || (from_snapshot.is_some() && target.id != self.identity.machine_id);
+        let nats_rpc = if needs_nats_rpc {
+            match self.nats_node_rpc_client().await {
+                Ok(client) => Some(client.with_policy(RpcPolicy {
+                    timeout: ZFS_SEND_RPC_TIMEOUT,
+                })),
+                Err(error) => return self.err("VOLUME_ZFS_SEND_FAILED", error),
+            }
+        } else {
+            None
         };
-        let peer_port = self
-            .peer_control_port()
-            .unwrap_or(self.remote_control_port + 1);
 
         let store = self.zfs_transfer_store();
         let transfer = match store.begin(
@@ -406,8 +473,8 @@ impl DaemonState {
                 &task_source,
                 &task_target,
                 task_local_driver.as_ref(),
+                nats_rpc,
                 transfer_port,
-                peer_port,
                 &task_local,
                 &task_snapshot,
                 task_from.as_deref(),
@@ -494,10 +561,7 @@ impl DaemonState {
             Ok(driver) => driver,
             Err(error) => return self.err("VOLUME_ZFS_PEER_START_SEND_FAILED", error),
         };
-        let transfer_port = match self.zfs_transfer_port() {
-            Ok(port) => port,
-            Err(error) => return self.err("VOLUME_ZFS_PEER_START_SEND_FAILED", error.to_string()),
-        };
+        let transfer_port = self.zfs_transfer_port;
         match send_zfs_stream_from_local(
             &record,
             &target,
@@ -683,20 +747,23 @@ impl DaemonState {
                 format!("machine '{machine}' not found"),
             );
         };
-        match overlay_rpc(
-            machine.overlay_ip,
-            self.peer_control_port()
-                .unwrap_or(self.remote_control_port + 1),
-            ployz_api::DaemonRequest::VolumeZfsInspect {
-                namespace: namespace.to_string(),
-                volume: volume.to_string(),
-                machine: None,
-            },
-        )
-        .await
+        let client = match self.nats_node_rpc_client().await {
+            Ok(client) => client,
+            Err(error) => return self.err("VOLUME_ZFS_INSPECT_FAILED", error),
+        };
+        match client
+            .request(
+                NodeCommandSubject::volume_zfs_inspect(&machine.id),
+                &ployz_api::DaemonRequest::VolumeZfsInspect {
+                    namespace: namespace.to_string(),
+                    volume: volume.to_string(),
+                    machine: None,
+                },
+            )
+            .await
         {
             Ok(response) => response,
-            Err(error) => self.err("VOLUME_ZFS_INSPECT_FAILED", error),
+            Err(error) => self.err("VOLUME_ZFS_INSPECT_FAILED", error.to_string()),
         }
     }
 
@@ -713,20 +780,23 @@ impl DaemonState {
                 format!("machine '{}' not found", machine_id),
             );
         };
-        match overlay_rpc(
-            machine.overlay_ip,
-            self.peer_control_port()
-                .unwrap_or(self.remote_control_port + 1),
-            ployz_api::DaemonRequest::VolumeZfsSnapshot {
-                namespace: namespace.0.clone(),
-                volume: volume.to_string(),
-                snapshot: snapshot.to_string(),
-            },
-        )
-        .await
+        let client = match self.nats_node_rpc_client().await {
+            Ok(client) => client,
+            Err(error) => return self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error),
+        };
+        match client
+            .request(
+                NodeCommandSubject::volume_zfs_snapshot(&machine.id),
+                &ployz_api::DaemonRequest::VolumeZfsSnapshot {
+                    namespace: namespace.0.clone(),
+                    volume: volume.to_string(),
+                    snapshot: snapshot.to_string(),
+                },
+            )
+            .await
         {
             Ok(response) => response,
-            Err(error) => self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error),
+            Err(error) => self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error.to_string()),
         }
     }
 
@@ -763,8 +833,8 @@ async fn run_coordinated_zfs_transfer_inner(
     source: &MachineMembership,
     target: &MachineMembership,
     local_driver: Option<&ZfsDriver<TokioShellRunner>>,
+    nats_rpc: Option<NatsNodeRpcClient>,
     transfer_port: u16,
-    peer_port: u16,
     local_machine_id: &MachineId,
     snapshot: &str,
     from_snapshot: Option<&str>,
@@ -773,8 +843,8 @@ async fn run_coordinated_zfs_transfer_inner(
     let snap_info = snapshot_on_machine(
         source,
         local_driver,
+        nats_rpc.as_ref(),
         local_machine_id,
-        peer_port,
         &record.namespace,
         &record.volume_name,
         snapshot,
@@ -788,8 +858,8 @@ async fn run_coordinated_zfs_transfer_inner(
         let from_guid = snapshot_guid_on_machine(
             source,
             local_driver,
+            nats_rpc.as_ref(),
             local_machine_id,
-            peer_port,
             &record.namespace,
             &record.volume_name,
             from_snapshot,
@@ -798,8 +868,8 @@ async fn run_coordinated_zfs_transfer_inner(
         let target_from_guid = snapshot_guid_on_machine(
             target,
             local_driver,
+            nats_rpc.as_ref(),
             local_machine_id,
-            peer_port,
             &record.namespace,
             &record.volume_name,
             from_snapshot,
@@ -820,9 +890,9 @@ async fn run_coordinated_zfs_transfer_inner(
         source,
         target,
         local_driver,
+        nats_rpc.as_ref(),
         local_machine_id,
         transfer_port,
-        peer_port,
         record,
         snapshot,
         snap_info.guid,
@@ -979,8 +1049,8 @@ async fn send_zfs_stream_from_local(
 async fn snapshot_on_machine(
     machine: &MachineMembership,
     local_driver: Option<&ZfsDriver<TokioShellRunner>>,
+    nats_rpc: Option<&NatsNodeRpcClient>,
     local_machine_id: &MachineId,
-    peer_port: u16,
     namespace: &Namespace,
     volume: &str,
     snapshot: &str,
@@ -1003,24 +1073,26 @@ async fn snapshot_on_machine(
         });
     }
 
-    let response = overlay_rpc(
-        machine.overlay_ip,
-        peer_port,
-        ployz_api::DaemonRequest::VolumeZfsPeerSnapshot {
-            namespace: namespace.0.clone(),
-            volume: volume.to_string(),
-            snapshot: snapshot.to_string(),
-        },
-    )
-    .await?;
+    let nats_rpc = nats_rpc.ok_or_else(|| "NATS RPC client is not configured".to_string())?;
+    let response = nats_rpc
+        .request(
+            NodeCommandSubject::volume_zfs_snapshot(&machine.id),
+            &ployz_api::DaemonRequest::VolumeZfsPeerSnapshot {
+                namespace: namespace.0.clone(),
+                volume: volume.to_string(),
+                snapshot: snapshot.to_string(),
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     expect_snapshot_payload(response, "remote peer snapshot")
 }
 
 async fn snapshot_guid_on_machine(
     machine: &MachineMembership,
     local_driver: Option<&ZfsDriver<TokioShellRunner>>,
+    nats_rpc: Option<&NatsNodeRpcClient>,
     local_machine_id: &MachineId,
-    peer_port: u16,
     namespace: &Namespace,
     volume: &str,
     snapshot: &str,
@@ -1043,16 +1115,18 @@ async fn snapshot_guid_on_machine(
         });
     }
 
-    let response = overlay_rpc(
-        machine.overlay_ip,
-        peer_port,
-        ployz_api::DaemonRequest::VolumeZfsPeerSnapshotGuid {
-            namespace: namespace.0.clone(),
-            volume: volume.to_string(),
-            snapshot: snapshot.to_string(),
-        },
-    )
-    .await?;
+    let nats_rpc = nats_rpc.ok_or_else(|| "NATS RPC client is not configured".to_string())?;
+    let response = nats_rpc
+        .request(
+            NodeCommandSubject::volume_zfs_snapshot_guid(&machine.id),
+            &ployz_api::DaemonRequest::VolumeZfsPeerSnapshotGuid {
+                namespace: namespace.0.clone(),
+                volume: volume.to_string(),
+                snapshot: snapshot.to_string(),
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     expect_snapshot_payload(response, "remote peer snapshot guid")
 }
 
@@ -1061,9 +1135,9 @@ async fn start_send_on_machine(
     source: &MachineMembership,
     target: &MachineMembership,
     local_driver: Option<&ZfsDriver<TokioShellRunner>>,
+    nats_rpc: Option<&NatsNodeRpcClient>,
     local_machine_id: &MachineId,
     transfer_port: u16,
-    peer_port: u16,
     record: &VolumeRecord,
     snapshot: &str,
     expected_guid: u64,
@@ -1087,20 +1161,22 @@ async fn start_send_on_machine(
         .await;
     }
 
-    let response = overlay_rpc_zfs_transfer(
-        source.overlay_ip,
-        peer_port,
-        ployz_api::DaemonRequest::VolumeZfsPeerStartSend {
-            namespace: record.namespace.0.clone(),
-            volume: record.volume_name.clone(),
-            snapshot: snapshot.to_string(),
-            target_machine: target.id.0.clone(),
-            expected_guid,
-            from_snapshot: from_snapshot.map(str::to_string),
-            from_snapshot_guid,
-        },
-    )
-    .await?;
+    let nats_rpc = nats_rpc.ok_or_else(|| "NATS RPC client is not configured".to_string())?;
+    let response = nats_rpc
+        .request(
+            NodeCommandSubject::volume_zfs_start_send(&source.id),
+            &ployz_api::DaemonRequest::VolumeZfsPeerStartSend {
+                namespace: record.namespace.0.clone(),
+                volume: record.volume_name.clone(),
+                snapshot: snapshot.to_string(),
+                target_machine: target.id.0.clone(),
+                expected_guid,
+                from_snapshot: from_snapshot.map(str::to_string),
+                from_snapshot_guid,
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     if !response.ok {
         return Err(format!(
             "remote peer start-send failed [{}]: {}",
@@ -1183,13 +1259,13 @@ mod tests {
     }
 
     #[test]
-    fn startup_reconciliation_marks_running_transfers_interrupted() {
-        let root = tmp_root("reconcile");
+    fn startup_recovery_marks_running_transfers_interrupted() {
+        let root = tmp_root("startup-recovery");
         let store = TransferStore::new(root.clone());
         let transfer = begin(&store);
         assert_eq!(transfer.status, TransferStatus::Running);
 
-        let count = store.reconcile_startup().expect("reconcile");
+        let count = store.recover_startup().expect("recover startup");
         assert_eq!(count, 1);
         let loaded = store
             .load(&transfer.id)
@@ -1271,6 +1347,37 @@ mod tests {
             .expect("record exists");
         assert_eq!(loaded.status, TransferStatus::Failed);
         assert_eq!(loaded.last_error.as_deref(), Some("boom"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn interrupted_transfer_preserves_prior_failure_error() {
+        let root = tmp_root("interrupt-after-failure");
+        let store = TransferStore::new(root.clone());
+        let mut transfer = begin(&store);
+        store
+            .update_status(
+                &mut transfer,
+                TransferStatus::Failed,
+                Some("send failed".into()),
+            )
+            .expect("record transfer failure");
+
+        store
+            .update_status(&mut transfer, TransferStatus::Interrupted, None)
+            .expect("record interruption");
+
+        let loaded = store
+            .load(&transfer.id)
+            .expect("load")
+            .expect("record exists");
+        assert_eq!(loaded.status, TransferStatus::Interrupted);
+        assert_eq!(loaded.last_error.as_deref(), Some("send failed"));
+        assert_eq!(
+            loaded.info().last_error.as_deref(),
+            Some("send failed"),
+            "operator-facing payload should preserve the failure audience"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

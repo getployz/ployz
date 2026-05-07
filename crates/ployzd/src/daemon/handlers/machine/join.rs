@@ -4,6 +4,8 @@ mod remote;
 pub(super) mod rollback;
 mod target;
 
+pub(in crate::daemon::handlers::machine) use self::coordination::release_reserved_subnet;
+
 use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions,
     MachineTransitionGoal,
@@ -15,19 +17,21 @@ use crate::daemon::DaemonState;
 use crate::daemon::ssh::{EphemeralSshIdentityFile, SshOptions};
 
 use self::bootstrap::bootstrap_remote_machine;
-use self::coordination::{BootstrapSubnetClaim, release_reserved_subnet};
+use self::coordination::BootstrapSubnetClaim;
 use self::remote::{
-    ExpectedSubnetState, log_remote_enable_rollback, overlay_rpc_expect_ok,
-    overlay_rpc_expect_ok_with_read_timeout, overlay_self_record, remote_rpc_expect_ok,
-    wait_for_machine_projection, wait_for_overlay_ready,
+    ExpectedMachineRecord, ExpectedSubnetState, log_nats_enable_rollback, nats_rpc_expect_ok,
+    nats_self_record, remote_response_error, remote_rpc_expect_ok, wait_for_machine_record,
+    wait_for_nats_ready,
 };
 use self::target::run_machine_add_target;
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
 use super::render::render_machine_add_report;
 use super::types::{MachineAddContext, MachineAddFailure, MachineAddReport};
-use crate::daemon::handlers::peer_rpc::PEER_RPC_DESTRUCTIVE_READ_TIMEOUT;
+use ployz_nats::{NodeCommandSubject, RpcPolicy};
+use std::time::Duration;
 
 const INVITE_TTL_SECS: u64 = 600;
+const MACHINE_TRANSITION_RPC_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl DaemonState {
     pub(crate) async fn handle_machine_init(
@@ -119,11 +123,17 @@ impl DaemonState {
             .as_ref()
             .map(EphemeralSshIdentityFile::ssh_options)
             .unwrap_or_default();
-
         let (running, context) = match self.active.as_ref() {
             Some(active) => {
-                let Some(peer_sync_tx) = active.mesh.peer_sync_sender() else {
-                    return self.err("PEER_SYNC_UNAVAILABLE", "peer sync task is not running");
+                let nats_rpc = if self.runtime_is_memory_test() {
+                    None
+                } else {
+                    match self.nats_node_rpc_client().await {
+                        Ok(client) => Some(client.with_policy(RpcPolicy {
+                            timeout: MACHINE_TRANSITION_RPC_TIMEOUT,
+                        })),
+                        Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
+                    }
                 };
                 (
                     active.config.clone(),
@@ -134,8 +144,7 @@ impl DaemonState {
                         local_machine_id: self.identity.machine_id.clone(),
                         cluster_cidr: active.config.cluster_cidr.clone(),
                         store: active.mesh.store.clone(),
-                        reservations: self.reservations.clone(),
-                        peer_sync_tx,
+                        nats_rpc,
                         ssh_options,
                         install: options.install.clone().unwrap_or_default(),
                     },
@@ -170,7 +179,7 @@ impl DaemonState {
             };
             tracing::info!(%target, "machine add invite token issued");
             let target_machine_id = MachineId(target.clone());
-            let subnet_claim = match self.reserve_machine_subnet(&target_machine_id).await {
+            let mut subnet_claim = match self.reserve_machine_subnet(&target_machine_id).await {
                 Ok(claim) => claim,
                 Err(err) => {
                     report.push(super::types::MachineAddTargetResult::Failed {
@@ -190,15 +199,14 @@ impl DaemonState {
                 super::types::MachineAddStage::Preflight.to_string(),
                 MachineOperationArtifacts {
                     invite_id: Some(invite.invite_id.clone()),
-                    allocated_subnet: Some(subnet_claim.subnet.to_string()),
+                    allocated_subnet: Some(subnet_claim.subnet().to_string()),
                     uses_operation_identity: options.ssh_identity_private_key.is_some(),
                     ..MachineOperationArtifacts::default()
                 },
             ) {
                 Ok(operation) => operation,
                 Err(err) => {
-                    if let Err(release_err) = release_reserved_subnet(&context, &subnet_claim).await
-                    {
+                    if let Err(release_err) = release_reserved_subnet(&mut subnet_claim).await {
                         tracing::warn!(
                             target = %target,
                             error = %release_err,
@@ -278,50 +286,27 @@ impl DaemonState {
                 format!("machine '{target}' is not standby"),
             );
         }
-        let peer_rpc_port = match self.peer_control_port() {
-            Ok(port) => port,
-            Err(error) => return self.err("CONTROL_TRANSPORT_FAILED", error.to_string()),
+        let nats_client = match self.nats_node_rpc_client().await {
+            Ok(client) => client.with_policy(RpcPolicy {
+                timeout: MACHINE_TRANSITION_RPC_TIMEOUT,
+            }),
+            Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
         };
 
-        let context = MachineAddContext {
-            network_name: active.config.name.0.clone(),
-            network_dir: self.network_dir(&active.config.name.0),
-            network_id: active.config.id.clone(),
-            local_machine_id: self.identity.machine_id.clone(),
-            cluster_cidr: active.config.cluster_cidr.clone(),
-            store: active.mesh.store.clone(),
-            reservations: self.reservations.clone(),
-            peer_sync_tx: {
-                let Some(peer_sync_tx) = active.mesh.peer_sync_sender() else {
-                    return self.err("PEER_SYNC_UNAVAILABLE", "peer sync task is not running");
-                };
-                peer_sync_tx
-            },
-            ssh_options: SshOptions::default(),
-            install: MachineInstallOptions::default(),
-        };
-
-        let subnet_claim = match self.reserve_machine_subnet(&machine_id).await {
+        let mut subnet_claim = match self.reserve_machine_subnet(&machine_id).await {
             Ok(claim) => claim,
             Err(err) => return self.err("SUBNET_RESERVATION_FAILED", err),
         };
 
         let result = self
-            .handle_machine_activate_remote(
-                &machine_id,
-                &record,
-                peer_rpc_port,
-                &context,
-                &subnet_claim,
-            )
+            .handle_machine_activate_remote(&machine_id, &record, &nats_client, &mut subnet_claim)
             .await;
 
         if result.ok {
-            match wait_for_machine_projection(
+            match wait_for_machine_record(
                 &active.mesh.store,
                 &machine_id,
-                MachineLifecycle::Active,
-                ExpectedSubnetState::Present,
+                ExpectedMachineRecord::new(MachineLifecycle::Active, ExpectedSubnetState::Present),
             )
             .await
             {
@@ -346,31 +331,30 @@ impl DaemonState {
         &self,
         machine_id: &MachineId,
         record: &MachineMembership,
-        peer_rpc_port: u16,
-        context: &MachineAddContext,
-        subnet_claim: &BootstrapSubnetClaim,
+        nats_client: &ployz_nats::NatsNodeRpcClient,
+        subnet_claim: &mut BootstrapSubnetClaim,
     ) -> DaemonResponse {
-        if let Err(err) = overlay_rpc_expect_ok_with_read_timeout(
-            record.overlay_ip,
-            peer_rpc_port,
+        let assigned_subnet = subnet_claim.subnet();
+        if let Err(err) = nats_rpc_expect_ok(
+            nats_client,
+            NodeCommandSubject::machine_transition_self(&record.id),
             DaemonRequest::MachineTransitionSelf {
                 goal: MachineTransitionGoal::Activate,
-                assigned_subnet: Some(subnet_claim.subnet),
+                assigned_subnet: Some(assigned_subnet),
                 force: false,
             },
-            PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
         )
         .await
         {
-            let _ = release_reserved_subnet(context, subnet_claim).await;
+            let _ = release_reserved_subnet(subnet_claim).await;
             return self.err("REMOTE_ACTIVATE_FAILED", err);
         }
 
-        let remote_record = match overlay_self_record(record, peer_rpc_port).await {
+        let remote_record = match nats_self_record(nats_client, record).await {
             Ok(record) => record,
             Err(err) => {
-                log_remote_enable_rollback(record, peer_rpc_port, &err).await;
-                let _ = release_reserved_subnet(context, subnet_claim).await;
+                log_nats_enable_rollback(nats_client, record, &err).await;
+                let _ = release_reserved_subnet(subnet_claim).await;
                 return self.err("SELF_RECORD_FAILED", err);
             }
         };
@@ -379,21 +363,21 @@ impl DaemonState {
                 "remote machine id '{}' did not match enable target '{}'",
                 remote_record.id, machine_id
             );
-            log_remote_enable_rollback(record, peer_rpc_port, &mismatch).await;
-            let _ = release_reserved_subnet(context, subnet_claim).await;
+            log_nats_enable_rollback(nats_client, record, &mismatch).await;
+            let _ = release_reserved_subnet(subnet_claim).await;
             return self.err("MACHINE_ID_MISMATCH", mismatch);
         }
 
-        if let Err(err) = wait_for_overlay_ready(record, peer_rpc_port).await {
-            log_remote_enable_rollback(record, peer_rpc_port, &err).await;
-            let _ = release_reserved_subnet(context, subnet_claim).await;
+        if let Err(err) = wait_for_nats_ready(nats_client, record).await {
+            log_nats_enable_rollback(nats_client, record, &err).await;
+            let _ = release_reserved_subnet(subnet_claim).await;
             return self.err("REMOTE_READY_FAILED", err);
         }
 
-        let _ = release_reserved_subnet(context, subnet_claim).await;
+        let _ = release_reserved_subnet(subnet_claim).await;
         self.ok(format!(
             "machine activated\n  machine: {}\n  subnet:  {}",
-            machine_id, subnet_claim.subnet
+            machine_id, assigned_subnet
         ))
     }
 
@@ -419,13 +403,13 @@ impl DaemonState {
         if record.lifecycle == MachineLifecycle::Draining {
             return self.ok(format!("machine '{}' already draining", machine_id));
         }
-        let peer_rpc_port = match self.peer_control_port() {
-            Ok(port) => port,
-            Err(error) => return self.err("CONTROL_TRANSPORT_FAILED", error.to_string()),
+        let nats_client = match self.nats_node_rpc_client().await {
+            Ok(client) => client,
+            Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
         };
-        if let Err(err) = overlay_rpc_expect_ok(
-            record.overlay_ip,
-            peer_rpc_port,
+        if let Err(err) = nats_rpc_expect_ok(
+            &nats_client,
+            NodeCommandSubject::machine_transition_self(&record.id),
             DaemonRequest::MachineTransitionSelf {
                 goal: MachineTransitionGoal::Drain,
                 assigned_subnet: None,
@@ -436,11 +420,10 @@ impl DaemonState {
         {
             return self.err("REMOTE_DRAIN_FAILED", err);
         }
-        match wait_for_machine_projection(
+        match wait_for_machine_record(
             &active.mesh.store,
             &machine_id,
-            MachineLifecycle::Draining,
-            ExpectedSubnetState::Present,
+            ExpectedMachineRecord::new(MachineLifecycle::Draining, ExpectedSubnetState::Present),
         )
         .await
         {
@@ -471,30 +454,60 @@ impl DaemonState {
         if record.lifecycle == MachineLifecycle::Standby && record.subnet.is_none() {
             return self.ok(format!("machine '{}' already standby", machine_id));
         }
-        let peer_rpc_port = match self.peer_control_port() {
-            Ok(port) => port,
-            Err(error) => return self.err("CONTROL_TRANSPORT_FAILED", error.to_string()),
+        let nats_client = match self.nats_node_rpc_client().await {
+            Ok(client) => client.with_policy(RpcPolicy {
+                timeout: MACHINE_TRANSITION_RPC_TIMEOUT,
+            }),
+            Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
         };
-        if let Err(err) = overlay_rpc_expect_ok_with_read_timeout(
-            record.overlay_ip,
-            peer_rpc_port,
-            DaemonRequest::MachineTransitionSelf {
-                goal: MachineTransitionGoal::Standby,
-                assigned_subnet: None,
-                force,
-            },
-            PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
-        )
-        .await
-        {
-            return self.err("REMOTE_STANDBY_FAILED", err);
+        let transition = nats_client
+            .request(
+                NodeCommandSubject::machine_transition_self(&record.id),
+                &DaemonRequest::MachineTransitionSelf {
+                    goal: MachineTransitionGoal::Standby,
+                    assigned_subnet: None,
+                    force,
+                },
+            )
+            .await;
+        match transition {
+            Ok(response) if response.ok => {}
+            Ok(response) => {
+                return self.err("REMOTE_STANDBY_FAILED", remote_response_error(&response));
+            }
+            Err(err) => {
+                let record_wait = wait_for_machine_record(
+                    &active.mesh.store,
+                    &machine_id,
+                    ExpectedMachineRecord::new(
+                        MachineLifecycle::Standby,
+                        ExpectedSubnetState::Absent,
+                    ),
+                )
+                .await;
+                match record_wait {
+                    Ok(()) => {
+                        tracing::warn!(
+                            machine = %machine_id,
+                            error = %err,
+                            "machine standby NATS reply failed after observed machine record reached expected value"
+                        );
+                        return self.ok(format!("machine '{}' standby", machine_id));
+                    }
+                    Err(record_err) => {
+                        return self.err(
+                            "REMOTE_STANDBY_FAILED",
+                            format!("{err}; observed machine record did not confirm standby: {record_err}"),
+                        );
+                    }
+                }
+            }
         }
 
-        match wait_for_machine_projection(
+        match wait_for_machine_record(
             &active.mesh.store,
             &machine_id,
-            MachineLifecycle::Standby,
-            ExpectedSubnetState::Absent,
+            ExpectedMachineRecord::new(MachineLifecycle::Standby, ExpectedSubnetState::Absent),
         )
         .await
         {

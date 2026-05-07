@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ployz_store_api::{MachineRegistry, StoreRuntimeControl, SyncProbe, SyncStatus};
+use ployz_store_api::{MachineMembershipStore, StoreRuntimeControl, SyncProbe, SyncStatus};
 use tracing::{info, warn};
 
 use crate::error::Error as PortError;
@@ -53,12 +53,8 @@ impl Mesh {
             .map(|m| m.wireguard_peer_spec())
             .collect();
         if !pre_start_peers.is_empty() {
-            if let Err(e) = self.network.set_peers(&pre_start_peers).await {
-                warn!(?e, "pre-start peer sync failed");
-            }
-            if self.wait_for_handshake().await.is_err() {
-                warn!("no WG handshake within timeout, continuing anyway");
-            }
+            self.network.set_peers(&pre_start_peers).await?;
+            self.wait_for_handshake().await?;
         }
 
         self.store.start().await?;
@@ -77,7 +73,7 @@ impl Mesh {
     async fn wait_for_handshake(&self) -> Result<()> {
         poll_until(
             Duration::from_secs(10),
-            Duration::from_millis(200),
+            Duration::from_millis(50),
             Duration::from_millis(200),
             || async { self.network.has_remote_handshake().await },
         )
@@ -86,7 +82,9 @@ impl Mesh {
         .ok_or_else(|| {
             MeshError::Port(PortError::operation(
                 "handshake wait",
-                "no WG handshake within 10s".to_string(),
+                "no WG handshake with any seeded peer within 10s -- store cannot \
+                 leafnode-bridge to the hub without a working overlay path"
+                    .to_string(),
             ))
         })?;
         info!("WG remote handshake confirmed, proceeding with store start");
@@ -167,12 +165,6 @@ impl Mesh {
             return Ok(());
         }
 
-        if self.allow_disconnected_bootstrap {
-            info!("skipping bootstrap wait because disconnected bootstrap is allowed");
-            self.apply(PhaseEvent::SyncComplete)?;
-            return Ok(());
-        }
-
         let interval = self.bootstrap_interval;
         let connection_timeout = self.connection_timeout;
         let store = self.store.clone();
@@ -185,17 +177,13 @@ impl Mesh {
                         Ok(SyncStatus::Disconnected) => {
                             consecutive_errors = 0;
                         }
-                        Ok(_) => return Ok(true),
+                        Ok(SyncStatus::Synced) => return Ok(true),
                         Err(e) => {
                             consecutive_errors += 1;
                             if consecutive_errors <= 3 {
                                 warn!(?e, "sync probe failed during bootstrap");
                             } else if consecutive_errors == 4 {
-                                warn!(
-                                    ?e,
-                                    consecutive_errors,
-                                    "sync probe keeps failing — corrosion transport may be stuck"
-                                );
+                                warn!(?e, consecutive_errors, "sync probe keeps failing");
                             }
                         }
                     }
@@ -209,15 +197,13 @@ impl Mesh {
 
         if !connected {
             let reason = match result {
-                Ok(_) => {
-                    "corrosion gossip could not reach any remote peer within the timeout. \
-                     The gossip transport (QUIC) may be stuck — try restarting the mesh on both nodes"
-                        .to_string()
-                }
+                Ok(_) => "store sync could not reach any remote peer within the timeout. \
+                     Try restarting the mesh on both nodes"
+                    .to_string(),
                 Err(e) => {
                     format!(
-                        "corrosion API never became healthy: {e}. \
-                         The gossip transport (QUIC) may be stuck — try restarting the mesh on both nodes"
+                        "store never became healthy: {e}. \
+                         Try restarting the mesh on both nodes"
                     )
                 }
             };

@@ -11,7 +11,7 @@ pub use proxy::GatewayApp;
 pub use server::{run_gateway_process_on_runtime, run_gateway_process_with_store, run_server};
 pub use snapshot::SharedSnapshot;
 pub use sync::{
-    RoutingSnapshotReader, load_projected_snapshot_from_store, run_sync_loop,
+    RoutingStateStore, load_projected_snapshot_from_store, run_sync_loop,
     spawn_sync_thread_with_store,
 };
 

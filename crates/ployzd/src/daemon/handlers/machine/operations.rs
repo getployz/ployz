@@ -9,10 +9,11 @@ use crate::daemon::ssh::SshOptions;
 use ployz_api::{
     DaemonPayload, MachineOperationInfo, MachineOperationListPayload, MachineOperationPayload,
 };
-use ployz_types::model::MachineId;
+use ployz_store_api::MachineMembershipStore;
+use ployz_types::model::{MachineId, MachineLifecycle};
 use ployz_types::time::now_unix_secs;
 
-use super::join::rollback::{best_effort_remote_cleanup, remove_transient_peer};
+use super::join::rollback::best_effort_remote_cleanup;
 use super::types::MachineAddStage;
 
 const OPERATIONS_DIR_NAME: &str = "machine-operations";
@@ -53,6 +54,39 @@ impl MachineOperationStatus {
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::Interrupted => "interrupted",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MachineOperationTransition {
+    status: MachineOperationStatus,
+    last_error: Option<String>,
+    at_unix_secs: u64,
+}
+
+impl MachineOperationTransition {
+    fn succeed(at_unix_secs: u64) -> Self {
+        Self {
+            status: MachineOperationStatus::Succeeded,
+            last_error: None,
+            at_unix_secs,
+        }
+    }
+
+    fn fail(last_error: String, at_unix_secs: u64) -> Self {
+        Self {
+            status: MachineOperationStatus::Failed,
+            last_error: Some(last_error),
+            at_unix_secs,
+        }
+    }
+
+    fn interrupt(last_error: Option<String>, at_unix_secs: u64) -> Self {
+        Self {
+            status: MachineOperationStatus::Interrupted,
+            last_error,
+            at_unix_secs,
         }
     }
 }
@@ -108,6 +142,26 @@ impl MachineOperationRecord {
             invite_id: self.artifacts.invite_id.clone(),
             allocated_subnet: self.artifacts.allocated_subnet.clone(),
         }
+    }
+
+    fn apply_transition(&mut self, transition: MachineOperationTransition) {
+        let MachineOperationTransition {
+            status,
+            last_error,
+            at_unix_secs,
+        } = transition;
+        self.status = status;
+        match status {
+            MachineOperationStatus::Succeeded => self.last_error = None,
+            MachineOperationStatus::Failed
+            | MachineOperationStatus::Interrupted
+            | MachineOperationStatus::Running => {
+                if let Some(last_error) = last_error {
+                    self.last_error = Some(last_error);
+                }
+            }
+        }
+        self.updated_at = at_unix_secs;
     }
 }
 
@@ -190,11 +244,22 @@ impl MachineOperationStore {
         status: MachineOperationStatus,
         last_error: Option<String>,
     ) -> Result<(), String> {
-        record.status = status;
-        if let Some(last_error) = last_error {
-            record.last_error = Some(last_error);
-        }
-        record.updated_at = now_unix_secs();
+        let at_unix_secs = now_unix_secs();
+        let transition = match status {
+            MachineOperationStatus::Running => MachineOperationTransition {
+                status,
+                last_error,
+                at_unix_secs,
+            },
+            MachineOperationStatus::Succeeded => MachineOperationTransition::succeed(at_unix_secs),
+            MachineOperationStatus::Failed => {
+                MachineOperationTransition::fail(last_error.unwrap_or_default(), at_unix_secs)
+            }
+            MachineOperationStatus::Interrupted => {
+                MachineOperationTransition::interrupt(last_error, at_unix_secs)
+            }
+        };
+        record.apply_transition(transition);
         self.save(record)
     }
 
@@ -328,12 +393,12 @@ impl DaemonState {
         }
     }
 
-    pub async fn reconcile_machine_operations_on_startup(&self) {
+    pub async fn recover_machine_operations_on_startup(&self) {
         let store = self.machine_operation_store();
         let records = match store.list() {
             Ok(records) => records,
             Err(err) => {
-                tracing::warn!(error = %err, "machine operation reconciliation: list failed");
+                tracing::warn!(error = %err, "machine operation startup recovery: list failed");
                 return;
             }
         };
@@ -347,11 +412,11 @@ impl DaemonState {
                 MachineOperationStatus::Interrupted,
                 Some("daemon restarted before operation completed".into()),
             ) {
-                tracing::warn!(error = %err, operation_id = %record.id, "machine operation reconciliation: mark interrupted failed");
+                tracing::warn!(error = %err, operation_id = %record.id, "machine operation startup recovery: mark interrupted failed");
                 continue;
             }
 
-            let note = match self.reconcile_machine_operation(&record).await {
+            let note = match self.recover_machine_operation(&record).await {
                 Ok(note) => note,
                 Err(err) => Some(err),
             };
@@ -362,31 +427,31 @@ impl DaemonState {
                     MachineOperationStatus::Interrupted,
                     Some(combined),
                 ) {
-                    tracing::warn!(error = %err, operation_id = %record.id, "machine operation reconciliation: update note failed");
+                    tracing::warn!(error = %err, operation_id = %record.id, "machine operation startup recovery: update note failed");
                 }
             }
         }
     }
 
-    async fn reconcile_machine_operation(
+    async fn recover_machine_operation(
         &self,
         record: &MachineOperationRecord,
     ) -> Result<Option<String>, String> {
         match record.kind {
             MachineOperationKind::Init => Ok(None),
-            MachineOperationKind::Add => self.reconcile_machine_add_operation(record).await,
-            MachineOperationKind::Update => self.reconcile_machine_update_operation(record).await,
+            MachineOperationKind::Add => self.recover_machine_add_operation(record).await,
+            MachineOperationKind::Update => self.recover_machine_update_operation(record).await,
         }
     }
 
-    async fn reconcile_machine_update_operation(
+    async fn recover_machine_update_operation(
         &self,
         record: &MachineOperationRecord,
     ) -> Result<Option<String>, String> {
         let store = self.machine_operation_store();
         let Some(mut current) = store.load(&record.id)? else {
             return Ok(Some(
-                "update operation disappeared during reconciliation".into(),
+                "update operation disappeared during startup recovery".into(),
             ));
         };
         let requested_version = record
@@ -404,9 +469,7 @@ impl DaemonState {
             requested_version == env!("CARGO_PKG_VERSION")
         };
         if version_matches {
-            current.status = MachineOperationStatus::Succeeded;
-            current.last_error = None;
-            current.updated_at = now_unix_secs();
+            current.apply_transition(MachineOperationTransition::succeed(now_unix_secs()));
             store.save(&current)?;
             return Ok(None);
         }
@@ -417,24 +480,35 @@ impl DaemonState {
         )))
     }
 
-    async fn reconcile_machine_add_operation(
+    async fn recover_machine_add_operation(
         &self,
         record: &MachineOperationRecord,
     ) -> Result<Option<String>, String> {
         let mut notes = Vec::new();
         if let Some(machine_id) = &record.artifacts.machine_id {
             let Some(active) = self.active.as_ref() else {
-                notes.push("transient peer cleanup skipped: no running network".into());
+                notes.push("bootstrap membership cleanup skipped: no running network".into());
                 return Ok(Some(notes.join("; ")));
             };
-            let Some(peer_sync_tx) = active.mesh.peer_sync_sender() else {
-                notes.push("transient peer cleanup skipped: peer sync unavailable".into());
-                return Ok(Some(notes.join("; ")));
-            };
-            if let Err(err) = remove_transient_peer(&peer_sync_tx, machine_id).await {
-                notes.push(format!("transient peer cleanup failed: {err}"));
-            } else {
-                notes.push(format!("transient peer '{}' removed", machine_id.0));
+            match super::list::find_machine_record(&active.mesh.store, machine_id).await {
+                Ok(Some(machine)) if machine.lifecycle == MachineLifecycle::Active => {
+                    notes.push(format!(
+                        "bootstrap membership cleanup skipped: machine '{}' is active",
+                        machine_id.0
+                    ));
+                }
+                Ok(Some(_machine)) => {
+                    if let Err(err) = active.mesh.store.delete_machine(machine_id).await {
+                        notes.push(format!("bootstrap membership cleanup failed: {err}"));
+                    } else {
+                        notes.push(format!(
+                            "bootstrap membership seed '{}' removed",
+                            machine_id.0
+                        ));
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => notes.push(format!("bootstrap membership lookup failed: {err}")),
             }
         }
 
@@ -448,8 +522,8 @@ impl DaemonState {
         if !matches!(
             add_stage,
             MachineAddStage::Joined
+                | MachineAddStage::BootstrapPublished
                 | MachineAddStage::SelfRecorded
-                | MachineAddStage::TransientPeerInstalled
                 | MachineAddStage::Ready
                 | MachineAddStage::Enabled
                 | MachineAddStage::Finalized
@@ -527,7 +601,7 @@ fn merge_operation_notes(existing: Option<&str>, next: &str) -> String {
 mod tests {
     use super::{
         MAX_OPERATION_ID_LEN, MachineOperationArtifacts, MachineOperationKind,
-        MachineOperationStore, unique_operation_id, validate_operation_id,
+        MachineOperationStatus, MachineOperationStore, unique_operation_id, validate_operation_id,
     };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -589,5 +663,56 @@ mod tests {
     fn store_load_rejects_traversal_id() {
         let store = MachineOperationStore::new(unique_temp_dir("ployz-machine-ops-test"));
         assert!(store.load("../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn operation_failure_remains_visible_until_success() {
+        let store = MachineOperationStore::new(unique_temp_dir("ployz-machine-ops-test"));
+        let mut record = store
+            .begin_with_id(
+                "op-visible-failure".into(),
+                MachineOperationKind::Add,
+                Some("alpha".into()),
+                vec!["machine-a".into()],
+                "bootstrap",
+                MachineOperationArtifacts::default(),
+            )
+            .expect("begin operation");
+
+        store
+            .update_status(
+                &mut record,
+                MachineOperationStatus::Failed,
+                Some("bootstrap failed".into()),
+            )
+            .expect("mark failed");
+        store
+            .update_status(&mut record, MachineOperationStatus::Running, None)
+            .expect("mark running");
+        store
+            .update_stage(&mut record, "cleanup")
+            .expect("update stage");
+
+        let loaded = store
+            .load("op-visible-failure")
+            .expect("load operation")
+            .expect("operation present");
+        assert_eq!(loaded.status, MachineOperationStatus::Running);
+        assert_eq!(loaded.stage, "cleanup");
+        assert_eq!(loaded.last_error.as_deref(), Some("bootstrap failed"));
+        assert_eq!(
+            loaded.info().last_error.as_deref(),
+            Some("bootstrap failed")
+        );
+
+        store
+            .update_status(&mut record, MachineOperationStatus::Succeeded, None)
+            .expect("mark succeeded");
+        let succeeded = store
+            .load("op-visible-failure")
+            .expect("load succeeded operation")
+            .expect("operation present");
+        assert_eq!(succeeded.status, MachineOperationStatus::Succeeded);
+        assert_eq!(succeeded.last_error, None);
     }
 }

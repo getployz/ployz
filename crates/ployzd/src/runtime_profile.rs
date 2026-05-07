@@ -1,24 +1,22 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 
 use crate::built_in_images::{BuiltInImage, BuiltInImages};
-use crate::services::corrosion::{corrosion_docker, corrosion_host};
 use crate::services::dns::{DnsHandle, start_managed_dns};
 use crate::services::gateway::{GatewayHandle, start_managed_gateway};
+use crate::services::nats::{nats_docker, nats_host};
 use crate::services::supervisor::ServiceSupervision;
 use ipnet::Ipv4Net;
 use ployz_config::{RuntimeTarget, ServiceMode};
 use ployz_dns_config::DnsConfig;
 use ployz_gateway_config::GatewayConfig;
+use ployz_nats::config as nats_config;
 use ployz_orchestrator::WireguardDriver;
 use ployz_runtime_api::Identity;
-use ployz_runtime_api::NamespaceLockManager;
-use ployz_runtime_backends::deploy::remote::{RemoteControlHandle, start_remote_control_listener};
 use ployz_runtime_backends::mesh::driver as mesh_backends;
 use ployz_runtime_backends::network::docker_bridge_network;
-use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
 use ployz_store_api::StoreDriver;
-use ployz_types::model::{MachineId, OverlayIp};
+use ployz_types::model::{OverlayIp, StorageParticipation};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecutionBackend {
@@ -28,7 +26,7 @@ enum ExecutionBackend {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ControlPlaneBinding {
+pub(crate) enum ZfsTransferBinding {
     Loopback,
     Overlay,
 }
@@ -38,7 +36,7 @@ pub(crate) struct RuntimeProfile {
     execution_backend: ExecutionBackend,
     runtime_target: RuntimeTarget,
     service_mode: ServiceMode,
-    control_plane_binding: ControlPlaneBinding,
+    zfs_transfer_binding: ZfsTransferBinding,
     sidecar_supervision: Option<ServiceSupervision>,
     built_in_images: BuiltInImages,
 }
@@ -58,6 +56,7 @@ pub(crate) struct MeshBuildRequest<'a> {
     pub(crate) exposed_tcp_ports: &'a [u16],
     pub(crate) bootstrap: &'a [String],
     pub(crate) network_id: &'a str,
+    pub(crate) storage_participation: &'a StorageParticipation,
 }
 
 impl RuntimeProfile {
@@ -72,7 +71,7 @@ impl RuntimeProfile {
                 execution_backend: ExecutionBackend::Docker,
                 runtime_target,
                 service_mode,
-                control_plane_binding: ControlPlaneBinding::Loopback,
+                zfs_transfer_binding: ZfsTransferBinding::Loopback,
                 sidecar_supervision: Some(ServiceSupervision::DockerContainer),
                 built_in_images,
             },
@@ -80,7 +79,7 @@ impl RuntimeProfile {
                 execution_backend: ExecutionBackend::Host,
                 runtime_target,
                 service_mode,
-                control_plane_binding: ControlPlaneBinding::Overlay,
+                zfs_transfer_binding: ZfsTransferBinding::Overlay,
                 sidecar_supervision: Some(match service_mode {
                     ServiceMode::User => ServiceSupervision::ChildProcess,
                     ServiceMode::System => ServiceSupervision::Systemd,
@@ -99,7 +98,7 @@ impl RuntimeProfile {
             execution_backend: ExecutionBackend::Memory,
             runtime_target: RuntimeTarget::Host,
             service_mode: ServiceMode::User,
-            control_plane_binding: ControlPlaneBinding::Loopback,
+            zfs_transfer_binding: ZfsTransferBinding::Loopback,
             sidecar_supervision: None,
             built_in_images,
         }
@@ -108,14 +107,6 @@ impl RuntimeProfile {
     #[must_use]
     pub(crate) fn is_memory_test(&self) -> bool {
         self.execution_backend == ExecutionBackend::Memory
-    }
-
-    #[must_use]
-    pub(crate) fn overlay_network_name(&self, network_name: &str) -> Option<String> {
-        if self.is_memory_test() {
-            return None;
-        }
-        Some(format!("ployz-{network_name}"))
     }
 
     pub(crate) async fn build_mesh_components(
@@ -131,6 +122,7 @@ impl RuntimeProfile {
             exposed_tcp_ports,
             bootstrap,
             network_id,
+            storage_participation,
         } = request;
         let network = match self.execution_backend {
             ExecutionBackend::Memory => WireguardDriver::memory(),
@@ -139,6 +131,7 @@ impl RuntimeProfile {
                     identity,
                     overlay_ip,
                     network_dir,
+                    nats_config::CLIENT_PORT,
                     exposed_tcp_ports,
                     self.built_in_images.resolve(BuiltInImage::Networking),
                 )
@@ -152,18 +145,23 @@ impl RuntimeProfile {
         let store = match self.execution_backend {
             ExecutionBackend::Memory => StoreDriver::memory(),
             ExecutionBackend::Docker => {
-                corrosion_docker(
+                nats_docker(
                     overlay_ip,
                     network_dir,
                     bootstrap,
                     network_id,
-                    self.built_in_images.resolve(BuiltInImage::Corrosion),
+                    storage_participation,
+                    self.built_in_images.resolve(BuiltInImage::Nats),
                 )
                 .await?
             }
-            ExecutionBackend::Host => {
-                corrosion_host(overlay_ip, network_dir, bootstrap, network_id)?
-            }
+            ExecutionBackend::Host => nats_host(
+                overlay_ip,
+                network_dir,
+                bootstrap,
+                network_id,
+                storage_participation,
+            )?,
         };
 
         let container_network = match (self.execution_backend, subnet) {
@@ -184,45 +182,17 @@ impl RuntimeProfile {
     }
 
     #[must_use]
-    pub(crate) fn remote_control_bind_addr(
+    pub(crate) fn zfs_transfer_bind_addr(
         &self,
-        remote_control_port: u16,
+        zfs_transfer_port: u16,
         overlay_ip: OverlayIp,
     ) -> SocketAddr {
-        match self.control_plane_binding {
-            ControlPlaneBinding::Loopback => {
-                SocketAddr::from(([127, 0, 0, 1], remote_control_port))
-            }
-            ControlPlaneBinding::Overlay => {
-                SocketAddr::new(IpAddr::V6(overlay_ip.0), remote_control_port)
+        match self.zfs_transfer_binding {
+            ZfsTransferBinding::Loopback => SocketAddr::from(([127, 0, 0, 1], zfs_transfer_port)),
+            ZfsTransferBinding::Overlay => {
+                SocketAddr::new(IpAddr::V6(overlay_ip.0), zfs_transfer_port)
             }
         }
-    }
-
-    pub(crate) async fn start_remote_control(
-        &self,
-        bind_addr: SocketAddr,
-        store: StoreDriver,
-        namespace_locks: NamespaceLockManager,
-        machine_id: MachineId,
-        overlay_network_name: Option<String>,
-        overlay_dns_server: Option<Ipv4Addr>,
-        storage_driver: Option<std::sync::Arc<ZfsDriver<TokioShellRunner>>>,
-    ) -> Result<RemoteControlHandle, String> {
-        if self.is_memory_test() {
-            return Ok(RemoteControlHandle::noop());
-        }
-        start_remote_control_listener(
-            bind_addr,
-            store,
-            namespace_locks,
-            machine_id,
-            overlay_network_name,
-            overlay_dns_server,
-            storage_driver,
-        )
-        .await
-        .map_err(|error| error.to_string())
     }
 
     pub(crate) async fn start_gateway(

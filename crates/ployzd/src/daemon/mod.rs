@@ -1,16 +1,18 @@
 mod cert_coordination;
+mod cert_renewal_health;
 mod deploy_probe;
 pub mod handlers;
 mod runtime;
 mod setup;
 pub mod ssh;
+mod subnet_coordination;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::built_in_images::BuiltInImages;
 use crate::ipc::listener::IncomingCommand;
-use crate::mesh_state::bootstrap::BootstrapSeedCacheTask;
+use crate::mesh_state::bootstrap::BootstrapPeerSeedTask;
 use crate::mesh_state::network::NetworkConfig;
 use crate::runtime_profile::RuntimeProfile;
 use ipnet::Ipv4Net;
@@ -18,35 +20,62 @@ use ployz_api::{DaemonPayload, DaemonResponse};
 use ployz_config::{RuntimeTarget, ServiceMode, StorageConfig};
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::certificates::CertificateRenewalTask;
-use ployz_orchestrator::coordination::PendingReservations;
+use ployz_orchestrator::coordination::{MemorySubnetCoordinator, SubnetReservationCoordinator};
 use ployz_runtime_api::Identity;
-use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
+use ployz_runtime_api::RuntimeHandle;
 use ployz_types::model::MachineTopology;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
 pub struct ActiveMesh {
     pub config: NetworkConfig,
-    pub cached_subnet: Option<Ipv4Net>,
+    pub retained_subnet: RetainedSubnet,
     pub mesh: Mesh,
-    pub remote_control: Box<dyn RuntimeHandle>,
-    pub peer_control: Box<dyn RuntimeHandle>,
+    pub nats_control: Box<dyn RuntimeHandle>,
     pub zfs_transfer: Box<dyn RuntimeHandle>,
     pub gateway: Box<dyn RuntimeHandle>,
     pub dns: Box<dyn RuntimeHandle>,
     pub certificate_renewal: Option<CertificateRenewalTask>,
-    pub bootstrap_seed_cache: Option<BootstrapSeedCacheTask>,
+    pub bootstrap_peer_seed: Option<BootstrapPeerSeedTask>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RetainedSubnet(Option<Ipv4Net>);
+
+impl RetainedSubnet {
+    #[must_use]
+    pub fn from_running_config(subnet: Option<Ipv4Net>) -> Self {
+        Self(subnet)
+    }
+
+    #[must_use]
+    pub fn value(self) -> Option<Ipv4Net> {
+        self.0
+    }
+
+    pub fn record_activation(&mut self, subnet: Ipv4Net) {
+        self.0 = Some(subnet);
+    }
+
+    pub fn record_standby(&mut self, previous_subnet: Option<Ipv4Net>) {
+        self.0 = previous_subnet;
+    }
 }
 
 impl ActiveMesh {
+    #[must_use]
+    pub fn subnet_to_persist_after_stop(&self) -> Option<Ipv4Net> {
+        self.config.subnet.or(self.retained_subnet.value())
+    }
+
     pub async fn stop_certificate_renewal(&mut self) {
         if let Some(task) = self.certificate_renewal.take() {
             task.shutdown().await;
         }
     }
 
-    pub async fn stop_bootstrap_seed_cache(&mut self) {
-        if let Some(task) = self.bootstrap_seed_cache.take() {
+    pub async fn stop_bootstrap_peer_seed(&mut self) {
+        if let Some(task) = self.bootstrap_peer_seed.take() {
             task.shutdown().await;
         }
     }
@@ -61,8 +90,7 @@ pub struct DaemonState {
     runtime_profile: RuntimeProfile,
     pub cluster_cidr: String,
     pub subnet_prefix_len: u8,
-    pub remote_control_port: u16,
-    pub peer_control_target: Option<String>,
+    pub zfs_transfer_port: u16,
     pub gateway_listen_addr: String,
     pub gateway_https_listen_addr: Option<String>,
     pub gateway_threads: usize,
@@ -70,8 +98,7 @@ pub struct DaemonState {
     pub dns_metrics_listen_addr: Option<String>,
     pub gateway_metrics_listen_addr: Option<String>,
     pub active: Option<ActiveMesh>,
-    pub namespace_locks: NamespaceLockManager,
-    pub reservations: Arc<PendingReservations>,
+    pub subnet_coord: Arc<dyn SubnetReservationCoordinator>,
     pub command_tx: Option<mpsc::Sender<IncomingCommand>>,
 }
 
@@ -87,7 +114,7 @@ impl DaemonState {
         built_in_images: BuiltInImages,
         cluster_cidr: String,
         subnet_prefix_len: u8,
-        remote_control_port: u16,
+        zfs_transfer_port: u16,
         gateway_listen_addr: String,
         gateway_https_listen_addr: Option<String>,
         gateway_threads: usize,
@@ -106,7 +133,7 @@ impl DaemonState {
             runtime_profile,
             cluster_cidr,
             subnet_prefix_len,
-            remote_control_port,
+            zfs_transfer_port,
             gateway_listen_addr,
             gateway_https_listen_addr,
             gateway_threads,
@@ -124,7 +151,7 @@ impl DaemonState {
         identity: Identity,
         cluster_cidr: String,
         subnet_prefix_len: u8,
-        remote_control_port: u16,
+        zfs_transfer_port: u16,
         gateway_listen_addr: String,
         gateway_https_listen_addr: Option<String>,
         gateway_threads: usize,
@@ -138,7 +165,7 @@ impl DaemonState {
             RuntimeProfile::memory_for_tests(),
             cluster_cidr,
             subnet_prefix_len,
-            remote_control_port,
+            zfs_transfer_port,
             gateway_listen_addr,
             gateway_https_listen_addr,
             gateway_threads,
@@ -159,7 +186,7 @@ impl DaemonState {
         runtime_profile: RuntimeProfile,
         cluster_cidr: String,
         subnet_prefix_len: u8,
-        remote_control_port: u16,
+        zfs_transfer_port: u16,
         gateway_listen_addr: String,
         gateway_https_listen_addr: Option<String>,
         gateway_threads: usize,
@@ -176,8 +203,7 @@ impl DaemonState {
             runtime_profile,
             cluster_cidr,
             subnet_prefix_len,
-            remote_control_port,
-            peer_control_target: None,
+            zfs_transfer_port,
             gateway_listen_addr,
             gateway_https_listen_addr,
             gateway_threads,
@@ -185,8 +211,7 @@ impl DaemonState {
             dns_metrics_listen_addr,
             gateway_metrics_listen_addr,
             active: None,
-            namespace_locks: NamespaceLockManager::default(),
-            reservations: Arc::new(PendingReservations::new()),
+            subnet_coord: Arc::new(MemorySubnetCoordinator::new()),
             command_tx: None,
         }
     }
@@ -251,5 +276,29 @@ impl DaemonState {
             Ok(json) => self.ok(json),
             Err(err) => self.err(encode_error_code, format!("{context}: {err}")),
         }
+    }
+
+    pub(crate) async fn nats_node_rpc_client(
+        &self,
+    ) -> Result<ployz_nats::NatsNodeRpcClient, String> {
+        let active = self
+            .active
+            .as_ref()
+            .ok_or_else(|| "no mesh is running".to_string())?;
+        let client_url = if self.runtime_target == RuntimeTarget::Docker {
+            crate::services::nats::local_client_url()
+        } else {
+            crate::services::nats::overlay_client_url(active.config.overlay_ip)
+        };
+        let scope = ployz_nats::NatsScope::local_for_storage_participation(
+            &active.config.storage_participation,
+        );
+        let store = ployz_nats::NatsStore::connect_with_scope(&client_url, scope)
+            .await
+            .map_err(|error| error.to_string())?;
+        ployz_store_api::StoreRuntimeControl::start(&store)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(ployz_nats::NatsNodeRpcClient::for_store(&store))
     }
 }

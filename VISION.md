@@ -190,7 +190,7 @@ human surface.
 ### 3. The data plane outlives the control plane
 
 The daemon (ployzd) is disposable. It can crash, upgrade, or restart
-without disrupting WireGuard, Corrosion, the gateway, DNS, or workloads.
+without disrupting WireGuard, NATS, the gateway, DNS, or workloads.
 On startup it adopts what is already running rather than recreating it.
 This is what makes "an agent runs the cluster unattended" honest — the
 daemon misbehaving cannot brick the data plane.
@@ -213,7 +213,7 @@ signal. Loud failure beats ambiguous progress.
 ### 6. Every node is a peer
 
 There is no master. No special node holds state others lack. Coordination,
-locking, and state visibility work on a peer-oriented model with Corrosion
+locking, and state visibility work on a peer-oriented model with NATS
 as a foundational part of the system. This is what makes `machine remove`
 safe regardless of which machine is removed.
 
@@ -232,28 +232,26 @@ events, not inferred health. Health and reachability are observed live at
 decision time, when the operator asks. The system does not rewrite cluster
 truth in the background from stale observations.
 
-### 9. Mesh membership is the trust boundary
+### 9. Store access is the trust boundary
 
-Corrosion replicates the full store to every mesh member. Anything written
-to a replicated table — including TLS private keys, ACME account keys, and
-invite tokens — lands on every machine's data directory in the same form it
-was written. This is a deliberate design choice: it gives any machine the
-ability to terminate TLS, serve routes, and take over control-plane
-responsibilities without a separate key-distribution channel.
+NATS is the cluster state substrate. Anything written to a replicated stream
+or KV bucket — including TLS private keys, ACME account keys, and invite
+tokens — must be treated as cluster-private material. For now, nodes with
+`storage=true` are trusted with the full control-plane store; nodes with
+`storage=false` should receive only the state they need for their runtime role.
 
 The consequences follow from that:
 
-- Every mesh member must be treated as equally trusted with the cluster's
-  secrets. There is no "gateway-only" node that holds less.
-- Data-directory backups contain all private key material in effect at the
-  time of the backup.
+- Storage-enabled nodes must be treated as trusted with the cluster's secrets.
+- Store data-directory backups contain private key material in effect at the
+  time of the backup unless encryption-at-rest says otherwise.
 - Recovering from a suspected compromise means rotating the affected
   material (re-issuing certs, revoking ACME accounts), not just removing the
   machine.
 
-If a future workload needs a stricter boundary than "any mesh member can read
-it," that workload is outside the mesh's trust model and needs a separate
-mechanism — not a privacy flag on a Corrosion table.
+If a future workload needs a stricter boundary, model that as scoped NATS
+subjects/streams and role-specific distribution, not as an ad hoc privacy flag
+on a store record.
 
 ### 10. Local and cloud share one model
 

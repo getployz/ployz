@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use ployz_runtime_api::RuntimeHandle;
 use ployz_runtime_backends::storage::{ShellRunner, TokioShellRunner, ZfsDriver};
-use ployz_store_api::{DeployRepository, MachineRegistry, StoreDriver};
+use ployz_store_api::{DeployStore, MachineMembershipStore, StoreDriver};
 use ployz_types::model::MachineId;
 use ployz_types::spec::Namespace;
 use serde::{Deserialize, Serialize};
@@ -468,11 +468,11 @@ mod tests {
     };
     use async_trait::async_trait;
     use ployz_runtime_backends::storage::{ShellOutput, ShellRunner, ZfsDriver};
-    use ployz_store_api::{DeployCommit, DeployRepository, MachineRegistry, StoreDriver};
+    use ployz_store_api::{DeployCommit, DeployStore, MachineMembershipStore, StoreDriver};
     use ployz_types::error::{Error, Result};
     use ployz_types::model::{
         DeployId, DeployRecord, DeployState, MachineId, MachineLifecycle, MachineMembership,
-        MachineTopology, OverlayIp, PublicKey, VolumeRecord,
+        MachineTopology, OverlayIp, PublicKey, StorageParticipation, VolumeRecord,
     };
     use ployz_types::spec::{Namespace, VolumeScope};
     use std::collections::{BTreeMap, VecDeque};
@@ -608,11 +608,12 @@ mod tests {
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(overlay),
             topology: MachineTopology::local(),
-            control_target: None,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
+            storage: true,
+            storage_participation: StorageParticipation::default_authority(),
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -658,6 +659,7 @@ mod tests {
         store
             .commit_deploy(&DeployCommit {
                 namespace: namespace.clone(),
+                revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
                 releases: Vec::new(),

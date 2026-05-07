@@ -179,7 +179,7 @@ fn render_plain_success(response: &DaemonResponse) -> String {
 }
 
 fn render_plain_status(payload: &StatusPayload) -> String {
-    format!(
+    let mut lines = vec![format!(
         "machine={} version={} network={} overlay={} network_lifecycle={} local_machine_lifecycle={} mesh_phase={}",
         payload.machine_id,
         payload.version,
@@ -194,7 +194,98 @@ fn render_plain_status(payload: &StatusPayload) -> String {
             .map(|value| value.to_string())
             .unwrap_or_else(|| "—".into()),
         payload.mesh_phase
-    )
+    )];
+    for sync in &payload.edge_sync {
+        let state = match &sync.state {
+            ployz_api::EdgeSyncHealthState::Healthy { failures_total } => {
+                format!("healthy failures_total={failures_total}")
+            }
+            ployz_api::EdgeSyncHealthState::Stale {
+                stale_since_unix_secs,
+                failures_total,
+            } => {
+                format!("stale stale_since={stale_since_unix_secs} failures_total={failures_total}")
+            }
+            ployz_api::EdgeSyncHealthState::Unknown {
+                error,
+                failures_total,
+            } => match failures_total {
+                Some(failures_total) => {
+                    format!("unknown error={error} failures_total={failures_total}")
+                }
+                None => format!("unknown error={error}"),
+            },
+        };
+        lines.push(format!(
+            "edge_sync service={} stream={} state={}",
+            sync.service, sync.stream, state
+        ));
+    }
+    for asset in &payload.nats_assets {
+        let state = match &asset.state {
+            ployz_api::NatsAssetHealthState::Healthy(status) => {
+                render_nats_asset_state("healthy", status)
+            }
+            ployz_api::NatsAssetHealthState::Stale(status) => {
+                render_nats_asset_state("stale", status)
+            }
+            ployz_api::NatsAssetHealthState::Unknown { error } => {
+                format!("unknown error={error}")
+            }
+        };
+        let mut scope = String::new();
+        if let Some(installation) = asset.installation.as_deref() {
+            scope.push_str(&format!(" installation={installation}"));
+        }
+        if let Some(authority) = asset.authority.as_deref() {
+            scope.push_str(&format!(" authority={authority}"));
+        }
+        if let Some(domain) = asset.domain.as_deref() {
+            scope.push_str(&format!(" domain={domain}"));
+        }
+        if let Some(asset_scope) = asset.scope.as_deref() {
+            scope.push_str(&format!(" scope={asset_scope}"));
+        }
+        lines.push(format!(
+            "nats_asset kind={} name={}{} state={}",
+            asset.kind, asset.name, scope, state
+        ));
+    }
+    for control in &payload.control_plane {
+        let state = match &control.state {
+            ployz_api::ControlPlaneHealthState::Healthy => {
+                "healthy consecutive_failures=0".to_string()
+            }
+            ployz_api::ControlPlaneHealthState::Stale {
+                stale_since_unix_secs,
+                consecutive_failures,
+                ..
+            } => {
+                format!(
+                    "stale stale_since={stale_since_unix_secs} consecutive_failures={consecutive_failures}"
+                )
+            }
+            ployz_api::ControlPlaneHealthState::Unknown { error } => {
+                format!("unknown error={error}")
+            }
+        };
+        lines.push(format!(
+            "control_plane component={} state={}",
+            control.component, state
+        ));
+    }
+    lines.join("\n")
+}
+
+fn render_nats_asset_state(state: &str, status: &ployz_api::NatsAssetReplicaStatus) -> String {
+    let mut rendered = format!(
+        "{state} replicas={} current={} offline={} max_lag={}",
+        status.replicas, status.current_replicas, status.offline_replicas, status.max_lag
+    );
+    if let Some(leader) = status.leader.as_deref() {
+        rendered.push_str(&format!(" leader={leader}"));
+    }
+    rendered
 }
 
 fn render_plain_machine_update(payload: &ployz_api::MachineUpdatePayload) -> String {
@@ -311,7 +402,16 @@ fn render_plain_mesh_ready(payload: &MeshReadyPayload) -> String {
 }
 
 fn render_plain_mesh_self_record(payload: &MeshSelfRecordPayload) -> String {
-    payload.encoded.clone()
+    format!(
+        "machine={} lifecycle={} subnet={}",
+        payload.record.id,
+        payload.record.lifecycle,
+        payload
+            .record
+            .subnet
+            .map(|subnet| subnet.to_string())
+            .unwrap_or_else(|| "none".into())
+    )
 }
 
 fn render_plain_doctor(payload: &DoctorPayload) -> String {
@@ -328,13 +428,12 @@ fn render_plain_doctor(payload: &DoctorPayload) -> String {
     ));
     lines.extend(payload.peers.iter().map(|peer| {
         format!(
-            "peer={} role={} blocking={} store_lifecycle={} subnet={} corrosion_state={} wg_state={} rtt={} cause_code={}",
+            "peer={} role={} blocking={} store_lifecycle={} subnet={} wg_state={} rtt={} cause_code={}",
             peer.machine_id,
             peer.role,
             peer.blocking,
             peer.store_lifecycle,
             peer.subnet.as_deref().unwrap_or("—"),
-            peer.corrosion_state,
             peer.wg_state,
             render_plain_peer_rtt(peer),
             peer.cause_code,
@@ -521,6 +620,8 @@ mod tests {
                 },
                 local: DoctorLocal {
                     machine_id: String::from("founder"),
+                    storage: true,
+                    storage_participation: String::from("authority:auth-default"),
                     network: String::from("alpha"),
                     network_lifecycle: String::from("running"),
                     machine_lifecycle: String::from("active"),
@@ -533,19 +634,18 @@ mod tests {
                 },
                 peers: vec![DoctorPeer {
                     machine_id: String::from("peer"),
+                    storage: true,
+                    storage_participation: String::from("candidate"),
                     role: String::from("blocking"),
                     blocking: false,
                     store_lifecycle: String::from("active"),
                     subnet: Some(String::from("10.210.1.0/24")),
                     wg_state: String::from("fresh"),
                     probe_state: String::from("not-used"),
-                    corrosion_state: String::from("alive"),
-                    corrosion_actor_id: Some(String::from("actor-1")),
-                    corrosion_timestamp: Some(123),
                     rtt_median_ms: Some(40.0),
                     rtt_stddev_ms: Some(2.0),
-                    cause_code: String::from("corrosion-alive"),
-                    cause_message: String::from("corrosion reports peer alive"),
+                    cause_code: String::from("fresh-wireguard-handshake"),
+                    cause_message: String::from("wireguard has a recent peer handshake"),
                 }],
             })),
         };
@@ -555,9 +655,8 @@ mod tests {
         assert!(rendered.contains("local_machine=founder"));
         assert!(rendered.contains("peer=peer"));
         assert!(rendered.contains("store_lifecycle=active"));
-        assert!(rendered.contains("corrosion_state=alive"));
         assert!(rendered.contains("rtt=40ms±2.0ms"));
-        assert!(rendered.contains("cause_code=corrosion-alive"));
+        assert!(rendered.contains("cause_code=fresh-wireguard-handshake"));
         assert!(!rendered.contains("probe_state="));
     }
 
@@ -569,12 +668,16 @@ mod tests {
             message: String::from("status"),
             payload: Some(DaemonPayload::Status(StatusPayload {
                 machine_id: String::from("founder"),
+                public_key: ployz_types::model::PublicKey([1; 32]),
                 version: String::from("0.1.0"),
                 network: Some(String::from("alpha")),
                 overlay_ip: Some(String::from("fd00::1")),
                 network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
                 local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
                 mesh_phase: String::from("Running"),
+                edge_sync: Vec::new(),
+                nats_assets: Vec::new(),
+                control_plane: Vec::new(),
             })),
         };
 
@@ -582,6 +685,171 @@ mod tests {
             render_plain_success(&response),
             "machine=founder version=0.1.0 network=alpha overlay=fd00::1 network_lifecycle=running local_machine_lifecycle=active mesh_phase=Running"
         );
+    }
+
+    #[test]
+    fn plain_status_renders_edge_sync_health() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("status"),
+            payload: Some(DaemonPayload::Status(StatusPayload {
+                machine_id: String::from("founder"),
+                public_key: ployz_types::model::PublicKey([1; 32]),
+                version: String::from("0.1.0"),
+                network: Some(String::from("alpha")),
+                overlay_ip: Some(String::from("fd00::1")),
+                network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
+                local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                mesh_phase: String::from("Running"),
+                edge_sync: vec![
+                    ployz_api::EdgeSyncStatus {
+                        service: String::from("gateway"),
+                        stream: String::from("routing"),
+                        state: ployz_api::EdgeSyncHealthState::Healthy { failures_total: 0 },
+                    },
+                    ployz_api::EdgeSyncStatus {
+                        service: String::from("dns"),
+                        stream: String::from("routing"),
+                        state: ployz_api::EdgeSyncHealthState::Stale {
+                            stale_since_unix_secs: 1_777_646_000,
+                            failures_total: 3,
+                        },
+                    },
+                    ployz_api::EdgeSyncStatus {
+                        service: String::from("gateway"),
+                        stream: String::from("certificates"),
+                        state: ployz_api::EdgeSyncHealthState::Unknown {
+                            error: String::from("connect metrics endpoint: refused"),
+                            failures_total: None,
+                        },
+                    },
+                ],
+                nats_assets: Vec::new(),
+                control_plane: Vec::new(),
+            })),
+        };
+
+        let rendered = render_plain_success(&response);
+        assert!(
+            rendered.contains(
+                "edge_sync service=gateway stream=routing state=healthy failures_total=0"
+            )
+        );
+        assert!(rendered.contains(
+            "edge_sync service=dns stream=routing state=stale stale_since=1777646000 failures_total=3"
+        ));
+        assert!(rendered.contains(
+            "edge_sync service=gateway stream=certificates state=unknown error=connect metrics endpoint: refused"
+        ));
+    }
+
+    #[test]
+    fn plain_status_renders_nats_asset_replicas() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("status"),
+            payload: Some(DaemonPayload::Status(StatusPayload {
+                machine_id: String::from("founder"),
+                public_key: ployz_types::model::PublicKey([1; 32]),
+                version: String::from("0.1.0"),
+                network: Some(String::from("alpha")),
+                overlay_ip: Some(String::from("fd00::1")),
+                network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
+                local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                mesh_phase: String::from("Running"),
+                edge_sync: Vec::new(),
+                nats_assets: vec![ployz_api::NatsAssetStatus {
+                    kind: String::from("stream"),
+                    name: String::from("routing_events_auth-default"),
+                    installation: Some(String::from("local")),
+                    authority: Some(String::from("auth-default")),
+                    domain: Some(String::from("dom-auth-default")),
+                    scope: Some(String::from("authority_local")),
+                    state: ployz_api::NatsAssetHealthState::Healthy(
+                        ployz_api::NatsAssetReplicaStatus {
+                            replicas: 1,
+                            current_replicas: 1,
+                            offline_replicas: 0,
+                            max_lag: 0,
+                            leader: Some(String::from("nats-a")),
+                        },
+                    ),
+                }],
+                control_plane: Vec::new(),
+            })),
+        };
+
+        let rendered = render_plain_success(&response);
+        assert!(rendered.contains(
+            "nats_asset kind=stream name=routing_events_auth-default installation=local authority=auth-default domain=dom-auth-default scope=authority_local state=healthy replicas=1 current=1 offline=0 max_lag=0 leader=nats-a"
+        ));
+    }
+
+    #[test]
+    fn plain_status_renders_control_plane_health() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("status"),
+            payload: Some(DaemonPayload::Status(StatusPayload {
+                machine_id: String::from("founder"),
+                public_key: ployz_types::model::PublicKey([1; 32]),
+                version: String::from("0.1.0"),
+                network: Some(String::from("alpha")),
+                overlay_ip: Some(String::from("fd00::1")),
+                network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
+                local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                mesh_phase: String::from("Running"),
+                edge_sync: Vec::new(),
+                nats_assets: Vec::new(),
+                control_plane: vec![
+                    ployz_api::ControlPlaneStatus {
+                        component: String::from("node_rpc_listener"),
+                        state: ployz_api::ControlPlaneHealthState::Stale {
+                            stale_since_unix_secs: 1_777_646_100,
+                            consecutive_failures: 2,
+                            error: String::from("nats node rpc resubscribe failed: disconnected"),
+                        },
+                    },
+                    ployz_api::ControlPlaneStatus {
+                        component: String::from("cert_renewal_worker"),
+                        state: ployz_api::ControlPlaneHealthState::Stale {
+                            stale_since_unix_secs: 1_777_646_200,
+                            consecutive_failures: 3,
+                            error: String::from("certificate renewal worker fetch failed"),
+                        },
+                    },
+                    ployz_api::ControlPlaneStatus {
+                        component: String::from("bootstrap_peer_seed"),
+                        state: ployz_api::ControlPlaneHealthState::Healthy,
+                    },
+                    ployz_api::ControlPlaneStatus {
+                        component: String::from("mesh_peer_sync"),
+                        state: ployz_api::ControlPlaneHealthState::Stale {
+                            stale_since_unix_secs: 1_777_646_300,
+                            consecutive_failures: 1,
+                            error: String::from("task exited unexpectedly"),
+                        },
+                    },
+                ],
+            })),
+        };
+
+        let rendered = render_plain_success(&response);
+        assert!(rendered.contains(
+            "control_plane component=node_rpc_listener state=stale stale_since=1777646100 consecutive_failures=2"
+        ));
+        assert!(rendered.contains(
+            "control_plane component=cert_renewal_worker state=stale stale_since=1777646200 consecutive_failures=3"
+        ));
+        assert!(rendered.contains(
+            "control_plane component=bootstrap_peer_seed state=healthy consecutive_failures=0"
+        ));
+        assert!(rendered.contains(
+            "control_plane component=mesh_peer_sync state=stale stale_since=1777646300 consecutive_failures=1"
+        ));
     }
 
     #[test]

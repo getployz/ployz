@@ -1,11 +1,9 @@
-mod coordination;
 mod debug;
 mod deploy;
 mod doctor;
 mod invite;
 pub(crate) mod machine;
 mod mesh;
-pub(crate) mod peer_rpc;
 pub(crate) mod runtime;
 mod status;
 pub(crate) mod volume;
@@ -47,6 +45,10 @@ impl DaemonState {
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::DeployNodeInspectNamespace { .. }
+            | DaemonRequest::DeployNodeStartCandidate { .. }
+            | DaemonRequest::DeployNodeDrainInstance { .. }
+            | DaemonRequest::DeployNodeRemoveInstance { .. }
             | DaemonRequest::RuntimeSubscribe
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }
@@ -74,10 +76,9 @@ impl DaemonState {
             | DaemonRequest::MachineInviteRevoke { .. }
             | DaemonRequest::MachineInviteList
             | DaemonRequest::MachineInviteImport { .. }
-            | DaemonRequest::Coord { .. }
             | DaemonRequest::AcmeChallengeReady { .. }
-            | DaemonRequest::MeshSelfRecord
-            | DaemonRequest::MeshAccept { .. } => RequestLane::Shared,
+            | DaemonRequest::AcmeHttp01Status { .. }
+            | DaemonRequest::MeshSelfRecord => RequestLane::Shared,
         }
     }
 
@@ -117,6 +118,49 @@ impl DaemonState {
             } => self.handle_deploy_apply(&manifest_json, &options).await,
             DaemonRequest::DeployExport { namespace } => {
                 self.handle_deploy_export(&namespace).await
+            }
+            DaemonRequest::DeployNodeInspectNamespace {
+                namespace,
+                deploy_id,
+            } => {
+                self.handle_deploy_node_inspect_namespace(&namespace, &deploy_id)
+                    .await
+            }
+            DaemonRequest::DeployNodeStartCandidate {
+                namespace,
+                deploy_id,
+                service,
+                slot_id,
+                instance_id,
+                spec_json,
+                volumes_json,
+            } => {
+                self.handle_deploy_node_start_candidate(
+                    &namespace,
+                    &deploy_id,
+                    &service,
+                    &slot_id,
+                    &instance_id,
+                    &spec_json,
+                    &volumes_json,
+                )
+                .await
+            }
+            DaemonRequest::DeployNodeDrainInstance {
+                namespace,
+                deploy_id,
+                instance_id,
+            } => {
+                self.handle_deploy_node_drain_instance(&namespace, &deploy_id, &instance_id)
+                    .await
+            }
+            DaemonRequest::DeployNodeRemoveInstance {
+                namespace,
+                deploy_id,
+                instance_id,
+            } => {
+                self.handle_deploy_node_remove_instance(&namespace, &deploy_id, &instance_id)
+                    .await
             }
             DaemonRequest::VolumeZfsInspect {
                 namespace,
@@ -226,12 +270,13 @@ impl DaemonState {
             DaemonRequest::MachineInviteImport { token } => {
                 self.handle_machine_invite_import(&token).await
             }
-            DaemonRequest::Coord { op } => self.handle_coord(op).await,
             DaemonRequest::AcmeChallengeReady { hostname, token } => {
                 self.handle_acme_challenge_ready(&hostname, &token).await
             }
+            DaemonRequest::AcmeHttp01Status { hostname } => {
+                self.handle_acme_http01_status(&hostname).await
+            }
             DaemonRequest::MeshSelfRecord => self.handle_mesh_self_record().await,
-            DaemonRequest::MeshAccept { response } => self.handle_mesh_accept(&response).await,
         }
     }
 
@@ -253,13 +298,7 @@ impl DaemonState {
                     .await
             }
             DaemonRequest::MeshInit { network } => self.handle_mesh_init(&network).await,
-            DaemonRequest::MeshStart {
-                network,
-                allow_disconnected_bootstrap,
-            } => {
-                self.handle_mesh_start(&network, allow_disconnected_bootstrap)
-                    .await
-            }
+            DaemonRequest::MeshStart { network } => self.handle_mesh_start(&network).await,
             DaemonRequest::MeshStop { force } => self.handle_mesh_stop(force).await,
             DaemonRequest::MeshDestroy { network } => self.handle_mesh_destroy(&network).await,
             DaemonRequest::MeshPeerPrepareDestroy {
@@ -326,6 +365,10 @@ impl DaemonState {
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::DeployNodeInspectNamespace { .. }
+            | DaemonRequest::DeployNodeStartCandidate { .. }
+            | DaemonRequest::DeployNodeDrainInstance { .. }
+            | DaemonRequest::DeployNodeRemoveInstance { .. }
             | DaemonRequest::RuntimeSubscribe
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }
@@ -353,10 +396,9 @@ impl DaemonState {
             | DaemonRequest::MachineInviteRevoke { .. }
             | DaemonRequest::MachineInviteList
             | DaemonRequest::MachineInviteImport { .. }
-            | DaemonRequest::Coord { .. }
             | DaemonRequest::AcmeChallengeReady { .. }
-            | DaemonRequest::MeshSelfRecord
-            | DaemonRequest::MeshAccept { .. } => {
+            | DaemonRequest::AcmeHttp01Status { .. }
+            | DaemonRequest::MeshSelfRecord => {
                 self.err("INTERNAL", "shared request routed to exclusive handler")
             }
         }

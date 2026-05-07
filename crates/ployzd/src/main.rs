@@ -57,7 +57,7 @@ async fn run() -> Result<i32> {
         Command::Run {
             runtime,
             service_mode,
-            remote_control_port,
+            zfs_transfer_port,
         } => {
             init_tracing();
             let platform = HostPlatform::detect();
@@ -65,7 +65,7 @@ async fn run() -> Result<i32> {
                 cli.config,
                 cli.data_dir,
                 cli.socket,
-                remote_control_port,
+                zfs_transfer_port,
                 &platform.paths_context(),
             )
             .map_err(|err| CliError::Config(err.to_string()))?;
@@ -85,8 +85,7 @@ async fn run() -> Result<i32> {
                 cfg.storage,
                 cfg.cluster_cidr,
                 cfg.subnet_prefix_len,
-                cfg.remote_control_port,
-                cfg.peer_control_target,
+                cfg.zfs_transfer_port,
                 cfg.gateway_listen_addr,
                 cfg.gateway_https_listen_addr,
                 cfg.gateway_threads,
@@ -275,14 +274,14 @@ mod tests {
             install_version: None,
             install_git_url: Some("https://example.invalid/ployz.git".into()),
             install_git_ref: Some("main".into()),
-            targets: vec!["lab@example".into()],
+            targets: vec!["ops@example".into()],
         })
         .expect("machine add request");
 
         let DaemonRequest::MachineAdd { targets, options } = request else {
             panic!("expected machine add request");
         };
-        assert_eq!(targets, vec!["lab@example"]);
+        assert_eq!(targets, vec!["ops@example"]);
         assert_eq!(
             options.ssh_identity_private_key.as_deref(),
             Some("test-private-key")

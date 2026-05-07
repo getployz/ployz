@@ -242,9 +242,7 @@ where
 
 /// Run the DNS process on an externally-provided tokio runtime.
 ///
-/// Corrosion's `reqwest::Client` pins its HTTP/2 connection driver to the
-/// runtime that first used it, so the store must stay on a single runtime
-/// for the entire lifetime of the process.
+/// Run the store subscription and DNS server on one runtime for the process.
 pub fn run_dns_process_on_runtime<S>(
     runtime: tokio::runtime::Runtime,
     config: DnsConfig,
@@ -303,26 +301,26 @@ where
     loop {
         match timeout(
             STORE_READY_ATTEMPT_TIMEOUT,
-            DnsStore::subscribe_routing_events(store),
+            store.subscribe_routing_events(),
         )
         .await
         {
             Ok(Ok((state, _rx))) => return Ok(state),
             Ok(Err(error)) if tokio::time::Instant::now() < deadline => {
-                warn!(?error, "dns waiting for corrosion query readiness");
+                warn!(?error, "dns waiting for store readiness");
             }
             Err(_) if tokio::time::Instant::now() < deadline => {
                 warn!("dns timed out loading initial routing state; retrying");
             }
             Ok(Err(error)) => {
                 return Err(DnsError::Store(format!(
-                    "corrosion query API did not become ready within {:?}: {error}",
+                    "store did not become ready within {:?}: {error}",
                     STORE_READY_TIMEOUT
                 )));
             }
             Err(_) => {
                 return Err(DnsError::Store(format!(
-                    "corrosion query API did not return initial routing state within {:?}",
+                    "store did not return initial routing state within {:?}",
                     STORE_READY_TIMEOUT
                 )));
             }
@@ -372,6 +370,7 @@ mod tests {
             instances: HashMap::new(),
         };
         let listen_addrs = vec![dns_addr];
+        crate::metrics::set_store_sync_healthy("routing", false);
 
         let server = tokio::spawn(async move {
             run_dns_server(&listen_addrs, SharedDnsSnapshot::new(snapshot), shutdown_rx).await
@@ -391,6 +390,11 @@ mod tests {
             metrics
                 .contains("ployz_dns_query_duration_seconds_count{qtype=\"A\",rcode=\"NXDOMAIN\"}")
         );
+        assert!(metrics.contains("ployz_dns_store_sync_healthy{stream=\"routing\"} 0"));
+        assert!(
+            metrics.contains("ployz_dns_store_sync_state_since_unix_seconds{stream=\"routing\"}")
+        );
+        assert!(metrics.contains("ployz_dns_store_sync_failures_total{stream=\"routing\"}"));
 
         server.abort();
         let _ = server.await;

@@ -1,6 +1,7 @@
 use ipnet::Ipv4Net;
 use ployz_types::model::{
-    NetworkId, NetworkLifecycle, NetworkName, OverlayIp, PublicKey, management_ip_from_key,
+    NetworkId, NetworkLifecycle, NetworkName, OverlayIp, PublicKey, StorageParticipation,
+    management_ip_from_key,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -47,6 +48,8 @@ pub struct NetworkConfig {
     pub lifecycle: NetworkLifecycle,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<Ipv4Net>,
+    pub storage: bool,
+    pub storage_participation: StorageParticipation,
 }
 
 impl NetworkConfig {
@@ -65,6 +68,8 @@ impl NetworkConfig {
             cluster_cidr: cluster_cidr.to_string(),
             lifecycle: NetworkLifecycle::Stopped,
             subnet: Some(subnet),
+            storage: true,
+            storage_participation: StorageParticipation::default_authority(),
         }
     }
 
@@ -96,7 +101,17 @@ impl NetworkConfig {
             })?;
         }
         let data = serde_json::to_string_pretty(self).map_err(NetworkConfigError::Serialize)?;
-        std::fs::write(path, data).map_err(|source| NetworkConfigError::Write {
+        let tmp_path = path.with_extension(format!(
+            "{}.tmp",
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("json")
+        ));
+        std::fs::write(&tmp_path, data).map_err(|source| NetworkConfigError::Write {
+            path: tmp_path.clone(),
+            source,
+        })?;
+        std::fs::rename(&tmp_path, path).map_err(|source| NetworkConfigError::Write {
             path: path.to_path_buf(),
             source,
         })

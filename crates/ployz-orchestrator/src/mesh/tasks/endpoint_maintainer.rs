@@ -7,6 +7,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use crate::error::Result as PloyzResult;
 use crate::mesh::driver::WireguardDriver;
 use crate::mesh::peer_state::PeerStateMap;
 use crate::mesh::{DevicePeer, WireGuardDevice};
@@ -20,8 +21,6 @@ pub(crate) type EndpointSelectionMap = Arc<RwLock<HashMap<MachineId, String>>>;
 
 #[derive(Debug)]
 pub(crate) enum EndpointMaintainerCommand {
-    UpsertTransient(MachineObservation),
-    RemoveTransient(MachineId),
     TickNow {
         force_rotate: bool,
         complete: oneshot::Sender<()>,
@@ -354,7 +353,7 @@ pub(crate) fn build_initial_endpoint_selections(
 
 pub(crate) struct EndpointMaintainerTask {
     pub(crate) snapshot: Vec<MachineMembership>,
-    pub(crate) events: mpsc::Receiver<MachineEvent>,
+    pub(crate) events: mpsc::Receiver<PloyzResult<MachineEvent>>,
     pub(crate) commands: mpsc::Receiver<EndpointMaintainerCommand>,
     pub(crate) bootstrap_peers: Vec<MachineObservation>,
     pub(crate) network: WireguardDriver,
@@ -365,7 +364,7 @@ pub(crate) struct EndpointMaintainerTask {
 }
 
 // This task is intentionally periodic, but it is observing/maintaining
-// transport state, not re-running control-plane reconciliation. The candidate
+// transport state, not recalculating control-plane policy. The candidate
 // endpoint list still comes from durable machine records; this loop only checks
 // external WireGuard handshake/device state and chooses which already-declared
 // endpoint to try right now.
@@ -414,7 +413,18 @@ pub(crate) async fn run_endpoint_maintainer_task(task: EndpointMaintainerTask) {
                 )
                 .await;
             }
-            Some(event) = events.recv() => {
+            event = events.recv() => {
+                let Some(event) = event else {
+                    warn!("endpoint maintainer machine subscription closed");
+                    break;
+                };
+                let event = match event {
+                    Ok(event) => event,
+                    Err(error) => {
+                        warn!(%error, "endpoint maintainer machine subscription failed");
+                        break;
+                    }
+                };
                 peer_map.apply_event(&event, Instant::now());
                 let device_peers = network.read_peers().await.unwrap_or_default();
                 runtime.refresh_candidates(&peer_map, &local_machine_id, &device_peers, Instant::now());
@@ -422,10 +432,6 @@ pub(crate) async fn run_endpoint_maintainer_task(task: EndpointMaintainerTask) {
             }
             Some(command) = commands.recv() => {
                 match command {
-                    EndpointMaintainerCommand::UpsertTransient(observation) => {
-                        peer_map.upsert_transient(&observation, Instant::now());
-                    }
-                    EndpointMaintainerCommand::RemoveTransient(id) => peer_map.remove_transient(&id),
                     EndpointMaintainerCommand::TickNow { force_rotate, complete } => {
                         run_endpoint_maintenance_pass(
                             &mut runtime,
@@ -435,12 +441,8 @@ pub(crate) async fn run_endpoint_maintainer_task(task: EndpointMaintainerTask) {
                         )
                         .await;
                         let _ = complete.send(());
-                        continue;
                     }
                 }
-                let device_peers = network.read_peers().await.unwrap_or_default();
-                runtime.refresh_candidates(&peer_map, &local_machine_id, &device_peers, Instant::now());
-                publish_endpoint_selections(&endpoint_selections, &runtime).await;
             }
         }
     }
@@ -512,13 +514,14 @@ mod tests {
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
             subnet: None,
-            control_target: None,
             bridge_ip: None,
             endpoints: endpoints
                 .iter()
                 .map(|endpoint| endpoint.to_string())
                 .collect(),
             lifecycle: MachineLifecycle::Standby,
+            storage: true,
+            storage_participation: crate::model::StorageParticipation::default_authority(),
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -564,5 +567,66 @@ mod tests {
                 .map(String::as_str),
             Some("a:1")
         );
+    }
+
+    #[tokio::test]
+    async fn exits_when_machine_subscription_closes() {
+        let network = crate::mesh::driver::WireguardDriver::memory_with(std::sync::Arc::new(
+            crate::mesh::wireguard::MemoryWireGuard::new(),
+        ));
+        let (event_tx, event_rx) = mpsc::channel(4);
+        let (_command_tx, command_rx) = mpsc::channel::<EndpointMaintainerCommand>(4);
+
+        drop(event_tx);
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            run_endpoint_maintainer_task(EndpointMaintainerTask {
+                snapshot: Vec::new(),
+                events: event_rx,
+                commands: command_rx,
+                bootstrap_peers: Vec::new(),
+                network,
+                local_machine_id: MachineId("self".into()),
+                endpoint_selections: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+                initial_device_peers: Vec::new(),
+                cancel: CancellationToken::new(),
+            }),
+        )
+        .await
+        .expect("endpoint maintainer should exit when machine subscription closes");
+    }
+
+    #[tokio::test]
+    async fn exits_when_machine_subscription_reports_failure() {
+        let network = crate::mesh::driver::WireguardDriver::memory_with(std::sync::Arc::new(
+            crate::mesh::wireguard::MemoryWireGuard::new(),
+        ));
+        let (event_tx, event_rx) = mpsc::channel(4);
+        let (_command_tx, command_rx) = mpsc::channel::<EndpointMaintainerCommand>(4);
+        event_tx
+            .send(Err(crate::error::Error::operation(
+                "test_subscription",
+                "closed",
+            )))
+            .await
+            .expect("failure event should send");
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            run_endpoint_maintainer_task(EndpointMaintainerTask {
+                snapshot: Vec::new(),
+                events: event_rx,
+                commands: command_rx,
+                bootstrap_peers: Vec::new(),
+                network,
+                local_machine_id: MachineId("self".into()),
+                endpoint_selections: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+                initial_device_peers: Vec::new(),
+                cancel: CancellationToken::new(),
+            }),
+        )
+        .await
+        .expect("endpoint maintainer should exit when machine subscription reports failure");
     }
 }

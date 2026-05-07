@@ -1,33 +1,34 @@
 //! ployzd-side `ParticipantProbe` implementation.
 //!
-//! Issues a `DaemonRequest::Ping` to each participant over the overlay-RPC
-//! transport (`peer_rpc::overlay_rpc`). This is the live, decision-time
+//! Issues a `DaemonRequest::Ping` to each participant over NATS request-reply.
+//! This is the live, decision-time
 //! reachability check that AGENTS.md mandates: it confirms the peer's daemon
 //! is processing requests at the moment a deploy is about to mutate cluster
-//! state, rather than relying on freshness of cached membership gossip.
+//! state, rather than relying on freshness of stale membership gossip.
 
 use async_trait::async_trait;
 use ployz_api::DaemonRequest;
+use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcFailureKind};
 use ployz_orchestrator::deploy::{ParticipantProbe, ProbeError, ProbeErrorKind};
 use ployz_types::model::MachineMembership;
 
-use crate::daemon::handlers::peer_rpc;
-
-pub struct OverlayRpcProbe {
-    peer_rpc_port: u16,
+pub struct NatsRpcProbe {
+    client: NatsNodeRpcClient,
 }
 
-impl OverlayRpcProbe {
+impl NatsRpcProbe {
     #[must_use]
-    pub fn new(peer_rpc_port: u16) -> Self {
-        Self { peer_rpc_port }
+    pub fn new(client: NatsNodeRpcClient) -> Self {
+        Self { client }
     }
 }
 
 #[async_trait]
-impl ParticipantProbe for OverlayRpcProbe {
+impl ParticipantProbe for NatsRpcProbe {
     async fn ping(&self, machine: &MachineMembership) -> Result<(), ProbeError> {
-        match peer_rpc::overlay_rpc(machine.overlay_ip, self.peer_rpc_port, DaemonRequest::Ping)
+        match self
+            .client
+            .request(NodeCommandSubject::ping(&machine.id), &DaemonRequest::Ping)
             .await
         {
             Ok(response) if response.ok => Ok(()),
@@ -39,14 +40,16 @@ impl ParticipantProbe for OverlayRpcProbe {
                 ),
             }),
             Err(error) => {
-                let kind = if error.contains("timed out") {
-                    ProbeErrorKind::Timeout
-                } else {
-                    ProbeErrorKind::Refused
+                let kind = match error.kind {
+                    RpcFailureKind::Timeout => ProbeErrorKind::Timeout,
+                    RpcFailureKind::NoResponders => ProbeErrorKind::Refused,
+                    RpcFailureKind::Transport | RpcFailureKind::Encode | RpcFailureKind::Decode => {
+                        ProbeErrorKind::Unexpected
+                    }
                 };
                 Err(ProbeError {
                     kind,
-                    detail: error,
+                    detail: error.to_string(),
                 })
             }
         }

@@ -10,12 +10,14 @@ use crate::mesh::container_network::ContainerNetwork;
 use crate::mesh::driver::WireguardDriver;
 use crate::mesh::phase::{Phase, TransitionError};
 use crate::mesh::tasks::{
-    EndpointMaintainerCommand, PeerSyncCommand, SelfRecordMutation, TaskSet, TaskSetError,
+    EndpointMaintainerCommand, MeshTaskHealth, SelfRecordMutation, TaskSet, TaskSetError,
     apply_self_record_mutation,
 };
-use crate::model::{MachineId, MachineMembership};
+use crate::model::{
+    MachineId, MachineLifecycleTransition, MachineMembership, MachineTransitionError,
+};
 use ployz_store_api::StoreDriver;
-use ployz_store_api::{MachineRegistry, StoreRuntimeControl, SyncProbe, SyncStatus};
+use ployz_store_api::{MachineMembershipStore, StoreRuntimeControl, SyncProbe, SyncStatus};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,7 +51,6 @@ pub struct Mesh {
     container_network: Option<ContainerNetwork>,
     tasks: Option<TaskSet>,
     task_cancel: Option<tokio_util::sync::CancellationToken>,
-    peer_sync_tx: Option<mpsc::Sender<PeerSyncCommand>>,
     endpoint_maintainer_tx: Option<mpsc::Sender<EndpointMaintainerCommand>>,
     self_record_tx: Option<mpsc::Sender<crate::mesh::tasks::SelfRecordCommand>>,
     bootstrap_interval: Duration,
@@ -59,7 +60,6 @@ pub struct Mesh {
     _listen_port: u16,
     seed_records: Vec<MachineMembership>,
     authoritative_self: Option<Arc<RwLock<MachineMembership>>>,
-    allow_disconnected_bootstrap: bool,
     dataplane: Option<Arc<dyn MeshDataplane>>,
     wg_ifindex: u32,
 }
@@ -80,17 +80,15 @@ impl Mesh {
             container_network,
             tasks: None,
             task_cancel: None,
-            peer_sync_tx: None,
             endpoint_maintainer_tx: None,
             self_record_tx: None,
-            bootstrap_interval: Duration::from_millis(500),
+            bootstrap_interval: Duration::from_millis(100),
             connection_timeout: Duration::from_secs(30),
             service_ready_timeout: Duration::from_secs(15),
             machine_id,
             _listen_port: listen_port,
             seed_records: Vec::new(),
             authoritative_self: None,
-            allow_disconnected_bootstrap: false,
             dataplane: None,
             wg_ifindex: 0,
         }
@@ -121,22 +119,8 @@ impl Mesh {
     }
 
     #[must_use]
-    pub fn with_disconnected_bootstrap_allowed(
-        mut self,
-        allow_disconnected_bootstrap: bool,
-    ) -> Self {
-        self.allow_disconnected_bootstrap = allow_disconnected_bootstrap;
-        self
-    }
-
-    #[must_use]
     pub fn phase(&self) -> Phase {
         self.phase
-    }
-
-    #[must_use]
-    pub fn peer_sync_sender(&self) -> Option<mpsc::Sender<PeerSyncCommand>> {
-        self.peer_sync_tx.clone()
     }
 
     pub async fn run_endpoint_maintenance_once(&self, force_rotate: bool) -> bool {
@@ -169,6 +153,10 @@ impl Mesh {
         Some(authoritative_self.read().await.clone())
     }
 
+    pub fn task_health(&self) -> Vec<MeshTaskHealth> {
+        self.tasks.as_ref().map(TaskSet::health).unwrap_or_default()
+    }
+
     pub async fn update_authoritative_self_record(
         &self,
         update: impl FnOnce(&mut MachineMembership),
@@ -185,6 +173,32 @@ impl Mesh {
         let mut record = authoritative_self.write().await;
         *record = next;
         Some(record.clone())
+    }
+
+    pub async fn transition_authoritative_self_record(
+        &self,
+        transition: MachineLifecycleTransition,
+    ) -> std::result::Result<Option<MachineMembership>, MachineTransitionError> {
+        let Some(current) = self.authoritative_self_record().await else {
+            return Ok(None);
+        };
+        let mut next = current;
+        next.apply_lifecycle_transition(transition)?;
+
+        if let Some(self_record_tx) = &self.self_record_tx {
+            return Ok(apply_self_record_mutation(
+                self_record_tx,
+                SelfRecordMutation::Replace(next),
+            )
+            .await);
+        }
+
+        let Some(authoritative_self) = self.authoritative_self.as_ref().cloned() else {
+            return Ok(None);
+        };
+        let mut record = authoritative_self.write().await;
+        *record = next;
+        Ok(Some(record.clone()))
     }
 
     pub async fn ready_status(&self) -> MeshReadyStatus {
@@ -208,7 +222,7 @@ impl Mesh {
         let sync_connected = if has_remote_peer {
             match self.store.sync_status().await {
                 Ok(SyncStatus::Disconnected) => false,
-                Ok(SyncStatus::Syncing { .. }) | Ok(SyncStatus::Synced) => true,
+                Ok(SyncStatus::Synced) => true,
                 Err(_) => false,
             }
         } else {

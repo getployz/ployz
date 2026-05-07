@@ -1,5 +1,7 @@
 use super::labels::{LABEL_KEY, LABEL_KIND, LABEL_MANAGED, LABEL_PARENT_ID};
-use super::spec::{ObservedContainer, RestartPolicy, RestartPolicyName, RuntimeContainerSpec};
+use super::spec::{
+    Observation, ObservedContainer, RestartPolicy, RestartPolicyName, RuntimeContainerSpec,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChangedField {
@@ -51,99 +53,123 @@ pub fn eval_spec_change(
         return SpecChange::Missing;
     };
 
-    if !observed.running {
+    if observed.running != Observation::Observed(true) {
         return SpecChange::Missing;
     }
 
     let mut fields = Vec::new();
-
-    if observed.image != desired.image {
-        fields.push(ChangedField::Image);
+    macro_rules! changed {
+        ($field:ident, $changed:expr) => {
+            if $changed {
+                fields.push(ChangedField::$field);
+            }
+        };
     }
 
-    if observed.cmd != desired.cmd {
-        fields.push(ChangedField::Cmd);
-    }
-
-    if !entrypoint_equal(observed.entrypoint.as_ref(), desired.entrypoint.as_ref()) {
-        fields.push(ChangedField::Entrypoint);
-    }
-
-    // Compare env sorted by key for stable comparison
-    if !env_equal(&observed.env, &desired.env) {
-        fields.push(ChangedField::Env);
-    }
-
-    if !labels_match(&observed.labels, &desired.labels) {
-        fields.push(ChangedField::Labels);
-    }
-
-    // Compare binds sorted
-    if !sorted_eq(&observed.binds, &desired.binds) {
-        fields.push(ChangedField::Binds);
-    }
-
-    if observed.tmpfs != desired.tmpfs {
-        fields.push(ChangedField::Tmpfs);
-    }
-
-    if !sorted_eq(&observed.dns_servers, &desired.dns_servers) {
-        fields.push(ChangedField::DnsServers);
-    }
-
-    if !network_mode_equal(
-        observed.network_mode.as_deref(),
-        desired.network_mode.as_deref(),
-    ) {
-        fields.push(ChangedField::NetworkMode);
-    }
-
-    if observed.port_bindings != desired.port_bindings {
-        fields.push(ChangedField::PortBindings);
-    }
-
-    if !sorted_eq(&observed.cap_add, &desired.cap_add) {
-        fields.push(ChangedField::CapAdd);
-    }
-
-    if !sorted_eq(&observed.cap_drop, &desired.cap_drop) {
-        fields.push(ChangedField::CapDrop);
-    }
-
-    if observed.privileged != desired.privileged {
-        fields.push(ChangedField::Privileged);
-    }
-
-    if observed.user != desired.user {
-        fields.push(ChangedField::User);
-    }
-
-    if !restart_policy_equal(
-        observed.restart_policy.as_ref(),
-        desired.restart_policy.as_ref(),
-    ) {
-        fields.push(ChangedField::RestartPolicy);
-    }
-
-    if observed.memory_bytes != desired.memory_bytes {
-        fields.push(ChangedField::MemoryBytes);
-    }
-
-    if observed.nano_cpus != desired.nano_cpus {
-        fields.push(ChangedField::NanoCpus);
-    }
-
-    if observed.sysctls != desired.sysctls {
-        fields.push(ChangedField::Sysctls);
-    }
-
-    if observed.stop_timeout != desired.stop_timeout {
-        fields.push(ChangedField::StopTimeout);
-    }
-
-    if !pid_mode_equal(observed.pid_mode.as_deref(), desired.pid_mode.as_deref()) {
-        fields.push(ChangedField::PidMode);
-    }
+    changed!(Image, observed.image.as_observed() != Some(&desired.image));
+    changed!(Cmd, observed.cmd.as_observed() != Some(&desired.cmd));
+    changed!(
+        Entrypoint,
+        !entrypoint_equal(
+            observed.entrypoint.as_observed().and_then(Option::as_ref),
+            desired.entrypoint.as_ref(),
+        )
+    );
+    changed!(
+        Env,
+        !observed
+            .env
+            .as_observed()
+            .is_some_and(|observed| env_equal(observed, &desired.env))
+    );
+    changed!(
+        Labels,
+        !observed
+            .labels
+            .as_observed()
+            .is_some_and(|observed| labels_match(observed, &desired.labels))
+    );
+    changed!(
+        Binds,
+        !observed
+            .binds
+            .as_observed()
+            .is_some_and(|observed| sorted_eq(observed, &desired.binds))
+    );
+    changed!(Tmpfs, observed.tmpfs.as_observed() != Some(&desired.tmpfs));
+    changed!(
+        DnsServers,
+        !observed
+            .dns_servers
+            .as_observed()
+            .is_some_and(|observed| sorted_eq(observed, &desired.dns_servers))
+    );
+    changed!(
+        NetworkMode,
+        !network_mode_equal(
+            observed
+                .network_mode
+                .as_observed()
+                .and_then(Option::as_deref),
+            desired.network_mode.as_deref(),
+        )
+    );
+    changed!(
+        PortBindings,
+        observed.port_bindings.as_observed() != Some(&desired.port_bindings)
+    );
+    changed!(
+        CapAdd,
+        !observed
+            .cap_add
+            .as_observed()
+            .is_some_and(|observed| sorted_eq(observed, &desired.cap_add))
+    );
+    changed!(
+        CapDrop,
+        !observed
+            .cap_drop
+            .as_observed()
+            .is_some_and(|observed| sorted_eq(observed, &desired.cap_drop))
+    );
+    changed!(
+        Privileged,
+        observed.privileged.as_observed() != Some(&desired.privileged)
+    );
+    changed!(User, observed.user.as_observed() != Some(&desired.user));
+    changed!(
+        RestartPolicy,
+        !restart_policy_equal(
+            observed
+                .restart_policy
+                .as_observed()
+                .and_then(Option::as_ref),
+            desired.restart_policy.as_ref(),
+        )
+    );
+    changed!(
+        MemoryBytes,
+        observed.memory_bytes.as_observed() != Some(&desired.memory_bytes)
+    );
+    changed!(
+        NanoCpus,
+        observed.nano_cpus.as_observed() != Some(&desired.nano_cpus)
+    );
+    changed!(
+        Sysctls,
+        observed.sysctls.as_observed() != Some(&desired.sysctls)
+    );
+    changed!(
+        StopTimeout,
+        observed.stop_timeout.as_observed() != Some(&desired.stop_timeout)
+    );
+    changed!(
+        PidMode,
+        !pid_mode_equal(
+            observed.pid_mode.as_observed().and_then(Option::as_deref),
+            desired.pid_mode.as_deref(),
+        )
+    );
 
     if fields.is_empty() {
         SpecChange::InSync
@@ -155,9 +181,11 @@ pub fn eval_spec_change(
 /// Check if the observed container has the unified label schema.
 #[must_use]
 pub fn has_new_labels(observed: &ObservedContainer) -> bool {
-    observed.labels.contains_key(LABEL_KEY)
-        && observed.labels.contains_key(LABEL_MANAGED)
-        && observed.labels.contains_key(LABEL_KIND)
+    observed.labels.as_observed().is_some_and(|labels| {
+        labels.contains_key(LABEL_KEY)
+            && labels.contains_key(LABEL_MANAGED)
+            && labels.contains_key(LABEL_KIND)
+    })
 }
 
 /// Compare parent container IDs for network namespace stability.
@@ -166,11 +194,11 @@ pub fn has_new_labels(observed: &ObservedContainer) -> bool {
 pub fn parent_id_matches(observed: &ObservedContainer, desired_parent_id: Option<&str>) -> bool {
     match desired_parent_id {
         None => true,
-        Some(expected) => observed
-            .labels
-            .get(LABEL_PARENT_ID)
-            .map(|stored| stored == expected)
-            .unwrap_or(false),
+        Some(expected) => observed.labels.as_observed().is_some_and(|labels| {
+            labels
+                .get(LABEL_PARENT_ID)
+                .is_some_and(|stored| stored == expected)
+        }),
     }
 }
 
@@ -265,33 +293,37 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    fn observed<T>(value: T) -> Observation<T> {
+        Observation::Observed(value)
+    }
+
     fn base_observed() -> ObservedContainer {
         ObservedContainer {
-            container_id: "abc123".into(),
-            container_name: "test".into(),
-            running: true,
-            image: "myimage:latest".into(),
-            cmd: Some(vec!["run".into()]),
-            entrypoint: None,
-            env: vec![("FOO".into(), "bar".into())],
-            labels: HashMap::new(),
-            binds: vec!["/host:/container".into()],
-            tmpfs: HashMap::new(),
-            dns_servers: Vec::new(),
-            network_mode: None,
-            port_bindings: None,
-            cap_add: Vec::new(),
-            cap_drop: Vec::new(),
-            privileged: false,
-            user: None,
-            restart_policy: None,
-            memory_bytes: None,
-            nano_cpus: None,
-            sysctls: HashMap::new(),
-            stop_timeout: None,
-            pid_mode: None,
-            ip_address: None,
-            networks: HashMap::new(),
+            container_id: observed("abc123".into()),
+            container_name: observed("test".into()),
+            running: observed(true),
+            image: observed("myimage:latest".into()),
+            cmd: observed(Some(vec!["run".into()])),
+            entrypoint: observed(None),
+            env: observed(vec![("FOO".into(), "bar".into())]),
+            labels: observed(HashMap::new()),
+            binds: observed(vec!["/host:/container".into()]),
+            tmpfs: observed(HashMap::new()),
+            dns_servers: observed(Vec::new()),
+            network_mode: observed(None),
+            port_bindings: observed(None),
+            cap_add: observed(Vec::new()),
+            cap_drop: observed(Vec::new()),
+            privileged: observed(false),
+            user: observed(None),
+            restart_policy: observed(None),
+            memory_bytes: observed(None),
+            nano_cpus: observed(None),
+            sysctls: observed(HashMap::new()),
+            stop_timeout: observed(None),
+            pid_mode: observed(None),
+            ip_address: observed(None),
+            networks: observed(HashMap::new()),
         }
     }
 
@@ -326,7 +358,7 @@ mod tests {
     #[test]
     fn not_running_is_missing() {
         let mut observed = base_observed();
-        observed.running = false;
+        observed.running = Observation::Observed(false);
         let desired = base_spec();
         let change = eval_spec_change(Some(&observed), &desired);
         assert!(matches!(change, SpecChange::Missing));
@@ -361,9 +393,13 @@ mod tests {
         let mut observed = base_observed();
         observed
             .labels
+            .as_observed_mut()
+            .expect("labels observed")
             .insert("dev.ployz.kind".into(), "system".into());
         observed
             .labels
+            .as_observed_mut()
+            .expect("labels observed")
             .insert("dev.ployz.version".into(), "0.5.2".into());
         let mut desired = base_spec();
         desired
@@ -386,8 +422,14 @@ mod tests {
         let mut observed = base_observed();
         observed
             .labels
+            .as_observed_mut()
+            .expect("labels observed")
             .insert("dev.ployz.kind".into(), "system".into());
-        observed.labels.insert("extra".into(), "value".into());
+        observed
+            .labels
+            .as_observed_mut()
+            .expect("labels observed")
+            .insert("extra".into(), "value".into());
         let mut desired = base_spec();
         desired
             .labels
@@ -403,8 +445,14 @@ mod tests {
         let mut observed = base_observed();
         observed
             .labels
+            .as_observed_mut()
+            .expect("labels observed")
             .insert("dev.ployz.kind".into(), "workload".into());
-        observed.labels.insert("extra".into(), "value".into());
+        observed
+            .labels
+            .as_observed_mut()
+            .expect("labels observed")
+            .insert("extra".into(), "value".into());
         let mut desired = base_spec();
         desired
             .labels
@@ -421,7 +469,11 @@ mod tests {
     #[test]
     fn observed_path_is_ignored_when_not_explicitly_desired() {
         let mut observed = base_observed();
-        observed.env.push(("PATH".into(), "/usr/local/bin".into()));
+        observed
+            .env
+            .as_observed_mut()
+            .expect("env observed")
+            .push(("PATH".into(), "/usr/local/bin".into()));
         let desired = base_spec();
         let change = eval_spec_change(Some(&observed), &desired);
         assert!(change.is_in_sync());
@@ -430,13 +482,42 @@ mod tests {
     #[test]
     fn extra_non_path_env_is_drifted() {
         let mut observed = base_observed();
-        observed.env.push(("BAR".into(), "baz".into()));
+        observed
+            .env
+            .as_observed_mut()
+            .expect("env observed")
+            .push(("BAR".into(), "baz".into()));
         let desired = base_spec();
         let change = eval_spec_change(Some(&observed), &desired);
         let SpecChange::Drifted { fields } = change else {
             panic!("expected drifted change");
         };
         assert!(fields.contains(&ChangedField::Env));
+    }
+
+    #[test]
+    fn malformed_observed_field_is_not_silently_adopted() {
+        let mut observed = base_observed();
+        observed.labels = Observation::Malformed("labels were not a map".into());
+        let desired = base_spec();
+
+        let change = eval_spec_change(Some(&observed), &desired);
+
+        let SpecChange::Drifted { fields } = change else {
+            panic!("expected malformed observation to force drift");
+        };
+        assert_eq!(fields, vec![ChangedField::Labels]);
+    }
+
+    #[test]
+    fn unknown_running_state_requires_recreation() {
+        let mut observed = base_observed();
+        observed.running = Observation::Unknown;
+        let desired = base_spec();
+
+        let change = eval_spec_change(Some(&observed), &desired);
+
+        assert!(matches!(change, SpecChange::Missing));
     }
 
     #[test]
@@ -454,7 +535,7 @@ mod tests {
     #[test]
     fn image_entrypoint_is_ignored_when_not_explicitly_desired() {
         let mut observed = base_observed();
-        observed.entrypoint = Some(vec!["/bin/service".into()]);
+        observed.entrypoint = Observation::Observed(Some(vec!["/bin/service".into()]));
         let desired = base_spec();
         let change = eval_spec_change(Some(&observed), &desired);
         assert!(change.is_in_sync());
@@ -463,7 +544,7 @@ mod tests {
     #[test]
     fn explicit_entrypoint_mismatch_is_drifted() {
         let mut observed = base_observed();
-        observed.entrypoint = Some(vec!["/bin/service".into()]);
+        observed.entrypoint = Observation::Observed(Some(vec!["/bin/service".into()]));
         let mut desired = base_spec();
         desired.entrypoint = Some(vec!["/bin/other".into()]);
         let change = eval_spec_change(Some(&observed), &desired);
@@ -476,7 +557,7 @@ mod tests {
     #[test]
     fn container_network_mode_uses_parent_match_not_raw_string() {
         let mut observed = base_observed();
-        observed.network_mode = Some("container:abc123".into());
+        observed.network_mode = Observation::Observed(Some("container:abc123".into()));
         let mut desired = base_spec();
         desired.network_mode = Some("container:ployz-networking".into());
         let change = eval_spec_change(Some(&observed), &desired);
@@ -486,7 +567,7 @@ mod tests {
     #[test]
     fn non_container_network_mode_mismatch_is_drifted() {
         let mut observed = base_observed();
-        observed.network_mode = Some("host".into());
+        observed.network_mode = Observation::Observed(Some("host".into()));
         let mut desired = base_spec();
         desired.network_mode = Some("none".into());
         let change = eval_spec_change(Some(&observed), &desired);
@@ -499,10 +580,10 @@ mod tests {
     #[test]
     fn default_restart_policy_is_equivalent_to_none() {
         let mut observed = base_observed();
-        observed.restart_policy = Some(RestartPolicy {
+        observed.restart_policy = Observation::Observed(Some(RestartPolicy {
             name: Some(RestartPolicyName::No),
             maximum_retry_count: Some(0),
-        });
+        }));
         let desired = base_spec();
         let change = eval_spec_change(Some(&observed), &desired);
         assert!(change.is_in_sync());
@@ -511,10 +592,10 @@ mod tests {
     #[test]
     fn explicit_restart_policy_mismatch_is_drifted() {
         let mut observed = base_observed();
-        observed.restart_policy = Some(RestartPolicy {
+        observed.restart_policy = Observation::Observed(Some(RestartPolicy {
             name: Some(RestartPolicyName::Always),
             maximum_retry_count: None,
-        });
+        }));
         let desired = base_spec();
         let change = eval_spec_change(Some(&observed), &desired);
         let SpecChange::Drifted { fields } = change else {
@@ -526,7 +607,7 @@ mod tests {
     #[test]
     fn empty_pid_mode_is_equivalent_to_none() {
         let mut observed = base_observed();
-        observed.pid_mode = Some(String::new());
+        observed.pid_mode = Observation::Observed(Some(String::new()));
         let desired = base_spec();
         let change = eval_spec_change(Some(&observed), &desired);
         assert!(change.is_in_sync());
@@ -535,7 +616,7 @@ mod tests {
     #[test]
     fn explicit_pid_mode_mismatch_is_drifted() {
         let mut observed = base_observed();
-        observed.pid_mode = Some("host".into());
+        observed.pid_mode = Observation::Observed(Some("host".into()));
         let desired = base_spec();
         let change = eval_spec_change(Some(&observed), &desired);
         let SpecChange::Drifted { fields } = change else {
@@ -547,7 +628,8 @@ mod tests {
     #[test]
     fn env_order_independent() {
         let mut observed = base_observed();
-        observed.env = vec![("B".into(), "2".into()), ("A".into(), "1".into())];
+        observed.env =
+            Observation::Observed(vec![("B".into(), "2".into()), ("A".into(), "1".into())]);
         let mut desired = base_spec();
         desired.env = vec![("A".into(), "1".into()), ("B".into(), "2".into())];
         desired.image = "myimage:latest".into();
@@ -562,6 +644,8 @@ mod tests {
         let mut observed = base_observed();
         observed
             .labels
+            .as_observed_mut()
+            .expect("labels observed")
             .insert(LABEL_PARENT_ID.into(), "container123".into());
         assert!(parent_id_matches(&observed, Some("container123")));
         assert!(!parent_id_matches(&observed, Some("other")));
@@ -571,5 +655,16 @@ mod tests {
     fn parent_id_matches_when_none_expected() {
         let observed = base_observed();
         assert!(parent_id_matches(&observed, None));
+    }
+
+    #[test]
+    fn parent_id_mismatch_when_labels_are_unknown_or_malformed() {
+        let mut unknown = base_observed();
+        unknown.labels = Observation::Unknown;
+        assert!(!parent_id_matches(&unknown, Some("container123")));
+
+        let mut malformed = base_observed();
+        malformed.labels = Observation::Malformed("labels were not a map".into());
+        assert!(!parent_id_matches(&malformed, Some("container123")));
     }
 }

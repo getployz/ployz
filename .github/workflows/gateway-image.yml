@@ -7,10 +7,15 @@ on:
       - ".github/workflows/gateway-image.yml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "crates/ployz-config/**"
       - "crates/ployz-gateway/**"
-      - "crates/ployz-sdk/**"
+      - "crates/ployz-gateway-config/**"
+      - "crates/ployz-metrics/**"
+      - "crates/ployz-nats/**"
       - "crates/ployz-routes/**"
-      - "crates/ployz-corrosion/**"
+      - "crates/ployz-sdk/**"
+      - "crates/ployz-store-api/**"
+      - "crates/ployz-types/**"
       - "Dockerfile.gateway"
   workflow_dispatch:
 

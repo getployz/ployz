@@ -31,6 +31,7 @@ pub enum GatewayError {
 pub struct GatewayConfig {
     pub data_dir: PathBuf,
     pub network: String,
+    pub machine_id: String,
     pub listen_addr: String,
     pub https_listen_addr: Option<String>,
     pub tls_cert_path: Option<PathBuf>,
@@ -44,6 +45,7 @@ impl GatewayConfig {
     pub fn for_network(
         data_dir: &std::path::Path,
         network: &str,
+        machine_id: String,
         listen_addr: String,
         https_listen_addr: Option<String>,
         tls_cert_path: Option<PathBuf>,
@@ -54,6 +56,7 @@ impl GatewayConfig {
         Self {
             data_dir: data_dir.to_path_buf(),
             network: network.to_string(),
+            machine_id,
             listen_addr,
             https_listen_addr,
             tls_cert_path,
@@ -86,6 +89,19 @@ impl GatewayConfig {
                 ));
             }
             Err(_) => DEFAULT_LISTEN_ADDR.to_string(),
+        };
+        let machine_id = match std::env::var("PLOYZ_GATEWAY_MACHINE_ID") {
+            Ok(machine_id) if !machine_id.trim().is_empty() => machine_id,
+            Ok(_) => {
+                return Err(GatewayError::Config(
+                    "PLOYZ_GATEWAY_MACHINE_ID was set but empty".into(),
+                ));
+            }
+            Err(_) => {
+                return Err(GatewayError::Config(
+                    "PLOYZ_GATEWAY_MACHINE_ID must be set".into(),
+                ));
+            }
         };
         let threads = match std::env::var("PLOYZ_GATEWAY_THREADS") {
             Ok(raw) => raw.parse::<usize>().map_err(|err| {
@@ -150,6 +166,7 @@ impl GatewayConfig {
         Ok(Self {
             data_dir,
             network,
+            machine_id,
             listen_addr,
             https_listen_addr,
             tls_cert_path,
@@ -169,6 +186,7 @@ mod tests {
         let config = GatewayConfig::for_network(
             std::path::Path::new("/tmp/ployz"),
             "alpha",
+            "machine-alpha".into(),
             "0.0.0.0:80".into(),
             None,
             None,
@@ -181,6 +199,7 @@ mod tests {
             config.metrics_listen_addr.as_deref(),
             Some("127.0.0.1:9180")
         );
+        assert_eq!(config.machine_id, "machine-alpha");
     }
 
     #[test]
@@ -188,6 +207,7 @@ mod tests {
         unsafe {
             std::env::set_var("PLOYZ_GATEWAY_DATA_DIR", "/tmp/ployz-gateway");
             std::env::set_var("PLOYZ_GATEWAY_NETWORK", "alpha");
+            std::env::set_var("PLOYZ_GATEWAY_MACHINE_ID", "machine-alpha");
             std::env::set_var("PLOYZ_GATEWAY_LISTEN_ADDR", DEFAULT_LISTEN_ADDR);
             std::env::set_var("PLOYZ_GATEWAY_THREADS", DEFAULT_THREADS.to_string());
             std::env::set_var("PLOYZ_GATEWAY_METRICS_LISTEN_ADDR", "127.0.0.1:9180");
@@ -201,6 +221,7 @@ mod tests {
             config.metrics_listen_addr.as_deref(),
             Some("127.0.0.1:9180")
         );
+        assert_eq!(config.machine_id, "machine-alpha");
         assert_eq!(config.https_listen_addr.as_deref(), Some("0.0.0.0:443"));
         assert_eq!(
             config.tls_cert_path.as_deref(),
@@ -214,6 +235,7 @@ mod tests {
         unsafe {
             std::env::remove_var("PLOYZ_GATEWAY_DATA_DIR");
             std::env::remove_var("PLOYZ_GATEWAY_NETWORK");
+            std::env::remove_var("PLOYZ_GATEWAY_MACHINE_ID");
             std::env::remove_var("PLOYZ_GATEWAY_LISTEN_ADDR");
             std::env::remove_var("PLOYZ_GATEWAY_THREADS");
             std::env::remove_var("PLOYZ_GATEWAY_METRICS_LISTEN_ADDR");

@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use crate::built_in_images::BuiltInImages;
 use crate::daemon::handlers::RequestLane;
 use crate::daemon::{ActiveMesh, DaemonState};
-use crate::endpoint_maintenance::spawn_local_endpoint_maintenance;
+use crate::endpoint_maintenance::spawn_local_endpoint_publisher;
 use crate::ipc::listener::{IncomingCommand, serve};
 use crate::mesh_state::network::NetworkConfig;
 use crate::metrics::{
@@ -18,7 +18,9 @@ use crate::metrics::{
     spawn_container_resource_metrics_loop,
 };
 use ployz_types::model::MachineTopology;
-use ployz_types::model::NetworkLifecycle;
+use ployz_types::model::{
+    NetworkLifecycle, NetworkLifecycleGoal, NetworkLifecycleTransition, NetworkTransitionEvidence,
+};
 
 pub fn init_tracing() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -34,8 +36,7 @@ pub async fn run_daemon(
     storage: StorageConfig,
     cluster_cidr: String,
     subnet_prefix_len: u8,
-    remote_control_port: u16,
-    peer_control_target: Option<String>,
+    zfs_transfer_port: u16,
     gateway_listen_addr: String,
     gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
@@ -53,8 +54,7 @@ pub async fn run_daemon(
         storage,
         cluster_cidr,
         subnet_prefix_len,
-        remote_control_port,
-        peer_control_target,
+        zfs_transfer_port,
         gateway_listen_addr,
         gateway_https_listen_addr,
         gateway_threads,
@@ -78,8 +78,7 @@ async fn run_daemon_with_resource_metrics_source(
     storage: StorageConfig,
     cluster_cidr: String,
     subnet_prefix_len: u8,
-    remote_control_port: u16,
-    peer_control_target: Option<String>,
+    zfs_transfer_port: u16,
     gateway_listen_addr: String,
     gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
@@ -98,8 +97,7 @@ async fn run_daemon_with_resource_metrics_source(
         storage,
         cluster_cidr,
         subnet_prefix_len,
-        remote_control_port,
-        peer_control_target,
+        zfs_transfer_port,
         gateway_listen_addr,
         gateway_https_listen_addr,
         gateway_threads,
@@ -122,8 +120,7 @@ async fn run_daemon_inner(
     storage: StorageConfig,
     cluster_cidr: String,
     subnet_prefix_len: u8,
-    remote_control_port: u16,
-    peer_control_target: Option<String>,
+    zfs_transfer_port: u16,
     gateway_listen_addr: String,
     gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
@@ -172,7 +169,7 @@ async fn run_daemon_inner(
         built_in_images,
         cluster_cidr,
         subnet_prefix_len,
-        remote_control_port,
+        zfs_transfer_port,
         gateway_listen_addr,
         gateway_https_listen_addr,
         gateway_threads,
@@ -180,10 +177,9 @@ async fn run_daemon_inner(
         dns_metrics_listen_addr,
         gateway_metrics_listen_addr,
     );
-    daemon_state.peer_control_target = peer_control_target;
     daemon_state.command_tx = Some(command_tx.clone());
     let state = Arc::new(RwLock::new(daemon_state));
-    spawn_local_endpoint_maintenance(Arc::clone(&state), cancel.clone());
+    spawn_local_endpoint_publisher(Arc::clone(&state), cancel.clone());
 
     if let Some(metrics_listen_addr) = daemon_metrics_listen_addr.as_deref() {
         let metrics_addr = spawn_metrics_listener(metrics_listen_addr)
@@ -210,7 +206,7 @@ async fn run_daemon_inner(
     }
 
     resume_running_network(&state).await;
-    reconcile_startup_operations(&state).await;
+    recover_interrupted_operations_on_startup(&state).await;
 
     tracing::info!(socket = socket_path, "daemon running");
 
@@ -281,7 +277,16 @@ async fn resume_running_network(state: &Arc<RwLock<DaemonState>>) {
         Err(error) => {
             tracing::warn!(%error, %network, "failed to resume network");
             let mut stopped = config.clone();
-            stopped.lifecycle = NetworkLifecycle::Stopped;
+            let stopped_network_name = stopped.name.clone();
+            let _ = stopped
+                .lifecycle
+                .apply_transition(NetworkLifecycleTransition {
+                    goal: NetworkLifecycleGoal::Stop,
+                    evidence: NetworkTransitionEvidence::StartupResumeFailure {
+                        network: stopped_network_name,
+                    },
+                    at_unix_secs: ployz_types::time::now_unix_secs(),
+                });
             let path = NetworkConfig::path(&state_guard.data_dir, &network);
             if let Err(save_error) = stopped.save(&path) {
                 tracing::warn!(?save_error, %network, "failed to persist stopped lifecycle after resume failure");
@@ -290,10 +295,10 @@ async fn resume_running_network(state: &Arc<RwLock<DaemonState>>) {
     }
 }
 
-async fn reconcile_startup_operations(state: &Arc<RwLock<DaemonState>>) {
+async fn recover_interrupted_operations_on_startup(state: &Arc<RwLock<DaemonState>>) {
     let state_guard = state.read().await;
-    state_guard.reconcile_machine_operations_on_startup().await;
-    state_guard.reconcile_zfs_transfers_on_startup().await;
+    state_guard.recover_machine_operations_on_startup().await;
+    state_guard.recover_zfs_transfers_on_startup().await;
 }
 
 fn spawn_command_task(
@@ -406,27 +411,25 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
     if let Some(active) = state.active.take() {
         let ActiveMesh {
             config: _config,
-            cached_subnet: _cached_subnet,
+            retained_subnet: _retained_subnet,
             mut mesh,
-            remote_control,
-            peer_control,
+            nats_control,
             zfs_transfer,
             gateway,
             dns,
             certificate_renewal,
-            bootstrap_seed_cache,
+            bootstrap_peer_seed,
         } = active;
         if let Some(task) = certificate_renewal {
             task.shutdown().await;
         }
-        if let Some(task) = bootstrap_seed_cache {
+        if let Some(task) = bootstrap_peer_seed {
             task.shutdown().await;
         }
         let _ = dns.detach().await;
         let _ = gateway.detach().await;
         let _ = zfs_transfer.shutdown().await;
-        let _ = peer_control.shutdown().await;
-        let _ = remote_control.shutdown().await;
+        let _ = nats_control.shutdown().await;
         let _ = mesh.detach().await;
     }
 }
@@ -467,8 +470,7 @@ mod tests {
                 StorageConfig::default(),
                 "10.210.0.0/16".into(),
                 24,
-                4317,
-                None,
+                4319,
                 "127.0.0.1:8080".into(),
                 None,
                 1,
@@ -556,8 +558,7 @@ mod tests {
                 StorageConfig::default(),
                 "10.210.0.0/16".into(),
                 24,
-                4317,
-                None,
+                4319,
                 "127.0.0.1:8080".into(),
                 None,
                 1,

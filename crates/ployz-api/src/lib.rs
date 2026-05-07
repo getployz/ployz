@@ -1,7 +1,8 @@
 use ipnet::Ipv4Net;
 use ployz_types::model::{
-    InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, NetworkId,
-    NetworkLifecycle, RoutingEvent, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord, InstanceStatusRecord,
+    MachineId, MachineLifecycle, MachineMembership, NetworkId, NetworkLifecycle, PublicKey,
+    RoutingEvent, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -71,74 +72,6 @@ pub enum DebugTickTask {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ResourceKey {
-    /// Subnet reservation: missing peers are acceptable only if the strict
-    /// majority quorum still allows the reservation.
-    Subnet(Ipv4Net),
-    /// Namespace deploy lock: all required deploy participants must be
-    /// reachable and session-locked.
-    DeployNamespace(String),
-    /// ACME hostname issuance lock: peer inventory must be available;
-    /// unreachable known peers abstain, explicit denials veto.
-    CertIssuance(String),
-    /// ACME account creation lock: peer inventory must be available;
-    /// unreachable known peers abstain, explicit denials veto.
-    AcmeAccount(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum VoteConflict {
-    HeldBy {
-        holder: MachineId,
-        reservation_id: String,
-    },
-    AlreadyCommitted,
-    OwnerMismatch,
-    Expired,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Vote {
-    Allow,
-    Deny(VoteConflict),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CoordOutcome {
-    SubnetClaimed { subnet: Ipv4Net, owner: MachineId },
-    SubnetReleased { subnet: Ipv4Net, owner: MachineId },
-    DeployCommitted { deploy_id: String },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CoordOp {
-    Prepare {
-        id: String,
-        key: ResourceKey,
-        owner: MachineId,
-        nonce: String,
-        ttl_secs: u64,
-    },
-    Renew {
-        id: String,
-        key: ResourceKey,
-        nonce: String,
-        ttl_secs: u64,
-    },
-    Commit {
-        id: String,
-        key: ResourceKey,
-        nonce: String,
-        outcome: CoordOutcome,
-    },
-    Release {
-        id: String,
-        key: ResourceKey,
-        nonce: String,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonRequest {
     /// Liveness probe used by deploy reachability checks. Returns immediately
     /// with no side effects so callers can confirm the peer daemon is alive
@@ -168,7 +101,6 @@ pub enum DaemonRequest {
     },
     MeshStart {
         network: String,
-        allow_disconnected_bootstrap: bool,
     },
     MeshStop {
         force: bool,
@@ -255,17 +187,14 @@ pub enum DaemonRequest {
         assigned_subnet: Option<Ipv4Net>,
         force: bool,
     },
-    Coord {
-        op: CoordOp,
-    },
     AcmeChallengeReady {
         hostname: String,
         token: String,
     },
-    MeshSelfRecord,
-    MeshAccept {
-        response: String,
+    AcmeHttp01Status {
+        hostname: String,
     },
+    MeshSelfRecord,
     DeployPreview {
         manifest_json: String,
         options: DeployOptions,
@@ -276,6 +205,29 @@ pub enum DaemonRequest {
     },
     DeployExport {
         namespace: String,
+    },
+    DeployNodeInspectNamespace {
+        namespace: String,
+        deploy_id: String,
+    },
+    DeployNodeStartCandidate {
+        namespace: String,
+        deploy_id: String,
+        service: String,
+        slot_id: String,
+        instance_id: String,
+        spec_json: String,
+        volumes_json: String,
+    },
+    DeployNodeDrainInstance {
+        namespace: String,
+        deploy_id: String,
+        instance_id: String,
+    },
+    DeployNodeRemoveInstance {
+        namespace: String,
+        deploy_id: String,
+        instance_id: String,
     },
     RuntimeSubscribe,
     VolumeZfsInspect {
@@ -337,6 +289,9 @@ pub enum DaemonPayload {
     MachineInviteList(MachineInviteListPayload),
     MachineOperationList(MachineOperationListPayload),
     MachineOperation(MachineOperationPayload),
+    AcmeHttp01Status(AcmeHttp01StatusPayload),
+    DeployNamespaceSnapshot(DeployNamespaceSnapshotPayload),
+    DeployCandidateStarted(DeployCandidateStartedPayload),
     VolumeZfsInspect(VolumeZfsInspectPayload),
     VolumeZfsSnapshot(VolumeZfsSnapshotPayload),
     VolumeZfsPeerSend(VolumeZfsPeerSendPayload),
@@ -345,9 +300,22 @@ pub enum DaemonPayload {
     RuntimeState(RuntimeStatePayload),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeHttp01StatusPayload {
+    pub hostname: String,
+    pub certificate: Option<CertificateRecord>,
+    pub challenges: Vec<AcmeHttp01ChallengeStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeHttp01ChallengeStatus {
+    pub challenge: AcmeChallengeRecord,
+    pub readiness: Vec<AcmeChallengeReadinessRecord>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimeTable {
+pub enum RuntimeCollection {
     Machine,
     Revision,
     Release,
@@ -370,14 +338,17 @@ pub enum RuntimeWatchFrame {
         state: RoutingState,
     },
     Upsert {
-        table: RuntimeTable,
+        collection: RuntimeCollection,
         key: String,
         record: RuntimeRecord,
     },
     Remove {
-        table: RuntimeTable,
+        collection: RuntimeCollection,
         key: String,
-        record: RuntimeRecord,
+    },
+    Error {
+        code: String,
+        message: String,
     },
     Heartbeat,
 }
@@ -411,70 +382,54 @@ pub fn instance_runtime_key(record: &InstanceStatusRecord) -> String {
 }
 
 pub fn sort_routing_state(state: &mut RoutingState) {
-    state
-        .machines
-        .sort_by_key(|record| machine_runtime_key(record));
-    state
-        .revisions
-        .sort_by_key(|record| revision_runtime_key(record));
-    state
-        .releases
-        .sort_by_key(|record| release_runtime_key(record));
-    state
-        .instances
-        .sort_by_key(|record| instance_runtime_key(record));
+    state.machines.sort_by_key(machine_runtime_key);
+    state.revisions.sort_by_key(revision_runtime_key);
+    state.releases.sort_by_key(release_runtime_key);
+    state.instances.sort_by_key(instance_runtime_key);
 }
 
 #[must_use]
 pub fn runtime_frame_from_event(event: RoutingEvent) -> RuntimeWatchFrame {
     match event {
-        RoutingEvent::MachineAdded(record) | RoutingEvent::MachineUpdated { new: record, .. } => {
-            RuntimeWatchFrame::Upsert {
-                key: machine_runtime_key(&record),
-                table: RuntimeTable::Machine,
-                record: RuntimeRecord::Machine(record),
-            }
-        }
-        RoutingEvent::MachineRemoved(record) => RuntimeWatchFrame::Remove {
+        RoutingEvent::MachineUpsert(record) => RuntimeWatchFrame::Upsert {
             key: machine_runtime_key(&record),
-            table: RuntimeTable::Machine,
+            collection: RuntimeCollection::Machine,
             record: RuntimeRecord::Machine(record),
         },
-        RoutingEvent::RevisionAdded(record) | RoutingEvent::RevisionUpdated { new: record, .. } => {
-            RuntimeWatchFrame::Upsert {
-                key: revision_runtime_key(&record),
-                table: RuntimeTable::Revision,
-                record: RuntimeRecord::Revision(record),
-            }
-        }
-        RoutingEvent::RevisionRemoved(record) => RuntimeWatchFrame::Remove {
+        RoutingEvent::MachineRemoved { id } => RuntimeWatchFrame::Remove {
+            key: id.0,
+            collection: RuntimeCollection::Machine,
+        },
+        RoutingEvent::RevisionUpsert(record) => RuntimeWatchFrame::Upsert {
             key: revision_runtime_key(&record),
-            table: RuntimeTable::Revision,
+            collection: RuntimeCollection::Revision,
             record: RuntimeRecord::Revision(record),
         },
-        RoutingEvent::ReleaseAdded(record) | RoutingEvent::ReleaseUpdated { new: record, .. } => {
-            RuntimeWatchFrame::Upsert {
-                key: release_runtime_key(&record),
-                table: RuntimeTable::Release,
-                record: RuntimeRecord::Release(record),
-            }
-        }
-        RoutingEvent::ReleaseRemoved(record) => RuntimeWatchFrame::Remove {
+        RoutingEvent::RevisionRemoved {
+            namespace,
+            service,
+            revision_hash,
+        } => RuntimeWatchFrame::Remove {
+            key: format!("{namespace}:{service}:{revision_hash}"),
+            collection: RuntimeCollection::Revision,
+        },
+        RoutingEvent::ReleaseUpsert(record) => RuntimeWatchFrame::Upsert {
             key: release_runtime_key(&record),
-            table: RuntimeTable::Release,
+            collection: RuntimeCollection::Release,
             record: RuntimeRecord::Release(record),
         },
-        RoutingEvent::InstanceAdded(record) | RoutingEvent::InstanceUpdated { new: record, .. } => {
-            RuntimeWatchFrame::Upsert {
-                key: instance_runtime_key(&record),
-                table: RuntimeTable::Instance,
-                record: RuntimeRecord::Instance(record),
-            }
-        }
-        RoutingEvent::InstanceRemoved(record) => RuntimeWatchFrame::Remove {
+        RoutingEvent::ReleaseRemoved { namespace, service } => RuntimeWatchFrame::Remove {
+            key: format!("{namespace}:{service}"),
+            collection: RuntimeCollection::Release,
+        },
+        RoutingEvent::InstanceUpsert(record) => RuntimeWatchFrame::Upsert {
             key: instance_runtime_key(&record),
-            table: RuntimeTable::Instance,
+            collection: RuntimeCollection::Instance,
             record: RuntimeRecord::Instance(record),
+        },
+        RoutingEvent::InstanceRemoved { instance_id } => RuntimeWatchFrame::Remove {
+            key: instance_id.0,
+            collection: RuntimeCollection::Instance,
         },
     }
 }
@@ -515,6 +470,7 @@ pub struct MachineRttRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusPayload {
     pub machine_id: String,
+    pub public_key: PublicKey,
     pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
@@ -525,6 +481,92 @@ pub struct StatusPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_machine_lifecycle: Option<MachineLifecycle>,
     pub mesh_phase: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edge_sync: Vec<EdgeSyncStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nats_assets: Vec<NatsAssetStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub control_plane: Vec<ControlPlaneStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeSyncStatus {
+    pub service: String,
+    pub stream: String,
+    #[serde(flatten)]
+    pub state: EdgeSyncHealthState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum EdgeSyncHealthState {
+    Healthy {
+        failures_total: u64,
+    },
+    Stale {
+        stale_since_unix_secs: u64,
+        failures_total: u64,
+    },
+    Unknown {
+        error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failures_total: Option<u64>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NatsAssetStatus {
+    pub name: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(flatten)]
+    pub state: NatsAssetHealthState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum NatsAssetHealthState {
+    Healthy(NatsAssetReplicaStatus),
+    Stale(NatsAssetReplicaStatus),
+    Unknown { error: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NatsAssetReplicaStatus {
+    pub replicas: usize,
+    pub current_replicas: usize,
+    pub offline_replicas: usize,
+    pub max_lag: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlPlaneStatus {
+    pub component: String,
+    #[serde(flatten)]
+    pub state: ControlPlaneHealthState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ControlPlaneHealthState {
+    Healthy,
+    Stale {
+        stale_since_unix_secs: u64,
+        consecutive_failures: u64,
+        error: String,
+    },
+    Unknown {
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -545,6 +587,8 @@ pub struct DoctorLocal {
     pub network: String,
     pub network_lifecycle: String,
     pub machine_lifecycle: String,
+    pub storage: bool,
+    pub storage_participation: String,
     pub config_subnet: Option<String>,
     pub record_subnet: Option<String>,
     pub runtime_running: bool,
@@ -557,17 +601,14 @@ pub struct DoctorLocal {
 pub struct DoctorPeer {
     pub machine_id: String,
     pub role: String,
+    pub storage: bool,
+    pub storage_participation: String,
     pub blocking: bool,
     pub store_lifecycle: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<String>,
     pub wg_state: String,
     pub probe_state: String,
-    pub corrosion_state: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub corrosion_actor_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub corrosion_timestamp: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rtt_median_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -660,7 +701,6 @@ pub enum MachineTransitionGoal {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshSelfRecordPayload {
-    pub encoded: String,
     pub record: MachineMembership,
 }
 
@@ -684,8 +724,6 @@ pub struct MeshBootstrapRequest {
     pub network_name: String,
     pub cluster_cidr: String,
     pub assigned_subnet: Ipv4Net,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub self_control_target: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bootstrap_peers: Vec<MachineMembership>,
 }
@@ -720,6 +758,16 @@ pub struct MachineOperationInfo {
     pub invite_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allocated_subnet: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployNamespaceSnapshotPayload {
+    pub instances: Vec<InstanceStatusRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployCandidateStartedPayload {
+    pub status: InstanceStatusRecord,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -800,100 +848,28 @@ pub struct DaemonResponse {
     pub payload: Option<DaemonPayload>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DeployFrame {
-    Open {
-        namespace: String,
-        deploy_id: String,
-        coordinator_id: String,
-    },
-    InspectNamespace,
-    StartCandidate {
-        service: String,
-        slot_id: String,
-        instance_id: String,
-        spec_json: String,
-        volumes_json: String,
-    },
-    DrainInstance {
-        instance_id: String,
-    },
-    RemoveInstance {
-        instance_id: String,
-    },
-    Close,
-    Opened {
-        instances: Vec<InstanceStatusRecord>,
-    },
-    NamespaceSnapshot {
-        instances: Vec<InstanceStatusRecord>,
-    },
-    CandidateStarted {
-        status: Box<InstanceStatusRecord>,
-    },
-    Ack {
-        message: String,
-    },
-    Error {
-        code: String,
-        message: String,
-    },
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        DeployFrame, RuntimeRecord, RuntimeTable, RuntimeWatchFrame, instance_runtime_key,
-        machine_runtime_key, release_runtime_key, revision_runtime_key, runtime_frame_from_event,
-        sort_routing_state,
+        ControlPlaneHealthState, ControlPlaneStatus, DaemonPayload, DaemonResponse,
+        EdgeSyncHealthState, EdgeSyncStatus, MachineOperationInfo, MachineOperationPayload,
+        MachineUpdatePayload, MachineUpdateRow, RuntimeCollection, RuntimeRecord,
+        RuntimeWatchFrame, StatusPayload, instance_runtime_key, machine_runtime_key,
+        release_runtime_key, revision_runtime_key, runtime_frame_from_event, sort_routing_state,
     };
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
-        MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey, RoutingEvent,
-        RoutingState, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
-        ServiceRevisionRecord, ServiceRoutingPolicy, SlotId,
+        MachineLifecycle, MachineMembership, MachineTopology, NetworkLifecycle, OverlayIp,
+        PublicKey, RoutingEvent, RoutingState, ServiceRelease, ServiceReleaseRecord,
+        ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId,
+        StorageParticipation,
     };
     use ployz_types::spec::Namespace;
     use std::collections::BTreeMap;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
-    fn start_candidate_roundtrip_is_session_scoped() {
-        let frame = DeployFrame::StartCandidate {
-            service: String::from("api"),
-            slot_id: String::from("slot-1"),
-            instance_id: String::from("inst-1"),
-            spec_json: String::from("{\"name\":\"api\"}"),
-            volumes_json: String::from("[]"),
-        };
-
-        let json = serde_json::to_value(&frame).expect("serialize frame");
-        let start_candidate = json
-            .get("StartCandidate")
-            .expect("enum variant payload should exist");
-
-        assert!(start_candidate.get("deploy_id").is_none());
-
-        let decoded: DeployFrame = serde_json::from_value(json).expect("deserialize frame");
-        let DeployFrame::StartCandidate {
-            service,
-            slot_id,
-            instance_id,
-            spec_json,
-            volumes_json,
-        } = decoded
-        else {
-            panic!("unexpected frame");
-        };
-        assert_eq!(service, "api");
-        assert_eq!(slot_id, "slot-1");
-        assert_eq!(instance_id, "inst-1");
-        assert_eq!(spec_json, "{\"name\":\"api\"}");
-        assert_eq!(volumes_json, "[]");
-    }
-
-    #[test]
-    fn sort_routing_state_orders_all_tables_by_runtime_key() {
+    fn sort_routing_state_orders_all_collections_by_runtime_key() {
         let mut state = RoutingState {
             machines: vec![machine_record("machine-b"), machine_record("machine-a")],
             revisions: vec![
@@ -945,41 +921,100 @@ mod tests {
 
     #[test]
     fn instance_events_map_to_idempotent_watch_frames() {
-        let old = instance_record("instance-1", "prod", "api");
-        let mut new = old.clone();
-        new.ready = true;
+        let mut record = instance_record("instance-1", "prod", "api");
+        record.ready = true;
 
-        let added = runtime_frame_from_event(RoutingEvent::InstanceAdded(old.clone()));
-        let updated = runtime_frame_from_event(RoutingEvent::InstanceUpdated {
-            old: old.clone(),
-            new: new.clone(),
+        let upsert = runtime_frame_from_event(RoutingEvent::InstanceUpsert(record.clone()));
+        let removed = runtime_frame_from_event(RoutingEvent::InstanceRemoved {
+            instance_id: record.instance_id.clone(),
         });
-        let removed = runtime_frame_from_event(RoutingEvent::InstanceRemoved(new.clone()));
 
         assert_eq!(
-            added,
+            upsert,
             RuntimeWatchFrame::Upsert {
-                table: RuntimeTable::Instance,
+                collection: RuntimeCollection::Instance,
                 key: String::from("instance-1"),
-                record: RuntimeRecord::Instance(old.clone()),
-            }
-        );
-        assert_eq!(
-            updated,
-            RuntimeWatchFrame::Upsert {
-                table: RuntimeTable::Instance,
-                key: String::from("instance-1"),
-                record: RuntimeRecord::Instance(new.clone()),
+                record: RuntimeRecord::Instance(record.clone()),
             }
         );
         assert_eq!(
             removed,
             RuntimeWatchFrame::Remove {
-                table: RuntimeTable::Instance,
+                collection: RuntimeCollection::Instance,
                 key: String::from("instance-1"),
-                record: RuntimeRecord::Instance(new),
             }
         );
+    }
+
+    #[test]
+    fn routing_events_for_all_collections_map_to_runtime_watch_frames() {
+        let mut new_machine = machine_record("machine-1");
+        new_machine.lifecycle = MachineLifecycle::Draining;
+        let mut new_revision = revision_record("prod", "api", "rev-1");
+        new_revision.spec_json = r#"{"image":"api:2"}"#.into();
+        let mut new_release = release_record("prod", "api");
+        new_release.release.primary_revision_hash = "rev-2".into();
+
+        let cases = [
+            (
+                runtime_frame_from_event(RoutingEvent::MachineUpsert(new_machine.clone())),
+                RuntimeWatchFrame::Upsert {
+                    collection: RuntimeCollection::Machine,
+                    key: String::from("machine-1"),
+                    record: RuntimeRecord::Machine(new_machine.clone()),
+                },
+            ),
+            (
+                runtime_frame_from_event(RoutingEvent::MachineRemoved {
+                    id: new_machine.id.clone(),
+                }),
+                RuntimeWatchFrame::Remove {
+                    collection: RuntimeCollection::Machine,
+                    key: String::from("machine-1"),
+                },
+            ),
+            (
+                runtime_frame_from_event(RoutingEvent::RevisionUpsert(new_revision.clone())),
+                RuntimeWatchFrame::Upsert {
+                    collection: RuntimeCollection::Revision,
+                    key: String::from("prod:api:rev-1"),
+                    record: RuntimeRecord::Revision(new_revision.clone()),
+                },
+            ),
+            (
+                runtime_frame_from_event(RoutingEvent::RevisionRemoved {
+                    namespace: new_revision.namespace.clone(),
+                    service: new_revision.service.clone(),
+                    revision_hash: new_revision.revision_hash.clone(),
+                }),
+                RuntimeWatchFrame::Remove {
+                    collection: RuntimeCollection::Revision,
+                    key: String::from("prod:api:rev-1"),
+                },
+            ),
+            (
+                runtime_frame_from_event(RoutingEvent::ReleaseUpsert(new_release.clone())),
+                RuntimeWatchFrame::Upsert {
+                    collection: RuntimeCollection::Release,
+                    key: String::from("prod:api"),
+                    record: RuntimeRecord::Release(new_release.clone()),
+                },
+            ),
+            (
+                runtime_frame_from_event(RoutingEvent::ReleaseRemoved {
+                    namespace: new_release.namespace.clone(),
+                    service: new_release.service.clone(),
+                }),
+                RuntimeWatchFrame::Remove {
+                    collection: RuntimeCollection::Release,
+                    key: String::from("prod:api"),
+                },
+            ),
+        ];
+
+        for (actual, expected) in cases {
+            assert_eq!(actual, expected);
+        }
     }
 
     #[test]
@@ -1005,7 +1040,7 @@ mod tests {
     #[test]
     fn runtime_watch_frame_serialization_roundtrips() {
         let frame = RuntimeWatchFrame::Upsert {
-            table: RuntimeTable::Instance,
+            collection: RuntimeCollection::Instance,
             key: String::from("instance-1"),
             record: RuntimeRecord::Instance(instance_record("instance-1", "prod", "api")),
         };
@@ -1016,7 +1051,7 @@ mod tests {
             json,
             serde_json::json!({
                 "kind": "upsert",
-                "table": "instance",
+                "collection": "instance",
                 "key": "instance-1",
                 "record": {
                     "instance_id": "instance-1",
@@ -1046,17 +1081,274 @@ mod tests {
         assert_eq!(decoded, frame);
     }
 
+    #[test]
+    fn runtime_watch_remove_frame_serialization_is_key_only() {
+        let frame = RuntimeWatchFrame::Remove {
+            collection: RuntimeCollection::Release,
+            key: String::from("prod:api"),
+        };
+
+        let json = serde_json::to_value(&frame).expect("serialize runtime remove frame");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "remove",
+                "collection": "release",
+                "key": "prod:api"
+            })
+        );
+
+        let decoded: RuntimeWatchFrame =
+            serde_json::from_value(json).expect("deserialize runtime remove frame");
+        assert_eq!(decoded, frame);
+    }
+
+    #[test]
+    fn runtime_watch_error_frame_serialization_roundtrips() {
+        let frame = RuntimeWatchFrame::Error {
+            code: String::from("RUNTIME_SUBSCRIPTION_FAILED"),
+            message: String::from("routing event 'event-1' ack receiver closed"),
+        };
+
+        let json = serde_json::to_value(&frame).expect("serialize runtime error frame");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "error",
+                "code": "RUNTIME_SUBSCRIPTION_FAILED",
+                "message": "routing event 'event-1' ack receiver closed"
+            })
+        );
+
+        let decoded: RuntimeWatchFrame =
+            serde_json::from_value(json).expect("deserialize runtime error frame");
+        assert_eq!(decoded, frame);
+    }
+
+    #[test]
+    fn daemon_error_response_preserves_structured_payload() {
+        let response = DaemonResponse {
+            ok: false,
+            code: String::from("MACHINE_UPDATE_FAILED"),
+            message: String::from("machine 'peer-1' update failed: refused"),
+            payload: Some(DaemonPayload::MachineUpdate(MachineUpdatePayload {
+                operation_id: String::from("update-1"),
+                updated: Vec::new(),
+                failed: vec![MachineUpdateRow {
+                    id: String::from("peer-1"),
+                    version: String::from("0.5.6"),
+                    message: String::from("refused"),
+                }],
+            })),
+        };
+
+        let json = serde_json::to_value(&response).expect("serialize response");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "ok": false,
+                "code": "MACHINE_UPDATE_FAILED",
+                "message": "machine 'peer-1' update failed: refused",
+                "payload": {
+                    "kind": "machine-update",
+                    "operation_id": "update-1",
+                    "failed": [{
+                        "id": "peer-1",
+                        "version": "0.5.6",
+                        "message": "refused"
+                    }]
+                }
+            })
+        );
+        let decoded: DaemonResponse = serde_json::from_value(json).expect("deserialize response");
+        assert!(!decoded.ok);
+        assert_eq!(decoded.code, "MACHINE_UPDATE_FAILED");
+        let Some(DaemonPayload::MachineUpdate(payload)) = decoded.payload else {
+            panic!("expected machine update payload");
+        };
+        assert_eq!(payload.operation_id, "update-1");
+        let [failed] = payload.failed.as_slice() else {
+            panic!("expected one failed row");
+        };
+        assert_eq!(failed.id, "peer-1");
+        assert_eq!(failed.message, "refused");
+    }
+
+    #[test]
+    fn daemon_operation_response_preserves_structured_failure_status() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("operation details"),
+            payload: Some(DaemonPayload::MachineOperation(MachineOperationPayload {
+                operation: MachineOperationInfo {
+                    id: String::from("machine-add-1"),
+                    kind: String::from("add"),
+                    network_name: Some(String::from("alpha")),
+                    targets: vec![String::from("host-a")],
+                    status: String::from("interrupted"),
+                    stage: String::from("bootstrap"),
+                    started_at: 10,
+                    updated_at: 20,
+                    last_error: Some(String::from("daemon restarted before operation completed")),
+                    machine_id: Some(MachineId("machine-a".into())),
+                    invite_id: Some(String::from("invite-1")),
+                    allocated_subnet: Some(String::from("10.210.1.0/24")),
+                },
+            })),
+        };
+
+        let json = serde_json::to_value(&response).expect("serialize operation response");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "ok": true,
+                "code": "OK",
+                "message": "operation details",
+                "payload": {
+                    "kind": "machine-operation",
+                    "operation": {
+                        "id": "machine-add-1",
+                        "kind": "add",
+                        "network_name": "alpha",
+                        "targets": ["host-a"],
+                        "status": "interrupted",
+                        "stage": "bootstrap",
+                        "started_at": 10,
+                        "updated_at": 20,
+                        "last_error": "daemon restarted before operation completed",
+                        "machine_id": "machine-a",
+                        "invite_id": "invite-1",
+                        "allocated_subnet": "10.210.1.0/24"
+                    }
+                }
+            })
+        );
+
+        let decoded: DaemonResponse =
+            serde_json::from_value(json).expect("deserialize operation response");
+        let Some(DaemonPayload::MachineOperation(payload)) = decoded.payload else {
+            panic!("expected machine operation payload");
+        };
+        assert_eq!(payload.operation.status, "interrupted");
+        assert_eq!(
+            payload.operation.last_error.as_deref(),
+            Some("daemon restarted before operation completed")
+        );
+    }
+
+    #[test]
+    fn daemon_status_response_preserves_edge_and_control_plane_uncertainty() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("status"),
+            payload: Some(DaemonPayload::Status(StatusPayload {
+                machine_id: String::from("founder"),
+                public_key: PublicKey([1; 32]),
+                version: String::from("0.5.5"),
+                network: Some(String::from("alpha")),
+                overlay_ip: Some(String::from("fd00::1")),
+                network_lifecycle: Some(NetworkLifecycle::Running),
+                local_machine_lifecycle: Some(MachineLifecycle::Active),
+                mesh_phase: String::from("Running"),
+                edge_sync: vec![EdgeSyncStatus {
+                    service: String::from("gateway"),
+                    stream: String::from("routing"),
+                    state: EdgeSyncHealthState::Stale {
+                        stale_since_unix_secs: 1_777_646_000,
+                        failures_total: 7,
+                    },
+                }],
+                nats_assets: Vec::new(),
+                control_plane: vec![ControlPlaneStatus {
+                    component: String::from("mesh_peer_sync"),
+                    state: ControlPlaneHealthState::Unknown {
+                        error: String::from("machine subscription closed"),
+                    },
+                }],
+            })),
+        };
+
+        let json = serde_json::to_value(&response).expect("serialize status response");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "ok": true,
+                "code": "OK",
+                "message": "status",
+                "payload": {
+                    "kind": "status",
+                    "machine_id": "founder",
+                    "public_key": PublicKey([1; 32]),
+                    "version": "0.5.5",
+                    "network": "alpha",
+                    "overlay_ip": "fd00::1",
+                    "network_lifecycle": "Running",
+                    "local_machine_lifecycle": "Active",
+                    "mesh_phase": "Running",
+                    "edge_sync": [{
+                        "service": "gateway",
+                        "stream": "routing",
+                        "state": "stale",
+                        "stale_since_unix_secs": 1777646000u64,
+                        "failures_total": 7u64
+                    }],
+                    "control_plane": [{
+                        "component": "mesh_peer_sync",
+                        "state": "unknown",
+                        "error": "machine subscription closed"
+                    }]
+                }
+            })
+        );
+
+        let decoded: DaemonResponse =
+            serde_json::from_value(json).expect("deserialize status response");
+        let Some(DaemonPayload::Status(payload)) = decoded.payload else {
+            panic!("expected status payload");
+        };
+        let [edge] = payload.edge_sync.as_slice() else {
+            panic!("expected one edge sync row");
+        };
+        match &edge.state {
+            EdgeSyncHealthState::Stale {
+                stale_since_unix_secs,
+                failures_total,
+            } => {
+                assert_eq!(*stale_since_unix_secs, 1_777_646_000);
+                assert_eq!(*failures_total, 7);
+            }
+            other => panic!("expected stale edge sync state, got {other:?}"),
+        }
+        let [control] = payload.control_plane.as_slice() else {
+            panic!("expected one control-plane row");
+        };
+        match &control.state {
+            ControlPlaneHealthState::Unknown { error } => {
+                assert_eq!(error, "machine subscription closed");
+            }
+            other => panic!("expected unknown control-plane state, got {other:?}"),
+        }
+    }
+
     fn machine_record(id: &str) -> MachineMembership {
         MachineMembership {
             id: MachineId(id.into()),
             public_key: PublicKey([7; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
-            control_target: None,
             subnet: None,
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
             lifecycle: MachineLifecycle::Active,
+            storage: true,
+            storage_participation: StorageParticipation::default_authority(),
             created_at: 1,
             updated_at: 2,
             labels: BTreeMap::new(),

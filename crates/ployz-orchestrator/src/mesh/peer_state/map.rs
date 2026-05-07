@@ -48,19 +48,15 @@ impl PeerStateMap {
 
     pub(crate) fn apply_event(&mut self, event: &MachineEvent, now: Instant) {
         match event {
-            MachineEvent::Added(record) | MachineEvent::Updated(record) => {
+            MachineEvent::Upsert(record) => {
                 self.upsert_stored(record, now);
             }
-            MachineEvent::Removed(record) => self.remove_stored(&record.id),
+            MachineEvent::Removed { id } => self.remove_stored(id),
         }
     }
 
     pub(crate) fn remove_stored(&mut self, id: &MachineId) {
         self.stored_peers.remove(id);
-    }
-
-    pub(crate) fn remove_transient(&mut self, id: &MachineId) {
-        self.transient_peers.remove(id);
     }
 
     pub(crate) fn effective_peers<'a>(

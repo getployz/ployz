@@ -27,9 +27,6 @@ deploy-types:
 bootstrap-linux *args:
     ./scripts/bootstrap-linux.sh {{args}}
 
-lab *args:
-    ./lab/bin/ployz-lab {{args}}
-
 e2e *args:
     cargo run -p ployz-e2e -- {{args}}
 
@@ -47,9 +44,9 @@ install prefix="/usr/local":
     install -m 0755 target/release/ployzd "{{prefix}}/bin/ployzd"
     install -m 0755 target/release/ployz-gateway "{{prefix}}/bin/ployz-gateway"
     install -m 0755 target/release/ployz-dns "{{prefix}}/bin/ployz-dns"
-    just install-corrosion {{prefix}}
+    just install-nats-server {{prefix}}
 
-install-corrosion prefix="/usr/local" repo="getployz/corrosion":
+install-nats-server prefix="/usr/local" repo="nats-io/nats-server":
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -64,103 +61,70 @@ install-corrosion prefix="/usr/local" repo="getployz/corrosion":
         wget -qO "${dest}" "${url}"
         return
       fi
-      echo "curl or wget is required to download corrosion" >&2
+      echo "curl or wget is required to download nats-server" >&2
       exit 1
     }
 
-    checksum_file() {
-      local file_path="$1"
-      if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "${file_path}" | awk '{print $1}'
-        return
-      fi
-      if command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "${file_path}" | awk '{print $1}'
-        return
-      fi
-      echo "sha256sum or shasum is required" >&2
-      exit 1
-    }
-
-    version_file=".corrosion-version"
+    version_file=".nats-version"
     if [[ ! -f "${version_file}" ]]; then
       echo "missing ${version_file}" >&2
       exit 1
     fi
     version="$(tr -d '[:space:]' < "${version_file}")"
     if [[ -z "${version}" ]]; then
-      echo "empty corrosion version in ${version_file}" >&2
+      echo "empty nats-server version in ${version_file}" >&2
       exit 1
     fi
 
-    install_path="{{prefix}}/bin/corrosion"
-    version_stamp="{{prefix}}/bin/.corrosion-release-version"
+    install_path="{{prefix}}/bin/nats-server"
+    version_stamp="{{prefix}}/bin/.nats-server-release-version"
     if [[ -x "${install_path}" && -f "${version_stamp}" ]]; then
       installed_version="$(tr -d '[:space:]' < "${version_stamp}")"
       if [[ "${installed_version}" == "${version}" ]]; then
-        echo "corrosion ${version} already installed at ${install_path}; skipping"
+        echo "nats-server ${version} already installed at ${install_path}; skipping"
         exit 0
       fi
     fi
 
     os="$(uname -s)"
     arch="$(uname -m)"
-    case "${os}:${arch}" in
-      Darwin:arm64)
-        asset="corrosion-aarch64-apple-darwin.tar.gz"
+    case "${os}" in
+      Darwin) asset_os="darwin" ;;
+      Linux) asset_os="linux" ;;
+      *)
+        echo "unsupported platform: ${os}/${arch}" >&2
+        exit 1
         ;;
-      Darwin:x86_64)
-        asset="corrosion-x86_64-apple-darwin.tar.gz"
-        ;;
-      Linux:aarch64|Linux:arm64)
-        asset="corrosion-aarch64-unknown-linux-gnu.tar.gz"
-        ;;
-      Linux:x86_64|Linux:amd64)
-        asset="corrosion-x86_64-unknown-linux-gnu.tar.gz"
-        ;;
+    esac
+    case "${arch}" in
+      x86_64|amd64) asset_arch="amd64" ;;
+      aarch64|arm64) asset_arch="arm64" ;;
       *)
         echo "unsupported platform: ${os}/${arch}" >&2
         exit 1
         ;;
     esac
 
+    asset="nats-server-${version}-${asset_os}-${asset_arch}.tar.gz"
     tmp_dir="$(mktemp -d)"
     trap 'rm -rf "${tmp_dir}"' EXIT
 
-    base_url="https://github.com/{{repo}}/releases/download/${version}"
-    download "${base_url}/checksums.txt" "${tmp_dir}/checksums.txt"
-    download "${base_url}/${asset}" "${tmp_dir}/${asset}"
-
-    checksums_path="${tmp_dir}/checksums.txt"
-    if [[ ! -f "${checksums_path}" ]]; then
-      echo "checksums.txt was not found in release {{repo}}@${version}" >&2
-      exit 1
-    fi
-
-    expected="$(awk -v name="${asset}" '$2 == name { print $1; exit }' "${checksums_path}")"
-    if [[ -z "${expected}" ]]; then
-      echo "missing checksum entry for ${asset}" >&2
-      exit 1
-    fi
-    actual="$(checksum_file "${tmp_dir}/${asset}")"
-    if [[ "${expected}" != "${actual}" ]]; then
-      echo "checksum mismatch for ${asset}: expected ${expected}, got ${actual}" >&2
-      exit 1
-    fi
-
+    url="https://github.com/{{repo}}/releases/download/${version}/${asset}"
+    download "${url}" "${tmp_dir}/${asset}"
     tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}"
-    if [[ ! -f "${tmp_dir}/corrosion" ]]; then
-      echo "archive ${asset} did not contain corrosion binary at root" >&2
+    binary="$(find "${tmp_dir}" -type f -name nats-server -perm -111 | head -n 1)"
+    if [[ -z "${binary}" ]]; then
+      echo "archive ${asset} did not contain executable nats-server" >&2
       exit 1
     fi
 
     install -d "{{prefix}}/bin"
-    install -m 0755 "${tmp_dir}/corrosion" "${install_path}"
+    install -m 0755 "${binary}" "${install_path}"
     printf '%s\n' "${version}" > "${version_stamp}"
     if [[ "${os}" == "Darwin" ]]; then
       xattr -d com.apple.quarantine "${install_path}" 2>/dev/null || true
     fi
-    echo "installed corrosion ${install_path} (${version} for ${os}/${arch})"
+    echo "installed nats-server ${install_path} (${version} for ${os}/${arch})"
 
 install-ebpf repo="getployz/ployz":
     ./scripts/install-ebpf-bytecode.sh {{repo}}

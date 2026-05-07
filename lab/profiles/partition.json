@@ -1,5 +1,0 @@
-{
-  "name": "partition",
-  "interface": "data",
-  "netem": "loss 100%"
-}

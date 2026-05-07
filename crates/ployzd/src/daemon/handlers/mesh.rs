@@ -42,17 +42,17 @@ mod tests {
     use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_orchestrator::{Mesh, WireguardDriver};
     use ployz_runtime_api::Identity;
-    use ployz_store_api::MachineRegistry;
+    use ployz_store_api::MachineMembershipStore;
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
-    use ployz_types::model::{MachineId, MachineLifecycle, MachineTopology, OverlayIp, PublicKey};
+    use ployz_types::model::{MachineId, MachineLifecycle, MachineTopology};
     use ployz_types::time::now_unix_secs;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[tokio::test]
-    async fn mesh_join_is_unsupported_in_founder_mediated_mode() {
+    async fn mesh_join_is_unsupported_without_machine_add() {
         let founder_identity =
             Identity::generate(ployz_types::model::MachineId("founder".into()), [7; 32]);
         let joiner_identity =
@@ -84,7 +84,7 @@ mod tests {
             joiner_identity,
             "10.210.0.0/16".into(),
             24,
-            4317,
+            4319,
             "127.0.0.1:0".into(),
             None,
             1,
@@ -93,40 +93,6 @@ mod tests {
         let response = state.handle_mesh_join(&token).await;
         assert!(!response.ok);
         assert_eq!(response.code, "UNSUPPORTED");
-    }
-
-    #[tokio::test]
-    async fn mesh_accept_installs_transient_peer_without_store_write() {
-        let (mut state, store, network) = make_active_state().await;
-        let response = ployz_types::model::JoinResponse {
-            machine_id: MachineId("joiner".into()),
-            public_key: PublicKey([2; 32]),
-            overlay_ip: "fd00::2".parse().map(OverlayIp).expect("valid overlay"),
-            topology: MachineTopology::local(),
-            subnet: Some("10.210.1.0/24".parse().expect("valid subnet")),
-            endpoints: vec!["203.0.113.10:51820".into()],
-        }
-        .encode()
-        .expect("encode join response");
-
-        let result = state.handle_mesh_accept(&response).await;
-        assert!(result.ok, "{}", result.message);
-        assert!(result.message.contains("awaiting self-publication"));
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let machines = store.list_machines().await.expect("list machines");
-        assert!(!machines.into_iter().any(|machine| machine.id.0 == "joiner"));
-        assert!(
-            network
-                .current_peers()
-                .into_iter()
-                .any(|peer| peer.id().0 == "joiner")
-        );
-
-        if let Some(active) = state.active.as_mut() {
-            active.mesh.destroy().await.expect("destroy mesh");
-        }
     }
 
     #[tokio::test]
@@ -157,15 +123,15 @@ mod tests {
             identity,
             "10.210.0.0/16".into(),
             24,
-            4317,
+            4319,
             "127.0.0.1:0".into(),
             None,
             1,
         );
-        let cached_subnet = config.subnet;
+        let retained_subnet = crate::daemon::RetainedSubnet::from_running_config(config.subnet);
         state.active = Some(ActiveMesh {
             config,
-            cached_subnet,
+            retained_subnet,
             mesh: Mesh::new(
                 WireguardDriver::memory(),
                 StoreDriver::memory(),
@@ -173,13 +139,12 @@ mod tests {
                 machine_id,
                 51820,
             ),
-            remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-            peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,
-            bootstrap_seed_cache: None,
+            bootstrap_peer_seed: None,
         });
 
         let error = state
@@ -211,7 +176,7 @@ mod tests {
             identity,
             "10.210.0.0/16".into(),
             24,
-            4317,
+            4319,
             "127.0.0.1:0".into(),
             None,
             1,
@@ -223,7 +188,6 @@ mod tests {
                 network_name: "alpha".into(),
                 cluster_cidr: "10.210.0.0/16".into(),
                 assigned_subnet: "10.210.2.0/24".parse().expect("valid subnet"),
-                self_control_target: None,
                 bootstrap_peers: Vec::new(),
             })
             .await;
@@ -275,10 +239,12 @@ mod tests {
                 overlay_ip: config.overlay_ip,
                 topology: MachineTopology::local(),
                 subnet: config.subnet,
-                control_target: None,
                 bridge_ip: None,
                 endpoints: vec!["127.0.0.1:51820".into()],
                 lifecycle: MachineLifecycle::Standby,
+                storage: true,
+                storage_participation: ployz_types::model::StorageParticipation::default_authority(
+                ),
                 created_at: 0,
                 updated_at: 0,
                 labels: std::collections::BTreeMap::new(),
@@ -301,23 +267,22 @@ mod tests {
             identity,
             "10.210.0.0/16".into(),
             24,
-            4317,
+            4319,
             "127.0.0.1:0".into(),
             None,
             1,
         );
-        let cached_subnet = config.subnet;
+        let retained_subnet = crate::daemon::RetainedSubnet::from_running_config(config.subnet);
         state.active = Some(ActiveMesh {
             config,
-            cached_subnet,
+            retained_subnet,
             mesh,
-            peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-            remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,
-            bootstrap_seed_cache: None,
+            bootstrap_peer_seed: None,
         });
         (state, store, network)
     }

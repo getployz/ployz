@@ -7,9 +7,14 @@ on:
       - ".github/workflows/dns-image.yml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "crates/ployz-config/**"
       - "crates/ployz-dns/**"
+      - "crates/ployz-dns-config/**"
+      - "crates/ployz-metrics/**"
+      - "crates/ployz-nats/**"
       - "crates/ployz-sdk/**"
-      - "crates/ployz-corrosion/**"
+      - "crates/ployz-store-api/**"
+      - "crates/ployz-types/**"
       - "Dockerfile.dns"
   workflow_dispatch:
 

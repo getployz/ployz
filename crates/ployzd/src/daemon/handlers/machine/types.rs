@@ -4,15 +4,12 @@ use ployz_api::{
     MachineAddPayload, MachineAwaitingSelfPublication, MachineInstallOptions, MachineListPayload,
     MachineListRow,
 };
-use ployz_orchestrator::coordination::PendingReservations;
-use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
+use ployz_nats::NatsNodeRpcClient;
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{MachineId, NetworkId};
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
-use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub(super) struct MachineAddContext {
@@ -22,8 +19,7 @@ pub(super) struct MachineAddContext {
     pub local_machine_id: MachineId,
     pub cluster_cidr: String,
     pub store: StoreDriver,
-    pub reservations: Arc<PendingReservations>,
-    pub peer_sync_tx: mpsc::Sender<PeerSyncCommand>,
+    pub nats_rpc: Option<NatsNodeRpcClient>,
     pub ssh_options: SshOptions,
     pub install: MachineInstallOptions,
 }
@@ -32,9 +28,9 @@ pub(super) struct MachineAddContext {
 pub(super) enum MachineAddStage {
     Preflight,
     Bootstrapped,
+    BootstrapPublished,
     Joined,
     SelfRecorded,
-    TransientPeerInstalled,
     Ready,
     Enabled,
     Finalized,
@@ -45,9 +41,9 @@ impl fmt::Display for MachineAddStage {
         let value = match self {
             Self::Preflight => "preflight",
             Self::Bootstrapped => "bootstrapped",
+            Self::BootstrapPublished => "bootstrap-published",
             Self::Joined => "joined",
             Self::SelfRecorded => "self-recorded",
-            Self::TransientPeerInstalled => "transient-peer-installed",
             Self::Ready => "ready",
             Self::Enabled => "enabled",
             Self::Finalized => "finalized",
@@ -63,9 +59,9 @@ impl FromStr for MachineAddStage {
         match value {
             "preflight" => Ok(Self::Preflight),
             "bootstrapped" => Ok(Self::Bootstrapped),
+            "bootstrap-published" => Ok(Self::BootstrapPublished),
             "joined" => Ok(Self::Joined),
             "self-recorded" => Ok(Self::SelfRecorded),
-            "transient-peer-installed" => Ok(Self::TransientPeerInstalled),
             "ready" => Ok(Self::Ready),
             "enabled" => Ok(Self::Enabled),
             "finalized" => Ok(Self::Finalized),

@@ -23,12 +23,15 @@
     {
       "type": "object",
       "required": [
+        "collection",
         "key",
         "kind",
-        "record",
-        "table"
+        "record"
       ],
       "properties": {
+        "collection": {
+          "$ref": "#/definitions/RuntimeCollection"
+        },
         "key": {
           "type": "string"
         },
@@ -40,21 +43,20 @@
         },
         "record": {
           "$ref": "#/definitions/RuntimeRecord"
-        },
-        "table": {
-          "$ref": "#/definitions/RuntimeTable"
         }
       }
     },
     {
       "type": "object",
       "required": [
+        "collection",
         "key",
-        "kind",
-        "record",
-        "table"
+        "kind"
       ],
       "properties": {
+        "collection": {
+          "$ref": "#/definitions/RuntimeCollection"
+        },
         "key": {
           "type": "string"
         },
@@ -63,12 +65,28 @@
           "enum": [
             "remove"
           ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "code",
+        "kind",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
         },
-        "record": {
-          "$ref": "#/definitions/RuntimeRecord"
+        "kind": {
+          "type": "string",
+          "enum": [
+            "error"
+          ]
         },
-        "table": {
-          "$ref": "#/definitions/RuntimeTable"
+        "message": {
+          "type": "string"
         }
       }
     },
@@ -88,6 +106,9 @@
     }
   ],
   "definitions": {
+    "AuthorityId": {
+      "type": "string"
+    },
     "AvailabilityZoneName": {
       "type": "string"
     },
@@ -221,6 +242,8 @@
         "labels",
         "overlay_ip",
         "public_key",
+        "storage",
+        "storage_participation",
         "topology",
         "updated_at"
       ],
@@ -233,12 +256,6 @@
             {
               "type": "null"
             }
-          ]
-        },
-        "control_target": {
-          "type": [
-            "string",
-            "null"
           ]
         },
         "created_at": {
@@ -274,6 +291,12 @@
         },
         "public_key": {
           "$ref": "#/definitions/PublicKey"
+        },
+        "storage": {
+          "type": "boolean"
+        },
+        "storage_participation": {
+          "$ref": "#/definitions/StorageParticipation"
         },
         "subnet": {
           "type": [
@@ -367,6 +390,15 @@
         }
       }
     },
+    "RuntimeCollection": {
+      "type": "string",
+      "enum": [
+        "machine",
+        "revision",
+        "release",
+        "instance"
+      ]
+    },
     "RuntimeRecord": {
       "anyOf": [
         {
@@ -381,15 +413,6 @@
         {
           "$ref": "#/definitions/InstanceStatusRecord"
         }
-      ]
-    },
-    "RuntimeTable": {
-      "type": "string",
-      "enum": [
-        "machine",
-        "revision",
-        "release",
-        "instance"
       ]
     },
     "ServiceRelease": {
@@ -574,6 +597,42 @@
     },
     "SlotId": {
       "type": "string"
+    },
+    "StorageParticipation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "candidate"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "authority_id",
+            "kind"
+          ],
+          "properties": {
+            "authority_id": {
+              "$ref": "#/definitions/AuthorityId"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "authority"
+              ]
+            }
+          }
+        }
+      ]
     }
   }
 }
