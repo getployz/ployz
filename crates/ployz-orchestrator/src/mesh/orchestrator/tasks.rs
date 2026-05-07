@@ -61,7 +61,7 @@ impl Mesh {
             run_peer_sync_task(PeerSyncTask {
                 snapshot,
                 events,
-                bootstrap_peers,
+                bootstrap_peers: bootstrap_peers.clone(),
                 network: self.network.clone(),
                 local_machine_id: self.machine_id.clone(),
                 endpoint_selections: endpoint_selections.clone(),
@@ -74,12 +74,7 @@ impl Mesh {
                 snapshot: maint_snapshot,
                 events: maint_events,
                 commands: maint_rx,
-                bootstrap_peers: self
-                    .seed_records
-                    .iter()
-                    .filter(|machine| machine.id != self.machine_id)
-                    .map(|machine| machine.observation())
-                    .collect(),
+                bootstrap_peers,
                 network: self.network.clone(),
                 local_machine_id: self.machine_id.clone(),
                 endpoint_selections,

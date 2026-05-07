@@ -1,11 +1,10 @@
-pub mod projection;
-
 use async_nats::jetstream;
 use async_nats::jetstream::context::PublishErrorKind;
 use async_nats::jetstream::message::PublishMessage;
 use async_nats::jetstream::stream::DirectGetErrorKind;
 use ployz_store_api::{
-    DeployCommit, DeployRecordUpdate, DeployRepository, DeploySnapshot, InstanceStatusRepository,
+    DeployCommit, DeployProjection, DeployRecordUpdate, DeployRepository, DeploySnapshot,
+    InstanceStatusRepository,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
@@ -15,7 +14,6 @@ use ployz_types::spec::Namespace;
 
 use crate::NatsStore;
 use crate::buckets::DEPLOY_STATUS_BUCKET;
-use crate::store::deploys::projection::DeployProjection;
 use crate::store::kv_json;
 use crate::subjects::{self, DEPLOY_COMMITS_STREAM, NatsScope};
 
@@ -27,7 +25,7 @@ pub(crate) struct CachedDeployProjection {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeployCommitPublish {
-    Created,
+    Created { sequence: u64 },
     Existing { sequence: u64 },
 }
 
@@ -65,16 +63,16 @@ impl DeployRepository for NatsStore {
     }
 
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
-        let mut projection = self.deploy_projection_snapshot().await?;
-        let routing_events = projection.apply_commit_events(command);
         let publish = publish_commit_in(self.jetstream(), self.scope(), command).await?;
+        *self.deploy_projection.write().await = None;
         let routing_events = match publish {
-            DeployCommitPublish::Created => routing_events,
+            DeployCommitPublish::Created { sequence } => {
+                committed_commit_routing_events(self.jetstream(), command, sequence).await?
+            }
             DeployCommitPublish::Existing { sequence } => {
                 duplicate_commit_repair_events(self.jetstream(), command, sequence).await?
             }
         };
-        *self.deploy_projection.write().await = None;
         self.publish_routing_events(
             format!("deploy:{}", command.deploy.deploy_id.0),
             "deploy.commit",
@@ -154,40 +152,73 @@ pub async fn publish_commit_in(
         .await
         .map_err(|error| Error::operation("nats_deploy_commit_publish", format!("{error:?}")))?;
     match ack.await {
-        Ok(_) => Ok(DeployCommitPublish::Created),
+        Ok(ack) if ack.duplicate => existing_commit_publish(js, subject, commit).await,
+        Ok(ack) => Ok(DeployCommitPublish::Created {
+            sequence: ack.sequence,
+        }),
         Err(error) if error.kind() == PublishErrorKind::WrongLastSequence => {
-            let stream = js
-                .get_stream(DEPLOY_COMMITS_STREAM)
-                .await
-                .map_err(|error| Error::operation("nats_deploy_stream", format!("{error:?}")))?;
-            let message = stream
-                .direct_get_last_for_subject(subject)
-                .await
-                .map_err(|error| {
-                    Error::operation("nats_deploy_commit_get", format!("{error:?}"))
-                })?;
-            let stored: DeployCommit =
-                serde_json::from_slice(message.payload.as_ref()).map_err(|error| {
-                    Error::operation("nats_deploy_commit_decode", error.to_string())
-                })?;
-            if stored != *commit {
-                return Err(Error::operation(
-                    "nats_deploy_commit_conflict",
-                    format!(
-                        "deploy commit '{}' already exists with different payload",
-                        commit.deploy.deploy_id
-                    ),
-                ));
-            }
-            Ok(DeployCommitPublish::Existing {
-                sequence: message.sequence,
-            })
+            existing_commit_publish(js, subject, commit).await
         }
         Err(error) => Err(Error::operation(
             "nats_deploy_commit_ack",
             format!("{error:?}"),
         )),
     }
+}
+
+async fn existing_commit_publish(
+    js: &jetstream::Context,
+    subject: String,
+    commit: &DeployCommit,
+) -> Result<DeployCommitPublish> {
+    let stream = js
+        .get_stream(DEPLOY_COMMITS_STREAM)
+        .await
+        .map_err(|error| Error::operation("nats_deploy_stream", format!("{error:?}")))?;
+    let message = stream
+        .direct_get_last_for_subject(subject)
+        .await
+        .map_err(|error| Error::operation("nats_deploy_commit_get", format!("{error:?}")))?;
+    let stored: DeployCommit = serde_json::from_slice(message.payload.as_ref())
+        .map_err(|error| Error::operation("nats_deploy_commit_decode", error.to_string()))?;
+    if stored != *commit {
+        return Err(Error::operation(
+            "nats_deploy_commit_conflict",
+            format!(
+                "deploy commit '{}' already exists with different payload",
+                commit.deploy.deploy_id
+            ),
+        ));
+    }
+    Ok(DeployCommitPublish::Existing {
+        sequence: message.sequence,
+    })
+}
+
+async fn committed_commit_routing_events(
+    js: &jetstream::Context,
+    command: &DeployCommit,
+    sequence: u64,
+) -> Result<Vec<RoutingEvent>> {
+    let mut stream = js
+        .get_stream(DEPLOY_COMMITS_STREAM)
+        .await
+        .map_err(|error| Error::operation("nats_deploy_stream", format!("{error:?}")))?;
+    let info = stream
+        .info()
+        .await
+        .map_err(|error| Error::operation("nats_deploy_stream_info", format!("{error:?}")))?
+        .clone();
+    let before = deploy_projection_before_sequence(&mut stream, info, sequence).await?;
+    Ok(routing_events_for_committed_commit(&before, command))
+}
+
+fn routing_events_for_committed_commit(
+    before: &DeployProjection,
+    command: &DeployCommit,
+) -> Vec<RoutingEvent> {
+    let mut projection = before.clone();
+    projection.apply_commit_events(command)
 }
 
 async fn duplicate_commit_repair_events(
@@ -455,6 +486,38 @@ mod tests {
             service: old_release.service,
         }));
         assert!(events.contains(&RoutingEvent::ReleaseAdded(new_release)));
+    }
+
+    #[test]
+    fn committed_commit_routing_uses_stream_ordered_prior_projection() {
+        let namespace = Namespace(String::from("prod"));
+        let old_release = release(&namespace, "api", "rev-old", "deploy-old");
+        let new_release = release(&namespace, "api", "rev-new", "deploy-new");
+        let command = deploy_commit(
+            &namespace,
+            "deploy-new",
+            Vec::new(),
+            Vec::new(),
+            vec![new_release.clone()],
+        );
+        let mut before = DeployProjection::new();
+        before.apply_commit(&deploy_commit(
+            &namespace,
+            "deploy-old",
+            Vec::new(),
+            Vec::new(),
+            vec![old_release.clone()],
+        ));
+
+        let events = routing_events_for_committed_commit(&before, &command);
+
+        assert_eq!(
+            events,
+            vec![RoutingEvent::ReleaseUpdated {
+                old: old_release,
+                new: new_release,
+            }]
+        );
     }
 
     #[test]

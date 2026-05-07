@@ -263,16 +263,11 @@ where
             info!(listen = %metrics_addr, "dns metrics listener running");
         }
 
-        let machine_id = ployz_types::model::MachineId(config.machine_id.clone());
         let state = wait_for_initial_routing_state(&store).await?;
         let initial_snapshot = project_dns(&state);
         let shared = SharedDnsSnapshot::new(initial_snapshot);
 
-        tokio::spawn(crate::sync::run_sync_loop(
-            store,
-            shared.clone(),
-            machine_id.clone(),
-        ));
+        tokio::spawn(crate::sync::run_sync_loop(store, shared.clone()));
 
         let mut listen_addrs = vec![config.overlay_listen_addr.parse().map_err(|err| {
             DnsError::Config(format!(
@@ -306,10 +301,7 @@ where
     loop {
         match timeout(
             STORE_READY_ATTEMPT_TIMEOUT,
-            DnsStore::subscribe_routing_events(
-                store,
-                ployz_store_api::RoutingSubscription::temporary(),
-            ),
+            store.subscribe_routing_events(),
         )
         .await
         {

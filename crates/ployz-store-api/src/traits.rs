@@ -31,39 +31,6 @@ pub type AcmeChallengeSubscription = (
 pub type RoutingEventSubscriptionUpdate = Result<RoutingEventEnvelope>;
 pub type RoutingEventSubscription = (RoutingState, mpsc::Receiver<RoutingEventSubscriptionUpdate>);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RoutingSubscription {
-    Durable { consumer_id: String },
-    Temporary,
-}
-
-impl RoutingSubscription {
-    #[must_use]
-    pub fn durable(consumer_id: impl Into<String>) -> Self {
-        Self::Durable {
-            consumer_id: consumer_id.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn temporary() -> Self {
-        Self::Temporary
-    }
-
-    #[must_use]
-    pub fn durable_consumer_id(&self) -> Option<&str> {
-        match self {
-            Self::Durable { consumer_id } => Some(consumer_id),
-            Self::Temporary => None,
-        }
-    }
-
-    #[must_use]
-    pub fn is_temporary(&self) -> bool {
-        matches!(self, Self::Temporary)
-    }
-}
-
 #[derive(Debug)]
 pub struct RoutingEventEnvelope {
     pub event_id: String,
@@ -155,7 +122,7 @@ pub fn apply_routing_event(state: &mut RoutingState, event: RoutingEvent) {
         }
         RoutingEvent::InstanceAdded(record) | RoutingEvent::InstanceUpdated { new: record, .. } => {
             upsert_by(&mut state.instances, record, |record| {
-                record.instance_id.clone()
+                record.instance_id.0.clone()
             });
         }
         RoutingEvent::InstanceRemoved { instance_id } => {
@@ -175,9 +142,14 @@ pub fn apply_routing_events(
     }
 }
 
+#[must_use]
+pub fn routing_event_id(operation_id: &str, sequence: usize) -> String {
+    format!("{operation_id}:{sequence}")
+}
+
 fn upsert_by<T, K>(items: &mut Vec<T>, value: T, key: impl Fn(&T) -> K)
 where
-    K: PartialEq,
+    K: Ord,
 {
     let value_key = key(&value);
     if let Some(existing) = items
@@ -188,13 +160,12 @@ where
     } else {
         items.push(value);
     }
+    items.sort_by_key(|candidate| key(candidate));
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        RoutingEventEnvelope, RoutingSubscription, apply_routing_event, apply_routing_events,
-    };
+    use super::{RoutingEventEnvelope, apply_routing_event, apply_routing_events};
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
         MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey, RoutingEvent,
@@ -204,17 +175,6 @@ mod tests {
     use ployz_types::spec::Namespace;
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
-
-    #[test]
-    fn routing_subscription_kind_tracks_consumer_lifetime() {
-        let durable = RoutingSubscription::durable("gateway.founder");
-        let temporary = RoutingSubscription::temporary();
-
-        assert_eq!(durable.durable_consumer_id(), Some("gateway.founder"));
-        assert!(!durable.is_temporary());
-        assert_eq!(temporary.durable_consumer_id(), None);
-        assert!(temporary.is_temporary());
-    }
 
     #[tokio::test]
     async fn unacked_routing_event_ack_is_noop() {
@@ -245,6 +205,14 @@ mod tests {
 
         assert!(error.to_string().contains("event-1"));
         assert!(error.to_string().contains("ack receiver closed"));
+    }
+
+    #[test]
+    fn routing_event_ids_are_operation_scoped_sequences() {
+        assert_eq!(
+            super::routing_event_id("deploy:deploy-1", 2),
+            "deploy:deploy-1:2"
+        );
     }
 
     #[test]
@@ -420,6 +388,64 @@ mod tests {
         );
 
         assert_eq!(state.machines, vec![machine_a_draining]);
+    }
+
+    #[test]
+    fn routing_event_upserts_keep_contract_identity_order() {
+        let namespace = Namespace("prod".into());
+        let mut state = RoutingState {
+            machines: Vec::new(),
+            revisions: Vec::new(),
+            releases: Vec::new(),
+            instances: Vec::new(),
+        };
+
+        apply_routing_events(
+            &mut state,
+            [
+                RoutingEvent::MachineAdded(machine("machine-b", MachineLifecycle::Active)),
+                RoutingEvent::MachineAdded(machine("machine-a", MachineLifecycle::Active)),
+                RoutingEvent::RevisionAdded(revision(&namespace, "worker", "rev-b", "{}")),
+                RoutingEvent::RevisionAdded(revision(&namespace, "api", "rev-a", "{}")),
+                RoutingEvent::ReleaseAdded(release(&namespace, "worker", "rev-b")),
+                RoutingEvent::ReleaseAdded(release(&namespace, "api", "rev-a")),
+                RoutingEvent::InstanceAdded(instance(&namespace, "inst-b", true)),
+                RoutingEvent::InstanceAdded(instance(&namespace, "inst-a", true)),
+            ],
+        );
+
+        assert_eq!(
+            state
+                .machines
+                .iter()
+                .map(|record| record.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["machine-a", "machine-b"]
+        );
+        assert_eq!(
+            state
+                .revisions
+                .iter()
+                .map(|record| record.service.as_str())
+                .collect::<Vec<_>>(),
+            ["api", "worker"]
+        );
+        assert_eq!(
+            state
+                .releases
+                .iter()
+                .map(|record| record.service.as_str())
+                .collect::<Vec<_>>(),
+            ["api", "worker"]
+        );
+        assert_eq!(
+            state
+                .instances
+                .iter()
+                .map(|record| record.instance_id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["inst-a", "inst-b"]
+        );
     }
 
     #[test]
@@ -626,10 +652,9 @@ pub trait InviteRepository: Send + Sync {
 pub trait RoutingSnapshotReader: Send + Sync {
     fn load_routing_state(&self) -> impl Future<Output = Result<RoutingState>> + Send + '_;
 
-    fn subscribe_routing_events<'a>(
-        &'a self,
-        subscription: RoutingSubscription,
-    ) -> impl Future<Output = Result<RoutingEventSubscription>> + Send + 'a;
+    fn subscribe_routing_events(
+        &self,
+    ) -> impl Future<Output = Result<RoutingEventSubscription>> + Send + '_;
 }
 
 pub trait DeployRepository: Send + Sync {

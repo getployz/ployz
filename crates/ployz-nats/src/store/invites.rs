@@ -43,9 +43,7 @@ impl InviteRepository for NatsStore {
     async fn list_invites(&self) -> Result<Vec<InviteRecord>> {
         let bucket =
             kv_json::get_bucket(self.jetstream(), INVITES_BUCKET, "nats_invites_bucket").await?;
-        let mut invites = list_invites(&bucket).await?;
-        invites.sort_by(|left, right| left.invite_id.cmp(&right.invite_id));
-        Ok(invites)
+        list_invites(&bucket).await
     }
 
     async fn redeem_invite(
@@ -151,8 +149,19 @@ async fn update_invite(
 }
 
 async fn list_invites(bucket: &async_nats::jetstream::kv::Store) -> Result<Vec<InviteRecord>> {
-    kv_json::list_json_entries::<InviteRecord>(bucket, "nats_invite_decode", "nats_invites_list")
-        .await?
+    let entries = kv_json::list_json_entries::<InviteRecord>(
+        bucket,
+        "nats_invite_decode",
+        "nats_invites_list",
+    )
+    .await?;
+    invite_records_from_entries(entries)
+}
+
+fn invite_records_from_entries(
+    entries: Vec<kv_json::JsonEntry<InviteRecord>>,
+) -> Result<Vec<InviteRecord>> {
+    entries
         .into_iter()
         .map(|entry| validate_invite_key(&entry.key, entry.value))
         .collect()
@@ -178,7 +187,8 @@ fn validate_invite_key(key: &str, invite: InviteRecord) -> Result<InviteRecord> 
 
 #[cfg(test)]
 mod tests {
-    use super::decode_invite;
+    use super::{decode_invite, invite_records_from_entries};
+    use crate::store::kv_json;
     use ployz_types::model::{InviteRecord, MachineId, NetworkId};
 
     #[test]
@@ -207,6 +217,32 @@ mod tests {
         let decoded = decode_invite("invite-a", &bytes).expect("matching invite key");
 
         assert_eq!(decoded, invite);
+    }
+
+    #[test]
+    fn invite_records_keep_backend_list_order() {
+        let entries = vec![
+            kv_json::JsonEntry {
+                key: "invite-a".into(),
+                revision: 1,
+                value: test_invite("invite-a"),
+            },
+            kv_json::JsonEntry {
+                key: "invite-b".into(),
+                revision: 2,
+                value: test_invite("invite-b"),
+            },
+        ];
+
+        let records = invite_records_from_entries(entries).expect("entries decode");
+
+        assert_eq!(
+            records
+                .iter()
+                .map(|invite| invite.invite_id.as_str())
+                .collect::<Vec<_>>(),
+            ["invite-a", "invite-b"]
+        );
     }
 
     fn test_invite(id: &str) -> InviteRecord {

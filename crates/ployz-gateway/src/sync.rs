@@ -4,7 +4,7 @@ use std::time::Duration;
 use crate::routes::{GatewayProjectionEvent, GatewayProjector, GatewaySnapshot, ProjectionDelta};
 use ployz_store_api::{
     AcmeChallengeSubscriptionUpdate, CertificateSubscriptionUpdate, RoutingEventEnvelope,
-    RoutingEventSubscription, RoutingSubscription,
+    RoutingEventSubscription,
 };
 use ployz_types::model::{
     AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateEvent,
@@ -34,10 +34,9 @@ pub trait RoutingSnapshotReader: Send + Sync {
         &self,
     ) -> impl Future<Output = Result<RoutingState, GatewayError>> + Send + '_;
 
-    fn subscribe_routing_events<'a>(
-        &'a self,
-        subscription: RoutingSubscription,
-    ) -> impl Future<Output = Result<RoutingEventSubscription, GatewayError>> + Send + 'a;
+    fn subscribe_routing_events(
+        &self,
+    ) -> impl Future<Output = Result<RoutingEventSubscription, GatewayError>> + Send + '_;
     fn list_certificates(
         &self,
     ) -> impl Future<Output = Result<Vec<CertificateRecord>, GatewayError>> + Send + '_;
@@ -103,11 +102,7 @@ where
     S: RoutingSnapshotReader + Send + Sync + 'static,
 {
     loop {
-        let consumer_id = format!("gateway.{}", machine_id.0);
-        let (routing_state, mut routing_rx) = match store
-            .subscribe_routing_events(RoutingSubscription::durable(consumer_id))
-            .await
-        {
+        let (routing_state, mut routing_rx) = match store.subscribe_routing_events().await {
             Ok(subscription) => subscription,
             Err(error) => {
                 set_store_sync_generation_healthy(false);

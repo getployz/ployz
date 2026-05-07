@@ -1335,7 +1335,7 @@ pub fn check_runtime_projection(
                 violations.push(InvariantViolation::new(
                     "runtime_projection",
                     format!(
-                        "runtime has live container '{}' with no status row",
+                        "runtime has live container '{}' with no status record",
                         container.instance_id
                     ),
                 ));

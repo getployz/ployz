@@ -18,7 +18,8 @@ pub const NATS_SCHEDULE: &str = "Nats-Schedule";
 pub const NATS_SCHEDULE_TARGET: &str = "Nats-Schedule-Target";
 pub const CERT_RENEWAL_CONSUMER: &str = "ployzd_cert_renewal";
 pub const CERT_RENEWAL_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
-pub const CERT_RENEWAL_MAX_ACK_PENDING: i64 = 1;
+pub const CERT_RENEWAL_MAX_IN_FLIGHT: i64 = 1;
+pub const CERT_RENEWAL_MAX_FETCH_MESSAGES: i64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertRenewalJob {
@@ -130,13 +131,13 @@ pub async fn publish_cert_renewal_job_in(
         .map_err(|error| Error::operation("nats_cert_job_ack", format!("{error:?}")))
 }
 
-pub fn cert_renewal_consumer_config(policy: WorkQueuePolicy) -> Result<pull::Config> {
+pub fn cert_renewal_consumer_config(policy: CertRenewalConsumerPolicy) -> Result<pull::Config> {
     cert_renewal_consumer_config_in(&NatsScope::default(), policy)
 }
 
 pub fn cert_renewal_consumer_config_in(
     scope: &NatsScope,
-    policy: WorkQueuePolicy,
+    policy: CertRenewalConsumerPolicy,
 ) -> Result<pull::Config> {
     let max_deliver = i64::try_from(policy.max_deliver)
         .map_err(|error| Error::operation("nats_cert_job_consumer_config", error.to_string()))?;
@@ -150,8 +151,8 @@ pub fn cert_renewal_consumer_config_in(
         max_deliver,
         filter_subject: subjects::cert_renewal_filter_in(scope),
         replay_policy: ReplayPolicy::Instant,
-        max_ack_pending: CERT_RENEWAL_MAX_ACK_PENDING,
-        max_batch: CERT_RENEWAL_MAX_ACK_PENDING,
+        max_ack_pending: CERT_RENEWAL_MAX_IN_FLIGHT,
+        max_batch: CERT_RENEWAL_MAX_FETCH_MESSAGES,
         max_expires: CERT_RENEWAL_FETCH_TIMEOUT,
         ..Default::default()
     })
@@ -164,14 +165,17 @@ pub struct NatsCertRenewalJobConsumer {
 }
 
 impl NatsCertRenewalJobConsumer {
-    pub async fn connect(js: &jetstream::Context, policy: WorkQueuePolicy) -> Result<Self> {
+    pub async fn connect(
+        js: &jetstream::Context,
+        policy: CertRenewalConsumerPolicy,
+    ) -> Result<Self> {
         Self::connect_in(js, &NatsScope::default(), policy).await
     }
 
     pub async fn connect_in(
         js: &jetstream::Context,
         scope: &NatsScope,
-        policy: WorkQueuePolicy,
+        policy: CertRenewalConsumerPolicy,
     ) -> Result<Self> {
         let stream = js
             .get_stream(CERT_JOBS_STREAM)
@@ -336,18 +340,16 @@ fn schedule_header_value(schedule: &JobSchedule) -> Result<Option<String>> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WorkQueuePolicy {
+pub struct CertRenewalConsumerPolicy {
     pub ack_wait: Duration,
     pub max_deliver: usize,
-    pub duplicate_window: Duration,
 }
 
-impl Default for WorkQueuePolicy {
+impl Default for CertRenewalConsumerPolicy {
     fn default() -> Self {
         Self {
             ack_wait: Duration::from_secs(10 * 60),
             max_deliver: 5,
-            duplicate_window: Duration::from_secs(60 * 60),
         }
     }
 }
@@ -451,8 +453,8 @@ mod tests {
 
     #[test]
     fn renewal_consumer_config_is_durable_workqueue_pull_consumer() {
-        let config =
-            cert_renewal_consumer_config(WorkQueuePolicy::default()).expect("consumer config");
+        let config = cert_renewal_consumer_config(CertRenewalConsumerPolicy::default())
+            .expect("consumer config");
 
         assert_eq!(config.durable_name.as_deref(), Some(CERT_RENEWAL_CONSUMER));
         assert_eq!(config.name.as_deref(), Some(CERT_RENEWAL_CONSUMER));
@@ -472,7 +474,7 @@ mod tests {
             ployz_types::model::InstallationId("inst-acme".into()),
             ployz_types::model::AuthorityId("auth-sin".into()),
         );
-        let config = cert_renewal_consumer_config_in(&scope, WorkQueuePolicy::default())
+        let config = cert_renewal_consumer_config_in(&scope, CertRenewalConsumerPolicy::default())
             .expect("consumer config");
 
         assert_eq!(

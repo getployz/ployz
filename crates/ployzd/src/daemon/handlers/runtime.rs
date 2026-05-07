@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use ployz_api::{RuntimeWatchFrame, runtime_frame_from_event, sort_routing_state};
-use ployz_store_api::{RoutingEventSubscriptionUpdate, RoutingSnapshotReader, RoutingSubscription};
+use ployz_store_api::{RoutingEventSubscriptionUpdate, RoutingSnapshotReader};
 use ployz_types::model::{RoutingEvent, RoutingState};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
@@ -21,7 +21,7 @@ impl DaemonState {
         let (state, mut envelopes) = active
             .mesh
             .store
-            .subscribe_routing_events(RoutingSubscription::temporary())
+            .subscribe_routing_events()
             .await
             .map_err(|error| Box::new(self.err("RUNTIME_SUBSCRIBE_FAILED", error.to_string())))?;
         let (tx, rx) = mpsc::channel(1024);

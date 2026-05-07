@@ -1,3 +1,4 @@
+mod deploy_projection;
 mod driver;
 pub mod memory;
 mod traits;
@@ -11,6 +12,7 @@ use ployz_types::model::{
 };
 use ployz_types::spec::Namespace;
 
+pub use deploy_projection::DeployProjection;
 pub use driver::StoreDriver;
 pub use traits::{
     AcmeChallengeSubscription, AcmeChallengeSubscriptionUpdate, CertificateStore,
@@ -18,8 +20,8 @@ pub use traits::{
     DeployRepository, DeploySnapshot, InstanceStatusRepository, InviteRepository, MachineRegistry,
     MachineSubscription, MachineSubscriptionUpdate, PeerRttObservation, PeerRttStore,
     RoutingEventEnvelope, RoutingEventSubscription, RoutingEventSubscriptionUpdate,
-    RoutingSnapshotReader, RoutingSubscription, StoreRuntimeControl, SyncProbe, SyncStatus,
-    apply_routing_event, apply_routing_events,
+    RoutingSnapshotReader, StoreRuntimeControl, SyncProbe, SyncStatus, apply_routing_event,
+    apply_routing_events, routing_event_id,
 };
 
 #[async_trait]
@@ -42,10 +44,7 @@ pub trait StoreBackend: Send + Sync {
     async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord>;
 
     async fn load_routing_state(&self) -> Result<RoutingState>;
-    async fn subscribe_routing_events(
-        &self,
-        subscription: RoutingSubscription,
-    ) -> Result<RoutingEventSubscription>;
+    async fn subscribe_routing_events(&self) -> Result<RoutingEventSubscription>;
 
     async fn list_deploy_releases(
         &self,

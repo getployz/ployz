@@ -48,65 +48,24 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
 
         async fn subscribe_routing_events(
             &self,
-            subscription: ployz_store_api::RoutingSubscription,
         ) -> Result<ployz_store_api::RoutingEventSubscription, ployz_gateway::GatewayError>
         {
-            let durable_consumer_id = subscription.durable_consumer_id().map(str::to_string);
-            match subscription.durable_consumer_id() {
-                Some(consumer_id) => {
-                    info!(
-                        consumer_id = %consumer_id,
-                        "gateway store call start: subscribe_routing_events"
-                    );
-                }
-                None => {
-                    info!("gateway store call start: subscribe_routing_events");
-                }
-            }
-            match ployz_store_api::RoutingSnapshotReader::subscribe_routing_events(
-                &self.0,
-                subscription,
-            )
-            .await
-            {
+            info!("gateway store call start: subscribe_routing_events");
+            match ployz_store_api::RoutingSnapshotReader::subscribe_routing_events(&self.0).await {
                 Ok((state, rx)) => {
-                    match durable_consumer_id.as_deref() {
-                        Some(consumer_id) => {
-                            info!(
-                                revisions = state.revisions.len(),
-                                releases = state.releases.len(),
-                                instances = state.instances.len(),
-                                consumer_id = %consumer_id,
-                                "gateway store call complete: subscribe_routing_events"
-                            );
-                        }
-                        None => {
-                            info!(
-                                revisions = state.revisions.len(),
-                                releases = state.releases.len(),
-                                instances = state.instances.len(),
-                                "gateway store call complete: subscribe_routing_events"
-                            );
-                        }
-                    }
+                    info!(
+                        revisions = state.revisions.len(),
+                        releases = state.releases.len(),
+                        instances = state.instances.len(),
+                        "gateway store call complete: subscribe_routing_events"
+                    );
                     Ok((state, rx))
                 }
                 Err(err) => {
-                    match durable_consumer_id.as_deref() {
-                        Some(consumer_id) => {
-                            warn!(
-                                error = %err,
-                                consumer_id = %consumer_id,
-                                "gateway store call failed: subscribe_routing_events"
-                            );
-                        }
-                        None => {
-                            warn!(
-                                error = %err,
-                                "gateway store call failed: subscribe_routing_events"
-                            );
-                        }
-                    }
+                    warn!(
+                        error = %err,
+                        "gateway store call failed: subscribe_routing_events"
+                    );
                     Err(ployz_gateway::GatewayError::Store(err.to_string()))
                 }
             }

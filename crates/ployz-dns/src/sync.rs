@@ -6,38 +6,27 @@ use tracing::{info, warn};
 
 use crate::config::DnsError;
 use crate::snapshot::{SharedDnsSnapshot, project_dns};
-use ployz_store_api::RoutingSubscription;
-use ployz_types::model::MachineId;
 
 // ---------------------------------------------------------------------------
 // DnsStore trait — consumer contract
 // ---------------------------------------------------------------------------
 
 pub trait DnsStore: Send + Sync {
-    fn subscribe_routing_events<'a>(
-        &'a self,
-        subscription: RoutingSubscription,
-    ) -> impl Future<Output = Result<ployz_store_api::RoutingEventSubscription, DnsError>> + Send + 'a;
+    fn subscribe_routing_events(
+        &self,
+    ) -> impl Future<Output = Result<ployz_store_api::RoutingEventSubscription, DnsError>> + Send + '_;
 }
 
 // ---------------------------------------------------------------------------
 // Sync logic
 // ---------------------------------------------------------------------------
 
-pub async fn run_sync_loop<S>(
-    store: S,
-    snapshot: SharedDnsSnapshot,
-    machine_id: MachineId,
-) -> Result<(), DnsError>
+pub async fn run_sync_loop<S>(store: S, snapshot: SharedDnsSnapshot) -> Result<(), DnsError>
 where
     S: DnsStore + Send + Sync + 'static,
 {
     loop {
-        let consumer_id = format!("dns.{}", machine_id.0);
-        let (mut state, mut routing_rx) = match store
-            .subscribe_routing_events(RoutingSubscription::durable(consumer_id))
-            .await
-        {
+        let (mut state, mut routing_rx) = match store.subscribe_routing_events().await {
             Ok(subscription) => subscription,
             Err(error) => {
                 crate::metrics::set_store_sync_healthy("routing", false);
@@ -89,7 +78,6 @@ fn replace_dns_snapshot(state: &ployz_types::model::RoutingState, snapshot: &Sha
 pub fn spawn_sync_thread_with_store<S>(
     store: S,
     snapshot: SharedDnsSnapshot,
-    machine_id: MachineId,
 ) -> Result<(), DnsError>
 where
     S: DnsStore + Send + Sync + 'static,
@@ -108,7 +96,7 @@ where
                 }
             };
             runtime.block_on(async move {
-                if let Err(err) = run_sync_loop(store, snapshot, machine_id).await {
+                if let Err(err) = run_sync_loop(store, snapshot).await {
                     warn!(?err, "dns sync loop exited");
                 }
             });
@@ -120,6 +108,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_types::model::MachineId;
     use prometheus::Encoder;
     use tokio::sync::oneshot;
 

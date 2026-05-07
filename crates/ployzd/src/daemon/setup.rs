@@ -15,7 +15,7 @@ use ployz_dns_config::DnsConfig;
 use ployz_gateway_config::GatewayConfig;
 use ployz_nats::NatsStore;
 use ployz_nats::config as nats_config;
-use ployz_nats::coord::jobs::{NatsCertRenewalJobConsumer, WorkQueuePolicy};
+use ployz_nats::coord::jobs::{CertRenewalConsumerPolicy, NatsCertRenewalJobConsumer};
 use ployz_nats::coord::locks::NatsLocks;
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::certificates::{
@@ -80,7 +80,7 @@ async fn start_nats_certificate_renewal_worker(
     let consumer = NatsCertRenewalJobConsumer::connect_in(
         nats_store.jetstream(),
         nats_store.scope(),
-        WorkQueuePolicy::default(),
+        CertRenewalConsumerPolicy::default(),
     )
     .await
     .map_err(|error| StartMeshError::MeshUp(format!("nats cert renewal consumer: {error}")))?;

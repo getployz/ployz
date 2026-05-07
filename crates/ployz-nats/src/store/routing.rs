@@ -1,7 +1,8 @@
 use async_nats::HeaderMap;
-use async_nats::header::NATS_EXPECTED_STREAM;
+use async_nats::header::{NATS_EXPECTED_STREAM, NATS_MESSAGE_ID};
 use async_nats::jetstream;
 use async_nats::jetstream::message::PublishMessage;
+use ployz_store_api::routing_event_id;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::RoutingEvent;
 
@@ -72,6 +73,7 @@ pub(crate) fn routing_publish_specs_in(
             let event_id = routing_event_id(operation_id, index + 1);
             let mut headers = HeaderMap::new();
             headers.insert(NATS_EXPECTED_STREAM, ROUTE_JOURNAL_STREAM);
+            headers.insert(NATS_MESSAGE_ID, event_id.as_str());
             headers.insert(PLOYZ_ROUTING_EVENT_ID, event_id.as_str());
             headers.insert(PLOYZ_ROUTING_CAUSE, cause);
             let payload = serde_json::to_vec(event).map_err(|error| {
@@ -84,10 +86,6 @@ pub(crate) fn routing_publish_specs_in(
             })
         })
         .collect()
-}
-
-fn routing_event_id(operation_id: &str, sequence: usize) -> String {
-    format!("{operation_id}:{sequence}")
 }
 
 #[cfg(test)]
@@ -112,6 +110,10 @@ mod tests {
         assert_eq!(specs.len(), 2);
         assert_eq!(
             header(&specs[0].headers, PLOYZ_ROUTING_EVENT_ID),
+            "machine:machine-1:1"
+        );
+        assert_eq!(
+            header(&specs[0].headers, "Nats-Msg-Id"),
             "machine:machine-1:1"
         );
         assert_eq!(
@@ -162,7 +164,6 @@ mod tests {
         assert!(headers.get("Nats-Batch-Id").is_none());
         assert!(headers.get("Nats-Batch-Sequence").is_none());
         assert!(headers.get("Nats-Batch-Commit").is_none());
-        assert!(headers.get("Nats-Msg-Id").is_none());
         assert!(headers.get("Nats-Expected-Last-Msg-Id").is_none());
     }
 

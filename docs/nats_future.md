@@ -180,8 +180,6 @@ workloads, volumes, and participants.
 
 ```
 ployz.v1.<inst>.<auth>.route.journal.event.<event_id>
-ployz.v1.<inst>.<auth>.route.journal.snapshot.<namespace>.<rev>
-
 ployz.v1.<inst>.<auth>.route.export.<audience_kind>.<audience_id>.event.<event_id>
 ployz.v1.<inst>.<auth>.route.export.<audience_kind>.<audience_id>.withdraw.<event_id>
 ployz.v1.<inst>.<auth>.route.export.<audience_kind>.<audience_id>.snapshot.<namespace>.<rev>
@@ -249,9 +247,9 @@ dev work and authority-local serving do not depend on root reachability.
 | Asset | Subjects | Notes |
 |---|---|---|
 | `cp_deploy_commits_<auth>` (stream) | `ployz.v1.<inst>.<auth>.cp.deploy.commit.>` | append-only; replica policy per authority |
-| `route_journal_<auth>` (stream) | `ployz.v1.<inst>.<auth>.route.journal.>` | authority-private source truth |
+| `route_journal_<auth>` (stream) | `ployz.v1.<inst>.<auth>.route.journal.event.>` | authority-private source truth; one event message per routing fact |
 | `route_exports_<auth>` (stream) | `ployz.v1.<inst>.<auth>.route.export.>` | owner-grant-derived audience feeds, including withdraw events |
-| `work_cert_<auth>` (stream, WorkQueue) | `ployz.v1.<inst>.<auth>.work.cert.>` | |
+| `work_cert_<auth>` (stream, WorkQueue) | `ployz.v1.<inst>.<auth>.work.cert.renew.>`, `ployz.v1.<inst>.<auth>.work.cert.schedule.>` | renewal jobs plus broker-held schedules |
 | `instances_<auth>` … `locks_<auth>` (KV) | per `cp.*` resource | authority-local lifecycle status and locks |
 
 ### Installation-root domain (`dom-<inst>-root`)
@@ -430,7 +428,7 @@ Per-authority domains make this nearly free:
   There is nothing to merge on heal — each domain catches up on the other's
   appends.
 
-Operator surface (extending the `control_plane component=...` row pattern
+Operator surface (extending the `control_plane component=...` status-entry pattern
 already in `ployzctl status`):
 
 - `domain_link component=leaf-<other_auth>` — leaf-bridge connectivity to each
@@ -447,7 +445,7 @@ already in `ployzctl status`):
 
 Any gateway projection that goes stale escalates the same way the existing
 routing/cert subscriptions do: explicit failure event, projection marked
-stale, sidecar metrics + status row, last-good kept serving (with stale
+stale, sidecar metrics + status entry, last-good kept serving (with stale
 flag), recovery only on a fresh successful subscription.
 
 ## Tier in subject vs. metadata — pros/cons
@@ -460,7 +458,7 @@ flag), recovery only on a fresh successful subscription.
 | Cross-tier sharing | Still needs grants/projections | Still needs grants/projections |
 | Subject self-documenting | Yes | Subject says *what*, registry says *policy* |
 | AI-operator reasoning | Tier is on the wire AND in registry — risk of drift | Single source of truth for tier |
-| Failure mode if tier is wrong | Subjects misclassified; hard to fix | KV row wrong; one update fixes it |
+| Failure mode if tier is wrong | Subjects misclassified; hard to fix | KV record wrong; one update fixes it |
 | Account/import design | Account boundary does not align with prefix | Account = authority; exports per audience |
 
 The wildcard convenience is real but small. Stable gateways need to subscribe

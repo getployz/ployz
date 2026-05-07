@@ -248,29 +248,21 @@ async fn read_stream_status(store: &NatsStore, asset: &NatsAssetSpec) -> NatsAss
     match store.jetstream().get_stream(stream.as_str()).await {
         Ok(mut stream_handle) => match stream_handle.info().await {
             Ok(info) => nats_asset_status_from_info(store, asset, &info),
-            Err(error) => NatsAssetStatus {
-                name: asset.name.to_string(),
-                kind: asset.kind.to_string(),
-                installation: Some(store.scope().installation.to_string()),
-                authority: nats_asset_authority(store, asset.role),
-                domain: Some(nats_asset_domain(store, asset.role)),
-                role: Some(asset.role.as_str().to_string()),
-                state: NatsAssetHealthState::Unknown {
+            Err(error) => nats_asset_status(
+                store,
+                asset,
+                NatsAssetHealthState::Unknown {
                     error: format!("{error:?}"),
                 },
-            },
+            ),
         },
-        Err(error) => NatsAssetStatus {
-            name: asset.name.to_string(),
-            kind: asset.kind.to_string(),
-            installation: Some(store.scope().installation.to_string()),
-            authority: nats_asset_authority(store, asset.role),
-            domain: Some(nats_asset_domain(store, asset.role)),
-            role: Some(asset.role.as_str().to_string()),
-            state: NatsAssetHealthState::Unknown {
+        Err(error) => nats_asset_status(
+            store,
+            asset,
+            NatsAssetHealthState::Unknown {
                 error: format!("{error:?}"),
             },
-        },
+        ),
     }
 }
 
@@ -294,6 +286,14 @@ fn nats_asset_status_from_info(
     } else {
         NatsAssetHealthState::Stale(replica_status)
     };
+    nats_asset_status(store, asset, state)
+}
+
+fn nats_asset_status(
+    store: &NatsStore,
+    asset: &NatsAssetSpec,
+    state: NatsAssetHealthState,
+) -> NatsAssetStatus {
     NatsAssetStatus {
         name: asset.name.to_string(),
         kind: asset.kind.to_string(),
@@ -426,7 +426,7 @@ fn metric_status(
 ) -> EdgeSyncStatus {
     match metrics {
         Ok(body) => match parse_sync_metric(body, healthy_metric, stream) {
-            Some(healthy) => {
+            SyncMetric::Present(healthy) => {
                 let state_since = parse_sync_metric_u64(body, state_since_metric, stream);
                 let failures_total =
                     parse_sync_metric_u64(body, failures_metric, stream).unwrap_or(0);
@@ -444,11 +444,21 @@ fn metric_status(
                     state,
                 }
             }
-            None => EdgeSyncStatus {
+            SyncMetric::Missing => EdgeSyncStatus {
                 service: service.to_string(),
                 stream: stream.to_string(),
                 state: EdgeSyncHealthState::Unknown {
                     error: format!("metric {healthy_metric} for stream {stream} was absent"),
+                    failures_total: parse_sync_metric_u64(body, failures_metric, stream),
+                },
+            },
+            SyncMetric::Invalid(value) => EdgeSyncStatus {
+                service: service.to_string(),
+                stream: stream.to_string(),
+                state: EdgeSyncHealthState::Unknown {
+                    error: format!(
+                        "metric {healthy_metric} for stream {stream} had invalid boolean value {value}"
+                    ),
                     failures_total: parse_sync_metric_u64(body, failures_metric, stream),
                 },
             },
@@ -464,14 +474,23 @@ fn metric_status(
     }
 }
 
-fn parse_sync_metric(metrics: &str, metric: &str, stream: &str) -> Option<bool> {
-    let value = parse_sync_metric_value(metrics, metric, stream)?;
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SyncMetric {
+    Present(bool),
+    Missing,
+    Invalid(f64),
+}
+
+fn parse_sync_metric(metrics: &str, metric: &str, stream: &str) -> SyncMetric {
+    let Some(value) = parse_sync_metric_value(metrics, metric, stream) else {
+        return SyncMetric::Missing;
+    };
     if (value - 1.0).abs() < f64::EPSILON {
-        Some(true)
+        SyncMetric::Present(true)
     } else if value.abs() < f64::EPSILON {
-        Some(false)
+        SyncMetric::Present(false)
     } else {
-        None
+        SyncMetric::Invalid(value)
     }
 }
 
@@ -500,12 +519,15 @@ fn parse_sync_metric_value(metrics: &str, metric: &str, stream: &str) -> Option<
 #[cfg(test)]
 mod tests {
     use super::{
-        component_health_status, metric_status, nats_asset_is_healthy, nats_current_replicas,
-        nats_max_lag, nats_offline_replicas, parse_sync_metric, parse_sync_metric_u64,
+        SyncMetric, component_health_status, metric_status, nats_asset_is_healthy,
+        nats_asset_probe_error, nats_current_replicas, nats_max_lag, nats_offline_replicas,
+        parse_sync_metric, parse_sync_metric_u64,
     };
     use crate::health::ComponentHealth;
     use async_nats::jetstream::stream::{ClusterInfo, PeerInfo};
-    use ployz_api::{ControlPlaneHealthState, EdgeSyncHealthState, NatsAssetReplicaStatus};
+    use ployz_api::{
+        ControlPlaneHealthState, EdgeSyncHealthState, NatsAssetHealthState, NatsAssetReplicaStatus,
+    };
     use std::time::Duration;
 
     fn peer(name: &str, current: bool, offline: bool, lag: Option<u64>) -> PeerInfo {
@@ -552,11 +574,11 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 3
 
         assert_eq!(
             parse_sync_metric(metrics, "ployz_gateway_store_sync_healthy", "routing"),
-            Some(true)
+            SyncMetric::Present(true)
         );
         assert_eq!(
             parse_sync_metric(metrics, "ployz_gateway_store_sync_healthy", "certificates"),
-            Some(false)
+            SyncMetric::Present(false)
         );
         assert_eq!(
             parse_sync_metric(
@@ -564,7 +586,7 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 3
                 "ployz_gateway_store_sync_healthy",
                 "acme_challenges"
             ),
-            None
+            SyncMetric::Missing
         );
         assert_eq!(
             parse_sync_metric_u64(
@@ -582,6 +604,36 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 3
             ),
             Some(3)
         );
+    }
+
+    #[test]
+    fn sidecar_sync_status_reports_invalid_health_metric_as_unknown() {
+        let metrics = String::from(
+            r#"
+ployz_gateway_store_sync_healthy{stream="routing"} 2
+ployz_gateway_store_sync_failures_total{stream="routing"} 4
+"#,
+        );
+
+        let status = metric_status(
+            "gateway",
+            "routing",
+            "ployz_gateway_store_sync_healthy",
+            "ployz_gateway_store_sync_state_since_unix_seconds",
+            "ployz_gateway_store_sync_failures_total",
+            Ok(&metrics),
+        );
+
+        match status.state {
+            EdgeSyncHealthState::Unknown {
+                error,
+                failures_total,
+            } => {
+                assert!(error.contains("invalid boolean value 2"));
+                assert_eq!(failures_total, Some(4));
+            }
+            other => panic!("expected unknown sidecar sync state, got {other:?}"),
+        }
     }
 
     #[test]
@@ -698,8 +750,26 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
     }
 
     #[test]
+    fn nats_asset_probe_error_preserves_operator_context() {
+        let [status] = nats_asset_probe_error(String::from("connect failed"))
+            .try_into()
+            .expect("probe error returns one status entry");
+
+        assert_eq!(status.name, "hub");
+        assert_eq!(status.kind, "connection");
+        assert_eq!(status.installation.as_deref(), Some("local"));
+        assert_eq!(status.authority.as_deref(), Some("auth-default"));
+        assert_eq!(status.domain.as_deref(), Some("dom-auth-default"));
+        assert_eq!(status.role.as_deref(), Some("authority_local"));
+        match status.state {
+            NatsAssetHealthState::Unknown { error } => assert_eq!(error, "connect failed"),
+            other => panic!("expected unknown NATS asset state, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn nats_asset_health_treats_single_replica_without_cluster_as_current() {
-        assert!(nats_asset_is_healthy(1, None));
+        assert!(nats_asset_is_healthy(&replica_status(1, None)));
         assert_eq!(nats_current_replicas(1, None), 1);
         assert_eq!(nats_offline_replicas(1, None), 0);
         assert_eq!(nats_max_lag(None), 0);
@@ -715,7 +785,7 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
             ],
         );
 
-        assert!(nats_asset_is_healthy(3, Some(&cluster)));
+        assert!(nats_asset_is_healthy(&replica_status(3, Some(&cluster))));
         assert_eq!(nats_current_replicas(3, Some(&cluster)), 3);
         assert_eq!(nats_offline_replicas(3, Some(&cluster)), 0);
         assert_eq!(nats_max_lag(Some(&cluster)), 0);
@@ -731,7 +801,7 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
             ],
         );
 
-        assert!(!nats_asset_is_healthy(3, Some(&cluster)));
+        assert!(!nats_asset_is_healthy(&replica_status(3, Some(&cluster))));
         assert_eq!(nats_current_replicas(3, Some(&cluster)), 1);
         assert_eq!(nats_offline_replicas(3, Some(&cluster)), 1);
         assert_eq!(nats_max_lag(Some(&cluster)), 44);
@@ -739,7 +809,7 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
 
     #[test]
     fn nats_asset_health_reports_missing_cluster_for_replicated_asset() {
-        assert!(!nats_asset_is_healthy(3, None));
+        assert!(!nats_asset_is_healthy(&replica_status(3, None)));
         assert_eq!(nats_current_replicas(3, None), 0);
         assert_eq!(nats_offline_replicas(3, None), 3);
         assert_eq!(nats_max_lag(None), 0);
