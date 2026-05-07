@@ -1,30 +1,68 @@
 use std::time::Duration;
 
 use ployz_api::{RuntimeWatchFrame, runtime_frame_from_event, sort_routing_state};
-use ployz_store_api::RoutingSnapshotReader;
+use ployz_store_api::{RoutingEventSubscriptionUpdate, RoutingStateStore};
 use ployz_types::model::{RoutingEvent, RoutingState};
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 use crate::daemon::DaemonState;
+
+type RuntimeEventUpdate = Result<RoutingEvent, String>;
 
 impl DaemonState {
     pub async fn open_runtime_subscription(
         &self,
-    ) -> Result<(RoutingState, mpsc::Receiver<RoutingEvent>), Box<ployz_api::DaemonResponse>> {
+    ) -> Result<(RoutingState, mpsc::Receiver<RuntimeEventUpdate>), Box<ployz_api::DaemonResponse>>
+    {
         let active = self.require_active("NO_MESH", "no mesh is running")?;
-        active
+        let (state, mut envelopes) = active
             .mesh
             .store
             .subscribe_routing_events()
             .await
-            .map_err(|error| Box::new(self.err("RUNTIME_SUBSCRIBE_FAILED", error.to_string())))
+            .map_err(|error| Box::new(self.err("RUNTIME_SUBSCRIBE_FAILED", error.to_string())))?;
+        let (tx, rx) = mpsc::channel(1024);
+        tokio::spawn(async move { relay_runtime_events(&mut envelopes, tx).await });
+        Ok((state, rx))
+    }
+}
+
+async fn relay_runtime_events(
+    events: &mut mpsc::Receiver<RoutingEventSubscriptionUpdate>,
+    tx: mpsc::Sender<RuntimeEventUpdate>,
+) {
+    while let Some(envelope) = events.recv().await {
+        let envelope = match envelope {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                warn!(%error, "runtime routing event relay failed");
+                let _ = tx.send(Err(error.to_string())).await;
+                return;
+            }
+        };
+        if tx.send(Ok(envelope.event.clone())).await.is_err() {
+            let _ = envelope.ack().await;
+            return;
+        }
+        if let Err(error) = envelope.ack().await {
+            warn!(%error, "runtime routing event ack failed");
+            match tx.try_send(Err(error.to_string())) {
+                Ok(()) | Err(TrySendError::Closed(_)) => {}
+                Err(TrySendError::Full(_)) => {
+                    warn!("runtime routing event channel full after ack failure");
+                }
+            }
+            return;
+        }
     }
 }
 
 pub async fn stream_runtime_frames(
     mut initial: RoutingState,
-    mut events: mpsc::Receiver<RoutingEvent>,
+    mut events: mpsc::Receiver<RuntimeEventUpdate>,
     frames: mpsc::Sender<RuntimeWatchFrame>,
     cancel: CancellationToken,
 ) {
@@ -57,7 +95,13 @@ pub async fn stream_runtime_frames(
                 let Some(event) = event else {
                     return;
                 };
-                let frame = runtime_frame_from_event(event);
+                let frame = match event {
+                    Ok(event) => runtime_frame_from_event(event),
+                    Err(message) => RuntimeWatchFrame::Error {
+                        code: String::from("RUNTIME_SUBSCRIPTION_FAILED"),
+                        message,
+                    },
+                };
                 if frames.send(frame).await.is_err() {
                     return;
                 }
@@ -68,8 +112,9 @@ pub async fn stream_runtime_frames(
 
 #[cfg(test)]
 mod tests {
-    use super::stream_runtime_frames;
-    use ployz_api::{RuntimeRecord, RuntimeTable, RuntimeWatchFrame};
+    use super::{relay_runtime_events, stream_runtime_frames};
+    use ployz_api::{RuntimeCollection, RuntimeRecord, RuntimeWatchFrame};
+    use ployz_store_api::RoutingEventEnvelope;
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
         RoutingEvent, RoutingState, SlotId,
@@ -93,11 +138,11 @@ mod tests {
         };
         let (event_tx, event_rx) = mpsc::channel(1);
         event_tx
-            .send(RoutingEvent::InstanceAdded(instance_record(
+            .send(Ok(RoutingEvent::InstanceUpsert(instance_record(
                 "instance-c",
                 "prod",
                 "worker",
-            )))
+            ))))
             .await
             .expect("queue event");
         drop(event_tx);
@@ -122,11 +167,122 @@ mod tests {
         assert_eq!(
             second,
             RuntimeWatchFrame::Upsert {
-                table: RuntimeTable::Instance,
+                collection: RuntimeCollection::Instance,
                 key: String::from("instance-c"),
                 record: RuntimeRecord::Instance(instance_record("instance-c", "prod", "worker")),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn stream_runtime_frames_emits_error_frame_before_closing() {
+        let initial = RoutingState {
+            machines: Vec::new(),
+            revisions: Vec::new(),
+            releases: Vec::new(),
+            instances: Vec::new(),
+        };
+        let (event_tx, event_rx) = mpsc::channel(1);
+        event_tx
+            .send(Err(String::from("routing consumer failed")))
+            .await
+            .expect("queue failure");
+        drop(event_tx);
+        let (frame_tx, mut frame_rx) = mpsc::channel(4);
+
+        stream_runtime_frames(initial, event_rx, frame_tx, CancellationToken::new()).await;
+
+        let first = frame_rx.recv().await.expect("snapshot frame");
+        assert!(matches!(first, RuntimeWatchFrame::Snapshot { .. }));
+        let second = frame_rx.recv().await.expect("error frame");
+        assert_eq!(
+            second,
+            RuntimeWatchFrame::Error {
+                code: String::from("RUNTIME_SUBSCRIPTION_FAILED"),
+                message: String::from("routing consumer failed"),
+            }
+        );
+        assert!(frame_rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn relay_runtime_events_ack_and_exit_when_receiver_closes() {
+        let (envelope_tx, mut envelope_rx) = mpsc::channel(1);
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        envelope_tx
+            .send(Ok(RoutingEventEnvelope::with_ack(
+                "event-1",
+                None,
+                RoutingEvent::InstanceUpsert(instance_record("instance-a", "prod", "web")),
+                ack_tx,
+            )))
+            .await
+            .expect("queue envelope");
+        drop(envelope_tx);
+        let (event_tx, event_rx) = mpsc::channel(1);
+        drop(event_rx);
+
+        relay_runtime_events(&mut envelope_rx, event_tx).await;
+
+        ack_rx.await.expect("event should be acked");
+    }
+
+    #[tokio::test]
+    async fn relay_runtime_events_exit_on_subscription_failure() {
+        let (envelope_tx, mut envelope_rx) = mpsc::channel(1);
+        envelope_tx
+            .send(Err(ployz_types::Error::operation(
+                "test_routing_subscription",
+                "closed",
+            )))
+            .await
+            .expect("queue failure");
+        drop(envelope_tx);
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+
+        relay_runtime_events(&mut envelope_rx, event_tx).await;
+
+        assert_eq!(
+            event_rx.recv().await,
+            Some(Err(String::from("test_routing_subscription: closed")))
+        );
+        assert!(event_rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn relay_runtime_events_surface_ack_failure_to_runtime_reader() {
+        let (envelope_tx, mut envelope_rx) = mpsc::channel(1);
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        drop(ack_rx);
+        envelope_tx
+            .send(Ok(RoutingEventEnvelope::with_ack(
+                "event-ack-failed",
+                None,
+                RoutingEvent::InstanceUpsert(instance_record("instance-a", "prod", "web")),
+                ack_tx,
+            )))
+            .await
+            .expect("queue envelope");
+        drop(envelope_tx);
+        let (event_tx, mut event_rx) = mpsc::channel(2);
+
+        relay_runtime_events(&mut envelope_rx, event_tx).await;
+
+        assert!(
+            event_rx
+                .recv()
+                .await
+                .expect("event should be forwarded before ack failure")
+                .is_ok()
+        );
+        let error = event_rx
+            .recv()
+            .await
+            .expect("ack failure should be forwarded")
+            .expect_err("ack failure should be visible to runtime reader");
+        assert!(error.contains("event-ack-failed"));
+        assert!(error.contains("ack receiver closed"));
+        assert!(event_rx.recv().await.is_none());
     }
 
     fn instance_record(id: &str, namespace: &str, service: &str) -> InstanceStatusRecord {

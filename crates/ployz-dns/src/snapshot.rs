@@ -245,7 +245,7 @@ mod tests {
     use super::*;
     use ployz_types::model::{
         DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership,
-        OverlayIp, PublicKey, RoutingState, SlotId,
+        OverlayIp, PublicKey, RoutingState, SlotId, StorageParticipation,
     };
     use std::collections::BTreeMap;
 
@@ -289,11 +289,12 @@ mod tests {
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay ip")),
             topology: MachineTopology::local(),
-            control_target: None,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
+            storage: true,
+            storage_participation: StorageParticipation::default_authority(),
             created_at: 1,
             updated_at: 1,
             labels: BTreeMap::new(),

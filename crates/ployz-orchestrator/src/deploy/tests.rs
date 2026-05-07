@@ -1,23 +1,30 @@
-use super::execute::{SessionSet, apply_with_initial_plan, ensure_plan_stable, run_phase_startup};
+use super::execute::{
+    ParticipantSet, apply_with_certificate_coordination, apply_with_initial_plan,
+    ensure_plan_stable, run_phase_startup,
+};
+use super::lifecycle::PreparedDeploy;
 use super::plan::{deployable_machines, desired_slots, resolve_plan};
 use super::preview;
-use super::probe::NoopParticipantProbe;
-use super::transaction::PreparedDeploy;
-use crate::deploy::session::{DeploySession, DeploySessionFactory, StartCandidateRequest};
+use super::probe::{NoopParticipantProbe, ParticipantProbe, ProbeError, ProbeErrorKind};
+use crate::certificates::{
+    LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, NoopAcmeIssuerFactory,
+    NoopIssuanceCoordinator,
+};
+use crate::deploy::participant::{DeployParticipantClient, StartCandidateRequest};
 use crate::error::Result;
 use crate::model::{
-    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, DeployState,
-    DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle,
-    MachineMembership, MachineTopology, OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord,
-    ServiceReleaseSlot, ServiceRoutingPolicy, SlotId, VolumeRecord,
+    AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
+    DeployId, DeployRecord, DeployState, DrainState, InstanceId, InstancePhase,
+    InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, MachineTopology,
+    OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
+    ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{
-    CertificateStore, DeployCommit, DeployRecordUpdate, DeployRepository, DeployRevisionUpsert,
-    DeploySnapshot, InstanceStatusRepository, InviteRepository, MachineRegistry,
-    MachineSubscription, RoutingSnapshotReader, RoutingSubscription, StoreBackend, StoreDriver,
-    StoreRuntimeControl,
+    CertificateStore, DeployCommit, DeployStore, InstanceStatusStore, InviteStore,
+    MachineMembershipStore, MachineSubscription, PeerRttStore, RoutingEventSubscription,
+    RoutingStateStore, StoreDriver, StoreRuntimeControl, SyncProbe,
 };
 use ployz_types::Result as PloyzResult;
 use ployz_types::spec::{
@@ -47,6 +54,7 @@ impl TestStoreSeed for StoreDriver {
     async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> PloyzResult<()> {
         self.commit_deploy(&DeployCommit {
             namespace: record.namespace.clone(),
+            revisions: Vec::new(),
             removed_services: Vec::new(),
             removed_volumes: Vec::new(),
             releases: vec![record.clone()],
@@ -116,6 +124,38 @@ fn replicated_one_reuses_existing_slot_machine() {
     };
     assert_eq!(slot.slot_id, SlotId("slot-0001".into()));
     assert_eq!(slot.machine_id, MachineId("machine-b".into()));
+}
+
+#[test]
+fn replicated_slot_stays_on_draining_machine_instead_of_replacing_lifecycle_truth() {
+    let spec = test_service_spec("api", Placement::Replicated { count: 2 }, "nginx:latest");
+    let machines = vec![MachineId("machine-a".into())];
+    let current_slots = [ServiceReleaseSlot {
+        slot_id: SlotId("slot-0001".into()),
+        machine_id: MachineId("machine-b".into()),
+        active_instance_id: InstanceId("inst-1".into()),
+        revision_hash: "rev-1".into(),
+    }];
+
+    let machine_map = HashMap::from([
+        (
+            MachineId("machine-a".into()),
+            test_machine("machine-a", MachineLifecycle::Active),
+        ),
+        (
+            MachineId("machine-b".into()),
+            test_machine("machine-b", MachineLifecycle::Draining),
+        ),
+    ]);
+
+    let desired = desired_slots(&spec, &machines, Some(&current_slots), &machine_map, None)
+        .expect("desired slots");
+
+    assert_eq!(desired.len(), 2);
+    assert_eq!(desired[0].slot_id, SlotId("slot-0001".into()));
+    assert_eq!(desired[0].machine_id, MachineId("machine-b".into()));
+    assert_eq!(desired[1].slot_id, SlotId("slot-0002".into()));
+    assert_eq!(desired[1].machine_id, MachineId("machine-a".into()));
 }
 
 #[tokio::test]
@@ -329,7 +369,7 @@ async fn apply_commits_volume_records_and_sends_volume_payload_to_startup() {
         .await
         .expect("initial plan");
     let controller = FakeController::default();
-    let factory = FakeSessionFactory::new(controller.clone());
+    let factory = FakeParticipantClient::new(controller.clone());
 
     let first =
         apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
@@ -389,7 +429,7 @@ async fn apply_commits_volume_records_and_sends_volume_payload_to_startup() {
 }
 
 #[tokio::test]
-async fn apply_reconciles_attached_service_before_committing_volume_quota_change() {
+async fn apply_restarts_attached_service_before_committing_volume_quota_change() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
     let local_machine_id = MachineId("local".into());
     let manifest = volume_manifest();
@@ -397,7 +437,7 @@ async fn apply_reconciles_attached_service_before_committing_volume_quota_change
         .await
         .expect("initial plan");
     let controller = FakeController::default();
-    let factory = FakeSessionFactory::new(controller.clone());
+    let factory = FakeParticipantClient::new(controller.clone());
 
     let first =
         apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
@@ -460,7 +500,7 @@ async fn apply_deletes_volume_records_removed_from_manifest() {
         .await
         .expect("initial plan");
     let controller = FakeController::default();
-    let factory = FakeSessionFactory::new(controller);
+    let factory = FakeParticipantClient::new(controller);
 
     apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
         .await
@@ -499,7 +539,7 @@ async fn apply_deletes_volume_records_removed_from_manifest() {
         .expect("list volumes after removal");
     assert!(
         records.is_empty(),
-        "expected volume row removed: {records:?}"
+        "expected volume record removed: {records:?}"
     );
 }
 
@@ -516,7 +556,7 @@ async fn apply_keeps_retained_volume_when_attached_service_is_removed() {
         .await
         .expect("initial plan");
     let controller = FakeController::default();
-    let factory = FakeSessionFactory::new(controller);
+    let factory = FakeParticipantClient::new(controller);
 
     apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
         .await
@@ -571,7 +611,7 @@ async fn apply_keeps_retained_volume_when_attached_service_is_removed() {
 }
 
 #[tokio::test]
-async fn apply_commits_unattached_volume_declarations_without_service_reconciliation() {
+async fn apply_commits_unattached_volume_declarations_without_service_restart() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
     let local_machine_id = MachineId("local".into());
     let mut manifest = test_manifest(vec![test_service_spec(
@@ -586,7 +626,7 @@ async fn apply_commits_unattached_volume_declarations_without_service_reconcilia
         .await
         .expect("initial plan");
     let controller = FakeController::default();
-    let factory = FakeSessionFactory::new(controller.clone());
+    let factory = FakeParticipantClient::new(controller.clone());
 
     apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
         .await
@@ -625,7 +665,7 @@ async fn apply_preserves_unattached_volume_record_on_unchanged_redeploy() {
         .await
         .expect("initial plan");
     let controller = FakeController::default();
-    let factory = FakeSessionFactory::new(controller);
+    let factory = FakeParticipantClient::new(controller);
 
     let first =
         apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
@@ -911,7 +951,7 @@ async fn resolve_plan_fingerprint_is_stable_across_release_insert_order() {
 }
 
 #[tokio::test]
-async fn session_set_opens_sessions_in_parallel_for_noop_plan() {
+async fn participant_set_inspects_participants_in_parallel_for_noop_plan() {
     let store = seeded_store_with_machines(&[
         "machine-a",
         "machine-b",
@@ -954,13 +994,13 @@ async fn session_set_opens_sessions_in_parallel_for_noop_plan() {
     let plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("resolve plan");
-    let factory = FakeSessionFactory::new(controller.clone());
+    let factory = FakeParticipantClient::new(controller.clone());
     let deploy_id = DeployId("deploy-open".into());
 
-    let (sessions, _events) = SessionSet::open(&factory, &plan, &local_machine_id, &deploy_id)
-        .await
-        .expect("open sessions");
-    sessions.close_all().await;
+    let (_participants, _events) =
+        ParticipantSet::inspect(&factory, &plan, &local_machine_id, &deploy_id)
+            .await
+            .expect("inspect participants");
 
     assert_eq!(controller.max_open_seen(), 5);
     assert_eq!(controller.start_count(), 0);
@@ -982,15 +1022,15 @@ async fn phase_startup_uses_one_worker_per_machine_but_parallel_across_machines(
     let plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("resolve plan");
-    let factory = FakeSessionFactory::new(controller.clone());
+    let factory = FakeParticipantClient::new(controller.clone());
     let deploy_id = DeployId("deploy-phase".into());
-    let (sessions, _events) = SessionSet::open(&factory, &plan, &local_machine_id, &deploy_id)
-        .await
-        .expect("open sessions");
-    let startup = run_phase_startup(&store, &sessions, &plan, &deploy_id)
+    let (participants, _events) =
+        ParticipantSet::inspect(&factory, &plan, &local_machine_id, &deploy_id)
+            .await
+            .expect("inspect participants");
+    let startup = run_phase_startup(&store, &factory, &participants, &plan)
         .await
         .expect("run startup");
-    sessions.close_all().await;
 
     assert_eq!(startup.started.len(), 4);
     assert_eq!(controller.start_count(), 4);
@@ -1020,16 +1060,16 @@ async fn run_phase_startup_waits_for_previous_phase_before_next_phase() {
         start_delay: Duration::from_millis(20),
         ..Default::default()
     };
-    let factory = FakeSessionFactory::new(controller.clone());
+    let factory = FakeParticipantClient::new(controller.clone());
     let deploy_id = DeployId("deploy-test".into());
-    let (sessions, _events) = SessionSet::open(&factory, &plan, &local_machine_id, &deploy_id)
-        .await
-        .expect("open sessions");
+    let (participants, _events) =
+        ParticipantSet::inspect(&factory, &plan, &local_machine_id, &deploy_id)
+            .await
+            .expect("inspect participants");
 
-    let startup = run_phase_startup(&store, &sessions, &plan, &deploy_id)
+    let startup = run_phase_startup(&store, &factory, &participants, &plan)
         .await
         .expect("run phases");
-    sessions.close_all().await;
 
     assert_eq!(startup.started.len(), 4);
     let log = controller.start_log().await;
@@ -1152,7 +1192,7 @@ async fn apply_rejects_hostname_owned_by_another_namespace_before_commit() {
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("initial plan");
-    let factory = FakeSessionFactory::new(FakeController::default());
+    let factory = FakeParticipantClient::new(FakeController::default());
 
     let error =
         apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
@@ -1161,6 +1201,43 @@ async fn apply_rejects_hostname_owned_by_another_namespace_before_commit() {
 
     assert!(error.to_string().contains("prod/api"));
     assert_eq!(backend.commit_count(), 0);
+}
+
+#[tokio::test]
+async fn apply_rejects_unreachable_participant_before_inspect_or_commit() {
+    let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 2 },
+        "nginx:1.27",
+    )]);
+    let controller = FakeController::default();
+    let participant_client = FakeParticipantClient::new(controller.clone());
+    let prober = FailingParticipantProbe {
+        machine_id: MachineId("machine-b".into()),
+    };
+
+    let error = apply_with_certificate_coordination(
+        &store,
+        &participant_client,
+        &local_machine_id,
+        &manifest,
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &prober,
+    )
+    .await
+    .expect_err("unreachable participant should block deploy");
+
+    assert!(error.to_string().contains("deploy blocked"));
+    assert!(error.to_string().contains("machine-b"));
+    assert_eq!(backend.deploy_status_write_count(), 0);
+    assert_eq!(backend.commit_count(), 0);
+    assert_eq!(controller.max_open_seen(), 0);
+    assert_eq!(controller.start_count(), 0);
 }
 
 #[tokio::test]
@@ -1188,7 +1265,34 @@ async fn preview_allows_hostname_move_within_same_namespace() {
 }
 
 #[tokio::test]
-async fn apply_with_initial_plan_does_not_commit_when_session_open_fails() {
+async fn preview_surfaces_unreachable_participants_without_mutating_deploy_state() {
+    let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 2 },
+        "nginx:1.27",
+    )]);
+    backend.reset_counts();
+    let prober = FailingParticipantProbe {
+        machine_id: MachineId("machine-b".into()),
+    };
+
+    let preview = preview(&store, &local_machine_id, &manifest, &prober)
+        .await
+        .expect("preview should surface reachability as warnings");
+
+    assert!(preview.warnings.iter().any(|warning| {
+        warning.contains("machine-b")
+            && warning.contains("timeout")
+            && warning.contains("injected probe timeout")
+    }));
+    assert_eq!(backend.deploy_status_write_count(), 0);
+    assert_eq!(backend.commit_count(), 0);
+}
+
+#[tokio::test]
+async fn apply_with_initial_plan_does_not_commit_when_participant_inspect_fails() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
     let local_machine_id = MachineId("local".into());
     let manifest = test_manifest(vec![test_service_spec(
@@ -1199,7 +1303,7 @@ async fn apply_with_initial_plan_does_not_commit_when_session_open_fails() {
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("initial plan");
-    let factory = FakeSessionFactory::new(FakeController {
+    let factory = FakeParticipantClient::new(FakeController {
         fail_open_machine: Some("machine-b".into()),
         ..Default::default()
     });
@@ -1225,7 +1329,7 @@ async fn apply_with_initial_plan_does_not_commit_when_start_candidate_fails() {
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("initial plan");
-    let factory = FakeSessionFactory::new(FakeController {
+    let factory = FakeParticipantClient::new(FakeController {
         fail_start_service: Some("api".into()),
         ..Default::default()
     });
@@ -1242,6 +1346,27 @@ async fn apply_with_initial_plan_does_not_commit_when_start_candidate_fails() {
         .await
         .expect("list releases");
     assert!(releases.is_empty());
+    let revisions = store
+        .list_deploy_revisions(&manifest.namespace)
+        .await
+        .expect("list deploy revisions");
+    assert!(
+        revisions.is_empty(),
+        "failed deploy must not publish uncommitted revision facts"
+    );
+    let last_update = backend
+        .last_deploy_status_write()
+        .await
+        .expect("failed deploy record should be written");
+    assert_eq!(last_update.state, DeployState::Failed);
+    assert!(last_update.finished_at.is_some());
+    assert!(
+        last_update
+            .summary_json
+            .contains("injected start failure for 'api'"),
+        "failed deploy summary should mention the apply error: {}",
+        last_update.summary_json
+    );
 }
 
 #[tokio::test]
@@ -1272,7 +1397,7 @@ async fn apply_with_initial_plan_sets_cleanup_pending_after_cleanup_failure() {
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("initial plan");
-    let factory = FakeSessionFactory::new(FakeController {
+    let factory = FakeParticipantClient::new(FakeController {
         fail_remove_instance: Some("old-instance".into()),
         ..Default::default()
     });
@@ -1285,7 +1410,7 @@ async fn apply_with_initial_plan_sets_cleanup_pending_after_cleanup_failure() {
     assert_eq!(result.state, crate::model::DeployState::CleanupPending);
     assert_eq!(backend.commit_count(), 1);
     // deploying -> post-cert warning refresh -> cleanup_pending
-    assert_eq!(backend.upsert_deploy_count(), 3);
+    assert_eq!(backend.deploy_status_write_count(), 3);
     let commit_index = result
         .events
         .iter()
@@ -1320,7 +1445,7 @@ async fn apply_with_initial_plan_commits_once_after_all_starts_finish() {
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("initial plan");
-    let factory = FakeSessionFactory::new(FakeController {
+    let factory = FakeParticipantClient::new(FakeController {
         start_delay: Duration::from_millis(10),
         ..Default::default()
     });
@@ -1589,25 +1714,25 @@ impl FakeController {
     }
 }
 
-struct FakeSessionFactory {
+struct FakeParticipantClient {
     controller: FakeController,
 }
 
-impl FakeSessionFactory {
+impl FakeParticipantClient {
     fn new(controller: FakeController) -> Self {
         Self { controller }
     }
 }
 
 #[async_trait::async_trait]
-impl DeploySessionFactory for FakeSessionFactory {
-    async fn open(
+impl DeployParticipantClient for FakeParticipantClient {
+    async fn inspect_namespace(
         &self,
         machine: &MachineMembership,
-        namespace: &Namespace,
-        deploy_id: &DeployId,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
         _coordinator_id: &MachineId,
-    ) -> Result<(Box<dyn DeploySession>, Vec<InstanceStatusRecord>)> {
+    ) -> Result<Vec<InstanceStatusRecord>> {
         self.controller.on_open_start().await;
         if self.controller.should_fail_open(&machine.id) {
             return Err(ployz_types::error::Error::operation(
@@ -1615,37 +1740,14 @@ impl DeploySessionFactory for FakeSessionFactory {
                 format!("injected open failure for '{}'", machine.id),
             ));
         }
-        Ok((
-            Box::new(FakeSession {
-                controller: self.controller.clone(),
-                machine_id: machine.id.clone(),
-                namespace: namespace.clone(),
-                deploy_id: deploy_id.clone(),
-            }),
-            Vec::new(),
-        ))
-    }
-}
-
-struct FakeSession {
-    controller: FakeController,
-    machine_id: MachineId,
-    namespace: Namespace,
-    deploy_id: DeployId,
-}
-
-#[async_trait::async_trait]
-impl DeploySession for FakeSession {
-    fn machine_id(&self) -> &MachineId {
-        &self.machine_id
-    }
-
-    async fn inspect_namespace(&mut self) -> Result<Vec<InstanceStatusRecord>> {
         Ok(Vec::new())
     }
 
     async fn start_candidate(
-        &mut self,
+        &self,
+        machine_id: &MachineId,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
         req: StartCandidateRequest,
     ) -> Result<InstanceStatusRecord> {
         self.controller
@@ -1654,25 +1756,25 @@ impl DeploySession for FakeSession {
             .await
             .push(req.clone());
         self.controller
-            .on_start_begin(&self.machine_id, &req.service, &req.slot_id)
+            .on_start_begin(machine_id, &req.service, &req.slot_id)
             .await;
         if self.controller.should_fail_start(&req.service) {
-            self.controller.on_start_end(&self.machine_id).await;
+            self.controller.on_start_end(machine_id).await;
             return Err(ployz_types::error::Error::operation(
                 "fake_start",
                 format!("injected start failure for '{}'", req.service),
             ));
         }
         sleep(self.controller.start_delay).await;
-        self.controller.on_start_end(&self.machine_id).await;
+        self.controller.on_start_end(machine_id).await;
         Ok(InstanceStatusRecord {
             instance_id: req.instance_id.clone(),
-            namespace: self.namespace.clone(),
+            namespace: namespace.clone(),
             service: req.service,
             slot_id: req.slot_id,
-            machine_id: self.machine_id.clone(),
+            machine_id: machine_id.clone(),
             revision_hash: "fake-revision".into(),
-            deploy_id: self.deploy_id.clone(),
+            deploy_id: deploy_id.clone(),
             docker_container_id: format!("container-{}", req.instance_id.0),
             overlay_ip: None,
             backend_ports: BTreeMap::new(),
@@ -1685,12 +1787,24 @@ impl DeploySession for FakeSession {
         })
     }
 
-    async fn drain_instance(&mut self, _instance_id: &InstanceId) -> Result<()> {
+    async fn drain_instance(
+        &self,
+        _machine_id: &MachineId,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
+        _instance_id: &InstanceId,
+    ) -> Result<()> {
         self.controller.on_drain();
         Ok(())
     }
 
-    async fn remove_instance(&mut self, instance_id: &InstanceId) -> Result<()> {
+    async fn remove_instance(
+        &self,
+        _machine_id: &MachineId,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
+        instance_id: &InstanceId,
+    ) -> Result<()> {
         self.controller.on_remove();
         if self.controller.should_fail_remove(instance_id) {
             return Err(ployz_types::error::Error::operation(
@@ -1700,8 +1814,21 @@ impl DeploySession for FakeSession {
         }
         Ok(())
     }
+}
 
-    async fn close(self: Box<Self>) -> Result<()> {
+struct FailingParticipantProbe {
+    machine_id: MachineId,
+}
+
+#[async_trait]
+impl ParticipantProbe for FailingParticipantProbe {
+    async fn ping(&self, machine: &MachineMembership) -> std::result::Result<(), ProbeError> {
+        if machine.id == self.machine_id {
+            return Err(ProbeError {
+                kind: ProbeErrorKind::Timeout,
+                detail: "injected probe timeout".into(),
+            });
+        }
         Ok(())
     }
 }
@@ -1719,9 +1846,16 @@ async fn seeded_store_with_machines(machine_ids: &[&str]) -> StoreDriver {
 
 async fn counting_store_with_machines(machine_ids: &[&str]) -> (StoreDriver, Arc<CountingBackend>) {
     let backend = Arc::new(CountingBackend::new());
-    let store = StoreDriver::from_backend(
-        backend.clone() as Arc<dyn StoreBackend>,
-        backend.clone() as Arc<dyn StoreRuntimeControl>,
+    let store = StoreDriver::new(
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
     );
     for machine_id in machine_ids {
         store
@@ -1820,6 +1954,7 @@ async fn seed_volume_with(
     store
         .commit_deploy(&DeployCommit {
             namespace: namespace.clone(),
+            revisions: Vec::new(),
             removed_services: Vec::new(),
             removed_volumes: Vec::new(),
             releases: Vec::new(),
@@ -1886,8 +2021,9 @@ async fn seed_committed_http_release(
     let spec = http_route_service_spec(service, hostname);
     let revision_hash = spec.revision_hash().expect("revision hash");
     store
-        .record_service_revision(&DeployRevisionUpsert {
-            revision: crate::model::ServiceRevisionRecord {
+        .commit_deploy(&DeployCommit {
+            namespace: namespace.clone(),
+            revisions: vec![crate::model::ServiceRevisionRecord {
                 namespace: namespace.clone(),
                 service: service.into(),
                 revision_hash: revision_hash.clone(),
@@ -1896,17 +2032,18 @@ async fn seed_committed_http_release(
                     .expect("canonical revision json"),
                 created_by: MachineId("seed".into()),
                 created_at: 0,
-            },
+            }],
+            removed_services: Vec::new(),
+            removed_volumes: Vec::new(),
+            releases: vec![test_release(
+                &namespace,
+                service,
+                &revision_hash,
+                Vec::new(),
+            )],
+            volumes: Vec::new(),
+            deploy: test_deploy_record(&namespace, "seed-deploy"),
         })
-        .await
-        .expect("seed revision");
-    store
-        .upsert_service_release(&test_release(
-            &namespace,
-            service,
-            &revision_hash,
-            Vec::new(),
-        ))
         .await
         .expect("seed release");
 }
@@ -1967,11 +2104,12 @@ fn test_machine(id: &str, lifecycle: MachineLifecycle) -> MachineMembership {
         public_key: PublicKey([7; 32]),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
         topology: MachineTopology::local(),
-        control_target: None,
         subnet: None,
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],
         lifecycle,
+        storage: true,
+        storage_participation: ployz_types::model::StorageParticipation::default_authority(),
         created_at: 0,
         updated_at: 0,
         labels: BTreeMap::new(),
@@ -2010,7 +2148,8 @@ struct CountingBackend {
     store: Arc<MemoryStore>,
     service: Arc<MemoryService>,
     commit_calls: AtomicUsize,
-    upsert_deploy_calls: AtomicUsize,
+    deploy_status_writes: AtomicUsize,
+    deploy_status_records: Mutex<Vec<DeployRecord>>,
 }
 
 impl CountingBackend {
@@ -2019,7 +2158,8 @@ impl CountingBackend {
             store: Arc::new(MemoryStore::new()),
             service: Arc::new(MemoryService::new()),
             commit_calls: AtomicUsize::new(0),
-            upsert_deploy_calls: AtomicUsize::new(0),
+            deploy_status_writes: AtomicUsize::new(0),
+            deploy_status_records: Mutex::new(Vec::new()),
         }
     }
 
@@ -2027,18 +2167,22 @@ impl CountingBackend {
         self.commit_calls.load(Ordering::SeqCst)
     }
 
-    fn upsert_deploy_count(&self) -> usize {
-        self.upsert_deploy_calls.load(Ordering::SeqCst)
+    fn deploy_status_write_count(&self) -> usize {
+        self.deploy_status_writes.load(Ordering::SeqCst)
     }
 
     fn reset_counts(&self) {
         self.commit_calls.store(0, Ordering::SeqCst);
-        self.upsert_deploy_calls.store(0, Ordering::SeqCst);
+        self.deploy_status_writes.store(0, Ordering::SeqCst);
+    }
+
+    async fn last_deploy_status_write(&self) -> Option<DeployRecord> {
+        self.deploy_status_records.lock().await.last().cloned()
     }
 }
 
 #[async_trait]
-impl StoreBackend for CountingBackend {
+impl MachineMembershipStore for CountingBackend {
     async fn init(&self) -> PloyzResult<()> {
         self.store.init().await
     }
@@ -2058,7 +2202,10 @@ impl StoreBackend for CountingBackend {
     async fn subscribe_machines(&self) -> PloyzResult<MachineSubscription> {
         self.store.subscribe_machines().await
     }
+}
 
+#[async_trait]
+impl InviteStore for CountingBackend {
     async fn create_invite(&self, invite: &ployz_types::model::InviteRecord) -> PloyzResult<()> {
         self.store.create_invite(invite).await
     }
@@ -2092,15 +2239,21 @@ impl StoreBackend for CountingBackend {
     ) -> PloyzResult<ployz_types::model::InviteRecord> {
         self.store.revoke_invite(invite_id, now_unix_secs).await
     }
+}
 
+#[async_trait]
+impl RoutingStateStore for CountingBackend {
     async fn load_routing_state(&self) -> PloyzResult<crate::model::RoutingState> {
         self.store.load_routing_state().await
     }
 
-    async fn subscribe_routing_events(&self) -> PloyzResult<RoutingSubscription> {
-        self.store.subscribe_routing_events().await
+    async fn subscribe_routing_events(&self) -> PloyzResult<RoutingEventSubscription> {
+        RoutingStateStore::subscribe_routing_events(self.store.as_ref()).await
     }
+}
 
+#[async_trait]
+impl CertificateStore for CountingBackend {
     async fn get_acme_account(&self, issuer_url: &str) -> PloyzResult<Option<AcmeAccountRecord>> {
         self.store.get_acme_account(issuer_url).await
     }
@@ -2133,6 +2286,23 @@ impl StoreBackend for CountingBackend {
         self.store.delete_acme_challenge(hostname, token).await
     }
 
+    async fn upsert_acme_challenge_readiness(
+        &self,
+        record: &AcmeChallengeReadinessRecord,
+    ) -> PloyzResult<()> {
+        self.store.upsert_acme_challenge_readiness(record).await
+    }
+
+    async fn list_acme_challenge_readiness(
+        &self,
+        hostname: &str,
+        token: &str,
+    ) -> PloyzResult<Vec<AcmeChallengeReadinessRecord>> {
+        self.store
+            .list_acme_challenge_readiness(hostname, token)
+            .await
+    }
+
     async fn subscribe_certificates(
         &self,
     ) -> PloyzResult<ployz_store_api::CertificateSubscription> {
@@ -2144,35 +2314,22 @@ impl StoreBackend for CountingBackend {
     ) -> PloyzResult<ployz_store_api::AcmeChallengeSubscription> {
         self.store.subscribe_acme_challenges().await
     }
+}
+
+#[async_trait]
+impl DeployStore for CountingBackend {
+    async fn list_deploy_revisions(
+        &self,
+        namespace: &Namespace,
+    ) -> PloyzResult<Vec<ServiceRevisionRecord>> {
+        self.store.list_deploy_revisions(namespace).await
+    }
 
     async fn list_deploy_releases(
         &self,
         namespace: &Namespace,
     ) -> PloyzResult<Vec<ServiceReleaseRecord>> {
         self.store.list_deploy_releases(namespace).await
-    }
-
-    async fn load_deploy_snapshot(&self, namespace: &Namespace) -> PloyzResult<DeploySnapshot> {
-        self.store.load_deploy_snapshot(namespace).await
-    }
-
-    async fn list_instance_status(
-        &self,
-        namespace: &Namespace,
-    ) -> PloyzResult<Vec<InstanceStatusRecord>> {
-        self.store.list_instance_status(namespace).await
-    }
-
-    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> PloyzResult<()> {
-        self.store.record_service_revision(command).await
-    }
-
-    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> PloyzResult<()> {
-        self.store.record_instance_status(record).await
-    }
-
-    async fn remove_instance_status(&self, instance_id: &InstanceId) -> PloyzResult<()> {
-        self.store.remove_instance_status(instance_id).await
     }
 
     async fn list_volumes(
@@ -2190,9 +2347,10 @@ impl StoreBackend for CountingBackend {
         self.store.get_volume(namespace, volume_name).await
     }
 
-    async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> PloyzResult<()> {
-        self.upsert_deploy_calls.fetch_add(1, Ordering::SeqCst);
-        self.store.update_deploy_record(command).await
+    async fn write_deploy_status(&self, deploy: &DeployRecord) -> PloyzResult<()> {
+        self.deploy_status_writes.fetch_add(1, Ordering::SeqCst);
+        self.deploy_status_records.lock().await.push(deploy.clone());
+        self.store.write_deploy_status(deploy).await
     }
 
     async fn commit_deploy(&self, command: &DeployCommit) -> PloyzResult<()> {
@@ -2207,6 +2365,28 @@ impl StoreBackend for CountingBackend {
         self.store.get_deploy(deploy_id).await
     }
 }
+
+#[async_trait]
+impl InstanceStatusStore for CountingBackend {
+    async fn list_instance_status(
+        &self,
+        namespace: &Namespace,
+    ) -> PloyzResult<Vec<InstanceStatusRecord>> {
+        self.store.list_instance_status(namespace).await
+    }
+
+    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> PloyzResult<()> {
+        self.store.record_instance_status(record).await
+    }
+
+    async fn remove_instance_status(&self, instance_id: &InstanceId) -> PloyzResult<()> {
+        self.store.remove_instance_status(instance_id).await
+    }
+}
+
+impl SyncProbe for CountingBackend {}
+
+impl PeerRttStore for CountingBackend {}
 
 #[async_trait]
 impl StoreRuntimeControl for CountingBackend {

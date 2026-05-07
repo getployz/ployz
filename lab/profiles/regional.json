@@ -1,5 +1,0 @@
-{
-  "name": "regional",
-  "interface": "data",
-  "netem": "delay 50ms 5ms distribution normal"
-}

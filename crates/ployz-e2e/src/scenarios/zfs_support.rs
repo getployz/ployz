@@ -135,38 +135,6 @@ pub(crate) fn wait_for_container_bind(
     })
 }
 
-pub(crate) fn assert_zfs_mode_state(
-    run: &ScenarioRun,
-    node_name: &str,
-    zfs: &ZfsContext,
-) -> Result<()> {
-    match zfs.mode.as_str() {
-        "fake" => assert_zfs_create_count(run, node_name, 1),
-        "real" => assert_real_zfs_dataset(run, node_name, zfs),
-        other => Err(Error::Message(format!(
-            "unsupported zfs e2e mode '{other}'"
-        ))),
-    }
-}
-
-fn assert_zfs_create_count(run: &ScenarioRun, node_name: &str, expected: usize) -> Result<()> {
-    let output = run.ssh_expect_ok_name(
-        node_name,
-        "grep -c '^zfs create ' /var/lib/ployz-e2e-zfs/calls.log",
-    )?;
-    let actual = output
-        .stdout
-        .trim()
-        .parse::<usize>()
-        .map_err(|error| Error::Message(format!("parse fake zfs create count: {error}")))?;
-    if actual == expected {
-        return Ok(());
-    }
-    Err(Error::Message(format!(
-        "expected fake zfs create count {expected}, got {actual}"
-    )))
-}
-
 pub(crate) fn assert_real_zfs_dataset(
     run: &ScenarioRun,
     node_name: &str,

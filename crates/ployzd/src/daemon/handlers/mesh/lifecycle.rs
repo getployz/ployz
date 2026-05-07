@@ -1,15 +1,16 @@
-use crate::daemon::handlers::peer_rpc::{
-    PEER_RPC_DESTRUCTIVE_READ_TIMEOUT, overlay_rpc, overlay_rpc_expect_ok,
-    overlay_rpc_expect_ok_with_read_timeout,
-};
-use crate::daemon::setup::MeshStartOptions;
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::{DaemonRequest, MachineTransitionGoal};
+use ployz_nats::{NodeCommandSubject, RpcPolicy};
 use ployz_orchestrator::ipam::pick_candidate_subnet;
-use ployz_store_api::MachineRegistry;
+use ployz_store_api::MachineMembershipStore;
 use ployz_types::model::MachineMembership;
-use ployz_types::model::{MachineId, MachineLifecycle, NetworkId, NetworkLifecycle, NetworkName};
+use ployz_types::model::{
+    MachineId, MachineLifecycle, MachineLifecycleGoal, MachineLifecycleTransition,
+    MachineTransitionEvidence, NetworkId, NetworkLifecycle, NetworkLifecycleGoal,
+    NetworkLifecycleTransition, NetworkName, NetworkTransitionEvidence, StandbyTransitionClearance,
+};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::sync::oneshot;
 use tracing::{error, warn};
 
@@ -17,9 +18,10 @@ use super::DaemonState;
 use crate::daemon::ActiveMesh;
 
 struct MeshControlHandles {
-    peer_control: Box<dyn ployz_runtime_api::RuntimeHandle>,
-    remote_control: Box<dyn ployz_runtime_api::RuntimeHandle>,
+    nats_control: Box<dyn ployz_runtime_api::RuntimeHandle>,
 }
+
+const MESH_DESTRUCTIVE_RPC_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl DaemonState {
     pub(crate) fn handle_mesh_create(&self, network: &str) -> ployz_api::DaemonResponse {
@@ -54,7 +56,7 @@ impl DaemonState {
             }
         };
 
-        match self.start_network_transition(net_config, false, true).await {
+        match self.start_network_transition(net_config, true).await {
             Ok(message) => self.ok(message),
             Err(error) => self.err("NETWORK_START_FAILED", error),
         }
@@ -94,11 +96,7 @@ impl DaemonState {
         Ok(net_config)
     }
 
-    pub(crate) async fn handle_mesh_start(
-        &mut self,
-        network: &str,
-        allow_disconnected_bootstrap: bool,
-    ) -> ployz_api::DaemonResponse {
+    pub(crate) async fn handle_mesh_start(&mut self, network: &str) -> ployz_api::DaemonResponse {
         if let Some(active) = &self.active {
             return self.err(
                 "NETWORK_ALREADY_RUNNING",
@@ -135,17 +133,14 @@ impl DaemonState {
             );
         }
 
-        match self
-            .start_network_transition(net_config, allow_disconnected_bootstrap, false)
-            .await
-        {
+        match self.start_network_transition(net_config, false).await {
             Ok(message) => self.ok(message),
             Err(error) => self.err("NETWORK_START_FAILED", error),
         }
     }
 
     pub(crate) async fn handle_mesh_stop(&mut self, force: bool) -> ployz_api::DaemonResponse {
-        let (network_name, overlay_ip, cached_subnet, current_lifecycle, previous_self_record) = {
+        let (network_name, overlay_ip, subnet_to_persist, current_lifecycle, previous_self_record) = {
             let Some(active) = self.active.as_ref() else {
                 return self.err("NO_RUNNING_NETWORK", "no mesh running");
             };
@@ -155,7 +150,7 @@ impl DaemonState {
             (
                 active.config.name.0.clone(),
                 active.config.overlay_ip,
-                active.config.subnet.or(active.cached_subnet),
+                active.subnet_to_persist_after_stop(),
                 self_record.lifecycle,
                 self_record,
             )
@@ -172,7 +167,7 @@ impl DaemonState {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
         active.stop_certificate_renewal().await;
-        active.stop_bootstrap_seed_cache().await;
+        active.stop_bootstrap_peer_seed().await;
         if let Err(error) = active.mesh.destroy().await {
             self.active = Some(active);
             return self.err("NETWORK_STOP_FAILED", format!("mesh stop failed: {error}"));
@@ -180,8 +175,27 @@ impl DaemonState {
         if let Err(error) = persist_stopped_self_record(&mut active, &previous_self_record).await {
             warn!(%error, "failed to persist standby self record after mesh stop");
         }
-        let _ = active.peer_control.shutdown().await;
-        let _ = active.remote_control.shutdown().await;
+        let mut persisted = active.config.clone();
+        let persisted_network_name = persisted.name.clone();
+        let _ = persisted
+            .lifecycle
+            .apply_transition(NetworkLifecycleTransition {
+                goal: NetworkLifecycleGoal::Stop,
+                evidence: NetworkTransitionEvidence::MeshTeardown {
+                    network: persisted_network_name,
+                },
+                at_unix_secs: ployz_types::time::now_unix_secs(),
+            });
+        persisted.subnet = subnet_to_persist;
+        let config_path = NetworkConfig::path(&self.data_dir, &network_name);
+        if let Err(error) = persisted.save(&config_path) {
+            return self.err(
+                "IO_ERROR",
+                format!("failed to persist stopped network config: {error}"),
+            );
+        }
+
+        let _ = active.nats_control.shutdown().await;
         if let Err(error) = active.dns.shutdown().await {
             warn!(?error, "dns stop failed during mesh stop");
         }
@@ -189,17 +203,6 @@ impl DaemonState {
             return self.err(
                 "NETWORK_STOP_FAILED",
                 format!("gateway stop failed: {error}"),
-            );
-        }
-
-        let mut persisted = active.config.clone();
-        persisted.lifecycle = NetworkLifecycle::Stopped;
-        persisted.subnet = cached_subnet;
-        let config_path = NetworkConfig::path(&self.data_dir, &network_name);
-        if let Err(error) = persisted.save(&config_path) {
-            return self.err(
-                "IO_ERROR",
-                format!("failed to persist stopped network config: {error}"),
             );
         }
 
@@ -234,9 +237,9 @@ impl DaemonState {
             );
         }
 
-        let peer_rpc_port = match self.peer_control_port() {
-            Ok(port) => port,
-            Err(error) => return self.err("PEER_RPC_UNAVAILABLE", error.to_string()),
+        let rpc_client = match self.nats_node_rpc_client().await {
+            Ok(client) => client,
+            Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
         };
         let network_id = active.config.id.clone();
         let machines = match active.mesh.store.list_machines().await {
@@ -259,17 +262,17 @@ impl DaemonState {
         let mut prepared = Vec::new();
         let mut failures = Vec::new();
         for peer in &peers {
-            let response = overlay_rpc(
-                peer.overlay_ip,
-                peer_rpc_port,
-                DaemonRequest::MeshPeerPrepareDestroy {
-                    operation_id: operation_id.clone(),
-                    network_id: network_id.clone(),
-                    coordinator_id: self.identity.machine_id.clone(),
-                    expected_machine_ids: expected_machine_ids.clone(),
-                },
-            )
-            .await;
+            let response = rpc_client
+                .request(
+                    NodeCommandSubject::mesh_prepare_destroy(&peer.id),
+                    &DaemonRequest::MeshPeerPrepareDestroy {
+                        operation_id: operation_id.clone(),
+                        network_id: network_id.clone(),
+                        coordinator_id: self.identity.machine_id.clone(),
+                        expected_machine_ids: expected_machine_ids.clone(),
+                    },
+                )
+                .await;
             match response {
                 Ok(response) if response.ok => prepared.push(peer.clone()),
                 Ok(response) => failures.push(format!(
@@ -282,14 +285,14 @@ impl DaemonState {
 
         if !failures.is_empty() {
             for peer in &prepared {
-                if let Err(error) = overlay_rpc_expect_ok(
-                    peer.overlay_ip,
-                    peer_rpc_port,
-                    DaemonRequest::MeshPeerCancelDestroy {
-                        operation_id: operation_id.clone(),
-                    },
-                )
-                .await
+                if let Err(error) = rpc_client
+                    .request_expect_ok(
+                        NodeCommandSubject::mesh_cancel_destroy(&peer.id),
+                        &DaemonRequest::MeshPeerCancelDestroy {
+                            operation_id: operation_id.clone(),
+                        },
+                    )
+                    .await
                 {
                     warn!(peer = %peer.id, %operation_id, error = %error, "mesh destroy cancel failed");
                 }
@@ -303,18 +306,20 @@ impl DaemonState {
             );
         }
 
+        let execute_client = rpc_client.with_policy(RpcPolicy {
+            timeout: MESH_DESTRUCTIVE_RPC_TIMEOUT,
+        });
         let mut execute_failures = Vec::new();
         for peer in &prepared {
-            if let Err(error) = overlay_rpc_expect_ok_with_read_timeout(
-                peer.overlay_ip,
-                peer_rpc_port,
-                DaemonRequest::MeshPeerExecuteDestroy {
-                    operation_id: operation_id.clone(),
-                    network_id: network_id.clone(),
-                },
-                PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
-            )
-            .await
+            if let Err(error) = execute_client
+                .request_expect_ok(
+                    NodeCommandSubject::mesh_execute_destroy(&peer.id),
+                    &DaemonRequest::MeshPeerExecuteDestroy {
+                        operation_id: operation_id.clone(),
+                        network_id: network_id.clone(),
+                    },
+                )
+                .await
             {
                 execute_failures.push(format!("{} execute failed: {error}", peer.id));
                 warn!(peer = %peer.id, %operation_id, error = %error, "mesh destroy execute failed");
@@ -505,8 +510,7 @@ impl DaemonState {
     async fn perform_mesh_teardown(data_dir: PathBuf, active: ActiveMesh) -> Result<(), String> {
         let (result, control_handles) =
             Self::perform_mesh_teardown_before_control_shutdown(&data_dir, active).await;
-        let _ = control_handles.peer_control.shutdown().await;
-        let _ = control_handles.remote_control.shutdown().await;
+        let _ = control_handles.nats_control.shutdown().await;
         result
     }
 
@@ -517,25 +521,21 @@ impl DaemonState {
         let ActiveMesh {
             config,
             mut mesh,
-            remote_control,
-            peer_control,
+            nats_control,
             gateway,
             dns,
             mut certificate_renewal,
-            mut bootstrap_seed_cache,
+            mut bootstrap_peer_seed,
             ..
         } = active;
         let network_name = config.name.0;
-        let control_handles = MeshControlHandles {
-            peer_control,
-            remote_control,
-        };
+        let control_handles = MeshControlHandles { nats_control };
 
         let result = async move {
             if let Some(task) = certificate_renewal.take() {
                 task.shutdown().await;
             }
-            if let Some(task) = bootstrap_seed_cache.take() {
+            if let Some(task) = bootstrap_peer_seed.take() {
                 task.shutdown().await;
             }
             if let Err(error) = mesh.destroy_and_wipe_store_data().await {
@@ -577,7 +577,6 @@ impl DaemonState {
     async fn start_network_transition(
         &mut self,
         net_config: NetworkConfig,
-        allow_disconnected_bootstrap: bool,
         initialized: bool,
     ) -> Result<String, String> {
         let Some(assigned_subnet) = net_config.subnet else {
@@ -588,17 +587,25 @@ impl DaemonState {
         };
 
         let mut running_config = net_config.clone();
-        running_config.lifecycle = NetworkLifecycle::Running;
+        running_config
+            .lifecycle
+            .apply_transition(NetworkLifecycleTransition {
+                goal: NetworkLifecycleGoal::Start,
+                evidence: NetworkTransitionEvidence::OperatorCommand {
+                    command: if initialized {
+                        "mesh init".into()
+                    } else {
+                        "mesh start".into()
+                    },
+                },
+                at_unix_secs: ployz_types::time::now_unix_secs(),
+            })
+            .map_err(|error| error.message().to_string())?;
         let network_name = running_config.name.clone();
         let overlay_ip = running_config.overlay_ip;
-        self.start_mesh(
-            running_config.clone(),
-            MeshStartOptions {
-                allow_disconnected_bootstrap,
-            },
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+        self.start_mesh(running_config.clone())
+            .await
+            .map_err(|error| error.to_string())?;
 
         if let Err(error) = self
             .transition_local_machine(
@@ -614,12 +621,28 @@ impl DaemonState {
 
         let config_path = NetworkConfig::path(&self.data_dir, &network_name.0);
         if let Some(active) = self.active.as_mut() {
-            active.config.lifecycle = NetworkLifecycle::Running;
+            let active_command = if initialized {
+                "mesh init".into()
+            } else {
+                "mesh start".into()
+            };
+            active
+                .config
+                .lifecycle
+                .apply_transition(NetworkLifecycleTransition {
+                    goal: NetworkLifecycleGoal::Start,
+                    evidence: NetworkTransitionEvidence::OperatorCommand {
+                        command: active_command,
+                    },
+                    at_unix_secs: ployz_types::time::now_unix_secs(),
+                })
+                .map_err(|error| error.message().to_string())?;
             if let Err(error) = active.config.save(&config_path) {
                 self.stop_started_mesh_after_transition_failure().await;
                 return Err(format!("save network config: {error}"));
             }
-            active.cached_subnet = active.config.subnet;
+            active.retained_subnet =
+                crate::daemon::RetainedSubnet::from_running_config(active.config.subnet);
         }
 
         let verb = if initialized {
@@ -638,12 +661,11 @@ impl DaemonState {
             return;
         };
         active.stop_certificate_renewal().await;
-        active.stop_bootstrap_seed_cache().await;
+        active.stop_bootstrap_peer_seed().await;
         if let Err(error) = active.mesh.destroy().await {
             warn!(?error, "failed to stop mesh after transition error");
         }
-        let _ = active.peer_control.shutdown().await;
-        let _ = active.remote_control.shutdown().await;
+        let _ = active.nats_control.shutdown().await;
         if let Err(error) = active.dns.shutdown().await {
             warn!(?error, "failed to stop dns after transition error");
         }
@@ -667,9 +689,17 @@ async fn persist_stopped_self_record(
     previous_self_record: &MachineMembership,
 ) -> Result<(), String> {
     let mut standby = previous_self_record.clone();
-    standby.lifecycle = MachineLifecycle::Standby;
-    standby.subnet = None;
-    standby.updated_at = ployz_types::time::now_unix_secs();
+    standby
+        .apply_lifecycle_transition(MachineLifecycleTransition {
+            goal: MachineLifecycleGoal::Standby {
+                clearance: StandbyTransitionClearance::OperatorForced,
+            },
+            evidence: MachineTransitionEvidence::MeshStop {
+                network: active.config.name.clone(),
+            },
+            at_unix_secs: ployz_types::time::now_unix_secs(),
+        })
+        .map_err(|err| format!("build standby self record: {err}"))?;
 
     if let Err(error) = active.mesh.store.upsert_self_machine(&standby).await {
         return Err(format!("persist standby self record in store: {error}"));
@@ -683,7 +713,7 @@ async fn persist_stopped_self_record(
         .await
         .is_none()
     {
-        return Err("persist standby self record in authoritative cache".to_string());
+        return Err("update in-memory self record after standby persistence".to_string());
     }
 
     Ok(())

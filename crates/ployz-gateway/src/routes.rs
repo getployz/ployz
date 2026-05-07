@@ -301,6 +301,7 @@ pub fn match_http_route<'a>(
     })
 }
 
+#[derive(Clone)]
 pub struct GatewayProjector {
     machines: HashMap<MachineId, MachineMembership>,
     revisions: HashMap<RevisionKey, ployz_types::model::ServiceRevisionRecord>,
@@ -411,21 +412,16 @@ impl GatewayProjector {
     fn apply_routing(&mut self, event: RoutingEvent) -> Result<ProjectionDelta, ProjectionError> {
         let mut services = BTreeSet::new();
         match event {
-            RoutingEvent::MachineAdded(machine) => {
+            RoutingEvent::MachineUpsert(machine) => {
                 let machine_id = machine.id.clone();
                 self.machines.insert(machine.id.clone(), machine);
                 services.extend(self.services_for_machine(&machine_id));
             }
-            RoutingEvent::MachineUpdated { old, new } => {
-                self.machines.insert(new.id.clone(), new);
-                services.extend(self.services_for_machine(&old.id));
+            RoutingEvent::MachineRemoved { id } => {
+                services.extend(self.services_for_machine(&id));
+                self.machines.remove(&id);
             }
-            RoutingEvent::MachineRemoved(machine) => {
-                self.machines.remove(&machine.id);
-                services.extend(self.services_for_machine(&machine.id));
-            }
-            RoutingEvent::RevisionAdded(revision)
-            | RoutingEvent::RevisionUpdated { new: revision, .. } => {
+            RoutingEvent::RevisionUpsert(revision) => {
                 let key = RevisionKey::new(
                     revision.namespace.clone(),
                     revision.service.clone(),
@@ -435,45 +431,38 @@ impl GatewayProjector {
                 self.revisions.insert(key.clone(), revision);
                 services.extend(self.services_using_revision(&key));
             }
-            RoutingEvent::RevisionRemoved(revision) => {
-                let key =
-                    RevisionKey::new(revision.namespace, revision.service, revision.revision_hash);
+            RoutingEvent::RevisionRemoved {
+                namespace,
+                service,
+                revision_hash,
+            } => {
+                let key = RevisionKey::new(namespace, service, revision_hash);
                 self.revisions.remove(&key);
                 self.specs.remove(&key);
                 services.extend(self.services_using_revision(&key));
             }
-            RoutingEvent::ReleaseAdded(release) => {
+            RoutingEvent::ReleaseUpsert(release) => {
                 let service = ServiceKey::from_release(&release);
                 self.releases.insert(service.clone(), release);
                 services.insert(service);
             }
-            RoutingEvent::ReleaseUpdated { old, new } => {
-                let old_service = ServiceKey::from_release(&old);
-                let service = ServiceKey::from_release(&new);
-                if old_service != service {
-                    self.releases.remove(&old_service);
-                    self.clear_service_routes(&old_service);
-                }
-                self.releases.insert(service.clone(), new);
-                services.insert(service);
-            }
-            RoutingEvent::ReleaseRemoved(release) => {
-                let service = ServiceKey::from_release(&release);
+            RoutingEvent::ReleaseRemoved { namespace, service } => {
+                let service = ServiceKey::new(namespace, service);
                 self.releases.remove(&service);
                 services.insert(service);
             }
-            RoutingEvent::InstanceAdded(instance) => {
+            RoutingEvent::InstanceUpsert(instance) => {
                 services.insert(ServiceKey::from_instance(&instance));
+                if let Some(old) = self.instances.get(&instance.instance_id) {
+                    services.insert(ServiceKey::from_instance(old));
+                }
                 self.insert_instance(instance);
             }
-            RoutingEvent::InstanceUpdated { old, new } => {
-                services.insert(ServiceKey::from_instance(&old));
-                services.insert(ServiceKey::from_instance(&new));
-                self.insert_instance(new);
-            }
-            RoutingEvent::InstanceRemoved(instance) => {
-                services.insert(ServiceKey::from_instance(&instance));
-                self.remove_instance(&instance.instance_id);
+            RoutingEvent::InstanceRemoved { instance_id } => {
+                if let Some(instance) = self.instances.get(&instance_id) {
+                    services.insert(ServiceKey::from_instance(instance));
+                }
+                self.remove_instance(&instance_id);
             }
         }
         self.reproject_services(services.into_iter().collect())
@@ -481,18 +470,19 @@ impl GatewayProjector {
 
     fn apply_certificate(&mut self, event: CertificateEvent) -> ProjectionDelta {
         let hostname = match &event {
-            CertificateEvent::Added(record)
-            | CertificateEvent::Updated(record)
-            | CertificateEvent::Removed(record) => {
+            CertificateEvent::Upsert(record) => {
                 NormalizedHostname::parse(&record.hostname).map(NormalizedHostname::into_string)
+            }
+            CertificateEvent::Removed { hostname } => {
+                NormalizedHostname::parse(hostname).map(NormalizedHostname::into_string)
             }
         };
         match event {
-            CertificateEvent::Added(record) | CertificateEvent::Updated(record) => {
+            CertificateEvent::Upsert(record) => {
                 self.project_certificate(record);
             }
-            CertificateEvent::Removed(record) => {
-                if let Some(hostname) = NormalizedHostname::parse(&record.hostname) {
+            CertificateEvent::Removed { hostname } => {
+                if let Some(hostname) = NormalizedHostname::parse(&hostname) {
                     self.certificates.remove(&hostname.into_string());
                 }
             }
@@ -507,20 +497,21 @@ impl GatewayProjector {
 
     fn apply_acme(&mut self, event: AcmeChallengeEvent) -> ProjectionDelta {
         let key = match &event {
-            AcmeChallengeEvent::Added(record)
-            | AcmeChallengeEvent::Updated(record)
-            | AcmeChallengeEvent::Removed(record) => NormalizedHostname::parse(&record.hostname)
+            AcmeChallengeEvent::Upsert(record) => NormalizedHostname::parse(&record.hostname)
                 .map(NormalizedHostname::into_string)
                 .map(|hostname| (hostname, record.token.clone())),
+            AcmeChallengeEvent::Removed { hostname, token } => NormalizedHostname::parse(hostname)
+                .map(NormalizedHostname::into_string)
+                .map(|hostname| (hostname, token.clone())),
         };
         match event {
-            AcmeChallengeEvent::Added(record) | AcmeChallengeEvent::Updated(record) => {
+            AcmeChallengeEvent::Upsert(record) => {
                 self.project_acme(record);
             }
-            AcmeChallengeEvent::Removed(record) => {
-                if let Some(hostname) = NormalizedHostname::parse(&record.hostname) {
+            AcmeChallengeEvent::Removed { hostname, token } => {
+                if let Some(hostname) = NormalizedHostname::parse(&hostname) {
                     self.acme_challenges
-                        .remove(&(hostname.into_string(), record.token));
+                        .remove(&(hostname.into_string(), token));
                 }
             }
         }
@@ -1292,7 +1283,7 @@ mod tests {
     use ployz_types::model::{
         CertificateState, DeployId, DrainState, InstanceStatusRecord, MachineLifecycle, OverlayIp,
         PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord,
-        ServiceRoutingPolicy, SlotId,
+        ServiceRoutingPolicy, SlotId, StorageParticipation,
     };
     use ployz_types::spec::{
         ContainerSpec, NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy,
@@ -1698,10 +1689,7 @@ mod tests {
 
         projector
             .apply(GatewayProjectionEvent::Routing(
-                RoutingEvent::InstanceUpdated {
-                    old: old_api_instance,
-                    new: new_api_instance,
-                },
+                RoutingEvent::InstanceUpsert(new_api_instance),
             ))
             .expect("apply instance update");
 
@@ -1747,10 +1735,7 @@ mod tests {
         let neighbor_service = service_keys[target + 1].clone();
         let delta = projector
             .apply(GatewayProjectionEvent::Routing(
-                RoutingEvent::ReleaseUpdated {
-                    old: releases[target].clone(),
-                    new: releases[target].clone(),
-                },
+                RoutingEvent::ReleaseUpsert(releases[target].clone()),
             ))
             .expect("release update should apply");
 
@@ -1806,10 +1791,7 @@ mod tests {
         reset_conflict_validation_visits();
         projector
             .apply(GatewayProjectionEvent::Routing(
-                RoutingEvent::ReleaseUpdated {
-                    old: releases[421].clone(),
-                    new: releases[421].clone(),
-                },
+                RoutingEvent::ReleaseUpsert(releases[421].clone()),
             ))
             .expect("release update should apply");
 
@@ -1846,15 +1828,7 @@ mod tests {
 
         let error = projector
             .apply(GatewayProjectionEvent::Routing(
-                RoutingEvent::ReleaseUpdated {
-                    old: release_record(
-                        &namespace,
-                        "api",
-                        &spec.revision_hash().expect("revision hash"),
-                        Vec::new(),
-                    ),
-                    new: missing_release,
-                },
+                RoutingEvent::ReleaseUpsert(missing_release),
             ))
             .expect_err("missing revision should fail");
         assert!(matches!(error, ProjectionError::MissingRevision { .. }));
@@ -1887,7 +1861,10 @@ mod tests {
 
         let delta = projector
             .apply(GatewayProjectionEvent::Routing(
-                RoutingEvent::ReleaseRemoved(release),
+                RoutingEvent::ReleaseRemoved {
+                    namespace: release.namespace,
+                    service: release.service,
+                },
             ))
             .expect("release removal should apply");
 
@@ -2038,11 +2015,12 @@ mod tests {
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay ip")),
             topology: MachineTopology::local(),
-            control_target: None,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
+            storage: true,
+            storage_participation: StorageParticipation::default_authority(),
             created_at: 1,
             updated_at: 1,
             labels: BTreeMap::new(),
@@ -2138,7 +2116,7 @@ mod tests {
 
         projector
             .apply(GatewayProjectionEvent::Certificate(
-                CertificateEvent::Added(active_cert("api.example.com", "v1")),
+                CertificateEvent::Upsert(active_cert("api.example.com", "v1")),
             ))
             .expect("certificate projection");
         assert_eq!(
@@ -2155,7 +2133,7 @@ mod tests {
 
         projector
             .apply(GatewayProjectionEvent::AcmeChallenge(
-                AcmeChallengeEvent::Added(challenge("api.example.com", "tok-1")),
+                AcmeChallengeEvent::Upsert(challenge("api.example.com", "tok-1")),
             ))
             .expect("challenge projection");
         assert_eq!(

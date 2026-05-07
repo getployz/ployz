@@ -1,13 +1,12 @@
 use ployz_orchestrator::mesh::WireGuardDevice;
-use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
 use ployz_orchestrator::{Mesh, Phase, WireguardDriver};
 use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
-use ployz_store_api::{MachineRegistry, SyncStatus};
+use ployz_store_api::{MachineMembershipStore, SyncStatus};
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp,
-    PublicKey,
+    MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
+    StorageParticipation,
 };
 use std::net::Ipv6Addr;
 use std::sync::Arc;
@@ -20,10 +19,11 @@ fn test_record(id: &str, key_byte: u8) -> MachineMembership {
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
         topology: MachineTopology::local(),
         subnet: None,
-        control_target: None,
         bridge_ip: None,
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
         lifecycle: MachineLifecycle::Standby,
+        storage: true,
+        storage_participation: StorageParticipation::default_authority(),
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),
@@ -109,7 +109,33 @@ async fn startup_reaches_running_single_node() {
 }
 
 #[tokio::test]
-async fn startup_preserves_stored_self_control_fields_when_seed_rebuilds_runtime_fields() {
+async fn ready_status_reports_store_unhealthy_without_inferring_ready_from_phase() {
+    let wg = Arc::new(MemoryWireGuard::new());
+    let svc = Arc::new(MemoryService::new());
+    let store = Arc::new(MemoryStore::new());
+
+    store
+        .upsert_self_machine(&test_record("m1", 1))
+        .await
+        .unwrap();
+
+    let mut mesh = make_mesh("m1", wg, svc.clone(), store);
+    mesh.up().await.unwrap();
+    assert_eq!(mesh.phase(), Phase::Running);
+
+    svc.set_healthy(false);
+    let ready = mesh.ready_status().await;
+
+    assert!(!ready.store_healthy);
+    assert!(!ready.ready);
+    assert!(
+        ready.sync_connected,
+        "single-node sync should stay independent from store health"
+    );
+}
+
+#[tokio::test]
+async fn startup_preserves_stored_self_state_when_seed_rebuilds_runtime_fields() {
     let wg = Arc::new(MemoryWireGuard::new());
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
@@ -128,7 +154,6 @@ async fn startup_preserves_stored_self_control_fields_when_seed_rebuilds_runtime
     seed.topology =
         MachineTopology::new("seed-region", Some("seed-a")).expect("valid seed topology");
     seed.subnet = Some("10.210.9.0/24".parse().expect("valid subnet"));
-    seed.control_target = Some("https://self.example".into());
     seed.endpoints = vec!["new.example:51820".into()];
 
     let mut mesh = Mesh::new(
@@ -155,7 +180,6 @@ async fn startup_preserves_stored_self_control_fields_when_seed_rebuilds_runtime
     assert_eq!(self_record.overlay_ip, seed.overlay_ip);
     assert_eq!(self_record.topology, seed.topology);
     assert_eq!(self_record.subnet, seed.subnet);
-    assert_eq!(self_record.control_target, seed.control_target);
     assert_eq!(self_record.endpoints, seed.endpoints);
     assert_eq!(self_record.bridge_ip, None);
 
@@ -351,39 +375,7 @@ async fn bootstrap_connection_timeout() {
     assert_eq!(mesh.phase(), Phase::Stopped);
 }
 
-#[tokio::test]
-async fn bootstrap_allows_disconnected_store_when_requested() {
-    let wg = Arc::new(MemoryWireGuard::new());
-    let svc = Arc::new(MemoryService::new());
-    let store = Arc::new(MemoryStore::new());
-    let founder_record = test_record("founder", 1);
-    let peer_record = test_record("peer", 2);
-
-    store.upsert_self_machine(&founder_record).await.unwrap();
-    store.upsert_self_machine(&peer_record).await.unwrap();
-    store.set_sync_status(SyncStatus::Disconnected);
-
-    let mut mesh = Mesh::new(
-        WireguardDriver::memory_with(wg),
-        StoreDriver::memory_with(store, svc),
-        None,
-        founder_record.id.clone(),
-        51820,
-    )
-    .with_seed_records(vec![peer_record])
-    .with_disconnected_bootstrap_allowed(true)
-    .with_bootstrap_timing(Duration::from_millis(10), Duration::from_millis(100));
-
-    mesh.up().await.unwrap();
-    assert_eq!(mesh.phase(), Phase::Running);
-
-    let ready = mesh.ready_status().await;
-    assert!(!ready.sync_connected);
-    assert!(!ready.ready);
-}
-
-/// Bootstrap gate proceeds once gossip sees a peer (any non-Disconnected status).
-/// We do NOT wait for gaps == 0 — see bootstrap_gate doc comment.
+/// Bootstrap gate proceeds once the store can complete a sync probe.
 #[tokio::test]
 async fn bootstrap_proceeds_on_membership() {
     let wg = Arc::new(MemoryWireGuard::new());
@@ -400,8 +392,7 @@ async fn bootstrap_proceeds_on_membership() {
     let s = store.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(30)).await;
-        // Syncing (with gaps) is enough — gate doesn't wait for Synced.
-        s.set_sync_status(SyncStatus::Syncing { gaps: 100 });
+        s.set_sync_status(SyncStatus::Synced);
     });
 
     let mut mesh = Mesh::new(
@@ -418,80 +409,10 @@ async fn bootstrap_proceeds_on_membership() {
     assert_eq!(mesh.phase(), Phase::Running);
 }
 
-// --- Two-node join ---
-
-/// Founder-side join bootstrap must be able to configure a remote peer without
-/// durably publishing that remote machine row into the store.
-#[tokio::test]
-async fn founder_can_configure_joiner_from_transient_peer() {
-    // Founder node
-    let founder_wg = Arc::new(MemoryWireGuard::new());
-    let founder_svc = Arc::new(MemoryService::new());
-    let founder_store = Arc::new(MemoryStore::new());
-
-    let founder_record = test_record("founder", 1);
-    founder_store
-        .upsert_self_machine(&founder_record)
-        .await
-        .unwrap();
-
-    let mut founder_mesh = make_mesh(
-        "founder",
-        founder_wg.clone(),
-        founder_svc,
-        founder_store.clone(),
-    );
-    founder_mesh.up().await.unwrap();
-    assert_eq!(founder_mesh.phase(), Phase::Running);
-
-    // Simulate the JoinResponse flow: joiner builds a JoinResponse from its identity
-    // and founder installs it as a transient peer only.
-    let joiner_record = test_record("joiner", 2);
-    let join_resp = JoinResponse {
-        machine_id: joiner_record.id.clone(),
-        public_key: joiner_record.public_key.clone(),
-        overlay_ip: joiner_record.overlay_ip,
-        topology: joiner_record.topology.clone(),
-        subnet: joiner_record.subnet,
-        endpoints: joiner_record.endpoints.clone(),
-    };
-
-    // Encode → decode roundtrip (simulates SSH transport)
-    let encoded = join_resp.encode().unwrap();
-    let decoded = JoinResponse::decode(&encoded).unwrap();
-    let record = decoded.into_seed_machine_membership();
-
-    founder_mesh
-        .peer_sync_sender()
-        .expect("peer sync sender")
-        .send(PeerSyncCommand::UpsertTransient(record.observation()))
-        .await
-        .unwrap();
-
-    // Give peer_sync time to pick up the record.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    assert!(
-        founder_wg
-            .current_peers()
-            .iter()
-            .any(|peer| peer.id().0 == "joiner"),
-        "transient joiner peer must be configured for the overlay to form"
-    );
-
-    let machines = founder_store.list_machines().await.unwrap();
-    assert!(
-        !machines.iter().any(|m| m.id.0 == "joiner"),
-        "founder must not durably publish the joiner row"
-    );
-
-    founder_mesh.destroy().await.unwrap();
-}
-
 // --- Store events ---
 
 #[tokio::test]
-async fn store_event_triggers_reconcile() {
+async fn store_event_applies_peer_update() {
     let wg = Arc::new(MemoryWireGuard::new());
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
@@ -506,7 +427,7 @@ async fn store_event_triggers_reconcile() {
 
     let initial_count = wg.set_peers_count();
 
-    // Add a peer via the store — should trigger event → reconcile.
+    // Add a peer via the store; the subscription event should update WireGuard.
     store
         .upsert_self_machine(&test_record("m2", 2))
         .await

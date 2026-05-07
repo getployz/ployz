@@ -1,0 +1,26 @@
+[package]
+name = "ployz-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "ployz_sim"
+path = "src/lib.rs"
+
+[dependencies]
+ployz-dns = { path = "../ployz-dns" }
+ployz-gateway = { path = "../ployz-gateway" }
+ployz-orchestrator = { path = "../ployz-orchestrator" }
+ployz-store-api = { path = "../ployz-store-api" }
+ployz-types = { path = "../ployz-types" }
+rand = { workspace = true }
+tokio = { workspace = true }
+
+[lints.clippy]
+indexing_slicing = "warn"
+fallible_impl_from = "warn"
+wildcard_enum_match_arm = "warn"
+fn_params_excessive_bools = "warn"
+must_use_candidate = "warn"

@@ -1,22 +1,20 @@
 use crate::daemon::DaemonState;
-use futures_util::StreamExt;
-use futures_util::stream::FuturesUnordered;
 use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineRemovePayload, MachineRttPayload,
     MachineRttRow,
 };
-use ployz_store_api::{MachineRegistry, PeerRttObservation, PeerRttStore, StoreDriver};
+use ployz_store_api::{MachineMembershipStore, PeerRttObservation, PeerRttStore, StoreDriver};
 use ployz_types::model::{MachineId, MachineMembership};
 use std::collections::HashMap;
 use std::net::IpAddr;
 
 use super::render::{format_lifecycle, format_timestamp, render_machine_list_report};
 use super::types::{MachineListReport, MachineListReportRow};
-use crate::daemon::handlers::peer_rpc::{
-    OverlayRpcExpectOkError, PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
-    overlay_rpc_expect_ok_classified_with_read_timeout,
-};
 use crate::mesh_state::bootstrap::refresh_bootstrap_peer_records_from_store;
+use ployz_nats::{NodeCommandSubject, RpcPolicy};
+use std::time::Duration;
+
+const MACHINE_REMOVE_RPC_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl DaemonState {
     pub(crate) async fn handle_machine_list(&self) -> DaemonResponse {
@@ -61,48 +59,6 @@ impl DaemonState {
             Ok(rows) => rows,
             Err(err) => return self.err("RTT_READ_FAILED", err),
         };
-        let peer_rpc_port = match self.peer_control_port() {
-            Ok(port) => port,
-            Err(error) => return self.err("PEER_RPC_UNAVAILABLE", error.to_string()),
-        };
-
-        let mut remotes = FuturesUnordered::new();
-        for machine in machines
-            .iter()
-            .filter(|machine| machine.id != self.identity.machine_id)
-        {
-            let machine_id = machine.id.clone();
-            let overlay_ip = machine.overlay_ip;
-            remotes.push(async move {
-                let response = crate::daemon::handlers::peer_rpc::overlay_rpc(
-                    overlay_ip,
-                    peer_rpc_port,
-                    DaemonRequest::MeshPeerRttSnapshot,
-                )
-                .await;
-                (machine_id, response)
-            });
-        }
-
-        let mut warnings = Vec::new();
-        while let Some((machine_id, response)) = remotes.next().await {
-            match response {
-                Ok(response) if response.ok => match response.payload {
-                    Some(DaemonPayload::MachineRtt(payload)) => rows.extend(payload.rows),
-                    Some(_) | None => {
-                        warnings.push(format!("machine '{}' returned no RTT payload", machine_id))
-                    }
-                },
-                Ok(response) => warnings.push(format!(
-                    "machine '{}' RTT snapshot failed [{}]: {}",
-                    machine_id, response.code, response.message
-                )),
-                Err(error) => warnings.push(format!(
-                    "machine '{}' RTT snapshot unreachable: {error}",
-                    machine_id
-                )),
-            }
-        }
 
         rows.sort_by(|left, right| {
             left.machine
@@ -111,10 +67,10 @@ impl DaemonState {
         });
         let payload = MachineRttPayload {
             rows,
-            warnings: warnings.clone(),
+            warnings: Vec::new(),
         };
         self.ok_with_payload(
-            render_machine_rtt_report(&payload, warnings.as_slice()),
+            render_machine_rtt_report(&payload, payload.warnings.as_slice()),
             Some(DaemonPayload::MachineRtt(payload)),
         )
     }
@@ -178,37 +134,49 @@ impl DaemonState {
         }
 
         if !force {
-            let peer_rpc_port = match self.peer_control_port() {
-                Ok(port) => port,
-                Err(error) => return self.err("PEER_RPC_UNAVAILABLE", error.to_string()),
-            };
-            let operation_id = format!("machine-rm-{}", ployz_types::model::NetworkId::random());
-            if let Err(error) = overlay_rpc_expect_ok_classified_with_read_timeout(
-                record.overlay_ip,
-                peer_rpc_port,
-                DaemonRequest::MeshPeerRemoveMachine {
-                    operation_id,
-                    network_id: active.config.id.clone(),
-                    machine_id: record.id.clone(),
-                },
-                PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
-            )
-            .await
-            {
-                return match error {
-                    OverlayRpcExpectOkError::Transport(error) => self.err(
+            let rpc_client = match self.nats_node_rpc_client().await {
+                Ok(client) => client.with_policy(RpcPolicy {
+                    timeout: MACHINE_REMOVE_RPC_TIMEOUT,
+                }),
+                Err(error) => {
+                    return self.err(
                         "MACHINE_REMOVE_PEER_UNREACHABLE",
                         format!(
-                            "machine '{id}' did not confirm online removal; rerun with --force for registry-only removal: {error}"
+                            "machine '{id}' did not confirm online removal; rerun with --force for membership-record-only removal: {error}"
                         ),
-                    ),
-                    OverlayRpcExpectOkError::Remote { code, message } => self.err(
+                    );
+                }
+            };
+            let operation_id = format!("machine-rm-{}", ployz_types::model::NetworkId::random());
+            let response = rpc_client
+                .request(
+                    NodeCommandSubject::mesh_remove_machine(&record.id),
+                    &DaemonRequest::MeshPeerRemoveMachine {
+                        operation_id,
+                        network_id: active.config.id.clone(),
+                        machine_id: record.id.clone(),
+                    },
+                )
+                .await;
+            match response {
+                Ok(response) if response.ok => {}
+                Ok(response) => {
+                    return self.err(
                         "MACHINE_REMOVE_PEER_REJECTED",
                         format!(
-                            "machine '{id}' rejected coordinated removal [{code}]: {message}; resolve the remote failure or rerun with --force only if you intend registry-only removal"
+                            "machine '{id}' rejected coordinated removal [{}]: {}; resolve the remote failure or rerun with --force only if you intend membership-record-only removal",
+                            response.code, response.message
                         ),
-                    ),
-                };
+                    );
+                }
+                Err(error) => {
+                    return self.err(
+                        "MACHINE_REMOVE_PEER_UNREACHABLE",
+                        format!(
+                            "machine '{id}' did not confirm online removal; rerun with --force for membership-record-only removal: {error}"
+                        ),
+                    );
+                }
             }
         }
 
@@ -225,7 +193,7 @@ impl DaemonState {
                     tracing::warn!(
                         %machine_id,
                         %error,
-                        "failed to refresh bootstrap seed cache after machine remove"
+                        "failed to refresh bootstrap peer seed after machine remove"
                     );
                 }
                 self.ok_with_payload(
@@ -249,7 +217,7 @@ async fn machine_rtt_rows_for(
     let observations = store
         .peer_rtt_observations()
         .await
-        .map_err(|err| format!("failed to read Corrosion peer RTTs: {err}"))?;
+        .map_err(|err| format!("failed to read peer RTT observations: {err}"))?;
     Ok(rows_from_rtt_observations(
         source_machine_id,
         machines,

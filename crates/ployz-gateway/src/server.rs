@@ -20,6 +20,7 @@ use crate::routes::GatewaySnapshot;
 use crate::routes::ProjectedTlsMaterial;
 use crate::snapshot::SharedSnapshot;
 use crate::sync::load_projected_snapshot_from_store;
+use ployz_types::model::MachineId;
 
 const STORE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const STORE_READY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -234,7 +235,7 @@ pub fn run_gateway_process_with_store<S>(
     store: S,
 ) -> Result<(), GatewayError>
 where
-    S: crate::sync::RoutingSnapshotReader + Send + Sync + 'static,
+    S: crate::sync::RoutingStateStore + Send + Sync + 'static,
 {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -247,28 +248,26 @@ where
 
 /// Run the gateway using an externally-provided runtime.
 ///
-/// All Corrosion client work (connect, initial snapshot, live subscriptions)
-/// must stay on a single tokio runtime: `reqwest::Client` pins its HTTP/2
-/// connection driver to the runtime that first used it, and any cross-runtime
-/// call will hang waiting for a response that never comes.
+/// Run store sync and Pingora against the same runtime so store subscriptions
+/// keep polling while Pingora owns the main thread.
 pub fn run_gateway_process_on_runtime<S>(
     runtime: tokio::runtime::Runtime,
     config: GatewayConfig,
     store: S,
 ) -> Result<(), GatewayError>
 where
-    S: crate::sync::RoutingSnapshotReader + Send + Sync + 'static,
+    S: crate::sync::RoutingStateStore + Send + Sync + 'static,
 {
     let initial_snapshot = runtime.block_on(wait_for_initial_snapshot(&store))?;
     crate::metrics::update_route_counts(&initial_snapshot);
     let shared_snapshot = SharedSnapshot::new(initial_snapshot);
 
-    // Keep the sync loop on the same runtime so the Corrosion client never
-    // crosses runtimes. The multi-thread runtime's worker threads keep
-    // polling while pingora blocks the main thread.
+    // The multi-thread runtime's worker threads keep polling store events while
+    // Pingora blocks the main thread.
     let sync_snapshot = shared_snapshot.clone();
+    let sync_machine_id = MachineId(config.machine_id.clone());
     runtime.spawn(async move {
-        if let Err(err) = crate::sync::run_sync_loop(store, sync_snapshot).await {
+        if let Err(err) = crate::sync::run_sync_loop(store, sync_snapshot, sync_machine_id).await {
             tracing::warn!(?err, "gateway sync loop exited");
         }
     });
@@ -284,15 +283,15 @@ where
         None,
     );
 
-    // Explicitly tear down the runtime so any in-flight Corrosion tasks get
-    // a chance to finish before the process exits.
+    // Explicitly tear down the runtime so in-flight store tasks get a chance to
+    // finish before the process exits.
     runtime.shutdown_background();
     result
 }
 
 async fn wait_for_initial_snapshot<S>(store: &S) -> Result<GatewaySnapshot, GatewayError>
 where
-    S: crate::sync::RoutingSnapshotReader + Send + Sync,
+    S: crate::sync::RoutingStateStore + Send + Sync,
 {
     let deadline = tokio::time::Instant::now() + STORE_READY_TIMEOUT;
     loop {
@@ -304,20 +303,20 @@ where
         {
             Ok(Ok(snapshot)) => return Ok(snapshot),
             Ok(Err(error)) if tokio::time::Instant::now() < deadline => {
-                warn!(?error, "gateway waiting for corrosion query readiness");
+                warn!(?error, "gateway waiting for store readiness");
             }
             Err(_) if tokio::time::Instant::now() < deadline => {
                 warn!("gateway timed out loading initial store snapshot; retrying");
             }
             Ok(Err(error)) => {
                 return Err(GatewayError::Store(format!(
-                    "corrosion query API did not become ready within {:?}: {error}",
+                    "store did not become ready within {:?}: {error}",
                     STORE_READY_TIMEOUT
                 )));
             }
             Err(_) => {
                 return Err(GatewayError::Store(format!(
-                    "corrosion query API did not return initial snapshot within {:?}",
+                    "store did not return initial snapshot within {:?}",
                     STORE_READY_TIMEOUT
                 )));
             }
@@ -362,6 +361,9 @@ mod tests {
 
     #[tokio::test]
     async fn gateway_metrics_listener_reports_requests_and_route_counts() {
+        let _metrics_guard = crate::metrics::ROUTE_METRICS_TEST_LOCK
+            .lock()
+            .expect("route metrics test lock should not be poisoned");
         ployz_metrics::set_build_info("ployz-gateway", env!("CARGO_PKG_VERSION"));
         let gateway_addr = free_local_addr();
         let metrics_addr = free_local_addr();
@@ -393,6 +395,8 @@ mod tests {
             certificates: std::collections::HashMap::new(),
         };
         crate::metrics::update_route_counts(&snapshot);
+        crate::metrics::set_store_sync_healthy("routing", true);
+        crate::metrics::set_store_sync_healthy("certificates", false);
 
         let shared_snapshot = SharedSnapshot::new(snapshot);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -428,6 +432,13 @@ mod tests {
         ));
         assert!(metrics.contains("ployz_gateway_routes{protocol=\"http\"} 1"));
         assert!(metrics.contains("ployz_gateway_routes{protocol=\"tcp\"} 0"));
+        assert!(metrics.contains("ployz_gateway_store_sync_healthy{stream=\"routing\"} 1"));
+        assert!(metrics.contains(
+            "ployz_gateway_store_sync_state_since_unix_seconds{stream=\"certificates\"}"
+        ));
+        assert!(
+            metrics.contains("ployz_gateway_store_sync_failures_total{stream=\"certificates\"}")
+        );
 
         let _ = shutdown_tx.send(());
         gateway_thread.join().expect("gateway thread should join");

@@ -19,26 +19,21 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 #[cfg(target_os = "linux")]
 use tokio::process::Command;
 
-const LOCAL_ENDPOINT_AUDIT_INTERVAL: Duration = Duration::from_secs(60);
-
-pub(crate) fn spawn_local_endpoint_maintenance(
+pub(crate) fn spawn_local_endpoint_publisher(
     state: Arc<RwLock<DaemonState>>,
     cancel: CancellationToken,
 ) {
     tokio::spawn(async move {
-        let mut audit = tokio::time::interval(LOCAL_ENDPOINT_AUDIT_INTERVAL);
         let mut watcher = spawn_linux_endpoint_watcher();
+        publish_local_endpoints_from_state(&state).await;
 
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => break,
-                _ = audit.tick() => {
-                    reconcile_local_endpoints_from_state(&state).await;
-                }
                 event = watcher.next() => {
                     match event {
                         Some(EndpointWatchEvent::Changed) => {
-                            reconcile_local_endpoints_from_state(&state).await;
+                            publish_local_endpoints_from_state(&state).await;
                         }
                         Some(EndpointWatchEvent::Closed) => {
                             watcher = EndpointWatcher::unsupported();
@@ -55,7 +50,7 @@ pub(crate) fn local_endpoint_watch_supported() -> bool {
     cfg!(target_os = "linux")
 }
 
-pub(crate) async fn reconcile_local_endpoints_for_mesh(
+pub(crate) async fn publish_local_endpoints_for_mesh(
     mesh: &Mesh,
     detected_endpoints: Vec<String>,
 ) -> Result<Option<Vec<String>>, String> {
@@ -78,7 +73,7 @@ pub(crate) async fn reconcile_local_endpoints_for_mesh(
     }
 }
 
-async fn reconcile_local_endpoints_from_state(state: &Arc<RwLock<DaemonState>>) {
+async fn publish_local_endpoints_from_state(state: &Arc<RwLock<DaemonState>>) {
     {
         let state_guard = state.read().await;
         if state_guard.active.is_none() {
@@ -92,7 +87,7 @@ async fn reconcile_local_endpoints_from_state(state: &Arc<RwLock<DaemonState>>) 
         let Some(active) = state_guard.active.as_ref() else {
             return;
         };
-        reconcile_local_endpoints_for_mesh(&active.mesh, detected_endpoints).await
+        publish_local_endpoints_for_mesh(&active.mesh, detected_endpoints).await
     };
 
     match result {
@@ -101,7 +96,7 @@ async fn reconcile_local_endpoints_from_state(state: &Arc<RwLock<DaemonState>>) 
         }
         Ok(None) => {}
         Err(error) => {
-            warn!(%error, "failed to reconcile advertised self endpoints");
+            warn!(%error, "failed to publish advertised self endpoints");
         }
     }
 }

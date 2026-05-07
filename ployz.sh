@@ -552,7 +552,6 @@ PLOYZCTL_PATH=$(shell_quote "${bin_dir}/ployzctl")
 PLOYZD_PATH=$(shell_quote "${bin_dir}/ployzd")
 PLOYZ_GATEWAY_PATH=$(shell_quote "${bin_dir}/ployz-gateway")
 PLOYZ_DNS_PATH=$(shell_quote "${bin_dir}/ployz-dns")
-CORROSION_PATH=$(shell_quote "${bin_dir}/corrosion")
 RUNTIME_TARGET=$(shell_quote "${runtime_target}")
 SERVICE_MODE=$(shell_quote "${service_mode}")
 SERVICE_BACKEND=$(shell_quote "")
@@ -584,7 +583,7 @@ install_payload() {
   required_payload_file "${payload_dir}" "bin/ployzd"
   required_payload_file "${payload_dir}" "bin/ployz-gateway"
   required_payload_file "${payload_dir}" "bin/ployz-dns"
-  required_payload_file "${payload_dir}" "bin/corrosion"
+  required_payload_file "${payload_dir}" "bin/nats-server"
   required_payload_file "${payload_dir}" "assets/systemd/ployzd.service"
 
   bin_dir="$(user_bin_dir)"
@@ -603,8 +602,8 @@ install_payload() {
   install -m 0755 "${payload_dir}/bin/ployz-gateway" "${bin_dir}/ployz-gateway"
   info "ployz-dns     -> ${bin_dir}/ployz-dns"
   install -m 0755 "${payload_dir}/bin/ployz-dns" "${bin_dir}/ployz-dns"
-  info "corrosion     -> ${bin_dir}/corrosion"
-  install -m 0755 "${payload_dir}/bin/corrosion" "${bin_dir}/corrosion"
+  info "nats-server   -> ${bin_dir}/nats-server"
+  install -m 0755 "${payload_dir}/bin/nats-server" "${bin_dir}/nats-server"
 
   step "Installing assets to ${assets_path}"
   install -d "${assets_path}/systemd"

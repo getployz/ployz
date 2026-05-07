@@ -150,4 +150,33 @@ mod tests {
         assert!(response.ok);
         assert_eq!(response.message, "pong");
     }
+
+    #[tokio::test]
+    async fn stdio_transport_surfaces_malformed_daemon_output() {
+        let transport =
+            StdioTransport::new("/bin/sh").args(["-c", "read line\nprintf 'not-json\\n'\n"]);
+
+        let error = transport
+            .request(DaemonRequest::Status)
+            .await
+            .expect_err("malformed daemon output should fail");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn stdio_transport_surfaces_child_failure_stderr() {
+        let transport = StdioTransport::new("/bin/sh").args([
+            "-c",
+            "read line\nprintf 'daemon unavailable\\n' >&2\nexit 42\n",
+        ]);
+
+        let error = transport
+            .request(DaemonRequest::Status)
+            .await
+            .expect_err("child failure should fail");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(error.to_string(), "daemon unavailable");
+    }
 }

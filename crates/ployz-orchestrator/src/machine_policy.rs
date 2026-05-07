@@ -110,6 +110,26 @@ mod tests {
     }
 
     #[test]
+    fn draining_machines_keep_existing_slots_but_do_not_receive_new_placements() {
+        let active = machine("active", MachineLifecycle::Active);
+        let draining = machine("draining", MachineLifecycle::Draining);
+        let standby = machine("standby", MachineLifecycle::Standby);
+
+        assert!(is_new_placement_candidate(&active));
+        assert!(!is_new_placement_candidate(&draining));
+        assert!(!is_new_placement_candidate(&standby));
+
+        assert!(can_keep_existing_slot(&active));
+        assert!(can_keep_existing_slot(&draining));
+        assert!(!can_keep_existing_slot(&standby));
+
+        assert_eq!(
+            diagnostic_role(&draining, &MachineId("self".into())),
+            Some(DiagnosticRole::Blocking)
+        );
+    }
+
+    #[test]
     fn coordination_peers_include_draining_and_exclude_disabled() {
         let machines = vec![
             machine("self", MachineLifecycle::Active),

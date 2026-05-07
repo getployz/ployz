@@ -19,7 +19,7 @@ use crate::spec::{
     VolumeDeclaration,
 };
 use crate::storage::{ShellRunner, TokioShellRunner, ZfsDriver, resolve_volumes};
-use ployz_store_api::InstanceStatusRepository;
+use ployz_store_api::InstanceStatusStore;
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 
@@ -130,7 +130,16 @@ impl LocalDeployRuntime {
 
         let mut instances = Vec::new();
         for obs in observed {
-            let Some(wl) = extract_workload_labels(&obs.labels) else {
+            let Some(labels) = obs.labels.as_observed() else {
+                continue;
+            };
+            let Some(wl) = extract_workload_labels(labels) else {
+                continue;
+            };
+            let Some(container_id) = obs.container_id.as_observed() else {
+                continue;
+            };
+            let Some(ip_address) = obs.ip_address.as_observed() else {
                 continue;
             };
             instances.push(ManagedInstance {
@@ -140,8 +149,8 @@ impl LocalDeployRuntime {
                 machine_id: MachineId(wl.machine_id),
                 revision_hash: wl.revision_hash,
                 deploy_id: DeployId(wl.deploy_id),
-                docker_container_id: obs.container_id,
-                ip_address: obs.ip_address,
+                docker_container_id: container_id.clone(),
+                ip_address: *ip_address,
                 backend_ports: BTreeMap::new(),
             });
         }
@@ -768,12 +777,9 @@ mod tests {
         // `connect_with_http` only builds an HTTP client and never touches
         // the network until a request is issued. Don't switch back unless the
         // test starts actually exercising Docker.
-        let docker = Docker::connect_with_http(
-            "http://127.0.0.1:1",
-            1,
-            bollard::API_DEFAULT_VERSION,
-        )
-        .expect("placeholder docker handle");
+        let docker =
+            Docker::connect_with_http("http://127.0.0.1:1", 1, bollard::API_DEFAULT_VERSION)
+                .expect("placeholder docker handle");
         let engine = ContainerEngine::new(docker);
         let runtime = LocalDeployRuntime::from_engine(engine, None, None, None);
 

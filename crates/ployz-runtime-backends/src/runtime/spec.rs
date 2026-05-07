@@ -94,39 +94,75 @@ impl Default for RuntimeContainerSpec {
 /// Observed state of a container from `docker inspect`.
 #[derive(Debug, Clone)]
 pub struct ObservedContainer {
-    pub container_id: String,
-    pub container_name: String,
-    pub running: bool,
-    pub image: String,
-    pub cmd: Option<Vec<String>>,
-    pub entrypoint: Option<Vec<String>>,
-    pub env: Vec<(String, String)>,
-    pub labels: HashMap<String, String>,
-    pub binds: Vec<String>,
-    pub tmpfs: HashMap<String, String>,
-    pub dns_servers: Vec<String>,
-    pub network_mode: Option<String>,
-    pub port_bindings: Option<PortMap>,
-    pub cap_add: Vec<String>,
-    pub cap_drop: Vec<String>,
-    pub privileged: bool,
-    pub user: Option<String>,
-    pub restart_policy: Option<RestartPolicy>,
-    pub memory_bytes: Option<i64>,
-    pub nano_cpus: Option<i64>,
-    pub sysctls: HashMap<String, String>,
-    pub stop_timeout: Option<i64>,
-    pub pid_mode: Option<String>,
-    pub ip_address: Option<IpAddr>,
-    pub networks: HashMap<String, String>,
+    pub container_id: Observation<String>,
+    pub container_name: Observation<String>,
+    pub running: Observation<bool>,
+    pub image: Observation<String>,
+    pub cmd: Observation<Option<Vec<String>>>,
+    pub entrypoint: Observation<Option<Vec<String>>>,
+    pub env: Observation<Vec<(String, String)>>,
+    pub labels: Observation<HashMap<String, String>>,
+    pub binds: Observation<Vec<String>>,
+    pub tmpfs: Observation<HashMap<String, String>>,
+    pub dns_servers: Observation<Vec<String>>,
+    pub network_mode: Observation<Option<String>>,
+    pub port_bindings: Observation<Option<PortMap>>,
+    pub cap_add: Observation<Vec<String>>,
+    pub cap_drop: Observation<Vec<String>>,
+    pub privileged: Observation<bool>,
+    pub user: Observation<Option<String>>,
+    pub restart_policy: Observation<Option<RestartPolicy>>,
+    pub memory_bytes: Observation<Option<i64>>,
+    pub nano_cpus: Observation<Option<i64>>,
+    pub sysctls: Observation<HashMap<String, String>>,
+    pub stop_timeout: Observation<Option<i64>>,
+    pub pid_mode: Observation<Option<String>>,
+    pub ip_address: Observation<Option<IpAddr>>,
+    pub networks: Observation<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Observation<T> {
+    Observed(T),
+    Missing,
+    Malformed(String),
+    Unknown,
+}
+
+impl<T> Observation<T> {
+    #[must_use]
+    pub fn observed(value: T) -> Self {
+        Self::Observed(value)
+    }
+
+    #[must_use]
+    pub fn as_observed(&self) -> Option<&T> {
+        match self {
+            Self::Observed(value) => Some(value),
+            Self::Missing | Self::Malformed(_) | Self::Unknown => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_observed_mut(&mut self) -> Option<&mut T> {
+        match self {
+            Self::Observed(value) => Some(value),
+            Self::Missing | Self::Malformed(_) | Self::Unknown => None,
+        }
+    }
+
+    #[must_use]
+    pub fn is_observed(&self) -> bool {
+        matches!(self, Self::Observed(_))
+    }
 }
 
 /// Parse env string "KEY=VALUE" into (key, value) tuple.
 #[cfg(feature = "docker")]
-fn parse_env_pair(s: &str) -> (String, String) {
+fn parse_env_pair(s: &str) -> Result<(String, String), String> {
     match s.split_once('=') {
-        Some((k, v)) => (k.to_string(), v.to_string()),
-        None => (s.to_string(), String::new()),
+        Some((k, v)) => Ok((k.to_string(), v.to_string())),
+        None => Err(format!("environment entry '{s}' is missing '='")),
     }
 }
 
@@ -213,104 +249,222 @@ pub fn observe(info: &ContainerInspectResponse) -> ObservedContainer {
     let host_config = info.host_config.as_ref();
     let state = info.state.as_ref();
 
-    let labels = config
-        .and_then(|c| c.labels.as_ref())
-        .cloned()
-        .unwrap_or_default();
+    let labels = match config {
+        Some(config) => config
+            .labels
+            .clone()
+            .map(Observation::Observed)
+            .unwrap_or(Observation::Missing),
+        None => Observation::Unknown,
+    };
 
-    let env: Vec<(String, String)> = config
-        .and_then(|c| c.env.as_ref())
-        .map(|vars| vars.iter().map(|s| parse_env_pair(s)).collect())
-        .unwrap_or_default();
+    let env = match config {
+        Some(config) => match config.env.as_ref() {
+            Some(vars) => vars
+                .iter()
+                .map(|s| parse_env_pair(s))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Observation::Observed)
+                .unwrap_or_else(Observation::Malformed),
+            None => Observation::Missing,
+        },
+        None => Observation::Unknown,
+    };
 
-    let binds = host_config
-        .and_then(|h| h.binds.as_ref())
-        .cloned()
-        .unwrap_or_default();
+    let binds = match host_config {
+        Some(host_config) => host_config
+            .binds
+            .clone()
+            .map(Observation::Observed)
+            .unwrap_or(Observation::Missing),
+        None => Observation::Unknown,
+    };
 
-    let tmpfs = host_config
-        .and_then(|h| h.tmpfs.as_ref())
-        .cloned()
-        .unwrap_or_default();
+    let tmpfs = match host_config {
+        Some(host_config) => host_config
+            .tmpfs
+            .clone()
+            .map(Observation::Observed)
+            .unwrap_or(Observation::Missing),
+        None => Observation::Unknown,
+    };
 
-    let dns_servers = host_config
-        .and_then(|h| h.dns.as_ref())
-        .cloned()
-        .unwrap_or_default();
+    let dns_servers = match host_config {
+        Some(host_config) => host_config
+            .dns
+            .clone()
+            .map(Observation::Observed)
+            .unwrap_or(Observation::Missing),
+        None => Observation::Unknown,
+    };
 
-    let network_mode = host_config.and_then(|h| h.network_mode.clone());
+    let network_mode = match host_config {
+        Some(host_config) => Observation::Observed(host_config.network_mode.clone()),
+        None => Observation::Unknown,
+    };
 
-    let port_bindings = host_config
-        .and_then(|h| h.port_bindings.as_ref())
-        .map(port_map_from_bollard);
+    let port_bindings = match host_config {
+        Some(host_config) => Observation::Observed(
+            host_config
+                .port_bindings
+                .as_ref()
+                .map(port_map_from_bollard),
+        ),
+        None => Observation::Unknown,
+    };
 
-    let cap_add = host_config
-        .and_then(|h| h.cap_add.as_ref())
-        .cloned()
-        .unwrap_or_default();
+    let cap_add = match host_config {
+        Some(host_config) => host_config
+            .cap_add
+            .clone()
+            .map(Observation::Observed)
+            .unwrap_or(Observation::Missing),
+        None => Observation::Unknown,
+    };
 
-    let cap_drop = host_config
-        .and_then(|h| h.cap_drop.as_ref())
-        .cloned()
-        .unwrap_or_default();
+    let cap_drop = match host_config {
+        Some(host_config) => host_config
+            .cap_drop
+            .clone()
+            .map(Observation::Observed)
+            .unwrap_or(Observation::Missing),
+        None => Observation::Unknown,
+    };
 
-    let privileged = host_config.and_then(|h| h.privileged).unwrap_or(false);
+    let privileged = match host_config {
+        Some(host_config) => host_config
+            .privileged
+            .map(Observation::Observed)
+            .unwrap_or(Observation::Missing),
+        None => Observation::Unknown,
+    };
 
-    let user = config
-        .and_then(|c| c.user.clone())
-        .filter(|u| !u.is_empty());
+    let user = match config {
+        Some(config) => Observation::Observed(config.user.clone().filter(|u| !u.is_empty())),
+        None => Observation::Unknown,
+    };
 
-    let restart_policy = host_config
-        .and_then(|h| h.restart_policy.as_ref())
-        .map(restart_policy_from_bollard);
+    let restart_policy = match host_config {
+        Some(host_config) => Observation::Observed(
+            host_config
+                .restart_policy
+                .as_ref()
+                .map(restart_policy_from_bollard),
+        ),
+        None => Observation::Unknown,
+    };
 
-    let memory_bytes = host_config.and_then(|h| h.memory).filter(|&m| m > 0);
+    let memory_bytes = match host_config {
+        Some(host_config) => Observation::Observed(host_config.memory.filter(|&m| m > 0)),
+        None => Observation::Unknown,
+    };
 
-    let nano_cpus = host_config.and_then(|h| h.nano_cpus).filter(|&c| c > 0);
+    let nano_cpus = match host_config {
+        Some(host_config) => Observation::Observed(host_config.nano_cpus.filter(|&c| c > 0)),
+        None => Observation::Unknown,
+    };
 
-    let sysctls = host_config
-        .and_then(|h| h.sysctls.as_ref())
-        .cloned()
-        .unwrap_or_default();
+    let sysctls = match host_config {
+        Some(host_config) => host_config
+            .sysctls
+            .clone()
+            .map(Observation::Observed)
+            .unwrap_or(Observation::Missing),
+        None => Observation::Unknown,
+    };
 
-    let pid_mode = host_config.and_then(|h| h.pid_mode.clone());
+    let pid_mode = match host_config {
+        Some(host_config) => Observation::Observed(host_config.pid_mode.clone()),
+        None => Observation::Unknown,
+    };
 
-    let stop_timeout = config.and_then(|c| c.stop_timeout);
+    let stop_timeout = match config {
+        Some(config) => Observation::Observed(config.stop_timeout),
+        None => Observation::Unknown,
+    };
 
-    let image = config.and_then(|c| c.image.clone()).unwrap_or_default();
+    let image = match config {
+        Some(config) => config
+            .image
+            .clone()
+            .map(Observation::Observed)
+            .unwrap_or(Observation::Missing),
+        None => Observation::Unknown,
+    };
 
-    let cmd = config.and_then(|c| c.cmd.clone());
-    let entrypoint = config.and_then(|c| c.entrypoint.clone());
+    let cmd = match config {
+        Some(config) => Observation::Observed(config.cmd.clone()),
+        None => Observation::Unknown,
+    };
+    let entrypoint = match config {
+        Some(config) => Observation::Observed(config.entrypoint.clone()),
+        None => Observation::Unknown,
+    };
 
-    let running = state.and_then(|s| s.running).unwrap_or(false);
+    let running = match state {
+        Some(state) => state
+            .running
+            .map(Observation::Observed)
+            .unwrap_or(Observation::Missing),
+        None => Observation::Unknown,
+    };
 
     // Extract IP address and network names from network settings
     let mut ip_address: Option<IpAddr> = None;
     let mut networks = HashMap::new();
-    if let Some(net_settings) = info.network_settings.as_ref()
-        && let Some(nets) = net_settings.networks.as_ref()
-    {
-        for (name, endpoint) in nets {
-            if let Some(ref ip) = endpoint.ip_address
-                && !ip.is_empty()
-                && let Ok(addr) = ip.parse::<IpAddr>()
-            {
-                if ip_address.is_none() {
-                    ip_address = Some(addr);
+    let mut malformed_network = None;
+    let networks = match info.network_settings.as_ref() {
+        Some(net_settings) => match net_settings.networks.as_ref() {
+            Some(nets) => {
+                for (name, endpoint) in nets {
+                    if let Some(ref ip) = endpoint.ip_address
+                        && !ip.is_empty()
+                    {
+                        match ip.parse::<IpAddr>() {
+                            Ok(addr) => {
+                                if ip_address.is_none() {
+                                    ip_address = Some(addr);
+                                }
+                                networks.insert(name.clone(), ip.clone());
+                            }
+                            Err(error) => {
+                                malformed_network = Some(format!(
+                                    "network '{name}' has invalid IP '{ip}': {error}"
+                                ));
+                                break;
+                            }
+                        }
+                    }
                 }
-                networks.insert(name.clone(), ip.clone());
+                match malformed_network {
+                    Some(message) => Observation::Malformed(message),
+                    None => Observation::Observed(networks),
+                }
             }
-        }
-    }
+            None => Observation::Missing,
+        },
+        None => Observation::Unknown,
+    };
+
+    let ip_address = match &networks {
+        Observation::Observed(_) => Observation::Observed(ip_address),
+        Observation::Missing => Observation::Missing,
+        Observation::Malformed(message) => Observation::Malformed(message.clone()),
+        Observation::Unknown => Observation::Unknown,
+    };
 
     let container_name = info
         .name
         .as_ref()
-        .map(|n| n.trim_start_matches('/').to_string())
-        .unwrap_or_default();
+        .map(|n| Observation::Observed(n.trim_start_matches('/').to_string()))
+        .unwrap_or(Observation::Missing);
 
     ObservedContainer {
-        container_id: info.id.clone().unwrap_or_default(),
+        container_id: info
+            .id
+            .clone()
+            .map(Observation::Observed)
+            .unwrap_or(Observation::Missing),
         container_name,
         running,
         image,
@@ -340,8 +494,9 @@ pub fn observe(info: &ContainerInspectResponse) -> ObservedContainer {
 
 #[cfg(all(test, feature = "docker"))]
 mod tests {
-    use super::observe;
+    use super::{Observation, observe};
     use bollard::models::{ContainerConfig, ContainerInspectResponse, HostConfig};
+    use std::collections::HashMap;
 
     #[test]
     fn observe_reads_dns_servers_from_host_config() {
@@ -358,7 +513,75 @@ mod tests {
             ..Default::default()
         });
 
-        assert_eq!(observed.container_name, "ployz-test");
-        assert_eq!(observed.dns_servers, vec!["10.210.0.2"]);
+        assert_eq!(
+            observed.container_name,
+            Observation::Observed("ployz-test".into())
+        );
+        assert_eq!(
+            observed.dns_servers,
+            Observation::Observed(vec!["10.210.0.2".into()])
+        );
+    }
+
+    #[test]
+    fn observe_marks_missing_host_config_fields_as_missing() {
+        let observed = observe(&ContainerInspectResponse {
+            name: Some("/ployz-test".into()),
+            config: Some(ContainerConfig {
+                image: Some("busybox:latest".into()),
+                ..Default::default()
+            }),
+            host_config: Some(HostConfig {
+                dns: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        assert_eq!(observed.dns_servers, Observation::Missing);
+    }
+
+    #[test]
+    fn observe_marks_absent_host_config_as_unknown() {
+        let observed = observe(&ContainerInspectResponse {
+            name: Some("/ployz-test".into()),
+            config: Some(ContainerConfig {
+                image: Some("busybox:latest".into()),
+                ..Default::default()
+            }),
+            host_config: None,
+            ..Default::default()
+        });
+
+        assert_eq!(observed.dns_servers, Observation::Unknown);
+    }
+
+    #[test]
+    fn observe_marks_invalid_network_ip_as_malformed() {
+        use bollard::models::{EndpointSettings, NetworkSettings};
+
+        let mut networks = HashMap::new();
+        networks.insert(
+            "ployz".into(),
+            EndpointSettings {
+                ip_address: Some("not-an-ip".into()),
+                ..Default::default()
+            },
+        );
+
+        let observed = observe(&ContainerInspectResponse {
+            name: Some("/ployz-test".into()),
+            config: Some(ContainerConfig {
+                image: Some("busybox:latest".into()),
+                ..Default::default()
+            }),
+            network_settings: Some(NetworkSettings {
+                networks: Some(networks),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        assert!(matches!(observed.networks, Observation::Malformed(_)));
     }
 }

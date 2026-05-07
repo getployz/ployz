@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use ployz_store_api::{RoutingStateStore, StoreRuntimeControl};
 use tokio::time::timeout;
 use tracing::{info, warn};
 
@@ -7,9 +8,8 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
     tracing_subscriber::fmt::init();
     ployz_metrics::set_build_info("ployz-gateway", env!("CARGO_PKG_VERSION"));
     let config = ployz_gateway::GatewayConfig::from_env()?;
-    // Single runtime for the process. Corrosion's reqwest client pins its
-    // HTTP/2 connection driver to the runtime that first used it; crossing
-    // runtimes causes later requests to hang on their response futures.
+    // Single runtime for the process so store futures and server tasks share
+    // one async reactor.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("ployz-gateway-async")
@@ -17,15 +17,14 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
         .build()
         .map_err(|err| ployz_gateway::GatewayError::Runtime(err.to_string()))?;
     let store = runtime.block_on(async {
-        let store =
-            ployz_corrosion::CorrosionStore::connect_for_network(&config.data_dir, &config.network)
-                .await
-                .map_err(|err| ployz_gateway::GatewayError::Store(err.to_string()))?;
-        probe_corrosion_startup(&store).await;
+        let store = ployz_nats::NatsStore::connect_for_network(&config.data_dir, &config.network)
+            .await
+            .map_err(|err| ployz_gateway::GatewayError::Store(err.to_string()))?;
+        probe_nats_startup(&store).await;
         Ok::<_, ployz_gateway::GatewayError>(store)
     })?;
-    struct StandaloneStore(ployz_corrosion::CorrosionStore);
-    impl ployz_gateway::RoutingSnapshotReader for StandaloneStore {
+    struct StandaloneStore(ployz_nats::NatsStore);
+    impl ployz_gateway::RoutingStateStore for StandaloneStore {
         async fn load_routing_state(
             &self,
         ) -> Result<ployz_types::model::RoutingState, ployz_gateway::GatewayError> {
@@ -49,15 +48,10 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
 
         async fn subscribe_routing_events(
             &self,
-        ) -> Result<
-            (
-                ployz_types::model::RoutingState,
-                tokio::sync::mpsc::Receiver<ployz_types::model::RoutingEvent>,
-            ),
-            ployz_gateway::GatewayError,
-        > {
+        ) -> Result<ployz_store_api::RoutingEventSubscription, ployz_gateway::GatewayError>
+        {
             info!("gateway store call start: subscribe_routing_events");
-            match ployz_store_api::RoutingSnapshotReader::subscribe_routing_events(&self.0).await {
+            match ployz_store_api::RoutingStateStore::subscribe_routing_events(&self.0).await {
                 Ok((state, rx)) => {
                     info!(
                         revisions = state.revisions.len(),
@@ -102,7 +96,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
         ) -> Result<
             (
                 Vec<ployz_types::model::CertificateRecord>,
-                tokio::sync::mpsc::Receiver<ployz_types::model::CertificateEvent>,
+                tokio::sync::mpsc::Receiver<ployz_store_api::CertificateSubscriptionUpdate>,
             ),
             ployz_gateway::GatewayError,
         > {
@@ -147,7 +141,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
         ) -> Result<
             (
                 Vec<ployz_types::model::AcmeChallengeRecord>,
-                tokio::sync::mpsc::Receiver<ployz_types::model::AcmeChallengeEvent>,
+                tokio::sync::mpsc::Receiver<ployz_store_api::AcmeChallengeSubscriptionUpdate>,
             ),
             ployz_gateway::GatewayError,
         > {
@@ -169,26 +163,50 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
                 }
             }
         }
+
+        async fn upsert_acme_challenge_readiness(
+            &self,
+            record: &ployz_types::model::AcmeChallengeReadinessRecord,
+        ) -> Result<(), ployz_gateway::GatewayError> {
+            info!(
+                hostname = %record.hostname,
+                token = %record.token,
+                machine_id = %record.machine_id,
+                "gateway store call start: upsert_acme_challenge_readiness"
+            );
+            match ployz_store_api::CertificateStore::upsert_acme_challenge_readiness(
+                &self.0, record,
+            )
+            .await
+            {
+                Ok(()) => {
+                    info!(
+                        hostname = %record.hostname,
+                        token = %record.token,
+                        machine_id = %record.machine_id,
+                        "gateway store call complete: upsert_acme_challenge_readiness"
+                    );
+                    Ok(())
+                }
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        "gateway store call failed: upsert_acme_challenge_readiness"
+                    );
+                    Err(ployz_gateway::GatewayError::Store(err.to_string()))
+                }
+            }
+        }
     }
     ployz_gateway::run_gateway_process_on_runtime(runtime, config, StandaloneStore(store))
 }
 
-async fn probe_corrosion_startup(store: &ployz_corrosion::CorrosionStore) {
-    match timeout(Duration::from_secs(5), store.client().health()).await {
-        Ok(Ok(health)) => {
-            info!(
-                gaps = health.gaps,
-                members = health.members,
-                "gateway corrosion probe complete: health"
-            );
-        }
-        Ok(Err(err)) => {
-            warn!(error = %err, "gateway corrosion probe failed: health");
-        }
-        Err(_) => {
-            warn!("gateway corrosion probe timed out: health");
-        }
-    }
+async fn probe_nats_startup(store: &ployz_nats::NatsStore) {
+    match timeout(Duration::from_secs(5), store.healthy()).await {
+        Ok(true) => info!("gateway nats probe complete: healthy"),
+        Ok(false) => warn!("gateway nats probe failed: unhealthy"),
+        Err(_) => warn!("gateway nats probe timed out: health"),
+    };
 
     match timeout(Duration::from_secs(5), store.load_routing_state()).await {
         Ok(Ok(state)) => {
@@ -196,14 +214,14 @@ async fn probe_corrosion_startup(store: &ployz_corrosion::CorrosionStore) {
                 revisions = state.revisions.len(),
                 releases = state.releases.len(),
                 instances = state.instances.len(),
-                "gateway corrosion probe complete: load_routing_state"
+                "gateway nats probe complete: load_routing_state"
             );
         }
         Ok(Err(err)) => {
-            warn!(error = %err, "gateway corrosion probe failed: load_routing_state");
+            warn!(error = %err, "gateway nats probe failed: load_routing_state");
         }
         Err(_) => {
-            warn!("gateway corrosion probe timed out: load_routing_state");
+            warn!("gateway nats probe timed out: load_routing_state");
         }
     }
 }

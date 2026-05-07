@@ -40,8 +40,6 @@ impl Default for CommandOutput {
 #[derive(Debug, Deserialize)]
 pub(crate) struct ReadyPayload {
     pub(crate) ready: bool,
-    #[serde(default)]
-    pub(crate) workload_subnet_present: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,6 +79,7 @@ pub(crate) struct MachineListRow {
 #[derive(Debug, Deserialize)]
 pub(crate) struct DoctorPayload {
     pub(crate) overall: DoctorOverall,
+    pub(crate) local: DoctorLocal,
     pub(crate) peers: Vec<DoctorPeer>,
 }
 
@@ -90,13 +89,20 @@ pub(crate) struct DoctorOverall {
 }
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct DoctorLocal {
+    pub(crate) storage: bool,
+    pub(crate) storage_participation: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct DoctorPeer {
     pub(crate) machine_id: String,
+    pub(crate) storage: bool,
+    pub(crate) storage_participation: String,
     pub(crate) blocking: bool,
     pub(crate) store_lifecycle: String,
     pub(crate) wg_state: String,
     pub(crate) probe_state: String,
-    pub(crate) corrosion_state: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -179,6 +185,17 @@ pub(crate) fn wait_until<F>(timeout: Duration, mut predicate: F) -> Result<()>
 where
     F: FnMut() -> Result<bool>,
 {
+    wait_until_with_interval(timeout, POLL_INTERVAL, &mut predicate)
+}
+
+pub(crate) fn wait_until_with_interval<F>(
+    timeout: Duration,
+    poll_interval: Duration,
+    mut predicate: F,
+) -> Result<()>
+where
+    F: FnMut() -> Result<bool>,
+{
     let deadline = Instant::now() + timeout;
     loop {
         if predicate()? {
@@ -190,7 +207,7 @@ where
                 timeout.as_secs()
             )));
         }
-        thread::sleep(POLL_INTERVAL);
+        thread::sleep(poll_interval);
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::model::{MachineMembership, OverlayIp};
-use ployz_store_api::MachineRegistry;
+use ployz_store_api::MachineMembershipStore;
 use ployz_store_api::StoreDriver;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -101,10 +101,11 @@ mod tests {
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
             subnet: None,
-            control_target: None,
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
             lifecycle: MachineLifecycle::Standby,
+            storage: true,
+            storage_participation: crate::model::StorageParticipation::default_authority(),
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),

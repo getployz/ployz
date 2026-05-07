@@ -36,7 +36,10 @@ hash_cmd() {
 {
   printf 'platform=%s\n' "${target_platform}"
   printf 'profile=%s\n' "${build_profile}"
-  git -C "${repo_root}" ls-files -z -- Cargo.toml Cargo.lock .corrosion-version ployz.sh crates scripts packaging \
+  {
+    git -C "${repo_root}" ls-files -z -- Cargo.toml Cargo.lock .nats-version ployz.sh crates scripts packaging
+    git -C "${repo_root}" ls-files --others --exclude-standard -z -- Cargo.toml Cargo.lock .nats-version ployz.sh crates scripts packaging
+  } | LC_ALL=C sort -zu \
     | while IFS= read -r -d '' path; do
         printf 'path=%s\n' "${path}"
         if [[ -f "${repo_root}/${path}" ]]; then

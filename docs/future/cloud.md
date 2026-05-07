@@ -10,13 +10,13 @@ cleanly.
 ```
 CLI ──────────► Daemon API ◄─────────── Dashboard
                     │                        │
-                Corrosion                 Cloud DB
+                   NATS                  Cloud DB
               (source of truth)        (read cache +
                survives eject)       user/billing/teams)
 ```
 
 The dashboard calls the same `DaemonRequest` operations as the CLI. A per-cluster
-agent (paid component) relays status from Corrosion to the cloud DB and forwards
+agent (paid component) relays status from the cluster store to the cloud DB and forwards
 deploy commands from the dashboard to the daemon.
 
 ### What the cloud DB owns (lost on eject, acceptable)
@@ -27,7 +27,7 @@ deploy commands from the dashboard to the daemon.
 - Deploy queue and audit log
 - Alerting rules, notification preferences
 
-### What the cloud DB caches (survives eject in Corrosion)
+### What the cloud DB caches (survives eject in cluster store)
 
 - Machine records, instance status, service heads, deploy records
 - Polled/streamed from agent for dashboard rendering
@@ -35,7 +35,7 @@ deploy commands from the dashboard to the daemon.
 
 ### What the cloud DB does NOT store
 
-- `ServiceSpec` definitions that the daemon reads back — those live in Corrosion
+- `ServiceSpec` definitions that the daemon reads back — those live in the cluster store
 - Instance assignments / slot placement — daemon decides
 - Any state the daemon depends on to function
 
@@ -226,8 +226,8 @@ interface Deploy {
 
 ### Failure behavior
 
-The daemon's deploy is atomic at the commit level — all service heads commit in
-one Corrosion transaction or none. On failure:
+The daemon's deploy is atomic at the commit level — a deploy commit is published
+as one authority event or not at all. On failure:
 
 1. Mark deploy as failed with error and events
 2. Cancel all queued deploys
@@ -655,7 +655,7 @@ The agent detects changed paths (like a CI `paths` filter) to minimize work.
 ### What the user keeps
 
 - All running services (unchanged)
-- Full Corrosion state (specs, revisions, slots, machines)
+- Full cluster store state (specs, revisions, slots, machines)
 - CLI access to everything
 - WireGuard mesh (unchanged)
 

@@ -267,7 +267,13 @@ impl<R: ShellRunner> ZfsDriver<R> {
             )
             .await?;
         if output.status != 0 {
-            return Ok(Vec::new());
+            if zfs_reports_not_found(&output.stderr) {
+                return Ok(Vec::new());
+            }
+            return Err(Error::operation(
+                "zfs list snapshots",
+                command_failure_message(&output.stderr, output.status),
+            ));
         }
         let text = String::from_utf8(output.stdout)
             .map_err(|err| Error::operation("zfs_parse", err.to_string()))?;
@@ -939,6 +945,23 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn inspect_dataset_surfaces_snapshot_listing_failures() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        fake.push(0, "tank/ployz/prod/data\t1G\t/tank/ployz/prod/data\n", "");
+        fake.push(0, "123\n", "");
+        fake.push(1, "", "permission denied");
+
+        let error = driver
+            .inspect_dataset("tank/ployz/prod/data")
+            .await
+            .expect_err("snapshot listing failure should fail inspection");
+
+        assert!(error.to_string().contains("zfs list snapshots"));
+        assert!(error.to_string().contains("permission denied"));
     }
 
     #[tokio::test]

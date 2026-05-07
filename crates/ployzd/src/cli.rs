@@ -165,7 +165,7 @@ pub(crate) enum Command {
         #[arg(long, value_enum, default_value_t = ServiceModeArg::User)]
         service_mode: ServiceModeArg,
         #[arg(long)]
-        remote_control_port: Option<u16>,
+        zfs_transfer_port: Option<u16>,
     },
     Status,
     Doctor,
@@ -340,8 +340,6 @@ pub(crate) enum MeshAction {
     },
     Start {
         network: String,
-        #[arg(long)]
-        allow_disconnected_bootstrap: bool,
     },
     Stop {
         #[arg(long)]
@@ -353,9 +351,6 @@ pub(crate) enum MeshAction {
         name_stdin: bool,
     },
     SelfRecord,
-    Accept {
-        response: String,
-    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -420,7 +415,7 @@ pub(crate) enum MachineAction {
         id: String,
         #[arg(
             long,
-            help = "Skip online target cleanup and remove only the registry row"
+            help = "Skip online target cleanup and remove only the membership record"
         )]
         force: bool,
     },

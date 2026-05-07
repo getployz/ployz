@@ -10,9 +10,10 @@ members = [
     "crates/ployz-runtime-backends",
     "crates/ployz-runtime-api",
     "crates/ployz-store-api",
+    "crates/ployz-sim",
+    "crates/ployz-nats",
     "crates/ployzd",
     "crates/ployz-e2e",
-    "crates/ployz-corrosion",
     "crates/ployz-gateway",
     "crates/ployz-gateway-config",
     "crates/ployz-dns",
@@ -33,9 +34,10 @@ default-members = [
     "crates/ployz-runtime-backends",
     "crates/ployz-runtime-api",
     "crates/ployz-store-api",
+    "crates/ployz-sim",
+    "crates/ployz-nats",
     "crates/ployzd",
     "crates/ployz-e2e",
-    "crates/ployz-corrosion",
     "crates/ployz-gateway",
     "crates/ployz-gateway-config",
     "crates/ployz-dns",
@@ -49,7 +51,7 @@ resolver = "3"
 [workspace.package]
 version = "0.5.5"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "io-util", "sync", "time", "net", "macros", "signal"] }

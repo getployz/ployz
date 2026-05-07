@@ -3,7 +3,7 @@
 ## The Core Idea
 
 ployzd is disposable control plane. It can crash, upgrade, restart — and nothing in the
-data plane notices. WireGuard tunnels stay up, Corrosion keeps replicating, the gateway
+data plane notices. WireGuard tunnels stay up, NATS keeps serving state, the gateway
 keeps proxying, DNS keeps resolving, and workload containers keep running. On startup
 the daemon attaches to whatever is already running and only recreates things whose
 configuration has drifted.
@@ -32,9 +32,9 @@ macOS Host                           Docker Desktop VM (Linux)
 │                 │    WG bridge     │   wg0 interface (overlay network) │
 │  OverlayBridge ─┼──UDP─over─TCP──►│   fd00::x overlay IPs             │
 │  (userspace WG) │    127.0.0.1    │                                   │
-│                 │                  │ ployz-corrosion (container:plz-nw)│
-│  Transport::    │    bridge fwd   │   Corrosion API on overlay IP     │
-│  Bridge ────────┼──127.0.0.1:8080─┼──►[fd00::x]:8080                 │
+│                 │                  │ nats-server (container:plz-nw)    │
+│  Transport::    │    bridge fwd   │   NATS client on overlay IP       │
+│  Bridge ────────┼──127.0.0.1:4222─┼──►[fd00::x]:4222                 │
 │                 │                  │                                   │
 │                 │                  │ ployz-gateway (container:plz-nw)  │
 │                 │                  │   HTTP proxy on overlay IP        │
@@ -49,7 +49,7 @@ macOS Host                           Docker Desktop VM (Linux)
 ```
 
 The daemon runs on the macOS host. Everything else runs inside Docker Desktop's Linux VM.
-Corrosion, Gateway, and DNS need to **bind** on the node's overlay IPv6 address so other
+NATS, Gateway, and DNS need to **bind** on the node's overlay IPv6 address so other
 mesh nodes can reach them directly. They share `ployz-networking`'s network namespace
 (`network_mode: container:ployz-networking`) to get access to the `wg0` interface.
 
@@ -111,7 +111,7 @@ The daemon separates cleanly into ephemeral control plane and persistent data pl
 | Workloads | Never touched by daemon restart |
 | Gateway | Adopted if running and config matches; recreated on drift |
 | DNS | Adopted if running and config matches; recreated on drift |
-| Corrosion | Adopted if running and parent netns unchanged; recreated on drift |
+| NATS | Adopted if running and parent netns unchanged; recreated on drift |
 | WireGuard | Adopted if healthy |
 | CLI RPC, remote deploy, heartbeat loops | Ephemeral, restarted with daemon |
 
@@ -139,10 +139,10 @@ mode enum.
 
 The key domains:
 - **mesh** — WireGuard overlay lifecycle, phase state machine, background sync loops
-- **store** — distributed state (Corrosion backends, memory backend, bootstrap, network config)
+- **store** — distributed state (NATS backend, memory backend, bootstrap, network config)
 - **network** — non-WireGuard networking (Docker bridge, eBPF classifiers, endpoint discovery)
 - **services** — long-lived sidecar management (supervisor lifecycle, gateway, DNS)
-- **deploy** — workload deployment (preview/apply coordination, container CRUD, remote sessions)
+- **deploy** — workload deployment (preview/apply coordination, container CRUD, NATS participant commands)
 - **daemon** — request handling, mesh startup orchestration
 - **node** — machine identity
 - **transport** — Unix socket listener

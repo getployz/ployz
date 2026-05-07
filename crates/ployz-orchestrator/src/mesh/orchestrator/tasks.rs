@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ployz_store_api::MachineRegistry;
+use ployz_store_api::MachineMembershipStore;
 use tokio::sync::{RwLock, mpsc};
 use tracing::warn;
 
@@ -16,7 +16,7 @@ use super::{Mesh, Result};
 
 impl Mesh {
     pub(super) async fn start_peer_sync_task(&mut self) -> Result<()> {
-        if self.peer_sync_tx.is_some() {
+        if self.endpoint_maintainer_tx.is_some() {
             return Ok(());
         }
 
@@ -30,9 +30,6 @@ impl Mesh {
             .subscribe_machines()
             .await
             .map_err(TaskSetError::Subscribe)?;
-        let (peer_sync_tx, mut peer_sync_rx) =
-            mpsc::channel::<crate::mesh::tasks::PeerSyncCommand>(64);
-        let (planner_tx, planner_rx) = mpsc::channel::<crate::mesh::tasks::PeerSyncCommand>(64);
         let (endpoint_maintainer_tx, maint_rx) = mpsc::channel::<EndpointMaintainerCommand>(64);
         let (mut task_set, cancel) = crate::mesh::tasks::TaskSet::new();
         let bootstrap_peers: Vec<_> = self
@@ -59,60 +56,33 @@ impl Mesh {
                 &initial_device_peers,
                 tokio::time::Instant::now(),
             )));
-        let planner_cancel = cancel.clone();
-        let endpoint_maintainer_cmd_tx = endpoint_maintainer_tx.clone();
-        task_set.spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = planner_cancel.cancelled() => break,
-                    Some(command) = peer_sync_rx.recv() => {
-                        if planner_tx.send(command.clone()).await.is_err() {
-                            break;
-                        }
-                        let maintainer_command = match command {
-                            crate::mesh::tasks::PeerSyncCommand::UpsertTransient(record) => {
-                                EndpointMaintainerCommand::UpsertTransient(record)
-                            }
-                            crate::mesh::tasks::PeerSyncCommand::RemoveTransient(id) => {
-                                EndpointMaintainerCommand::RemoveTransient(id)
-                            }
-                        };
-                        if endpoint_maintainer_cmd_tx.send(maintainer_command).await.is_err() {
-                            break;
-                        }
-                    }
-                    else => break,
-                }
-            }
-        });
-        task_set.spawn(run_peer_sync_task(PeerSyncTask {
-            snapshot,
-            events,
-            commands: planner_rx,
-            bootstrap_peers,
-            network: self.network.clone(),
-            local_machine_id: self.machine_id.clone(),
-            endpoint_selections: endpoint_selections.clone(),
-            cancel: cancel.clone(),
-        }));
-        task_set.spawn(run_endpoint_maintainer_task(EndpointMaintainerTask {
-            snapshot: maint_snapshot,
-            events: maint_events,
-            commands: maint_rx,
-            bootstrap_peers: self
-                .seed_records
-                .iter()
-                .filter(|machine| machine.id != self.machine_id)
-                .map(|machine| machine.observation())
-                .collect(),
-            network: self.network.clone(),
-            local_machine_id: self.machine_id.clone(),
-            endpoint_selections,
-            initial_device_peers,
-            cancel: cancel.clone(),
-        }));
+        task_set.spawn_named(
+            "mesh_peer_sync",
+            run_peer_sync_task(PeerSyncTask {
+                snapshot,
+                events,
+                bootstrap_peers: bootstrap_peers.clone(),
+                network: self.network.clone(),
+                local_machine_id: self.machine_id.clone(),
+                endpoint_selections: endpoint_selections.clone(),
+                cancel: cancel.clone(),
+            }),
+        );
+        task_set.spawn_named(
+            "mesh_endpoint_maintainer",
+            run_endpoint_maintainer_task(EndpointMaintainerTask {
+                snapshot: maint_snapshot,
+                events: maint_events,
+                commands: maint_rx,
+                bootstrap_peers,
+                network: self.network.clone(),
+                local_machine_id: self.machine_id.clone(),
+                endpoint_selections,
+                initial_device_peers,
+                cancel: cancel.clone(),
+            }),
+        );
 
-        self.peer_sync_tx = Some(peer_sync_tx);
         self.endpoint_maintainer_tx = Some(endpoint_maintainer_tx);
         self.task_cancel = Some(cancel);
         self.tasks = Some(task_set);
@@ -156,12 +126,15 @@ impl Mesh {
 
         let (self_record_tx, self_record_rx) = mpsc::channel(64);
         self.self_record_tx = Some(self_record_tx.clone());
-        task_set.spawn(run_self_record_writer_task(
-            authoritative_self.clone(),
-            self.store.clone(),
-            self_record_rx,
-            cancel.clone(),
-        ));
+        task_set.spawn_named(
+            "mesh_self_record_writer",
+            run_self_record_writer_task(
+                authoritative_self.clone(),
+                self.store.clone(),
+                self_record_rx,
+                cancel.clone(),
+            ),
+        );
         let bridge_ip = self.network.bridge_ip().await;
         let _ = apply_self_record_mutation(
             &self_record_tx,
@@ -174,11 +147,10 @@ impl Mesh {
             .subscribe_machines()
             .await
             .map_err(TaskSetError::Subscribe)?;
-        task_set.spawn(run_subnet_claim_monitor_task(
-            subnet_snapshot,
-            subnet_events,
-            cancel.clone(),
-        ));
+        task_set.spawn_named(
+            "mesh_subnet_claim_monitor",
+            run_subnet_claim_monitor_task(subnet_snapshot, subnet_events, cancel.clone()),
+        );
 
         if let Some(ref dataplane) = self.dataplane {
             let (ebpf_snapshot, ebpf_events) = self
@@ -186,14 +158,17 @@ impl Mesh {
                 .subscribe_machines()
                 .await
                 .map_err(TaskSetError::Subscribe)?;
-            task_set.spawn(run_ebpf_sync_task(
-                ebpf_snapshot,
-                ebpf_events,
-                dataplane.clone(),
-                self.wg_ifindex,
-                self.machine_id.clone(),
-                cancel.clone(),
-            ));
+            task_set.spawn_named(
+                "mesh_ebpf_sync",
+                run_ebpf_sync_task(
+                    ebpf_snapshot,
+                    ebpf_events,
+                    dataplane.clone(),
+                    self.wg_ifindex,
+                    self.machine_id.clone(),
+                    cancel.clone(),
+                ),
+            );
         }
 
         Ok(())
@@ -209,7 +184,6 @@ fn merge_authoritative_self(
             stored.public_key = seed.public_key;
             stored.overlay_ip = seed.overlay_ip;
             stored.topology = seed.topology;
-            stored.control_target = seed.control_target;
             stored.subnet = seed.subnet;
             stored.bridge_ip = seed.bridge_ip;
             stored.endpoints = seed.endpoints;

@@ -1,10 +1,13 @@
 use async_trait::async_trait;
 use ployz_store_api::{CertificateStore, StoreDriver};
 use ployz_types::error::{Error, Result};
-use ployz_types::model::{CertificateRecord, CertificateState, CertificateVersion};
+use ployz_types::model::{
+    CertificateRecord, CertificateState, CertificateStateGoal, CertificateStateTransition,
+    CertificateTransitionEvidence, CertificateVersion,
+};
 use ployz_types::time::now_unix_secs;
-use rand::RngExt;
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,13 +20,11 @@ use x509_parser::pem::parse_x509_pem;
 pub const DEFAULT_ACME_DIRECTORY_URL: &str = "https://acme-v02.api.letsencrypt.org/directory";
 const CERT_VALIDITY_FALLBACK_SECS: u64 = 90 * 24 * 60 * 60;
 pub const CHALLENGE_TTL_SECS: u64 = 15 * 60;
-// Finalization runs in the background, so this can cover unusually slow
-// Corrosion replication before reachable peers must observe the HTTP-01 row.
+// Finalization runs in the background, so this can cover unusually slow store
+// propagation before reachable peers must observe the HTTP-01 record.
 pub const HTTP01_CHALLENGE_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const HTTP01_CHALLENGE_VISIBILITY_POLL: Duration = Duration::from_millis(100);
 pub const HTTP01_GATEWAY_SNAPSHOT_SETTLE: Duration = Duration::from_secs(1);
-const RENEWAL_TICK_DEFAULT_SECS: u64 = 60 * 60;
-const RENEWAL_TICK_MIN_SECS: u64 = 60;
 const STUCK_ISSUING_MAX_AGE_SECS: u64 = 24 * 60 * 60;
 
 #[derive(Debug, Clone)]
@@ -107,6 +108,7 @@ pub trait AcmeAccountCoordinator: Send + Sync {
 pub enum AccountAcquisition {
     Allowed(IssuanceHold),
     VetoedByPeer(String),
+    CoordinationFailed(String),
 }
 
 pub struct NoopAcmeAccountCoordinator;
@@ -131,7 +133,7 @@ impl Http01ChallengeReadiness for LocalHttp01ChallengeReadiness {
 /// out a connection-bound lock to peer machines before `start_order` runs;
 /// explicit deny from any reachable peer vetoes this pass, unreachable peers
 /// abstain. The guard is held until both the ACME order side effect and the
-/// resulting certificate-row state transition have been persisted.
+/// resulting certificate-record state transition have been persisted.
 #[async_trait]
 pub trait IssuanceCoordinator: Send + Sync {
     async fn try_acquire(&self, hostname: &str) -> IssuanceAcquisition;
@@ -140,6 +142,7 @@ pub trait IssuanceCoordinator: Send + Sync {
 pub enum IssuanceAcquisition {
     Allowed(IssuanceHold),
     VetoedByPeer(String),
+    CoordinationFailed(String),
 }
 
 pub struct IssuanceHold {
@@ -335,9 +338,27 @@ where
     I: AcmeIssuer + Sync + ?Sized,
     C: IssuanceCoordinator + ?Sized,
 {
+    match start_pending_orders_checked(store, issuer, coordinator, hostnames).await {
+        Ok(warnings) => warnings,
+        Err(error) => vec![format!(
+            "Could not start managed certificate order: {error}"
+        )],
+    }
+}
+
+async fn start_pending_orders_checked<I, C>(
+    store: &StoreDriver,
+    issuer: &I,
+    coordinator: &C,
+    hostnames: &[String],
+) -> Result<Vec<String>>
+where
+    I: AcmeIssuer + Sync + ?Sized,
+    C: IssuanceCoordinator + ?Sized,
+{
     let hostnames = hostnames.iter().cloned().collect::<BTreeSet<_>>();
     if hostnames.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let mut warnings = Vec::new();
     let records = match store.list_certificates().await {
@@ -346,7 +367,7 @@ where
             warnings.push(format!(
                 "Could not list managed certificates for ACME order: {error}"
             ));
-            return warnings;
+            return Ok(warnings);
         }
     };
     for record in records {
@@ -356,11 +377,11 @@ where
         if !needs_start_order(&record) {
             continue;
         }
-        if let Some(warning) = start_one(store, issuer, coordinator, record).await {
+        if let Some(warning) = start_one(store, issuer, coordinator, record).await? {
             warnings.push(warning);
         }
     }
-    warnings
+    Ok(warnings)
 }
 
 fn needs_start_order(record: &CertificateRecord) -> bool {
@@ -370,9 +391,9 @@ fn needs_start_order(record: &CertificateRecord) -> bool {
     }
 }
 
-/// Delete all challenge rows for a given hostname. Called immediately before
+/// Delete all challenge records for a given hostname. Called immediately before
 /// minting a new ACME order so retries from `Failed` don't accumulate dead
-/// `(hostname, token)` rows in `acme_challenges`.
+/// `(hostname, token)` entries in `acme_challenges`.
 async fn prune_acme_challenges_for(store: &StoreDriver, hostname: &str) -> Result<()> {
     let challenges = store.list_acme_challenges().await?;
     for challenge in challenges
@@ -391,7 +412,7 @@ async fn start_one<I, C>(
     issuer: &I,
     coordinator: &C,
     record: CertificateRecord,
-) -> Option<String>
+) -> Result<Option<String>>
 where
     I: AcmeIssuer + Sync + ?Sized,
     C: IssuanceCoordinator + ?Sized,
@@ -405,74 +426,94 @@ where
                 reason = %reason,
                 "cert issuance deferred: another orchestrator holds the hostname lock"
             );
-            return None;
+            return Ok(None);
+        }
+        IssuanceAcquisition::CoordinationFailed(reason) => {
+            return Err(Error::operation(
+                "certificate_issuance_coordination",
+                format!("could not acquire certificate lock for {hostname}: {reason}"),
+            ));
         }
     };
 
-    // Re-read inside the lock. Corrosion is CRDT-replicated and offers no
-    // native CAS, so the row we were handed by `start_pending_orders` may
-    // already be stale: another daemon could have raced ahead while we were
-    // waiting on the cluster lock. The lock-bound re-read is what makes
-    // this critical section publish-coherent.
+    // Re-read inside the lock. The record we were handed by `start_pending_orders`
+    // may already be stale: another daemon could have raced ahead while we were
+    // waiting on the cluster lock. The lock-bound read is what makes this
+    // critical section publish-coherent.
     // Keep a single lock-release point, similar to Go's `defer`: everything in
     // this critical section exits through `'under_lock`, then we release.
-    let warning =
-        'under_lock: {
-            let current = match store.get_certificate(&hostname).await {
-                Ok(Some(current)) if needs_start_order(&current) => current,
-                Ok(_) => break 'under_lock None,
-                Err(error) => {
-                    break 'under_lock Some(format!(
-                        "Could not re-read certificate {hostname} before ACME order: {error}"
-                    ));
-                }
-            };
-            let mut record = current;
-
-            // Prune stale challenge rows for this hostname before opening a new
-            // order. Tokens are scoped to the order ACME issued them under, so rows
-            // left over from a prior failed order can no longer be validated. The
-            // success path of `finalize_order` deletes challenges per token, but
-            // failure paths leave them behind — without this prune, repeated retries
-            // would grow `acme_challenges` without bound, replicate the leak across
-            // the cluster, and bloat every gateway snapshot rebuild. Done under the
-            // cluster lock so a peer can't be mid-validation against a token we're
-            // about to delete.
-            if let Err(error) = prune_acme_challenges_for(store, &hostname).await {
+    let warning = 'under_lock: {
+        let current = match store.get_certificate(&hostname).await {
+            Ok(Some(current)) if needs_start_order(&current) => current,
+            Ok(_) => break 'under_lock None,
+            Err(error) => {
                 break 'under_lock Some(format!(
-                    "Could not prune stale ACME challenges for {hostname}: {error}"
+                    "Could not re-read certificate {hostname} before ACME order: {error}"
                 ));
             }
-
-            let outcome = issuer.start_order(store, &hostname).await;
-            break 'under_lock match outcome {
-                Ok(started) => {
-                    record.state = CertificateState::Issuing;
-                    record.order_url = Some(started.order_url);
-                    record.updated_at = now_unix_secs();
-                    record.last_error = None;
-                    store.upsert_certificate(&record).await.err().map(|error| {
-                        format!("Could not persist ACME order for {hostname}: {error}")
-                    })
-                }
-                Err(error) => {
-                    let detail = error.to_string();
-                    record.state = CertificateState::Failed;
-                    record.last_error = Some(detail.clone());
-                    record.order_url = None;
-                    record.updated_at = now_unix_secs();
-                    let _ = store.upsert_certificate(&record).await;
-                    Some(format!("ACME order for {hostname} failed: {detail}"))
-                }
-            };
         };
+        let mut record = current;
+        let hostname_for_transition = hostname.clone();
+
+        // Prune stale challenge records for this hostname before opening a new
+        // order. Tokens are scoped to the order ACME issued them under, so records
+        // left over from a prior failed order can no longer be validated. The
+        // success path of `finalize_order` deletes challenges per token, but
+        // failure paths leave them behind — without this prune, repeated retries
+        // would grow `acme_challenges` without bound, replicate the leak across
+        // the cluster, and bloat every gateway snapshot rebuild. Done under the
+        // cluster lock so a peer can't be mid-validation against a token we're
+        // about to delete.
+        if let Err(error) = prune_acme_challenges_for(store, &hostname).await {
+            break 'under_lock Some(format!(
+                "Could not prune stale ACME challenges for {hostname}: {error}"
+            ));
+        }
+
+        let outcome = issuer.start_order(store, &hostname).await;
+        break 'under_lock match outcome {
+            Ok(started) => {
+                let transition_result = record.apply_state_transition(CertificateStateTransition {
+                    goal: CertificateStateGoal::StartIssuing {
+                        order_url: started.order_url,
+                    },
+                    evidence: CertificateTransitionEvidence::AcmeOrderStart {
+                        hostname: hostname_for_transition.clone(),
+                    },
+                    at_unix_secs: now_unix_secs(),
+                });
+                match transition_result {
+                    Ok(_) => store.upsert_certificate(&record).await.err().map(|error| {
+                        format!("Could not persist ACME order for {hostname}: {error}")
+                    }),
+                    Err(error) => Some(format!(
+                        "Could not transition certificate {hostname} after ACME order: {error}"
+                    )),
+                }
+            }
+            Err(error) => {
+                let detail = error.to_string();
+                let _ = record.apply_state_transition(CertificateStateTransition {
+                    goal: CertificateStateGoal::MarkOrderFailed {
+                        error: detail.clone(),
+                    },
+                    evidence: CertificateTransitionEvidence::AcmeOrderStart {
+                        hostname: hostname_for_transition,
+                    },
+                    at_unix_secs: now_unix_secs(),
+                });
+                let _ = store.upsert_certificate(&record).await;
+                Some(format!("ACME order for {hostname} failed: {detail}"))
+            }
+        };
+    };
 
     // Release AFTER persistence so the lock covers both the external order
-    // creation and the row update. Releasing earlier opens a window where
-    // another daemon's reconciler can read the still-Pending row, acquire
+    // creation and the record update. Releasing earlier opens a window where
+    // another daemon can read the still-Pending record, acquire
     // the (now-free) lock, and create a duplicate ACME order.
     hold.release().await;
-    warning
+    Ok(warning)
 }
 
 /// Background: for every certificate with an open order (`Issuing` + stored
@@ -514,7 +555,7 @@ where
     let hostname = record.hostname.clone();
 
     // Acquire the same hostname-scoped cluster lock `start_one` uses. Without
-    // it, every daemon that sees the Issuing row races the same ACME order:
+    // it, every daemon that sees the Issuing record races the same ACME order:
     // exactly one wins `finalize()`, but the losers' fast `Failed` writes
     // beat the winner's slow `poll_certificate`, dropping the issued cert
     // and burning duplicate-cert rate limit on every cycle. Holding the
@@ -530,12 +571,18 @@ where
             );
             return Ok(());
         }
+        IssuanceAcquisition::CoordinationFailed(reason) => {
+            return Err(Error::operation(
+                "certificate_finalization_coordination",
+                format!("could not acquire certificate lock for {hostname}: {reason}"),
+            ));
+        }
     };
 
     let outcome = finalize_one_under_lock(store, issuer, &hostname, order_url).await;
 
     // Release AFTER persistence (mirrors `start_one`): the lock must cover
-    // both the external ACME side effects and the row update.
+    // both the external ACME side effects and the record update.
     hold.release().await;
     outcome
 }
@@ -551,12 +598,12 @@ where
 {
     // Re-read inside the lock. The snapshot from `finalize_due_certificates`
     // may be stale: a peer holding the lock before us could have rotated
-    // the row to Active or to a newer order_url.
+    // the record to Active or to a newer order_url.
     let Some(pre) = store.get_certificate(hostname).await? else {
         tracing::warn!(
             hostname = %hostname,
             order_url,
-            "skipping ACME finalization because certificate row disappeared"
+            "skipping ACME finalization because certificate record disappeared"
         );
         return Ok(());
     };
@@ -582,7 +629,7 @@ where
         tracing::warn!(
             hostname = %hostname,
             order_url,
-            "skipping ACME finalization write because certificate row disappeared"
+            "skipping ACME finalization write because certificate record disappeared"
         );
         return Ok(());
     };
@@ -613,23 +660,62 @@ where
                 not_after,
                 issued_at: now,
             });
-            current.active_version_id = Some(version_id);
-            current.state = CertificateState::Active;
-            current.updated_at = now;
-            current.next_renewal_at = next_renewal_at;
-            current.order_url = None;
-            current.last_error = None;
+            current
+                .apply_state_transition(CertificateStateTransition {
+                    goal: CertificateStateGoal::FinalizeActive {
+                        active_version_id: version_id,
+                        next_renewal_at,
+                    },
+                    evidence: CertificateTransitionEvidence::AcmeFinalize {
+                        hostname: hostname.to_string(),
+                    },
+                    at_unix_secs: now,
+                })
+                .map_err(|error| {
+                    Error::operation(
+                        "certificate_transition",
+                        format!("finalize active {hostname}: {error}"),
+                    )
+                })?;
         }
         Err(error) => {
+            let detail = error.to_string();
             if is_retryable_challenge_visibility(&error) {
-                current.state = CertificateState::Issuing;
+                current
+                    .apply_state_transition(CertificateStateTransition {
+                        goal: CertificateStateGoal::KeepIssuingAfterRetryableFailure {
+                            error: detail,
+                        },
+                        evidence: CertificateTransitionEvidence::AcmeFinalize {
+                            hostname: hostname.to_string(),
+                        },
+                        at_unix_secs: now_unix_secs(),
+                    })
+                    .map_err(|error| {
+                        Error::operation(
+                            "certificate_transition",
+                            format!("retryable finalize failure {hostname}: {error}"),
+                        )
+                    })?;
             } else {
-                current.state = CertificateState::Failed;
-                current.active_version_id = previous_active_version_id;
-                current.order_url = None;
+                current
+                    .apply_state_transition(CertificateStateTransition {
+                        goal: CertificateStateGoal::MarkFinalizeFailed {
+                            error: detail,
+                            previous_active_version_id,
+                        },
+                        evidence: CertificateTransitionEvidence::AcmeFinalize {
+                            hostname: hostname.to_string(),
+                        },
+                        at_unix_secs: now_unix_secs(),
+                    })
+                    .map_err(|error| {
+                        Error::operation(
+                            "certificate_transition",
+                            format!("finalize failure {hostname}: {error}"),
+                        )
+                    })?;
             }
-            current.updated_at = now_unix_secs();
-            current.last_error = Some(error.to_string());
         }
     }
 
@@ -704,159 +790,117 @@ pub fn renewal_threshold(not_before: Option<u64>, not_after: Option<u64>) -> Opt
 }
 
 // ---------------------------------------------------------------------------
-// Renewal reconciliation
+// Renewal work
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-pub struct RenewalConfig {
-    pub interval: Duration,
-}
-
-impl Default for RenewalConfig {
-    fn default() -> Self {
-        Self {
-            interval: Duration::from_secs(RENEWAL_TICK_DEFAULT_SECS),
-        }
-    }
-}
-
-impl RenewalConfig {
-    #[must_use]
-    pub fn from_env() -> Self {
-        let interval_secs = std::env::var("PLOYZ_CERT_RENEWAL_INTERVAL_SECS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .map(|secs| secs.max(RENEWAL_TICK_MIN_SECS))
-            .unwrap_or(RENEWAL_TICK_DEFAULT_SECS);
-        Self {
-            interval: Duration::from_secs(interval_secs),
-        }
-    }
-}
-
-/// Cancellable owner for the certificate renewal ticker.
+/// Cancellable owner for certificate renewal background work.
 pub struct CertificateRenewalTask {
     cancel: CancellationToken,
     task: JoinHandle<()>,
+    name: &'static str,
 }
 
 impl CertificateRenewalTask {
+    pub fn spawn<F>(name: &'static str, run: impl FnOnce(CancellationToken) -> F) -> Self
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(run(task_cancel));
+        Self { cancel, task, name }
+    }
+
     pub async fn shutdown(self) {
         self.cancel.cancel();
         if let Err(error) = self.task.await {
             tracing::warn!(
                 ?error,
-                "certificate renewal ticker task failed during shutdown"
+                task = self.name,
+                "certificate renewal task failed during shutdown"
             );
         }
     }
 }
 
-/// Spawn a background ticker that runs `reconcile_renewals` immediately and
-/// then on an hourly-ish jittered interval. The ticker only flips state and
-/// fires `start_pending_orders` — it never waits on ACME itself.
-pub fn spawn_certificate_renewal_ticker(
-    store: StoreDriver,
-    issuer_factory: Arc<dyn AcmeIssuerFactory>,
-    renewal_config: RenewalConfig,
-    coordinator: Arc<dyn IssuanceCoordinator>,
-    readiness: Arc<dyn Http01ChallengeReadiness>,
-    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
-) -> CertificateRenewalTask {
-    let cancel = CancellationToken::new();
-    let task_cancel = cancel.clone();
-    let task = tokio::spawn(async move {
-        let issuer = issuer_factory.create(
-            Arc::new(LocalHttp01ChallengeReadiness),
-            account_coordinator.clone(),
-        );
-        loop {
-            if let Err(error) =
-                reconcile_renewals(&store, issuer.as_ref(), coordinator.as_ref()).await
-            {
-                tracing::warn!(?error, "certificate renewal reconcile failed");
-            }
-            // Finalize any Issuing rows out-of-band. `finalize_order` blocks
-            // on LE for seconds-to-minutes, so spawning prevents a single
-            // slow cert from stalling the ticker.
-            spawn_certificate_finalization_with_coordination(
-                store.clone(),
-                issuer_factory.clone(),
-                readiness.clone(),
-                account_coordinator.clone(),
-                coordinator.clone(),
-            );
-            tokio::select! {
-                () = task_cancel.cancelled() => break,
-                () = tokio::time::sleep(jittered(renewal_config.interval)) => {}
-            }
-        }
-    });
-    CertificateRenewalTask { cancel, task }
-}
-
-/// Walk certificates and flip state based on wall-clock: `Active` past its
-/// renewal threshold → `RenewalDue`, `Issuing` stale > 24h → `Pending`.
-/// Then queue any new orders via `start_pending_orders`. Does NOT call
-/// `finalize_order` — that's the ticker's job, spawned separately.
-pub async fn reconcile_renewals<I, C>(
+/// Process one certificate renewal job. This is the unit of work for NATS
+/// `cert_jobs` delivery: the job names a hostname, this function re-reads the
+/// authoritative certificate record, applies wall-clock state transitions, then
+/// starts an ACME order if that record still needs one.
+pub async fn process_renewal_job<I, C>(
     store: &StoreDriver,
     issuer: &I,
     coordinator: &C,
+    hostname: &str,
 ) -> Result<()>
 where
     I: AcmeIssuer + Sync + ?Sized,
     C: IssuanceCoordinator + ?Sized,
 {
+    let Some(mut record) = store.get_certificate(hostname).await? else {
+        tracing::info!(hostname, "certificate renewal job skipped missing record");
+        return Ok(());
+    };
     let now = now_unix_secs();
-    let records = store.list_certificates().await?;
-    let mut due_hostnames = Vec::new();
-    for mut record in records {
-        match record.state {
-            CertificateState::Active => {
-                let Some(threshold) = record.next_renewal_at else {
-                    continue;
-                };
-                if now < threshold {
-                    continue;
-                }
-                record.state = CertificateState::RenewalDue;
-                record.updated_at = now;
-                store.upsert_certificate(&record).await?;
-                due_hostnames.push(record.hostname);
+    let due = match record.state {
+        CertificateState::Active => {
+            let Some(threshold) = record.next_renewal_at else {
+                return Ok(());
+            };
+            if now < threshold {
+                return Ok(());
             }
-            CertificateState::Issuing => {
-                if now.saturating_sub(record.updated_at) < STUCK_ISSUING_MAX_AGE_SECS {
-                    continue;
-                }
-                record.state = CertificateState::Pending;
-                record.order_url = None;
-                record.last_error = Some("previous order stalled; re-ordering".into());
-                record.updated_at = now;
-                store.upsert_certificate(&record).await?;
-                due_hostnames.push(record.hostname);
-            }
-            CertificateState::Pending | CertificateState::Failed | CertificateState::RenewalDue => {
-                due_hostnames.push(record.hostname);
-            }
+            record
+                .apply_state_transition(CertificateStateTransition {
+                    goal: CertificateStateGoal::MarkRenewalDue,
+                    evidence: CertificateTransitionEvidence::RenewalScheduler {
+                        hostname: hostname.to_string(),
+                    },
+                    at_unix_secs: now,
+                })
+                .map_err(|error| {
+                    Error::operation(
+                        "certificate_transition",
+                        format!("mark renewal due {hostname}: {error}"),
+                    )
+                })?;
+            store.upsert_certificate(&record).await?;
+            true
         }
+        CertificateState::Issuing => {
+            if now.saturating_sub(record.updated_at) < STUCK_ISSUING_MAX_AGE_SECS {
+                return Ok(());
+            }
+            record
+                .apply_state_transition(CertificateStateTransition {
+                    goal: CertificateStateGoal::ResetStalledIssuing {
+                        error: "previous order stalled; re-ordering".into(),
+                    },
+                    evidence: CertificateTransitionEvidence::RenewalScheduler {
+                        hostname: hostname.to_string(),
+                    },
+                    at_unix_secs: now,
+                })
+                .map_err(|error| {
+                    Error::operation(
+                        "certificate_transition",
+                        format!("reset stalled issuing {hostname}: {error}"),
+                    )
+                })?;
+            store.upsert_certificate(&record).await?;
+            true
+        }
+        CertificateState::Pending | CertificateState::Failed | CertificateState::RenewalDue => true,
+    };
+    if !due {
+        return Ok(());
     }
-    for warning in start_pending_orders(store, issuer, coordinator, &due_hostnames).await {
+    for warning in
+        start_pending_orders_checked(store, issuer, coordinator, &[record.hostname]).await?
+    {
         tracing::warn!(%warning, "certificate renewal");
     }
     Ok(())
-}
-
-fn jittered(base: Duration) -> Duration {
-    let mut rng = rand::rng();
-    let millis = base.as_millis().try_into().unwrap_or(u64::MAX);
-    let jitter_ms = millis / 10;
-    if jitter_ms == 0 {
-        return base;
-    }
-    let delta = rng.random_range(0..=jitter_ms.saturating_mul(2));
-    base.saturating_sub(Duration::from_millis(jitter_ms))
-        .saturating_add(Duration::from_millis(delta))
 }
 
 #[cfg(test)]
@@ -993,14 +1037,13 @@ mod tests {
     // orders in a clustered deployment:
     //
     //   1. The cluster lock must cover both the external `start_order`
-    //      side effect AND the row update — otherwise a peer's
-    //      reconciler can read the still-Pending row in the gap, acquire
+    //      side effect AND the record update — otherwise a peer can read
+    //      the still-Pending record in the gap, acquire
     //      the (released) lock, and create a duplicate order.
     //
-    //   2. After acquiring the lock, the row must be re-read; Corrosion
-    //      replicates as a CRDT and offers no native CAS, so the snapshot
-    //      handed in by `start_pending_orders` may already be stale.
-    //      A row that is no longer Pending/Failed/RenewalDue must not
+    //   2. After acquiring the lock, the record must be re-read, because the
+    //      snapshot handed in by `start_pending_orders` may already be stale.
+    //      A record that is no longer Pending/Failed/RenewalDue must not
     //      trigger a new ACME order.
     // -------------------------------------------------------------------
 
@@ -1023,9 +1066,9 @@ mod tests {
         }
     }
 
-    /// Coordinator that captures the certificate row's state at the moment
+    /// Coordinator that captures the certificate record's state at the moment
     /// `IssuanceHold::release` runs. Lets the test assert that the lock is
-    /// still held when the row was upserted with `Issuing` + `order_url`.
+    /// still held when the record was upserted with `Issuing` + `order_url`.
     struct CaptureOnReleaseCoordinator {
         store: StoreDriver,
         captured: std::sync::Arc<Mutex<Option<CertificateRecord>>>,
@@ -1038,18 +1081,18 @@ mod tests {
             let captured = std::sync::Arc::clone(&self.captured);
             let hostname = hostname.to_string();
             IssuanceAcquisition::Allowed(IssuanceHold::new(move || async move {
-                if let Ok(Some(row)) = store.get_certificate(&hostname).await {
-                    *captured.lock().expect("captured lock") = Some(row);
+                if let Ok(Some(record)) = store.get_certificate(&hostname).await {
+                    *captured.lock().expect("captured lock") = Some(record);
                 }
             }))
         }
     }
 
     #[tokio::test]
-    async fn start_one_skips_when_row_already_issuing_after_lock_acquire() {
+    async fn start_one_skips_when_record_already_issuing_after_lock_acquire() {
         // Simulate: peer A held the lock, ran start_order, persisted Issuing
         // with an order_url, released. Peer B's `start_pending_orders` had
-        // already read the row as Pending before A's write replicated, so
+        // already read the record as Pending before A's write replicated, so
         // it hands a stale snapshot to start_one. The lock-bound re-read
         // must catch this and skip — otherwise B would mint a duplicate
         // ACME order for the same hostname.
@@ -1062,29 +1105,31 @@ mod tests {
             .await
             .expect("already-issuing cert should persist");
 
-        // Stale snapshot of the same row, as start_pending_orders would have
+        // Stale snapshot of the same record, as start_pending_orders would have
         // observed it before peer A's write reached this daemon.
         let stale = pending_record("example.com");
 
-        let warning = start_one(&store, &PanickingIssuer, &NoopIssuanceCoordinator, stale).await;
+        let warning = start_one(&store, &PanickingIssuer, &NoopIssuanceCoordinator, stale)
+            .await
+            .expect("stale start should not fail coordination");
         assert!(warning.is_none(), "stale start should be skipped silently");
 
-        // Row is unchanged: A's order_url and Issuing state are intact.
-        let row = store
+        // Record is unchanged: A's order_url and Issuing state are intact.
+        let record = store
             .get_certificate("example.com")
             .await
             .expect("cert lookup should work")
-            .expect("cert row should exist");
-        assert_eq!(row.state, CertificateState::Issuing);
-        assert_eq!(row.order_url.as_deref(), Some("https://acme/orders/41"));
+            .expect("cert record should exist");
+        assert_eq!(record.state, CertificateState::Issuing);
+        assert_eq!(record.order_url.as_deref(), Some("https://acme/orders/41"));
     }
 
     #[tokio::test]
     async fn start_one_holds_lock_until_after_upsert() {
-        // The cluster lock must cover the row write, not just `start_order`.
-        // We assert this by capturing the row's state at the exact moment
+        // The cluster lock must cover the record write, not just `start_order`.
+        // We assert this by capturing the record's state at the exact moment
         // `IssuanceHold::release` runs: if the lock covers the upsert, the
-        // captured row already has Issuing + the new order_url.
+        // captured record already has Issuing + the new order_url.
         let store = StoreDriver::memory();
         store
             .upsert_certificate(&pending_record("example.com"))
@@ -1101,7 +1146,7 @@ mod tests {
             .get_certificate("example.com")
             .await
             .expect("read snapshot")
-            .expect("snapshot row");
+            .expect("snapshot record");
 
         let warning = start_one(
             &store,
@@ -1111,14 +1156,15 @@ mod tests {
             &coordinator,
             stale,
         )
-        .await;
+        .await
+        .expect("happy-path start should not fail coordination");
         assert!(warning.is_none(), "happy-path start should not warn");
 
         let snapshot_at_release = captured
             .lock()
             .expect("captured lock")
             .clone()
-            .expect("release should have captured the row");
+            .expect("release should have captured the record");
         // If the lock had been released before the upsert, this would still
         // be Pending with no order_url.
         assert_eq!(snapshot_at_release.state, CertificateState::Issuing);
@@ -1129,9 +1175,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_one_prunes_stale_challenge_rows_for_same_hostname() {
+    async fn start_one_prunes_stale_challenge_records_for_same_hostname() {
         // Failed-then-retry scenario: a previous order left stale challenge
-        // rows behind because finalize_order's success path is the only
+        // records behind because finalize_order's success path is the only
         // place that deletes them. The next `start_one` must prune those
         // before minting a new order — otherwise `acme_challenges` grows
         // unbounded across repeated failures, replicates the leak across
@@ -1172,17 +1218,18 @@ mod tests {
             &NoopIssuanceCoordinator,
             failed,
         )
-        .await;
+        .await
+        .expect("happy retry should not fail coordination");
         assert!(warning.is_none(), "happy retry should not warn");
 
         let remaining = store
             .list_acme_challenges()
             .await
             .expect("list should work");
-        // FakeIssuer::start_only doesn't write any new challenge rows; we
-        // only assert pruning here, so the surviving row is the unrelated
+        // FakeIssuer::start_only doesn't write any new challenge records; we
+        // only assert pruning here, so the surviving record is the unrelated
         // hostname's challenge.
-        assert_eq!(remaining.len(), 1, "stale rows should be pruned");
+        assert_eq!(remaining.len(), 1, "stale records should be pruned");
         assert_eq!(remaining[0].hostname, "other.example.com");
         assert_eq!(remaining[0].token, "keep-tok");
     }
@@ -1453,7 +1500,7 @@ mod tests {
 
     /// Issuer that records each `finalize_order` call. Lets the pre-call
     /// guard test assert the ACME side-effect path was not entered when
-    /// `finalize_one` is handed a row that's already been rotated to a
+    /// `finalize_one` is handed a record that's already been rotated to a
     /// newer order.
     struct RecordingFinalizeIssuer {
         finalize_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -1494,9 +1541,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finalize_one_skips_acme_when_stored_row_already_advanced_past_order() {
-        // A peer's `start_one` has already rotated the row to a newer order
-        // (order/43). This daemon's reconciler still holds a stale snapshot
+    async fn finalize_one_skips_acme_when_stored_record_already_advanced_past_order() {
+        // A peer's `start_one` has already rotated the record to a newer order
+        // (order/43). This daemon still holds a stale snapshot
         // that points at order/42. `finalize_one` must short-circuit before
         // calling the ACME finalize step — running it would delete or
         // disturb challenge state for the in-flight order/43 (the original
@@ -1531,24 +1578,24 @@ mod tests {
         assert_eq!(
             issuer.finalize_call_count(),
             0,
-            "ACME finalize_order must not run when the stored row already points at a newer order"
+            "ACME finalize_order must not run when the stored record already points at a newer order"
         );
 
-        // The newer order's row is untouched.
-        let row = store
+        // The newer order's record is untouched.
+        let record = store
             .get_certificate("example.com")
             .await
             .expect("cert lookup should work")
             .expect("cert record should exist");
-        assert_eq!(row.state, CertificateState::Issuing);
-        assert_eq!(row.order_url.as_deref(), Some("https://acme/orders/43"));
+        assert_eq!(record.state, CertificateState::Issuing);
+        assert_eq!(record.order_url.as_deref(), Some("https://acme/orders/43"));
     }
 
     // -------------------------------------------------------------------
     // finalize_one — multi-daemon order-finalization safety
     //
     // The pre-fix race: every daemon independently finalizes the same
-    // Issuing row. Exactly one wins `finalize()` at LE; the losers' fast
+    // Issuing record. Exactly one wins `finalize()` at LE; the losers' fast
     // `Failed` writes beat the winner's slow `poll_certificate` and the
     // winner's post-check then sees `Failed` and drops the issued cert.
     // On a 300-node cluster this fires every cycle and burns LE's
@@ -1568,6 +1615,61 @@ mod tests {
         async fn try_acquire(&self, _hostname: &str) -> IssuanceAcquisition {
             IssuanceAcquisition::VetoedByPeer("peer holds lock".into())
         }
+    }
+
+    struct FailingCoordinator;
+
+    #[async_trait]
+    impl IssuanceCoordinator for FailingCoordinator {
+        async fn try_acquire(&self, _hostname: &str) -> IssuanceAcquisition {
+            IssuanceAcquisition::CoordinationFailed("nats lock backend unavailable".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn start_pending_surfaces_coordination_failure_as_warning() {
+        let store = StoreDriver::memory();
+        store
+            .upsert_certificate(&pending_record("example.com"))
+            .await
+            .expect("pending cert should persist");
+
+        let warnings = start_pending_orders(
+            &store,
+            &PanickingIssuer,
+            &FailingCoordinator,
+            &["example.com".into()],
+        )
+        .await;
+
+        let [warning] = warnings.as_slice() else {
+            panic!("expected one coordination warning, got {warnings:?}");
+        };
+        assert!(warning.contains("certificate_issuance_coordination"));
+        assert!(warning.contains("nats lock backend unavailable"));
+    }
+
+    #[tokio::test]
+    async fn process_renewal_job_fails_on_coordination_backend_error() {
+        let store = StoreDriver::memory();
+        let mut record = pending_record("example.com");
+        record.state = CertificateState::RenewalDue;
+        store
+            .upsert_certificate(&record)
+            .await
+            .expect("renewal due cert should persist");
+
+        let error =
+            process_renewal_job(&store, &PanickingIssuer, &FailingCoordinator, "example.com")
+                .await
+                .expect_err("renewal job should fail on lock backend error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("certificate_issuance_coordination")
+        );
+        assert!(error.to_string().contains("nats lock backend unavailable"));
     }
 
     #[tokio::test]
@@ -1598,20 +1700,51 @@ mod tests {
             "ACME finalize_order must not run when a peer holds the lock"
         );
 
-        let row = store
+        let record = store
             .get_certificate("example.com")
             .await
             .expect("cert lookup should work")
             .expect("cert record should exist");
-        assert_eq!(row.state, CertificateState::Issuing);
-        assert_eq!(row.order_url.as_deref(), Some("https://acme/orders/42"));
-        assert!(row.last_error.is_none());
+        assert_eq!(record.state, CertificateState::Issuing);
+        assert_eq!(record.order_url.as_deref(), Some("https://acme/orders/42"));
+        assert!(record.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn finalize_one_fails_on_coordination_backend_error() {
+        let store = StoreDriver::memory();
+        let mut record = pending_record("example.com");
+        record.state = CertificateState::Issuing;
+        record.order_url = Some("https://acme/orders/42".into());
+        store
+            .upsert_certificate(&record)
+            .await
+            .expect("issuing cert should persist");
+
+        let issuer = RecordingFinalizeIssuer::new();
+        let error = finalize_one(
+            &store,
+            &issuer,
+            &FailingCoordinator,
+            record,
+            "https://acme/orders/42",
+        )
+        .await
+        .expect_err("lock backend failure should fail finalization");
+
+        assert!(
+            error
+                .to_string()
+                .contains("certificate_finalization_coordination")
+        );
+        assert!(error.to_string().contains("nats lock backend unavailable"));
+        assert_eq!(issuer.finalize_call_count(), 0);
     }
 
     #[tokio::test]
     async fn finalize_one_holds_lock_until_after_persist() {
         // Mirrors `start_one_holds_lock_until_after_upsert`. The lock must
-        // cover the row write so a peer can't read the still-Issuing row
+        // cover the record write so a peer can't read the still-Issuing record
         // between `finalize_order` returning and the persist landing,
         // grab the (released) lock, and start a duplicate fresh order.
         let store = StoreDriver::memory();
@@ -1646,18 +1779,18 @@ mod tests {
         .await
         .expect("finalization should succeed");
 
-        let row_at_release = captured
+        let record_at_release = captured
             .lock()
             .expect("captured lock")
             .clone()
-            .expect("release callback should observe a row");
-        assert_eq!(row_at_release.state, CertificateState::Active);
-        assert!(row_at_release.active_version_id.is_some());
-        assert!(row_at_release.order_url.is_none());
-        let [version] = row_at_release.versions.as_slice() else {
+            .expect("release callback should observe a record");
+        assert_eq!(record_at_release.state, CertificateState::Active);
+        assert!(record_at_release.active_version_id.is_some());
+        assert!(record_at_release.order_url.is_none());
+        let [version] = record_at_release.versions.as_slice() else {
             panic!(
                 "expected exactly one issued version, got {:?}",
-                row_at_release.versions
+                record_at_release.versions
             );
         };
         assert_eq!(version.fullchain_pem, "fullchain");
@@ -1739,10 +1872,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_finalize_one_calls_serialize_through_lock() {
-        // Eight concurrent finalize_one tasks against the same Issuing row.
+        // Eight concurrent finalize_one tasks against the same Issuing record.
         // Exactly one acquires the cluster lock and runs ACME; the seven
         // losers see VetoedByPeer and return early without touching the
-        // row. The issued cert lands on the row — never `Failed`. This is
+        // record. The issued cert lands on the record — never `Failed`. This is
         // the test that would have caught the original bug: pre-fix, the
         // losers would have raced past the pre-check, run ACME, hit the
         // already-finalized order at LE, and written `Failed` before the
@@ -1796,25 +1929,25 @@ mod tests {
             "exactly one daemon should have run ACME finalize"
         );
 
-        let row = store
+        let record = store
             .get_certificate("example.com")
             .await
             .expect("cert lookup should work")
             .expect("cert record should exist");
         assert_eq!(
-            row.state,
+            record.state,
             CertificateState::Active,
-            "issued cert must land on the row, not Failed"
+            "issued cert must land on the record, not Failed"
         );
-        let [version] = row.versions.as_slice() else {
+        let [version] = record.versions.as_slice() else {
             panic!(
                 "expected exactly one issued version, got {:?}",
-                row.versions
+                record.versions
             );
         };
         assert_eq!(version.fullchain_pem, "winner-chain");
-        assert!(row.last_error.is_none());
-        assert!(row.order_url.is_none());
+        assert!(record.last_error.is_none());
+        assert!(record.order_url.is_none());
     }
 
     #[tokio::test]
@@ -1896,7 +2029,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_flips_active_past_threshold_to_renewal_due() {
+    async fn renewal_job_flips_active_past_threshold_to_renewal_due() {
         let store = StoreDriver::memory();
         let now = now_unix_secs();
         let mut record = pending_record("example.com");
@@ -1908,30 +2041,31 @@ mod tests {
             .await
             .expect("active cert should persist");
 
-        reconcile_renewals(
+        process_renewal_job(
             &store,
             &FakeIssuer::new(
                 Err(Error::operation("fake_start_order", "no work expected")),
                 Err(Error::operation("fake_finalize_order", "no work expected")),
             ),
             &NoopIssuanceCoordinator,
+            "example.com",
         )
         .await
-        .expect("reconcile should run");
+        .expect("renewal job should run");
 
         let record = store
             .get_certificate("example.com")
             .await
             .expect("cert lookup should work")
             .expect("cert record should exist");
-        // RenewalDue was picked up by start_pending_orders in the same pass.
+        // RenewalDue was picked up by start_pending_orders in the same job.
         // FakeIssuer returned Err → state is Failed, last_error captured.
         assert_eq!(record.state, CertificateState::Failed);
         assert!(record.last_error.is_some());
     }
 
     #[tokio::test]
-    async fn reconcile_resets_stuck_issuing_to_pending() {
+    async fn renewal_job_resets_stuck_issuing_to_pending() {
         let store = StoreDriver::memory();
         let now = now_unix_secs();
         let mut record = pending_record("example.com");
@@ -1943,7 +2077,7 @@ mod tests {
             .await
             .expect("stuck cert should persist");
 
-        reconcile_renewals(
+        process_renewal_job(
             &store,
             &FakeIssuer::new(
                 Ok(StartedOrder {
@@ -1952,9 +2086,10 @@ mod tests {
                 Err(Error::operation("fake_finalize_order", "no work expected")),
             ),
             &NoopIssuanceCoordinator,
+            "example.com",
         )
         .await
-        .expect("reconcile should run");
+        .expect("renewal job should run");
 
         let record = store
             .get_certificate("example.com")
@@ -1965,6 +2100,105 @@ mod tests {
         // a new order and moved it to Issuing with the fresh URL.
         assert_eq!(record.state, CertificateState::Issuing);
         assert_eq!(record.order_url.as_deref(), Some("https://acme/orders/new"));
+    }
+
+    #[tokio::test]
+    async fn renewal_job_skips_active_before_threshold() {
+        let store = StoreDriver::memory();
+        let now = now_unix_secs();
+        let mut record = pending_record("example.com");
+        record.state = CertificateState::Active;
+        record.active_version_id = Some("v1".into());
+        record.next_renewal_at = Some(now.saturating_add(3600));
+        store
+            .upsert_certificate(&record)
+            .await
+            .expect("active cert should persist");
+
+        process_renewal_job(
+            &store,
+            &FakeIssuer::start_only(Err(Error::operation(
+                "fake_start_order",
+                "should not be called",
+            ))),
+            &NoopIssuanceCoordinator,
+            "example.com",
+        )
+        .await
+        .expect("renewal job should run");
+
+        let record = store
+            .get_certificate("example.com")
+            .await
+            .expect("cert lookup should work")
+            .expect("cert record should exist");
+        assert_eq!(record.state, CertificateState::Active);
+        assert!(record.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn renewal_job_processes_one_due_hostname() {
+        let store = StoreDriver::memory();
+        let now = now_unix_secs();
+        let mut due = pending_record("due.example.com");
+        due.state = CertificateState::Active;
+        due.active_version_id = Some("v1".into());
+        due.next_renewal_at = Some(now.saturating_sub(1));
+        let mut other = pending_record("other.example.com");
+        other.state = CertificateState::Active;
+        other.active_version_id = Some("v1".into());
+        other.next_renewal_at = Some(now.saturating_sub(1));
+        store
+            .upsert_certificate(&due)
+            .await
+            .expect("due cert should persist");
+        store
+            .upsert_certificate(&other)
+            .await
+            .expect("other cert should persist");
+
+        process_renewal_job(
+            &store,
+            &FakeIssuer::start_only(Ok(StartedOrder {
+                order_url: "https://acme/orders/due".into(),
+            })),
+            &NoopIssuanceCoordinator,
+            "due.example.com",
+        )
+        .await
+        .expect("renewal job should run");
+
+        let due = store
+            .get_certificate("due.example.com")
+            .await
+            .expect("cert lookup should work")
+            .expect("due cert should exist");
+        let other = store
+            .get_certificate("other.example.com")
+            .await
+            .expect("cert lookup should work")
+            .expect("other cert should exist");
+        assert_eq!(due.state, CertificateState::Issuing);
+        assert_eq!(due.order_url.as_deref(), Some("https://acme/orders/due"));
+        assert_eq!(other.state, CertificateState::Active);
+        assert!(other.order_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn renewal_job_skips_missing_hostname() {
+        let store = StoreDriver::memory();
+
+        process_renewal_job(
+            &store,
+            &FakeIssuer::start_only(Err(Error::operation(
+                "fake_start_order",
+                "should not be called",
+            ))),
+            &NoopIssuanceCoordinator,
+            "missing.example.com",
+        )
+        .await
+        .expect("missing record should be a no-op");
     }
 
     #[tokio::test(start_paused = true)]
@@ -1995,7 +2229,7 @@ mod tests {
         let store = StoreDriver::memory();
         let writer_store = store.clone();
         let writer = tokio::spawn(async move {
-            // Make the visibility loop poll a few times before the row appears.
+            // Make the visibility loop poll a few times before the record appears.
             tokio::time::sleep(HTTP01_CHALLENGE_VISIBILITY_POLL * 50).await;
             writer_store
                 .upsert_acme_challenge(&AcmeChallengeRecord {

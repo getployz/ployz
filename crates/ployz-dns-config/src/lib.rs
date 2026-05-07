@@ -28,6 +28,7 @@ pub enum DnsError {
 pub struct DnsConfig {
     pub data_dir: PathBuf,
     pub network: String,
+    pub machine_id: String,
     pub overlay_listen_addr: String,
     pub bridge_listen_addr: Option<String>,
     pub metrics_listen_addr: Option<String>,
@@ -38,6 +39,7 @@ impl DnsConfig {
     pub fn for_network(
         data_dir: &Path,
         network: &str,
+        machine_id: impl Into<String>,
         overlay_ip: OverlayIp,
         bridge_listen_addr: Option<String>,
         metrics_listen_addr: Option<String>,
@@ -46,6 +48,7 @@ impl DnsConfig {
         Self {
             data_dir: data_dir.to_path_buf(),
             network: network.to_string(),
+            machine_id: machine_id.into(),
             overlay_listen_addr: format!("[{ip}]:53"),
             bridge_listen_addr,
             metrics_listen_addr,
@@ -82,6 +85,17 @@ impl DnsConfig {
                 ));
             }
         };
+        let machine_id = match std::env::var("PLOYZ_DNS_MACHINE_ID") {
+            Ok(machine_id) if !machine_id.trim().is_empty() => machine_id,
+            Ok(_) => {
+                return Err(DnsError::Config(
+                    "PLOYZ_DNS_MACHINE_ID was set but empty".into(),
+                ));
+            }
+            Err(_) => {
+                return Err(DnsError::Config("PLOYZ_DNS_MACHINE_ID is required".into()));
+            }
+        };
         let bridge_listen_addr = match std::env::var("PLOYZ_DNS_BRIDGE_LISTEN_ADDR") {
             Ok(address) if !address.trim().is_empty() => Some(address),
             Ok(_) => {
@@ -104,6 +118,7 @@ impl DnsConfig {
         Ok(Self {
             data_dir,
             network,
+            machine_id,
             overlay_listen_addr,
             bridge_listen_addr,
             metrics_listen_addr,
@@ -123,12 +138,14 @@ mod tests {
         let config = DnsConfig::for_network(
             Path::new("/tmp/ployz"),
             "default",
+            "machine-alpha",
             OverlayIp(Ipv6Addr::LOCALHOST),
             Some("0.0.0.0:53".into()),
             Some("127.0.0.1:9153".into()),
         );
 
         assert_eq!(config.network, "default");
+        assert_eq!(config.machine_id, "machine-alpha");
         assert_eq!(config.overlay_listen_addr, "[::1]:53");
         assert_eq!(config.bridge_listen_addr.as_deref(), Some("0.0.0.0:53"));
         assert_eq!(
@@ -142,6 +159,7 @@ mod tests {
         let config = DnsConfig::for_network(
             Path::new("/tmp/ployz"),
             "default",
+            "machine-alpha",
             OverlayIp(Ipv6Addr::LOCALHOST),
             None,
             None,
@@ -156,6 +174,7 @@ mod tests {
         unsafe {
             std::env::set_var("PLOYZ_DNS_DATA_DIR", "/tmp/ployz-dns");
             std::env::set_var("PLOYZ_DNS_NETWORK", "alpha");
+            std::env::set_var("PLOYZ_DNS_MACHINE_ID", "machine-alpha");
             std::env::set_var("PLOYZ_DNS_OVERLAY_LISTEN_ADDR", "[::1]:53");
             std::env::set_var("PLOYZ_DNS_METRICS_LISTEN_ADDR", "127.0.0.1:9153");
         }
@@ -169,6 +188,7 @@ mod tests {
         unsafe {
             std::env::remove_var("PLOYZ_DNS_DATA_DIR");
             std::env::remove_var("PLOYZ_DNS_NETWORK");
+            std::env::remove_var("PLOYZ_DNS_MACHINE_ID");
             std::env::remove_var("PLOYZ_DNS_OVERLAY_LISTEN_ADDR");
             std::env::remove_var("PLOYZ_DNS_METRICS_LISTEN_ADDR");
         }

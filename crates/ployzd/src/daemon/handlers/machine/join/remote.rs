@@ -1,28 +1,66 @@
 use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineTransitionGoal, MeshReadyPayload,
-    MeshSelfRecordPayload,
+    MeshSelfRecordPayload, StatusPayload,
 };
+use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject};
 use ployz_sdk::Transport;
-use ployz_store_api::StoreDriver;
-use ployz_types::model::{
-    JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineLifecycle, MachineMembership, OverlayIp,
-};
+use ployz_store_api::{MachineMembershipStore, StoreDriver};
+use ployz_types::model::{MachineEvent, MachineId, MachineLifecycle, MachineMembership, PublicKey};
 use tokio::time::{Duration, Instant, sleep, timeout};
 
-use crate::daemon::handlers::peer_rpc;
 use crate::daemon::ssh::{SshOptions, ssh_stdio_transport};
 
 const REMOTE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const NATS_READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const REMOTE_READY_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 const MACHINE_STATE_SYNC_TIMEOUT: Duration = Duration::from_secs(20);
-const MACHINE_STATE_SYNC_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const REMOTE_RPC_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployzctl\" rpc-stdio";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ExpectedSubnetState {
     Present,
     Absent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ExpectedMachineRecord {
+    lifecycle: MachineLifecycle,
+    subnet: ExpectedSubnetState,
+}
+
+impl ExpectedMachineRecord {
+    pub(super) fn new(lifecycle: MachineLifecycle, subnet: ExpectedSubnetState) -> Self {
+        Self { lifecycle, subnet }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RemoteDaemonIdentity {
+    pub machine_id: MachineId,
+    pub public_key: PublicKey,
+}
+
+pub(super) async fn remote_daemon_identity(
+    target: &str,
+    ssh_options: &SshOptions,
+) -> Result<RemoteDaemonIdentity, String> {
+    let response = remote_rpc(target, DaemonRequest::Status, ssh_options).await?;
+    if !response.ok {
+        return Err(remote_response_error(&response));
+    }
+    match response.payload {
+        Some(DaemonPayload::Status(StatusPayload {
+            machine_id,
+            public_key,
+            ..
+        })) => Ok(RemoteDaemonIdentity {
+            machine_id: MachineId(machine_id),
+            public_key,
+        }),
+        Some(payload) => Err(format!("unexpected status payload: {payload:?}")),
+        None => Err("status response missing structured payload".to_string()),
+    }
 }
 
 pub(super) async fn wait_for_remote_ready(
@@ -92,9 +130,83 @@ pub(super) async fn remote_self_record(
         return Err(remote_response_error(&response));
     }
     match response.payload {
-        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record, .. })) => Ok(record),
+        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record })) => Ok(record),
         Some(payload) => Err(format!("unexpected self-record payload: {payload:?}")),
-        None => decode_joiner_record(&response.message),
+        None => Err("self-record response missing structured payload".to_string()),
+    }
+}
+
+pub(super) async fn nats_self_record(
+    client: &NatsNodeRpcClient,
+    machine: &MachineMembership,
+) -> Result<MachineMembership, String> {
+    let response = client
+        .request(
+            NodeCommandSubject::mesh_self_record(&machine.id),
+            &DaemonRequest::MeshSelfRecord,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.ok {
+        return Err(remote_response_error(&response));
+    }
+    match response.payload {
+        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record })) => Ok(record),
+        Some(payload) => Err(format!("unexpected self-record payload: {payload:?}")),
+        None => Err("self-record response missing structured payload".to_string()),
+    }
+}
+
+pub(super) async fn nats_rpc_expect_ok(
+    client: &NatsNodeRpcClient,
+    subject: NodeCommandSubject,
+    request: DaemonRequest,
+) -> Result<(), String> {
+    let response = client
+        .request(subject, &request)
+        .await
+        .map_err(|error| error.to_string())?;
+    if response.ok {
+        return Ok(());
+    }
+    Err(remote_response_error(&response))
+}
+
+pub(super) async fn wait_for_nats_command_responder(
+    client: &NatsNodeRpcClient,
+    machine: &MachineMembership,
+) -> Result<(), String> {
+    let deadline = Instant::now() + REMOTE_READY_TIMEOUT;
+    let mut attempt: u32 = 0;
+
+    loop {
+        attempt += 1;
+        let last_error = match timeout(
+            REMOTE_READY_RPC_TIMEOUT,
+            client.request(NodeCommandSubject::ping(&machine.id), &DaemonRequest::Ping),
+        )
+        .await
+        {
+            Ok(Ok(response)) if response.ok => {
+                tracing::debug!(machine = %machine.id, attempt, "NATS command responder confirmed");
+                return Ok(());
+            }
+            Ok(Ok(response)) => remote_response_error(&response),
+            Ok(Err(err)) => err.to_string(),
+            Err(_) => format!(
+                "NATS command responder probe exceeded {:?}",
+                REMOTE_READY_RPC_TIMEOUT
+            ),
+        };
+
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for NATS command responder after {:?}: {last_error}",
+                REMOTE_READY_TIMEOUT,
+            ));
+        }
+
+        sleep(NATS_READY_POLL_INTERVAL).await;
     }
 }
 
@@ -126,61 +238,23 @@ fn remote_join_ready(payload: &MeshReadyPayload) -> bool {
     payload.ready || (payload.phase == "running" && payload.store_healthy && payload.sync_connected)
 }
 
-pub(super) async fn overlay_rpc(
-    overlay_ip: OverlayIp,
-    peer_rpc_port: u16,
-    request: DaemonRequest,
-) -> Result<DaemonResponse, String> {
-    peer_rpc::overlay_rpc(overlay_ip, peer_rpc_port, request).await
-}
-
-pub(super) async fn overlay_rpc_expect_ok(
-    overlay_ip: OverlayIp,
-    peer_rpc_port: u16,
-    request: DaemonRequest,
-) -> Result<(), String> {
-    let response = overlay_rpc(overlay_ip, peer_rpc_port, request).await?;
-    if response.ok {
-        return Ok(());
-    }
-    Err(remote_response_error(&response))
-}
-
-pub(super) async fn overlay_rpc_expect_ok_with_read_timeout(
-    overlay_ip: OverlayIp,
-    peer_rpc_port: u16,
-    request: DaemonRequest,
-    read_timeout: Duration,
-) -> Result<(), String> {
-    peer_rpc::overlay_rpc_expect_ok_with_read_timeout(
-        overlay_ip,
-        peer_rpc_port,
-        request,
-        read_timeout,
-    )
-    .await
-}
-
-async fn rollback_remote_enable(overlay_ip: OverlayIp, peer_rpc_port: u16) -> Result<(), String> {
-    overlay_rpc_expect_ok_with_read_timeout(
-        overlay_ip,
-        peer_rpc_port,
-        DaemonRequest::MachineTransitionSelf {
-            goal: MachineTransitionGoal::Standby,
-            assigned_subnet: None,
-            force: true,
-        },
-        peer_rpc::PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
-    )
-    .await
-}
-
-pub(super) async fn log_remote_enable_rollback(
+pub(super) async fn log_nats_enable_rollback(
+    client: &NatsNodeRpcClient,
     machine: &MachineMembership,
-    peer_rpc_port: u16,
     original_error: &str,
 ) {
-    if let Err(rollback_error) = rollback_remote_enable(machine.overlay_ip, peer_rpc_port).await {
+    let request = DaemonRequest::MachineTransitionSelf {
+        goal: MachineTransitionGoal::Standby,
+        assigned_subnet: None,
+        force: true,
+    };
+    if let Err(rollback_error) = nats_rpc_expect_ok(
+        client,
+        NodeCommandSubject::machine_transition_self(&machine.id),
+        request,
+    )
+    .await
+    {
         tracing::warn!(
             machine = %machine.id,
             error = %rollback_error,
@@ -190,29 +264,9 @@ pub(super) async fn log_remote_enable_rollback(
     }
 }
 
-pub(super) async fn overlay_self_record(
+pub(super) async fn wait_for_nats_ready(
+    client: &NatsNodeRpcClient,
     machine: &MachineMembership,
-    peer_rpc_port: u16,
-) -> Result<MachineMembership, String> {
-    let response = overlay_rpc(
-        machine.overlay_ip,
-        peer_rpc_port,
-        DaemonRequest::MeshSelfRecord,
-    )
-    .await?;
-    if !response.ok {
-        return Err(remote_response_error(&response));
-    }
-    match response.payload {
-        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record, .. })) => Ok(record),
-        Some(payload) => Err(format!("unexpected self-record payload: {payload:?}")),
-        None => decode_joiner_record(&response.message),
-    }
-}
-
-pub(super) async fn wait_for_overlay_ready(
-    machine: &MachineMembership,
-    peer_rpc_port: u16,
 ) -> Result<(), String> {
     let deadline = Instant::now() + REMOTE_READY_TIMEOUT;
     let mut attempt: u32 = 0;
@@ -221,10 +275,9 @@ pub(super) async fn wait_for_overlay_ready(
         attempt += 1;
         let last_error = match timeout(
             REMOTE_READY_RPC_TIMEOUT,
-            overlay_rpc(
-                machine.overlay_ip,
-                peer_rpc_port,
-                DaemonRequest::MeshReady { json: false },
+            client.request(
+                NodeCommandSubject::mesh_ready(&machine.id),
+                &DaemonRequest::MeshReady { json: false },
             ),
         )
         .await
@@ -232,76 +285,121 @@ pub(super) async fn wait_for_overlay_ready(
             Ok(Ok(response)) => match mesh_ready_payload(&response) {
                 Ok(payload) => {
                     if remote_join_ready(&payload) {
-                        tracing::debug!(machine = %machine.id, attempt, "overlay mesh ready confirmed");
+                        tracing::debug!(machine = %machine.id, attempt, "NATS mesh ready confirmed");
                         return Ok(());
                     }
                     format!("mesh reported not ready yet: {}", response.message)
                 }
                 Err(err) => err,
             },
-            Ok(Err(err)) => err,
+            Ok(Err(err)) => err.to_string(),
             Err(_) => format!(
-                "overlay readiness probe exceeded {:?}",
+                "NATS readiness probe exceeded {:?}",
                 REMOTE_READY_RPC_TIMEOUT
             ),
         };
 
         if Instant::now() >= deadline {
             return Err(format!(
-                "timed out waiting for overlay mesh readiness after {:?}: {last_error}",
+                "timed out waiting for NATS mesh readiness after {:?}: {last_error}",
                 REMOTE_READY_TIMEOUT,
             ));
         }
 
-        sleep(REMOTE_READY_POLL_INTERVAL).await;
+        sleep(NATS_READY_POLL_INTERVAL).await;
     }
 }
 
-pub(super) async fn wait_for_machine_projection(
+pub(super) async fn wait_for_machine_record(
     store: &StoreDriver,
     machine_id: &MachineId,
-    expected_lifecycle: MachineLifecycle,
-    expected_subnet: ExpectedSubnetState,
+    expected: ExpectedMachineRecord,
 ) -> Result<(), String> {
     let deadline = Instant::now() + MACHINE_STATE_SYNC_TIMEOUT;
+    let (snapshot, mut events) = store
+        .subscribe_machines()
+        .await
+        .map_err(|err| format!("subscribe to machine records: {err}"))?;
+
+    if machine_record_matches(
+        snapshot.iter().find(|record| record.id == *machine_id),
+        expected,
+    ) {
+        return Ok(());
+    }
 
     loop {
-        let Some(record) = super::super::list::find_machine_record(store, machine_id).await? else {
-            if Instant::now() >= deadline {
-                return Err(format!(
-                    "timed out waiting for machine '{}' to appear in local store",
-                    machine_id
-                ));
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return Err(machine_record_timeout(store, machine_id, expected).await);
+        };
+
+        match timeout(remaining, events.recv()).await {
+            Ok(Some(Ok(MachineEvent::Upsert(record)))) => {
+                if record.id == *machine_id && machine_record_matches(Some(&record), expected) {
+                    return Ok(());
+                }
             }
-            sleep(MACHINE_STATE_SYNC_POLL_INTERVAL).await;
-            continue;
-        };
-
-        let subnet_matches = match expected_subnet {
-            ExpectedSubnetState::Present => record.subnet.is_some(),
-            ExpectedSubnetState::Absent => record.subnet.is_none(),
-        };
-        if record.lifecycle == expected_lifecycle && subnet_matches {
-            return Ok(());
+            Ok(Some(Ok(MachineEvent::Removed { .. }))) => {}
+            Ok(Some(Err(err))) => {
+                return Err(format!("machine record subscription failed: {err}"));
+            }
+            Ok(None) => return Err("machine record subscription closed".into()),
+            Err(_) => {
+                return Err(machine_record_timeout(store, machine_id, expected).await);
+            }
         }
+    }
+}
 
-        if Instant::now() >= deadline {
-            let expected_subnet = match expected_subnet {
-                ExpectedSubnetState::Present => "present",
-                ExpectedSubnetState::Absent => "absent",
-            };
+fn machine_record_matches(
+    record: Option<&MachineMembership>,
+    expected: ExpectedMachineRecord,
+) -> bool {
+    let Some(record) = record else {
+        return false;
+    };
+    let subnet_matches = match expected.subnet {
+        ExpectedSubnetState::Present => record.subnet.is_some(),
+        ExpectedSubnetState::Absent => record.subnet.is_none(),
+    };
+    record.lifecycle == expected.lifecycle && subnet_matches
+}
+
+async fn machine_record_timeout(
+    store: &StoreDriver,
+    machine_id: &MachineId,
+    expected: ExpectedMachineRecord,
+) -> String {
+    match super::super::list::find_machine_record(store, machine_id).await {
+        Ok(Some(record)) => {
+            let expected_subnet = expected.subnet.label();
             let actual_subnet = if record.subnet.is_some() {
                 "present"
             } else {
                 "absent"
             };
-            return Err(format!(
+            format!(
                 "timed out waiting for machine '{}' to reach lifecycle='{}' subnet={expected_subnet}; observed lifecycle='{}' subnet={actual_subnet}",
-                machine_id, expected_lifecycle, record.lifecycle,
-            ));
+                machine_id, expected.lifecycle, record.lifecycle,
+            )
         }
+        Ok(None) => format!(
+            "timed out waiting for machine '{}' to appear in observed machine records",
+            machine_id
+        ),
+        Err(err) => format!(
+            "timed out waiting for machine '{}' record and failed to inspect final state: {err}",
+            machine_id
+        ),
+    }
+}
 
-        sleep(MACHINE_STATE_SYNC_POLL_INTERVAL).await;
+impl ExpectedSubnetState {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Present => "present",
+            Self::Absent => "absent",
+        }
     }
 }
 
@@ -336,22 +434,4 @@ pub(super) fn remote_response_error(response: &DaemonResponse) -> String {
         "remote daemon error [{}]: {}",
         response.code, response.message
     )
-}
-
-fn decode_joiner_record(output: &str) -> Result<MachineMembership, String> {
-    let response_line = match output
-        .lines()
-        .find(|line| line.starts_with(JOIN_RESPONSE_PREFIX))
-    {
-        Some(line) => line,
-        None => {
-            return Err(format!(
-                "self-record output missing {JOIN_RESPONSE_PREFIX} line\nhint: run `ployzctl mesh self-record` on the joiner and `ployzctl mesh accept <response>` on this machine"
-            ));
-        }
-    };
-
-    let join_response = JoinResponse::decode(response_line)
-        .map_err(|err| format!("failed to decode join response: {err}"))?;
-    Ok(join_response.into_seed_machine_membership())
 }

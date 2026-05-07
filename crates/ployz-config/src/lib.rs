@@ -98,10 +98,8 @@ pub struct DaemonConfig {
     pub cluster_cidr: String,
     #[serde(default = "default_subnet_prefix_len")]
     pub subnet_prefix_len: u8,
-    #[serde(default = "default_remote_control_port")]
-    pub remote_control_port: u16,
-    #[serde(default)]
-    pub peer_control_target: Option<String>,
+    #[serde(default = "default_zfs_transfer_port")]
+    pub zfs_transfer_port: u16,
     #[serde(default = "default_gateway_listen_addr")]
     pub gateway_listen_addr: String,
     #[serde(default)]
@@ -139,8 +137,8 @@ fn default_subnet_prefix_len() -> u8 {
     24
 }
 
-fn default_remote_control_port() -> u16 {
-    4317
+fn default_zfs_transfer_port() -> u16 {
+    4319
 }
 
 fn default_gateway_listen_addr() -> String {
@@ -170,9 +168,7 @@ struct RuntimeDefaults {
     az: Option<String>,
     cluster_cidr: String,
     subnet_prefix_len: u8,
-    remote_control_port: u16,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    peer_control_target: Option<String>,
+    zfs_transfer_port: u16,
     gateway_listen_addr: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_https_listen_addr: Option<String>,
@@ -210,9 +206,7 @@ struct DaemonOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
     subnet_prefix_len: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    remote_control_port: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    peer_control_target: Option<String>,
+    zfs_transfer_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_listen_addr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -300,7 +294,7 @@ pub fn load_daemon_config(
     cli_config_path: Option<PathBuf>,
     cli_data_dir: Option<PathBuf>,
     cli_socket: Option<String>,
-    cli_remote_control_port: Option<u16>,
+    cli_zfs_transfer_port: Option<u16>,
     context: &HostPathsContext,
 ) -> std::result::Result<DaemonConfig, ConfigLoadError> {
     let overrides = DaemonOverrides {
@@ -315,8 +309,7 @@ pub fn load_daemon_config(
         az: None,
         cluster_cidr: None,
         subnet_prefix_len: None,
-        remote_control_port: cli_remote_control_port,
-        peer_control_target: None,
+        zfs_transfer_port: cli_zfs_transfer_port,
         gateway_listen_addr: None,
         gateway_https_listen_addr: None,
         gateway_threads: None,
@@ -341,8 +334,7 @@ fn build_figment(cli_config_path: Option<PathBuf>, context: &HostPathsContext) -
         az: None,
         cluster_cidr: default_cluster_cidr(),
         subnet_prefix_len: default_subnet_prefix_len(),
-        remote_control_port: default_remote_control_port(),
-        peer_control_target: None,
+        zfs_transfer_port: default_zfs_transfer_port(),
         gateway_listen_addr: default_gateway_listen_addr(),
         gateway_https_listen_addr: None,
         gateway_threads: default_gateway_threads(),
@@ -446,6 +438,26 @@ mod tests {
         unsafe {
             std::env::remove_var("PLOYZ_REGION");
             std::env::remove_var("PLOYZ_AZ");
+        }
+    }
+
+    #[test]
+    fn daemon_config_reads_zfs_transfer_port_from_env_and_cli() {
+        unsafe {
+            std::env::set_var("PLOYZ_ZFS_TRANSFER_PORT", "4444");
+        }
+
+        let from_env = load_daemon_config(None, None, None, None, &context(Os::Darwin, false))
+            .expect("daemon config should load");
+        let from_cli =
+            load_daemon_config(None, None, None, Some(5555), &context(Os::Darwin, false))
+                .expect("daemon config should load");
+
+        assert_eq!(from_env.zfs_transfer_port, 4444);
+        assert_eq!(from_cli.zfs_transfer_port, 5555);
+
+        unsafe {
+            std::env::remove_var("PLOYZ_ZFS_TRANSFER_PORT");
         }
     }
 

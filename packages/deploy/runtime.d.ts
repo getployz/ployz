@@ -5,17 +5,22 @@ export type RuntimeWatchFrame =
       [k: string]: any;
     }
   | {
+      collection: RuntimeCollection;
       key: string;
       kind: "upsert";
       record: RuntimeRecord;
-      table: RuntimeTable;
       [k: string]: any;
     }
   | {
+      collection: RuntimeCollection;
       key: string;
       kind: "remove";
-      record: RuntimeRecord;
-      table: RuntimeTable;
+      [k: string]: any;
+    }
+  | {
+      code: string;
+      kind: "error";
+      message: string;
       [k: string]: any;
     }
   | {
@@ -69,6 +74,17 @@ export type PublicKey = [
   number,
   number
 ];
+export type StorageParticipation =
+  | {
+      kind: "candidate";
+      [k: string]: any;
+    }
+  | {
+      authority_id: AuthorityId;
+      kind: "authority";
+      [k: string]: any;
+    };
+export type AuthorityId = string;
 export type AvailabilityZoneName = string;
 export type RegionName = string;
 export type ServiceRoutingPolicy =
@@ -82,8 +98,8 @@ export type ServiceRoutingPolicy =
       kind: "split";
       [k: string]: any;
     };
+export type RuntimeCollection = "machine" | "revision" | "release" | "instance";
 export type RuntimeRecord = MachineMembership | ServiceRevisionRecord | ServiceReleaseRecord | InstanceStatusRecord;
-export type RuntimeTable = "machine" | "revision" | "release" | "instance";
 
 export interface RoutingState {
   instances: InstanceStatusRecord[];
@@ -115,7 +131,6 @@ export interface InstanceStatusRecord {
 }
 export interface MachineMembership {
   bridge_ip?: OverlayIp | null;
-  control_target?: string | null;
   created_at: number;
   endpoints: string[];
   id: MachineId;
@@ -125,6 +140,8 @@ export interface MachineMembership {
   lifecycle?: MachineLifecycle & string;
   overlay_ip: OverlayIp;
   public_key: PublicKey;
+  storage: boolean;
+  storage_participation: StorageParticipation;
   subnet?: string | null;
   topology: MachineTopology;
   updated_at: number;

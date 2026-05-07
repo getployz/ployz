@@ -1,12 +1,11 @@
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use ployz_dns_config::DnsConfig;
 use ployz_gateway_config::GatewayConfig;
-use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
+use ployz_runtime_api::RuntimeHandle;
 use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
-use ployz_store_api::StoreDriver;
-use ployz_types::model::{MachineId, OverlayIp};
+use ployz_types::model::OverlayIp;
 
 use super::DaemonState;
 use crate::runtime_profile::{MeshBuildRequest, MeshRuntimeComponents};
@@ -20,42 +19,13 @@ impl DaemonState {
     }
 
     #[must_use]
-    pub(crate) fn remote_control_bind_addr(
+    pub(crate) fn zfs_transfer_bind_addr(
         &self,
-        remote_control_port: u16,
+        zfs_transfer_port: u16,
         overlay_ip: OverlayIp,
     ) -> SocketAddr {
         self.runtime_profile
-            .remote_control_bind_addr(remote_control_port, overlay_ip)
-    }
-
-    #[must_use]
-    pub(crate) fn runtime_overlay_network_name(&self, network_name: &str) -> Option<String> {
-        self.runtime_profile.overlay_network_name(network_name)
-    }
-
-    pub(crate) async fn start_runtime_remote_control(
-        &self,
-        bind_addr: SocketAddr,
-        store: StoreDriver,
-        namespace_locks: NamespaceLockManager,
-        machine_id: MachineId,
-        overlay_network_name: Option<String>,
-        overlay_dns_server: Option<Ipv4Addr>,
-    ) -> Result<Box<dyn RuntimeHandle>, String> {
-        let storage_driver = self.zfs_storage_driver().await?;
-        self.runtime_profile
-            .start_remote_control(
-                bind_addr,
-                store,
-                namespace_locks,
-                machine_id,
-                overlay_network_name,
-                overlay_dns_server,
-                storage_driver,
-            )
-            .await
-            .map(|handle| Box::new(handle) as Box<dyn RuntimeHandle>)
+            .zfs_transfer_bind_addr(zfs_transfer_port, overlay_ip)
     }
 
     pub(crate) async fn start_runtime_gateway(

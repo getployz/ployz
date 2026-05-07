@@ -1,5 +1,0 @@
-{
-  "name": "far",
-  "interface": "data",
-  "netem": "delay 150ms 20ms distribution normal"
-}
