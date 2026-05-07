@@ -92,6 +92,7 @@ pub enum SimEvent {
     RemoveInstance(InstanceId),
     SetInstanceRunning(InstanceStatusRecord),
     SyncWireGuardFromStore,
+    RecordLiveObservation(LiveObservationRecord),
     RuntimeStart(InstanceStatusRecord),
     RuntimeStop(InstanceId),
     CheckInvariants,
@@ -108,6 +109,7 @@ impl SimEvent {
             Self::RemoveInstance(_) => "remove_instance",
             Self::SetInstanceRunning(_) => "set_instance_running",
             Self::SyncWireGuardFromStore => "sync_wireguard_from_store",
+            Self::RecordLiveObservation(_) => "record_live_observation",
             Self::RuntimeStart(_) => "runtime_start",
             Self::RuntimeStop(_) => "runtime_stop",
             Self::CheckInvariants => "check_invariants",
@@ -253,6 +255,77 @@ impl FakeRuntime {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LiveObservationSubject {
+    GatewayRouting,
+    DnsRouting,
+    RuntimeReadiness,
+    MeshPeerSync,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LiveObservationState {
+    Healthy,
+    Delayed {
+        last_good_at: SimInstant,
+    },
+    Failed {
+        last_good_at: Option<SimInstant>,
+        failures_total: u32,
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveObservationRecord {
+    pub subject: LiveObservationSubject,
+    pub state: LiveObservationState,
+    pub observed_at: SimInstant,
+}
+
+impl LiveObservationRecord {
+    #[must_use]
+    pub fn healthy(subject: LiveObservationSubject, observed_at: SimInstant) -> Self {
+        Self {
+            subject,
+            state: LiveObservationState::Healthy,
+            observed_at,
+        }
+    }
+
+    #[must_use]
+    pub fn delayed(
+        subject: LiveObservationSubject,
+        observed_at: SimInstant,
+        last_good_at: SimInstant,
+    ) -> Self {
+        Self {
+            subject,
+            state: LiveObservationState::Delayed { last_good_at },
+            observed_at,
+        }
+    }
+
+    #[must_use]
+    pub fn failed(
+        subject: LiveObservationSubject,
+        observed_at: SimInstant,
+        last_good_at: Option<SimInstant>,
+        failures_total: u32,
+        error: impl Into<String>,
+    ) -> Self {
+        Self {
+            subject,
+            state: LiveObservationState::Failed {
+                last_good_at,
+                failures_total,
+                error: error.into(),
+            },
+            observed_at,
+        }
+    }
+}
+
 pub struct FakeNatsStore {
     pub driver: StoreDriver,
     pub memory: Arc<MemoryStore>,
@@ -342,6 +415,7 @@ pub struct MiniSimulator {
     pub store: SimStore,
     pub runtime: FakeRuntime,
     pub wireguard: Arc<FakeWireGuard>,
+    live_observations: BTreeMap<LiveObservationSubject, LiveObservationRecord>,
     committed_namespaces: HashSet<Namespace>,
     wireguard_synced: bool,
     history: Vec<SimStep>,
@@ -356,6 +430,7 @@ impl MiniSimulator {
             store: SimStore::new(),
             runtime: FakeRuntime::new(),
             wireguard: Arc::new(MemoryWireGuard::new()),
+            live_observations: BTreeMap::new(),
             committed_namespaces: HashSet::new(),
             wireguard_synced: false,
             history: Vec::new(),
@@ -453,6 +528,10 @@ impl MiniSimulator {
                 self.wireguard_synced = true;
                 Ok(())
             }
+            SimEvent::RecordLiveObservation(record) => {
+                self.live_observations.insert(record.subject, record);
+                Ok(())
+            }
             SimEvent::RuntimeStart(record) => self.runtime.start(&record),
             SimEvent::RuntimeStop(instance_id) => self.runtime.stop(&instance_id),
             SimEvent::CheckInvariants => Ok(()),
@@ -485,6 +564,71 @@ impl MiniSimulator {
     #[must_use]
     pub fn history(&self) -> &[SimStep] {
         &self.history
+    }
+
+    pub async fn product_snapshot(&self, namespace: &Namespace) -> Result<ProductSnapshot> {
+        ProductSnapshot::from_sim(self, namespace).await
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductSnapshot {
+    pub active_machines: Vec<MachineId>,
+    pub gateway_backends: usize,
+    pub dns_addresses: usize,
+    pub wireguard_peers: Vec<MachineId>,
+    pub runtime_containers: Vec<InstanceId>,
+    pub volumes: Vec<VolumeRecord>,
+    pub live_observations: Vec<LiveObservationRecord>,
+}
+
+impl ProductSnapshot {
+    pub async fn from_sim(sim: &MiniSimulator, namespace: &Namespace) -> Result<Self> {
+        let state = sim.store.driver.load_routing_state().await?;
+        let gateway = routes::project(state.clone()).map_err(|error| {
+            Error::operation("sim.product_snapshot.gateway_projection", error.to_string())
+        })?;
+        let dns = project_dns(&state);
+        let mut active_machines = state
+            .machines
+            .iter()
+            .filter(|machine| machine.lifecycle == MachineLifecycle::Active)
+            .map(|machine| machine.id.clone())
+            .collect::<Vec<_>>();
+        active_machines.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut wireguard_peers = sim
+            .wireguard
+            .current_peers()
+            .iter()
+            .map(|peer| peer.id().clone())
+            .collect::<Vec<_>>();
+        wireguard_peers.sort_by(|left, right| left.0.cmp(&right.0));
+        let runtime_containers = sim
+            .runtime
+            .containers()
+            .into_iter()
+            .map(|container| container.instance_id)
+            .collect::<Vec<_>>();
+        let volumes = sim.store.driver.list_volumes(namespace).await?;
+        let live_observations = sim.live_observations.values().cloned().collect::<Vec<_>>();
+
+        Ok(Self {
+            active_machines,
+            gateway_backends: gateway
+                .http_routes
+                .iter()
+                .filter(|route| namespace == &route.namespace)
+                .flat_map(|route| route.backends.iter())
+                .count(),
+            dns_addresses: dns
+                .lookup_service(namespace, "web")
+                .map(<[Ipv4Addr]>::len)
+                .unwrap_or(0),
+            wireguard_peers,
+            runtime_containers,
+            volumes,
+            live_observations,
+        })
     }
 }
 
@@ -907,6 +1051,7 @@ pub async fn check_simulator_invariants(sim: &MiniSimulator) -> InvariantReport 
             &sim.wireguard.current_peers(),
         ));
     }
+    report.extend(check_live_observation_records(&sim.live_observations));
     report
 }
 
@@ -1399,6 +1544,62 @@ pub fn check_wireguard_membership_alignment(
     violations
 }
 
+#[must_use]
+pub fn check_live_observation_records(
+    observations: &BTreeMap<LiveObservationSubject, LiveObservationRecord>,
+) -> Vec<InvariantViolation> {
+    let mut violations = Vec::new();
+    for (subject, observation) in observations {
+        if subject != &observation.subject {
+            violations.push(InvariantViolation::new(
+                "live_observation",
+                format!(
+                    "observation keyed as '{subject:?}' contains subject '{:?}'",
+                    observation.subject
+                ),
+            ));
+        }
+        match &observation.state {
+            LiveObservationState::Healthy => {}
+            LiveObservationState::Delayed { last_good_at } => {
+                if last_good_at > &observation.observed_at {
+                    violations.push(InvariantViolation::new(
+                        "live_observation",
+                        format!("delayed observation '{subject:?}' points to a future last-good"),
+                    ));
+                }
+            }
+            LiveObservationState::Failed {
+                last_good_at,
+                failures_total,
+                error,
+            } => {
+                if *failures_total == 0 {
+                    violations.push(InvariantViolation::new(
+                        "live_observation",
+                        format!("failed observation '{subject:?}' has no failure count"),
+                    ));
+                }
+                if error.trim().is_empty() {
+                    violations.push(InvariantViolation::new(
+                        "live_observation",
+                        format!("failed observation '{subject:?}' has no operator-facing error"),
+                    ));
+                }
+                if let Some(last_good_at) = last_good_at
+                    && last_good_at > &observation.observed_at
+                {
+                    violations.push(InvariantViolation::new(
+                        "live_observation",
+                        format!("failed observation '{subject:?}' points to a future last-good"),
+                    ));
+                }
+            }
+        }
+    }
+    violations
+}
+
 fn check_volume_record(
     volume: &VolumeRecord,
     machine_ids: &HashSet<MachineId>,
@@ -1714,6 +1915,21 @@ mod tests {
         let state = routing_state(sim).await;
         assert_gateway_backends(&state, expected);
         assert_dns_addresses(&state, namespace, expected);
+    }
+
+    async fn assert_product_snapshot(
+        sim: &MiniSimulator,
+        namespace: &Namespace,
+        gateway_backends: usize,
+        dns_addresses: usize,
+    ) -> ProductSnapshot {
+        let snapshot = sim
+            .product_snapshot(namespace)
+            .await
+            .expect("product snapshot");
+        assert_eq!(snapshot.gateway_backends, gateway_backends);
+        assert_eq!(snapshot.dns_addresses, dns_addresses);
+        snapshot
     }
 
     #[test]
@@ -2207,6 +2423,182 @@ mod tests {
         let result = sim.run_scripted_until_idle().await.expect("sim runs");
         assert_eq!(result.report.violations, Vec::new());
         assert_exposure(&sim, &namespace, 1).await;
+    }
+
+    #[tokio::test]
+    async fn product_observation_failures_are_visible_without_rewriting_serving_state() {
+        let namespace = Namespace::default_ns();
+        let ready = fixture::instance(namespace.clone(), InstancePhase::Ready);
+        let mut sim = MiniSimulator::new(25, 1);
+        sim.schedule_now(SimEvent::UpsertMachine(fixture::machine(
+            1,
+            MachineLifecycle::Active,
+        )))
+        .expect("schedule machine");
+        sim.schedule_now(SimEvent::RecordInstance(ready.clone()))
+            .expect("schedule ready status");
+        sim.schedule_now(SimEvent::RuntimeStart(ready))
+            .expect("schedule runtime");
+        sim.schedule_now(SimEvent::CommitDeploy(Box::new(commit(
+            namespace.clone(),
+            vec![fixture::revision(namespace.clone())],
+            vec![fixture::release(namespace.clone())],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            "deploy-ready",
+        ))))
+        .expect("schedule deploy");
+        let first_good = sim.clock.now();
+        sim.schedule_now(SimEvent::RecordLiveObservation(
+            LiveObservationRecord::healthy(LiveObservationSubject::GatewayRouting, first_good),
+        ))
+        .expect("schedule healthy gateway observation");
+        sim.schedule_now(SimEvent::RecordLiveObservation(
+            LiveObservationRecord::healthy(LiveObservationSubject::DnsRouting, first_good),
+        ))
+        .expect("schedule healthy dns observation");
+        sim.schedule_now(SimEvent::CheckInvariants)
+            .expect("schedule healthy observation point");
+
+        let result = sim.run_scripted_until_idle().await.expect("sim runs");
+        assert_eq!(result.report.violations, Vec::new());
+        let healthy_snapshot = assert_product_snapshot(&sim, &namespace, 1, 1).await;
+        assert_eq!(healthy_snapshot.live_observations.len(), 2);
+
+        sim.clock.advance(30).expect("advance clock");
+        let failure_time = sim.clock.now();
+        sim.schedule_now(SimEvent::RecordLiveObservation(
+            LiveObservationRecord::failed(
+                LiveObservationSubject::GatewayRouting,
+                failure_time,
+                Some(first_good),
+                2,
+                "gateway metrics endpoint refused connection",
+            ),
+        ))
+        .expect("schedule failed gateway observation");
+        sim.schedule_now(SimEvent::RecordLiveObservation(
+            LiveObservationRecord::delayed(
+                LiveObservationSubject::DnsRouting,
+                failure_time,
+                first_good,
+            ),
+        ))
+        .expect("schedule delayed dns observation");
+        sim.schedule_now(SimEvent::CheckInvariants)
+            .expect("schedule failed observation point");
+
+        let result = sim.run_scripted_until_idle().await.expect("sim runs");
+        assert_eq!(result.report.violations, Vec::new());
+        let failed_snapshot = assert_product_snapshot(&sim, &namespace, 1, 1).await;
+        assert!(failed_snapshot.live_observations.iter().any(|observation| {
+            observation.subject == LiveObservationSubject::GatewayRouting
+                && matches!(
+                    observation.state,
+                    LiveObservationState::Failed {
+                        failures_total: 2,
+                        ..
+                    }
+                )
+        }));
+        assert!(failed_snapshot.live_observations.iter().any(|observation| {
+            observation.subject == LiveObservationSubject::DnsRouting
+                && matches!(observation.state, LiveObservationState::Delayed { .. })
+        }));
+    }
+
+    #[tokio::test]
+    async fn product_volume_transfer_then_node_removal_converges_without_route_loss() {
+        let namespace = Namespace::default_ns();
+        let instance = fixture::instance(namespace.clone(), InstancePhase::Ready);
+        let mut volume = fixture::volume(namespace.clone(), MachineId("machine-1".into()));
+        let mut sim = MiniSimulator::new(26, 1);
+        sim.schedule_now(SimEvent::UpsertMachine(fixture::machine(
+            1,
+            MachineLifecycle::Active,
+        )))
+        .expect("schedule first machine");
+        sim.schedule_now(SimEvent::UpsertMachine(fixture::machine(
+            2,
+            MachineLifecycle::Active,
+        )))
+        .expect("schedule second machine");
+        sim.schedule_now(SimEvent::RecordInstance(instance.clone()))
+            .expect("schedule status");
+        sim.schedule_now(SimEvent::RuntimeStart(instance))
+            .expect("schedule runtime");
+        sim.schedule_now(SimEvent::CommitDeploy(Box::new(commit(
+            namespace.clone(),
+            vec![fixture::revision(namespace.clone())],
+            vec![fixture::release(namespace.clone())],
+            vec![volume.clone()],
+            Vec::new(),
+            Vec::new(),
+            "deploy-on-machine-1",
+        ))))
+        .expect("schedule deploy");
+        sim.schedule_now(SimEvent::SyncWireGuardFromStore)
+            .expect("schedule wireguard");
+        sim.schedule_now(SimEvent::CheckInvariants)
+            .expect("schedule first observation");
+
+        let result = sim.run_scripted_until_idle().await.expect("sim runs");
+        assert_eq!(result.report.violations, Vec::new());
+        let first_snapshot = assert_product_snapshot(&sim, &namespace, 1, 1).await;
+        assert_eq!(first_snapshot.wireguard_peers.len(), 2);
+
+        let mut migrated_instance = fixture::instance(namespace.clone(), InstancePhase::Ready);
+        migrated_instance.machine_id = MachineId("machine-2".into());
+        migrated_instance.updated_at = 2;
+        let mut migrated_release = fixture::release(namespace.clone());
+        if let Some(slot) = migrated_release.release.slots.first_mut() {
+            slot.machine_id = MachineId("machine-2".into());
+        }
+        migrated_release.release.updated_by_deploy_id = DeployId("deploy-volume-transfer".into());
+        migrated_release.release.updated_at = 2;
+        volume.machine_id = MachineId("machine-2".into());
+        volume.last_modified_by_deploy_id = DeployId("deploy-volume-transfer".into());
+        volume.last_modified_at = 2;
+        sim.schedule_now(SimEvent::RecordInstance(migrated_instance.clone()))
+            .expect("schedule migrated status");
+        sim.schedule_now(SimEvent::RuntimeStart(migrated_instance))
+            .expect("schedule migrated runtime");
+        sim.schedule_now(SimEvent::CommitDeploy(Box::new(commit(
+            namespace.clone(),
+            Vec::new(),
+            vec![migrated_release],
+            vec![volume],
+            Vec::new(),
+            Vec::new(),
+            "deploy-volume-transfer",
+        ))))
+        .expect("schedule volume transfer");
+        sim.schedule_now(SimEvent::RemoveMachine(MachineId("machine-1".into())))
+            .expect("schedule old owner removal");
+        sim.schedule_now(SimEvent::SyncWireGuardFromStore)
+            .expect("schedule wireguard resync");
+        sim.schedule_now(SimEvent::CheckInvariants)
+            .expect("schedule convergence observation");
+
+        let result = sim.run_scripted_until_idle().await.expect("sim runs");
+        assert_eq!(result.report.violations, Vec::new());
+        let converged = assert_product_snapshot(&sim, &namespace, 1, 1).await;
+        assert_eq!(
+            converged.active_machines,
+            vec![MachineId("machine-2".into())]
+        );
+        assert_eq!(
+            converged.wireguard_peers,
+            vec![MachineId("machine-2".into())]
+        );
+        assert_eq!(
+            converged
+                .volumes
+                .first()
+                .map(|volume| volume.machine_id.clone()),
+            Some(MachineId("machine-2".into()))
+        );
     }
 
     #[tokio::test]
