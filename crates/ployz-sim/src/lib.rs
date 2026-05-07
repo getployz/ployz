@@ -1,8 +1,15 @@
-//! Deterministic mini-simulator and invariant checks for the Ployz core model.
+//! Deterministic mini-simulator and invariant checks for Ployz core orchestration.
+//!
+//! This crate is for model and control-plane behavior: deploy records, machine
+//! membership, volume ownership, projected gateway/DNS state, and the boundary
+//! between durable intent, stored status, and live observations. It intentionally
+//! does not try to prove Docker, ZFS, WireGuard, NATS, kernel networking, or DNS
+//! sockets. Those belong in backend contract and E2E tests.
 //!
 //! The simulator follows the TigerBeetle-inspired testing shape used in this
-//! repository: explicit clocks, seeded scheduling, bounded fake backends, and
-//! invariant checks that state the model contracts directly.
+//! repository: explicit clocks, seeded scheduling, bounded fake backends,
+//! seed-reproducible product workloads, final convergence passes, and invariant
+//! checkers that state externally meaningful contracts directly.
 
 use ployz_dns::project_dns;
 use ployz_gateway::routes;
@@ -15,9 +22,9 @@ use ployz_store_api::{
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    DeployRecord, DeployState, DrainState, InstanceId, InstancePhase, InstanceStatusRecord,
-    MachineId, MachineLifecycle, MachineMembership, OverlayIp, PublicKey, RoutingState,
-    ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord, WireGuardPeerSpec,
+    DeployId, DeployRecord, DeployState, DrainState, InstanceId, InstancePhase,
+    InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, OverlayIp, PublicKey,
+    RoutingState, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord, WireGuardPeerSpec,
 };
 use ployz_types::spec::{
     ContainerSpec, HttpRoute, Namespace, NetworkMode, Placement, PortProtocol, PullPolicy,
@@ -83,6 +90,7 @@ pub enum SimEvent {
     CommitDeploy(Box<DeployCommit>),
     RecordInstance(InstanceStatusRecord),
     RemoveInstance(InstanceId),
+    SetInstanceRunning(InstanceStatusRecord),
     SyncWireGuardFromStore,
     RuntimeStart(InstanceStatusRecord),
     RuntimeStop(InstanceId),
@@ -98,6 +106,7 @@ impl SimEvent {
             Self::CommitDeploy(_) => "commit_deploy",
             Self::RecordInstance(_) => "record_instance",
             Self::RemoveInstance(_) => "remove_instance",
+            Self::SetInstanceRunning(_) => "set_instance_running",
             Self::SyncWireGuardFromStore => "sync_wireguard_from_store",
             Self::RuntimeStart(_) => "runtime_start",
             Self::RuntimeStop(_) => "runtime_stop",
@@ -428,6 +437,10 @@ impl MiniSimulator {
             SimEvent::RemoveInstance(instance_id) => {
                 self.store.driver.remove_instance_status(&instance_id).await
             }
+            SimEvent::SetInstanceRunning(record) => {
+                self.store.driver.record_instance_status(&record).await?;
+                self.runtime.start(&record)
+            }
             SimEvent::SyncWireGuardFromStore => {
                 let state = self.store.driver.load_routing_state().await?;
                 let peers = state
@@ -456,8 +469,7 @@ impl MiniSimulator {
             1,
             MachineLifecycle::Active,
         )))?;
-        self.schedule_now(SimEvent::RecordInstance(instance.clone()))?;
-        self.schedule_now(SimEvent::RuntimeStart(instance))?;
+        self.schedule_now(SimEvent::SetInstanceRunning(instance))?;
         self.schedule_now(SimEvent::CommitDeploy(Box::new(DeployCommit {
             namespace,
             revisions: vec![revision],
@@ -473,6 +485,334 @@ impl MiniSimulator {
     #[must_use]
     pub fn history(&self) -> &[SimStep] {
         &self.history
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProductSwarmOptions {
+    pub seed: u64,
+    pub ticks: u32,
+    pub machines_max: u8,
+}
+
+impl ProductSwarmOptions {
+    #[must_use]
+    pub fn from_seed(seed: u64) -> Self {
+        let mut rng = StdRng::seed_from_u64(seed);
+        Self {
+            seed,
+            ticks: rng.random_range(24..=80),
+            machines_max: rng.random_range(3..=8),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductSwarmResult {
+    pub seed: u64,
+    pub ticks: u32,
+    pub operations: Vec<ProductOperation>,
+    pub report: InvariantReport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProductOperation {
+    DeployReady,
+    MarkFailed,
+    RecoverReady,
+    Drain,
+    RestoreServing,
+    MoveVolume,
+    AddMachine,
+    RemoveIdleMachine,
+    SyncWireGuard,
+}
+
+impl ProductOperation {
+    pub const ALL: [Self; 9] = [
+        Self::DeployReady,
+        Self::MarkFailed,
+        Self::RecoverReady,
+        Self::Drain,
+        Self::RestoreServing,
+        Self::MoveVolume,
+        Self::AddMachine,
+        Self::RemoveIdleMachine,
+        Self::SyncWireGuard,
+    ];
+}
+
+pub struct ProductSwarm {
+    options: ProductSwarmOptions,
+    rng: StdRng,
+    namespace: Namespace,
+    sim: MiniSimulator,
+    active_machines: Vec<MachineId>,
+    next_machine_index: u8,
+    instance: InstanceStatusRecord,
+    volume: VolumeRecord,
+    deployed: bool,
+}
+
+impl ProductSwarm {
+    #[must_use]
+    pub fn new(options: ProductSwarmOptions) -> Self {
+        let namespace = Namespace::default_ns();
+        let instance = fixture::instance(namespace.clone(), InstancePhase::Ready);
+        let volume = fixture::volume(namespace.clone(), MachineId("machine-1".into()));
+        Self {
+            options,
+            rng: StdRng::seed_from_u64(options.seed),
+            namespace,
+            sim: MiniSimulator::new(options.seed, 1),
+            active_machines: Vec::new(),
+            next_machine_index: 1,
+            instance,
+            volume,
+            deployed: false,
+        }
+    }
+
+    pub async fn run(mut self) -> Result<ProductSwarmResult> {
+        self.bootstrap().await?;
+        let mut operations = Vec::new();
+        let mut report = self.check().await;
+        if !report.is_ok() {
+            return Ok(ProductSwarmResult {
+                seed: self.options.seed,
+                ticks: 0,
+                operations,
+                report,
+            });
+        }
+
+        for tick in 0..self.options.ticks {
+            let operation = self.next_operation();
+            operations.push(operation);
+            self.apply_operation(operation).await?;
+            report = self.check().await;
+            if !report.is_ok() {
+                return Ok(ProductSwarmResult {
+                    seed: self.options.seed,
+                    ticks: tick + 1,
+                    operations,
+                    report,
+                });
+            }
+        }
+
+        self.apply_operation(ProductOperation::RecoverReady).await?;
+        self.apply_operation(ProductOperation::SyncWireGuard)
+            .await?;
+        operations.push(ProductOperation::RecoverReady);
+        operations.push(ProductOperation::SyncWireGuard);
+        report = self.check().await;
+
+        Ok(ProductSwarmResult {
+            seed: self.options.seed,
+            ticks: self.options.ticks,
+            operations,
+            report,
+        })
+    }
+
+    async fn bootstrap(&mut self) -> Result<()> {
+        self.add_machine().await?;
+        self.add_machine().await?;
+        self.apply_operation(ProductOperation::DeployReady).await?;
+        self.apply_operation(ProductOperation::SyncWireGuard).await
+    }
+
+    fn next_operation(&mut self) -> ProductOperation {
+        let roll = self.rng.random_range(0..100);
+        match roll {
+            0..=16 => ProductOperation::DeployReady,
+            17..=27 => ProductOperation::MarkFailed,
+            28..=39 => ProductOperation::RecoverReady,
+            40..=48 => ProductOperation::Drain,
+            49..=58 => ProductOperation::RestoreServing,
+            59..=70 => ProductOperation::MoveVolume,
+            71..=80 => ProductOperation::AddMachine,
+            81..=90 => ProductOperation::RemoveIdleMachine,
+            91..=99 => ProductOperation::SyncWireGuard,
+            _ => unreachable!("roll is in 0..100"),
+        }
+    }
+
+    async fn apply_operation(&mut self, operation: ProductOperation) -> Result<()> {
+        match operation {
+            ProductOperation::DeployReady => self.deploy_ready().await,
+            ProductOperation::MarkFailed => self.mark_failed().await,
+            ProductOperation::RecoverReady | ProductOperation::RestoreServing => {
+                self.recover_ready().await
+            }
+            ProductOperation::Drain => self.drain().await,
+            ProductOperation::MoveVolume => self.move_volume().await,
+            ProductOperation::AddMachine => self.add_machine().await,
+            ProductOperation::RemoveIdleMachine => self.remove_idle_machine().await,
+            ProductOperation::SyncWireGuard => {
+                self.sim.apply_event(SimEvent::SyncWireGuardFromStore).await
+            }
+        }
+    }
+
+    async fn deploy_ready(&mut self) -> Result<()> {
+        self.instance.phase = InstancePhase::Ready;
+        self.instance.ready = true;
+        self.instance.drain_state = DrainState::None;
+        self.instance.error = None;
+        if !self
+            .active_machines
+            .iter()
+            .any(|machine_id| machine_id == &self.instance.machine_id)
+        {
+            let Some(machine_id) = self.active_machines.first().cloned() else {
+                return Err(Error::operation(
+                    "sim.product.deploy",
+                    "cannot deploy without an active machine",
+                ));
+            };
+            self.instance.machine_id = machine_id;
+        }
+        let deploy_id = if self.deployed {
+            "swarm-redeploy"
+        } else {
+            "swarm-deploy"
+        };
+        self.deployed = true;
+        self.sim
+            .apply_event(SimEvent::RecordInstance(self.instance.clone()))
+            .await?;
+        self.sim
+            .apply_event(SimEvent::RuntimeStart(self.instance.clone()))
+            .await?;
+        self.sim
+            .apply_event(SimEvent::CommitDeploy(Box::new(swarm_commit(
+                self.namespace.clone(),
+                vec![fixture::revision(self.namespace.clone())],
+                vec![fixture::release(self.namespace.clone())],
+                vec![self.volume.clone()],
+                Vec::new(),
+                Vec::new(),
+                deploy_id,
+            ))))
+            .await
+    }
+
+    async fn mark_failed(&mut self) -> Result<()> {
+        self.instance.phase = InstancePhase::Failed;
+        self.instance.ready = false;
+        self.instance.drain_state = DrainState::None;
+        self.instance.error = Some(String::from("simulated runtime failure"));
+        self.sim
+            .apply_event(SimEvent::RecordInstance(self.instance.clone()))
+            .await?;
+        self.sim
+            .apply_event(SimEvent::RuntimeStop(self.instance.instance_id.clone()))
+            .await
+    }
+
+    async fn recover_ready(&mut self) -> Result<()> {
+        self.instance.phase = InstancePhase::Ready;
+        self.instance.ready = true;
+        self.instance.drain_state = DrainState::None;
+        self.instance.error = None;
+        self.sim
+            .apply_event(SimEvent::RuntimeStart(self.instance.clone()))
+            .await?;
+        self.sim
+            .apply_event(SimEvent::RecordInstance(self.instance.clone()))
+            .await
+    }
+
+    async fn drain(&mut self) -> Result<()> {
+        self.instance.phase = InstancePhase::Draining;
+        self.instance.ready = false;
+        self.instance.drain_state = DrainState::Requested;
+        self.instance.error = None;
+        self.sim
+            .apply_event(SimEvent::RecordInstance(self.instance.clone()))
+            .await?;
+        self.sim
+            .apply_event(SimEvent::RuntimeStop(self.instance.instance_id.clone()))
+            .await
+    }
+
+    async fn move_volume(&mut self) -> Result<()> {
+        if self.active_machines.is_empty() {
+            return Ok(());
+        }
+        let index = self.rng.random_range(0..self.active_machines.len());
+        let Some(machine_id) = self.active_machines.get(index).cloned() else {
+            return Ok(());
+        };
+        self.volume.machine_id = machine_id;
+        self.volume.last_modified_by_deploy_id = DeployId(format!(
+            "swarm-volume-{}",
+            self.volume.last_modified_at.saturating_add(1)
+        ));
+        self.volume.last_modified_at = self.volume.last_modified_at.saturating_add(1);
+        self.sim
+            .apply_event(SimEvent::CommitDeploy(Box::new(swarm_commit(
+                self.namespace.clone(),
+                Vec::new(),
+                Vec::new(),
+                vec![self.volume.clone()],
+                Vec::new(),
+                Vec::new(),
+                "swarm-volume-move",
+            ))))
+            .await
+    }
+
+    async fn add_machine(&mut self) -> Result<()> {
+        if self.active_machines.len() >= usize::from(self.options.machines_max) {
+            return Ok(());
+        }
+        let index = self.next_machine_index;
+        self.next_machine_index = self.next_machine_index.saturating_add(1);
+        let machine = fixture::machine(index, MachineLifecycle::Active);
+        self.active_machines.push(machine.id.clone());
+        self.sim.apply_event(SimEvent::UpsertMachine(machine)).await
+    }
+
+    async fn remove_idle_machine(&mut self) -> Result<()> {
+        let removable = self.active_machines.iter().position(|machine_id| {
+            machine_id != &self.instance.machine_id && machine_id != &self.volume.machine_id
+        });
+        let Some(index) = removable else {
+            return Ok(());
+        };
+        let machine_id = self.active_machines.remove(index);
+        self.sim
+            .apply_event(SimEvent::RemoveMachine(machine_id))
+            .await
+    }
+
+    async fn check(&self) -> InvariantReport {
+        check_simulator_invariants(&self.sim).await
+    }
+}
+
+fn swarm_commit(
+    namespace: Namespace,
+    revisions: Vec<ServiceRevisionRecord>,
+    releases: Vec<ServiceReleaseRecord>,
+    volumes: Vec<VolumeRecord>,
+    removed_services: Vec<String>,
+    removed_volumes: Vec<String>,
+    deploy_id: &str,
+) -> DeployCommit {
+    let mut deploy = fixture::deploy(namespace.clone());
+    deploy.deploy_id = DeployId(deploy_id.into());
+    DeployCommit {
+        namespace,
+        revisions,
+        removed_services,
+        removed_volumes,
+        releases,
+        volumes,
+        deploy,
     }
 }
 
@@ -959,12 +1299,17 @@ pub fn check_runtime_projection(
     runtime: &FakeRuntime,
 ) -> Vec<InvariantViolation> {
     let mut violations = Vec::new();
+    let live_containers = runtime
+        .containers()
+        .into_iter()
+        .map(|container| (container.instance_id.clone(), container))
+        .collect::<HashMap<_, _>>();
     let status_instances = state
         .instances
         .iter()
         .map(|instance| (instance.instance_id.clone(), instance))
         .collect::<HashMap<_, _>>();
-    for container in runtime.containers() {
+    for container in live_containers.values() {
         match status_instances.get(&container.instance_id) {
             Some(status) => {
                 if status.machine_id != container.machine_id {
@@ -995,6 +1340,21 @@ pub fn check_runtime_projection(
                     ),
                 ));
             }
+        }
+    }
+    for instance in &state.instances {
+        if instance.phase == InstancePhase::Ready
+            && instance.ready
+            && instance.drain_state == DrainState::None
+            && !live_containers.contains_key(&instance.instance_id)
+        {
+            violations.push(InvariantViolation::new(
+                "runtime_projection",
+                format!(
+                    "ready status '{}' has no matching live runtime container",
+                    instance.instance_id
+                ),
+            ));
         }
     }
     violations
@@ -1518,7 +1878,7 @@ mod tests {
         let result = sim.run_until_idle().await.expect("sim runs");
 
         assert_eq!(result.report.violations, Vec::new());
-        assert_eq!(result.steps, 5);
+        assert_eq!(result.steps, 4);
         assert_eq!(
             result.history.last().map(|step| step.event),
             Some("sync_wireguard_from_store")
@@ -1845,6 +2205,49 @@ mod tests {
         let result = sim.run_scripted_until_idle().await.expect("sim runs");
         assert_eq!(result.report.violations, Vec::new());
         assert_exposure(&sim, &namespace, 1).await;
+    }
+
+    #[tokio::test]
+    async fn tigerbeetle_style_product_swarm_is_reproducible_by_seed() {
+        let seed = 0x5eed_51a7_u64;
+        let first = ProductSwarm::new(ProductSwarmOptions::from_seed(seed))
+            .run()
+            .await
+            .expect("first swarm runs");
+        let second = ProductSwarm::new(ProductSwarmOptions::from_seed(seed))
+            .run()
+            .await
+            .expect("second swarm runs");
+
+        assert_eq!(first.operations, second.operations);
+        assert_eq!(first.report.violations, Vec::new());
+        assert_eq!(second.report.violations, Vec::new());
+    }
+
+    #[tokio::test]
+    async fn tigerbeetle_style_product_swarm_checks_seeded_workload_range() {
+        let mut covered = HashSet::new();
+        for seed in 0_u64..64 {
+            let result = ProductSwarm::new(ProductSwarmOptions::from_seed(seed))
+                .run()
+                .await
+                .expect("swarm runs");
+            covered.extend(result.operations.iter().copied());
+
+            assert_eq!(
+                result.report.violations,
+                Vec::new(),
+                "seed {seed} failed after {} ticks with operations {:?}",
+                result.ticks,
+                result.operations
+            );
+        }
+        for operation in ProductOperation::ALL {
+            assert!(
+                covered.contains(&operation),
+                "seed range did not cover operation {operation:?}"
+            );
+        }
     }
 
     #[test]

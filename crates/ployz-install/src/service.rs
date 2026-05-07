@@ -129,12 +129,14 @@ pub(super) fn promote_system_binaries(manifest: &InstallManifest) -> Result<(), 
             system_bin_dir.display()
         )
     })?;
+    let nats_server_path = manifest.bin_dir.join("nats-server");
     let copies = [
         (&manifest.installer_path, system_bin_dir.join("ployz.sh")),
         (&manifest.ployzctl_path, system_bin_dir.join("ployzctl")),
         (&manifest.ployzd_path, system_bin_dir.join("ployzd")),
         (&manifest.gateway_path, system_bin_dir.join("ployz-gateway")),
         (&manifest.dns_path, system_bin_dir.join("ployz-dns")),
+        (&nats_server_path, system_bin_dir.join("nats-server")),
     ];
     for (src, dest) in copies {
         let Some(file_name) = dest.file_name() else {

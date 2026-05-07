@@ -4,6 +4,13 @@ use ployz_types::error::{Error, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+#[derive(Debug, Clone)]
+pub struct JsonEntry<T> {
+    pub key: String,
+    pub revision: u64,
+    pub value: T,
+}
+
 pub async fn get_bucket(
     js: &async_nats::jetstream::Context,
     bucket: &str,
@@ -53,6 +60,42 @@ where
             continue;
         };
         records.push(decode_json(decode_operation, bytes.as_ref())?);
+    }
+    Ok(records)
+}
+
+pub async fn list_json_entries<T>(
+    store: &kv::Store,
+    decode_operation: &'static str,
+    get_operation: &'static str,
+) -> Result<Vec<JsonEntry<T>>>
+where
+    T: DeserializeOwned,
+{
+    let keys = store
+        .keys()
+        .await
+        .map_err(|error| Error::operation(get_operation, format!("{error:?}")))?
+        .try_collect::<Vec<String>>()
+        .await
+        .map_err(|error| Error::operation(get_operation, format!("{error:?}")))?;
+    let mut records = Vec::with_capacity(keys.len());
+    for key in keys {
+        let Some(entry) = store
+            .entry(key)
+            .await
+            .map_err(|error| Error::operation(get_operation, format!("{error:?}")))?
+        else {
+            continue;
+        };
+        if entry.operation != kv::Operation::Put {
+            continue;
+        }
+        records.push(JsonEntry {
+            key: entry.key,
+            revision: entry.revision,
+            value: decode_json(decode_operation, entry.value.as_ref())?,
+        });
     }
     Ok(records)
 }

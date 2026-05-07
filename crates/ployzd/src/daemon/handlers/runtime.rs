@@ -60,7 +60,11 @@ async fn relay_runtime_batches(
                 return;
             }
         }
-        let _ = batch.ack().await;
+        if let Err(error) = batch.ack().await {
+            warn!(%error, "runtime routing batch ack failed");
+            let _ = tx.send(Err(error.to_string())).await;
+            return;
+        }
     }
 }
 
@@ -266,6 +270,35 @@ mod tests {
             event_rx.recv().await,
             Some(Err(String::from("test_routing_subscription: closed")))
         );
+        assert!(event_rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn relay_runtime_batches_surfaces_ack_failure_to_runtime_reader() {
+        let (batch_tx, mut batch_rx) = mpsc::channel(1);
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        drop(ack_rx);
+        batch_tx
+            .send(Ok(RoutingEventBatch::with_ack(
+                "batch-ack-failed",
+                None,
+                Vec::new(),
+                ack_tx,
+            )))
+            .await
+            .expect("queue batch");
+        drop(batch_tx);
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+
+        relay_runtime_batches(&mut batch_rx, event_tx).await;
+
+        let error = event_rx
+            .recv()
+            .await
+            .expect("ack failure should be forwarded")
+            .expect_err("ack failure should be visible to runtime reader");
+        assert!(error.contains("batch-ack-failed"));
+        assert!(error.contains("ack receiver closed"));
         assert!(event_rx.recv().await.is_none());
     }
 

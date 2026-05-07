@@ -7,7 +7,7 @@ use ployz_types::model::RoutingEvent;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::NatsStore;
-use crate::subjects::{self, ROUTING_EVENTS_STREAM};
+use crate::subjects::{self, NatsScope, ROUTING_EVENTS_STREAM};
 
 const NATS_BATCH_ID_MAX_LEN: usize = 64;
 pub const NATS_BATCH_ID: &str = "Nats-Batch-Id";
@@ -31,17 +31,18 @@ impl NatsStore {
         cause: impl AsRef<str>,
         events: &[RoutingEvent],
     ) -> Result<()> {
-        publish_routing_batch(self.jetstream(), batch_id, cause, events).await
+        publish_routing_batch_in(self.jetstream(), self.scope(), batch_id, cause, events).await
     }
 }
 
-pub(crate) async fn publish_routing_batch(
+pub(crate) async fn publish_routing_batch_in(
     js: &jetstream::Context,
+    scope: &NatsScope,
     batch_id: impl AsRef<str>,
     cause: impl AsRef<str>,
     events: &[RoutingEvent],
 ) -> Result<()> {
-    let specs = routing_publish_specs(batch_id.as_ref(), cause.as_ref(), events)?;
+    let specs = routing_publish_specs_in(scope, batch_id.as_ref(), cause.as_ref(), events)?;
     let Some((commit, staged)) = specs.split_last() else {
         return Ok(());
     };
@@ -87,7 +88,17 @@ async fn publish_routing_batch_part(
     ))
 }
 
-pub(crate) fn routing_publish_specs(
+#[cfg(test)]
+fn routing_publish_specs(
+    batch_id: &str,
+    cause: &str,
+    events: &[RoutingEvent],
+) -> Result<Vec<RoutingPublishSpec>> {
+    routing_publish_specs_in(&NatsScope::default(), batch_id, cause, events)
+}
+
+pub(crate) fn routing_publish_specs_in(
+    scope: &NatsScope,
     batch_id: &str,
     cause: &str,
     events: &[RoutingEvent],
@@ -118,7 +129,7 @@ pub(crate) fn routing_publish_specs(
                 Error::operation("nats_routing_event_encode", error.to_string())
             })?;
             Ok(RoutingPublishSpec {
-                subject: subjects::routing_event(batch_id, sequence),
+                subject: subjects::route_journal_event_in(scope, batch_id, sequence),
                 headers,
                 payload,
             })
@@ -141,6 +152,7 @@ fn unique_routing_publish_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_types::model::{AuthorityId, InstallationId};
     use ployz_types::model::{
         MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
         StorageParticipation,
@@ -194,6 +206,26 @@ mod tests {
         assert_eq!(
             header(&specs[0].headers, PLOYZ_ROUTING_LOGICAL_BATCH_ID),
             long_logical_batch_id
+        );
+    }
+
+    #[test]
+    fn routing_batch_specs_use_scope_for_publish_subjects() {
+        let scope = NatsScope::new(
+            InstallationId("inst-acme".into()),
+            AuthorityId("auth-sin".into()),
+        );
+        let specs = routing_publish_specs_in(
+            &scope,
+            "machine:machine-1",
+            "machine.upsert",
+            &[RoutingEvent::MachineAdded(test_machine("machine-1"))],
+        )
+        .expect("build specs");
+
+        assert_eq!(
+            specs[0].subject,
+            "ployz.v1.inst-acme.auth-sin.route.journal.event.default.machine%3Amachine-1.1"
         );
     }
 

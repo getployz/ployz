@@ -130,10 +130,24 @@ impl CertificateStore for NatsStore {
         let bucket = certificates_bucket(self).await?;
         let snapshot_boundary =
             kv_json::latest_sequence(&bucket, "nats_certificates_snapshot_boundary").await?;
-        let snapshot = self.list_certificates().await?;
-        kv_watch::subscribe_all(
+        let snapshot_entries = kv_json::list_json_entries::<CertificateRecord>(
+            &bucket,
+            "nats_certificate_decode",
+            "nats_certificates_list",
+        )
+        .await?;
+        let snapshot_revisions = snapshot_entries
+            .iter()
+            .map(|entry| (entry.key.clone(), entry.revision))
+            .collect::<HashMap<_, _>>();
+        let snapshot = snapshot_entries
+            .into_iter()
+            .map(|entry| entry.value)
+            .collect::<Vec<_>>();
+        kv_watch::subscribe_all_with_snapshot_revisions(
             &bucket,
             snapshot,
+            snapshot_revisions,
             snapshot_boundary,
             |record: &CertificateRecord| certificate_key(&record.hostname),
             "nats_certificates_watch",

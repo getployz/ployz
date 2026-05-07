@@ -278,7 +278,7 @@ impl NatsLocks {
             header::NATS_EXPECTED_LAST_SUBJECT_SEQUENCE,
             revision.to_string(),
         );
-        headers.insert(header::NATS_MESSAGE_TTL, ttl.as_secs().to_string());
+        headers.insert(header::NATS_MESSAGE_TTL, ttl_header_value(ttl));
         self.jetstream
             .publish_with_headers(kv_put_subject(&self.bucket, key), headers, value.into())
             .await
@@ -287,6 +287,10 @@ impl NatsLocks {
             .map(|ack| ack.sequence)
             .map_err(|error| Error::operation("nats_lock_publish_ack", format!("{error:?}")))
     }
+}
+
+fn ttl_header_value(ttl: Duration) -> String {
+    format!("{}s", ttl.as_secs())
 }
 
 fn release_value_for_operation(
@@ -405,5 +409,10 @@ mod tests {
             release_value_for_operation(kv::Operation::Put, &encoded).expect("put marker"),
             Some(value)
         );
+    }
+
+    #[test]
+    fn ttl_header_uses_nats_duration_string() {
+        assert_eq!(ttl_header_value(Duration::from_secs(300)), "300s");
     }
 }
