@@ -73,6 +73,9 @@ cargo test -p ployz-sim
   and invalid-transition behavior in `ployz-types`.
 - Deploy lifecycle tests pin explicit commit and cleanup-pending transitions,
   including idempotent retries that preserve the original completion evidence.
+- Instance status tests pin drain and runtime-failure transitions: drain clears
+  stale errors, idempotent repeats preserve timestamps, and changed runtime
+  failures update the visible error.
 - Deploy orchestration tests pin that unreachable participants block before
   inspect, start, or commit, so reachability is checked at decision time rather
   than inferred from stored freshness.
@@ -82,6 +85,9 @@ cargo test -p ployz-sim
 - Store API routing projection tests pin backend-independent event semantics
   across machines, revisions, releases, and instances: emitted routing events
   must update subscriber state the same way a fresh snapshot would.
+- Memory store routing batch tests pin the reference backend contract:
+  subscribers receive an initial snapshot followed by metadata-rich batches
+  whose events preserve old/new identity and satisfy acknowledgement semantics.
 - Store API routing acknowledgement tests pin foreground failure visibility:
   untracked batches are no-ops, while closed ack receivers return an error to
   the caller instead of being hidden.
@@ -99,8 +105,8 @@ cargo test -p ployz-sim
   sidecar sync metrics report unknown health with an explicit error instead of
   pretending the edge is healthy.
 - API serialization tests pin structured failure/status contracts: daemon
-  responses preserve typed payloads, machine operation status, and `last_error`
-  across JSON roundtrips.
+  responses preserve typed payloads, machine operation status, runtime
+  subscription error frames, and `last_error` across JSON roundtrips.
 - Machine operation tests pin durable failure visibility: a recorded operation
   failure remains visible through later running/stage updates and is cleared
   only by success.

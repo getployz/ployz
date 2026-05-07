@@ -2019,6 +2019,87 @@ mod tests {
     }
 
     #[test]
+    fn instance_transition_idempotent_draining_preserves_original_timestamp() {
+        let mut record = instance_record();
+        record.phase = InstancePhase::Draining;
+        record.ready = false;
+        record.drain_state = DrainState::Requested;
+        record.error = None;
+        record.updated_at = 42;
+
+        let outcome = record
+            .apply_status_transition(InstanceStatusTransition {
+                goal: InstanceStatusGoal::MarkDraining,
+                evidence: InstanceStatusEvidence::DeployCleanup {
+                    deploy_id: DeployId("deploy-1".into()),
+                },
+                at_unix_secs: 99,
+            })
+            .expect("repeated drain request is idempotent");
+
+        assert_eq!(outcome, InstanceStatusTransitionOutcome::AlreadyInState);
+        assert_eq!(record.phase, InstancePhase::Draining);
+        assert!(!record.ready);
+        assert_eq!(record.drain_state, DrainState::Requested);
+        assert_eq!(record.updated_at, 42);
+        assert!(record.error.is_none());
+    }
+
+    #[test]
+    fn instance_transition_failure_visibility_changes_only_when_error_changes() {
+        let mut record = instance_record();
+
+        record
+            .apply_status_transition(InstanceStatusTransition {
+                goal: InstanceStatusGoal::MarkFailed {
+                    error: "image pull failed".into(),
+                },
+                evidence: InstanceStatusEvidence::RuntimeStart {
+                    deploy_id: DeployId("deploy-1".into()),
+                },
+                at_unix_secs: 42,
+            })
+            .expect("runtime failure should be recorded");
+
+        assert_eq!(record.phase, InstancePhase::Failed);
+        assert!(!record.ready);
+        assert_eq!(record.error.as_deref(), Some("image pull failed"));
+        assert_eq!(record.updated_at, 42);
+
+        let outcome = record
+            .apply_status_transition(InstanceStatusTransition {
+                goal: InstanceStatusGoal::MarkFailed {
+                    error: "image pull failed".into(),
+                },
+                evidence: InstanceStatusEvidence::RuntimeStart {
+                    deploy_id: DeployId("deploy-1".into()),
+                },
+                at_unix_secs: 99,
+            })
+            .expect("same runtime failure is idempotent");
+
+        assert_eq!(outcome, InstanceStatusTransitionOutcome::AlreadyInState);
+        assert_eq!(record.error.as_deref(), Some("image pull failed"));
+        assert_eq!(record.updated_at, 42);
+
+        let outcome = record
+            .apply_status_transition(InstanceStatusTransition {
+                goal: InstanceStatusGoal::MarkFailed {
+                    error: "health check failed".into(),
+                },
+                evidence: InstanceStatusEvidence::RuntimeStart {
+                    deploy_id: DeployId("deploy-1".into()),
+                },
+                at_unix_secs: 100,
+            })
+            .expect("new runtime failure should update visible error");
+
+        assert_eq!(outcome, InstanceStatusTransitionOutcome::Applied);
+        assert_eq!(record.error.as_deref(), Some("health check failed"));
+        assert_eq!(record.updated_at, 100);
+    }
+
+    #[test]
     fn authority_region_and_participation_records_serialize_explicitly() {
         let authority = AuthorityRecord {
             id: AuthorityId::default_authority(),

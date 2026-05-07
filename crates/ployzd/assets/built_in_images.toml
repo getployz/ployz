@@ -1,4 +1,4 @@
 networking = "ghcr.io/getployz/ployz-networking:latest@sha256:520abe6e45704e5b8ef1b8336188a1d6f2f70db1ef70fcb199bc1ce6bc34890f"
 nats = "nats:2.14-alpine"
-dns = "ghcr.io/getployz/ployz-dns:latest@sha256:67e759f7a0f0480c8dc533856344bad79296006de85b36a8943063d72f598356"
-gateway = "ghcr.io/getployz/ployz-gateway:latest@sha256:de8bca7926fddd30aafd68f2bf4b2183f5ec4ff59382ef6fb12d1c5419a05ae1"
+dns = "ghcr.io/getployz/ployz-dns:latest@sha256:015ac8c768db2860f4ea3c63781961ad3a608c7c3276a130a374739265bf7432"
+gateway = "ghcr.io/getployz/ployz-gateway:latest@sha256:fa37ccf54bf629b8cc16208791716f95e17fbacc7b15ad8f64906a0004f58dcb"

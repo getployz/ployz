@@ -1325,6 +1325,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn routing_batch_subscription_returns_snapshot_then_metadata_rich_batches() {
+        let store = MemoryStore::new();
+        let machine = test_machine("machine-1");
+        store
+            .upsert_self_machine(&machine)
+            .await
+            .expect("seed machine");
+
+        let (state, mut batches) = store
+            .subscribe_routing_batches(crate::RoutingSubscription::durable("test.consumer"))
+            .await
+            .expect("subscribe routing batches");
+
+        assert_eq!(state.machines, vec![machine.clone()]);
+
+        let mut updated = machine.clone();
+        updated.labels.insert("role".into(), "gateway".into());
+        store
+            .upsert_self_machine(&updated)
+            .await
+            .expect("update machine");
+
+        let batch = tokio::time::timeout(std::time::Duration::from_secs(1), batches.recv())
+            .await
+            .expect("routing batch deadline")
+            .expect("routing batch")
+            .expect("routing batch should be successful");
+
+        assert_eq!(batch.batch_id, "memory:machine:machine-1");
+        assert_eq!(batch.cause.as_deref(), Some("machine.upsert"));
+        let [event] = batch.events.as_slice() else {
+            panic!("expected one routing event, got {:?}", batch.events);
+        };
+        let RoutingEvent::MachineUpdated { old, new } = event else {
+            panic!("expected machine update event, got {event:?}");
+        };
+        assert_eq!(old.labels.get("role"), None);
+        assert_eq!(new.labels.get("role").map(String::as_str), Some("gateway"));
+
+        batch.ack().await.expect("memory routing ack is a no-op");
+    }
+
+    #[tokio::test]
     async fn full_routing_event_channel_closes_subscriber() {
         let store = MemoryStore::new();
         let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");

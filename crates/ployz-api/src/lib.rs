@@ -1005,6 +1005,29 @@ mod tests {
     }
 
     #[test]
+    fn runtime_watch_error_frame_serialization_roundtrips() {
+        let frame = RuntimeWatchFrame::Error {
+            code: String::from("RUNTIME_SUBSCRIPTION_FAILED"),
+            message: String::from("routing batch 'batch-1' ack receiver closed"),
+        };
+
+        let json = serde_json::to_value(&frame).expect("serialize runtime error frame");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "error",
+                "code": "RUNTIME_SUBSCRIPTION_FAILED",
+                "message": "routing batch 'batch-1' ack receiver closed"
+            })
+        );
+
+        let decoded: RuntimeWatchFrame =
+            serde_json::from_value(json).expect("deserialize runtime error frame");
+        assert_eq!(decoded, frame);
+    }
+
+    #[test]
     fn daemon_error_response_preserves_structured_payload() {
         let response = DaemonResponse {
             ok: false,
