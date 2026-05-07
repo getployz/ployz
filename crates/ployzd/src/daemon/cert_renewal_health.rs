@@ -69,11 +69,7 @@ mod tests {
     async fn cert_renewal_health_roundtrip() {
         let path = temp_path("cert-renewal-health-roundtrip").join("health.json");
         let first = CertRenewalWorkerHealth::stale(1_777_646_000, None, "first");
-        let health = CertRenewalWorkerHealth::stale(
-            1_777_646_100,
-            Some(&first),
-            "fetch failed",
-        );
+        let health = CertRenewalWorkerHealth::stale(1_777_646_100, Some(&first), "fetch failed");
 
         write_health(&path, health.clone()).await;
 

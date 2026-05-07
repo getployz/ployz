@@ -6,7 +6,6 @@ use ployz_types::spec::Namespace;
 pub const DEPLOY_COMMITS_STREAM: &str = "cp_deploy_commits_auth-default";
 pub const CERT_JOBS_STREAM: &str = "work_cert_auth-default";
 pub const ROUTE_JOURNAL_STREAM: &str = "route_journal_auth-default";
-pub const ROUTING_EVENTS_STREAM: &str = ROUTE_JOURNAL_STREAM;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatsScope {

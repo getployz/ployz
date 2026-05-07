@@ -27,7 +27,7 @@ use crate::buckets::ensure_assets_in;
 use crate::store::instances::list_all_instance_status;
 use crate::store::kv_json;
 use crate::store::routing::{PLOYZ_ROUTING_CAUSE, PLOYZ_ROUTING_EVENT_ID};
-use crate::subjects::{NatsScope, ROUTING_EVENTS_STREAM};
+use crate::subjects::{NatsScope, ROUTE_JOURNAL_STREAM};
 
 const ROUTING_CONSUMER_CHANNEL_CAPACITY: usize = 128;
 const ROUTING_CONSUMER_ACK_WAIT: Duration = Duration::from_secs(30);
@@ -226,7 +226,7 @@ impl RoutingSnapshotReader for NatsStore {
         let temporary = subscription.is_temporary();
         let stream = self
             .jetstream()
-            .get_stream(ROUTING_EVENTS_STREAM)
+            .get_stream(ROUTE_JOURNAL_STREAM)
             .await
             .map_err(|error| Error::operation("nats_routing_stream", format!("{error:?}")))?;
         let mut stream = stream;

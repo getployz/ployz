@@ -151,7 +151,6 @@ ployz.v1.<inst>.<auth>.cp.cert.meta.<hostname>                       (KV)
 ployz.v1.<inst>.<auth>.cp.acme.account.<hash>                        (KV)
 ployz.v1.<inst>.<auth>.cp.acme.challenge.<hostname>.<token>          (KV)
 ployz.v1.<inst>.<auth>.cp.lock.<resource_kind>.<resource_id>         (KV)
-ployz.v1.<inst>.<auth>.cp.coordinator_lease                          (KV)
 ```
 
 ### Installation substrate plane

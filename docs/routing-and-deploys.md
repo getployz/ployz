@@ -121,7 +121,7 @@ runtime action.
 
 All routing decisions start from one snapshot of the distributed store's routing
 collections. After the snapshot, live consumers apply ordered routing events from the
-`routing_events` JetStream stream.
+`route_journal` JetStream stream.
 
 The snapshot is the catch-up boundary. If a process restarts or loses its local
 projection, it subscribes again, replaces any old consumer with the same id,

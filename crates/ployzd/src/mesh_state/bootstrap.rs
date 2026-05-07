@@ -37,16 +37,7 @@ pub struct BootstrapPeerRecord {
     pub endpoints: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BootstrapSeedCacheHealth {
-    pub healthy: bool,
-    pub updated_at_unix_secs: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stale_since_unix_secs: Option<u64>,
-    pub consecutive_failures: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
-}
+pub type BootstrapSeedCacheHealth = crate::health::ComponentHealth;
 
 impl BootstrapPeerRecord {
     #[must_use]
@@ -317,8 +308,7 @@ async fn run_bootstrap_seed_cache_task(
     cancel: CancellationToken,
 ) {
     let retry_delay = Duration::from_secs(5);
-    let mut consecutive_failures = 0u64;
-    let mut stale_since_unix_secs = None;
+    let mut health_state = None;
     loop {
         let subscription = tokio::select! {
             _ = cancel.cancelled() => return,
@@ -329,12 +319,7 @@ async fn run_bootstrap_seed_cache_task(
             Ok(subscription) => subscription,
             Err(error) => {
                 tracing::warn!(%error, "bootstrap seed cache machine subscription failed");
-                mark_seed_cache_failed(
-                    &network_dir,
-                    &mut consecutive_failures,
-                    &mut stale_since_unix_secs,
-                    error.to_string(),
-                );
+                mark_seed_cache_failed(&network_dir, &mut health_state, error.to_string());
                 if sleep_or_cancel(retry_delay, &cancel).await {
                     return;
                 }
@@ -354,18 +339,12 @@ async fn run_bootstrap_seed_cache_task(
             &mut last_written,
         ) {
             Ok(()) => {
-                consecutive_failures = 0;
-                stale_since_unix_secs = None;
+                health_state = None;
                 mark_seed_cache_healthy(&network_dir);
             }
             Err(error) => {
                 tracing::warn!(%error, "failed to write bootstrap seed cache");
-                mark_seed_cache_failed(
-                    &network_dir,
-                    &mut consecutive_failures,
-                    &mut stale_since_unix_secs,
-                    error,
-                );
+                mark_seed_cache_failed(&network_dir, &mut health_state, error);
             }
         }
 
@@ -378,8 +357,7 @@ async fn run_bootstrap_seed_cache_task(
                 tracing::warn!("bootstrap seed cache machine subscription ended");
                 mark_seed_cache_failed(
                     &network_dir,
-                    &mut consecutive_failures,
-                    &mut stale_since_unix_secs,
+                    &mut health_state,
                     "machine subscription ended",
                 );
                 break;
@@ -388,12 +366,7 @@ async fn run_bootstrap_seed_cache_task(
                 Ok(event) => event,
                 Err(error) => {
                     tracing::warn!(%error, "bootstrap seed cache machine subscription failed");
-                    mark_seed_cache_failed(
-                        &network_dir,
-                        &mut consecutive_failures,
-                        &mut stale_since_unix_secs,
-                        error.to_string(),
-                    );
+                    mark_seed_cache_failed(&network_dir, &mut health_state, error.to_string());
                     break;
                 }
             };
@@ -412,8 +385,7 @@ async fn run_bootstrap_seed_cache_task(
                             tracing::warn!("bootstrap seed cache machine subscription ended");
                             mark_seed_cache_failed(
                                 &network_dir,
-                                &mut consecutive_failures,
-                                &mut stale_since_unix_secs,
+                                &mut health_state,
                                 "machine subscription ended",
                             );
                             subscription_ended = true;
@@ -425,8 +397,7 @@ async fn run_bootstrap_seed_cache_task(
                                 tracing::warn!(%error, "bootstrap seed cache machine subscription failed");
                                 mark_seed_cache_failed(
                                     &network_dir,
-                                    &mut consecutive_failures,
-                                    &mut stale_since_unix_secs,
+                                    &mut health_state,
                                     error.to_string(),
                                 );
                                 subscription_ended = true;
@@ -447,18 +418,12 @@ async fn run_bootstrap_seed_cache_task(
             if !subscription_ended {
                 match sync_result {
                     Ok(()) => {
-                        consecutive_failures = 0;
-                        stale_since_unix_secs = None;
+                        health_state = None;
                         mark_seed_cache_healthy(&network_dir);
                     }
                     Err(error) => {
                         tracing::warn!(%error, "failed to write bootstrap seed cache");
-                        mark_seed_cache_failed(
-                            &network_dir,
-                            &mut consecutive_failures,
-                            &mut stale_since_unix_secs,
-                            error,
-                        );
+                        mark_seed_cache_failed(&network_dir, &mut health_state, error);
                     }
                 }
             }
@@ -492,13 +457,7 @@ async fn sleep_or_cancel(delay: Duration, cancel: &CancellationToken) -> bool {
 }
 
 fn mark_seed_cache_healthy(network_dir: &Path) {
-    let health = BootstrapSeedCacheHealth {
-        healthy: true,
-        updated_at_unix_secs: ployz_types::time::now_unix_secs(),
-        stale_since_unix_secs: None,
-        consecutive_failures: 0,
-        last_error: None,
-    };
+    let health = BootstrapSeedCacheHealth::healthy(ployz_types::time::now_unix_secs());
     if let Err(error) = write_bootstrap_seed_cache_health(network_dir, &health) {
         tracing::warn!(%error, "failed to write bootstrap seed cache health");
     }
@@ -506,20 +465,12 @@ fn mark_seed_cache_healthy(network_dir: &Path) {
 
 fn mark_seed_cache_failed(
     network_dir: &Path,
-    consecutive_failures: &mut u64,
-    stale_since_unix_secs: &mut Option<u64>,
+    health_state: &mut Option<BootstrapSeedCacheHealth>,
     error: impl Into<String>,
 ) {
     let now = ployz_types::time::now_unix_secs();
-    let stale_since = *stale_since_unix_secs.get_or_insert(now);
-    *consecutive_failures = consecutive_failures.saturating_add(1);
-    let health = BootstrapSeedCacheHealth {
-        healthy: false,
-        updated_at_unix_secs: now,
-        stale_since_unix_secs: Some(stale_since),
-        consecutive_failures: *consecutive_failures,
-        last_error: Some(error.into()),
-    };
+    let health = BootstrapSeedCacheHealth::stale(now, health_state.as_ref(), error);
+    *health_state = Some(health.clone());
     if let Err(error) = write_bootstrap_seed_cache_health(network_dir, &health) {
         tracing::warn!(%error, "failed to write bootstrap seed cache health");
     }
@@ -662,13 +613,8 @@ mod tests {
     #[test]
     fn bootstrap_seed_cache_health_roundtrip() {
         let network_dir = temp_network_dir("health-roundtrip");
-        let health = BootstrapSeedCacheHealth {
-            healthy: false,
-            updated_at_unix_secs: 123,
-            stale_since_unix_secs: Some(100),
-            consecutive_failures: 2,
-            last_error: Some("watch failed".into()),
-        };
+        let first = BootstrapSeedCacheHealth::stale(100, None, "first");
+        let health = BootstrapSeedCacheHealth::stale(123, Some(&first), "watch failed");
 
         write_bootstrap_seed_cache_health(&network_dir, &health).expect("write health");
         let loaded = load_bootstrap_seed_cache_health(&network_dir)
@@ -843,9 +789,9 @@ mod tests {
         let health = load_bootstrap_seed_cache_health(&network_dir)
             .expect("load health")
             .expect("health");
-        assert!(health.healthy);
-        assert_eq!(health.consecutive_failures, 0);
-        assert!(health.stale_since_unix_secs.is_none());
+        assert!(health.is_healthy());
+        assert_eq!(health.consecutive_failures(), 0);
+        assert!(health.stale_since_unix_secs().is_none());
         let _ = std::fs::remove_dir_all(&network_dir);
     }
 

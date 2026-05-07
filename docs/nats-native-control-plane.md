@@ -239,7 +239,7 @@ fault injection and record observed p50/p95/p99.
 | Deploy status | NATS KV `deploy_status` | owning authority replicas | direct KV/projection | mutable KV update to owning authority quorum |
 | Instance status | NATS KV `instances` | owning authority replicas | routing projection or direct KV | participant writes status to owning authority quorum |
 | Routing snapshot | local projection | each gateway/DNS/daemon process memory | in-process memory | rebuilt from authoritative NATS state |
-| Routing events | JetStream stream `routing_events` | owning authority replicas | durable or temporary consumer | atomic batch publish to owning authority quorum |
+| Routing events | JetStream stream `route_journal` | owning authority replicas | durable or temporary consumer | publish one ordered event per routing fact to owning authority quorum |
 | Public/shared route projections | JetStream source streams | installation-root projection authority | public/shared gateways consume projections | source only from explicit owner exports |
 | Certificates metadata | NATS KV `certificates` | owning authority replicas | direct KV/subscription | KV put to owning authority quorum |
 | Certificate PEM blobs | NATS Object Store | owning authority replicas | object get, often cached by consumers | object put to owning authority quorum |
