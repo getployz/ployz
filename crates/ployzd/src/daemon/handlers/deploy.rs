@@ -671,6 +671,17 @@ mod tests {
         assert!(manifest.services.is_empty());
     }
 
+    #[test]
+    fn decode_manifest_rejects_invalid_json_with_structured_error() {
+        let error = decode_manifest("{not-json")
+            .expect_err("invalid manifest json should return daemon error");
+
+        assert!(!error.ok);
+        assert_eq!(error.code, "INVALID_MANIFEST");
+        assert!(error.message.starts_with("invalid deploy manifest:"));
+        assert!(error.payload.is_none());
+    }
+
     #[tokio::test]
     async fn export_manifest_includes_stored_volume_declarations() {
         let store = StoreDriver::memory();
@@ -753,5 +764,126 @@ mod tests {
         assert_eq!(volume.mode, "0750");
         assert_eq!(volume.owner, "999:999");
         manifest.validate().expect("export should validate");
+    }
+
+    #[tokio::test]
+    async fn export_manifest_surfaces_release_referencing_missing_revision() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        let deploy_id = DeployId("deploy-1".into());
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: Vec::new(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: vec![ServiceReleaseRecord {
+                    namespace: namespace.clone(),
+                    service: "api".into(),
+                    release: ServiceRelease {
+                        primary_revision_hash: "missing-rev".into(),
+                        referenced_revision_hashes: vec!["missing-rev".into()],
+                        routing: ServiceRoutingPolicy::Direct {
+                            revision_hash: "missing-rev".into(),
+                        },
+                        slots: Vec::new(),
+                        updated_by_deploy_id: deploy_id.clone(),
+                        updated_at: 1,
+                    },
+                }],
+                volumes: Vec::new(),
+                deploy: DeployRecord {
+                    deploy_id,
+                    namespace: namespace.clone(),
+                    coordinator_machine_id: MachineId("local".into()),
+                    manifest_hash: "manifest".into(),
+                    state: DeployState::Committed,
+                    started_at: 1,
+                    committed_at: Some(1),
+                    finished_at: Some(1),
+                    summary_json: "{}".into(),
+                },
+            })
+            .await
+            .expect("seed corrupt release");
+
+        let error = export_manifest(&store, &namespace)
+            .await
+            .expect_err("missing revision should fail export");
+
+        assert!(error.to_string().contains("deploy_export"));
+        assert!(error.to_string().contains(
+            "current release for service 'api' referenced missing revision 'missing-rev'"
+        ));
+    }
+
+    #[tokio::test]
+    async fn export_manifest_surfaces_stored_spec_service_mismatch() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        let mut service = test_service();
+        service.name = "wrong-service".into();
+        let revision_hash = "rev-api".to_string();
+        let deploy_id = DeployId("deploy-1".into());
+
+        store
+            .record_service_revision(&DeployRevisionUpsert {
+                revision: ServiceRevisionRecord {
+                    namespace: namespace.clone(),
+                    service: "api".into(),
+                    revision_hash: revision_hash.clone(),
+                    spec_json: serde_json::to_string(&service).expect("serialize service"),
+                    created_by: MachineId("local".into()),
+                    created_at: 1,
+                },
+            })
+            .await
+            .expect("seed mismatched revision");
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: Vec::new(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: vec![ServiceReleaseRecord {
+                    namespace: namespace.clone(),
+                    service: "api".into(),
+                    release: ServiceRelease {
+                        primary_revision_hash: revision_hash.clone(),
+                        referenced_revision_hashes: vec![revision_hash.clone()],
+                        routing: ServiceRoutingPolicy::Direct { revision_hash },
+                        slots: Vec::new(),
+                        updated_by_deploy_id: deploy_id.clone(),
+                        updated_at: 1,
+                    },
+                }],
+                volumes: Vec::new(),
+                deploy: DeployRecord {
+                    deploy_id,
+                    namespace: namespace.clone(),
+                    coordinator_machine_id: MachineId("local".into()),
+                    manifest_hash: "manifest".into(),
+                    state: DeployState::Committed,
+                    started_at: 1,
+                    committed_at: Some(1),
+                    finished_at: Some(1),
+                    summary_json: "{}".into(),
+                },
+            })
+            .await
+            .expect("seed release");
+
+        let error = export_manifest(&store, &namespace)
+            .await
+            .expect_err("mismatched stored spec should fail export");
+
+        assert!(error.to_string().contains("deploy_export"));
+        assert!(
+            error.to_string().contains(
+                "stored spec service 'wrong-service' did not match release service 'api'"
+            )
+        );
     }
 }

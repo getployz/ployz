@@ -1134,6 +1134,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn commit_deploy_removed_service_emits_release_removed() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let removed = test_release(&namespace, "worker", "rev-old", "deploy-old");
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: Vec::new(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: vec![
+                    test_release(&namespace, "api", "rev-old", "deploy-old"),
+                    removed.clone(),
+                ],
+                volumes: Vec::new(),
+                deploy: test_deploy(&namespace, "deploy-old"),
+            })
+            .await
+            .expect("seed deploy");
+        let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: Vec::new(),
+                removed_services: vec!["worker".into()],
+                removed_volumes: Vec::new(),
+                releases: Vec::new(),
+                volumes: Vec::new(),
+                deploy: test_deploy(&namespace, "deploy-new"),
+            })
+            .await
+            .expect("remove service");
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("await removal event")
+            .expect("event present");
+        assert_eq!(event, RoutingEvent::ReleaseRemoved(removed));
+    }
+
+    #[tokio::test]
+    async fn commit_deploy_removed_volumes_are_scoped_to_namespace() {
+        let store = MemoryStore::new();
+        let prod = Namespace("prod".into());
+        let staging = Namespace("staging".into());
+        let deploy_id = DeployId("deploy-1".into());
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: prod.clone(),
+                revisions: Vec::new(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: Vec::new(),
+                volumes: vec![test_volume(&prod, "data", &deploy_id)],
+                deploy: test_deploy(&prod, "deploy-prod"),
+            })
+            .await
+            .expect("seed prod volume");
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: staging.clone(),
+                revisions: Vec::new(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: Vec::new(),
+                volumes: vec![test_volume(&staging, "data", &deploy_id)],
+                deploy: test_deploy(&staging, "deploy-staging"),
+            })
+            .await
+            .expect("seed staging volume");
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: prod.clone(),
+                revisions: Vec::new(),
+                removed_services: Vec::new(),
+                removed_volumes: vec!["data".into()],
+                releases: Vec::new(),
+                volumes: Vec::new(),
+                deploy: test_deploy(&prod, "deploy-prod-remove"),
+            })
+            .await
+            .expect("remove prod volume");
+
+        assert!(
+            store
+                .get_volume(&prod, "data")
+                .await
+                .expect("load prod volume")
+                .is_none()
+        );
+        assert!(
+            store
+                .get_volume(&staging, "data")
+                .await
+                .expect("load staging volume")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
     async fn instance_status_writes_update_routing_snapshot_and_emit_events() {
         let store = MemoryStore::new();
         let namespace = Namespace("prod".into());
@@ -1257,6 +1361,23 @@ mod tests {
             error: None,
             started_at: 1,
             updated_at: 1,
+        }
+    }
+
+    fn test_volume(namespace: &Namespace, volume_name: &str, deploy_id: &DeployId) -> VolumeRecord {
+        VolumeRecord {
+            namespace: namespace.clone(),
+            volume_name: volume_name.into(),
+            scope: ployz_types::spec::VolumeScope::Single,
+            machine_id: MachineId("machine-1".into()),
+            quota: "1G".into(),
+            mode: "0750".into(),
+            owner: "999:999".into(),
+            attached_services: Vec::new(),
+            created_at: 1,
+            created_by_deploy_id: deploy_id.clone(),
+            last_modified_at: 1,
+            last_modified_by_deploy_id: deploy_id.clone(),
         }
     }
 

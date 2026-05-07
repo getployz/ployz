@@ -941,6 +941,83 @@ mod tests {
     }
 
     #[test]
+    fn routing_events_for_all_tables_map_to_runtime_watch_frames() {
+        let old_machine = machine_record("machine-1");
+        let mut new_machine = old_machine.clone();
+        new_machine.lifecycle = MachineLifecycle::Draining;
+        let old_revision = revision_record("prod", "api", "rev-1");
+        let mut new_revision = old_revision.clone();
+        new_revision.spec_json = r#"{"image":"api:2"}"#.into();
+        let old_release = release_record("prod", "api");
+        let mut new_release = old_release.clone();
+        new_release.release.primary_revision_hash = "rev-2".into();
+
+        let cases = [
+            (
+                runtime_frame_from_event(RoutingEvent::MachineUpdated {
+                    old: old_machine.clone(),
+                    new: new_machine.clone(),
+                }),
+                RuntimeWatchFrame::Upsert {
+                    table: RuntimeTable::Machine,
+                    key: String::from("machine-1"),
+                    record: RuntimeRecord::Machine(new_machine.clone()),
+                },
+            ),
+            (
+                runtime_frame_from_event(RoutingEvent::MachineRemoved(new_machine.clone())),
+                RuntimeWatchFrame::Remove {
+                    table: RuntimeTable::Machine,
+                    key: String::from("machine-1"),
+                    record: RuntimeRecord::Machine(new_machine),
+                },
+            ),
+            (
+                runtime_frame_from_event(RoutingEvent::RevisionUpdated {
+                    old: old_revision.clone(),
+                    new: new_revision.clone(),
+                }),
+                RuntimeWatchFrame::Upsert {
+                    table: RuntimeTable::Revision,
+                    key: String::from("prod:api:rev-1"),
+                    record: RuntimeRecord::Revision(new_revision.clone()),
+                },
+            ),
+            (
+                runtime_frame_from_event(RoutingEvent::RevisionRemoved(new_revision.clone())),
+                RuntimeWatchFrame::Remove {
+                    table: RuntimeTable::Revision,
+                    key: String::from("prod:api:rev-1"),
+                    record: RuntimeRecord::Revision(new_revision),
+                },
+            ),
+            (
+                runtime_frame_from_event(RoutingEvent::ReleaseUpdated {
+                    old: old_release.clone(),
+                    new: new_release.clone(),
+                }),
+                RuntimeWatchFrame::Upsert {
+                    table: RuntimeTable::Release,
+                    key: String::from("prod:api"),
+                    record: RuntimeRecord::Release(new_release.clone()),
+                },
+            ),
+            (
+                runtime_frame_from_event(RoutingEvent::ReleaseRemoved(new_release.clone())),
+                RuntimeWatchFrame::Remove {
+                    table: RuntimeTable::Release,
+                    key: String::from("prod:api"),
+                    record: RuntimeRecord::Release(new_release),
+                },
+            ),
+        ];
+
+        for (actual, expected) in cases {
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
     fn runtime_frame_keys_are_deterministic() {
         assert_eq!(
             machine_runtime_key(&machine_record("machine-1")),

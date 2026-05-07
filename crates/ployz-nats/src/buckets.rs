@@ -321,6 +321,7 @@ fn revisions_stream(scope: &NatsScope, replicas: usize) -> stream::Config {
         max_messages_per_subject: 1,
         discard: stream::DiscardPolicy::New,
         duplicate_window: Duration::from_secs(60 * 60),
+        allow_direct: true,
         ..Default::default()
     }
 }
@@ -428,6 +429,23 @@ mod tests {
         assert_eq!(config.num_replicas, 3);
         assert!(config.allow_direct);
         assert!(config.allow_atomic_publish);
+    }
+
+    #[test]
+    fn revisions_stream_allows_direct_projection_replay() {
+        let config = asset_configs(AssetPolicy {
+            storage_nodes: 3,
+            replica_preference: ReplicaPreference::Three,
+        })
+        .revisions;
+        assert_eq!(config.name, REVISIONS_STREAM);
+        assert_eq!(
+            config.subjects,
+            vec!["ployz.v1.local.auth-default.cp.revision.>".to_string()]
+        );
+        assert_eq!(config.retention, stream::RetentionPolicy::Limits);
+        assert_eq!(config.max_messages_per_subject, 1);
+        assert!(config.allow_direct);
     }
 
     #[test]
