@@ -1,8 +1,8 @@
-pub mod certificates;
-pub mod deploys;
-pub mod instances;
-pub mod invites;
+pub(crate) mod certificates;
+pub(crate) mod deploys;
+pub(crate) mod instances;
+pub(crate) mod invites;
 pub(crate) mod kv_json;
 pub(crate) mod kv_watch;
-pub mod machines;
-pub mod routing;
+pub(crate) mod machines;
+pub(crate) mod routing;

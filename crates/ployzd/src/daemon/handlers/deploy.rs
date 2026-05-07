@@ -9,14 +9,14 @@ use ployz_api::{
 };
 use ployz_cert_backends::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
-use ployz_nats::coord::locks::{NatsDeployLock, NatsLocks};
-use ployz_nats::coord::rpc::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
+use ployz_nats::{NatsDeployLock, NatsLocks};
+use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
 use ployz_orchestrator::certificates::{AcmeAccountCoordinator, CertificateManagerConfig};
 use ployz_orchestrator::coordination::ReservationId;
 use ployz_orchestrator::deploy::participant::{DeployParticipantClient, StartCandidateRequest};
 use ployz_orchestrator::deploy::{apply_with_certificate_coordination, preview};
 use ployz_runtime_backends::deploy::remote::DeployAgent;
-use ployz_store_api::{DeployRepository, StoreDriver, StoreRuntimeControl};
+use ployz_store_api::{DeployStore, StoreDriver, StoreRuntimeControl};
 use ployz_types::Error as PloyzError;
 use ployz_types::model::SlotId;
 use ployz_types::model::{
@@ -63,15 +63,19 @@ impl DaemonState {
         } else {
             crate::services::nats::overlay_client_url(active.config.overlay_ip)
         };
-        let nats_store = match ployz_nats::NatsStore::connect(&nats_client_url).await {
-            Ok(store) => store,
-            Err(error) => return self.err("DEPLOY_PREVIEW_FAILED", error.to_string()),
-        };
+        let nats_scope = ployz_nats::NatsScope::local_for_storage_participation(
+            &active.config.storage_participation,
+        );
+        let nats_store =
+            match ployz_nats::NatsStore::connect_with_scope(&nats_client_url, nats_scope).await {
+                Ok(store) => store,
+                Err(error) => return self.err("DEPLOY_PREVIEW_FAILED", error.to_string()),
+            };
         if let Err(error) = nats_store.start().await {
             return self.err("DEPLOY_PREVIEW_FAILED", error.to_string());
         }
         let prober = crate::daemon::deploy_probe::NatsRpcProbe::new(
-            ployz_nats::coord::rpc::NatsNodeRpcClient::new(nats_store.client().clone()),
+            ployz_nats::NatsNodeRpcClient::for_store(&nats_store),
         );
 
         match preview(
@@ -105,10 +109,14 @@ impl DaemonState {
         } else {
             crate::services::nats::overlay_client_url(active.config.overlay_ip)
         };
-        let nats_store = match ployz_nats::NatsStore::connect(&nats_client_url).await {
-            Ok(store) => store,
-            Err(error) => return self.err("DEPLOY_APPLY_FAILED", error.to_string()),
-        };
+        let nats_scope = ployz_nats::NatsScope::local_for_storage_participation(
+            &active.config.storage_participation,
+        );
+        let nats_store =
+            match ployz_nats::NatsStore::connect_with_scope(&nats_client_url, nats_scope).await {
+                Ok(store) => store,
+                Err(error) => return self.err("DEPLOY_APPLY_FAILED", error.to_string()),
+            };
         if let Err(error) = nats_store.start().await {
             return self.err("DEPLOY_APPLY_FAILED", error.to_string());
         }
@@ -144,13 +152,12 @@ impl DaemonState {
             CertificateManagerConfig::from_env(),
         ));
         let prober = crate::daemon::deploy_probe::NatsRpcProbe::new(
-            ployz_nats::coord::rpc::NatsNodeRpcClient::new(nats_store.client().clone()),
+            ployz_nats::NatsNodeRpcClient::for_store(&nats_store),
         );
         let participant_client = NatsDeployParticipantClient::new(
-            ployz_nats::coord::rpc::NatsNodeRpcClient::new(nats_store.client().clone())
-                .with_policy(RpcPolicy {
-                    timeout: DEPLOY_PARTICIPANT_RPC_TIMEOUT,
-                }),
+            ployz_nats::NatsNodeRpcClient::for_store(&nats_store).with_policy(RpcPolicy {
+                timeout: DEPLOY_PARTICIPANT_RPC_TIMEOUT,
+            }),
         );
 
         let apply = apply_with_certificate_coordination(
@@ -538,9 +545,8 @@ async fn export_manifest(
     store: &StoreDriver,
     namespace: &Namespace,
 ) -> ployz_types::Result<DeployManifest> {
-    let snapshot = store.load_deploy_snapshot(namespace).await?;
-    let releases = snapshot.releases;
-    let revisions = snapshot.revisions;
+    let releases = store.list_deploy_releases(namespace).await?;
+    let revisions = store.list_deploy_revisions(namespace).await?;
     let volume_records = store.list_volumes(namespace).await?;
     let revisions_by_key: BTreeMap<(String, String), String> = revisions
         .into_iter()
@@ -611,7 +617,7 @@ async fn export_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_store_api::{DeployCommit, DeployRepository};
+    use ployz_store_api::{DeployCommit, DeployStore};
     use ployz_types::model::{
         DeployId, DeployRecord, DeployState, MachineId, ServiceRelease, ServiceReleaseRecord,
         ServiceRevisionRecord, ServiceRoutingPolicy, VolumeRecord,

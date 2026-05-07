@@ -819,27 +819,22 @@ pub struct InviteRecord {
     pub signature: String,
 }
 
-pub type InviteReservation = InviteRecord;
-
 #[derive(Debug, Clone)]
 pub enum MachineEvent {
-    Added(MachineMembership),
-    Updated(MachineMembership),
-    Removed(MachineMembership),
+    Upsert(MachineMembership),
+    Removed { id: MachineId },
 }
 
 #[derive(Debug, Clone)]
 pub enum CertificateEvent {
-    Added(CertificateRecord),
-    Updated(CertificateRecord),
-    Removed(CertificateRecord),
+    Upsert(CertificateRecord),
+    Removed { hostname: String },
 }
 
 #[derive(Debug, Clone)]
 pub enum AcmeChallengeEvent {
-    Added(AcmeChallengeRecord),
-    Updated(AcmeChallengeRecord),
-    Removed(AcmeChallengeRecord),
+    Upsert(AcmeChallengeRecord),
+    Removed { hostname: String, token: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
@@ -972,38 +967,22 @@ pub enum RouteExportLifecycleEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RoutingEvent {
-    MachineAdded(MachineMembership),
-    MachineUpdated {
-        old: MachineMembership,
-        new: MachineMembership,
-    },
+    MachineUpsert(MachineMembership),
     MachineRemoved {
         id: MachineId,
     },
-    RevisionAdded(ServiceRevisionRecord),
-    RevisionUpdated {
-        old: ServiceRevisionRecord,
-        new: ServiceRevisionRecord,
-    },
+    RevisionUpsert(ServiceRevisionRecord),
     RevisionRemoved {
         namespace: Namespace,
         service: String,
         revision_hash: String,
     },
-    ReleaseAdded(ServiceReleaseRecord),
-    ReleaseUpdated {
-        old: ServiceReleaseRecord,
-        new: ServiceReleaseRecord,
-    },
+    ReleaseUpsert(ServiceReleaseRecord),
     ReleaseRemoved {
         namespace: Namespace,
         service: String,
     },
-    InstanceAdded(InstanceStatusRecord),
-    InstanceUpdated {
-        old: InstanceStatusRecord,
-        new: InstanceStatusRecord,
-    },
+    InstanceUpsert(InstanceStatusRecord),
     InstanceRemoved {
         instance_id: InstanceId,
     },

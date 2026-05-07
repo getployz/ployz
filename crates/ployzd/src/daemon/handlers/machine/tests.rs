@@ -15,7 +15,7 @@ use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
 use ployz_runtime_api::Identity;
 use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
-use ployz_store_api::{InviteRepository, MachineRegistry};
+use ployz_store_api::{InviteStore, MachineMembershipStore};
 use ployz_types::model::{
     MachineId, MachineLifecycle, MachineMembership, MachineTopology, NetworkLifecycle, OverlayIp,
     PublicKey, StorageParticipation,
@@ -368,7 +368,7 @@ async fn machine_remove_refuses_offline_peer_without_force() {
     let peer = machines
         .into_iter()
         .find(|machine| machine.id.0 == "peer-1")
-        .expect("failed unforced remove must preserve registry record");
+        .expect("failed unforced remove must preserve membership record");
     assert_eq!(peer.lifecycle, MachineLifecycle::Active);
     assert_eq!(
         peer.subnet,
@@ -377,7 +377,7 @@ async fn machine_remove_refuses_offline_peer_without_force() {
 }
 
 #[tokio::test]
-async fn machine_remove_force_deletes_registry_record() {
+async fn machine_remove_force_deletes_membership_record() {
     let (state, store, _) = make_state(false).await;
     store
         .upsert_self_machine(&test_machine_record(
@@ -757,16 +757,16 @@ async fn interrupted_machine_add_is_marked_interrupted_on_startup() {
         .update_status(&mut operation, MachineOperationStatus::Running, None)
         .expect("keep running");
 
-    state.reconcile_machine_operations_on_startup().await;
+    state.recover_machine_operations_on_startup().await;
 
-    let reconciled = state
+    let recovered = state
         .machine_operation_store()
         .load(&operation.id)
         .expect("load operation")
         .expect("operation exists");
-    assert_eq!(reconciled.status, MachineOperationStatus::Interrupted);
+    assert_eq!(recovered.status, MachineOperationStatus::Interrupted);
     assert!(
-        reconciled
+        recovered
             .last_error
             .as_deref()
             .expect("last error")
@@ -792,16 +792,16 @@ async fn interrupted_latest_machine_update_without_version_change_stays_interrup
         )
         .expect("begin operation");
 
-    state.reconcile_machine_operations_on_startup().await;
+    state.recover_machine_operations_on_startup().await;
 
-    let reconciled = state
+    let recovered = state
         .machine_operation_store()
         .load(&operation.id)
         .expect("load operation")
         .expect("operation exists");
-    assert_eq!(reconciled.status, MachineOperationStatus::Interrupted);
+    assert_eq!(recovered.status, MachineOperationStatus::Interrupted);
     assert!(
-        reconciled
+        recovered
             .last_error
             .as_deref()
             .expect("last error")
@@ -827,15 +827,15 @@ async fn interrupted_latest_machine_update_with_version_change_succeeds_on_start
         )
         .expect("begin operation");
 
-    state.reconcile_machine_operations_on_startup().await;
+    state.recover_machine_operations_on_startup().await;
 
-    let reconciled = state
+    let recovered = state
         .machine_operation_store()
         .load(&operation.id)
         .expect("load operation")
         .expect("operation exists");
-    assert_eq!(reconciled.status, MachineOperationStatus::Succeeded);
-    assert!(reconciled.last_error.is_none());
+    assert_eq!(recovered.status, MachineOperationStatus::Succeeded);
+    assert!(recovered.last_error.is_none());
 }
 
 #[tokio::test]
@@ -855,16 +855,16 @@ async fn interrupted_pinned_machine_update_requires_matching_version_on_startup(
         )
         .expect("begin operation");
 
-    state.reconcile_machine_operations_on_startup().await;
+    state.recover_machine_operations_on_startup().await;
 
-    let reconciled = state
+    let recovered = state
         .machine_operation_store()
         .load(&operation.id)
         .expect("load operation")
         .expect("operation exists");
-    assert_eq!(reconciled.status, MachineOperationStatus::Interrupted);
+    assert_eq!(recovered.status, MachineOperationStatus::Interrupted);
     assert!(
-        reconciled
+        recovered
             .last_error
             .as_deref()
             .expect("last error")
@@ -934,17 +934,17 @@ async fn make_state_with_zfs_transfer_port(
     } else {
         NetworkLifecycle::Stopped
     };
-    let cached_subnet = config.subnet;
+    let retained_subnet = crate::daemon::RetainedSubnet::from_running_config(config.subnet);
     state.active = Some(ActiveMesh {
         config,
-        cached_subnet,
+        retained_subnet,
         mesh,
         nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         certificate_renewal: None,
-        bootstrap_seed_cache: None,
+        bootstrap_peer_seed: None,
     });
 
     (state, store, network)

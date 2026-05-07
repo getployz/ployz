@@ -9,28 +9,27 @@ use crate::store::kv_json;
 
 const KV_WATCH_CHANNEL_CAPACITY: usize = 128;
 
-pub(crate) async fn subscribe_all_with_snapshot_revisions<T, E>(
+pub(crate) async fn subscribe_all<T, E>(
     bucket: &kv::Store,
     snapshot: Vec<T>,
-    snapshot_revisions: HashMap<String, u64>,
-    snapshot_boundary: u64,
+    observed_revision: u64,
     snapshot_key: impl Fn(&T) -> String + Send + 'static,
+    decode_record: impl Fn(&str, &[u8]) -> Result<T> + Send + 'static,
+    upsert_event: impl Fn(T) -> E + Send + 'static,
+    remove_event: impl Fn(T) -> E + Send + 'static,
     watch_operation: &'static str,
     watch_failure_message: &'static str,
     decode_failure_message: &'static str,
-    event_from_entry: impl Fn(&mut HashMap<String, T>, &str, &[u8], kv::Operation) -> Result<Option<E>>
-    + Send
-    + 'static,
 ) -> Result<(Vec<T>, mpsc::Receiver<Result<E>>)>
 where
-    T: Clone + Send + 'static,
+    T: Clone + PartialEq + Send + 'static,
     E: Send + 'static,
 {
     let mut watch = bucket
-        .watch_all_from_revision(kv_json::next_sequence(snapshot_boundary))
+        .watch_all_from_revision(kv_json::next_sequence(observed_revision))
         .await
         .map_err(|error| Error::operation(watch_operation, format!("{error:?}")))?;
-    let mut last_seen = snapshot
+    let mut live_records = snapshot
         .iter()
         .map(|record| (snapshot_key(record), record.clone()))
         .collect::<HashMap<_, _>>();
@@ -53,17 +52,14 @@ where
                     break;
                 }
             };
-            if snapshot_revisions
-                .get(entry.key.as_str())
-                .is_some_and(|revision| entry.revision <= *revision)
-            {
-                continue;
-            }
-            let Some(event) = (match event_from_entry(
-                &mut last_seen,
+            let Some(event) = (match project_entry(
+                &mut live_records,
                 entry.key.as_str(),
                 entry.value.as_ref(),
                 entry.operation,
+                &decode_record,
+                &upsert_event,
+                &remove_event,
             ) {
                 Ok(event) => event,
                 Err(error) => {
@@ -80,4 +76,136 @@ where
         }
     });
     Ok((snapshot, rx))
+}
+
+fn project_entry<T, E>(
+    live_records: &mut HashMap<String, T>,
+    key: &str,
+    bytes: &[u8],
+    operation: kv::Operation,
+    decode_record: &impl Fn(&str, &[u8]) -> Result<T>,
+    upsert_event: &impl Fn(T) -> E,
+    remove_event: &impl Fn(T) -> E,
+) -> Result<Option<E>>
+where
+    T: Clone + PartialEq,
+{
+    match operation {
+        kv::Operation::Put => {
+            let record = decode_record(key, bytes)?;
+            if live_records.get(key) == Some(&record) {
+                return Ok(None);
+            }
+            live_records.insert(key.to_string(), record.clone());
+            Ok(Some(upsert_event(record)))
+        }
+        kv::Operation::Delete | kv::Operation::Purge => {
+            Ok(live_records.remove(key).map(remove_event))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_types::error::Error;
+
+    #[test]
+    fn put_updates_live_records_and_emits_event() {
+        let mut live_records = HashMap::new();
+
+        let event = project_entry(
+            &mut live_records,
+            "key-a",
+            b"value-a",
+            kv::Operation::Put,
+            &decode_string,
+            &|value| format!("upsert:{value}"),
+            &|value| format!("remove:{value}"),
+        )
+        .expect("put should decode");
+
+        assert_eq!(event.as_deref(), Some("upsert:value-a"));
+        assert_eq!(
+            live_records.get("key-a").map(String::as_str),
+            Some("value-a")
+        );
+    }
+
+    #[test]
+    fn put_deduplicates_identical_value() {
+        let mut live_records = HashMap::from([(String::from("key-a"), String::from("value-a"))]);
+
+        let event = project_entry(
+            &mut live_records,
+            "key-a",
+            b"value-a",
+            kv::Operation::Put,
+            &decode_string,
+            &|value| format!("upsert:{value}"),
+            &|value| format!("remove:{value}"),
+        )
+        .expect("put should decode");
+
+        assert!(event.is_none());
+        assert_eq!(
+            live_records.get("key-a").map(String::as_str),
+            Some("value-a")
+        );
+    }
+
+    #[test]
+    fn delete_uses_live_record_and_missing_delete_is_noop() {
+        let mut live_records = HashMap::from([(String::from("key-a"), String::from("value-a"))]);
+
+        let event = project_entry(
+            &mut live_records,
+            "key-a",
+            &[],
+            kv::Operation::Delete,
+            &decode_string,
+            &|value| format!("upsert:{value}"),
+            &|value| format!("remove:{value}"),
+        )
+        .expect("delete should not decode");
+
+        assert_eq!(event.as_deref(), Some("remove:value-a"));
+        assert!(!live_records.contains_key("key-a"));
+
+        let missing = project_entry(
+            &mut live_records,
+            "key-a",
+            &[],
+            kv::Operation::Delete,
+            &decode_string,
+            &|value| format!("upsert:{value}"),
+            &|value| format!("remove:{value}"),
+        )
+        .expect("missing delete should not fail");
+
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn decode_failure_does_not_update_live_records() {
+        let mut live_records = HashMap::new();
+
+        let result = project_entry(
+            &mut live_records,
+            "key-a",
+            b"bad",
+            kv::Operation::Put,
+            &|_, _| Err(Error::operation("decode", "bad record")),
+            &|value: String| format!("upsert:{value}"),
+            &|value| format!("remove:{value}"),
+        );
+
+        assert!(result.is_err());
+        assert!(live_records.is_empty());
+    }
+
+    fn decode_string(_key: &str, bytes: &[u8]) -> Result<String> {
+        String::from_utf8(bytes.to_vec())
+            .map_err(|error| Error::operation("decode", error.to_string()))
+    }
 }

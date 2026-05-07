@@ -140,7 +140,7 @@ impl DaemonState {
                     )
                     .await
                 {
-                    tracing::warn!(%error, "failed to refresh bootstrap seed cache after mesh bootstrap");
+                    tracing::warn!(%error, "failed to refresh bootstrap peer seed after mesh bootstrap");
                 }
                 self.ok(format!(
                     "bootstrapped and started network '{}'",

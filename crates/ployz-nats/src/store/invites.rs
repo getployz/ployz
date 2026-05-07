@@ -1,11 +1,13 @@
-use ployz_store_api::InviteRepository;
+use async_trait::async_trait;
+use ployz_store_api::InviteStore;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{InviteRecord, MachineId};
 
 use crate::NatsStore;
 use crate::store::kv_json;
 
-impl InviteRepository for NatsStore {
+#[async_trait]
+impl InviteStore for NatsStore {
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
         let bucket = invites_bucket(self).await?;
         let payload = serde_json::to_vec(invite)
@@ -227,12 +229,10 @@ mod tests {
         let entries = vec![
             kv_json::JsonEntry {
                 key: "invite-a".into(),
-                revision: 1,
                 value: test_invite("invite-a"),
             },
             kv_json::JsonEntry {
                 key: "invite-b".into(),
-                revision: 2,
                 value: test_invite("invite-b"),
             },
         ];

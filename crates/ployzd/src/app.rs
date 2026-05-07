@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use crate::built_in_images::BuiltInImages;
 use crate::daemon::handlers::RequestLane;
 use crate::daemon::{ActiveMesh, DaemonState};
-use crate::endpoint_maintenance::spawn_local_endpoint_maintenance;
+use crate::endpoint_maintenance::spawn_local_endpoint_publisher;
 use crate::ipc::listener::{IncomingCommand, serve};
 use crate::mesh_state::network::NetworkConfig;
 use crate::metrics::{
@@ -179,7 +179,7 @@ async fn run_daemon_inner(
     );
     daemon_state.command_tx = Some(command_tx.clone());
     let state = Arc::new(RwLock::new(daemon_state));
-    spawn_local_endpoint_maintenance(Arc::clone(&state), cancel.clone());
+    spawn_local_endpoint_publisher(Arc::clone(&state), cancel.clone());
 
     if let Some(metrics_listen_addr) = daemon_metrics_listen_addr.as_deref() {
         let metrics_addr = spawn_metrics_listener(metrics_listen_addr)
@@ -206,7 +206,7 @@ async fn run_daemon_inner(
     }
 
     resume_running_network(&state).await;
-    reconcile_startup_operations(&state).await;
+    recover_interrupted_operations_on_startup(&state).await;
 
     tracing::info!(socket = socket_path, "daemon running");
 
@@ -295,10 +295,10 @@ async fn resume_running_network(state: &Arc<RwLock<DaemonState>>) {
     }
 }
 
-async fn reconcile_startup_operations(state: &Arc<RwLock<DaemonState>>) {
+async fn recover_interrupted_operations_on_startup(state: &Arc<RwLock<DaemonState>>) {
     let state_guard = state.read().await;
-    state_guard.reconcile_machine_operations_on_startup().await;
-    state_guard.reconcile_zfs_transfers_on_startup().await;
+    state_guard.recover_machine_operations_on_startup().await;
+    state_guard.recover_zfs_transfers_on_startup().await;
 }
 
 fn spawn_command_task(
@@ -411,19 +411,19 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
     if let Some(active) = state.active.take() {
         let ActiveMesh {
             config: _config,
-            cached_subnet: _cached_subnet,
+            retained_subnet: _retained_subnet,
             mut mesh,
             nats_control,
             zfs_transfer,
             gateway,
             dns,
             certificate_renewal,
-            bootstrap_seed_cache,
+            bootstrap_peer_seed,
         } = active;
         if let Some(task) = certificate_renewal {
             task.shutdown().await;
         }
-        if let Some(task) = bootstrap_seed_cache {
+        if let Some(task) = bootstrap_peer_seed {
             task.shutdown().await;
         }
         let _ = dns.detach().await;

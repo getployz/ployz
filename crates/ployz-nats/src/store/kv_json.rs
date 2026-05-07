@@ -7,7 +7,6 @@ use serde::de::DeserializeOwned;
 #[derive(Debug, Clone)]
 pub struct JsonEntry<T> {
     pub key: String,
-    pub revision: u64,
     pub value: T,
 }
 
@@ -58,7 +57,6 @@ where
         }
         records.push(JsonEntry {
             key: entry.key,
-            revision: entry.revision,
             value: decode_json(decode_operation, entry.value.as_ref())?,
         });
     }

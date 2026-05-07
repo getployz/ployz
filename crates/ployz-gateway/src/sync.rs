@@ -26,10 +26,10 @@ const STREAM_ACME_CHALLENGES: &str = "acme_challenges";
 const STORE_SYNC_STREAMS: [&str; 3] = [STREAM_ROUTING, STREAM_CERTIFICATES, STREAM_ACME_CHALLENGES];
 
 // ---------------------------------------------------------------------------
-// RoutingSnapshotReader trait — consumer contract
+// RoutingStateStore trait — consumer contract
 // ---------------------------------------------------------------------------
 
-pub trait RoutingSnapshotReader: Send + Sync {
+pub trait RoutingStateStore: Send + Sync {
     fn load_routing_state(
         &self,
     ) -> impl Future<Output = Result<RoutingState, GatewayError>> + Send + '_;
@@ -81,7 +81,7 @@ pub async fn load_projected_snapshot_from_store<S>(
     store: &S,
 ) -> Result<GatewaySnapshot, GatewayError>
 where
-    S: RoutingSnapshotReader + Send + Sync,
+    S: RoutingStateStore + Send + Sync,
 {
     let routing_state = store.load_routing_state().await?;
     let mut projector = GatewayProjector::new(routing_state)
@@ -99,7 +99,7 @@ pub async fn run_sync_loop<S>(
     machine_id: MachineId,
 ) -> Result<(), GatewayError>
 where
-    S: RoutingSnapshotReader + Send + Sync + 'static,
+    S: RoutingStateStore + Send + Sync + 'static,
 {
     loop {
         let (routing_state, mut routing_rx) = match store.subscribe_routing_events().await {
@@ -232,7 +232,7 @@ fn apply_initial_certificates(projector: &mut GatewayProjector, records: Vec<Cer
         );
     }
     for record in records.into_iter().take(MAX_CACHED_CERTIFICATES) {
-        apply_certificate_event(projector, CertificateEvent::Added(record));
+        apply_certificate_event(projector, CertificateEvent::Upsert(record));
     }
 }
 
@@ -249,7 +249,7 @@ fn apply_initial_challenges(
     }
     let mut applied = Vec::new();
     for record in records.into_iter().take(MAX_CACHED_CHALLENGES) {
-        if apply_challenge_event(projector, AcmeChallengeEvent::Added(record.clone())).is_some() {
+        if apply_challenge_event(projector, AcmeChallengeEvent::Upsert(record.clone())).is_some() {
             applied.push(record);
         }
     }
@@ -354,10 +354,8 @@ fn drain_challenge_events(
 
 fn challenge_record_for_readiness(event: &AcmeChallengeEvent) -> Option<AcmeChallengeRecord> {
     match event {
-        AcmeChallengeEvent::Added(record) | AcmeChallengeEvent::Updated(record) => {
-            Some(record.clone())
-        }
-        AcmeChallengeEvent::Removed(_) => None,
+        AcmeChallengeEvent::Upsert(record) => Some(record.clone()),
+        AcmeChallengeEvent::Removed { .. } => None,
     }
 }
 
@@ -366,7 +364,7 @@ async fn publish_challenge_readiness<S>(
     machine_id: &MachineId,
     records: &[AcmeChallengeRecord],
 ) where
-    S: RoutingSnapshotReader + Send + Sync,
+    S: RoutingStateStore + Send + Sync,
 {
     for record in records {
         let readiness = AcmeChallengeReadinessRecord {
@@ -409,7 +407,7 @@ fn apply_certificate_event(
     event: CertificateEvent,
 ) -> Option<ProjectionDelta> {
     match &event {
-        CertificateEvent::Added(record) | CertificateEvent::Updated(record)
+        CertificateEvent::Upsert(record)
             if !projector.has_certificate(&record.hostname)
                 && projector.certificate_count() >= MAX_CACHED_CERTIFICATES =>
         {
@@ -421,9 +419,7 @@ fn apply_certificate_event(
             );
             None
         }
-        CertificateEvent::Added(_)
-        | CertificateEvent::Updated(_)
-        | CertificateEvent::Removed(_) => {
+        CertificateEvent::Upsert(_) | CertificateEvent::Removed { .. } => {
             apply_one(projector, GatewayProjectionEvent::Certificate(event))
         }
     }
@@ -434,7 +430,7 @@ fn apply_challenge_event(
     event: AcmeChallengeEvent,
 ) -> Option<ProjectionDelta> {
     match &event {
-        AcmeChallengeEvent::Added(record) | AcmeChallengeEvent::Updated(record)
+        AcmeChallengeEvent::Upsert(record)
             if !projector.has_acme_challenge(&record.hostname, &record.token)
                 && projector.acme_challenge_count() >= MAX_CACHED_CHALLENGES =>
         {
@@ -447,9 +443,7 @@ fn apply_challenge_event(
             );
             None
         }
-        AcmeChallengeEvent::Added(_)
-        | AcmeChallengeEvent::Updated(_)
-        | AcmeChallengeEvent::Removed(_) => {
+        AcmeChallengeEvent::Upsert(_) | AcmeChallengeEvent::Removed { .. } => {
             apply_one(projector, GatewayProjectionEvent::AcmeChallenge(event))
         }
     }
@@ -482,7 +476,7 @@ pub fn spawn_sync_thread_with_store<S>(
     machine_id: MachineId,
 ) -> Result<(), GatewayError>
 where
-    S: RoutingSnapshotReader + Send + Sync + 'static,
+    S: RoutingStateStore + Send + Sync + 'static,
 {
     std::thread::Builder::new()
         .name("ployz-gateway-sync".into())
@@ -543,13 +537,10 @@ mod tests {
 
     #[test]
     fn removed_challenge_event_does_not_publish_readiness() {
-        let event = AcmeChallengeEvent::Removed(AcmeChallengeRecord {
+        let event = AcmeChallengeEvent::Removed {
             hostname: "example.com".into(),
             token: "token-a".into(),
-            key_authorization: "token-a.auth".into(),
-            expires_at: 100,
-            created_at: 1,
-        });
+        };
 
         assert!(challenge_record_for_readiness(&event).is_none());
     }
@@ -578,7 +569,7 @@ mod tests {
 
         let (ready, stream_failed) = drain_challenge_events(
             &mut projector,
-            AcmeChallengeEvent::Updated(record.clone()),
+            AcmeChallengeEvent::Upsert(record.clone()),
             &mut rx,
             &snapshot,
         );
@@ -616,7 +607,7 @@ mod tests {
 
         let (ready, stream_failed) = drain_challenge_events(
             &mut projector,
-            AcmeChallengeEvent::Added(record.clone()),
+            AcmeChallengeEvent::Upsert(record.clone()),
             &mut rx,
             &snapshot,
         );
@@ -679,7 +670,7 @@ mod tests {
             RoutingEventEnvelope::with_ack(
                 "event-1",
                 Some("test".into()),
-                ployz_types::model::RoutingEvent::RevisionAdded(
+                ployz_types::model::RoutingEvent::RevisionUpsert(
                     ployz_types::model::ServiceRevisionRecord {
                         namespace: ployz_types::spec::Namespace("prod".into()),
                         service: "api".into(),

@@ -39,7 +39,7 @@ lower-level tests.
 - Machine add must not promote storage authority: test through NATS/store/daemon
   integration surfaces by asserting default replica policy remains R=1 until an
   explicit storage-promotion primitive exists.
-- Drain, standby, activate, and registry lifecycle transitions: test in daemon
+- Drain, standby, activate, and membership lifecycle transitions: test in daemon
   command-handler and orchestrator tests.
 - Unreachable peer foreground failures: test NATS RPC no-responder and timeout
   classification through daemon/NATS tests.

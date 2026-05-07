@@ -42,7 +42,7 @@ mod tests {
     use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_orchestrator::{Mesh, WireguardDriver};
     use ployz_runtime_api::Identity;
-    use ployz_store_api::MachineRegistry;
+    use ployz_store_api::MachineMembershipStore;
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
     use ployz_types::model::{MachineId, MachineLifecycle, MachineTopology};
@@ -128,10 +128,10 @@ mod tests {
             None,
             1,
         );
-        let cached_subnet = config.subnet;
+        let retained_subnet = crate::daemon::RetainedSubnet::from_running_config(config.subnet);
         state.active = Some(ActiveMesh {
             config,
-            cached_subnet,
+            retained_subnet,
             mesh: Mesh::new(
                 WireguardDriver::memory(),
                 StoreDriver::memory(),
@@ -144,7 +144,7 @@ mod tests {
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,
-            bootstrap_seed_cache: None,
+            bootstrap_peer_seed: None,
         });
 
         let error = state
@@ -272,17 +272,17 @@ mod tests {
             None,
             1,
         );
-        let cached_subnet = config.subnet;
+        let retained_subnet = crate::daemon::RetainedSubnet::from_running_config(config.subnet);
         state.active = Some(ActiveMesh {
             config,
-            cached_subnet,
+            retained_subnet,
             mesh,
             zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,
-            bootstrap_seed_cache: None,
+            bootstrap_peer_seed: None,
         });
         (state, store, network)
     }

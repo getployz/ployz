@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use crate::built_in_images::BuiltInImages;
 use crate::ipc::listener::IncomingCommand;
-use crate::mesh_state::bootstrap::BootstrapSeedCacheTask;
+use crate::mesh_state::bootstrap::BootstrapPeerSeedTask;
 use crate::mesh_state::network::NetworkConfig;
 use crate::runtime_profile::RuntimeProfile;
 use ipnet::Ipv4Net;
@@ -29,25 +29,53 @@ use tokio::sync::mpsc;
 
 pub struct ActiveMesh {
     pub config: NetworkConfig,
-    pub cached_subnet: Option<Ipv4Net>,
+    pub retained_subnet: RetainedSubnet,
     pub mesh: Mesh,
     pub nats_control: Box<dyn RuntimeHandle>,
     pub zfs_transfer: Box<dyn RuntimeHandle>,
     pub gateway: Box<dyn RuntimeHandle>,
     pub dns: Box<dyn RuntimeHandle>,
     pub certificate_renewal: Option<CertificateRenewalTask>,
-    pub bootstrap_seed_cache: Option<BootstrapSeedCacheTask>,
+    pub bootstrap_peer_seed: Option<BootstrapPeerSeedTask>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RetainedSubnet(Option<Ipv4Net>);
+
+impl RetainedSubnet {
+    #[must_use]
+    pub fn from_running_config(subnet: Option<Ipv4Net>) -> Self {
+        Self(subnet)
+    }
+
+    #[must_use]
+    pub fn value(self) -> Option<Ipv4Net> {
+        self.0
+    }
+
+    pub fn record_activation(&mut self, subnet: Ipv4Net) {
+        self.0 = Some(subnet);
+    }
+
+    pub fn record_standby(&mut self, previous_subnet: Option<Ipv4Net>) {
+        self.0 = previous_subnet;
+    }
 }
 
 impl ActiveMesh {
+    #[must_use]
+    pub fn subnet_to_persist_after_stop(&self) -> Option<Ipv4Net> {
+        self.config.subnet.or(self.retained_subnet.value())
+    }
+
     pub async fn stop_certificate_renewal(&mut self) {
         if let Some(task) = self.certificate_renewal.take() {
             task.shutdown().await;
         }
     }
 
-    pub async fn stop_bootstrap_seed_cache(&mut self) {
-        if let Some(task) = self.bootstrap_seed_cache.take() {
+    pub async fn stop_bootstrap_peer_seed(&mut self) {
+        if let Some(task) = self.bootstrap_peer_seed.take() {
             task.shutdown().await;
         }
     }
@@ -252,7 +280,7 @@ impl DaemonState {
 
     pub(crate) async fn nats_node_rpc_client(
         &self,
-    ) -> Result<ployz_nats::coord::rpc::NatsNodeRpcClient, String> {
+    ) -> Result<ployz_nats::NatsNodeRpcClient, String> {
         let active = self
             .active
             .as_ref()
@@ -262,14 +290,15 @@ impl DaemonState {
         } else {
             crate::services::nats::overlay_client_url(active.config.overlay_ip)
         };
-        let store = ployz_nats::NatsStore::connect(&client_url)
+        let scope = ployz_nats::NatsScope::local_for_storage_participation(
+            &active.config.storage_participation,
+        );
+        let store = ployz_nats::NatsStore::connect_with_scope(&client_url, scope)
             .await
             .map_err(|error| error.to_string())?;
         ployz_store_api::StoreRuntimeControl::start(&store)
             .await
             .map_err(|error| error.to_string())?;
-        Ok(ployz_nats::coord::rpc::NatsNodeRpcClient::new(
-            store.client().clone(),
-        ))
+        Ok(ployz_nats::NatsNodeRpcClient::for_store(&store))
     }
 }

@@ -7,7 +7,7 @@
 //! sockets. Those belong in backend contract and E2E tests.
 //!
 //! The simulator follows the TigerBeetle-inspired testing shape used in this
-//! repository: explicit clocks, seeded scheduling, bounded fake backends,
+//! workspace: explicit clocks, seeded scheduling, bounded fake backends,
 //! seed-reproducible product workloads, final convergence passes, and invariant
 //! checkers that state externally meaningful contracts directly.
 
@@ -17,8 +17,8 @@ use ployz_orchestrator::mesh::MeshNetwork;
 use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{
-    DeployCommit, DeployRepository, InstanceStatusRepository, MachineRegistry,
-    RoutingSnapshotReader, StoreDriver,
+    DeployCommit, DeployStore, InstanceStatusStore, MachineMembershipStore, RoutingStateStore,
+    StoreDriver,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
@@ -900,9 +900,9 @@ pub async fn check_simulator_invariants(sim: &MiniSimulator) -> InvariantReport 
             )),
         }
     }
-    report.extend(check_runtime_projection(&state, &sim.runtime));
+    report.extend(check_runtime_status_alignment(&state, &sim.runtime));
     if sim.wireguard_synced {
-        report.extend(check_wireguard_projection(
+        report.extend(check_wireguard_membership_alignment(
             &state,
             &sim.wireguard.current_peers(),
         ));
@@ -924,7 +924,7 @@ pub fn check_cluster_model_invariants(
     report.extend(check_membership(state));
     report.extend(check_endpoint_selections(state));
     report.extend(check_volume_ownership_records(state, volumes));
-    report.extend(check_deploy_projection(state));
+    report.extend(check_deploy_graph(state));
     report.extend(check_gateway_projection(state));
     report.extend(check_dns_projection(state));
     report.extend(check_intent_status_live_observation_separation(state));
@@ -1052,7 +1052,7 @@ pub fn check_volume_ownership_records(
 }
 
 #[must_use]
-pub fn check_deploy_projection(state: &RoutingState) -> Vec<InvariantViolation> {
+pub fn check_deploy_graph(state: &RoutingState) -> Vec<InvariantViolation> {
     let mut violations = Vec::new();
     let machines = machine_ids(state);
     let revisions = revision_keys(state);
@@ -1072,7 +1072,7 @@ pub fn check_deploy_projection(state: &RoutingState) -> Vec<InvariantViolation> 
                 );
                 if !revisions.contains(&key) {
                     violations.push(InvariantViolation::new(
-                        "deploy_projection",
+                        "deploy_graph",
                         format!(
                             "release '{}/{}' routes to missing revision '{}'",
                             release.namespace, release.service, revision_hash
@@ -1091,7 +1091,7 @@ pub fn check_deploy_projection(state: &RoutingState) -> Vec<InvariantViolation> 
                     );
                     if !revisions.contains(&key) {
                         violations.push(InvariantViolation::new(
-                            "deploy_projection",
+                            "deploy_graph",
                             format!(
                                 "release '{}/{}' allocates to missing revision '{}'",
                                 release.namespace, release.service, allocation.revision_hash
@@ -1101,7 +1101,7 @@ pub fn check_deploy_projection(state: &RoutingState) -> Vec<InvariantViolation> 
                 }
                 if percent_total != 100 {
                     violations.push(InvariantViolation::new(
-                        "deploy_projection",
+                        "deploy_graph",
                         format!(
                             "release '{}/{}' split totals {} percent",
                             release.namespace, release.service, percent_total
@@ -1115,7 +1115,7 @@ pub fn check_deploy_projection(state: &RoutingState) -> Vec<InvariantViolation> 
         for slot in &release.release.slots {
             if !machines.contains(&slot.machine_id) {
                 violations.push(InvariantViolation::new(
-                    "deploy_projection",
+                    "deploy_graph",
                     format!(
                         "release '{}/{}' slot '{}' points at missing machine '{}'",
                         release.namespace, release.service, slot.slot_id, slot.machine_id
@@ -1129,7 +1129,7 @@ pub fn check_deploy_projection(state: &RoutingState) -> Vec<InvariantViolation> 
             );
             if !revisions.contains(&revision_key) {
                 violations.push(InvariantViolation::new(
-                    "deploy_projection",
+                    "deploy_graph",
                     format!(
                         "release '{}/{}' slot '{}' points at missing revision '{}'",
                         release.namespace, release.service, slot.slot_id, slot.revision_hash
@@ -1144,7 +1144,7 @@ pub fn check_deploy_projection(state: &RoutingState) -> Vec<InvariantViolation> 
                         || instance.machine_id != slot.machine_id
                     {
                         violations.push(InvariantViolation::new(
-                            "deploy_projection",
+                            "deploy_graph",
                             format!(
                                 "release '{}/{}' slot '{}' does not match active instance '{}'",
                                 release.namespace,
@@ -1157,7 +1157,7 @@ pub fn check_deploy_projection(state: &RoutingState) -> Vec<InvariantViolation> 
                 }
                 None => {
                     violations.push(InvariantViolation::new(
-                        "deploy_projection",
+                        "deploy_graph",
                         format!(
                             "release '{}/{}' slot '{}' points at missing instance '{}'",
                             release.namespace,
@@ -1170,7 +1170,7 @@ pub fn check_deploy_projection(state: &RoutingState) -> Vec<InvariantViolation> 
             }
             if !slot_ids.insert(slot.slot_id.clone()) {
                 violations.push(InvariantViolation::new(
-                    "deploy_projection",
+                    "deploy_graph",
                     format!(
                         "release '{}/{}' has duplicate slot '{}'",
                         release.namespace, release.service, slot.slot_id
@@ -1294,7 +1294,7 @@ pub fn check_intent_status_live_observation_separation(
 }
 
 #[must_use]
-pub fn check_runtime_projection(
+pub fn check_runtime_status_alignment(
     state: &RoutingState,
     runtime: &FakeRuntime,
 ) -> Vec<InvariantViolation> {
@@ -1314,7 +1314,7 @@ pub fn check_runtime_projection(
             Some(status) => {
                 if status.machine_id != container.machine_id {
                     violations.push(InvariantViolation::new(
-                        "runtime_projection",
+                        "runtime_status_alignment",
                         format!(
                             "runtime container '{}' is on machine '{}' but status says '{}'",
                             container.instance_id, container.machine_id, status.machine_id
@@ -1323,7 +1323,7 @@ pub fn check_runtime_projection(
                 }
                 if status.phase != container.phase {
                     violations.push(InvariantViolation::new(
-                        "runtime_projection",
+                        "runtime_status_alignment",
                         format!(
                             "runtime container '{}' phase '{}' disagrees with status phase '{}'",
                             container.instance_id, container.phase, status.phase
@@ -1333,7 +1333,7 @@ pub fn check_runtime_projection(
             }
             None => {
                 violations.push(InvariantViolation::new(
-                    "runtime_projection",
+                    "runtime_status_alignment",
                     format!(
                         "runtime has live container '{}' with no status record",
                         container.instance_id
@@ -1349,7 +1349,7 @@ pub fn check_runtime_projection(
             && !live_containers.contains_key(&instance.instance_id)
         {
             violations.push(InvariantViolation::new(
-                "runtime_projection",
+                "runtime_status_alignment",
                 format!(
                     "ready status '{}' has no matching live runtime container",
                     instance.instance_id
@@ -1361,7 +1361,7 @@ pub fn check_runtime_projection(
 }
 
 #[must_use]
-pub fn check_wireguard_projection(
+pub fn check_wireguard_membership_alignment(
     state: &RoutingState,
     peers: &[WireGuardPeerSpec],
 ) -> Vec<InvariantViolation> {
@@ -1377,13 +1377,13 @@ pub fn check_wireguard_projection(
         let id = peer.id().clone();
         if !active.contains(&id) {
             violations.push(InvariantViolation::new(
-                "wireguard_projection",
+                "wireguard_membership_alignment",
                 format!("wireguard includes non-active peer '{id}'"),
             ));
         }
         if !peer_ids.insert(id.clone()) {
             violations.push(InvariantViolation::new(
-                "wireguard_projection",
+                "wireguard_membership_alignment",
                 format!("wireguard includes duplicate peer '{id}'"),
             ));
         }
@@ -1391,7 +1391,7 @@ pub fn check_wireguard_projection(
     for id in active {
         if !peer_ids.contains(&id) {
             violations.push(InvariantViolation::new(
-                "wireguard_projection",
+                "wireguard_membership_alignment",
                 format!("active machine '{id}' missing from wireguard peers"),
             ));
         }
@@ -1789,7 +1789,7 @@ mod tests {
     }
 
     #[test]
-    fn deploy_projection_catches_missing_revision_and_instance() {
+    fn deploy_graph_catches_missing_revision_and_instance() {
         let namespace = Namespace::default_ns();
         let state = RoutingState {
             machines: vec![fixture::machine(1, MachineLifecycle::Active)],
@@ -1798,7 +1798,7 @@ mod tests {
             instances: Vec::new(),
         };
 
-        let violations = check_deploy_projection(&state);
+        let violations = check_deploy_graph(&state);
 
         assert!(
             violations
@@ -1869,7 +1869,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn simulator_runs_store_runtime_wireguard_and_projection_invariants() {
+    async fn simulator_runs_store_runtime_wireguard_and_edge_projection_invariants() {
         let namespace = Namespace::default_ns();
         let mut sim = MiniSimulator::new(11, 1);
         sim.schedule_committed_web_service(namespace.clone())
@@ -1916,7 +1916,7 @@ mod tests {
                 .report
                 .violations
                 .iter()
-                .any(|violation| violation.invariant == "runtime_projection")
+                .any(|violation| violation.invariant == "runtime_status_alignment")
         );
         assert_eq!(
             result.history.last().map(|step| step.event),
@@ -2189,8 +2189,10 @@ mod tests {
                 .report
                 .violations
                 .iter()
-                .any(|violation| violation.invariant == "runtime_projection"
-                    && violation.message.contains("disagrees with status phase"))
+                .any(
+                    |violation| violation.invariant == "runtime_status_alignment"
+                        && violation.message.contains("disagrees with status phase")
+                )
         );
 
         sim.schedule_now(SimEvent::RuntimeStop(ready.instance_id.clone()))

@@ -1,8 +1,8 @@
 use ipnet::Ipv4Net;
 use ployz_api::{DaemonRequest, MachineTransitionGoal, MeshBootstrapRequest};
-use ployz_nats::coord::rpc::NodeCommandSubject;
+use ployz_nats::NodeCommandSubject;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
-use ployz_store_api::MachineRegistry;
+use ployz_store_api::MachineMembershipStore;
 use ployz_types::model::{
     MachineLifecycle, MachineMembership, StorageParticipation, management_ip_from_key,
 };
@@ -18,8 +18,8 @@ use super::coordination::{
     BootstrapSubnetClaim, assert_subnet_unique, consume_invite, release_reserved_subnet,
 };
 use super::remote::{
-    ExpectedSubnetState, nats_rpc_expect_ok, nats_self_record, remote_daemon_identity,
-    remote_rpc_expect_ok, remote_self_record, wait_for_machine_projection,
+    ExpectedMachineRecord, ExpectedSubnetState, nats_rpc_expect_ok, nats_self_record,
+    remote_daemon_identity, remote_rpc_expect_ok, remote_self_record, wait_for_machine_record,
     wait_for_nats_command_responder, wait_for_nats_ready, wait_for_remote_ready,
 };
 use super::rollback::rollback_machine_add_target;
@@ -268,16 +268,15 @@ pub(super) async fn run_machine_add_target(
         }
     }
 
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for lifecycle projection");
-    if let Err(err) = wait_for_machine_projection(
+    tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for observed machine record");
+    if let Err(err) = wait_for_machine_record(
         &context.store,
         &machine_id,
-        MachineLifecycle::Active,
-        ExpectedSubnetState::Present,
+        ExpectedMachineRecord::new(MachineLifecycle::Active, ExpectedSubnetState::Present),
     )
     .await
     {
-        tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: lifecycle projection failed");
+        tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: observed machine record failed");
         let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
@@ -329,7 +328,7 @@ pub(super) async fn run_machine_add_target(
             %target,
             joiner_id = %machine_id,
             error = %err,
-            "machine add target: failed to refresh bootstrap seed cache"
+            "machine add target: failed to refresh bootstrap peer seed"
         );
     }
     let _ = operation_store.update_status(&mut operation, MachineOperationStatus::Succeeded, None);

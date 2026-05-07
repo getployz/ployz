@@ -1,6 +1,7 @@
 use crate::error::Result as PloyzResult;
 use crate::mesh::MeshDataplane;
 use crate::model::{MachineEvent, MachineId, MachineMembership};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -14,6 +15,11 @@ pub(crate) async fn run_ebpf_sync_task(
     local_machine_id: MachineId,
     cancel: CancellationToken,
 ) {
+    let mut machine_subnets = snapshot
+        .iter()
+        .filter_map(|machine| machine.subnet.map(|subnet| (machine.id.clone(), subnet)))
+        .collect::<HashMap<_, _>>();
+
     // Seed from snapshot
     for machine in &snapshot {
         if machine.id == local_machine_id {
@@ -45,20 +51,27 @@ pub(crate) async fn run_ebpf_sync_task(
                     }
                 };
                 match &event {
-                    MachineEvent::Added(m) | MachineEvent::Updated(m) => {
+                    MachineEvent::Upsert(m) => {
                         if m.id == local_machine_id {
                             continue;
                         }
-                        if let Some(subnet) = m.subnet
-                            && let Err(e) = dataplane.upsert_route(subnet, wg_ifindex).await {
-                                warn!(?e, %subnet, "ebpf_sync: upsert failed");
+                        match m.subnet {
+                            Some(subnet) => {
+                                machine_subnets.insert(m.id.clone(), subnet);
+                                if let Err(e) = dataplane.upsert_route(subnet, wg_ifindex).await {
+                                    warn!(?e, %subnet, "ebpf_sync: upsert failed");
+                                }
                             }
+                            None => {
+                                machine_subnets.remove(&m.id);
+                            }
+                        }
                     }
-                    MachineEvent::Removed(m) => {
-                        if m.id == local_machine_id {
+                    MachineEvent::Removed { id } => {
+                        if id == &local_machine_id {
                             continue;
                         }
-                        if let Some(subnet) = m.subnet
+                        if let Some(subnet) = machine_subnets.remove(&id)
                             && let Err(e) = dataplane.remove_route(subnet).await {
                                 warn!(?e, %subnet, "ebpf_sync: remove failed");
                             }

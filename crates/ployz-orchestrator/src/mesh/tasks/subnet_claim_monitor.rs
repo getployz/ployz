@@ -42,11 +42,11 @@ pub(crate) async fn run_subnet_claim_monitor_task(
                     }
                 };
                 match event {
-                    MachineEvent::Added(machine) | MachineEvent::Updated(machine) => {
+                    MachineEvent::Upsert(machine) => {
                         machines.insert(machine.id.clone(), machine);
                     }
-                    MachineEvent::Removed(machine) => {
-                        machines.remove(&machine.id);
+                    MachineEvent::Removed { id } => {
+                        machines.remove(&id);
                     }
                 }
 

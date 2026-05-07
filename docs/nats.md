@@ -145,7 +145,7 @@ js.publish_with_headers(subject, headers_with_batch_commit, payload).await?;
 ```
 
 Useful when you have multi-message logical operations that must either all
-land or all fail. Ployz does not use this for the route journal: routing
+land or all fail. Ployz does not use this for routing events: routing
 facts are intentionally one JetStream message per event, with per-message
 acknowledgement by each projection consumer.
 
@@ -497,29 +497,29 @@ let response = client
 - Stream — authoritative for ordered multi-record facts. `deploy_commits`
   (each `DeployCommit` envelope is one self-contained fact with revisions
   inlined). Append-only, immutable, no `MaxMsgsPerSubject` collapse.
-- Local projection — read model, derived from the stream. Tail once,
-  serve from cache.
-- KV mirror — never as a correctness boundary. Available as a perf
+- Deploy reads — replay the immutable commit stream at the read boundary and
+  return explicit revision/release/volume fact lists. There is no hidden
+  per-process deploy cache to invalidate.
+- KV mirror — never as a correctness boundary. Available as an explicit perf
   optimization later; rebuilt from the stream on every reader start.
 
 `commit_deploy` publishes the envelope with `Nats-Expected-Last-Subject-Sequence: 0`
-(create-only). New-commit routing events are derived from the stream sequence
-acknowledged by JetStream, so routing output follows committed stream order
-rather than the caller's pre-append cache view. Retries with the same
-`deploy_id` are idempotent.
+(create-only). New-commit routing events are the commit's upsert/remove facts,
+published only after JetStream acknowledges the durable commit. Retries with
+the same `deploy_id` are idempotent.
 If the durable commit exists but publishing the derived routing events failed,
 the retry verifies the stored payload and republishes repair events for touched
-keys that still match the authoritative projection; superseded releases are not
+keys that still match current commit-stream truth; superseded releases are not
 replayed. Routing events use their event id as `Nats-Msg-Id`, so replaying the
-same repair event deduplicates inside the route journal stream's duplicate
+same repair event deduplicates inside the routing event stream's duplicate
 window instead of appending another copy.
-`update_deploy_record` writes a separate `deploy_status` KV, never the
+`write_deploy_status` writes a separate `deploy_status` KV, never the
 stream — keeps the commit log immutable and replay-safe.
 
 ### Replica policy
 
 Replica count is operator intent, not a side effect of machine count.
-Machine add only adds a machine and starts its local NATS role. It does not
+Machine add only adds a machine and starts its local NATS server. It does not
 promote the cluster to R=3, does not add a Raft voter to authoritative streams,
 and does not change write quorum.
 
@@ -645,9 +645,10 @@ Tracked in code comments and the implementation plan. Highlights:
    memory-backed push consumers with an inactivity threshold after loading a
    fresh snapshot, so watches do not leave durable cursor state behind. Routing
    subscription setup reads the routing stream sequence, loads a fresh snapshot,
-   then starts delivery from the next stream sequence. Updates carry either one
-   event envelope or an explicit consumer failure. Runtime watch clients receive
-   that failure as an explicit error frame before the watch stream closes.
+   then starts delivery from that same stream sequence. Events already reflected
+   in the snapshot may replay as idempotent facts. Updates carry either one event
+   envelope or an explicit consumer failure. Runtime watch clients receive that
+   failure as an explicit error frame before the watch stream closes.
    Routing consumer `max_ack_pending` is bounded to the local bridge-channel
    capacity, and idle heartbeats surface broken delivery paths as failures.
 2. Machine/certificate/ACME challenge subscriptions are KV watchers that carry
@@ -662,16 +663,17 @@ Tracked in code comments and the implementation plan. Highlights:
    follower lag, and leader. Replica count alone is not considered operationally
    healthy; the entry is healthy only when all configured replicas are current,
    no replica is offline, and max lag is zero.
-   KV subscriptions read the bucket stream sequence as a snapshot boundary,
-   load the current snapshot, then watch from the next sequence. Updates that
+   KV subscriptions read the bucket stream sequence as an observed revision,
+   load the current records, then watch from the next sequence. Updates that
    race with snapshot loading are delivered from the bounded watch stream, and
    duplicate observations collapse through the subscriber's last-seen state.
    Watcher tasks also exit as soon as their downstream receiver closes, and
    event decode failures are surfaced as subscription failures instead of being
    logged while the stale stream continues.
-3. Deploy projections cache the last replayed stream sequence and extend from
-   the next commit when the cached sequence is still within the retained stream
-   window. They fall back to full replay only after compaction or cache loss.
+3. Deploy reads build their projection directly from the immutable
+   `deploy_commits` stream at the read boundary. Small-cluster scale keeps this
+   cheap, and it avoids a hidden per-process cache whose freshness would become
+   another control-plane state surface.
 4. Standalone gateway and DNS now use NATS-backed store subscriptions through
    their `main.rs` wrappers.
 5. Coordination layer — KV lock helpers and node RPC are now the daemon command
@@ -693,12 +695,12 @@ Tracked in code comments and the implementation plan. Highlights:
    scoped cluster information. The introducer writes a bootstrap membership seed
    into NATS so existing nodes learn the joiner's WireGuard identity through the
    machines subscription; after bootstrap, node commands use NATS request/reply.
-   Each daemon also maintains a local `bootstrap-peers.json` seed cache plus
-   `bootstrap-seed-cache-health.json`. The peer file is only a restart/bootstrap
+   Each daemon also maintains a local `bootstrap-peers.json` peer seed plus
+   `bootstrap-peer-seed-health.json`. The peer file is only a restart/bootstrap
    hint; the health file records whether the machines subscription feeding it is
    fresh, stale-since time, consecutive failures, and the last error so a stale
    bootstrap hint is not silent. `ployzctl status` reports this as
-   `control_plane component=bootstrap_seed_cache`.
+   `control_plane component=bootstrap_peer_seed`.
    Mesh background tasks that consume machine subscriptions also report
    `control_plane component=mesh_*` health, so a dead local membership
    projection is visible even while WireGuard/NATS sidecars keep running.

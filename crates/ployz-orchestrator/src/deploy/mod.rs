@@ -1,10 +1,10 @@
 pub mod participant;
 
 mod execute;
+mod lifecycle;
 mod managed_domains;
 mod plan;
 mod probe;
-mod transaction;
 
 #[cfg(test)]
 mod tests;

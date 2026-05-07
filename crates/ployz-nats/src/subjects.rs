@@ -1,21 +1,17 @@
 use base64::Engine;
 use ipnet::Ipv4Net;
-use ployz_types::model::{AuthorityId, DeployId, InstallationId, MachineId};
+use ployz_types::model::{AuthorityId, DeployId, InstallationId, MachineId, StorageParticipation};
 use ployz_types::spec::Namespace;
-
-pub const DEPLOY_COMMITS_STREAM: &str = "cp_deploy_commits_auth-default";
-pub const CERT_JOBS_STREAM: &str = "work_cert_auth-default";
-pub const ROUTE_JOURNAL_STREAM: &str = "route_journal_auth-default";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatsScope {
-    pub installation: InstallationId,
-    pub authority: AuthorityId,
+    installation: InstallationId,
+    authority: AuthorityId,
 }
 
 impl NatsScope {
     #[must_use]
-    pub fn new(installation: InstallationId, authority: AuthorityId) -> Self {
+    pub(crate) fn new(installation: InstallationId, authority: AuthorityId) -> Self {
         Self {
             installation,
             authority,
@@ -31,6 +27,25 @@ impl NatsScope {
     }
 
     #[must_use]
+    pub fn local_for_storage_participation(participation: &StorageParticipation) -> Self {
+        let authority = participation
+            .authority_id()
+            .cloned()
+            .unwrap_or_else(AuthorityId::default_authority);
+        Self::new(InstallationId::local(), authority)
+    }
+
+    #[must_use]
+    pub fn installation(&self) -> &InstallationId {
+        &self.installation
+    }
+
+    #[must_use]
+    pub fn authority(&self) -> &AuthorityId {
+        &self.authority
+    }
+
+    #[must_use]
     pub fn authority_domain(&self) -> String {
         format!("dom-{}", subject_token(self.authority.as_str()))
     }
@@ -41,7 +56,7 @@ impl NatsScope {
     }
 
     #[must_use]
-    pub fn authority_prefix(&self) -> String {
+    pub(crate) fn authority_prefix(&self) -> String {
         format!(
             "ployz.v1.{}.{}",
             subject_token(self.installation.as_str()),
@@ -50,7 +65,7 @@ impl NatsScope {
     }
 
     #[must_use]
-    pub fn substrate_prefix(&self) -> String {
+    pub(crate) fn substrate_prefix(&self) -> String {
         format!(
             "ployz.v1.{}.substrate",
             subject_token(self.installation.as_str())
@@ -58,19 +73,12 @@ impl NatsScope {
     }
 }
 
-impl Default for NatsScope {
-    fn default() -> Self {
-        Self::local_default()
-    }
-}
-
 #[must_use]
-pub fn deploy_commit(namespace: &Namespace, deploy_id: &DeployId) -> String {
-    deploy_commit_in(&NatsScope::default(), namespace, deploy_id)
-}
-
-#[must_use]
-pub fn deploy_commit_in(scope: &NatsScope, namespace: &Namespace, deploy_id: &DeployId) -> String {
+pub(crate) fn deploy_commit_in(
+    scope: &NatsScope,
+    namespace: &Namespace,
+    deploy_id: &DeployId,
+) -> String {
     format!(
         "{}.cp.deploy.commit.{}.{}",
         scope.authority_prefix(),
@@ -80,32 +88,22 @@ pub fn deploy_commit_in(scope: &NatsScope, namespace: &Namespace, deploy_id: &De
 }
 
 #[must_use]
-pub fn deploy_commit_filter_in(scope: &NatsScope) -> String {
+pub(crate) fn deploy_commit_filter_in(scope: &NatsScope) -> String {
     format!("{}.cp.deploy.commit.>", scope.authority_prefix())
 }
 
 #[must_use]
-pub fn route_journal_event(event_id: &str) -> String {
-    route_journal_event_in(&NatsScope::default(), event_id)
-}
-
-#[must_use]
-pub fn route_journal_event_in(scope: &NatsScope, event_id: &str) -> String {
+pub(crate) fn routing_event_in(scope: &NatsScope, event_id: &str) -> String {
     format!(
-        "{}.route.journal.event.{}",
+        "{}.routing.event.{}",
         scope.authority_prefix(),
         subject_token(event_id),
     )
 }
 
 #[must_use]
-pub fn routing_event(event_id: &str) -> String {
-    route_journal_event(event_id)
-}
-
-#[must_use]
-pub fn route_journal_event_filter_in(scope: &NatsScope) -> String {
-    format!("{}.route.journal.event.>", scope.authority_prefix())
+pub(crate) fn routing_event_filter_in(scope: &NatsScope) -> String {
+    format!("{}.routing.event.>", scope.authority_prefix())
 }
 
 #[must_use]
@@ -132,12 +130,7 @@ pub fn subnet_lock(subnet: Ipv4Net) -> String {
 }
 
 #[must_use]
-pub fn cert_renewal_job(hostname: &str) -> String {
-    cert_renewal_job_in(&NatsScope::default(), hostname)
-}
-
-#[must_use]
-pub fn cert_renewal_job_in(scope: &NatsScope, hostname: &str) -> String {
+pub(crate) fn cert_renewal_job_in(scope: &NatsScope, hostname: &str) -> String {
     format!(
         "{}.work.cert.renew.{}",
         scope.authority_prefix(),
@@ -146,17 +139,12 @@ pub fn cert_renewal_job_in(scope: &NatsScope, hostname: &str) -> String {
 }
 
 #[must_use]
-pub fn cert_renewal_filter_in(scope: &NatsScope) -> String {
+pub(crate) fn cert_renewal_filter_in(scope: &NatsScope) -> String {
     format!("{}.work.cert.renew.>", scope.authority_prefix())
 }
 
 #[must_use]
-pub fn cert_renewal_schedule(hostname: &str) -> String {
-    cert_renewal_schedule_in(&NatsScope::default(), hostname)
-}
-
-#[must_use]
-pub fn cert_renewal_schedule_in(scope: &NatsScope, hostname: &str) -> String {
+pub(crate) fn cert_renewal_schedule_in(scope: &NatsScope, hostname: &str) -> String {
     format!(
         "{}.work.cert.schedule.{}",
         scope.authority_prefix(),
@@ -165,17 +153,12 @@ pub fn cert_renewal_schedule_in(scope: &NatsScope, hostname: &str) -> String {
 }
 
 #[must_use]
-pub fn cert_renewal_schedule_filter_in(scope: &NatsScope) -> String {
+pub(crate) fn cert_renewal_schedule_filter_in(scope: &NatsScope) -> String {
     format!("{}.work.cert.schedule.>", scope.authority_prefix())
 }
 
 #[must_use]
-pub fn substrate_node_command(machine_id: &MachineId, command: &str) -> String {
-    substrate_node_command_in(&NatsScope::default(), machine_id, command)
-}
-
-#[must_use]
-pub fn substrate_node_command_in(
+pub(crate) fn substrate_node_command_in(
     scope: &NatsScope,
     machine_id: &MachineId,
     command: &str,
@@ -189,12 +172,7 @@ pub fn substrate_node_command_in(
 }
 
 #[must_use]
-pub fn authority_node_command(machine_id: &MachineId, command: &str) -> String {
-    authority_node_command_in(&NatsScope::default(), machine_id, command)
-}
-
-#[must_use]
-pub fn authority_node_command_in(
+pub(crate) fn authority_node_command_in(
     scope: &NatsScope,
     machine_id: &MachineId,
     command: &str,
@@ -208,17 +186,7 @@ pub fn authority_node_command_in(
 }
 
 #[must_use]
-pub fn node_command(machine_id: &MachineId, command: &str) -> String {
-    authority_node_command(machine_id, command)
-}
-
-#[must_use]
-pub fn node_command_listener(machine_id: &MachineId) -> String {
-    node_command_listener_in(&NatsScope::default(), machine_id)
-}
-
-#[must_use]
-pub fn node_command_listener_in(scope: &NatsScope, machine_id: &MachineId) -> String {
+pub(crate) fn node_command_listener_in(scope: &NatsScope, machine_id: &MachineId) -> String {
     format!(
         "ployz.v1.{}.*.rpc.node.{}.>",
         subject_token(scope.installation.as_str()),
@@ -227,7 +195,7 @@ pub fn node_command_listener_in(scope: &NatsScope, machine_id: &MachineId) -> St
 }
 
 #[must_use]
-pub fn node_command_queue_group(machine_id: &MachineId) -> String {
+pub(crate) fn node_command_queue_group(machine_id: &MachineId) -> String {
     format!("ployzd-node-{}", subject_token(&machine_id.0))
 }
 
@@ -274,8 +242,8 @@ mod tests {
             "ployz.v1.local.auth-default.cp.deploy.commit.prod.deploy-1"
         );
         assert_eq!(
-            route_journal_event_in(&scope, "deploy:deploy-1:2"),
-            "ployz.v1.local.auth-default.route.journal.event.deploy%3Adeploy-1%3A2"
+            routing_event_in(&scope, "deploy:deploy-1:2"),
+            "ployz.v1.local.auth-default.routing.event.deploy%3Adeploy-1%3A2"
         );
         assert_eq!(
             cert_renewal_job_in(&scope, "API.Example.COM"),

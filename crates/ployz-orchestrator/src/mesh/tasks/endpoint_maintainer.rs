@@ -364,7 +364,7 @@ pub(crate) struct EndpointMaintainerTask {
 }
 
 // This task is intentionally periodic, but it is observing/maintaining
-// transport state, not re-running control-plane reconciliation. The candidate
+// transport state, not recalculating control-plane policy. The candidate
 // endpoint list still comes from durable machine records; this loop only checks
 // external WireGuard handshake/device state and chooses which already-declared
 // endpoint to try right now.

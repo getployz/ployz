@@ -7,8 +7,7 @@ use ployz_api::{
     NatsAssetStatus, StatusPayload,
 };
 use ployz_config::RuntimeTarget;
-use ployz_nats::NatsStore;
-use ployz_nats::buckets::{NATS_KV_ASSETS, NATS_STREAM_ASSETS, NatsAssetRole, NatsAssetSpec};
+use ployz_nats::{NatsAssetScope, NatsAssetSpec, NatsStore};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -112,20 +111,20 @@ impl DaemonState {
                 },
             }),
         }
-        match crate::mesh_state::bootstrap::load_bootstrap_seed_cache_health(&network_dir) {
+        match crate::mesh_state::bootstrap::load_bootstrap_peer_seed_health(&network_dir) {
             Ok(Some(health)) => {
-                status.push(component_health_status("bootstrap_seed_cache", &health))
+                status.push(component_health_status("bootstrap_peer_seed", &health))
             }
             Ok(None) => status.push(ControlPlaneStatus {
-                component: String::from("bootstrap_seed_cache"),
+                component: String::from("bootstrap_peer_seed"),
                 state: ControlPlaneHealthState::Unknown {
-                    error: String::from("bootstrap seed cache health file missing"),
+                    error: String::from("bootstrap peer seed health file missing"),
                 },
             }),
             Err(error) => status.push(ControlPlaneStatus {
-                component: String::from("bootstrap_seed_cache"),
+                component: String::from("bootstrap_peer_seed"),
                 state: ControlPlaneHealthState::Unknown {
-                    error: format!("read bootstrap seed cache health: {error}"),
+                    error: format!("read bootstrap peer seed health: {error}"),
                 },
             }),
         }
@@ -191,7 +190,7 @@ impl DaemonState {
         };
         match tokio::time::timeout(
             NATS_ASSET_PROBE_TIMEOUT,
-            read_nats_asset_status(&client_url),
+            read_nats_asset_status(&client_url, &active.config),
         )
         .await
         {
@@ -225,42 +224,31 @@ fn component_health_status(
     }
 }
 
-async fn read_nats_asset_status(client_url: &str) -> Vec<NatsAssetStatus> {
-    let store = match NatsStore::connect(client_url).await {
+async fn read_nats_asset_status(
+    client_url: &str,
+    config: &crate::mesh_state::network::NetworkConfig,
+) -> Vec<NatsAssetStatus> {
+    let scope =
+        ployz_nats::NatsScope::local_for_storage_participation(&config.storage_participation);
+    let store = match NatsStore::connect_with_scope(client_url, scope).await {
         Ok(store) => store,
         Err(error) => return nats_asset_probe_error(error.to_string()),
     };
     let mut status = Vec::new();
-    for asset in NATS_STREAM_ASSETS {
-        status.push(read_stream_status(&store, asset).await);
-    }
-    for asset in NATS_KV_ASSETS {
-        status.push(read_stream_status(&store, asset).await);
+    for asset in store.asset_manifest() {
+        status.push(read_stream_status(&store, &asset).await);
     }
     status
 }
 
 async fn read_stream_status(store: &NatsStore, asset: &NatsAssetSpec) -> NatsAssetStatus {
-    let stream = match asset.kind {
-        "kv" => format!("KV_{}", asset.name),
-        _ => asset.name.to_string(),
-    };
-    match store.jetstream().get_stream(stream.as_str()).await {
-        Ok(mut stream_handle) => match stream_handle.info().await {
-            Ok(info) => nats_asset_status_from_info(store, asset, &info),
-            Err(error) => nats_asset_status(
-                store,
-                asset,
-                NatsAssetHealthState::Unknown {
-                    error: format!("{error:?}"),
-                },
-            ),
-        },
+    match store.asset_stream_info(asset).await {
+        Ok(info) => nats_asset_status_from_info(store, asset, &info),
         Err(error) => nats_asset_status(
             store,
             asset,
             NatsAssetHealthState::Unknown {
-                error: format!("{error:?}"),
+                error: error.to_string(),
             },
         ),
     }
@@ -295,27 +283,28 @@ fn nats_asset_status(
     state: NatsAssetHealthState,
 ) -> NatsAssetStatus {
     NatsAssetStatus {
-        name: asset.name.to_string(),
+        name: asset.name.clone(),
         kind: asset.kind.to_string(),
-        installation: Some(store.scope().installation.to_string()),
-        authority: nats_asset_authority(store, asset.role),
-        domain: Some(nats_asset_domain(store, asset.role)),
-        role: Some(asset.role.as_str().to_string()),
+        installation: Some(store.installation().to_string()),
+        authority: nats_asset_authority(store, asset.scope),
+        domain: Some(nats_asset_domain(store, asset.scope)),
+        scope: Some(asset.scope.as_str().to_string()),
         state,
     }
 }
 
-fn nats_asset_authority(store: &NatsStore, role: NatsAssetRole) -> Option<String> {
-    match role {
-        NatsAssetRole::AuthorityLocal => Some(store.scope().authority.to_string()),
-        NatsAssetRole::InstallationRoot => None,
+fn nats_asset_authority(store: &NatsStore, scope: NatsAssetScope) -> Option<String> {
+    match scope {
+        NatsAssetScope::AuthorityLocal => Some(store.authority().to_string()),
+        NatsAssetScope::InstallationRoot => None,
     }
 }
 
-fn nats_asset_domain(store: &NatsStore, role: NatsAssetRole) -> String {
-    match role {
-        NatsAssetRole::AuthorityLocal => store.scope().authority_domain(),
-        NatsAssetRole::InstallationRoot => store.scope().root_domain(),
+fn nats_asset_domain(store: &NatsStore, scope: NatsAssetScope) -> String {
+    match scope {
+        NatsAssetScope::AuthorityLocal | NatsAssetScope::InstallationRoot => {
+            store.asset_domain(scope)
+        }
     }
 }
 
@@ -377,7 +366,7 @@ fn nats_asset_probe_error(error: String) -> Vec<NatsAssetStatus> {
         installation: Some(String::from("local")),
         authority: Some(String::from("auth-default")),
         domain: Some(String::from("dom-auth-default")),
-        role: Some(String::from("authority_local")),
+        scope: Some(String::from("authority_local")),
         state: NatsAssetHealthState::Unknown { error },
     }]
 }
@@ -760,7 +749,7 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
         assert_eq!(status.installation.as_deref(), Some("local"));
         assert_eq!(status.authority.as_deref(), Some("auth-default"));
         assert_eq!(status.domain.as_deref(), Some("dom-auth-default"));
-        assert_eq!(status.role.as_deref(), Some("authority_local"));
+        assert_eq!(status.scope.as_deref(), Some("authority_local"));
         match status.state {
             NatsAssetHealthState::Unknown { error } => assert_eq!(error, "connect failed"),
             other => panic!("expected unknown NATS asset state, got {other:?}"),

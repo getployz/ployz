@@ -3,7 +3,7 @@ use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
 use ployz_orchestrator::{Mesh, Phase, WireguardDriver};
 use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
-use ployz_store_api::{MachineRegistry, SyncStatus};
+use ployz_store_api::{MachineMembershipStore, SyncStatus};
 use ployz_types::model::{
     MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
     StorageParticipation,
@@ -412,7 +412,7 @@ async fn bootstrap_proceeds_on_membership() {
 // --- Store events ---
 
 #[tokio::test]
-async fn store_event_triggers_reconcile() {
+async fn store_event_applies_peer_update() {
     let wg = Arc::new(MemoryWireGuard::new());
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
@@ -427,7 +427,7 @@ async fn store_event_triggers_reconcile() {
 
     let initial_count = wg.set_peers_count();
 
-    // Add a peer via the store — should trigger event → reconcile.
+    // Add a peer via the store; the subscription event should update WireGuard.
     store
         .upsert_self_machine(&test_record("m2", 2))
         .await

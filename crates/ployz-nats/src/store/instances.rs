@@ -1,4 +1,5 @@
-use ployz_store_api::InstanceStatusRepository;
+use async_trait::async_trait;
+use ployz_store_api::InstanceStatusStore;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{InstanceId, InstanceStatusRecord, RoutingEvent};
 use ployz_types::spec::Namespace;
@@ -6,7 +7,8 @@ use ployz_types::spec::Namespace;
 use crate::NatsStore;
 use crate::store::kv_json;
 
-impl InstanceStatusRepository for NatsStore {
+#[async_trait]
+impl InstanceStatusStore for NatsStore {
     async fn list_instance_status(
         &self,
         namespace: &Namespace,
@@ -22,12 +24,6 @@ impl InstanceStatusRepository for NatsStore {
 
     async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
         let bucket = instances_bucket(self).await?;
-        let old = bucket
-            .get(&record.instance_id.0)
-            .await
-            .map_err(|error| Error::operation("nats_instance_get", format!("{error:?}")))?
-            .map(|bytes| decode_instance(&record.instance_id.0, bytes.as_ref()))
-            .transpose()?;
         kv_json::put_json(
             &bucket,
             &record.instance_id.0,
@@ -36,17 +32,10 @@ impl InstanceStatusRepository for NatsStore {
             "nats_instance_put",
         )
         .await?;
-        let event = match old {
-            Some(old) => RoutingEvent::InstanceUpdated {
-                old,
-                new: record.clone(),
-            },
-            None => RoutingEvent::InstanceAdded(record.clone()),
-        };
         self.publish_routing_events(
             format!("instance:{}", record.instance_id.0),
             "instance.status",
-            &[event],
+            &[RoutingEvent::InstanceUpsert(record.clone())],
         )
         .await
     }
@@ -97,6 +86,7 @@ async fn list_instances(
     .collect()
 }
 
+#[cfg(test)]
 fn decode_instance(key: &str, bytes: &[u8]) -> Result<InstanceStatusRecord> {
     let record: InstanceStatusRecord = kv_json::decode_json("nats_instance_decode", bytes)?;
     validate_instance_key(key, record)

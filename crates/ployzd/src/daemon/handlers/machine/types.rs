@@ -4,7 +4,7 @@ use ployz_api::{
     MachineAddPayload, MachineAwaitingSelfPublication, MachineInstallOptions, MachineListPayload,
     MachineListRow,
 };
-use ployz_nats::coord::rpc::NatsNodeRpcClient;
+use ployz_nats::NatsNodeRpcClient;
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{MachineId, NetworkId};
 use std::fmt;

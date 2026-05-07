@@ -131,7 +131,7 @@ impl DaemonState {
                     ));
                 };
                 active.config.subnet = Some(assigned_subnet);
-                active.cached_subnet = Some(assigned_subnet);
+                active.retained_subnet.record_activation(assigned_subnet);
                 Ok(format!(
                     "machine '{}' activated with subnet {}",
                     record.id, assigned_subnet
@@ -244,7 +244,7 @@ impl DaemonState {
                     ));
                 };
                 active.config.subnet = None;
-                active.cached_subnet = previous_subnet;
+                active.retained_subnet.record_standby(previous_subnet);
                 Ok(format!("machine '{}' entered standby", record.id))
             }
         }

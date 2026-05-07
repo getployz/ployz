@@ -1,27 +1,23 @@
+use crate::NatsStore;
+use crate::coord::jobs::{JobSchedule, publish_cert_renewal_job_in};
+use crate::store::kv_json;
+use crate::store::kv_watch;
+use crate::subjects;
 use async_nats::jetstream::kv;
+use async_trait::async_trait;
 use ployz_store_api::{AcmeChallengeSubscription, CertificateStore, CertificateSubscription};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     CertificateEvent, CertificateRecord, CertificateState, MachineId,
 };
-use std::collections::HashMap;
 
-use crate::NatsStore;
-use crate::buckets::{
-    ACME_ACCOUNTS_BUCKET, ACME_CHALLENGE_READINESS_BUCKET, ACME_CHALLENGES_BUCKET,
-    CERTIFICATES_BUCKET,
-};
-use crate::coord::jobs::{JobSchedule, publish_cert_renewal_job_in};
-use crate::store::kv_json;
-use crate::store::kv_watch;
-use crate::subjects;
-
+#[async_trait]
 impl CertificateStore for NatsStore {
     async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {
         let bucket = kv_json::get_bucket(
             self.jetstream(),
-            ACME_ACCOUNTS_BUCKET,
+            self.assets().acme_accounts_bucket.as_str(),
             "nats_acme_accounts_bucket",
         )
         .await?;
@@ -43,7 +39,7 @@ impl CertificateStore for NatsStore {
     async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()> {
         let bucket = kv_json::get_bucket(
             self.jetstream(),
-            ACME_ACCOUNTS_BUCKET,
+            self.assets().acme_accounts_bucket.as_str(),
             "nats_acme_accounts_bucket",
         )
         .await?;
@@ -126,58 +122,60 @@ impl CertificateStore for NatsStore {
 
     async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
         let bucket = certificates_bucket(self).await?;
-        let snapshot_boundary =
-            kv_json::latest_sequence(&bucket, "nats_certificates_snapshot_boundary").await?;
+        let observed_revision =
+            kv_json::latest_sequence(&bucket, "nats_certificates_observed_revision").await?;
         let snapshot_entries = kv_json::list_json_entries::<CertificateRecord>(
             &bucket,
             "nats_certificate_decode",
             "nats_certificates_list",
         )
         .await?;
-        let snapshot_revisions = snapshot_entries
-            .iter()
-            .map(|entry| (entry.key.clone(), entry.revision))
-            .collect::<HashMap<_, _>>();
         let snapshot = snapshot_entries
             .into_iter()
             .map(|entry| validate_certificate_key(&entry.key, entry.value))
             .collect::<Result<Vec<_>>>()?;
-        kv_watch::subscribe_all_with_snapshot_revisions(
+        kv_watch::subscribe_all(
             &bucket,
             snapshot,
-            snapshot_revisions,
-            snapshot_boundary,
+            observed_revision,
             |record: &CertificateRecord| certificate_key(&record.hostname),
+            decode_certificate,
+            CertificateEvent::Upsert,
+            |record| CertificateEvent::Removed {
+                hostname: record.hostname,
+            },
             "nats_certificates_watch",
             "NATS certificate watcher failed",
             "NATS certificate event decode failed",
-            certificate_event_from_kv_entry,
         )
         .await
     }
 
     async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
         let bucket = challenges_bucket(self).await?;
-        let snapshot_boundary =
-            kv_json::latest_sequence(&bucket, "nats_acme_challenges_snapshot_boundary").await?;
+        let observed_revision =
+            kv_json::latest_sequence(&bucket, "nats_acme_challenges_observed_revision").await?;
         let snapshot_entries = kv_json::list_json_entries::<AcmeChallengeRecord>(
             &bucket,
             "nats_acme_challenge_decode",
             "nats_acme_challenges_list",
         )
         .await?;
-        let (snapshot, snapshot_revisions) = acme_challenge_snapshot_parts(snapshot_entries);
-        let snapshot = snapshot?;
-        kv_watch::subscribe_all_with_snapshot_revisions(
+        let snapshot = acme_challenge_snapshot(snapshot_entries)?;
+        kv_watch::subscribe_all(
             &bucket,
             snapshot,
-            snapshot_revisions,
-            snapshot_boundary,
+            observed_revision,
             |record: &AcmeChallengeRecord| challenge_key(&record.hostname, &record.token),
+            decode_challenge,
+            AcmeChallengeEvent::Upsert,
+            |record| AcmeChallengeEvent::Removed {
+                hostname: record.hostname,
+                token: record.token,
+            },
             "nats_acme_challenges_watch",
             "NATS ACME challenge watcher failed",
             "NATS ACME challenge event decode failed",
-            challenge_event_from_kv_entry,
         )
         .await
     }
@@ -224,7 +222,7 @@ fn certificate_renewal_job_schedule(record: &CertificateRecord) -> Option<JobSch
 async fn certificates_bucket(store: &NatsStore) -> Result<kv::Store> {
     kv_json::get_bucket(
         store.jetstream(),
-        CERTIFICATES_BUCKET,
+        store.assets().certificates_bucket.as_str(),
         "nats_certificates_bucket",
     )
     .await
@@ -233,7 +231,7 @@ async fn certificates_bucket(store: &NatsStore) -> Result<kv::Store> {
 async fn challenges_bucket(store: &NatsStore) -> Result<kv::Store> {
     kv_json::get_bucket(
         store.jetstream(),
-        ACME_CHALLENGES_BUCKET,
+        store.assets().acme_challenges_bucket.as_str(),
         "nats_acme_challenges_bucket",
     )
     .await
@@ -242,7 +240,7 @@ async fn challenges_bucket(store: &NatsStore) -> Result<kv::Store> {
 async fn readiness_bucket(store: &NatsStore) -> Result<kv::Store> {
     kv_json::get_bucket(
         store.jetstream(),
-        ACME_CHALLENGE_READINESS_BUCKET,
+        store.assets().acme_challenge_readiness_bucket.as_str(),
         "nats_acme_readiness_bucket",
     )
     .await
@@ -349,66 +347,18 @@ fn validate_readiness_key(
     Ok(record)
 }
 
-fn certificate_event_from_kv_entry(
-    last_seen: &mut HashMap<String, CertificateRecord>,
-    key: &str,
-    bytes: &[u8],
-    operation: kv::Operation,
-) -> Result<Option<CertificateEvent>> {
-    match operation {
-        kv::Operation::Put => {
-            let record = decode_certificate(key, bytes)?;
-            let event = match last_seen.get(key) {
-                Some(existing) if existing == &record => return Ok(None),
-                Some(_) => CertificateEvent::Updated(record.clone()),
-                None => CertificateEvent::Added(record.clone()),
-            };
-            last_seen.insert(key.to_string(), record);
-            Ok(Some(event))
-        }
-        kv::Operation::Delete | kv::Operation::Purge => {
-            Ok(last_seen.remove(key).map(CertificateEvent::Removed))
-        }
-    }
+fn decode_challenge(key: &str, bytes: &[u8]) -> Result<AcmeChallengeRecord> {
+    let record = kv_json::decode_json::<AcmeChallengeRecord>("nats_acme_challenge_decode", bytes)?;
+    validate_challenge_key(key, record)
 }
 
-fn challenge_event_from_kv_entry(
-    last_seen: &mut HashMap<String, AcmeChallengeRecord>,
-    key: &str,
-    bytes: &[u8],
-    operation: kv::Operation,
-) -> Result<Option<AcmeChallengeEvent>> {
-    match operation {
-        kv::Operation::Put => {
-            let record =
-                kv_json::decode_json::<AcmeChallengeRecord>("nats_acme_challenge_decode", bytes)?;
-            let record = validate_challenge_key(key, record)?;
-            let event = match last_seen.get(key) {
-                Some(existing) if existing == &record => return Ok(None),
-                Some(_) => AcmeChallengeEvent::Updated(record.clone()),
-                None => AcmeChallengeEvent::Added(record.clone()),
-            };
-            last_seen.insert(key.to_string(), record);
-            Ok(Some(event))
-        }
-        kv::Operation::Delete | kv::Operation::Purge => {
-            Ok(last_seen.remove(key).map(AcmeChallengeEvent::Removed))
-        }
-    }
-}
-
-fn acme_challenge_snapshot_parts(
+fn acme_challenge_snapshot(
     entries: Vec<kv_json::JsonEntry<AcmeChallengeRecord>>,
-) -> (Result<Vec<AcmeChallengeRecord>>, HashMap<String, u64>) {
-    let snapshot_revisions = entries
-        .iter()
-        .map(|entry| (entry.key.clone(), entry.revision))
-        .collect::<HashMap<_, _>>();
-    let snapshot = entries
+) -> Result<Vec<AcmeChallengeRecord>> {
+    entries
         .into_iter()
         .map(|entry| validate_challenge_key(&entry.key, entry.value))
-        .collect::<Result<Vec<_>>>();
-    (snapshot, snapshot_revisions)
+        .collect()
 }
 
 async fn delete_acme_challenge_readiness(
@@ -446,100 +396,6 @@ mod tests {
     use ployz_types::model::CertificateState;
 
     #[test]
-    fn certificate_kv_decode_failure_is_subscription_failure() {
-        let mut last_seen = HashMap::new();
-
-        let result = certificate_event_from_kv_entry(
-            &mut last_seen,
-            "example.com",
-            b"{",
-            kv::Operation::Put,
-        );
-
-        assert!(result.is_err());
-        assert!(last_seen.is_empty());
-    }
-
-    #[test]
-    fn certificate_kv_key_mismatch_is_subscription_failure() {
-        let record = certificate("example.com");
-        let bytes = serde_json::to_vec(&record).expect("encode certificate");
-        let mut last_seen = HashMap::new();
-
-        let result = certificate_event_from_kv_entry(
-            &mut last_seen,
-            "other.example.com",
-            &bytes,
-            kv::Operation::Put,
-        );
-
-        assert!(result.is_err());
-        assert!(last_seen.is_empty());
-    }
-
-    #[test]
-    fn certificate_kv_delete_for_unknown_key_is_noop() {
-        let mut last_seen = HashMap::new();
-
-        let event = certificate_event_from_kv_entry(
-            &mut last_seen,
-            "example.com",
-            &[],
-            kv::Operation::Delete,
-        )
-        .expect("delete should not fail");
-
-        assert!(event.is_none());
-    }
-
-    #[test]
-    fn acme_challenge_kv_decode_failure_is_subscription_failure() {
-        let mut last_seen = HashMap::new();
-
-        let result = challenge_event_from_kv_entry(
-            &mut last_seen,
-            "example.com.token",
-            b"{",
-            kv::Operation::Put,
-        );
-
-        assert!(result.is_err());
-        assert!(last_seen.is_empty());
-    }
-
-    #[test]
-    fn acme_challenge_kv_key_mismatch_is_subscription_failure() {
-        let record = challenge("example.com", "token");
-        let bytes = serde_json::to_vec(&record).expect("encode challenge");
-        let mut last_seen = HashMap::new();
-
-        let result = challenge_event_from_kv_entry(
-            &mut last_seen,
-            "example.com.other-token",
-            &bytes,
-            kv::Operation::Put,
-        );
-
-        assert!(result.is_err());
-        assert!(last_seen.is_empty());
-    }
-
-    #[test]
-    fn acme_challenge_kv_delete_for_unknown_key_is_noop() {
-        let mut last_seen = HashMap::new();
-
-        let event = challenge_event_from_kv_entry(
-            &mut last_seen,
-            "example.com.token",
-            &[],
-            kv::Operation::Delete,
-        )
-        .expect("delete should not fail");
-
-        assert!(event.is_none());
-    }
-
-    #[test]
     fn acme_challenge_readiness_key_is_collision_safe() {
         let machine = MachineId("machine.1".into());
 
@@ -569,44 +425,6 @@ mod tests {
     }
 
     #[test]
-    fn certificate_kv_put_updates_last_seen() {
-        let record = certificate("example.com");
-        let bytes = serde_json::to_vec(&record).expect("encode certificate");
-        let mut last_seen = HashMap::new();
-
-        let event = certificate_event_from_kv_entry(
-            &mut last_seen,
-            "example.com",
-            &bytes,
-            kv::Operation::Put,
-        )
-        .expect("put should decode");
-
-        assert!(
-            matches!(event, Some(CertificateEvent::Added(event_record)) if event_record == record)
-        );
-        assert_eq!(last_seen.get("example.com"), Some(&record));
-    }
-
-    #[test]
-    fn certificate_kv_put_ignores_identical_value() {
-        let record = certificate("example.com");
-        let bytes = serde_json::to_vec(&record).expect("encode certificate");
-        let mut last_seen = HashMap::from([(String::from("example.com"), record.clone())]);
-
-        let event = certificate_event_from_kv_entry(
-            &mut last_seen,
-            "example.com",
-            &bytes,
-            kv::Operation::Put,
-        )
-        .expect("put should decode");
-
-        assert!(event.is_none());
-        assert_eq!(last_seen.get("example.com"), Some(&record));
-    }
-
-    #[test]
     fn active_certificate_schedules_next_renewal_job() {
         let mut record = certificate("example.com");
         record.state = CertificateState::Active;
@@ -627,47 +445,15 @@ mod tests {
     }
 
     #[test]
-    fn acme_challenge_kv_put_updates_last_seen() {
+    fn acme_challenge_snapshot_validates_keys() {
         let record = challenge("example.com", "token");
         let key = challenge_key(&record.hostname, &record.token);
-        let bytes = serde_json::to_vec(&record).expect("encode challenge");
-        let mut last_seen = HashMap::new();
-
-        let event = challenge_event_from_kv_entry(&mut last_seen, &key, &bytes, kv::Operation::Put)
-            .expect("put should decode");
-
-        assert!(
-            matches!(event, Some(AcmeChallengeEvent::Added(event_record)) if event_record == record)
-        );
-        assert_eq!(last_seen.get(&key), Some(&record));
-    }
-
-    #[test]
-    fn acme_challenge_kv_put_ignores_identical_value() {
-        let record = challenge("example.com", "token");
-        let key = challenge_key(&record.hostname, &record.token);
-        let bytes = serde_json::to_vec(&record).expect("encode challenge");
-        let mut last_seen = HashMap::from([(key.clone(), record.clone())]);
-
-        let event = challenge_event_from_kv_entry(&mut last_seen, &key, &bytes, kv::Operation::Put)
-            .expect("put should decode");
-
-        assert!(event.is_none());
-        assert_eq!(last_seen.get(&key), Some(&record));
-    }
-
-    #[test]
-    fn acme_challenge_snapshot_parts_keep_entry_revisions() {
-        let record = challenge("example.com", "token");
-        let key = challenge_key(&record.hostname, &record.token);
-        let (snapshot, revisions) = acme_challenge_snapshot_parts(vec![kv_json::JsonEntry {
+        let snapshot = acme_challenge_snapshot(vec![kv_json::JsonEntry {
             key: key.clone(),
-            revision: 42,
             value: record.clone(),
         }]);
 
         assert_eq!(snapshot.expect("valid snapshot"), vec![record]);
-        assert_eq!(revisions.get(&key), Some(&42));
     }
 
     #[test]

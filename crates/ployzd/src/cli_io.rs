@@ -243,8 +243,8 @@ fn render_plain_status(payload: &StatusPayload) -> String {
         if let Some(domain) = asset.domain.as_deref() {
             scope.push_str(&format!(" domain={domain}"));
         }
-        if let Some(role) = asset.role.as_deref() {
-            scope.push_str(&format!(" role={role}"));
+        if let Some(asset_scope) = asset.scope.as_deref() {
+            scope.push_str(&format!(" scope={asset_scope}"));
         }
         lines.push(format!(
             "nats_asset kind={} name={}{} state={}",
@@ -762,11 +762,11 @@ mod tests {
                 edge_sync: Vec::new(),
                 nats_assets: vec![ployz_api::NatsAssetStatus {
                     kind: String::from("stream"),
-                    name: String::from("route_journal_auth-default"),
+                    name: String::from("routing_events_auth-default"),
                     installation: Some(String::from("local")),
                     authority: Some(String::from("auth-default")),
                     domain: Some(String::from("dom-auth-default")),
-                    role: Some(String::from("authority_local")),
+                    scope: Some(String::from("authority_local")),
                     state: ployz_api::NatsAssetHealthState::Healthy(
                         ployz_api::NatsAssetReplicaStatus {
                             replicas: 1,
@@ -783,7 +783,7 @@ mod tests {
 
         let rendered = render_plain_success(&response);
         assert!(rendered.contains(
-            "nats_asset kind=stream name=route_journal_auth-default installation=local authority=auth-default domain=dom-auth-default role=authority_local state=healthy replicas=1 current=1 offline=0 max_lag=0 leader=nats-a"
+            "nats_asset kind=stream name=routing_events_auth-default installation=local authority=auth-default domain=dom-auth-default scope=authority_local state=healthy replicas=1 current=1 offline=0 max_lag=0 leader=nats-a"
         ));
     }
 
@@ -822,7 +822,7 @@ mod tests {
                         },
                     },
                     ployz_api::ControlPlaneStatus {
-                        component: String::from("bootstrap_seed_cache"),
+                        component: String::from("bootstrap_peer_seed"),
                         state: ployz_api::ControlPlaneHealthState::Healthy,
                     },
                     ployz_api::ControlPlaneStatus {
@@ -845,7 +845,7 @@ mod tests {
             "control_plane component=cert_renewal_worker state=stale stale_since=1777646200 consecutive_failures=3"
         ));
         assert!(rendered.contains(
-            "control_plane component=bootstrap_seed_cache state=healthy consecutive_failures=0"
+            "control_plane component=bootstrap_peer_seed state=healthy consecutive_failures=0"
         ));
         assert!(rendered.contains(
             "control_plane component=mesh_peer_sync state=stale stale_since=1777646300 consecutive_failures=1"

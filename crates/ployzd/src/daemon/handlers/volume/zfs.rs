@@ -6,9 +6,9 @@ use ployz_api::{
     VolumeZfsSnapshotInfo, VolumeZfsSnapshotPayload, VolumeZfsTransferInfo,
     VolumeZfsTransferListPayload, VolumeZfsTransferPayload,
 };
-use ployz_nats::coord::rpc::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
+use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
 use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
-use ployz_store_api::{DeployRepository, MachineRegistry};
+use ployz_store_api::{DeployStore, MachineMembershipStore};
 use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership, VolumeRecord};
 use ployz_types::spec::{Namespace, VolumeScope};
 use ployz_types::time::now_unix_secs;
@@ -266,7 +266,7 @@ impl TransferStore {
         Ok(records)
     }
 
-    fn reconcile_startup(&self) -> Result<usize, String> {
+    fn recover_startup(&self) -> Result<usize, String> {
         let mut count = 0;
         for mut record in self.list()? {
             if record.status == TransferStatus::Running {
@@ -321,13 +321,13 @@ impl DaemonState {
         TransferStore::new(self.data_dir.clone())
     }
 
-    pub(crate) async fn reconcile_zfs_transfers_on_startup(&self) {
-        match self.zfs_transfer_store().reconcile_startup() {
+    pub(crate) async fn recover_zfs_transfers_on_startup(&self) {
+        match self.zfs_transfer_store().recover_startup() {
             Ok(count) if count > 0 => {
                 tracing::warn!(count, "marked running zfs transfers interrupted")
             }
             Ok(_) => {}
-            Err(error) => tracing::warn!(%error, "failed to reconcile zfs transfers"),
+            Err(error) => tracing::warn!(%error, "failed to recover zfs transfer startup state"),
         }
     }
 
@@ -1259,13 +1259,13 @@ mod tests {
     }
 
     #[test]
-    fn startup_reconciliation_marks_running_transfers_interrupted() {
-        let root = tmp_root("reconcile");
+    fn startup_recovery_marks_running_transfers_interrupted() {
+        let root = tmp_root("startup-recovery");
         let store = TransferStore::new(root.clone());
         let transfer = begin(&store);
         assert_eq!(transfer.status, TransferStatus::Running);
 
-        let count = store.reconcile_startup().expect("reconcile");
+        let count = store.recover_startup().expect("recover startup");
         assert_eq!(count, 1);
         let loaded = store
             .load(&transfer.id)

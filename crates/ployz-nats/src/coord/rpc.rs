@@ -4,11 +4,20 @@ use ployz_api::{DaemonRequest, DaemonResponse};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::MachineId;
 
-use crate::subjects;
+use crate::NatsStore;
+use crate::subjects::{self, NatsScope};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NodeCommandPlane {
+    Authority,
+    Substrate,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeCommandSubject {
-    subject: String,
+    machine_id: MachineId,
+    command: &'static str,
+    plane: NodeCommandPlane,
 }
 
 impl NodeCommandSubject {
@@ -128,19 +137,30 @@ impl NodeCommandSubject {
     }
 
     #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.subject
-    }
-
-    fn new(machine_id: &MachineId, command: &str) -> Self {
-        Self {
-            subject: subjects::authority_node_command(machine_id, command),
+    pub(crate) fn subject_in(&self, scope: &NatsScope) -> String {
+        match self.plane {
+            NodeCommandPlane::Authority => {
+                subjects::authority_node_command_in(scope, &self.machine_id, self.command)
+            }
+            NodeCommandPlane::Substrate => {
+                subjects::substrate_node_command_in(scope, &self.machine_id, self.command)
+            }
         }
     }
 
-    fn new_substrate(machine_id: &MachineId, command: &str) -> Self {
+    fn new(machine_id: &MachineId, command: &'static str) -> Self {
         Self {
-            subject: subjects::substrate_node_command(machine_id, command),
+            machine_id: machine_id.clone(),
+            command,
+            plane: NodeCommandPlane::Authority,
+        }
+    }
+
+    fn new_substrate(machine_id: &MachineId, command: &'static str) -> Self {
+        Self {
+            machine_id: machine_id.clone(),
+            command,
+            plane: NodeCommandPlane::Substrate,
         }
     }
 }
@@ -207,14 +227,21 @@ impl RpcFailure {
 #[derive(Clone)]
 pub struct NatsNodeRpcClient {
     client: async_nats::Client,
+    scope: NatsScope,
     policy: RpcPolicy,
 }
 
 impl NatsNodeRpcClient {
     #[must_use]
-    pub fn new(client: async_nats::Client) -> Self {
+    pub fn for_store(store: &NatsStore) -> Self {
+        Self::new(store.client().clone(), store.scope().clone())
+    }
+
+    #[must_use]
+    pub(crate) fn new(client: async_nats::Client, scope: NatsScope) -> Self {
         Self {
             client,
+            scope,
             policy: RpcPolicy::default(),
         }
     }
@@ -230,6 +257,7 @@ impl NatsNodeRpcClient {
         subject: NodeCommandSubject,
         request: &DaemonRequest,
     ) -> std::result::Result<DaemonResponse, RpcFailure> {
+        let subject_name = subject.subject_in(&self.scope);
         let payload = serde_json::to_vec(request).map_err(|error| {
             RpcFailure::new(
                 RpcFailureKind::Encode,
@@ -238,24 +266,20 @@ impl NatsNodeRpcClient {
         })?;
         let response = tokio::time::timeout(
             self.policy.timeout,
-            self.client
-                .request(subject.as_str().to_string(), payload.into()),
+            self.client.request(subject_name.clone(), payload.into()),
         )
         .await
         .map_err(|_| {
             RpcFailure::new(
                 RpcFailureKind::Timeout,
-                format!("request to '{}' timed out", subject.as_str()),
+                format!("request to '{subject_name}' timed out"),
             )
         })?
         .map_err(classify_request_error)?;
         serde_json::from_slice(response.payload.as_ref()).map_err(|error| {
             RpcFailure::new(
                 RpcFailureKind::Decode,
-                format!(
-                    "decode node rpc response from '{}': {error}",
-                    subject.as_str()
-                ),
+                format!("decode node rpc response from '{subject_name}': {error}"),
             )
         })
     }
@@ -280,7 +304,7 @@ impl NatsNodeRpcClient {
 }
 
 #[must_use]
-pub fn classify_request_error(error: async_nats::RequestError) -> RpcFailure {
+pub(crate) fn classify_request_error(error: async_nats::RequestError) -> RpcFailure {
     match error.kind() {
         async_nats::RequestErrorKind::TimedOut => {
             RpcFailure::new(RpcFailureKind::Timeout, error.to_string())
@@ -320,10 +344,11 @@ mod tests {
     #[test]
     fn node_command_subject_uses_substrate_for_whole_node_commands() {
         let machine_id = MachineId("machine.a".into());
+        let scope = NatsScope::local_default();
         let subject = NodeCommandSubject::status(&machine_id);
 
         assert_eq!(
-            subject.as_str(),
+            subject.subject_in(&scope),
             "ployz.v1.local.substrate.rpc.node.machine%2Ea.status"
         );
         assert_eq!(
@@ -335,17 +360,18 @@ mod tests {
     #[test]
     fn mesh_command_subjects_name_operation() {
         let machine_id = MachineId("machine-a".into());
+        let scope = NatsScope::local_default();
 
         assert_eq!(
-            NodeCommandSubject::mesh_prepare_destroy(&machine_id).as_str(),
+            NodeCommandSubject::mesh_prepare_destroy(&machine_id).subject_in(&scope),
             "ployz.v1.local.substrate.rpc.node.machine-a.mesh.prepare_destroy"
         );
         assert_eq!(
-            NodeCommandSubject::mesh_execute_destroy(&machine_id).as_str(),
+            NodeCommandSubject::mesh_execute_destroy(&machine_id).subject_in(&scope),
             "ployz.v1.local.substrate.rpc.node.machine-a.mesh.execute_destroy"
         );
         assert_eq!(
-            NodeCommandSubject::mesh_ready(&machine_id).as_str(),
+            NodeCommandSubject::mesh_ready(&machine_id).subject_in(&scope),
             "ployz.v1.local.substrate.rpc.node.machine-a.mesh.ready"
         );
     }
@@ -353,9 +379,10 @@ mod tests {
     #[test]
     fn deploy_command_subjects_remain_authority_scoped() {
         let machine_id = MachineId("machine-a".into());
+        let scope = NatsScope::local_default();
 
         assert_eq!(
-            NodeCommandSubject::deploy_start_candidate(&machine_id).as_str(),
+            NodeCommandSubject::deploy_start_candidate(&machine_id).subject_in(&scope),
             "ployz.v1.local.auth-default.rpc.node.machine-a.deploy.start_candidate"
         );
     }

@@ -2,7 +2,6 @@ use async_nats::HeaderMap;
 use async_nats::header::{NATS_EXPECTED_STREAM, NATS_MESSAGE_ID};
 use async_nats::jetstream;
 use async_nats::jetstream::message::PublishMessage;
-use ployz_store_api::routing_event_id;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::RoutingEvent;
 
@@ -13,11 +12,11 @@ use crate::subjects::{self, NatsScope};
 pub const PLOYZ_ROUTING_CAUSE: &str = "Ployz-Routing-Cause";
 pub const PLOYZ_ROUTING_EVENT_ID: &str = "Ployz-Routing-Event-Id";
 
-pub(crate) struct RoutingPublishSpec {
-    pub subject: String,
-    pub stream: String,
-    pub headers: HeaderMap,
-    pub payload: Vec<u8>,
+struct RoutingPublish {
+    subject: String,
+    stream: String,
+    headers: HeaderMap,
+    payload: Vec<u8>,
 }
 
 impl NatsStore {
@@ -38,7 +37,7 @@ pub(crate) async fn publish_routing_events_in(
     cause: impl AsRef<str>,
     events: &[RoutingEvent],
 ) -> Result<()> {
-    for spec in routing_publish_specs_in(scope, operation_id.as_ref(), cause.as_ref(), events)? {
+    for spec in routing_publishes_in(scope, operation_id.as_ref(), cause.as_ref(), events)? {
         let publish = PublishMessage::build()
             .payload(spec.payload.into())
             .headers(spec.headers)
@@ -53,27 +52,18 @@ pub(crate) async fn publish_routing_events_in(
     Ok(())
 }
 
-#[cfg(test)]
-fn routing_publish_specs(
-    operation_id: &str,
-    cause: &str,
-    events: &[RoutingEvent],
-) -> Result<Vec<RoutingPublishSpec>> {
-    routing_publish_specs_in(&NatsScope::default(), operation_id, cause, events)
-}
-
-pub(crate) fn routing_publish_specs_in(
+fn routing_publishes_in(
     scope: &NatsScope,
     operation_id: &str,
     cause: &str,
     events: &[RoutingEvent],
-) -> Result<Vec<RoutingPublishSpec>> {
-    let stream = NatsAssetNames::new(scope).route_journal_stream;
+) -> Result<Vec<RoutingPublish>> {
+    let stream = NatsAssetNames::new(scope).routing_events_stream;
     events
         .iter()
         .enumerate()
         .map(|(index, event)| {
-            let event_id = routing_event_id(operation_id, index + 1);
+            let event_id = format!("{operation_id}:{}", index + 1);
             let mut headers = HeaderMap::new();
             headers.insert(NATS_EXPECTED_STREAM, stream.as_str());
             headers.insert(NATS_MESSAGE_ID, event_id.as_str());
@@ -82,8 +72,8 @@ pub(crate) fn routing_publish_specs_in(
             let payload = serde_json::to_vec(event).map_err(|error| {
                 Error::operation("nats_routing_event_encode", error.to_string())
             })?;
-            Ok(RoutingPublishSpec {
-                subject: subjects::route_journal_event_in(scope, &event_id),
+            Ok(RoutingPublish {
+                subject: subjects::routing_event_in(scope, &event_id),
                 stream: stream.clone(),
                 headers,
                 payload,
@@ -101,15 +91,23 @@ mod tests {
         StorageParticipation,
     };
 
+    fn local_routing_publishes(
+        operation_id: &str,
+        cause: &str,
+        events: &[RoutingEvent],
+    ) -> Result<Vec<RoutingPublish>> {
+        routing_publishes_in(&NatsScope::local_default(), operation_id, cause, events)
+    }
+
     #[test]
     fn routing_event_specs_set_event_headers() {
         let events = vec![
-            RoutingEvent::MachineAdded(test_machine("machine-1")),
-            RoutingEvent::MachineAdded(test_machine("machine-2")),
+            RoutingEvent::MachineUpsert(test_machine("machine-1")),
+            RoutingEvent::MachineUpsert(test_machine("machine-2")),
         ];
 
         let specs =
-            routing_publish_specs("machine:machine-1", "machine.upsert", &events).expect("specs");
+            local_routing_publishes("machine:machine-1", "machine.upsert", &events).expect("specs");
 
         assert_eq!(specs.len(), 2);
         assert_eq!(
@@ -126,11 +124,11 @@ mod tests {
         );
         assert_eq!(
             header(&specs[0].headers, "Nats-Expected-Stream"),
-            NatsAssetNames::new(&NatsScope::default()).route_journal_stream
+            NatsAssetNames::new(&NatsScope::local_default()).routing_events_stream
         );
         assert_eq!(
             specs[0].stream,
-            NatsAssetNames::new(&NatsScope::default()).route_journal_stream
+            NatsAssetNames::new(&NatsScope::local_default()).routing_events_stream
         );
         assert_eq!(
             header(&specs[1].headers, PLOYZ_ROUTING_EVENT_ID),
@@ -144,26 +142,26 @@ mod tests {
             InstallationId("inst-acme".into()),
             AuthorityId("auth-sin".into()),
         );
-        let specs = routing_publish_specs_in(
+        let specs = routing_publishes_in(
             &scope,
             "machine:machine-1",
             "machine.upsert",
-            &[RoutingEvent::MachineAdded(test_machine("machine-1"))],
+            &[RoutingEvent::MachineUpsert(test_machine("machine-1"))],
         )
         .expect("build specs");
 
         assert_eq!(
             specs[0].subject,
-            "ployz.v1.inst-acme.auth-sin.route.journal.event.machine%3Amachine-1%3A1"
+            "ployz.v1.inst-acme.auth-sin.routing.event.machine%3Amachine-1%3A1"
         );
     }
 
     #[test]
     fn routing_event_specs_do_not_emulate_batch_commit_protocol() {
-        let specs = routing_publish_specs(
+        let specs = local_routing_publishes(
             "deploy:deploy-1",
             "deploy.commit",
-            &[RoutingEvent::MachineAdded(test_machine("machine-1"))],
+            &[RoutingEvent::MachineUpsert(test_machine("machine-1"))],
         )
         .expect("build specs");
 

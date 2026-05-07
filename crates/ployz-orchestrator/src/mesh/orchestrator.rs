@@ -17,7 +17,7 @@ use crate::model::{
     MachineId, MachineLifecycleTransition, MachineMembership, MachineTransitionError,
 };
 use ployz_store_api::StoreDriver;
-use ployz_store_api::{MachineRegistry, StoreRuntimeControl, SyncProbe, SyncStatus};
+use ployz_store_api::{MachineMembershipStore, StoreRuntimeControl, SyncProbe, SyncStatus};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;

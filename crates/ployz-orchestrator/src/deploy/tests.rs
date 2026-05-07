@@ -2,10 +2,10 @@ use super::execute::{
     ParticipantSet, apply_with_certificate_coordination, apply_with_initial_plan,
     ensure_plan_stable, run_phase_startup,
 };
+use super::lifecycle::PreparedDeploy;
 use super::plan::{deployable_machines, desired_slots, resolve_plan};
 use super::preview;
 use super::probe::{NoopParticipantProbe, ParticipantProbe, ProbeError, ProbeErrorKind};
-use super::transaction::PreparedDeploy;
 use crate::certificates::{
     LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, NoopAcmeIssuerFactory,
     NoopIssuanceCoordinator,
@@ -17,15 +17,14 @@ use crate::model::{
     DeployId, DeployRecord, DeployState, DrainState, InstanceId, InstancePhase,
     InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, MachineTopology,
     OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
-    ServiceRoutingPolicy, SlotId, VolumeRecord,
+    ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{
-    CertificateStore, DeployCommit, DeployRecordUpdate, DeployRepository, DeploySnapshot,
-    InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
-    RoutingEventSubscription, RoutingSnapshotReader, StoreBackend, StoreDriver,
-    StoreRuntimeControl,
+    CertificateStore, DeployCommit, DeployStore, InstanceStatusStore, InviteStore,
+    MachineMembershipStore, MachineSubscription, PeerRttStore, RoutingEventSubscription,
+    RoutingStateStore, StoreDriver, StoreRuntimeControl, SyncProbe,
 };
 use ployz_types::Result as PloyzResult;
 use ployz_types::spec::{
@@ -430,7 +429,7 @@ async fn apply_commits_volume_records_and_sends_volume_payload_to_startup() {
 }
 
 #[tokio::test]
-async fn apply_reconciles_attached_service_before_committing_volume_quota_change() {
+async fn apply_restarts_attached_service_before_committing_volume_quota_change() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
     let local_machine_id = MachineId("local".into());
     let manifest = volume_manifest();
@@ -540,7 +539,7 @@ async fn apply_deletes_volume_records_removed_from_manifest() {
         .expect("list volumes after removal");
     assert!(
         records.is_empty(),
-        "expected volume row removed: {records:?}"
+        "expected volume record removed: {records:?}"
     );
 }
 
@@ -612,7 +611,7 @@ async fn apply_keeps_retained_volume_when_attached_service_is_removed() {
 }
 
 #[tokio::test]
-async fn apply_commits_unattached_volume_declarations_without_service_reconciliation() {
+async fn apply_commits_unattached_volume_declarations_without_service_restart() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
     let local_machine_id = MachineId("local".into());
     let mut manifest = test_manifest(vec![test_service_spec(
@@ -1235,7 +1234,7 @@ async fn apply_rejects_unreachable_participant_before_inspect_or_commit() {
 
     assert!(error.to_string().contains("deploy blocked"));
     assert!(error.to_string().contains("machine-b"));
-    assert_eq!(backend.upsert_deploy_count(), 0);
+    assert_eq!(backend.deploy_status_write_count(), 0);
     assert_eq!(backend.commit_count(), 0);
     assert_eq!(controller.max_open_seen(), 0);
     assert_eq!(controller.start_count(), 0);
@@ -1288,7 +1287,7 @@ async fn preview_surfaces_unreachable_participants_without_mutating_deploy_state
             && warning.contains("timeout")
             && warning.contains("injected probe timeout")
     }));
-    assert_eq!(backend.upsert_deploy_count(), 0);
+    assert_eq!(backend.deploy_status_write_count(), 0);
     assert_eq!(backend.commit_count(), 0);
 }
 
@@ -1347,16 +1346,16 @@ async fn apply_with_initial_plan_does_not_commit_when_start_candidate_fails() {
         .await
         .expect("list releases");
     assert!(releases.is_empty());
-    let deploy_snapshot = store
-        .load_deploy_snapshot(&manifest.namespace)
+    let revisions = store
+        .list_deploy_revisions(&manifest.namespace)
         .await
-        .expect("load deploy snapshot");
+        .expect("list deploy revisions");
     assert!(
-        deploy_snapshot.revisions.is_empty(),
+        revisions.is_empty(),
         "failed deploy must not publish uncommitted revision facts"
     );
     let last_update = backend
-        .last_deploy_update()
+        .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
     assert_eq!(last_update.state, DeployState::Failed);
@@ -1411,7 +1410,7 @@ async fn apply_with_initial_plan_sets_cleanup_pending_after_cleanup_failure() {
     assert_eq!(result.state, crate::model::DeployState::CleanupPending);
     assert_eq!(backend.commit_count(), 1);
     // deploying -> post-cert warning refresh -> cleanup_pending
-    assert_eq!(backend.upsert_deploy_count(), 3);
+    assert_eq!(backend.deploy_status_write_count(), 3);
     let commit_index = result
         .events
         .iter()
@@ -1847,9 +1846,16 @@ async fn seeded_store_with_machines(machine_ids: &[&str]) -> StoreDriver {
 
 async fn counting_store_with_machines(machine_ids: &[&str]) -> (StoreDriver, Arc<CountingBackend>) {
     let backend = Arc::new(CountingBackend::new());
-    let store = StoreDriver::from_backend(
-        backend.clone() as Arc<dyn StoreBackend>,
-        backend.clone() as Arc<dyn StoreRuntimeControl>,
+    let store = StoreDriver::new(
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
     );
     for machine_id in machine_ids {
         store
@@ -2142,8 +2148,8 @@ struct CountingBackend {
     store: Arc<MemoryStore>,
     service: Arc<MemoryService>,
     commit_calls: AtomicUsize,
-    upsert_deploy_calls: AtomicUsize,
-    deploy_updates: Mutex<Vec<DeployRecord>>,
+    deploy_status_writes: AtomicUsize,
+    deploy_status_records: Mutex<Vec<DeployRecord>>,
 }
 
 impl CountingBackend {
@@ -2152,8 +2158,8 @@ impl CountingBackend {
             store: Arc::new(MemoryStore::new()),
             service: Arc::new(MemoryService::new()),
             commit_calls: AtomicUsize::new(0),
-            upsert_deploy_calls: AtomicUsize::new(0),
-            deploy_updates: Mutex::new(Vec::new()),
+            deploy_status_writes: AtomicUsize::new(0),
+            deploy_status_records: Mutex::new(Vec::new()),
         }
     }
 
@@ -2161,22 +2167,22 @@ impl CountingBackend {
         self.commit_calls.load(Ordering::SeqCst)
     }
 
-    fn upsert_deploy_count(&self) -> usize {
-        self.upsert_deploy_calls.load(Ordering::SeqCst)
+    fn deploy_status_write_count(&self) -> usize {
+        self.deploy_status_writes.load(Ordering::SeqCst)
     }
 
     fn reset_counts(&self) {
         self.commit_calls.store(0, Ordering::SeqCst);
-        self.upsert_deploy_calls.store(0, Ordering::SeqCst);
+        self.deploy_status_writes.store(0, Ordering::SeqCst);
     }
 
-    async fn last_deploy_update(&self) -> Option<DeployRecord> {
-        self.deploy_updates.lock().await.last().cloned()
+    async fn last_deploy_status_write(&self) -> Option<DeployRecord> {
+        self.deploy_status_records.lock().await.last().cloned()
     }
 }
 
 #[async_trait]
-impl StoreBackend for CountingBackend {
+impl MachineMembershipStore for CountingBackend {
     async fn init(&self) -> PloyzResult<()> {
         self.store.init().await
     }
@@ -2196,7 +2202,10 @@ impl StoreBackend for CountingBackend {
     async fn subscribe_machines(&self) -> PloyzResult<MachineSubscription> {
         self.store.subscribe_machines().await
     }
+}
 
+#[async_trait]
+impl InviteStore for CountingBackend {
     async fn create_invite(&self, invite: &ployz_types::model::InviteRecord) -> PloyzResult<()> {
         self.store.create_invite(invite).await
     }
@@ -2230,15 +2239,21 @@ impl StoreBackend for CountingBackend {
     ) -> PloyzResult<ployz_types::model::InviteRecord> {
         self.store.revoke_invite(invite_id, now_unix_secs).await
     }
+}
 
+#[async_trait]
+impl RoutingStateStore for CountingBackend {
     async fn load_routing_state(&self) -> PloyzResult<crate::model::RoutingState> {
         self.store.load_routing_state().await
     }
 
     async fn subscribe_routing_events(&self) -> PloyzResult<RoutingEventSubscription> {
-        RoutingSnapshotReader::subscribe_routing_events(self.store.as_ref()).await
+        RoutingStateStore::subscribe_routing_events(self.store.as_ref()).await
     }
+}
 
+#[async_trait]
+impl CertificateStore for CountingBackend {
     async fn get_acme_account(&self, issuer_url: &str) -> PloyzResult<Option<AcmeAccountRecord>> {
         self.store.get_acme_account(issuer_url).await
     }
@@ -2299,31 +2314,22 @@ impl StoreBackend for CountingBackend {
     ) -> PloyzResult<ployz_store_api::AcmeChallengeSubscription> {
         self.store.subscribe_acme_challenges().await
     }
+}
+
+#[async_trait]
+impl DeployStore for CountingBackend {
+    async fn list_deploy_revisions(
+        &self,
+        namespace: &Namespace,
+    ) -> PloyzResult<Vec<ServiceRevisionRecord>> {
+        self.store.list_deploy_revisions(namespace).await
+    }
 
     async fn list_deploy_releases(
         &self,
         namespace: &Namespace,
     ) -> PloyzResult<Vec<ServiceReleaseRecord>> {
         self.store.list_deploy_releases(namespace).await
-    }
-
-    async fn load_deploy_snapshot(&self, namespace: &Namespace) -> PloyzResult<DeploySnapshot> {
-        self.store.load_deploy_snapshot(namespace).await
-    }
-
-    async fn list_instance_status(
-        &self,
-        namespace: &Namespace,
-    ) -> PloyzResult<Vec<InstanceStatusRecord>> {
-        self.store.list_instance_status(namespace).await
-    }
-
-    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> PloyzResult<()> {
-        self.store.record_instance_status(record).await
-    }
-
-    async fn remove_instance_status(&self, instance_id: &InstanceId) -> PloyzResult<()> {
-        self.store.remove_instance_status(instance_id).await
     }
 
     async fn list_volumes(
@@ -2341,13 +2347,10 @@ impl StoreBackend for CountingBackend {
         self.store.get_volume(namespace, volume_name).await
     }
 
-    async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> PloyzResult<()> {
-        self.upsert_deploy_calls.fetch_add(1, Ordering::SeqCst);
-        self.deploy_updates
-            .lock()
-            .await
-            .push(command.deploy.clone());
-        self.store.update_deploy_record(command).await
+    async fn write_deploy_status(&self, deploy: &DeployRecord) -> PloyzResult<()> {
+        self.deploy_status_writes.fetch_add(1, Ordering::SeqCst);
+        self.deploy_status_records.lock().await.push(deploy.clone());
+        self.store.write_deploy_status(deploy).await
     }
 
     async fn commit_deploy(&self, command: &DeployCommit) -> PloyzResult<()> {
@@ -2362,6 +2365,28 @@ impl StoreBackend for CountingBackend {
         self.store.get_deploy(deploy_id).await
     }
 }
+
+#[async_trait]
+impl InstanceStatusStore for CountingBackend {
+    async fn list_instance_status(
+        &self,
+        namespace: &Namespace,
+    ) -> PloyzResult<Vec<InstanceStatusRecord>> {
+        self.store.list_instance_status(namespace).await
+    }
+
+    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> PloyzResult<()> {
+        self.store.record_instance_status(record).await
+    }
+
+    async fn remove_instance_status(&self, instance_id: &InstanceId) -> PloyzResult<()> {
+        self.store.remove_instance_status(instance_id).await
+    }
+}
+
+impl SyncProbe for CountingBackend {}
+
+impl PeerRttStore for CountingBackend {}
 
 #[async_trait]
 impl StoreRuntimeControl for CountingBackend {

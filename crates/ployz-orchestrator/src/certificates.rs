@@ -790,7 +790,7 @@ pub fn renewal_threshold(not_before: Option<u64>, not_after: Option<u64>) -> Opt
 }
 
 // ---------------------------------------------------------------------------
-// Renewal reconciliation
+// Renewal work
 // ---------------------------------------------------------------------------
 
 /// Cancellable owner for certificate renewal background work.

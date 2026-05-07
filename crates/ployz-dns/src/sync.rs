@@ -130,7 +130,7 @@ mod tests {
             ployz_store_api::RoutingEventEnvelope::with_ack(
                 "event-1",
                 Some("test".into()),
-                ployz_types::model::RoutingEvent::RevisionAdded(
+                ployz_types::model::RoutingEvent::RevisionUpsert(
                     ployz_types::model::ServiceRevisionRecord {
                         namespace: ployz_types::spec::Namespace("prod".into()),
                         service: "api".into(),

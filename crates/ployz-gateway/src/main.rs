@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ployz_store_api::{RoutingSnapshotReader, StoreRuntimeControl};
+use ployz_store_api::{RoutingStateStore, StoreRuntimeControl};
 use tokio::time::timeout;
 use tracing::{info, warn};
 
@@ -24,7 +24,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
         Ok::<_, ployz_gateway::GatewayError>(store)
     })?;
     struct StandaloneStore(ployz_nats::NatsStore);
-    impl ployz_gateway::RoutingSnapshotReader for StandaloneStore {
+    impl ployz_gateway::RoutingStateStore for StandaloneStore {
         async fn load_routing_state(
             &self,
         ) -> Result<ployz_types::model::RoutingState, ployz_gateway::GatewayError> {
@@ -51,7 +51,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
         ) -> Result<ployz_store_api::RoutingEventSubscription, ployz_gateway::GatewayError>
         {
             info!("gateway store call start: subscribe_routing_events");
-            match ployz_store_api::RoutingSnapshotReader::subscribe_routing_events(&self.0).await {
+            match ployz_store_api::RoutingStateStore::subscribe_routing_events(&self.0).await {
                 Ok((state, rx)) => {
                     info!(
                         revisions = state.revisions.len(),
