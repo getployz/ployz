@@ -50,6 +50,39 @@ impl TransferStatus {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TransferTransition {
+    status: TransferStatus,
+    last_error: Option<String>,
+    at_unix_secs: u64,
+}
+
+impl TransferTransition {
+    fn succeeded(at_unix_secs: u64) -> Self {
+        Self {
+            status: TransferStatus::Succeeded,
+            last_error: None,
+            at_unix_secs,
+        }
+    }
+
+    fn failed(last_error: String, at_unix_secs: u64) -> Self {
+        Self {
+            status: TransferStatus::Failed,
+            last_error: Some(last_error),
+            at_unix_secs,
+        }
+    }
+
+    fn interrupted(at_unix_secs: u64) -> Self {
+        Self {
+            status: TransferStatus::Interrupted,
+            last_error: None,
+            at_unix_secs,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TransferRecord {
     id: String,
@@ -93,6 +126,24 @@ impl TransferRecord {
             updated_at: self.updated_at,
             last_error: self.last_error.clone(),
         }
+    }
+
+    fn apply_transition(&mut self, transition: TransferTransition) {
+        let TransferTransition {
+            status,
+            last_error,
+            at_unix_secs,
+        } = transition;
+        self.status = status;
+        match status {
+            TransferStatus::Succeeded => self.last_error = None,
+            TransferStatus::Failed | TransferStatus::Interrupted | TransferStatus::Running => {
+                if let Some(last_error) = last_error {
+                    self.last_error = Some(last_error);
+                }
+            }
+        }
+        self.updated_at = at_unix_secs;
     }
 }
 
@@ -153,11 +204,20 @@ impl TransferStore {
         status: TransferStatus,
         last_error: Option<String>,
     ) -> Result<(), String> {
-        record.status = status;
-        if let Some(last_error) = last_error {
-            record.last_error = Some(last_error);
-        }
-        record.updated_at = now_unix_secs();
+        let at_unix_secs = now_unix_secs();
+        let transition = match status {
+            TransferStatus::Running => TransferTransition {
+                status,
+                last_error,
+                at_unix_secs,
+            },
+            TransferStatus::Succeeded => TransferTransition::succeeded(at_unix_secs),
+            TransferStatus::Failed => {
+                TransferTransition::failed(last_error.unwrap_or_default(), at_unix_secs)
+            }
+            TransferStatus::Interrupted => TransferTransition::interrupted(at_unix_secs),
+        };
+        record.apply_transition(transition);
         self.save(record)
     }
 

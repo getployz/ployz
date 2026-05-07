@@ -717,7 +717,9 @@ impl StoreRuntimeControl for DockerNats {
 
     async fn healthy(&self) -> bool {
         match self.engine.inspect(&self.container_name).await {
-            Ok(Some(observed)) => observed.running,
+            Ok(Some(observed)) => {
+                observed.running == ployz_runtime_backends::runtime::Observation::Observed(true)
+            }
             Ok(None) => false,
             Err(_) => false,
         }

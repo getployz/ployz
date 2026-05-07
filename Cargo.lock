@@ -3275,6 +3275,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-sim"
+version = "0.5.5"
+dependencies = [
+ "ployz-dns",
+ "ployz-gateway",
+ "ployz-orchestrator",
+ "ployz-store-api",
+ "ployz-types",
+ "rand 0.10.0",
+ "tokio",
+]
+
+[[package]]
 name = "ployz-store-api"
 version = "0.5.5"
 dependencies = [

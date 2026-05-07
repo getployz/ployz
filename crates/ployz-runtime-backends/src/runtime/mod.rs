@@ -13,6 +13,6 @@ pub use image_ref::{DockerImageRef, parse_docker_image_ref};
 #[cfg(feature = "docker")]
 pub use probe::{Probe, ProbeRunner};
 pub use spec::{
-    ObservedContainer, PortBinding, PortMap, PullPolicy, RestartPolicy, RestartPolicyName,
-    RuntimeContainerSpec,
+    Observation, ObservedContainer, PortBinding, PortMap, PullPolicy, RestartPolicy,
+    RestartPolicyName, RuntimeContainerSpec,
 };

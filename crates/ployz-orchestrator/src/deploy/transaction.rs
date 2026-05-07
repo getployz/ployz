@@ -2,8 +2,9 @@ use crate::deploy::plan::ResolvedPlan;
 use crate::error::{Error, Result};
 use crate::model::{
     DeployChangeKind, DeployEvent, DeployId, DeployPreview, DeployRecord, DeployState,
-    InstanceStatusRecord, MachineId, ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord,
-    ServiceRoutingPolicy, VolumeRecord,
+    DeployStateGoal, DeployStateTransition, DeployTransitionEvidence, InstanceStatusRecord,
+    MachineId, ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord, ServiceRoutingPolicy,
+    VolumeRecord,
 };
 use ployz_store_api::DeployCommit;
 use ployz_types::spec::Namespace;
@@ -157,15 +158,21 @@ impl StartedCandidates {
             .filter(|service| service.action == DeployChangeKind::Remove)
             .map(|service| service.service.clone())
             .collect::<Vec<_>>();
-        let deploy = DeployRecord {
-            state: DeployState::Committed,
-            committed_at: Some(committed_at),
-            finished_at: Some(committed_at),
-            summary_json: serde_json::to_string(&preview).map_err(|error| {
-                Error::operation("deploy_apply", format!("serialize preview: {error}"))
-            })?,
-            ..applying_record
-        };
+        let summary_json = serde_json::to_string(&preview).map_err(|error| {
+            Error::operation("deploy_apply", format!("serialize preview: {error}"))
+        })?;
+        let mut deploy = applying_record;
+        deploy
+            .apply_state_transition(DeployStateTransition {
+                goal: DeployStateGoal::Commit { summary_json },
+                evidence: DeployTransitionEvidence::DeployExecutor {
+                    coordinator_machine_id: deploy.coordinator_machine_id.clone(),
+                },
+                at_unix_secs: committed_at,
+            })
+            .map_err(|error| {
+                Error::operation("deploy_apply", format!("commit deploy transition: {error}"))
+            })?;
         let namespace = plan.namespace().clone();
         let participants = plan.participants().clone();
 
@@ -237,12 +244,23 @@ impl CommittedDeploy {
         }
     }
 
-    pub(super) fn cleanup_pending_record(&self, finished_at: u64) -> DeployRecord {
-        DeployRecord {
-            state: DeployState::CleanupPending,
-            finished_at: Some(finished_at),
-            ..self.deploy.clone()
-        }
+    pub(super) fn cleanup_pending_record(&self, finished_at: u64) -> Result<DeployRecord> {
+        let mut deploy = self.deploy.clone();
+        deploy
+            .apply_state_transition(DeployStateTransition {
+                goal: DeployStateGoal::MarkCleanupPending,
+                evidence: DeployTransitionEvidence::DeployExecutor {
+                    coordinator_machine_id: deploy.coordinator_machine_id.clone(),
+                },
+                at_unix_secs: finished_at,
+            })
+            .map_err(|error| {
+                Error::operation(
+                    "deploy_apply",
+                    format!("mark cleanup pending transition: {error}"),
+                )
+            })?;
+        Ok(deploy)
     }
 
     pub(super) fn deploy_id(&self) -> &DeployId {

@@ -15,7 +15,9 @@ use tracing::{info, warn};
 use super::diff::{ChangedField, SpecChange, eval_spec_change, parent_id_matches};
 use super::labels::{LABEL_KIND, LABEL_MANAGED, extract_workload_labels};
 use super::probe::ProbeRunner;
-use super::spec::{ObservedContainer, observe, port_map_to_bollard, restart_policy_to_bollard};
+use super::spec::{
+    Observation, ObservedContainer, observe, port_map_to_bollard, restart_policy_to_bollard,
+};
 use super::{PullPolicy, RuntimeContainerSpec, parse_docker_image_ref};
 
 pub struct ContainerEngine {
@@ -114,11 +116,11 @@ impl ContainerEngine {
                 };
                 info!(name = %spec.container_name, "adopted existing container");
                 Ok(EnsureResult {
-                    container_id: obs.container_id.clone(),
+                    container_id: require_observed(&obs.container_id, "container_id")?.clone(),
                     container_name: spec.container_name.clone(),
                     action: EnsureAction::Adopted,
-                    ip_address: obs.ip_address,
-                    networks: obs.networks.clone(),
+                    ip_address: require_observed(&obs.ip_address, "ip_address")?,
+                    networks: require_observed(&obs.networks, "networks")?.clone(),
                 })
             }
             SpecChange::Missing => {
@@ -245,7 +247,7 @@ impl ContainerEngine {
         let Some(observed) = self.inspect(container_name).await? else {
             return Ok(false);
         };
-        Ok(observed.running)
+        Ok(observed.running == Observation::Observed(true))
     }
 
     pub async fn list_by_labels(&self, filters: &[(&str, &str)]) -> Result<Vec<ObservedContainer>> {
@@ -417,9 +419,9 @@ impl ContainerEngine {
 
         let observed = observe(&info);
         Ok((
-            observed.container_id,
-            observed.ip_address,
-            observed.networks,
+            require_observed(&observed.container_id, "container_id")?,
+            require_observed(&observed.ip_address, "ip_address")?,
+            require_observed(&observed.networks, "networks")?,
         ))
     }
 
@@ -445,15 +447,18 @@ impl ContainerEngine {
         &self,
         container: &ObservedContainer,
     ) -> Result<Option<WorkloadResourceSnapshot>> {
-        if !container.running {
+        if container.running != Observation::Observed(true) {
             return Ok(None);
         }
 
+        let Some(container_id) = container.container_id.as_observed() else {
+            return Ok(None);
+        };
         let options = StatsOptionsBuilder::default()
             .stream(false)
             .one_shot(true)
             .build();
-        let mut stats_stream = self.docker.stats(&container.container_id, Some(options));
+        let mut stats_stream = self.docker.stats(container_id, Some(options));
 
         let stats_result = stats_stream.next().await;
         let Some(stats_result) = stats_result else {
@@ -464,7 +469,7 @@ impl ContainerEngine {
             Err(error) => {
                 warn!(
                     ?error,
-                    container = %container.container_name,
+                    container = ?container.container_name,
                     "failed to fetch workload stats"
                 );
                 Ok(None)
@@ -485,13 +490,14 @@ fn workload_resource_snapshot(
     container: &ObservedContainer,
     stats: &ContainerStatsResponse,
 ) -> Option<WorkloadResourceSnapshot> {
-    if container.labels.get(LABEL_MANAGED).map(String::as_str) != Some("true") {
+    let labels = container.labels.as_observed()?;
+    if labels.get(LABEL_MANAGED).map(String::as_str) != Some("true") {
         return None;
     }
-    if container.labels.get(LABEL_KIND).map(String::as_str) != Some("workload") {
+    if labels.get(LABEL_KIND).map(String::as_str) != Some("workload") {
         return None;
     }
-    let labels = extract_workload_labels(&container.labels)?;
+    let labels = extract_workload_labels(labels)?;
     let cpu_total_nanos = stats
         .cpu_stats
         .as_ref()
@@ -520,11 +526,31 @@ fn workload_resource_snapshot(
     })
 }
 
+fn require_observed<T: Clone>(observation: &Observation<T>, field: &str) -> Result<T> {
+    match observation {
+        Observation::Observed(value) => Ok(value.clone()),
+        Observation::Missing => Err(Error::operation(
+            "docker observe",
+            format!("missing required observed field {field}"),
+        )),
+        Observation::Malformed(message) => Err(Error::operation(
+            "docker observe",
+            format!("malformed observed field {field}: {message}"),
+        )),
+        Observation::Unknown => Err(Error::operation(
+            "docker observe",
+            format!("unknown required observed field {field}"),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
-    use super::{ObservedContainer, WorkloadResourceSnapshot, workload_resource_snapshot};
+    use super::{
+        Observation, ObservedContainer, WorkloadResourceSnapshot, workload_resource_snapshot,
+    };
     use crate::runtime::labels::{
         LABEL_INSTANCE, LABEL_KIND, LABEL_MACHINE, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE,
     };
@@ -572,7 +598,11 @@ mod tests {
     #[test]
     fn workload_resource_snapshot_ignores_unlabeled_containers() {
         let mut container = observed_workload_container();
-        container.labels.remove(LABEL_NAMESPACE);
+        container
+            .labels
+            .as_observed_mut()
+            .expect("labels observed")
+            .remove(LABEL_NAMESPACE);
 
         let snapshot = workload_resource_snapshot(&container, &ContainerStatsResponse::default());
         assert!(snapshot.is_none());
@@ -581,7 +611,11 @@ mod tests {
     #[test]
     fn workload_resource_snapshot_ignores_non_workload_containers() {
         let mut container = observed_workload_container();
-        container.labels.insert(LABEL_KIND.into(), "system".into());
+        container
+            .labels
+            .as_observed_mut()
+            .expect("labels observed")
+            .insert(LABEL_KIND.into(), "system".into());
 
         let snapshot = workload_resource_snapshot(&container, &ContainerStatsResponse::default());
         assert!(snapshot.is_none());
@@ -600,31 +634,31 @@ mod tests {
         labels.insert("dev.ployz.deploy".into(), "deploy-1".into());
 
         ObservedContainer {
-            container_id: "container-1".into(),
-            container_name: "ployz-ns-web-1".into(),
-            running: true,
-            image: "busybox".into(),
-            cmd: None,
-            entrypoint: None,
-            env: Vec::new(),
-            labels,
-            binds: Vec::new(),
-            tmpfs: HashMap::new(),
-            dns_servers: Vec::new(),
-            network_mode: None,
-            port_bindings: None,
-            cap_add: Vec::new(),
-            cap_drop: Vec::new(),
-            privileged: false,
-            user: None,
-            restart_policy: None,
-            memory_bytes: None,
-            nano_cpus: None,
-            sysctls: HashMap::new(),
-            stop_timeout: None,
-            pid_mode: None,
-            ip_address: None,
-            networks: HashMap::new(),
+            container_id: Observation::Observed("container-1".into()),
+            container_name: Observation::Observed("ployz-ns-web-1".into()),
+            running: Observation::Observed(true),
+            image: Observation::Observed("busybox".into()),
+            cmd: Observation::Observed(None),
+            entrypoint: Observation::Observed(None),
+            env: Observation::Observed(Vec::new()),
+            labels: Observation::Observed(labels),
+            binds: Observation::Observed(Vec::new()),
+            tmpfs: Observation::Observed(HashMap::new()),
+            dns_servers: Observation::Observed(Vec::new()),
+            network_mode: Observation::Observed(None),
+            port_bindings: Observation::Observed(None),
+            cap_add: Observation::Observed(Vec::new()),
+            cap_drop: Observation::Observed(Vec::new()),
+            privileged: Observation::Observed(false),
+            user: Observation::Observed(None),
+            restart_policy: Observation::Observed(None),
+            memory_bytes: Observation::Observed(None),
+            nano_cpus: Observation::Observed(None),
+            sysctls: Observation::Observed(HashMap::new()),
+            stop_timeout: Observation::Observed(None),
+            pid_mode: Observation::Observed(None),
+            ip_address: Observation::Observed(None),
+            networks: Observation::Observed(HashMap::new()),
         }
     }
 }

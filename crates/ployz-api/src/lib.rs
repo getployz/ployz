@@ -835,8 +835,10 @@ pub struct DaemonResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        RuntimeRecord, RuntimeTable, RuntimeWatchFrame, instance_runtime_key, machine_runtime_key,
-        release_runtime_key, revision_runtime_key, runtime_frame_from_event, sort_routing_state,
+        DaemonPayload, DaemonResponse, MachineOperationInfo, MachineOperationPayload,
+        MachineUpdatePayload, MachineUpdateRow, RuntimeRecord, RuntimeTable, RuntimeWatchFrame,
+        instance_runtime_key, machine_runtime_key, release_runtime_key, revision_runtime_key,
+        runtime_frame_from_event, sort_routing_state,
     };
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
@@ -1000,6 +1002,120 @@ mod tests {
         let decoded: RuntimeWatchFrame =
             serde_json::from_value(json).expect("deserialize runtime watch frame");
         assert_eq!(decoded, frame);
+    }
+
+    #[test]
+    fn daemon_error_response_preserves_structured_payload() {
+        let response = DaemonResponse {
+            ok: false,
+            code: String::from("MACHINE_UPDATE_FAILED"),
+            message: String::from("machine 'peer-1' update failed: refused"),
+            payload: Some(DaemonPayload::MachineUpdate(MachineUpdatePayload {
+                operation_id: String::from("update-1"),
+                updated: Vec::new(),
+                failed: vec![MachineUpdateRow {
+                    id: String::from("peer-1"),
+                    version: String::from("0.5.6"),
+                    message: String::from("refused"),
+                }],
+            })),
+        };
+
+        let json = serde_json::to_value(&response).expect("serialize response");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "ok": false,
+                "code": "MACHINE_UPDATE_FAILED",
+                "message": "machine 'peer-1' update failed: refused",
+                "payload": {
+                    "kind": "machine-update",
+                    "operation_id": "update-1",
+                    "failed": [{
+                        "id": "peer-1",
+                        "version": "0.5.6",
+                        "message": "refused"
+                    }]
+                }
+            })
+        );
+        let decoded: DaemonResponse = serde_json::from_value(json).expect("deserialize response");
+        assert!(!decoded.ok);
+        assert_eq!(decoded.code, "MACHINE_UPDATE_FAILED");
+        let Some(DaemonPayload::MachineUpdate(payload)) = decoded.payload else {
+            panic!("expected machine update payload");
+        };
+        assert_eq!(payload.operation_id, "update-1");
+        let [failed] = payload.failed.as_slice() else {
+            panic!("expected one failed row");
+        };
+        assert_eq!(failed.id, "peer-1");
+        assert_eq!(failed.message, "refused");
+    }
+
+    #[test]
+    fn daemon_operation_response_preserves_structured_failure_status() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("operation details"),
+            payload: Some(DaemonPayload::MachineOperation(MachineOperationPayload {
+                operation: MachineOperationInfo {
+                    id: String::from("machine-add-1"),
+                    kind: String::from("add"),
+                    network_name: Some(String::from("alpha")),
+                    targets: vec![String::from("host-a")],
+                    status: String::from("interrupted"),
+                    stage: String::from("bootstrap"),
+                    started_at: 10,
+                    updated_at: 20,
+                    last_error: Some(String::from("daemon restarted before operation completed")),
+                    machine_id: Some(MachineId("machine-a".into())),
+                    invite_id: Some(String::from("invite-1")),
+                    allocated_subnet: Some(String::from("10.210.1.0/24")),
+                },
+            })),
+        };
+
+        let json = serde_json::to_value(&response).expect("serialize operation response");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "ok": true,
+                "code": "OK",
+                "message": "operation details",
+                "payload": {
+                    "kind": "machine-operation",
+                    "operation": {
+                        "id": "machine-add-1",
+                        "kind": "add",
+                        "network_name": "alpha",
+                        "targets": ["host-a"],
+                        "status": "interrupted",
+                        "stage": "bootstrap",
+                        "started_at": 10,
+                        "updated_at": 20,
+                        "last_error": "daemon restarted before operation completed",
+                        "machine_id": "machine-a",
+                        "invite_id": "invite-1",
+                        "allocated_subnet": "10.210.1.0/24"
+                    }
+                }
+            })
+        );
+
+        let decoded: DaemonResponse =
+            serde_json::from_value(json).expect("deserialize operation response");
+        let Some(DaemonPayload::MachineOperation(payload)) = decoded.payload else {
+            panic!("expected machine operation payload");
+        };
+        assert_eq!(payload.operation.status, "interrupted");
+        assert_eq!(
+            payload.operation.last_error.as_deref(),
+            Some("daemon restarted before operation completed")
+        );
     }
 
     fn machine_record(id: &str) -> MachineMembership {

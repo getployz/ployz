@@ -13,7 +13,9 @@ use crate::mesh::tasks::{
     EndpointMaintainerCommand, MeshTaskHealth, SelfRecordMutation, TaskSet, TaskSetError,
     apply_self_record_mutation,
 };
-use crate::model::{MachineId, MachineMembership};
+use crate::model::{
+    MachineId, MachineLifecycleTransition, MachineMembership, MachineTransitionError,
+};
 use ployz_store_api::StoreDriver;
 use ployz_store_api::{MachineRegistry, StoreRuntimeControl, SyncProbe, SyncStatus};
 use std::net::Ipv4Addr;
@@ -171,6 +173,32 @@ impl Mesh {
         let mut record = authoritative_self.write().await;
         *record = next;
         Some(record.clone())
+    }
+
+    pub async fn transition_authoritative_self_record(
+        &self,
+        transition: MachineLifecycleTransition,
+    ) -> std::result::Result<Option<MachineMembership>, MachineTransitionError> {
+        let Some(current) = self.authoritative_self_record().await else {
+            return Ok(None);
+        };
+        let mut next = current;
+        next.apply_lifecycle_transition(transition)?;
+
+        if let Some(self_record_tx) = &self.self_record_tx {
+            return Ok(apply_self_record_mutation(
+                self_record_tx,
+                SelfRecordMutation::Replace(next),
+            )
+            .await);
+        }
+
+        let Some(authoritative_self) = self.authoritative_self.as_ref().cloned() else {
+            return Ok(None);
+        };
+        let mut record = authoritative_self.write().await;
+        *record = next;
+        Ok(Some(record.clone()))
     }
 
     pub async fn ready_status(&self) -> MeshReadyStatus {
