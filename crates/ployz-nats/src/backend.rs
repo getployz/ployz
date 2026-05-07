@@ -3,19 +3,11 @@ use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use ployz_store_api::{
-    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
-    DeployRecordUpdate, DeployRepository, DeploySnapshot, InstanceStatusRepository,
-    InviteRepository, MachineRegistry, MachineSubscription, PeerRttObservation, PeerRttStore,
-    RoutingEventEnvelope, RoutingEventSubscription, RoutingSnapshotReader, StoreBackend,
-    StoreRuntimeControl, SyncProbe, SyncStatus,
+    MachineMembershipStore, PeerRttStore, RoutingEventEnvelope, RoutingEventSubscription,
+    RoutingStateStore, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use ployz_types::error::{Error, Result};
-use ployz_types::model::{
-    AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineMembership, RoutingEvent, RoutingState, ServiceReleaseRecord, VolumeRecord,
-};
-use ployz_types::spec::Namespace;
+use ployz_types::model::{RoutingEvent, RoutingState};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -33,181 +25,13 @@ const ROUTING_CONSUMER_IDLE_HEARTBEAT: Duration = Duration::from_secs(5);
 const ROUTING_EPHEMERAL_INACTIVE_THRESHOLD: Duration = Duration::from_secs(60);
 
 #[async_trait]
-impl StoreBackend for NatsStore {
-    async fn init(&self) -> Result<()> {
-        ensure_assets_in(self.jetstream(), self.scope(), self.asset_policy()).await
-    }
-
-    async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
-        MachineRegistry::list_machines(self).await
-    }
-
-    async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
-        MachineRegistry::upsert_self_machine(self, record).await
-    }
-
-    async fn delete_machine(&self, id: &MachineId) -> Result<()> {
-        MachineRegistry::delete_machine(self, id).await
-    }
-
-    async fn subscribe_machines(&self) -> Result<MachineSubscription> {
-        MachineRegistry::subscribe_machines(self).await
-    }
-
-    async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
-        InviteRepository::create_invite(self, invite).await
-    }
-
-    async fn get_invite(&self, invite_id: &str) -> Result<Option<InviteRecord>> {
-        InviteRepository::get_invite(self, invite_id).await
-    }
-
-    async fn list_invites(&self) -> Result<Vec<InviteRecord>> {
-        InviteRepository::list_invites(self).await
-    }
-
-    async fn redeem_invite(
-        &self,
-        invite_id: &str,
-        machine_id: &MachineId,
-        now_unix_secs: u64,
-    ) -> Result<InviteRecord> {
-        InviteRepository::redeem_invite(self, invite_id, machine_id, now_unix_secs).await
-    }
-
-    async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord> {
-        InviteRepository::revoke_invite(self, invite_id, now_unix_secs).await
-    }
-
+impl RoutingStateStore for NatsStore {
     async fn load_routing_state(&self) -> Result<RoutingState> {
-        RoutingSnapshotReader::load_routing_state(self).await
-    }
-
-    async fn subscribe_routing_events(&self) -> Result<RoutingEventSubscription> {
-        RoutingSnapshotReader::subscribe_routing_events(self).await
-    }
-
-    async fn list_deploy_releases(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<ServiceReleaseRecord>> {
-        DeployRepository::list_deploy_releases(self, namespace).await
-    }
-
-    async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
-        DeployRepository::load_deploy_snapshot(self, namespace).await
-    }
-
-    async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
-        DeployRepository::list_volumes(self, namespace).await
-    }
-
-    async fn get_volume(
-        &self,
-        namespace: &Namespace,
-        volume_name: &str,
-    ) -> Result<Option<VolumeRecord>> {
-        DeployRepository::get_volume(self, namespace, volume_name).await
-    }
-
-    async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
-        DeployRepository::commit_deploy(self, command).await
-    }
-
-    async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()> {
-        DeployRepository::update_deploy_record(self, command).await
-    }
-
-    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        DeployRepository::get_deploy(self, deploy_id).await
-    }
-
-    async fn list_instance_status(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<InstanceStatusRecord>> {
-        InstanceStatusRepository::list_instance_status(self, namespace).await
-    }
-
-    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
-        InstanceStatusRepository::record_instance_status(self, record).await
-    }
-
-    async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
-        InstanceStatusRepository::remove_instance_status(self, instance_id).await
-    }
-
-    async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {
-        CertificateStore::get_acme_account(self, issuer_url).await
-    }
-
-    async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()> {
-        CertificateStore::upsert_acme_account(self, record).await
-    }
-
-    async fn list_certificates(&self) -> Result<Vec<CertificateRecord>> {
-        CertificateStore::list_certificates(self).await
-    }
-
-    async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>> {
-        CertificateStore::get_certificate(self, hostname).await
-    }
-
-    async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()> {
-        CertificateStore::upsert_certificate(self, record).await
-    }
-
-    async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
-        CertificateStore::list_acme_challenges(self).await
-    }
-
-    async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
-        CertificateStore::upsert_acme_challenge(self, record).await
-    }
-
-    async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
-        CertificateStore::delete_acme_challenge(self, hostname, token).await
-    }
-
-    async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
-        CertificateStore::subscribe_certificates(self).await
-    }
-
-    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
-        CertificateStore::subscribe_acme_challenges(self).await
-    }
-
-    async fn upsert_acme_challenge_readiness(
-        &self,
-        record: &AcmeChallengeReadinessRecord,
-    ) -> Result<()> {
-        CertificateStore::upsert_acme_challenge_readiness(self, record).await
-    }
-
-    async fn list_acme_challenge_readiness(
-        &self,
-        hostname: &str,
-        token: &str,
-    ) -> Result<Vec<AcmeChallengeReadinessRecord>> {
-        CertificateStore::list_acme_challenge_readiness(self, hostname, token).await
-    }
-
-    async fn sync_status(&self) -> Result<SyncStatus> {
-        SyncProbe::sync_status(self).await
-    }
-
-    async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
-        PeerRttStore::peer_rtt_observations(self).await
-    }
-}
-
-impl RoutingSnapshotReader for NatsStore {
-    async fn load_routing_state(&self) -> Result<RoutingState> {
-        let projection = self.deploy_projection_snapshot().await?;
+        let facts = self.deploy_commit_facts().await?;
         Ok(RoutingState {
-            machines: MachineRegistry::list_machines(self).await?,
-            revisions: projection.all_revisions(),
-            releases: projection.all_releases(),
+            machines: MachineMembershipStore::list_machines(self).await?,
+            revisions: facts.all_revisions(),
+            releases: facts.all_releases(),
             instances: list_all_instance_status(self).await?,
         })
     }
@@ -215,12 +39,12 @@ impl RoutingSnapshotReader for NatsStore {
     async fn subscribe_routing_events(&self) -> Result<RoutingEventSubscription> {
         let stream = self
             .jetstream()
-            .get_stream(self.assets().route_journal_stream.as_str())
+            .get_stream(self.assets().routing_events_stream.as_str())
             .await
             .map_err(|error| Error::operation("nats_routing_stream", format!("{error:?}")))?;
         let mut stream = stream;
         let start_sequence = routing_subscription_start_sequence(&mut stream).await?;
-        let state = RoutingSnapshotReader::load_routing_state(self).await?;
+        let state = RoutingStateStore::load_routing_state(self).await?;
         let consumer: async_nats::jetstream::consumer::PushConsumer = stream
             .create_consumer(routing_consumer_config(
                 start_sequence,
@@ -296,7 +120,7 @@ fn routing_consumer_config(
         ack_wait: ROUTING_CONSUMER_ACK_WAIT,
         idle_heartbeat: ROUTING_CONSUMER_IDLE_HEARTBEAT,
         max_ack_pending: ROUTING_CONSUMER_CHANNEL_CAPACITY as i64,
-        filter_subject: crate::subjects::route_journal_event_filter_in(scope),
+        filter_subject: crate::subjects::routing_event_filter_in(scope),
         description: Some(String::from("temporary ployz routing subscription")),
         memory_storage: true,
         inactive_threshold: ROUTING_EPHEMERAL_INACTIVE_THRESHOLD,
@@ -349,6 +173,7 @@ fn header<'a>(headers: &'a async_nats::HeaderMap, name: &str) -> Result<&'a str>
         .ok_or_else(|| Error::operation("nats_routing_headers", format!("missing {name} header")))
 }
 
+#[async_trait]
 impl SyncProbe for NatsStore {
     async fn sync_status(&self) -> Result<SyncStatus> {
         match self.client().connection_state() {
@@ -365,6 +190,7 @@ impl SyncProbe for NatsStore {
     }
 }
 
+#[async_trait]
 impl PeerRttStore for NatsStore {}
 
 #[async_trait]
@@ -389,11 +215,15 @@ impl StoreRuntimeControl for NatsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_types::model::{MachineId, MachineMembership};
 
     #[test]
     fn routing_consumers_are_ephemeral() {
-        let config =
-            routing_consumer_config(42, "_INBOX.runtime.1".to_string(), &NatsScope::default());
+        let config = routing_consumer_config(
+            42,
+            "_INBOX.runtime.1".to_string(),
+            &NatsScope::local_default(),
+        );
 
         assert_eq!(config.durable_name, None);
         assert_eq!(config.name, None);
@@ -418,8 +248,31 @@ mod tests {
 
         assert_eq!(
             config.filter_subject,
-            "ployz.v1.inst-acme.auth-sin.route.journal.event.>"
+            "ployz.v1.inst-acme.auth-sin.routing.event.>"
         );
+    }
+
+    #[test]
+    fn routing_replayed_events_preserve_recreate_already_in_snapshot() {
+        let removed = test_machine("machine-1");
+        let mut recreated = test_machine("machine-1");
+        recreated.updated_at = 2;
+        let mut state = RoutingState {
+            machines: vec![recreated.clone()],
+            revisions: Vec::new(),
+            releases: Vec::new(),
+            instances: Vec::new(),
+        };
+
+        ployz_store_api::apply_routing_events(
+            &mut state,
+            [
+                RoutingEvent::MachineRemoved { id: removed.id },
+                RoutingEvent::MachineUpsert(recreated.clone()),
+            ],
+        );
+
+        assert_eq!(state.machines, vec![recreated]);
     }
 
     #[test]
@@ -427,7 +280,7 @@ mod tests {
         let mut headers = async_nats::HeaderMap::new();
         headers.insert(PLOYZ_ROUTING_EVENT_ID, "deploy:deploy-1:1");
         headers.insert(PLOYZ_ROUTING_CAUSE, "deploy.commit");
-        let event = RoutingEvent::MachineAdded(test_machine("machine-1"));
+        let event = RoutingEvent::MachineUpsert(test_machine("machine-1"));
         let payload = serde_json::to_vec(&event).expect("routing event should encode");
 
         let (event_id, cause, decoded) =
@@ -442,7 +295,7 @@ mod tests {
     fn routing_event_decode_requires_event_id_header() {
         let mut headers = async_nats::HeaderMap::new();
         headers.insert(PLOYZ_ROUTING_CAUSE, "deploy.commit");
-        let event = RoutingEvent::MachineAdded(test_machine("machine-1"));
+        let event = RoutingEvent::MachineUpsert(test_machine("machine-1"));
         let payload = serde_json::to_vec(&event).expect("routing event should encode");
 
         let error = decode_routing_event(Some(&headers), &payload)
@@ -454,7 +307,7 @@ mod tests {
 
     #[test]
     fn routing_event_decode_rejects_missing_headers() {
-        let event = RoutingEvent::MachineAdded(test_machine("machine-1"));
+        let event = RoutingEvent::MachineUpsert(test_machine("machine-1"));
         let payload = serde_json::to_vec(&event).expect("routing event should encode");
 
         let error = decode_routing_event(None, &payload)

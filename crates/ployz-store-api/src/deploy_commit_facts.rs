@@ -1,8 +1,6 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
-use ployz_types::model::{
-    DeployId, DeployRecord, RoutingEvent, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
-};
+use ployz_types::model::{RoutingEvent, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord};
 use ployz_types::spec::Namespace;
 
 use crate::DeployCommit;
@@ -12,78 +10,50 @@ type ReleaseKey = (Namespace, String);
 type VolumeKey = (Namespace, String);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DeployProjection {
+pub struct DeployCommitFacts {
     revisions: BTreeMap<RevisionKey, ServiceRevisionRecord>,
     releases: BTreeMap<ReleaseKey, ServiceReleaseRecord>,
     volumes: BTreeMap<VolumeKey, VolumeRecord>,
-    deploys: HashMap<DeployId, DeployRecord>,
 }
 
-impl DeployProjection {
+impl DeployCommitFacts {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn apply_commit(&mut self, commit: &DeployCommit) {
-        let _events = self.apply_commit_events(commit);
-    }
-
     pub fn apply_commit_events(&mut self, commit: &DeployCommit) -> Vec<RoutingEvent> {
         let mut events = Vec::new();
         for revision in &commit.revisions {
-            match self
-                .revisions
-                .insert(revision_key(revision), revision.clone())
-            {
-                Some(old) if old != *revision => events.push(RoutingEvent::RevisionUpdated {
-                    old,
-                    new: revision.clone(),
-                }),
-                Some(_) => {}
-                None => events.push(RoutingEvent::RevisionAdded(revision.clone())),
-            }
+            self.revisions
+                .insert(revision_key(revision), revision.clone());
+            events.push(RoutingEvent::RevisionUpsert(revision.clone()));
         }
         for service in &commit.removed_services {
-            if let Some(old) = self
-                .releases
-                .remove(&(commit.namespace.clone(), service.clone()))
-            {
-                events.push(RoutingEvent::ReleaseRemoved {
-                    namespace: old.namespace,
-                    service: old.service,
-                });
-            }
+            self.releases
+                .remove(&(commit.namespace.clone(), service.clone()));
+            events.push(RoutingEvent::ReleaseRemoved {
+                namespace: commit.namespace.clone(),
+                service: service.clone(),
+            });
         }
         for volume in &commit.removed_volumes {
             self.volumes
                 .remove(&(commit.namespace.clone(), volume.clone()));
         }
         for release in &commit.releases {
-            match self.releases.insert(release_key(release), release.clone()) {
-                Some(old) if old != *release => events.push(RoutingEvent::ReleaseUpdated {
-                    old,
-                    new: release.clone(),
-                }),
-                Some(_) => {}
-                None => events.push(RoutingEvent::ReleaseAdded(release.clone())),
-            }
+            self.releases.insert(release_key(release), release.clone());
+            events.push(RoutingEvent::ReleaseUpsert(release.clone()));
         }
         for volume in &commit.volumes {
             self.volumes.insert(volume_key(volume), volume.clone());
         }
-        self.deploys
-            .insert(commit.deploy.deploy_id.clone(), commit.deploy.clone());
         events
     }
 
-    pub fn update_deploy_record(&mut self, deploy: DeployRecord) {
-        self.deploys.insert(deploy.deploy_id.clone(), deploy);
-    }
-
     #[must_use]
-    pub fn deploy(&self, deploy_id: &DeployId) -> Option<&DeployRecord> {
-        self.deploys.get(deploy_id)
+    pub fn release(&self, namespace: &Namespace, service: &str) -> Option<&ServiceReleaseRecord> {
+        self.releases.get(&(namespace.clone(), service.to_string()))
     }
 
     #[must_use]
@@ -91,15 +61,6 @@ impl DeployProjection {
         self.releases
             .values()
             .filter(|release| &release.namespace == namespace)
-            .cloned()
-            .collect()
-    }
-
-    #[must_use]
-    pub fn revisions(&self, namespace: &Namespace) -> Vec<ServiceRevisionRecord> {
-        self.revisions
-            .values()
-            .filter(|revision| &revision.namespace == namespace)
             .cloned()
             .collect()
     }
@@ -119,8 +80,12 @@ impl DeployProjection {
     }
 
     #[must_use]
-    pub fn release(&self, namespace: &Namespace, service: &str) -> Option<&ServiceReleaseRecord> {
-        self.releases.get(&(namespace.clone(), service.to_string()))
+    pub fn revisions(&self, namespace: &Namespace) -> Vec<ServiceRevisionRecord> {
+        self.revisions
+            .values()
+            .filter(|revision| &revision.namespace == namespace)
+            .cloned()
+            .collect()
     }
 
     #[must_use]
@@ -148,8 +113,9 @@ impl DeployProjection {
         self.revisions.values().cloned().collect()
     }
 
+    #[cfg(test)]
     #[must_use]
-    pub fn all_volumes(&self) -> Vec<VolumeRecord> {
+    fn all_volumes(&self) -> Vec<VolumeRecord> {
         self.volumes.values().cloned().collect()
     }
 }
@@ -173,14 +139,16 @@ fn volume_key(record: &VolumeRecord) -> VolumeKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{DeployState, MachineId, ServiceRelease, ServiceRoutingPolicy};
+    use ployz_types::model::{
+        DeployId, DeployRecord, DeployState, MachineId, ServiceRelease, ServiceRoutingPolicy,
+    };
     use ployz_types::spec::VolumeScope;
 
     #[test]
-    fn deploy_projection_returns_namespace_snapshots_in_contract_identity_order() {
+    fn deploy_commit_facts_returns_namespace_snapshots_in_contract_identity_order() {
         let namespace = Namespace(String::from("prod"));
-        let mut projection = DeployProjection::new();
-        projection.apply_commit(&commit(
+        let mut facts = DeployCommitFacts::new();
+        facts.apply_commit_events(&commit(
             &namespace,
             vec![
                 revision(&namespace, "worker", "rev-b"),
@@ -197,7 +165,7 @@ mod tests {
         ));
 
         assert_eq!(
-            projection
+            facts
                 .revisions(&namespace)
                 .iter()
                 .map(|record| record.service.as_str())
@@ -205,7 +173,7 @@ mod tests {
             ["api", "worker"]
         );
         assert_eq!(
-            projection
+            facts
                 .releases(&namespace)
                 .iter()
                 .map(|record| record.service.as_str())
@@ -213,7 +181,7 @@ mod tests {
             ["api", "worker"]
         );
         assert_eq!(
-            projection
+            facts
                 .volumes(&namespace)
                 .iter()
                 .map(|record| record.volume_name.as_str())
@@ -223,17 +191,17 @@ mod tests {
     }
 
     #[test]
-    fn deploy_projection_returns_global_snapshots_in_contract_identity_order() {
+    fn deploy_commit_facts_returns_global_snapshots_in_contract_identity_order() {
         let prod = Namespace(String::from("prod"));
         let staging = Namespace(String::from("staging"));
-        let mut projection = DeployProjection::new();
-        projection.apply_commit(&commit(
+        let mut facts = DeployCommitFacts::new();
+        facts.apply_commit_events(&commit(
             &staging,
             vec![revision(&staging, "worker", "rev-b")],
             vec![release(&staging, "worker", "rev-b")],
             vec![volume(&staging, "z-data", "deploy-staging")],
         ));
-        projection.apply_commit(&commit(
+        facts.apply_commit_events(&commit(
             &prod,
             vec![revision(&prod, "api", "rev-a")],
             vec![release(&prod, "api", "rev-a")],
@@ -241,7 +209,7 @@ mod tests {
         ));
 
         assert_eq!(
-            projection
+            facts
                 .all_revisions()
                 .iter()
                 .map(|record| (record.namespace.0.as_str(), record.service.as_str()))
@@ -249,7 +217,7 @@ mod tests {
             [("prod", "api"), ("staging", "worker")]
         );
         assert_eq!(
-            projection
+            facts
                 .all_releases()
                 .iter()
                 .map(|record| (record.namespace.0.as_str(), record.service.as_str()))
@@ -257,12 +225,46 @@ mod tests {
             [("prod", "api"), ("staging", "worker")]
         );
         assert_eq!(
-            projection
+            facts
                 .all_volumes()
                 .iter()
                 .map(|record| (record.namespace.0.as_str(), record.volume_name.as_str()))
                 .collect::<Vec<_>>(),
             [("prod", "a-data"), ("staging", "z-data")]
+        );
+    }
+
+    #[test]
+    fn deploy_commit_events_are_commit_facts_not_prior_state_diffs() {
+        let namespace = Namespace(String::from("prod"));
+        let mut facts = DeployCommitFacts::new();
+        let release = release(&namespace, "api", "rev-a");
+        facts.apply_commit_events(&commit(
+            &namespace,
+            vec![revision(&namespace, "api", "rev-a")],
+            vec![release.clone()],
+            Vec::new(),
+        ));
+        let mut repeated = commit(
+            &namespace,
+            vec![revision(&namespace, "api", "rev-a")],
+            vec![release.clone()],
+            Vec::new(),
+        );
+        repeated.removed_services = vec![String::from("missing")];
+
+        let events = facts.apply_commit_events(&repeated);
+
+        assert_eq!(
+            events,
+            vec![
+                RoutingEvent::RevisionUpsert(revision(&namespace, "api", "rev-a")),
+                RoutingEvent::ReleaseRemoved {
+                    namespace: namespace.clone(),
+                    service: String::from("missing"),
+                },
+                RoutingEvent::ReleaseUpsert(release),
+            ]
         );
     }
 

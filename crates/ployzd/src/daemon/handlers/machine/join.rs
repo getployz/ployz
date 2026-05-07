@@ -19,14 +19,15 @@ use crate::daemon::ssh::{EphemeralSshIdentityFile, SshOptions};
 use self::bootstrap::bootstrap_remote_machine;
 use self::coordination::BootstrapSubnetClaim;
 use self::remote::{
-    ExpectedSubnetState, log_nats_enable_rollback, nats_rpc_expect_ok, nats_self_record,
-    remote_response_error, remote_rpc_expect_ok, wait_for_machine_projection, wait_for_nats_ready,
+    ExpectedMachineRecord, ExpectedSubnetState, log_nats_enable_rollback, nats_rpc_expect_ok,
+    nats_self_record, remote_response_error, remote_rpc_expect_ok, wait_for_machine_record,
+    wait_for_nats_ready,
 };
 use self::target::run_machine_add_target;
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
 use super::render::render_machine_add_report;
 use super::types::{MachineAddContext, MachineAddFailure, MachineAddReport};
-use ployz_nats::coord::rpc::{NodeCommandSubject, RpcPolicy};
+use ployz_nats::{NodeCommandSubject, RpcPolicy};
 use std::time::Duration;
 
 const INVITE_TTL_SECS: u64 = 600;
@@ -302,11 +303,10 @@ impl DaemonState {
             .await;
 
         if result.ok {
-            match wait_for_machine_projection(
+            match wait_for_machine_record(
                 &active.mesh.store,
                 &machine_id,
-                MachineLifecycle::Active,
-                ExpectedSubnetState::Present,
+                ExpectedMachineRecord::new(MachineLifecycle::Active, ExpectedSubnetState::Present),
             )
             .await
             {
@@ -331,7 +331,7 @@ impl DaemonState {
         &self,
         machine_id: &MachineId,
         record: &MachineMembership,
-        nats_client: &ployz_nats::coord::rpc::NatsNodeRpcClient,
+        nats_client: &ployz_nats::NatsNodeRpcClient,
         subnet_claim: &mut BootstrapSubnetClaim,
     ) -> DaemonResponse {
         let assigned_subnet = subnet_claim.subnet();
@@ -420,11 +420,10 @@ impl DaemonState {
         {
             return self.err("REMOTE_DRAIN_FAILED", err);
         }
-        match wait_for_machine_projection(
+        match wait_for_machine_record(
             &active.mesh.store,
             &machine_id,
-            MachineLifecycle::Draining,
-            ExpectedSubnetState::Present,
+            ExpectedMachineRecord::new(MachineLifecycle::Draining, ExpectedSubnetState::Present),
         )
         .await
         {
@@ -477,37 +476,38 @@ impl DaemonState {
                 return self.err("REMOTE_STANDBY_FAILED", remote_response_error(&response));
             }
             Err(err) => {
-                let projection = wait_for_machine_projection(
+                let record_wait = wait_for_machine_record(
                     &active.mesh.store,
                     &machine_id,
-                    MachineLifecycle::Standby,
-                    ExpectedSubnetState::Absent,
+                    ExpectedMachineRecord::new(
+                        MachineLifecycle::Standby,
+                        ExpectedSubnetState::Absent,
+                    ),
                 )
                 .await;
-                match projection {
+                match record_wait {
                     Ok(()) => {
                         tracing::warn!(
                             machine = %machine_id,
                             error = %err,
-                            "machine standby NATS reply failed after projected state reached expected value"
+                            "machine standby NATS reply failed after observed machine record reached expected value"
                         );
                         return self.ok(format!("machine '{}' standby", machine_id));
                     }
-                    Err(projection_err) => {
+                    Err(record_err) => {
                         return self.err(
                             "REMOTE_STANDBY_FAILED",
-                            format!("{err}; projection did not confirm standby: {projection_err}"),
+                            format!("{err}; observed machine record did not confirm standby: {record_err}"),
                         );
                     }
                 }
             }
         }
 
-        match wait_for_machine_projection(
+        match wait_for_machine_record(
             &active.mesh.store,
             &machine_id,
-            MachineLifecycle::Standby,
-            ExpectedSubnetState::Absent,
+            ExpectedMachineRecord::new(MachineLifecycle::Standby, ExpectedSubnetState::Absent),
         )
         .await
         {

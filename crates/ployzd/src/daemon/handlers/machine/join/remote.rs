@@ -2,9 +2,9 @@ use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineTransitionGoal, MeshReadyPayload,
     MeshSelfRecordPayload, StatusPayload,
 };
-use ployz_nats::coord::rpc::{NatsNodeRpcClient, NodeCommandSubject};
+use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject};
 use ployz_sdk::Transport;
-use ployz_store_api::{MachineRegistry, StoreDriver};
+use ployz_store_api::{MachineMembershipStore, StoreDriver};
 use ployz_types::model::{MachineEvent, MachineId, MachineLifecycle, MachineMembership, PublicKey};
 use tokio::time::{Duration, Instant, sleep, timeout};
 
@@ -21,6 +21,18 @@ const REMOTE_RPC_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployzctl\" rpc-std
 pub(super) enum ExpectedSubnetState {
     Present,
     Absent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ExpectedMachineRecord {
+    lifecycle: MachineLifecycle,
+    subnet: ExpectedSubnetState,
+}
+
+impl ExpectedMachineRecord {
+    pub(super) fn new(lifecycle: MachineLifecycle, subnet: ExpectedSubnetState) -> Self {
+        Self { lifecycle, subnet }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -298,91 +310,69 @@ pub(super) async fn wait_for_nats_ready(
     }
 }
 
-pub(super) async fn wait_for_machine_projection(
+pub(super) async fn wait_for_machine_record(
     store: &StoreDriver,
     machine_id: &MachineId,
-    expected_lifecycle: MachineLifecycle,
-    expected_subnet: ExpectedSubnetState,
+    expected: ExpectedMachineRecord,
 ) -> Result<(), String> {
     let deadline = Instant::now() + MACHINE_STATE_SYNC_TIMEOUT;
     let (snapshot, mut events) = store
         .subscribe_machines()
         .await
-        .map_err(|err| format!("subscribe to machine projection: {err}"))?;
+        .map_err(|err| format!("subscribe to machine records: {err}"))?;
 
-    if machine_projection_matches(
+    if machine_record_matches(
         snapshot.iter().find(|record| record.id == *machine_id),
-        expected_lifecycle,
-        expected_subnet,
+        expected,
     ) {
         return Ok(());
     }
 
     loop {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            return Err(machine_projection_timeout(
-                store,
-                machine_id,
-                expected_lifecycle,
-                expected_subnet,
-            )
-            .await);
+            return Err(machine_record_timeout(store, machine_id, expected).await);
         };
 
         match timeout(remaining, events.recv()).await {
-            Ok(Some(Ok(MachineEvent::Added(record) | MachineEvent::Updated(record)))) => {
-                if record.id == *machine_id
-                    && machine_projection_matches(
-                        Some(&record),
-                        expected_lifecycle,
-                        expected_subnet,
-                    )
-                {
+            Ok(Some(Ok(MachineEvent::Upsert(record)))) => {
+                if record.id == *machine_id && machine_record_matches(Some(&record), expected) {
                     return Ok(());
                 }
             }
-            Ok(Some(Ok(MachineEvent::Removed(_)))) => {}
+            Ok(Some(Ok(MachineEvent::Removed { .. }))) => {}
             Ok(Some(Err(err))) => {
-                return Err(format!("machine projection subscription failed: {err}"));
+                return Err(format!("machine record subscription failed: {err}"));
             }
-            Ok(None) => return Err("machine projection subscription closed".into()),
+            Ok(None) => return Err("machine record subscription closed".into()),
             Err(_) => {
-                return Err(machine_projection_timeout(
-                    store,
-                    machine_id,
-                    expected_lifecycle,
-                    expected_subnet,
-                )
-                .await);
+                return Err(machine_record_timeout(store, machine_id, expected).await);
             }
         }
     }
 }
 
-fn machine_projection_matches(
+fn machine_record_matches(
     record: Option<&MachineMembership>,
-    expected_lifecycle: MachineLifecycle,
-    expected_subnet: ExpectedSubnetState,
+    expected: ExpectedMachineRecord,
 ) -> bool {
     let Some(record) = record else {
         return false;
     };
-    let subnet_matches = match expected_subnet {
+    let subnet_matches = match expected.subnet {
         ExpectedSubnetState::Present => record.subnet.is_some(),
         ExpectedSubnetState::Absent => record.subnet.is_none(),
     };
-    record.lifecycle == expected_lifecycle && subnet_matches
+    record.lifecycle == expected.lifecycle && subnet_matches
 }
 
-async fn machine_projection_timeout(
+async fn machine_record_timeout(
     store: &StoreDriver,
     machine_id: &MachineId,
-    expected_lifecycle: MachineLifecycle,
-    expected_subnet: ExpectedSubnetState,
+    expected: ExpectedMachineRecord,
 ) -> String {
     match super::super::list::find_machine_record(store, machine_id).await {
         Ok(Some(record)) => {
-            let expected_subnet = expected_subnet.label();
+            let expected_subnet = expected.subnet.label();
             let actual_subnet = if record.subnet.is_some() {
                 "present"
             } else {
@@ -390,15 +380,15 @@ async fn machine_projection_timeout(
             };
             format!(
                 "timed out waiting for machine '{}' to reach lifecycle='{}' subnet={expected_subnet}; observed lifecycle='{}' subnet={actual_subnet}",
-                machine_id, expected_lifecycle, record.lifecycle,
+                machine_id, expected.lifecycle, record.lifecycle,
             )
         }
         Ok(None) => format!(
-            "timed out waiting for machine '{}' to appear in local store",
+            "timed out waiting for machine '{}' to appear in observed machine records",
             machine_id
         ),
         Err(err) => format!(
-            "timed out waiting for machine '{}' projection and failed to inspect final state: {err}",
+            "timed out waiting for machine '{}' record and failed to inspect final state: {err}",
             machine_id
         ),
     }

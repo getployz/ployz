@@ -3,7 +3,7 @@ use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 
 use crate::daemon::DaemonState;
-use crate::endpoint_maintenance::reconcile_local_endpoints_for_mesh;
+use crate::endpoint_maintenance::publish_local_endpoints_for_mesh;
 
 impl DaemonState {
     pub(crate) async fn handle_debug_tick(
@@ -64,7 +64,7 @@ impl DaemonState {
         };
         let detected_endpoints = detect_advertised_endpoints(DEFAULT_LISTEN_PORT).await;
 
-        reconcile_local_endpoints_for_mesh(&active.mesh, detected_endpoints)
+        publish_local_endpoints_for_mesh(&active.mesh, detected_endpoints)
             .await
             .map_err(|error| ("ENDPOINT_UPDATE_FAILED", error))?;
 

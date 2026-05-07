@@ -4,7 +4,7 @@ use std::time::Duration;
 use ipnet::Ipv4Net;
 use ployz_orchestrator::coordination::{ClaimError, SubnetClaim};
 use ployz_orchestrator::ipam::pick_candidate_subnet;
-use ployz_store_api::{InviteRepository, MachineRegistry, StoreDriver};
+use ployz_store_api::{InviteStore, MachineMembershipStore, StoreDriver};
 use ployz_types::model::MachineId;
 use ployz_types::time::now_unix_secs;
 
@@ -159,7 +159,7 @@ pub(super) async fn assert_subnet_unique(
 mod tests {
     use super::assert_subnet_unique;
     use ipnet::Ipv4Net;
-    use ployz_store_api::{MachineRegistry, StoreDriver};
+    use ployz_store_api::{MachineMembershipStore, StoreDriver};
     use ployz_types::model::{
         MachineId, MachineLifecycle, MachineMembership, OverlayIp, PublicKey,
     };

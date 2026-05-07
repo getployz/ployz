@@ -19,7 +19,7 @@ use crate::spec::{
     VolumeDeclaration,
 };
 use crate::storage::{ShellRunner, TokioShellRunner, ZfsDriver, resolve_volumes};
-use ployz_store_api::InstanceStatusRepository;
+use ployz_store_api::InstanceStatusStore;
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 

@@ -1,4 +1,3 @@
-pub mod jobs;
-pub mod leader;
-pub mod locks;
-pub mod rpc;
+pub(crate) mod jobs;
+pub(crate) mod locks;
+pub(crate) mod rpc;

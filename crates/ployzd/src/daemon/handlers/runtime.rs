@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use ployz_api::{RuntimeWatchFrame, runtime_frame_from_event, sort_routing_state};
-use ployz_store_api::{RoutingEventSubscriptionUpdate, RoutingSnapshotReader};
+use ployz_store_api::{RoutingEventSubscriptionUpdate, RoutingStateStore};
 use ployz_types::model::{RoutingEvent, RoutingState};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
@@ -138,7 +138,7 @@ mod tests {
         };
         let (event_tx, event_rx) = mpsc::channel(1);
         event_tx
-            .send(Ok(RoutingEvent::InstanceAdded(instance_record(
+            .send(Ok(RoutingEvent::InstanceUpsert(instance_record(
                 "instance-c",
                 "prod",
                 "worker",
@@ -213,7 +213,7 @@ mod tests {
             .send(Ok(RoutingEventEnvelope::with_ack(
                 "event-1",
                 None,
-                RoutingEvent::InstanceAdded(instance_record("instance-a", "prod", "web")),
+                RoutingEvent::InstanceUpsert(instance_record("instance-a", "prod", "web")),
                 ack_tx,
             )))
             .await
@@ -258,7 +258,7 @@ mod tests {
             .send(Ok(RoutingEventEnvelope::with_ack(
                 "event-ack-failed",
                 None,
-                RoutingEvent::InstanceAdded(instance_record("instance-a", "prod", "web")),
+                RoutingEvent::InstanceUpsert(instance_record("instance-a", "prod", "web")),
                 ack_tx,
             )))
             .await

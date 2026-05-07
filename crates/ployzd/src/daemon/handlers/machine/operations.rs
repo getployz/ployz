@@ -9,7 +9,7 @@ use crate::daemon::ssh::SshOptions;
 use ployz_api::{
     DaemonPayload, MachineOperationInfo, MachineOperationListPayload, MachineOperationPayload,
 };
-use ployz_store_api::MachineRegistry;
+use ployz_store_api::MachineMembershipStore;
 use ployz_types::model::{MachineId, MachineLifecycle};
 use ployz_types::time::now_unix_secs;
 
@@ -393,12 +393,12 @@ impl DaemonState {
         }
     }
 
-    pub async fn reconcile_machine_operations_on_startup(&self) {
+    pub async fn recover_machine_operations_on_startup(&self) {
         let store = self.machine_operation_store();
         let records = match store.list() {
             Ok(records) => records,
             Err(err) => {
-                tracing::warn!(error = %err, "machine operation reconciliation: list failed");
+                tracing::warn!(error = %err, "machine operation startup recovery: list failed");
                 return;
             }
         };
@@ -412,11 +412,11 @@ impl DaemonState {
                 MachineOperationStatus::Interrupted,
                 Some("daemon restarted before operation completed".into()),
             ) {
-                tracing::warn!(error = %err, operation_id = %record.id, "machine operation reconciliation: mark interrupted failed");
+                tracing::warn!(error = %err, operation_id = %record.id, "machine operation startup recovery: mark interrupted failed");
                 continue;
             }
 
-            let note = match self.reconcile_machine_operation(&record).await {
+            let note = match self.recover_machine_operation(&record).await {
                 Ok(note) => note,
                 Err(err) => Some(err),
             };
@@ -427,31 +427,31 @@ impl DaemonState {
                     MachineOperationStatus::Interrupted,
                     Some(combined),
                 ) {
-                    tracing::warn!(error = %err, operation_id = %record.id, "machine operation reconciliation: update note failed");
+                    tracing::warn!(error = %err, operation_id = %record.id, "machine operation startup recovery: update note failed");
                 }
             }
         }
     }
 
-    async fn reconcile_machine_operation(
+    async fn recover_machine_operation(
         &self,
         record: &MachineOperationRecord,
     ) -> Result<Option<String>, String> {
         match record.kind {
             MachineOperationKind::Init => Ok(None),
-            MachineOperationKind::Add => self.reconcile_machine_add_operation(record).await,
-            MachineOperationKind::Update => self.reconcile_machine_update_operation(record).await,
+            MachineOperationKind::Add => self.recover_machine_add_operation(record).await,
+            MachineOperationKind::Update => self.recover_machine_update_operation(record).await,
         }
     }
 
-    async fn reconcile_machine_update_operation(
+    async fn recover_machine_update_operation(
         &self,
         record: &MachineOperationRecord,
     ) -> Result<Option<String>, String> {
         let store = self.machine_operation_store();
         let Some(mut current) = store.load(&record.id)? else {
             return Ok(Some(
-                "update operation disappeared during reconciliation".into(),
+                "update operation disappeared during startup recovery".into(),
             ));
         };
         let requested_version = record
@@ -480,7 +480,7 @@ impl DaemonState {
         )))
     }
 
-    async fn reconcile_machine_add_operation(
+    async fn recover_machine_add_operation(
         &self,
         record: &MachineOperationRecord,
     ) -> Result<Option<String>, String> {

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use ployz_nats::NatsScope;
 use ployz_nats::NatsStore;
 use ployz_nats::config::{self, CLIENT_PORT, PeerRoute, ServerConfig};
 use ployz_runtime_backends::runtime::labels::build_system_labels;
@@ -12,16 +13,18 @@ use ployz_runtime_backends::runtime::{
     ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec,
 };
 use ployz_store_api::{
-    AcmeChallengeSubscription, CertificateSubscription, DeployCommit, DeployRecordUpdate,
-    DeploySnapshot, MachineSubscription, PeerRttObservation, RoutingEventSubscription,
-    StoreBackend, StoreDriver, StoreRuntimeControl, SyncStatus,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
+    DeployStore, InstanceStatusStore, InviteStore, MachineMembershipStore, MachineSubscription,
+    PeerRttObservation, PeerRttStore, RoutingEventSubscription, RoutingStateStore, StoreDriver,
+    StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use ployz_types::Result;
 use ployz_types::error::Error;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineMembership, OverlayIp, RoutingState, ServiceReleaseRecord, VolumeRecord,
+    MachineMembership, OverlayIp, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    StorageParticipation, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -39,7 +42,7 @@ pub async fn nats_docker(
     network_dir: &Path,
     bootstrap: &[String],
     network_id: &str,
-    storage_authority: bool,
+    storage_participation: &StorageParticipation,
     image: &str,
 ) -> std::result::Result<StoreDriver, String> {
     let paths = config::Paths::new(network_dir);
@@ -54,7 +57,7 @@ pub async fn nats_docker(
         overlay_ip,
         bootstrap,
         network_id,
-        storage_authority,
+        storage_participation,
     )
     .map_err(|error| format!("write nats config: {error}"))?;
 
@@ -70,7 +73,11 @@ pub async fn nats_docker(
         .map_err(|error| format!("docker service: {error}"))?;
 
     let client_url = local_client_url();
-    Ok(nats_driver(Arc::new(service), client_url))
+    Ok(nats_driver(
+        Arc::new(service),
+        client_url,
+        NatsScope::local_for_storage_participation(storage_participation),
+    ))
 }
 
 pub fn nats_host(
@@ -78,7 +85,7 @@ pub fn nats_host(
     network_dir: &Path,
     bootstrap: &[String],
     network_id: &str,
-    storage_authority: bool,
+    storage_participation: &StorageParticipation,
 ) -> std::result::Result<StoreDriver, String> {
     let paths = config::Paths::new(network_dir);
     write_node_config(
@@ -87,7 +94,7 @@ pub fn nats_host(
         overlay_ip,
         bootstrap,
         network_id,
-        storage_authority,
+        storage_participation,
     )
     .map_err(|error| format!("write nats config: {error}"))?;
     let service = HostNats::new(
@@ -97,21 +104,33 @@ pub fn nats_host(
     );
 
     let client_url = overlay_client_url(overlay_ip);
-    Ok(nats_driver(Arc::new(service), client_url))
+    Ok(nats_driver(
+        Arc::new(service),
+        client_url,
+        NatsScope::local_for_storage_participation(storage_participation),
+    ))
 }
 
-fn nats_driver<S>(service: Arc<S>, client_url: String) -> StoreDriver
+fn nats_driver<S>(service: Arc<S>, client_url: String, scope: NatsScope) -> StoreDriver
 where
     S: StoreRuntimeControl + Send + Sync + 'static,
 {
     let backend = Arc::new(NatsRuntime {
         service,
         client_url,
+        scope,
         store: Mutex::new(None),
     });
-    StoreDriver::from_backend(
-        Arc::clone(&backend) as Arc<dyn StoreBackend>,
-        backend as Arc<dyn StoreRuntimeControl>,
+    StoreDriver::new(
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend.clone(),
+        backend,
     )
 }
 
@@ -121,7 +140,7 @@ fn write_node_config(
     overlay_ip: OverlayIp,
     bootstrap: &[String],
     network_id: &str,
-    storage_authority: bool,
+    storage_participation: &StorageParticipation,
 ) -> std::io::Result<()> {
     let storage_peers: Vec<_> = bootstrap
         .iter()
@@ -135,7 +154,9 @@ fn write_node_config(
             overlay_ip.0.to_string().replace(':', "-")
         ),
         cluster_name: format!("ployz-{network_id}"),
-        storage_authority,
+        storage_authority: storage_participation.is_authority(),
+        authority_domain: NatsScope::local_for_storage_participation(storage_participation)
+            .authority_domain(),
         overlay_ip: overlay_ip.0,
         storage_peers,
         data_dir: runtime_paths.data.clone(),
@@ -179,6 +200,7 @@ fn which_nats_server() -> std::result::Result<PathBuf, String> {
 struct NatsRuntime<S> {
     service: Arc<S>,
     client_url: String,
+    scope: NatsScope,
     store: Mutex<Option<Arc<NatsStore>>>,
 }
 
@@ -211,7 +233,11 @@ where
                 url = %self.client_url,
                 "connecting to nats store"
             );
-            match tokio::time::timeout(CONNECT_TIMEOUT, NatsStore::connect(&self.client_url)).await
+            match tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                NatsStore::connect_with_scope(&self.client_url, self.scope.clone()),
+            )
+            .await
             {
                 Ok(Ok(store)) => match store.start().await {
                     Ok(()) => {
@@ -266,40 +292,46 @@ where
 }
 
 #[async_trait]
-impl<S> StoreBackend for NatsRuntime<S>
+impl<S> MachineMembershipStore for NatsRuntime<S>
 where
     S: StoreRuntimeControl + Send + Sync + 'static,
 {
     async fn init(&self) -> Result<()> {
-        self.store().await?.init().await
+        MachineMembershipStore::init(self.store().await?.as_ref()).await
     }
 
     async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
-        self.store().await?.list_machines().await
+        MachineMembershipStore::list_machines(self.store().await?.as_ref()).await
     }
 
     async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
-        self.store().await?.upsert_self_machine(record).await
+        MachineMembershipStore::upsert_self_machine(self.store().await?.as_ref(), record).await
     }
 
     async fn delete_machine(&self, id: &MachineId) -> Result<()> {
-        self.store().await?.delete_machine(id).await
+        MachineMembershipStore::delete_machine(self.store().await?.as_ref(), id).await
     }
 
     async fn subscribe_machines(&self) -> Result<MachineSubscription> {
-        self.store().await?.subscribe_machines().await
+        MachineMembershipStore::subscribe_machines(self.store().await?.as_ref()).await
     }
+}
 
+#[async_trait]
+impl<S> InviteStore for NatsRuntime<S>
+where
+    S: StoreRuntimeControl + Send + Sync + 'static,
+{
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
-        self.store().await?.create_invite(invite).await
+        InviteStore::create_invite(self.store().await?.as_ref(), invite).await
     }
 
     async fn get_invite(&self, invite_id: &str) -> Result<Option<InviteRecord>> {
-        self.store().await?.get_invite(invite_id).await
+        InviteStore::get_invite(self.store().await?.as_ref(), invite_id).await
     }
 
     async fn list_invites(&self) -> Result<Vec<InviteRecord>> {
-        self.store().await?.list_invites().await
+        InviteStore::list_invites(self.store().await?.as_ref()).await
     }
 
     async fn redeem_invite(
@@ -308,40 +340,55 @@ where
         machine_id: &MachineId,
         now_unix_secs: u64,
     ) -> Result<InviteRecord> {
-        self.store()
-            .await?
-            .redeem_invite(invite_id, machine_id, now_unix_secs)
-            .await
+        InviteStore::redeem_invite(
+            self.store().await?.as_ref(),
+            invite_id,
+            machine_id,
+            now_unix_secs,
+        )
+        .await
     }
 
     async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord> {
-        self.store()
-            .await?
-            .revoke_invite(invite_id, now_unix_secs)
-            .await
+        InviteStore::revoke_invite(self.store().await?.as_ref(), invite_id, now_unix_secs).await
     }
+}
 
+#[async_trait]
+impl<S> RoutingStateStore for NatsRuntime<S>
+where
+    S: StoreRuntimeControl + Send + Sync + 'static,
+{
     async fn load_routing_state(&self) -> Result<RoutingState> {
-        self.store().await?.load_routing_state().await
+        RoutingStateStore::load_routing_state(self.store().await?.as_ref()).await
     }
 
     async fn subscribe_routing_events(&self) -> Result<RoutingEventSubscription> {
-        self.store().await?.subscribe_routing_events().await
+        RoutingStateStore::subscribe_routing_events(self.store().await?.as_ref()).await
+    }
+}
+
+#[async_trait]
+impl<S> DeployStore for NatsRuntime<S>
+where
+    S: StoreRuntimeControl + Send + Sync + 'static,
+{
+    async fn list_deploy_revisions(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceRevisionRecord>> {
+        DeployStore::list_deploy_revisions(self.store().await?.as_ref(), namespace).await
     }
 
     async fn list_deploy_releases(
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<ServiceReleaseRecord>> {
-        self.store().await?.list_deploy_releases(namespace).await
-    }
-
-    async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
-        self.store().await?.load_deploy_snapshot(namespace).await
+        DeployStore::list_deploy_releases(self.store().await?.as_ref(), namespace).await
     }
 
     async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
-        self.store().await?.list_volumes(namespace).await
+        DeployStore::list_volumes(self.store().await?.as_ref(), namespace).await
     }
 
     async fn get_volume(
@@ -349,89 +396,93 @@ where
         namespace: &Namespace,
         volume_name: &str,
     ) -> Result<Option<VolumeRecord>> {
-        self.store().await?.get_volume(namespace, volume_name).await
+        DeployStore::get_volume(self.store().await?.as_ref(), namespace, volume_name).await
     }
 
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
-        self.store().await?.commit_deploy(command).await
+        DeployStore::commit_deploy(self.store().await?.as_ref(), command).await
     }
 
-    async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()> {
-        self.store().await?.update_deploy_record(command).await
+    async fn write_deploy_status(&self, deploy: &DeployRecord) -> Result<()> {
+        DeployStore::write_deploy_status(self.store().await?.as_ref(), deploy).await
     }
 
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        self.store().await?.get_deploy(deploy_id).await
+        DeployStore::get_deploy(self.store().await?.as_ref(), deploy_id).await
     }
+}
 
+#[async_trait]
+impl<S> InstanceStatusStore for NatsRuntime<S>
+where
+    S: StoreRuntimeControl + Send + Sync + 'static,
+{
     async fn list_instance_status(
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<InstanceStatusRecord>> {
-        self.store().await?.list_instance_status(namespace).await
+        InstanceStatusStore::list_instance_status(self.store().await?.as_ref(), namespace).await
     }
 
     async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
-        self.store().await?.record_instance_status(record).await
+        InstanceStatusStore::record_instance_status(self.store().await?.as_ref(), record).await
     }
 
     async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
-        self.store()
-            .await?
-            .remove_instance_status(instance_id)
-            .await
+        InstanceStatusStore::remove_instance_status(self.store().await?.as_ref(), instance_id).await
     }
+}
 
+#[async_trait]
+impl<S> CertificateStore for NatsRuntime<S>
+where
+    S: StoreRuntimeControl + Send + Sync + 'static,
+{
     async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {
-        self.store().await?.get_acme_account(issuer_url).await
+        CertificateStore::get_acme_account(self.store().await?.as_ref(), issuer_url).await
     }
 
     async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()> {
-        self.store().await?.upsert_acme_account(record).await
+        CertificateStore::upsert_acme_account(self.store().await?.as_ref(), record).await
     }
 
     async fn list_certificates(&self) -> Result<Vec<CertificateRecord>> {
-        self.store().await?.list_certificates().await
+        CertificateStore::list_certificates(self.store().await?.as_ref()).await
     }
 
     async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>> {
-        self.store().await?.get_certificate(hostname).await
+        CertificateStore::get_certificate(self.store().await?.as_ref(), hostname).await
     }
 
     async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()> {
-        self.store().await?.upsert_certificate(record).await
+        CertificateStore::upsert_certificate(self.store().await?.as_ref(), record).await
     }
 
     async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
-        self.store().await?.list_acme_challenges().await
+        CertificateStore::list_acme_challenges(self.store().await?.as_ref()).await
     }
 
     async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
-        self.store().await?.upsert_acme_challenge(record).await
+        CertificateStore::upsert_acme_challenge(self.store().await?.as_ref(), record).await
     }
 
     async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
-        self.store()
-            .await?
-            .delete_acme_challenge(hostname, token)
-            .await
+        CertificateStore::delete_acme_challenge(self.store().await?.as_ref(), hostname, token).await
     }
 
     async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
-        self.store().await?.subscribe_certificates().await
+        CertificateStore::subscribe_certificates(self.store().await?.as_ref()).await
     }
 
     async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
-        self.store().await?.subscribe_acme_challenges().await
+        CertificateStore::subscribe_acme_challenges(self.store().await?.as_ref()).await
     }
 
     async fn upsert_acme_challenge_readiness(
         &self,
         record: &AcmeChallengeReadinessRecord,
     ) -> Result<()> {
-        self.store()
-            .await?
-            .upsert_acme_challenge_readiness(record)
+        CertificateStore::upsert_acme_challenge_readiness(self.store().await?.as_ref(), record)
             .await
     }
 
@@ -440,18 +491,32 @@ where
         hostname: &str,
         token: &str,
     ) -> Result<Vec<AcmeChallengeReadinessRecord>> {
-        self.store()
-            .await?
-            .list_acme_challenge_readiness(hostname, token)
-            .await
+        CertificateStore::list_acme_challenge_readiness(
+            self.store().await?.as_ref(),
+            hostname,
+            token,
+        )
+        .await
     }
+}
 
+#[async_trait]
+impl<S> SyncProbe for NatsRuntime<S>
+where
+    S: StoreRuntimeControl + Send + Sync + 'static,
+{
     async fn sync_status(&self) -> Result<SyncStatus> {
-        self.store().await?.sync_status().await
+        SyncProbe::sync_status(self.store().await?.as_ref()).await
     }
+}
 
+#[async_trait]
+impl<S> PeerRttStore for NatsRuntime<S>
+where
+    S: StoreRuntimeControl + Send + Sync + 'static,
+{
     async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
-        self.store().await?.peer_rtt_observations().await
+        PeerRttStore::peer_rtt_observations(self.store().await?.as_ref()).await
     }
 }
 
@@ -749,6 +814,7 @@ fn nats_data_volume_name(network_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{OverlayIp, config, nats_data_volume_name, parse_peer_route, write_node_config};
+    use ployz_types::model::{AuthorityId, StorageParticipation};
 
     #[test]
     fn parses_bootstrap_peer_route_from_socket() {
@@ -773,7 +839,7 @@ mod tests {
             overlay_ip,
             &["[fd00::10]:6222".into()],
             "alpha",
-            true,
+            &StorageParticipation::default_authority(),
         )
         .expect("config should write");
 
@@ -800,14 +866,16 @@ mod tests {
             overlay_ip,
             &["[fd00::10]:6222".into()],
             "alpha",
-            true,
+            &StorageParticipation::Authority {
+                authority_id: AuthorityId("auth-sin".into()),
+            },
         )
         .expect("config should write");
 
         let rendered = std::fs::read_to_string(&host_paths.config).expect("config should read");
         std::fs::remove_dir_all(&root).ok();
         assert!(rendered.contains("jetstream {"));
-        assert!(rendered.contains("domain: dom-auth-default"));
+        assert!(rendered.contains("domain: dom-auth-sin"));
         assert!(rendered.contains("cluster {"));
         assert!(rendered.contains("nats://[fd00::10]:6222"));
     }

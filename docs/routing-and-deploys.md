@@ -7,12 +7,12 @@ How services get deployed onto machines and how traffic finds its way to them.
 The distributed store holds all the state that drives both routing and
 deployment. The routing collections divide into three conceptual groups:
 
-**Mesh infrastructure** — the machine registry and join tokens. Who's in the mesh
+**Mesh infrastructure** — machine membership records and join tokens. Who's in the mesh
 and what their keys and overlay IPs are.
 
-**Service versioning & placement** — an append-only ledger of service spec versions
-(content-addressed, immutable), a mutable head pointer per service (which version is
-active), region placement policy, and slot records that bind replicas to machines.
+**Service versioning & placement** — append-only deploy commits record service
+spec versions (content-addressed, immutable), the active version per service,
+region placement policy, and slot records that bind replicas to machines.
 This is the scheduling layer.
 
 **Runtime state** — per-instance lifecycle records (phase, readiness, drain state, ports)
@@ -34,7 +34,7 @@ truth still commits to one home/data authority.
 ### Concepts
 
 A **deploy** applies a manifest (a list of service specs) to a namespace. Each spec is
-content-hashed into a revision. The deploy engine diffs desired vs current state,
+content-hashed into a revision. The deploy engine compares desired vs current state,
 starts new containers, waits for readiness, appends one immutable deploy commit,
 publishes the derived routing facts, then cleans up old containers.
 
@@ -122,26 +122,29 @@ runtime action.
 
 All routing decisions start from one snapshot of the distributed store's routing
 collections. After the snapshot, live consumers apply ordered routing events from the
-`route_journal` JetStream stream.
+`routing_events` JetStream stream.
 
-The snapshot is the catch-up boundary. Subscription setup reads the route
-journal's last stream sequence, loads a fresh snapshot, then starts an ephemeral
-memory-backed consumer from the next sequence (`DeliverPolicy::ByStartSequence`).
-If a process restarts, a watcher closes, or projection freshness becomes
-uncertain, the process discards the local projection and repeats that sequence.
+Subscription setup reads the routing event stream's next sequence, loads a fresh
+snapshot, then starts an ephemeral memory-backed consumer from that same sequence
+(`DeliverPolicy::ByStartSequence`). Events that raced into the snapshot may be
+delivered again; routing events are idempotent facts, so replaying them is safe
+and avoids a separate manual catch-up phase.
+If a process restarts, a watcher closes, or routing-view freshness becomes
+uncertain, the process discards the local view and repeats that sequence.
 
 ### Subscription Model
 
 Routing event consumers are all temporary NATS consumers. Gateway, DNS, runtime
 watch, and readiness probes rebuild from durable state first, then consume only
-the events that occur after that snapshot boundary. The consumer's
+the events that occur after that observed stream sequence. The consumer's
 `max_ack_pending` matches the process bridge-channel capacity, and idle
 heartbeats turn a broken delivery path into an explicit subscription failure.
 
 Properties:
 
-- Plain event journal — each routing fact is one JetStream message, and
-  consumers ack each event only after applying it.
+- Plain event stream — each routing fact is one JetStream message, and
+  consumers ack each event only after applying it. Facts are upserts or removals;
+  old/new database-style diffs are intentionally not part of the event stream.
 - No durable cursors — watchers do not leave server-side routing cursor state
   behind after exit or daemon crash.
 - Visible freshness loss — projection errors surface as subscription failures;

@@ -3,14 +3,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ployz_api::{AcmeHttp01ChallengeStatus, AcmeHttp01StatusPayload, DaemonPayload};
-use ployz_nats::coord::locks::{Lease, NatsLocks};
-use ployz_nats::subjects;
+use ployz_nats::{Lease, LockAcquireError, NatsLocks};
+use ployz_nats::{acme_account_lock, cert_lock};
 use ployz_orchestrator::certificates::{
     AccountAcquisition, AcmeAccountCoordinator, HTTP01_CHALLENGE_VISIBILITY_TIMEOUT,
     Http01ChallengeReadiness, IssuanceAcquisition, IssuanceCoordinator, IssuanceHold,
 };
 use ployz_orchestrator::coordination::ReservationId;
-use ployz_store_api::{CertificateStore, RoutingSnapshotReader, StoreDriver};
+use ployz_store_api::{CertificateStore, RoutingStateStore, StoreDriver};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     MachineId, MachineLifecycle, MachineMembership, RoutingState, ServiceReleaseRecord,
@@ -42,7 +42,7 @@ impl NatsIssuanceCoordinator {
         }
     }
 
-    async fn acquire_key(&self, key: String) -> std::result::Result<Lease, Error> {
+    async fn acquire_key(&self, key: String) -> std::result::Result<Lease, LockAcquireError> {
         self.locks
             .acquire(
                 &key,
@@ -67,11 +67,12 @@ impl NatsIssuanceCoordinator {
 #[async_trait]
 impl IssuanceCoordinator for NatsIssuanceCoordinator {
     async fn try_acquire(&self, hostname: &str) -> IssuanceAcquisition {
-        match self.acquire_key(subjects::cert_lock(hostname)).await {
+        match self.acquire_key(cert_lock(hostname)).await {
             Ok(lease) => IssuanceAcquisition::Allowed(self.hold_for(lease)),
-            Err(error) if is_lock_contention(&error) => {
-                IssuanceAcquisition::VetoedByPeer(error.to_string())
-            }
+            Err(
+                error
+                @ (LockAcquireError::AlreadyHeld { .. } | LockAcquireError::Contention { .. }),
+            ) => IssuanceAcquisition::VetoedByPeer(error.to_string()),
             Err(error) => IssuanceAcquisition::CoordinationFailed(error.to_string()),
         }
     }
@@ -80,26 +81,14 @@ impl IssuanceCoordinator for NatsIssuanceCoordinator {
 #[async_trait]
 impl AcmeAccountCoordinator for NatsIssuanceCoordinator {
     async fn try_acquire_account(&self, issuer_url: &str) -> AccountAcquisition {
-        match self
-            .acquire_key(subjects::acme_account_lock(issuer_url))
-            .await
-        {
+        match self.acquire_key(acme_account_lock(issuer_url)).await {
             Ok(lease) => AccountAcquisition::Allowed(self.hold_for(lease)),
-            Err(error) if is_lock_contention(&error) => {
-                AccountAcquisition::VetoedByPeer(error.to_string())
-            }
+            Err(
+                error
+                @ (LockAcquireError::AlreadyHeld { .. } | LockAcquireError::Contention { .. }),
+            ) => AccountAcquisition::VetoedByPeer(error.to_string()),
             Err(error) => AccountAcquisition::CoordinationFailed(error.to_string()),
         }
-    }
-}
-
-fn is_lock_contention(error: &Error) -> bool {
-    match error {
-        Error::Operation {
-            operation: "nats_lock_acquire",
-            message,
-        } => message.contains("already held") || message.contains("contention:"),
-        Error::Operation { .. } => false,
     }
 }
 
@@ -383,22 +372,21 @@ mod tests {
 
     #[test]
     fn lock_contention_is_not_backend_failure() {
-        let held = Error::operation(
-            "nats_lock_acquire",
-            "lock 'locks.cert.example' is already held",
-        );
-        let raced = Error::operation(
-            "nats_lock_acquire",
-            "lock 'locks.cert.example' contention: wrong last sequence",
-        );
-        let backend = Error::operation(
+        let held = LockAcquireError::AlreadyHeld {
+            key: "locks.cert.example".into(),
+        };
+        let raced = LockAcquireError::Contention {
+            key: "locks.cert.example".into(),
+            source: Error::operation("nats_lock_publish", "wrong last sequence"),
+        };
+        let backend = LockAcquireError::Backend(Error::operation(
             "nats_lock_read_for_acquire",
             "request timed out while reading lock",
-        );
+        ));
 
-        assert!(is_lock_contention(&held));
-        assert!(is_lock_contention(&raced));
-        assert!(!is_lock_contention(&backend));
+        assert!(matches!(held, LockAcquireError::AlreadyHeld { .. }));
+        assert!(matches!(raced, LockAcquireError::Contention { .. }));
+        assert!(matches!(backend, LockAcquireError::Backend(_)));
     }
 
     fn test_machine(id: &str, lifecycle: MachineLifecycle, has_subnet: bool) -> MachineMembership {

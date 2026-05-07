@@ -2,13 +2,11 @@ use async_nats::jetstream;
 use async_nats::jetstream::context::PublishErrorKind;
 use async_nats::jetstream::message::PublishMessage;
 use async_nats::jetstream::stream::DirectGetErrorKind;
-use ployz_store_api::{
-    DeployCommit, DeployProjection, DeployRecordUpdate, DeployRepository, DeploySnapshot,
-    InstanceStatusRepository,
-};
+use async_trait::async_trait;
+use ployz_store_api::{DeployCommit, DeployCommitFacts, DeployStore};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    DeployId, DeployRecord, RoutingEvent, ServiceReleaseRecord, VolumeRecord,
+    DeployId, DeployRecord, RoutingEvent, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 
@@ -17,37 +15,30 @@ use crate::buckets::NatsAssetNames;
 use crate::store::kv_json;
 use crate::subjects::{self, NatsScope};
 
-#[derive(Debug, Clone)]
-pub(crate) struct CachedDeployProjection {
-    projection: DeployProjection,
-    deploy_last_sequence: u64,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeployCommitPublish {
-    Created { sequence: u64 },
-    Existing { sequence: u64 },
+enum DeployCommitPublish {
+    Created,
+    Existing,
 }
 
-impl DeployRepository for NatsStore {
+#[async_trait]
+impl DeployStore for NatsStore {
+    async fn list_deploy_revisions(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceRevisionRecord>> {
+        Ok(self.deploy_commit_facts().await?.revisions(namespace))
+    }
+
     async fn list_deploy_releases(
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<ServiceReleaseRecord>> {
-        Ok(self.deploy_projection_snapshot().await?.releases(namespace))
-    }
-
-    async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
-        let projection = self.deploy_projection_snapshot().await?;
-        Ok(DeploySnapshot {
-            revisions: projection.revisions(namespace),
-            releases: projection.releases(namespace),
-            instances: self.list_instance_status(namespace).await?,
-        })
+        Ok(self.deploy_commit_facts().await?.releases(namespace))
     }
 
     async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
-        Ok(self.deploy_projection_snapshot().await?.volumes(namespace))
+        Ok(self.deploy_commit_facts().await?.volumes(namespace))
     }
 
     async fn get_volume(
@@ -56,7 +47,7 @@ impl DeployRepository for NatsStore {
         volume_name: &str,
     ) -> Result<Option<VolumeRecord>> {
         Ok(self
-            .deploy_projection_snapshot()
+            .deploy_commit_facts()
             .await?
             .volume(namespace, volume_name)
             .cloned())
@@ -64,15 +55,13 @@ impl DeployRepository for NatsStore {
 
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
         let publish = publish_commit_in(self.jetstream(), self.scope(), command).await?;
-        *self.deploy_projection.write().await = None;
         let routing_events = match publish {
-            DeployCommitPublish::Created { sequence } => {
-                committed_commit_routing_events(self.jetstream(), self.scope(), command, sequence)
-                    .await?
+            DeployCommitPublish::Created => {
+                let mut commit_facts = DeployCommitFacts::new();
+                commit_facts.apply_commit_events(command)
             }
-            DeployCommitPublish::Existing { sequence } => {
-                duplicate_commit_repair_events(self.jetstream(), self.scope(), command, sequence)
-                    .await?
+            DeployCommitPublish::Existing => {
+                duplicate_commit_repair_events(self.jetstream(), self.scope(), command).await?
             }
         };
         self.publish_routing_events(
@@ -83,35 +72,27 @@ impl DeployRepository for NatsStore {
         .await
     }
 
-    async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()> {
-        write_deploy_status(
+    async fn write_deploy_status(&self, deploy: &DeployRecord) -> Result<()> {
+        write_deploy_status_entry(
             self.jetstream(),
             self.assets().deploy_status_bucket.as_str(),
-            &command.deploy,
+            deploy,
         )
         .await
     }
 
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        if let Some(status) = read_deploy_status(
+        read_deploy_status(
             self.jetstream(),
             self.assets().deploy_status_bucket.as_str(),
             deploy_id,
         )
-        .await?
-        {
-            return Ok(Some(status));
-        }
-        Ok(self
-            .deploy_projection_snapshot()
-            .await?
-            .deploy(deploy_id)
-            .cloned())
+        .await
     }
 }
 
 impl NatsStore {
-    pub(crate) async fn deploy_projection_snapshot(&self) -> Result<DeployProjection> {
+    pub(crate) async fn deploy_commit_facts(&self) -> Result<DeployCommitFacts> {
         let mut stream = self
             .jetstream()
             .get_stream(self.assets().deploy_commits_stream.as_str())
@@ -122,32 +103,11 @@ impl NatsStore {
             .await
             .map_err(|error| Error::operation("nats_deploy_stream_info", format!("{error:?}")))?
             .clone();
-        if let Some(cached) = self.deploy_projection.read().await.as_ref()
-            && cached.deploy_last_sequence == info.state.last_sequence
-        {
-            return Ok(cached.projection.clone());
-        }
-
-        let current = self.deploy_projection.read().await.clone();
-        let cached = match current {
-            Some(cached) if can_extend_cached_projection(cached.deploy_last_sequence, &info) => {
-                extend_projection_from_stream(&mut stream, cached, info).await?
-            }
-            Some(_) | None => replay_projection_from_stream(&mut stream, info).await?,
-        };
-        *self.deploy_projection.write().await = Some(cached.clone());
-        Ok(cached.projection)
+        replay_commit_facts_from_stream(&mut stream, info).await
     }
 }
 
-pub async fn publish_commit(
-    js: &jetstream::Context,
-    commit: &DeployCommit,
-) -> Result<DeployCommitPublish> {
-    publish_commit_in(js, &NatsScope::default(), commit).await
-}
-
-pub async fn publish_commit_in(
+async fn publish_commit_in(
     js: &jetstream::Context,
     scope: &NatsScope,
     commit: &DeployCommit,
@@ -167,9 +127,7 @@ pub async fn publish_commit_in(
         .map_err(|error| Error::operation("nats_deploy_commit_publish", format!("{error:?}")))?;
     match ack.await {
         Ok(ack) if ack.duplicate => existing_commit_publish(js, &stream, subject, commit).await,
-        Ok(ack) => Ok(DeployCommitPublish::Created {
-            sequence: ack.sequence,
-        }),
+        Ok(_ack) => Ok(DeployCommitPublish::Created),
         Err(error) if error.kind() == PublishErrorKind::WrongLastSequence => {
             existing_commit_publish(js, &stream, subject, commit).await
         }
@@ -205,46 +163,17 @@ async fn existing_commit_publish(
             ),
         ));
     }
-    Ok(DeployCommitPublish::Existing {
-        sequence: message.sequence,
-    })
-}
-
-async fn committed_commit_routing_events(
-    js: &jetstream::Context,
-    scope: &NatsScope,
-    command: &DeployCommit,
-    sequence: u64,
-) -> Result<Vec<RoutingEvent>> {
-    let mut stream = js
-        .get_stream(NatsAssetNames::new(scope).deploy_commits_stream.as_str())
-        .await
-        .map_err(|error| Error::operation("nats_deploy_stream", format!("{error:?}")))?;
-    let info = stream
-        .info()
-        .await
-        .map_err(|error| Error::operation("nats_deploy_stream_info", format!("{error:?}")))?
-        .clone();
-    let before = deploy_projection_before_sequence(&mut stream, info, sequence).await?;
-    Ok(routing_events_for_committed_commit(&before, command))
-}
-
-fn routing_events_for_committed_commit(
-    before: &DeployProjection,
-    command: &DeployCommit,
-) -> Vec<RoutingEvent> {
-    let mut projection = before.clone();
-    projection.apply_commit_events(command)
+    Ok(DeployCommitPublish::Existing)
 }
 
 async fn duplicate_commit_repair_events(
     js: &jetstream::Context,
     scope: &NatsScope,
     command: &DeployCommit,
-    sequence: u64,
 ) -> Result<Vec<RoutingEvent>> {
+    let stream_name = NatsAssetNames::new(scope).deploy_commits_stream;
     let mut stream = js
-        .get_stream(NatsAssetNames::new(scope).deploy_commits_stream.as_str())
+        .get_stream(stream_name.as_str())
         .await
         .map_err(|error| Error::operation("nats_deploy_stream", format!("{error:?}")))?;
     let info = stream
@@ -252,37 +181,12 @@ async fn duplicate_commit_repair_events(
         .await
         .map_err(|error| Error::operation("nats_deploy_stream_info", format!("{error:?}")))?
         .clone();
-    let before = deploy_projection_before_sequence(&mut stream, info.clone(), sequence).await?;
-    let current = replay_projection_from_stream(&mut stream, info)
-        .await?
-        .projection;
-    Ok(repair_events_for_duplicate_commit(
-        &before, &current, command,
-    ))
-}
-
-async fn deploy_projection_before_sequence(
-    stream: &mut async_nats::jetstream::stream::Stream,
-    info: async_nats::jetstream::stream::Info,
-    sequence: u64,
-) -> Result<DeployProjection> {
-    let mut projection = DeployProjection::new();
-    if info.state.messages == 0 || sequence <= info.state.first_sequence {
-        return Ok(projection);
-    }
-    apply_projection_range(
-        stream,
-        &mut projection,
-        info.state.first_sequence,
-        sequence.saturating_sub(1),
-    )
-    .await?;
-    Ok(projection)
+    let current = replay_commit_facts_from_stream(&mut stream, info).await?;
+    Ok(repair_events_for_duplicate_commit(&current, command))
 }
 
 fn repair_events_for_duplicate_commit(
-    before: &DeployProjection,
-    current: &DeployProjection,
+    current: &DeployCommitFacts,
     command: &DeployCommit,
 ) -> Vec<RoutingEvent> {
     let mut events = Vec::new();
@@ -293,98 +197,45 @@ fn repair_events_for_duplicate_commit(
             &revision.revision_hash,
         ) == Some(revision)
         {
-            events.push(RoutingEvent::RevisionAdded(revision.clone()));
+            events.push(RoutingEvent::RevisionUpsert(revision.clone()));
         }
     }
     for service in &command.removed_services {
-        if current.release(&command.namespace, service).is_none()
-            && let Some(old) = before.release(&command.namespace, service)
-        {
+        if current.release(&command.namespace, service).is_none() {
             events.push(RoutingEvent::ReleaseRemoved {
-                namespace: old.namespace.clone(),
-                service: old.service.clone(),
+                namespace: command.namespace.clone(),
+                service: service.clone(),
             });
         }
     }
     for release in &command.releases {
         if current.release(&release.namespace, &release.service) == Some(release) {
-            events.push(RoutingEvent::ReleaseAdded(release.clone()));
+            events.push(RoutingEvent::ReleaseUpsert(release.clone()));
         }
     }
     events
 }
 
-async fn replay_projection_from_stream(
+async fn replay_commit_facts_from_stream(
     stream: &mut async_nats::jetstream::stream::Stream,
     info: async_nats::jetstream::stream::Info,
-) -> Result<CachedDeployProjection> {
-    let mut projection = DeployProjection::new();
+) -> Result<DeployCommitFacts> {
+    let mut facts = DeployCommitFacts::default();
     if info.state.messages > 0 {
-        apply_projection_range(
+        apply_commit_fact_range(
             stream,
-            &mut projection,
+            &mut facts,
             info.state.first_sequence,
             info.state.last_sequence,
         )
         .await?;
     }
-    Ok(CachedDeployProjection {
-        projection,
-        deploy_last_sequence: info.state.last_sequence,
-    })
+    Ok(facts)
 }
 
-async fn extend_projection_from_stream(
+async fn apply_commit_fact_range(
     stream: &mut async_nats::jetstream::stream::Stream,
-    cached: CachedDeployProjection,
-    info: async_nats::jetstream::stream::Info,
-) -> Result<CachedDeployProjection> {
-    let mut projection = cached.projection;
-    apply_projection_range(
-        stream,
-        &mut projection,
-        cached.deploy_last_sequence.saturating_add(1),
-        info.state.last_sequence,
-    )
-    .await?;
-    Ok(CachedDeployProjection {
-        projection,
-        deploy_last_sequence: info.state.last_sequence,
-    })
-}
-
-fn can_extend_cached_projection(
-    cached_last_sequence: u64,
-    info: &async_nats::jetstream::stream::Info,
-) -> bool {
-    cached_projection_extension_start(
-        cached_last_sequence,
-        info.state.first_sequence,
-        info.state.last_sequence,
-        info.state.messages,
-    )
-    .is_some()
-}
-
-fn cached_projection_extension_start(
-    cached_last_sequence: u64,
-    first_sequence: u64,
-    last_sequence: u64,
-    messages: u64,
-) -> Option<u64> {
-    if messages == 0 || cached_last_sequence >= last_sequence {
-        return None;
-    }
-    let next_sequence = cached_last_sequence.saturating_add(1);
-    if next_sequence < first_sequence {
-        return None;
-    }
-    Some(next_sequence)
-}
-
-async fn apply_projection_range(
-    stream: &mut async_nats::jetstream::stream::Stream,
-    projection: &mut DeployProjection,
+    facts: &mut DeployCommitFacts,
     first_sequence: u64,
     last_sequence: u64,
 ) -> Result<()> {
@@ -401,12 +252,12 @@ async fn apply_projection_range(
         };
         let commit: DeployCommit = serde_json::from_slice(message.payload.as_ref())
             .map_err(|error| Error::operation("nats_deploy_commit_decode", error.to_string()))?;
-        projection.apply_commit(&commit);
+        let _events = facts.apply_commit_events(&commit);
     }
     Ok(())
 }
 
-async fn write_deploy_status(
+async fn write_deploy_status_entry(
     js: &jetstream::Context,
     bucket_name: &str,
     deploy: &DeployRecord,
@@ -461,22 +312,6 @@ mod tests {
     use ployz_types::spec::Namespace;
 
     #[test]
-    fn cached_projection_extends_from_next_sequence() {
-        assert_eq!(cached_projection_extension_start(10, 1, 12, 12), Some(11));
-    }
-
-    #[test]
-    fn cached_projection_replays_when_cache_precedes_stream_start() {
-        assert_eq!(cached_projection_extension_start(10, 12, 15, 4), None);
-    }
-
-    #[test]
-    fn cached_projection_replays_when_stream_is_empty_or_not_ahead() {
-        assert_eq!(cached_projection_extension_start(10, 0, 10, 0), None);
-        assert_eq!(cached_projection_extension_start(10, 1, 10, 10), None);
-    }
-
-    #[test]
     fn duplicate_commit_repair_republishes_current_truth_for_touched_keys() {
         let namespace = Namespace(String::from("prod"));
         let old_release = release(&namespace, "web", "rev-old", "deploy-old");
@@ -489,8 +324,8 @@ mod tests {
             vec![String::from("web")],
             vec![new_release.clone()],
         );
-        let mut before = DeployProjection::new();
-        before.apply_commit(&deploy_commit(
+        let mut before = DeployCommitFacts::default();
+        before.apply_commit_events(&deploy_commit(
             &namespace,
             "deploy-old",
             Vec::new(),
@@ -498,48 +333,16 @@ mod tests {
             vec![old_release.clone()],
         ));
         let mut current = before.clone();
-        current.apply_commit(&command);
+        current.apply_commit_events(&command);
 
-        let events = repair_events_for_duplicate_commit(&before, &current, &command);
+        let events = repair_events_for_duplicate_commit(&current, &command);
 
-        assert!(events.contains(&RoutingEvent::RevisionAdded(revision)));
+        assert!(events.contains(&RoutingEvent::RevisionUpsert(revision)));
         assert!(events.contains(&RoutingEvent::ReleaseRemoved {
             namespace: old_release.namespace,
             service: old_release.service,
         }));
-        assert!(events.contains(&RoutingEvent::ReleaseAdded(new_release)));
-    }
-
-    #[test]
-    fn committed_commit_routing_uses_stream_ordered_prior_projection() {
-        let namespace = Namespace(String::from("prod"));
-        let old_release = release(&namespace, "api", "rev-old", "deploy-old");
-        let new_release = release(&namespace, "api", "rev-new", "deploy-new");
-        let command = deploy_commit(
-            &namespace,
-            "deploy-new",
-            Vec::new(),
-            Vec::new(),
-            vec![new_release.clone()],
-        );
-        let mut before = DeployProjection::new();
-        before.apply_commit(&deploy_commit(
-            &namespace,
-            "deploy-old",
-            Vec::new(),
-            Vec::new(),
-            vec![old_release.clone()],
-        ));
-
-        let events = routing_events_for_committed_commit(&before, &command);
-
-        assert_eq!(
-            events,
-            vec![RoutingEvent::ReleaseUpdated {
-                old: old_release,
-                new: new_release,
-            }]
-        );
+        assert!(events.contains(&RoutingEvent::ReleaseUpsert(new_release)));
     }
 
     #[test]
@@ -554,10 +357,9 @@ mod tests {
             Vec::new(),
             vec![command_release.clone()],
         );
-        let before = DeployProjection::new();
-        let mut current = before.clone();
-        current.apply_commit(&command);
-        current.apply_commit(&deploy_commit(
+        let mut current = DeployCommitFacts::default();
+        current.apply_commit_events(&command);
+        current.apply_commit_events(&deploy_commit(
             &namespace,
             "deploy-b",
             Vec::new(),
@@ -565,9 +367,9 @@ mod tests {
             vec![later_release],
         ));
 
-        let events = repair_events_for_duplicate_commit(&before, &current, &command);
+        let events = repair_events_for_duplicate_commit(&current, &command);
 
-        assert!(!events.contains(&RoutingEvent::ReleaseAdded(command_release)));
+        assert!(!events.contains(&RoutingEvent::ReleaseUpsert(command_release)));
     }
 
     #[test]

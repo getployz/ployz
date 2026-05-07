@@ -4,11 +4,11 @@
 //! This is the live, decision-time
 //! reachability check that AGENTS.md mandates: it confirms the peer's daemon
 //! is processing requests at the moment a deploy is about to mutate cluster
-//! state, rather than relying on freshness of cached membership gossip.
+//! state, rather than relying on freshness of stale membership gossip.
 
 use async_trait::async_trait;
 use ployz_api::DaemonRequest;
-use ployz_nats::coord::rpc::{NatsNodeRpcClient, NodeCommandSubject, RpcFailureKind};
+use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcFailureKind};
 use ployz_orchestrator::deploy::{ParticipantProbe, ProbeError, ProbeErrorKind};
 use ployz_types::model::MachineMembership;
 

@@ -3,8 +3,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use ipnet::Ipv4Net;
 
-use ployz_nats::coord::locks::{Lease, NatsLocks};
-use ployz_nats::subjects;
+use ployz_nats::subnet_lock;
+use ployz_nats::{Lease, LockAcquireError, NatsLocks};
 use ployz_orchestrator::coordination::{
     ClaimError, ReservationId, SubnetClaim, SubnetClaimRelease, SubnetReservationCoordinator,
 };
@@ -38,7 +38,7 @@ impl SubnetReservationCoordinator for NatsSubnetCoordinator {
         owner: &MachineId,
         ttl: Duration,
     ) -> Result<SubnetClaim, ClaimError> {
-        let key = subjects::subnet_lock(candidate);
+        let key = subnet_lock(candidate);
         let nonce = ReservationId::random().0;
         let expires_at = now_unix_secs().saturating_add(ttl.as_secs());
         match self
@@ -50,16 +50,17 @@ impl SubnetReservationCoordinator for NatsSubnetCoordinator {
                 locks: self.locks.clone(),
                 lease,
             }))),
-            Err(error) => Err(classify_acquire_error(error.to_string())),
+            Err(error) => Err(claim_error_from_lock_acquire(error)),
         }
     }
 }
 
-fn classify_acquire_error(message: String) -> ClaimError {
-    if message.contains("already held") || message.contains("contention") {
-        ClaimError::AlreadyHeld
-    } else {
-        ClaimError::Backend(message)
+fn claim_error_from_lock_acquire(error: LockAcquireError) -> ClaimError {
+    match error {
+        LockAcquireError::AlreadyHeld { .. } | LockAcquireError::Contention { .. } => {
+            ClaimError::AlreadyHeld
+        }
+        error => ClaimError::Backend(error.to_string()),
     }
 }
 
@@ -85,9 +86,11 @@ mod tests {
 
     #[test]
     fn lock_contention_is_retryable() {
-        assert!(matches!(
-            classify_acquire_error("nats_lock_acquire: lock 'locks.subnet.x' contention".into()),
-            ClaimError::AlreadyHeld
-        ));
+        let result = claim_error_from_lock_acquire(LockAcquireError::Contention {
+            key: "locks.subnet.x".into(),
+            source: ployz_types::Error::operation("nats_lock_publish", "wrong sequence"),
+        });
+
+        assert!(matches!(result, ClaimError::AlreadyHeld));
     }
 }

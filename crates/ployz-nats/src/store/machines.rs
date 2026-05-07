@@ -1,15 +1,15 @@
 use async_nats::jetstream::kv;
-use ployz_store_api::{MachineRegistry, MachineSubscription};
+use async_trait::async_trait;
+use ployz_store_api::{MachineMembershipStore, MachineSubscription};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{MachineEvent, MachineId, MachineMembership, RoutingEvent};
-use std::collections::HashMap;
 
 use crate::NatsStore;
-use crate::buckets::MACHINES_BUCKET;
 use crate::store::kv_json;
 use crate::store::kv_watch;
 
-impl MachineRegistry for NatsStore {
+#[async_trait]
+impl MachineMembershipStore for NatsStore {
     async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         let kv = machines_bucket(self).await?;
         let entries = kv_json::list_json_entries::<MachineMembership>(
@@ -18,18 +18,12 @@ impl MachineRegistry for NatsStore {
             "nats_machines_list",
         )
         .await?;
-        let (machines, _revisions) = machine_snapshot_parts(entries)?;
+        let machines = machine_snapshot(entries)?;
         Ok(machines)
     }
 
     async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         let kv = machines_bucket(self).await?;
-        let old = kv
-            .get(record.id.0.as_str())
-            .await
-            .map_err(|error| Error::operation("nats_machine_get", format!("{error:?}")))?
-            .map(|bytes| decode_machine(record.id.0.as_str(), bytes.as_ref()))
-            .transpose()?;
         kv_json::put_json(
             &kv,
             record.id.0.as_str(),
@@ -38,17 +32,10 @@ impl MachineRegistry for NatsStore {
             "nats_machine_put",
         )
         .await?;
-        let event = match old {
-            Some(old) => RoutingEvent::MachineUpdated {
-                old,
-                new: record.clone(),
-            },
-            None => RoutingEvent::MachineAdded(record.clone()),
-        };
         self.publish_routing_events(
             format!("machine:{}", record.id.0),
             "machine.upsert",
-            &[event],
+            &[RoutingEvent::MachineUpsert(record.clone())],
         )
         .await
     }
@@ -66,69 +53,50 @@ impl MachineRegistry for NatsStore {
 
     async fn subscribe_machines(&self) -> Result<MachineSubscription> {
         let kv = machines_bucket(self).await?;
-        let snapshot_boundary =
-            kv_json::latest_sequence(&kv, "nats_machines_snapshot_boundary").await?;
+        let observed_revision =
+            kv_json::latest_sequence(&kv, "nats_machines_observed_revision").await?;
         let snapshot_entries = kv_json::list_json_entries::<MachineMembership>(
             &kv,
             "nats_machine_decode",
             "nats_machines_list",
         )
         .await?;
-        let (snapshot, snapshot_revisions) = machine_snapshot_parts(snapshot_entries)?;
-        kv_watch::subscribe_all_with_snapshot_revisions(
+        let snapshot = machine_snapshot(snapshot_entries)?;
+        kv_watch::subscribe_all(
             &kv,
             snapshot,
-            snapshot_revisions,
-            snapshot_boundary,
+            observed_revision,
             |record: &MachineMembership| record.id.0.clone(),
+            decode_machine,
+            MachineEvent::Upsert,
+            |machine| MachineEvent::Removed { id: machine.id },
             "nats_machines_watch",
             "NATS machines watcher failed",
             "NATS machine event decode failed",
-            machine_event_from_kv_entry,
         )
         .await
     }
 }
 
 async fn machines_bucket(store: &NatsStore) -> Result<kv::Store> {
-    kv_json::get_bucket(store.jetstream(), MACHINES_BUCKET, "nats_machines_bucket").await
+    kv_json::get_bucket(
+        store.jetstream(),
+        store.assets().machines_bucket.as_str(),
+        "nats_machines_bucket",
+    )
+    .await
 }
 
-fn machine_snapshot_parts(
+fn machine_snapshot(
     entries: Vec<kv_json::JsonEntry<MachineMembership>>,
-) -> Result<(Vec<MachineMembership>, HashMap<String, u64>)> {
+) -> Result<Vec<MachineMembership>> {
     let mut snapshot = Vec::with_capacity(entries.len());
-    let mut snapshot_revisions = HashMap::with_capacity(entries.len());
     for entry in entries {
         let machine = validate_machine_key(&entry.key, entry.value)?;
-        snapshot_revisions.insert(entry.key, entry.revision);
         snapshot.push(machine);
     }
     snapshot.sort_by(|left, right| left.id.cmp(&right.id));
-    Ok((snapshot, snapshot_revisions))
-}
-
-fn machine_event_from_kv_entry(
-    last_seen: &mut HashMap<String, MachineMembership>,
-    key: &str,
-    bytes: &[u8],
-    operation: kv::Operation,
-) -> Result<Option<MachineEvent>> {
-    match operation {
-        kv::Operation::Put => {
-            let machine = decode_machine(key, bytes)?;
-            let event = match last_seen.get(key) {
-                Some(existing) if existing == &machine => return Ok(None),
-                Some(_) => MachineEvent::Updated(machine.clone()),
-                None => MachineEvent::Added(machine.clone()),
-            };
-            last_seen.insert(key.to_string(), machine);
-            Ok(Some(event))
-        }
-        kv::Operation::Delete | kv::Operation::Purge => {
-            Ok(last_seen.remove(key).map(MachineEvent::Removed))
-        }
-    }
+    Ok(snapshot)
 }
 
 fn decode_machine(key: &str, bytes: &[u8]) -> Result<MachineMembership> {
@@ -166,17 +134,6 @@ mod tests {
     };
 
     #[test]
-    fn machine_kv_decode_failure_is_subscription_failure() {
-        let mut last_seen = HashMap::new();
-
-        let result =
-            machine_event_from_kv_entry(&mut last_seen, "machine-a", b"{", kv::Operation::Put);
-
-        assert!(result.is_err());
-        assert!(last_seen.is_empty());
-    }
-
-    #[test]
     fn machine_kv_key_mismatch_is_visible() {
         let machine = test_machine("payload-machine");
         let bytes = serde_json::to_vec(&machine).expect("encode machine");
@@ -199,24 +156,21 @@ mod tests {
     }
 
     #[test]
-    fn machine_snapshot_parts_keep_entry_revisions() {
+    fn machine_snapshot_returns_records_in_contract_identity_order() {
         let machine_a = test_machine("machine-a");
         let machine_b = test_machine("machine-b");
         let entries = vec![
             kv_json::JsonEntry {
                 key: String::from("machine-b"),
-                revision: 41,
                 value: machine_b,
             },
             kv_json::JsonEntry {
                 key: String::from("machine-a"),
-                revision: 42,
                 value: machine_a,
             },
         ];
 
-        let (snapshot, revisions) =
-            machine_snapshot_parts(entries).expect("snapshot parts should decode");
+        let snapshot = machine_snapshot(entries).expect("snapshot should decode");
 
         assert_eq!(
             snapshot
@@ -225,33 +179,19 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["machine-a", "machine-b"]
         );
-        assert_eq!(revisions.get("machine-a"), Some(&42));
-        assert_eq!(revisions.get("machine-b"), Some(&41));
     }
 
     #[test]
-    fn machine_snapshot_parts_rejects_key_mismatch() {
+    fn machine_snapshot_rejects_key_mismatch() {
         let entries = vec![kv_json::JsonEntry {
             key: String::from("key-machine"),
-            revision: 41,
             value: test_machine("payload-machine"),
         }];
 
-        let error = machine_snapshot_parts(entries).expect_err("key mismatch should fail");
+        let error = machine_snapshot(entries).expect_err("key mismatch should fail");
 
         assert!(error.to_string().contains("key-machine"));
         assert!(error.to_string().contains("payload-machine"));
-    }
-
-    #[test]
-    fn machine_kv_delete_for_unknown_key_is_noop() {
-        let mut last_seen = HashMap::new();
-
-        let event =
-            machine_event_from_kv_entry(&mut last_seen, "machine-a", &[], kv::Operation::Delete)
-                .expect("delete should not fail");
-
-        assert!(event.is_none());
     }
 
     fn test_machine(id: &str) -> MachineMembership {
@@ -270,33 +210,5 @@ mod tests {
             updated_at: 1,
             labels: Default::default(),
         }
-    }
-
-    #[test]
-    fn machine_kv_put_updates_last_seen() {
-        let machine = test_machine("machine-a");
-        let bytes = serde_json::to_vec(&machine).expect("encode machine");
-        let mut last_seen = HashMap::new();
-
-        let event =
-            machine_event_from_kv_entry(&mut last_seen, "machine-a", &bytes, kv::Operation::Put)
-                .expect("put should decode");
-
-        assert!(matches!(event, Some(MachineEvent::Added(record)) if record == machine));
-        assert_eq!(last_seen.get("machine-a"), Some(&machine));
-    }
-
-    #[test]
-    fn machine_kv_put_ignores_identical_value() {
-        let machine = test_machine("machine-a");
-        let bytes = serde_json::to_vec(&machine).expect("encode machine");
-        let mut last_seen = HashMap::from([(String::from("machine-a"), machine.clone())]);
-
-        let event =
-            machine_event_from_kv_entry(&mut last_seen, "machine-a", &bytes, kv::Operation::Put)
-                .expect("put should decode");
-
-        assert!(event.is_none());
-        assert_eq!(last_seen.get("machine-a"), Some(&machine));
     }
 }

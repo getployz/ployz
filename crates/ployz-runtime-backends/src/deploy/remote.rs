@@ -10,7 +10,7 @@ use crate::model::{
 };
 use crate::spec::{Namespace, ServiceSpec, VolumeDeclaration};
 use crate::storage::{TokioShellRunner, ZfsDriver};
-use ployz_store_api::InstanceStatusRepository;
+use ployz_store_api::InstanceStatusStore;
 
 use super::local::{
     LocalDeployRuntime, StartCandidate, adopt_instances, build_instance_status_record,

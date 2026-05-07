@@ -37,7 +37,7 @@ by the installation's current home/data authority.
 
 Route source truth is authority-private. Sharing, public exposure, and
 cross-authority gateway visibility are explicit route exports derived from that
-source journal by owner-local grants. Use per-authority JetStream domains +
+private routing event stream by owner-local grants. Use per-authority JetStream domains +
 NATS accounts when an authority exists, so partition tolerance and
 cross-authority visibility fall out of NATS-native primitives instead of subject
 namespacing. A compute-only region does not need its own JetStream authority
@@ -121,8 +121,8 @@ What is genuinely structural and forever-true about a piece of data:
 - which **installation** it belongs to,
 - which **authority** owns the writes,
 - which **plane** it lives on (control plane / route / RPC / work / audit),
-- and for routes specifically, whether the message is the authority-private
-  **journal** or an intentional **export** to a named audience.
+- and for routes specifically, whether the message is an authority-private
+  routing event or an intentional **export** to a named audience.
 
 ## Subject hierarchy
 
@@ -176,16 +176,16 @@ Substrate RPC covers install, ping, mesh diagnostics, node facts, and whole-node
 drain/removal. Authority RPC covers commands scoped to an authority's
 workloads, volumes, and participants.
 
-### Route plane (journal and exports)
+### Route Plane
 
 ```
-ployz.v1.<inst>.<auth>.route.journal.event.<event_id>
+ployz.v1.<inst>.<auth>.routing.event.<event_id>
 ployz.v1.<inst>.<auth>.route.export.<audience_kind>.<audience_id>.event.<event_id>
 ployz.v1.<inst>.<auth>.route.export.<audience_kind>.<audience_id>.withdraw.<event_id>
 ployz.v1.<inst>.<auth>.route.export.<audience_kind>.<audience_id>.snapshot.<namespace>.<rev>
 ```
 
-`route.journal` is source truth and is readable only by the owning authority.
+`routing.event` is source truth and is readable only by the owning authority.
 It does not become public or shared by changing subject names.
 
 `route.export.<audience_kind>.<audience_id>` is a materialized, intentional
@@ -199,7 +199,7 @@ group.<group_id>
 gateway.<gateway_id>
 ```
 
-The broker-enforced boundary is on journal vs. export and on the named export
+The broker-enforced boundary is on private routing events vs. exports and on the named export
 audience. That keeps route ownership boring while still making privacy leaks
 hard at the substrate.
 
@@ -247,7 +247,7 @@ dev work and authority-local serving do not depend on root reachability.
 | Asset | Subjects | Notes |
 |---|---|---|
 | `cp_deploy_commits_<auth>` (stream) | `ployz.v1.<inst>.<auth>.cp.deploy.commit.>` | append-only; replica policy per authority |
-| `route_journal_<auth>` (stream) | `ployz.v1.<inst>.<auth>.route.journal.event.>` | authority-private source truth; one event message per routing fact |
+| `routing_events_<auth>` (stream) | `ployz.v1.<inst>.<auth>.routing.event.>` | authority-private source truth; one event message per routing fact |
 | `route_exports_<auth>` (stream) | `ployz.v1.<inst>.<auth>.route.export.>` | owner-grant-derived audience feeds, including withdraw events |
 | `work_cert_<auth>` (stream, WorkQueue) | `ployz.v1.<inst>.<auth>.work.cert.renew.>`, `ployz.v1.<inst>.<auth>.work.cert.schedule.>` | renewal jobs plus broker-held schedules |
 | `instances_<auth>` … `locks_<auth>` (KV) | per `cp.*` resource | authority-local lifecycle status and locks |
@@ -326,19 +326,19 @@ serves = [
 
 [gateway.home-us-west]
 serves = [
-  { authority = "auth-default", journal = true },
+  { authority = "auth-default", local_routes = true },
   { exports = "public.global" },
 ]
 
 [gateway.promoted-sin]
 serves = [
-  { authority = "auth-sin", journal = true },
+  { authority = "auth-sin", local_routes = true },
   { exports = "public.global" },
 ]
 
 [gateway.dev-nick]
 serves = [
-  { authority = "auth-dev-nick", journal = true },
+  { authority = "auth-dev-nick", local_routes = true },
   { exports = "authority.auth-dev-nick" },
   { exports = "public.global" },
 ]
@@ -347,7 +347,7 @@ serves = [
 That config compiles into a deterministic subscription set:
 
 - For each authority where the gateway is part of that authority's local
-  serving surface: subscribe to `route_journal_<auth>` in that authority's
+  serving surface: subscribe to `routing_events_<auth>` in that authority's
   domain.
 - For public routes from other authorities: subscribe to `sync_public_routes`
   in installation-root.
@@ -371,7 +371,7 @@ does not silently decide new audiences.
 ### Private (default)
 
 The owning authority publishes to
-`ployz.v1.<inst>.<auth>.route.journal.event.>`. Only `<auth>`'s own account can
+`ployz.v1.<inst>.<auth>.routing.event.>`. Only `<auth>`'s own account can
 subscribe. No export exists.
 
 ### Shared (dev-to-dev)
@@ -383,7 +383,7 @@ Two-step:
    Writes the grant in the owner authority's `route_grants_<auth>` bucket.
 2. The owner authority materializes an export feed at
    `ployz.v1.<inst>.<owner>.route.export.authority.<grantee_auth>.event.<ns>.>`.
-   The export is derived from journal events matching the grant.
+   The export is derived from private routing events matching the grant.
 3. If the share crosses authorities through installation-root, the foreground
    command updates `sync_authority_<grantee>` to source that export feed. The
    grantee's gateway sees only its projection stream. Direct authority-to-
@@ -403,8 +403,8 @@ Same shape, more careful guardrails:
    a public-publish grant in the owner authority's `route_grants_<auth>` bucket.
 2. The owner authority materializes an export feed at
    `ployz.v1.<inst>.<owner>.route.export.public.global.event.<ns>.>`, only for
-   journal events matching a current public grant. If the grant is missing or
-   expired, export fails loudly and journal truth remains private.
+   private routing events matching a current public grant. If the grant is missing or
+   expired, export fails loudly and private routing truth remains private.
 3. The foreground command updates `sync_public_routes` to source the public
    export feed and verifies that the public gateway projection sees it. TTL
    expiry writes `GrantExpired` and `RouteWithdrawn`; source removal and purge
@@ -418,7 +418,7 @@ private or shared subjects, by account import scope.
 Per-authority domains make this nearly free:
 
 - A dev domain is its own JetStream cluster. Partitioned dev keeps reading and
-  writing its own `cp.*`, `route.journal.*`, local `route.export.*`, and
+  writing its own `cp.*`, `routing.event.*`, local `route.export.*`, and
   `work.cert.*`. Local R=1 means quorum is the laptop itself.
 - The installation-root/home side stops seeing the dev's export events; that lag
   shows up as `sync_authority_<grantee>` source freshness on the root side.
@@ -439,7 +439,7 @@ already in `ployzctl status`):
   `projection component=sync_authority_<grantee>` — sources, current grants,
   last configure time, last configure error.
 - `export component=<audience_kind>.<audience_id>` — current owner-local grant,
-  source journal sequence, last exported sequence, stale-since, last error.
+  source routing event sequence, last exported sequence, stale-since, last error.
 - `authority component=<auth>` — domain quorum state, replica
   current/configured/offline, leader, last write.
 
@@ -478,7 +478,7 @@ primitives without inventing a tier abstraction. Installation-root is a
 directory and projection authority, not a master for private work. Substrate
 machines belong to the installation and regions are recorded on the substrate;
 authority participation is recorded separately. Route source truth belongs in
-an authority-private journal; sharing and public exposure belong in explicit
+an authority-private routing event stream; sharing and public exposure belong in explicit
 export feeds with durable withdraw events because they are operator actions, not
 inherent route identity. The AI-operator simplicity bet wins because there is
 exactly one place where tier is recorded, exactly one place where route grants

@@ -232,13 +232,13 @@ fault injection and record observed p50/p95/p99.
 
 | Data | Authority | Physical location | Read path | Write path |
 |------|-----------|-------------------|-----------|------------|
-| Machine membership | NATS KV `machines` | installation-root/home authority replicas | local daemon projection or KV direct get | KV CAS/put to home authority quorum |
+| Machine membership | NATS KV `machines` | installation-root/home authority replicas | local daemon view or KV direct get | KV CAS/put to home authority quorum |
 | Invites | NATS KV `invites` | home/data authority replicas | direct KV | KV create/update to home authority quorum |
-| Deploy commits | JetStream stream `deploy_commits` | owning authority replicas | daemon projection from stream | append one immutable commit to owning authority quorum |
-| Deploy status | NATS KV `deploy_status` | owning authority replicas | direct KV/projection | mutable KV update to owning authority quorum |
-| Instance status | NATS KV `instances` | owning authority replicas | routing projection or direct KV | participant writes status to owning authority quorum |
-| Routing snapshot | local projection | each gateway/DNS/daemon process memory | in-process memory | rebuilt from authoritative NATS state |
-| Routing events | JetStream stream `route_journal` | owning authority replicas | ephemeral consumer after fresh snapshot | publish one ordered event per routing fact to owning authority quorum |
+| Deploy commits | JetStream stream `deploy_commits` | owning authority replicas | direct stream replay at read boundary | append one immutable commit to owning authority quorum |
+| Deploy status | NATS KV `deploy_status` | owning authority replicas | direct KV | mutable KV update to owning authority quorum |
+| Instance status | NATS KV `instances` | owning authority replicas | routing view or direct KV | participant writes status to owning authority quorum |
+| Routing snapshot | local routing view | each gateway/DNS/daemon process memory | in-process memory | rebuilt from authoritative NATS state |
+| Routing events | JetStream stream `routing_events` | owning authority replicas | ephemeral consumer after fresh snapshot | publish one ordered event per routing fact to owning authority quorum |
 | Public/shared route projections | JetStream source streams | installation-root projection authority | public/shared gateways consume projections | source only from explicit owner exports |
 | Certificates metadata | NATS KV `certificates` | owning authority replicas | direct KV/subscription | KV put to owning authority quorum |
 | Certificate PEM blobs | NATS Object Store | owning authority replicas | object get, often cached by consumers | object put to owning authority quorum |
@@ -298,18 +298,18 @@ The important split:
   stale-since time, consecutive failures, and the last fetch, job, ack, or nak
   error. A fetch failure can clear after the consumer fetch path recovers; a job
   failure remains stale until a renewal job completes and acks successfully.
-- The daemon's bootstrap seed-cache task records whether its machines
-  subscription is fresh in `bootstrap-seed-cache-health.json` under the network
+- The daemon's bootstrap peer-seed task records whether its machines
+  subscription is fresh in `bootstrap-peer-seed-health.json` under the network
   data directory. `ployzctl status` reports it as
-  `control_plane component=bootstrap_seed_cache`; stale health means the local
+  `control_plane component=bootstrap_peer_seed`; stale health means the local
   `bootstrap-peers.json` restart hint may lag NATS membership authority.
 - Mesh background tasks that consume NATS-backed machine subscriptions are also
   reported under `control_plane` with `mesh_*` component names. If a machine
   subscription closes or reports a watcher failure, the task exits, the mesh task
-  set cancels, and status preserves which local projection task went stale.
+  set cancels, and status preserves which local routing-view task went stale.
 
 - **authority** lives in the owning authority's JetStream/KV/Object Store,
-- **hot read models** live in process memory and are rebuilt from authority,
+- **edge views** live in process memory and are rebuilt from authority,
 - **node-local reality** lives on the node and is queried by request/reply,
 - **payload bytes** live in the substrate that owns them, such as ZFS.
 
@@ -338,13 +338,13 @@ The important split:
 Data touched:
 
 1. `locks.deploy.<namespace>` KV CAS acquire.
-2. Current deployment/routing state read from local projection or owning
+2. Current deployment/routing state read from explicit store facts or owning
    authority.
 3. Participant runtime commands over NATS request/reply.
 4. Participant writes `instances` status records as candidates become ready.
 5. One append to `deploy_commits`.
 6. `deploy_status` KV update.
-7. Gateway/DNS projections reload from the commit/status state.
+7. Gateway/DNS views reload from the commit/status state.
 
 Latency shape:
 
@@ -353,7 +353,7 @@ Latency shape:
 - each participant command: request/reply RTT to that node plus runtime work,
 - readiness: dominated by container startup/probe time,
 - commit: one owning-authority quorum stream append,
-- route visibility: watcher/projection delivery plus local rebuild.
+- route visibility: watcher delivery plus local rebuild.
 
 For small same-region clusters, the NATS portions should be low-ms to tens of
 ms. Container startup and readiness dominate deploy time.
@@ -367,14 +367,14 @@ Data touched:
    nodes learn the joiner's WireGuard identity through NATS,
 3. joiner local NATS startup/connectivity,
 4. joiner overwrites its `machines` membership record from its own daemon,
-5. existing daemons observe membership through subscription/projection.
+5. existing daemons observe membership through subscriptions.
 
 Latency shape:
 
 - bootstrap/install is out-of-band and dominates,
 - bootstrap and self-published membership writes are installation-root/home
   authority quorum writes,
-- visibility is subscription delivery plus local projection,
+- visibility is subscription delivery plus local routing-view rebuild,
 - no stream/KV replica reconfiguration occurs.
 
 #### Storage promotion
@@ -451,7 +451,7 @@ Latency shape:
 
 | Operator operation | Expected latency shape | Notes |
 |--------------------|------------------------|-------|
-| `status` local | local projection + health probes | should be fast; mark freshness explicitly if projection is stale |
+| `status` local | local view + health probes | should be fast; mark freshness explicitly if a view is stale |
 | `status --live` cluster | NATS request/reply fan-out or sampled probes | bounded by slow/offline targets unless output is per-node partial |
 | `deploy preview` | reads + live reachability probes | should not write; fails if required live facts cannot be checked |
 | `deploy apply` | deploy lock KV write + participant commands + commit stream write | lock/commit pay quorum; runtime start/readiness dominates total time |

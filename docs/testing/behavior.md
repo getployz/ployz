@@ -106,19 +106,17 @@ cargo test -p ployz-sim
   removals are idempotent by each collection's contract identity.
 - Memory store routing event tests pin the reference backend contract:
   subscribers receive an initial snapshot followed by metadata-rich events
-  whose payloads preserve old/new identity and satisfy acknowledgement
-  semantics.
+  whose payloads are NATS-style upsert/remove facts and satisfy
+  acknowledgement semantics.
 - Memory deploy commit tests pin backend write semantics: removed services emit
-  release-removal events, removed volumes are scoped to the deploy namespace,
-  and deploy snapshots return revisions, releases, and instances in stable
-  contract-identity order; direct release-list and volume-list reads also
-  return stable contract-identity order. Memory and NATS deploy stores share the
-  same store API deploy projection, so commit interpretation is tested once
-  instead of drifting by backend. Memory routing notifications use one routing
-  event id per fact, matching the route journal shape.
+  release-removal facts, deploy commit records emit their contained
+  upsert/remove routing facts directly, removed volumes are scoped to the deploy
+  namespace, and direct revision-list, release-list, and volume-list reads return
+  stable contract-identity order. Memory routing notifications use one routing
+  event id per fact, matching the routing event stream shape.
 - Memory instance status tests pin direct status-list reads: instance records are
-  returned in stable contract-identity order, matching deploy snapshots.
-- Memory machine registry tests pin removal visibility: deleting a machine
+  returned in stable contract-identity order without a bundled deploy read.
+- Memory machine membership tests pin removal visibility: deleting a machine
   updates the routing snapshot and emits both machine and routing removal
   events; machine lists, routing snapshots, and machine subscription snapshots
   return records in stable machine-id order.
@@ -137,11 +135,10 @@ cargo test -p ployz-sim
 - NATS KV JSON helper tests pin backend-independent list ordering: shared KV
   readers consume keys in stable order before decoding records, so store
   consumers do not inherit backend iteration nondeterminism.
-- NATS machine registry tests pin key/payload identity checks: malformed
+- NATS machine membership tests pin key/payload identity checks: malformed
   records and mismatched KV keys fail visibly instead of corrupting durable
-  routing truth, and machine subscription snapshots preserve KV revisions while
-  rejecting key/payload mismatches and returning records in stable machine-id
-  order.
+  routing truth, and machine subscription snapshots reject key/payload
+  mismatches and return records in stable machine-id order.
 - NATS instance store tests pin key/payload identity checks: malformed instance
   records and mismatched KV keys fail visibly instead of emitting misleading
   routing updates or removals, and instance status records are returned in stable
@@ -154,11 +151,13 @@ cargo test -p ployz-sim
 - NATS deploy status tests pin key/payload identity checks: malformed or
   mismatched deploy status records fail visibly instead of being returned for
   the wrong deploy id.
-- Store API deploy projection tests pin deterministic backend output: revisions,
+- Store API memory deploy tests pin deterministic backend output: revisions,
   releases, and volumes are returned in contract-identity order for namespace
   and global snapshots rather than hash-map iteration order.
-- NATS deploy stream tests pin stream-specific behavior: routing events for a
-  committed deploy are derived from the stream-ordered prior projection.
+- NATS deploy stream tests pin stream-specific behavior: newly created commits
+  route directly from the commit's upsert/remove facts, while duplicate-commit
+  repair derives only still-current repair facts from the deploy stream
+  projection.
 - NATS invite store tests pin key/payload identity checks: malformed or
   mismatched invite records fail visibly before invite redemption or revocation
   mutates control-plane state, and invite list output preserves the shared
@@ -168,18 +167,21 @@ cargo test -p ployz-sim
   remain authoritative identities rather than untrusted decoded payload fields;
   certificate, challenge, and readiness records are sorted by contract identity;
   active certificates are persisted before renewal jobs are scheduled.
-- NATS routing journal tests pin the NATS-native shape: each routing fact is a
+- NATS routing event stream tests pin the NATS-native shape: each routing fact is a
   directly acknowledged JetStream message, with no staged batch/commit protocol
-  or route-journal atomic publish dependency; event subjects are keyed directly
+  or routing-event-stream atomic publish dependency; event subjects are keyed directly
   by routing event id rather than a database-style batch/index pair, and the
-  same id is used as `Nats-Msg-Id` for broker-side retry dedupe. The route
-  journal stream and consumers subscribe only to `route.journal.event.>` so
-  routing watchers cannot accidentally decode unrelated journal message types.
+  same id is used as `Nats-Msg-Id` for broker-side retry dedupe. The routing
+  event stream and consumers subscribe only to `routing.event.>` so
+  routing watchers cannot accidentally decode unrelated routing message types.
 - NATS asset manifest tests pin operator-visible control-plane inventory:
   every stream and KV bucket created by asset setup must appear in the status
-  manifest with the correct stream/KV role. Work streams accept only the
+  manifest with the correct stream/KV scope. Work streams accept only the
   concrete subject families they process, such as certificate renewal and
-  renewal-schedule messages, instead of broad catch-all work namespaces.
+  renewal-schedule messages, instead of broad catch-all work namespaces. Scoped
+  asset configs generate stream/KV names and subject filters from the same
+  `NatsScope`, so non-default authorities cannot accidentally publish scoped
+  subjects into default-authority assets.
 - Runtime subscription tests pin that routing event acknowledgement failures
   are forwarded to the runtime reader as subscription errors instead of being
   swallowed by the daemon relay.

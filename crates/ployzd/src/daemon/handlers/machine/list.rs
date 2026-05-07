@@ -3,7 +3,7 @@ use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineRemovePayload, MachineRttPayload,
     MachineRttRow,
 };
-use ployz_store_api::{MachineRegistry, PeerRttObservation, PeerRttStore, StoreDriver};
+use ployz_store_api::{MachineMembershipStore, PeerRttObservation, PeerRttStore, StoreDriver};
 use ployz_types::model::{MachineId, MachineMembership};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -11,7 +11,7 @@ use std::net::IpAddr;
 use super::render::{format_lifecycle, format_timestamp, render_machine_list_report};
 use super::types::{MachineListReport, MachineListReportRow};
 use crate::mesh_state::bootstrap::refresh_bootstrap_peer_records_from_store;
-use ployz_nats::coord::rpc::{NodeCommandSubject, RpcPolicy};
+use ployz_nats::{NodeCommandSubject, RpcPolicy};
 use std::time::Duration;
 
 const MACHINE_REMOVE_RPC_TIMEOUT: Duration = Duration::from_secs(120);
@@ -142,7 +142,7 @@ impl DaemonState {
                     return self.err(
                         "MACHINE_REMOVE_PEER_UNREACHABLE",
                         format!(
-                            "machine '{id}' did not confirm online removal; rerun with --force for registry-only removal: {error}"
+                            "machine '{id}' did not confirm online removal; rerun with --force for membership-record-only removal: {error}"
                         ),
                     );
                 }
@@ -164,7 +164,7 @@ impl DaemonState {
                     return self.err(
                         "MACHINE_REMOVE_PEER_REJECTED",
                         format!(
-                            "machine '{id}' rejected coordinated removal [{}]: {}; resolve the remote failure or rerun with --force only if you intend registry-only removal",
+                            "machine '{id}' rejected coordinated removal [{}]: {}; resolve the remote failure or rerun with --force only if you intend membership-record-only removal",
                             response.code, response.message
                         ),
                     );
@@ -173,7 +173,7 @@ impl DaemonState {
                     return self.err(
                         "MACHINE_REMOVE_PEER_UNREACHABLE",
                         format!(
-                            "machine '{id}' did not confirm online removal; rerun with --force for registry-only removal: {error}"
+                            "machine '{id}' did not confirm online removal; rerun with --force for membership-record-only removal: {error}"
                         ),
                     );
                 }
@@ -193,7 +193,7 @@ impl DaemonState {
                     tracing::warn!(
                         %machine_id,
                         %error,
-                        "failed to refresh bootstrap seed cache after machine remove"
+                        "failed to refresh bootstrap peer seed after machine remove"
                     );
                 }
                 self.ok_with_payload(

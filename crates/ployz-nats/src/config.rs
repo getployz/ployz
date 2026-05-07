@@ -5,7 +5,6 @@ pub const CLIENT_PORT: u16 = 4222;
 pub const ROUTE_PORT: u16 = 6222;
 pub const LEAFNODE_PORT: u16 = 7422;
 pub const MONITOR_PORT: u16 = 8222;
-pub const HUB_DOMAIN: &str = "dom-auth-default";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
@@ -54,6 +53,7 @@ pub struct ServerConfig {
     pub server_name: String,
     pub cluster_name: String,
     pub storage_authority: bool,
+    pub authority_domain: String,
     pub overlay_ip: Ipv6Addr,
     pub storage_peers: Vec<PeerRoute>,
     pub data_dir: PathBuf,
@@ -69,7 +69,7 @@ impl ServerConfig {
         if self.storage_authority {
             config.push_str(&format!(
                 "jetstream {{\n  domain: {}\n  store_dir: \"{}\"\n}}\n",
-                HUB_DOMAIN,
+                self.authority_domain,
                 self.data_dir.display()
             ));
             if !self.storage_peers.is_empty() {
@@ -109,6 +109,7 @@ mod tests {
             server_name: "m1".into(),
             cluster_name: "ployz-alpha".into(),
             storage_authority: true,
+            authority_domain: "dom-auth-default".into(),
             overlay_ip: "fd00::1".parse().expect("valid ip"),
             storage_peers: Vec::new(),
             data_dir: PathBuf::from("/data"),
@@ -124,6 +125,7 @@ mod tests {
             server_name: "m1".into(),
             cluster_name: "ployz-alpha".into(),
             storage_authority: true,
+            authority_domain: "dom-auth-sin".into(),
             overlay_ip: "fd00::1".parse().expect("valid ip"),
             storage_peers: Vec::new(),
             data_dir: PathBuf::from("/data"),
@@ -131,7 +133,7 @@ mod tests {
         .render();
         assert!(!rendered.contains("cluster {"));
         assert!(rendered.contains("jetstream {"));
-        assert!(rendered.contains("domain: dom-auth-default"));
+        assert!(rendered.contains("domain: dom-auth-sin"));
         assert!(rendered.contains("leafnodes {"));
     }
 
@@ -141,6 +143,7 @@ mod tests {
             server_name: "leaf-1".into(),
             cluster_name: "ployz-alpha".into(),
             storage_authority: false,
+            authority_domain: "dom-auth-default".into(),
             overlay_ip: "fd00::10".parse().expect("valid ip"),
             storage_peers: vec![PeerRoute {
                 overlay_ip: "fd00::1".parse().expect("valid ip"),
@@ -158,6 +161,7 @@ mod tests {
             server_name: "leaf-1".into(),
             cluster_name: "ployz-alpha".into(),
             storage_authority: false,
+            authority_domain: "dom-auth-default".into(),
             overlay_ip: "fd00::10".parse().expect("valid ip"),
             storage_peers: vec![PeerRoute {
                 overlay_ip: "fd00::1".parse().expect("valid ip"),

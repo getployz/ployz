@@ -5,7 +5,7 @@ use ployz_orchestrator::machine_policy::{DiagnosticRole, diagnostic_role};
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_orchestrator::mesh::{DevicePeer, WireGuardDevice};
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
-use ployz_store_api::{MachineRegistry, PeerRttObservation, PeerRttStore};
+use ployz_store_api::{MachineMembershipStore, PeerRttObservation, PeerRttStore};
 use ployz_types::model::{MachineId, MachineMembership, PublicKey};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -611,17 +611,17 @@ mod tests {
             None,
             1,
         );
-        let cached_subnet = config.subnet;
+        let retained_subnet = crate::daemon::RetainedSubnet::from_running_config(config.subnet);
         state.active = Some(ActiveMesh {
             config,
-            cached_subnet,
+            retained_subnet,
             mesh,
             nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,
-            bootstrap_seed_cache: None,
+            bootstrap_peer_seed: None,
         });
 
         (state, store, network)
@@ -668,18 +668,18 @@ mod tests {
             identity.machine_id,
             51820,
         );
-        let cached_subnet = config.subnet;
+        let retained_subnet = crate::daemon::RetainedSubnet::from_running_config(config.subnet);
 
         ActiveMesh {
             config,
-            cached_subnet,
+            retained_subnet,
             mesh,
             nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,
-            bootstrap_seed_cache: None,
+            bootstrap_peer_seed: None,
         }
     }
 

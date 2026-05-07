@@ -4,22 +4,20 @@ use crate::certificates::{
     NoopIssuanceCoordinator, spawn_certificate_finalization_with_coordination,
     start_pending_orders,
 };
+use crate::deploy::lifecycle::{CleanupPlan, PreparedDeploy};
 use crate::deploy::managed_domains;
 use crate::deploy::participant::{self, DeployParticipantClient};
 use crate::deploy::plan::{
     PlanFingerprint, ResolvedPlan, VolumeChange, resolve_plan, volume_record_change,
 };
 use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_participants};
-use crate::deploy::transaction::{CleanupPlan, PreparedDeploy};
 use crate::error::{Error, Result};
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPreview, DeployRecord,
     DeployState, InstanceId, InstanceStatusRecord, MachineId, MachineMembership, VolumeRecord,
 };
 use futures_util::stream::{self, StreamExt, TryStreamExt};
-use ployz_store_api::{
-    DeployRecordUpdate, DeployRepository, InstanceStatusRepository, StoreDriver,
-};
+use ployz_store_api::{DeployStore, InstanceStatusStore, StoreDriver};
 use ployz_types::time::now_unix_secs;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -292,9 +290,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
             final_plan,
         )?;
         store
-            .update_deploy_record(&DeployRecordUpdate {
-                deploy: prepared.applying_record().clone(),
-            })
+            .write_deploy_status(prepared.applying_record())
             .await?;
         last_written_deploy_record = Some(prepared.applying_record().clone());
 
@@ -337,11 +333,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
             managed_domains::warnings_for_plan(store, committed.plan()).await?;
         managed_warnings.extend(acme_warnings);
         committed.set_warnings(managed_warnings)?;
-        store
-            .update_deploy_record(&DeployRecordUpdate {
-                deploy: committed.deploy_record().clone(),
-            })
-            .await?;
+        store.write_deploy_status(committed.deploy_record()).await?;
         last_written_deploy_record = Some(committed.deploy_record().clone());
         spawn_certificate_finalization_with_coordination(
             store.clone(),
@@ -361,11 +353,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
             DeployState::Committed
         } else {
             let cleanup_pending_record = committed.cleanup_pending_record(now_unix_secs())?;
-            store
-                .update_deploy_record(&DeployRecordUpdate {
-                    deploy: cleanup_pending_record,
-                })
-                .await?;
+            store.write_deploy_status(&cleanup_pending_record).await?;
             for error in cleanup.errors {
                 events.push(DeployEvent {
                     step: "cleanup_pending".into(),
@@ -387,17 +375,15 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
     if let Err(error) = &result
         && let Some(last_record) = last_written_deploy_record
         && last_record.state == DeployState::Applying
-        && let Err(update_error) = store
-            .update_deploy_record(&DeployRecordUpdate {
-                deploy: failed_deploy_record(last_record, error),
-            })
-            .await
     {
-        warn!(
-            ?update_error,
-            deploy_id = %deploy_id,
-            "failed to record terminal failed deploy state after apply error"
-        );
+        let failed_record = failed_deploy_record(last_record, error);
+        if let Err(update_error) = store.write_deploy_status(&failed_record).await {
+            warn!(
+                ?update_error,
+                deploy_id = %deploy_id,
+                "failed to record terminal failed deploy state after apply error"
+            );
+        }
     }
 
     result
@@ -587,7 +573,7 @@ fn build_committed_volumes(
             return Err(Error::operation(
                 "deploy_apply",
                 format!(
-                    "volume '{}' changed but no attached service was reconciled",
+                    "volume '{}' changed but no attached service was restarted",
                     planned.declaration.name
                 ),
             ));

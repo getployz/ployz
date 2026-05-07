@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ployz_store_api::{MachineRegistry, StoreRuntimeControl, SyncProbe, SyncStatus};
+use ployz_store_api::{MachineMembershipStore, StoreRuntimeControl, SyncProbe, SyncStatus};
 use tracing::{info, warn};
 
 use crate::error::Error as PortError;

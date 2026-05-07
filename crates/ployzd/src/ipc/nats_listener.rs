@@ -1,5 +1,5 @@
 use futures_util::StreamExt;
-use ployz_nats::coord::rpc::{decode_daemon_request, encode_daemon_response};
+use ployz_nats::{decode_daemon_request, encode_daemon_response};
 use ployz_runtime_api::RuntimeHandle;
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,16 +12,14 @@ use ployz_types::time::now_unix_secs;
 use tokio::sync::Mutex;
 
 use crate::NatsStore;
-use crate::buckets::LOCKS_BUCKET;
-use crate::config;
 use crate::store::kv_json;
 use crate::subjects;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LeaseValue {
-    pub owner: String,
-    pub nonce: String,
-    pub expires_at: u64,
+struct LeaseValue {
+    owner: String,
+    nonce: String,
+    expires_at: u64,
 }
 
 pub struct NatsDeployLock {
@@ -44,7 +43,8 @@ impl NatsDeployLock {
                 ttl,
                 now_unix_secs().saturating_add(ttl.as_secs()),
             )
-            .await?;
+            .await
+            .map_err(LockAcquireError::into_error)?;
         Ok(Self {
             locks,
             lease: Arc::new(Mutex::new(Some(lease))),
@@ -101,7 +101,7 @@ pub struct Lease {
 
 impl Lease {
     #[must_use]
-    pub fn new(key: impl Into<String>, revision: u64, value: LeaseValue) -> Self {
+    fn new(key: impl Into<String>, revision: u64, value: LeaseValue) -> Self {
         Self {
             key: key.into(),
             revision,
@@ -110,22 +110,7 @@ impl Lease {
     }
 
     #[must_use]
-    pub fn key(&self) -> &str {
-        &self.key
-    }
-
-    #[must_use]
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    #[must_use]
-    pub fn nonce(&self) -> &str {
-        &self.value.nonce
-    }
-
-    #[must_use]
-    pub fn into_release_guard(self) -> ReleaseGuard {
+    fn into_release_guard(self) -> ReleaseGuard {
         ReleaseGuard {
             key: self.key,
             expected_revision: self.revision,
@@ -135,34 +120,71 @@ impl Lease {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReleaseGuard {
-    pub key: String,
-    pub expected_revision: u64,
-    pub expected_nonce: String,
+struct ReleaseGuard {
+    key: String,
+    expected_revision: u64,
+    expected_nonce: String,
 }
 
 #[must_use]
-pub fn release_is_allowed(
-    current_revision: u64,
-    current: &LeaseValue,
-    guard: &ReleaseGuard,
-) -> bool {
+fn release_is_allowed(current_revision: u64, current: &LeaseValue, guard: &ReleaseGuard) -> bool {
     current_revision == guard.expected_revision && current.nonce == guard.expected_nonce
+}
+
+#[derive(Debug)]
+pub enum LockAcquireError {
+    AlreadyHeld { key: String },
+    Contention { key: String, source: Error },
+    Backend(Error),
+}
+
+impl LockAcquireError {
+    #[must_use]
+    pub fn into_error(self) -> Error {
+        match self {
+            Self::AlreadyHeld { key } => {
+                Error::operation("nats_lock_acquire", format!("lock '{key}' is already held"))
+            }
+            Self::Contention { key, source } => Error::operation(
+                "nats_lock_acquire",
+                format!("lock '{key}' contention: {source}"),
+            ),
+            Self::Backend(error) => error,
+        }
+    }
+}
+
+impl fmt::Display for LockAcquireError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AlreadyHeld { key } => write!(formatter, "lock '{key}' is already held"),
+            Self::Contention { key, source } => {
+                write!(formatter, "lock '{key}' contention: {source}")
+            }
+            Self::Backend(error) => write!(formatter, "{error}"),
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct NatsLocks {
     jetstream: async_nats::jetstream::Context,
     bucket: kv::Store,
+    domain: String,
 }
 
 impl NatsLocks {
     pub async fn new(store: &NatsStore) -> Result<Self> {
-        let bucket =
-            kv_json::get_bucket(store.jetstream(), LOCKS_BUCKET, "nats_locks_bucket").await?;
+        let bucket = kv_json::get_bucket(
+            store.jetstream(),
+            store.assets().locks_bucket.as_str(),
+            "nats_locks_bucket",
+        )
+        .await?;
         Ok(Self {
             jetstream: store.jetstream().clone(),
             bucket,
+            domain: store.scope().authority_domain(),
         })
     }
 
@@ -173,47 +195,49 @@ impl NatsLocks {
         nonce: impl Into<String>,
         ttl: Duration,
         expires_at: u64,
-    ) -> Result<Lease> {
+    ) -> std::result::Result<Lease, LockAcquireError> {
         let now = expires_at.saturating_sub(ttl.as_secs());
         let value = LeaseValue {
             owner: owner.into(),
             nonce: nonce.into(),
             expires_at,
         };
-        let payload = serde_json::to_vec(&value)
-            .map_err(|error| Error::operation("nats_lock_encode", error.to_string()))?;
+        let payload = serde_json::to_vec(&value).map_err(|error| {
+            LockAcquireError::Backend(Error::operation("nats_lock_encode", error.to_string()))
+        })?;
         let revision = match self.update_with_ttl(key, payload.clone(), 0, ttl).await {
             Ok(revision) => revision,
             Err(create_error) => {
                 let Some(entry) = self.bucket.entry(key).await.map_err(|error| {
-                    Error::operation("nats_lock_read_for_acquire", format!("{error:?}"))
+                    LockAcquireError::Backend(Error::operation(
+                        "nats_lock_read_for_acquire",
+                        format!("{error:?}"),
+                    ))
                 })?
                 else {
-                    return Err(Error::operation(
-                        "nats_lock_acquire",
-                        format!("{create_error:?}"),
-                    ));
+                    return Err(LockAcquireError::Contention {
+                        key: key.to_string(),
+                        source: create_error,
+                    });
                 };
                 match entry.operation {
                     kv::Operation::Put => {
                         let current: LeaseValue =
-                            kv_json::decode_json("nats_lock_decode", entry.value.as_ref())?;
+                            kv_json::decode_json("nats_lock_decode", entry.value.as_ref())
+                                .map_err(LockAcquireError::Backend)?;
                         if current.expires_at > now {
-                            return Err(Error::operation(
-                                "nats_lock_acquire",
-                                format!("lock '{key}' is already held"),
-                            ));
+                            return Err(LockAcquireError::AlreadyHeld {
+                                key: key.to_string(),
+                            });
                         }
                     }
                     kv::Operation::Delete | kv::Operation::Purge => {}
                 }
                 self.update_with_ttl(key, payload, entry.revision, ttl)
                     .await
-                    .map_err(|error| {
-                        Error::operation(
-                            "nats_lock_acquire",
-                            format!("lock '{key}' contention: {error:?}"),
-                        )
+                    .map_err(|source| LockAcquireError::Contention {
+                        key: key.to_string(),
+                        source,
                     })?
             }
         };
@@ -280,7 +304,11 @@ impl NatsLocks {
         );
         headers.insert(header::NATS_MESSAGE_TTL, ttl_header_value(ttl));
         self.jetstream
-            .publish_with_headers(kv_put_subject(&self.bucket, key), headers, value.into())
+            .publish_with_headers(
+                kv_put_subject(&self.bucket, &self.domain, key),
+                headers,
+                value.into(),
+            )
             .await
             .map_err(|error| Error::operation("nats_lock_publish", format!("{error:?}")))?
             .await
@@ -303,9 +331,10 @@ fn release_value_for_operation(
     }
 }
 
-fn kv_put_subject(bucket: &kv::Store, key: &str) -> String {
+fn kv_put_subject(bucket: &kv::Store, domain: &str, key: &str) -> String {
     kv_put_subject_parts(
         bucket.use_jetstream_prefix,
+        domain,
         bucket.put_prefix.as_deref(),
         &bucket.prefix,
         key,
@@ -314,6 +343,7 @@ fn kv_put_subject(bucket: &kv::Store, key: &str) -> String {
 
 fn kv_put_subject_parts(
     use_jetstream_prefix: bool,
+    domain: &str,
     put_prefix: Option<&str>,
     prefix: &str,
     key: &str,
@@ -321,7 +351,7 @@ fn kv_put_subject_parts(
     let mut subject = String::new();
     if use_jetstream_prefix {
         subject.push_str("$JS.");
-        subject.push_str(config::HUB_DOMAIN);
+        subject.push_str(domain);
         subject.push_str(".API.");
     }
     subject.push_str(put_prefix.unwrap_or(prefix));
@@ -359,8 +389,28 @@ mod tests {
     #[test]
     fn kv_subject_uses_authority_domain_prefix_for_domain_scoped_bucket() {
         assert_eq!(
-            kv_put_subject_parts(true, None, "$KV.locks.", "locks.deploy.default"),
+            kv_put_subject_parts(
+                true,
+                "dom-auth-default",
+                None,
+                "$KV.locks.",
+                "locks.deploy.default"
+            ),
             "$JS.dom-auth-default.API.$KV.locks.locks.deploy.default"
+        );
+    }
+
+    #[test]
+    fn kv_subject_uses_scoped_authority_domain_prefix() {
+        assert_eq!(
+            kv_put_subject_parts(
+                true,
+                "dom-auth-sin",
+                None,
+                "$KV.locks.",
+                "locks.deploy.default"
+            ),
+            "$JS.dom-auth-sin.API.$KV.locks.locks.deploy.default"
         );
     }
 

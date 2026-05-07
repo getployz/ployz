@@ -9,7 +9,6 @@ use ployz_types::model::{
 };
 use ployz_types::spec::Namespace;
 use serde::{Deserialize, Serialize};
-use std::future::Future;
 use std::net::SocketAddr;
 use tokio::sync::{mpsc, oneshot};
 
@@ -84,13 +83,13 @@ impl RoutingEventEnvelope {
 
 pub fn apply_routing_event(state: &mut RoutingState, event: RoutingEvent) {
     match event {
-        RoutingEvent::MachineAdded(record) | RoutingEvent::MachineUpdated { new: record, .. } => {
+        RoutingEvent::MachineUpsert(record) => {
             upsert_by(&mut state.machines, record, |record| record.id.clone());
         }
         RoutingEvent::MachineRemoved { id } => {
             state.machines.retain(|candidate| candidate.id != id);
         }
-        RoutingEvent::RevisionAdded(record) | RoutingEvent::RevisionUpdated { new: record, .. } => {
+        RoutingEvent::RevisionUpsert(record) => {
             upsert_by(&mut state.revisions, record, |record| {
                 (
                     record.namespace.clone(),
@@ -110,7 +109,7 @@ pub fn apply_routing_event(state: &mut RoutingState, event: RoutingEvent) {
                     || candidate.revision_hash != revision_hash
             });
         }
-        RoutingEvent::ReleaseAdded(record) | RoutingEvent::ReleaseUpdated { new: record, .. } => {
+        RoutingEvent::ReleaseUpsert(record) => {
             upsert_by(&mut state.releases, record, |record| {
                 (record.namespace.clone(), record.service.clone())
             });
@@ -120,7 +119,7 @@ pub fn apply_routing_event(state: &mut RoutingState, event: RoutingEvent) {
                 candidate.namespace != namespace || candidate.service != service
             });
         }
-        RoutingEvent::InstanceAdded(record) | RoutingEvent::InstanceUpdated { new: record, .. } => {
+        RoutingEvent::InstanceUpsert(record) => {
             upsert_by(&mut state.instances, record, |record| {
                 record.instance_id.0.clone()
             });
@@ -140,11 +139,6 @@ pub fn apply_routing_events(
     for event in events {
         apply_routing_event(state, event);
     }
-}
-
-#[must_use]
-pub fn routing_event_id(operation_id: &str, sequence: usize) -> String {
-    format!("{operation_id}:{sequence}")
 }
 
 fn upsert_by<T, K>(items: &mut Vec<T>, value: T, key: impl Fn(&T) -> K)
@@ -181,7 +175,7 @@ mod tests {
         RoutingEventEnvelope::unacked(
             "event-1",
             None,
-            RoutingEvent::MachineAdded(machine("machine-1", MachineLifecycle::Active)),
+            RoutingEvent::MachineUpsert(machine("machine-1", MachineLifecycle::Active)),
         )
         .ack()
         .await
@@ -196,7 +190,7 @@ mod tests {
         let error = RoutingEventEnvelope::with_ack(
             "event-1",
             None,
-            RoutingEvent::MachineAdded(machine("machine-1", MachineLifecycle::Active)),
+            RoutingEvent::MachineUpsert(machine("machine-1", MachineLifecycle::Active)),
             ack_tx,
         )
         .ack()
@@ -205,14 +199,6 @@ mod tests {
 
         assert!(error.to_string().contains("event-1"));
         assert!(error.to_string().contains("ack receiver closed"));
-    }
-
-    #[test]
-    fn routing_event_ids_are_operation_scoped_sequences() {
-        assert_eq!(
-            super::routing_event_id("deploy:deploy-1", 2),
-            "deploy:deploy-1:2"
-        );
     }
 
     #[test]
@@ -228,13 +214,7 @@ mod tests {
             instances: Vec::new(),
         };
 
-        apply_routing_event(
-            &mut state,
-            RoutingEvent::ReleaseUpdated {
-                old: old_api,
-                new: new_api,
-            },
-        );
+        apply_routing_event(&mut state, RoutingEvent::ReleaseUpsert(new_api));
 
         assert_eq!(state.releases.len(), 2);
         assert_eq!(
@@ -285,13 +265,7 @@ mod tests {
             instances: Vec::new(),
         };
 
-        apply_routing_event(
-            &mut state,
-            RoutingEvent::RevisionUpdated {
-                old: old_api,
-                new: new_api,
-            },
-        );
+        apply_routing_event(&mut state, RoutingEvent::RevisionUpsert(new_api));
 
         assert_eq!(state.revisions.len(), 2);
         assert_eq!(
@@ -329,13 +303,7 @@ mod tests {
             instances: vec![old_api.clone(), worker.clone()],
         };
 
-        apply_routing_event(
-            &mut state,
-            RoutingEvent::InstanceUpdated {
-                old: old_api,
-                new: new_api,
-            },
-        );
+        apply_routing_event(&mut state, RoutingEvent::InstanceUpsert(new_api));
 
         assert_eq!(state.instances.len(), 2);
         assert_eq!(
@@ -377,12 +345,9 @@ mod tests {
         apply_routing_events(
             &mut state,
             [
-                RoutingEvent::MachineAdded(machine_a.clone()),
-                RoutingEvent::MachineAdded(machine_b.clone()),
-                RoutingEvent::MachineUpdated {
-                    old: machine_a,
-                    new: machine_a_draining.clone(),
-                },
+                RoutingEvent::MachineUpsert(machine_a.clone()),
+                RoutingEvent::MachineUpsert(machine_b.clone()),
+                RoutingEvent::MachineUpsert(machine_a_draining.clone()),
                 RoutingEvent::MachineRemoved { id: machine_b.id },
             ],
         );
@@ -403,14 +368,14 @@ mod tests {
         apply_routing_events(
             &mut state,
             [
-                RoutingEvent::MachineAdded(machine("machine-b", MachineLifecycle::Active)),
-                RoutingEvent::MachineAdded(machine("machine-a", MachineLifecycle::Active)),
-                RoutingEvent::RevisionAdded(revision(&namespace, "worker", "rev-b", "{}")),
-                RoutingEvent::RevisionAdded(revision(&namespace, "api", "rev-a", "{}")),
-                RoutingEvent::ReleaseAdded(release(&namespace, "worker", "rev-b")),
-                RoutingEvent::ReleaseAdded(release(&namespace, "api", "rev-a")),
-                RoutingEvent::InstanceAdded(instance(&namespace, "inst-b", true)),
-                RoutingEvent::InstanceAdded(instance(&namespace, "inst-a", true)),
+                RoutingEvent::MachineUpsert(machine("machine-b", MachineLifecycle::Active)),
+                RoutingEvent::MachineUpsert(machine("machine-a", MachineLifecycle::Active)),
+                RoutingEvent::RevisionUpsert(revision(&namespace, "worker", "rev-b", "{}")),
+                RoutingEvent::RevisionUpsert(revision(&namespace, "api", "rev-a", "{}")),
+                RoutingEvent::ReleaseUpsert(release(&namespace, "worker", "rev-b")),
+                RoutingEvent::ReleaseUpsert(release(&namespace, "api", "rev-a")),
+                RoutingEvent::InstanceUpsert(instance(&namespace, "inst-b", true)),
+                RoutingEvent::InstanceUpsert(instance(&namespace, "inst-a", true)),
             ],
         );
 
@@ -590,185 +555,117 @@ pub struct DeployCommit {
     pub deploy: DeployRecord,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeployRecordUpdate {
-    pub deploy: DeployRecord,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeploySnapshot {
-    pub revisions: Vec<ServiceRevisionRecord>,
-    pub releases: Vec<ServiceReleaseRecord>,
-    pub instances: Vec<InstanceStatusRecord>,
-}
-
-pub trait MachineRegistry: Send + Sync {
-    fn init(&self) -> impl Future<Output = Result<()>> + Send + '_ {
-        async { Ok(()) }
+#[async_trait]
+pub trait MachineMembershipStore: Send + Sync {
+    async fn init(&self) -> Result<()> {
+        Ok(())
     }
 
-    fn list_machines(&self) -> impl Future<Output = Result<Vec<MachineMembership>>> + Send + '_;
+    async fn list_machines(&self) -> Result<Vec<MachineMembership>>;
 
-    fn upsert_self_machine<'a>(
-        &'a self,
-        record: &'a MachineMembership,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()>;
 
-    fn delete_machine<'a>(
-        &'a self,
-        id: &'a MachineId,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn delete_machine(&self, id: &MachineId) -> Result<()>;
 
-    fn subscribe_machines(&self) -> impl Future<Output = Result<MachineSubscription>> + Send + '_;
+    async fn subscribe_machines(&self) -> Result<MachineSubscription>;
 }
 
-pub trait InviteRepository: Send + Sync {
-    fn create_invite<'a>(
-        &'a self,
-        invite: &'a InviteRecord,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+#[async_trait]
+pub trait InviteStore: Send + Sync {
+    async fn create_invite(&self, invite: &InviteRecord) -> Result<()>;
 
-    fn get_invite<'a>(
-        &'a self,
-        invite_id: &'a str,
-    ) -> impl Future<Output = Result<Option<InviteRecord>>> + Send + 'a;
+    async fn get_invite(&self, invite_id: &str) -> Result<Option<InviteRecord>>;
 
-    fn list_invites(&self) -> impl Future<Output = Result<Vec<InviteRecord>>> + Send + '_;
+    async fn list_invites(&self) -> Result<Vec<InviteRecord>>;
 
-    fn redeem_invite<'a>(
-        &'a self,
-        invite_id: &'a str,
-        machine_id: &'a MachineId,
-        now_unix_secs: u64,
-    ) -> impl Future<Output = Result<InviteRecord>> + Send + 'a;
-
-    fn revoke_invite<'a>(
-        &'a self,
-        invite_id: &'a str,
-        now_unix_secs: u64,
-    ) -> impl Future<Output = Result<InviteRecord>> + Send + 'a;
-}
-
-pub trait RoutingSnapshotReader: Send + Sync {
-    fn load_routing_state(&self) -> impl Future<Output = Result<RoutingState>> + Send + '_;
-
-    fn subscribe_routing_events(
+    async fn redeem_invite(
         &self,
-    ) -> impl Future<Output = Result<RoutingEventSubscription>> + Send + '_;
+        invite_id: &str,
+        machine_id: &MachineId,
+        now_unix_secs: u64,
+    ) -> Result<InviteRecord>;
+
+    async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord>;
 }
 
-pub trait DeployRepository: Send + Sync {
-    fn list_deploy_releases<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-    ) -> impl Future<Output = Result<Vec<ServiceReleaseRecord>>> + Send + 'a;
+#[async_trait]
+pub trait RoutingStateStore: Send + Sync {
+    async fn load_routing_state(&self) -> Result<RoutingState>;
 
-    fn load_deploy_snapshot<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-    ) -> impl Future<Output = Result<DeploySnapshot>> + Send + 'a;
-
-    fn list_volumes<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-    ) -> impl Future<Output = Result<Vec<VolumeRecord>>> + Send + 'a;
-
-    fn get_volume<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-        volume_name: &'a str,
-    ) -> impl Future<Output = Result<Option<VolumeRecord>>> + Send + 'a;
-
-    fn commit_deploy<'a>(
-        &'a self,
-        command: &'a DeployCommit,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
-
-    fn update_deploy_record<'a>(
-        &'a self,
-        command: &'a DeployRecordUpdate,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
-
-    fn get_deploy<'a>(
-        &'a self,
-        deploy_id: &'a DeployId,
-    ) -> impl Future<Output = Result<Option<DeployRecord>>> + Send + 'a;
+    async fn subscribe_routing_events(&self) -> Result<RoutingEventSubscription>;
 }
 
-pub trait InstanceStatusRepository: Send + Sync {
-    fn list_instance_status<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-    ) -> impl Future<Output = Result<Vec<InstanceStatusRecord>>> + Send + 'a;
+#[async_trait]
+pub trait DeployStore: Send + Sync {
+    async fn list_deploy_revisions(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceRevisionRecord>>;
 
-    fn record_instance_status<'a>(
-        &'a self,
-        record: &'a InstanceStatusRecord,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn list_deploy_releases(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceReleaseRecord>>;
 
-    fn remove_instance_status<'a>(
-        &'a self,
-        instance_id: &'a InstanceId,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>>;
+
+    async fn get_volume(
+        &self,
+        namespace: &Namespace,
+        volume_name: &str,
+    ) -> Result<Option<VolumeRecord>>;
+
+    async fn commit_deploy(&self, command: &DeployCommit) -> Result<()>;
+
+    async fn write_deploy_status(&self, deploy: &DeployRecord) -> Result<()>;
+
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>>;
 }
 
+#[async_trait]
+pub trait InstanceStatusStore: Send + Sync {
+    async fn list_instance_status(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<InstanceStatusRecord>>;
+
+    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()>;
+
+    async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()>;
+}
+
+#[async_trait]
 pub trait CertificateStore: Send + Sync {
-    fn get_acme_account<'a>(
-        &'a self,
-        issuer_url: &'a str,
-    ) -> impl Future<Output = Result<Option<AcmeAccountRecord>>> + Send + 'a;
+    async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>>;
 
-    fn upsert_acme_account<'a>(
-        &'a self,
-        record: &'a AcmeAccountRecord,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()>;
 
-    fn list_certificates(&self)
-    -> impl Future<Output = Result<Vec<CertificateRecord>>> + Send + '_;
+    async fn list_certificates(&self) -> Result<Vec<CertificateRecord>>;
 
-    fn get_certificate<'a>(
-        &'a self,
-        hostname: &'a str,
-    ) -> impl Future<Output = Result<Option<CertificateRecord>>> + Send + 'a;
+    async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>>;
 
-    fn upsert_certificate<'a>(
-        &'a self,
-        record: &'a CertificateRecord,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()>;
 
-    fn list_acme_challenges(
+    async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>>;
+
+    async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()>;
+
+    async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()>;
+
+    async fn subscribe_certificates(&self) -> Result<CertificateSubscription>;
+
+    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription>;
+
+    async fn upsert_acme_challenge_readiness(
         &self,
-    ) -> impl Future<Output = Result<Vec<AcmeChallengeRecord>>> + Send + '_;
+        record: &AcmeChallengeReadinessRecord,
+    ) -> Result<()>;
 
-    fn upsert_acme_challenge<'a>(
-        &'a self,
-        record: &'a AcmeChallengeRecord,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
-
-    fn delete_acme_challenge<'a>(
-        &'a self,
-        hostname: &'a str,
-        token: &'a str,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
-
-    fn subscribe_certificates(
+    async fn list_acme_challenge_readiness(
         &self,
-    ) -> impl Future<Output = Result<CertificateSubscription>> + Send + '_;
-
-    fn subscribe_acme_challenges(
-        &self,
-    ) -> impl Future<Output = Result<AcmeChallengeSubscription>> + Send + '_;
-
-    fn upsert_acme_challenge_readiness<'a>(
-        &'a self,
-        record: &'a AcmeChallengeReadinessRecord,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
-
-    fn list_acme_challenge_readiness<'a>(
-        &'a self,
-        hostname: &'a str,
-        token: &'a str,
-    ) -> impl Future<Output = Result<Vec<AcmeChallengeReadinessRecord>>> + Send + 'a;
+        hostname: &str,
+        token: &str,
+    ) -> Result<Vec<AcmeChallengeReadinessRecord>>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -783,17 +680,17 @@ pub struct PeerRttObservation {
     pub rtts_ms: Vec<u64>,
 }
 
+#[async_trait]
 pub trait PeerRttStore: Send + Sync {
-    fn peer_rtt_observations(
-        &self,
-    ) -> impl Future<Output = Result<Vec<PeerRttObservation>>> + Send + '_ {
-        async { Ok(Vec::new()) }
+    async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
+        Ok(Vec::new())
     }
 }
 
+#[async_trait]
 pub trait SyncProbe: Send + Sync {
-    fn sync_status(&self) -> impl Future<Output = Result<SyncStatus>> + Send + '_ {
-        async { Ok(SyncStatus::Synced) }
+    async fn sync_status(&self) -> Result<SyncStatus> {
+        Ok(SyncStatus::Synced)
     }
 }
 

@@ -5,7 +5,7 @@ use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signer, SigningKey};
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
-use ployz_store_api::{InviteRepository, MachineRegistry};
+use ployz_store_api::{InviteStore, MachineMembershipStore};
 use ployz_types::model::InviteRecord;
 use ployz_types::time::now_unix_secs;
 use x25519_dalek::StaticSecret;
@@ -228,7 +228,7 @@ mod tests {
     use ployz_orchestrator::{Mesh, WireguardDriver};
     use ployz_runtime_api::Identity;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
-    use ployz_store_api::{InviteRepository, StoreDriver};
+    use ployz_store_api::{InviteStore, StoreDriver};
     use ployz_types::model::{MachineId, NetworkId};
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -304,7 +304,7 @@ mod tests {
             1,
         );
         state.active = Some(ActiveMesh {
-            cached_subnet: config.subnet,
+            retained_subnet: crate::daemon::RetainedSubnet::from_running_config(config.subnet),
             config,
             mesh,
             nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
@@ -312,7 +312,7 @@ mod tests {
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,
-            bootstrap_seed_cache: None,
+            bootstrap_peer_seed: None,
         });
         (state, store)
     }

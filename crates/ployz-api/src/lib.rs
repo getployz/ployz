@@ -391,24 +391,20 @@ pub fn sort_routing_state(state: &mut RoutingState) {
 #[must_use]
 pub fn runtime_frame_from_event(event: RoutingEvent) -> RuntimeWatchFrame {
     match event {
-        RoutingEvent::MachineAdded(record) | RoutingEvent::MachineUpdated { new: record, .. } => {
-            RuntimeWatchFrame::Upsert {
-                key: machine_runtime_key(&record),
-                collection: RuntimeCollection::Machine,
-                record: RuntimeRecord::Machine(record),
-            }
-        }
+        RoutingEvent::MachineUpsert(record) => RuntimeWatchFrame::Upsert {
+            key: machine_runtime_key(&record),
+            collection: RuntimeCollection::Machine,
+            record: RuntimeRecord::Machine(record),
+        },
         RoutingEvent::MachineRemoved { id } => RuntimeWatchFrame::Remove {
             key: id.0,
             collection: RuntimeCollection::Machine,
         },
-        RoutingEvent::RevisionAdded(record) | RoutingEvent::RevisionUpdated { new: record, .. } => {
-            RuntimeWatchFrame::Upsert {
-                key: revision_runtime_key(&record),
-                collection: RuntimeCollection::Revision,
-                record: RuntimeRecord::Revision(record),
-            }
-        }
+        RoutingEvent::RevisionUpsert(record) => RuntimeWatchFrame::Upsert {
+            key: revision_runtime_key(&record),
+            collection: RuntimeCollection::Revision,
+            record: RuntimeRecord::Revision(record),
+        },
         RoutingEvent::RevisionRemoved {
             namespace,
             service,
@@ -417,24 +413,20 @@ pub fn runtime_frame_from_event(event: RoutingEvent) -> RuntimeWatchFrame {
             key: format!("{namespace}:{service}:{revision_hash}"),
             collection: RuntimeCollection::Revision,
         },
-        RoutingEvent::ReleaseAdded(record) | RoutingEvent::ReleaseUpdated { new: record, .. } => {
-            RuntimeWatchFrame::Upsert {
-                key: release_runtime_key(&record),
-                collection: RuntimeCollection::Release,
-                record: RuntimeRecord::Release(record),
-            }
-        }
+        RoutingEvent::ReleaseUpsert(record) => RuntimeWatchFrame::Upsert {
+            key: release_runtime_key(&record),
+            collection: RuntimeCollection::Release,
+            record: RuntimeRecord::Release(record),
+        },
         RoutingEvent::ReleaseRemoved { namespace, service } => RuntimeWatchFrame::Remove {
             key: format!("{namespace}:{service}"),
             collection: RuntimeCollection::Release,
         },
-        RoutingEvent::InstanceAdded(record) | RoutingEvent::InstanceUpdated { new: record, .. } => {
-            RuntimeWatchFrame::Upsert {
-                key: instance_runtime_key(&record),
-                collection: RuntimeCollection::Instance,
-                record: RuntimeRecord::Instance(record),
-            }
-        }
+        RoutingEvent::InstanceUpsert(record) => RuntimeWatchFrame::Upsert {
+            key: instance_runtime_key(&record),
+            collection: RuntimeCollection::Instance,
+            record: RuntimeRecord::Instance(record),
+        },
         RoutingEvent::InstanceRemoved { instance_id } => RuntimeWatchFrame::Remove {
             key: instance_id.0,
             collection: RuntimeCollection::Instance,
@@ -533,7 +525,7 @@ pub struct NatsAssetStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
+    pub scope: Option<String>,
     #[serde(flatten)]
     pub state: NatsAssetHealthState,
 }
@@ -929,33 +921,20 @@ mod tests {
 
     #[test]
     fn instance_events_map_to_idempotent_watch_frames() {
-        let old = instance_record("instance-1", "prod", "api");
-        let mut new = old.clone();
-        new.ready = true;
+        let mut record = instance_record("instance-1", "prod", "api");
+        record.ready = true;
 
-        let added = runtime_frame_from_event(RoutingEvent::InstanceAdded(old.clone()));
-        let updated = runtime_frame_from_event(RoutingEvent::InstanceUpdated {
-            old: old.clone(),
-            new: new.clone(),
-        });
+        let upsert = runtime_frame_from_event(RoutingEvent::InstanceUpsert(record.clone()));
         let removed = runtime_frame_from_event(RoutingEvent::InstanceRemoved {
-            instance_id: new.instance_id.clone(),
+            instance_id: record.instance_id.clone(),
         });
 
         assert_eq!(
-            added,
+            upsert,
             RuntimeWatchFrame::Upsert {
                 collection: RuntimeCollection::Instance,
                 key: String::from("instance-1"),
-                record: RuntimeRecord::Instance(old.clone()),
-            }
-        );
-        assert_eq!(
-            updated,
-            RuntimeWatchFrame::Upsert {
-                collection: RuntimeCollection::Instance,
-                key: String::from("instance-1"),
-                record: RuntimeRecord::Instance(new.clone()),
+                record: RuntimeRecord::Instance(record.clone()),
             }
         );
         assert_eq!(
@@ -969,22 +948,16 @@ mod tests {
 
     #[test]
     fn routing_events_for_all_collections_map_to_runtime_watch_frames() {
-        let old_machine = machine_record("machine-1");
-        let mut new_machine = old_machine.clone();
+        let mut new_machine = machine_record("machine-1");
         new_machine.lifecycle = MachineLifecycle::Draining;
-        let old_revision = revision_record("prod", "api", "rev-1");
-        let mut new_revision = old_revision.clone();
+        let mut new_revision = revision_record("prod", "api", "rev-1");
         new_revision.spec_json = r#"{"image":"api:2"}"#.into();
-        let old_release = release_record("prod", "api");
-        let mut new_release = old_release.clone();
+        let mut new_release = release_record("prod", "api");
         new_release.release.primary_revision_hash = "rev-2".into();
 
         let cases = [
             (
-                runtime_frame_from_event(RoutingEvent::MachineUpdated {
-                    old: old_machine.clone(),
-                    new: new_machine.clone(),
-                }),
+                runtime_frame_from_event(RoutingEvent::MachineUpsert(new_machine.clone())),
                 RuntimeWatchFrame::Upsert {
                     collection: RuntimeCollection::Machine,
                     key: String::from("machine-1"),
@@ -1001,10 +974,7 @@ mod tests {
                 },
             ),
             (
-                runtime_frame_from_event(RoutingEvent::RevisionUpdated {
-                    old: old_revision.clone(),
-                    new: new_revision.clone(),
-                }),
+                runtime_frame_from_event(RoutingEvent::RevisionUpsert(new_revision.clone())),
                 RuntimeWatchFrame::Upsert {
                     collection: RuntimeCollection::Revision,
                     key: String::from("prod:api:rev-1"),
@@ -1023,10 +993,7 @@ mod tests {
                 },
             ),
             (
-                runtime_frame_from_event(RoutingEvent::ReleaseUpdated {
-                    old: old_release.clone(),
-                    new: new_release.clone(),
-                }),
+                runtime_frame_from_event(RoutingEvent::ReleaseUpsert(new_release.clone())),
                 RuntimeWatchFrame::Upsert {
                     collection: RuntimeCollection::Release,
                     key: String::from("prod:api"),

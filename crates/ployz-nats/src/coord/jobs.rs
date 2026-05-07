@@ -11,6 +11,7 @@ use futures_util::StreamExt;
 use ployz_types::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::NatsStore;
 use crate::buckets::NatsAssetNames;
 use crate::subjects;
 use crate::subjects::NatsScope;
@@ -23,20 +24,15 @@ pub const CERT_RENEWAL_MAX_IN_FLIGHT: i64 = 1;
 pub const CERT_RENEWAL_MAX_FETCH_MESSAGES: i64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CertRenewalJob {
-    pub hostname: String,
-    pub renewal_subject: String,
-    pub schedule_subject: String,
+struct CertRenewalJob {
+    hostname: String,
+    renewal_subject: String,
+    schedule_subject: String,
 }
 
 impl CertRenewalJob {
     #[must_use]
-    pub fn new(hostname: impl Into<String>) -> Self {
-        Self::new_in(&NatsScope::default(), hostname)
-    }
-
-    #[must_use]
-    pub fn new_in(scope: &NatsScope, hostname: impl Into<String>) -> Self {
+    fn new_in(scope: &NatsScope, hostname: impl Into<String>) -> Self {
         let hostname = hostname.into().to_ascii_lowercase();
         Self {
             renewal_subject: subjects::cert_renewal_job_in(scope, &hostname),
@@ -47,8 +43,8 @@ impl CertRenewalJob {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CertRenewalJobPayload {
-    pub hostname: String,
+struct CertRenewalJobPayload {
+    hostname: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,64 +55,49 @@ pub enum JobSchedule {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CertRenewalPublishSpec {
-    pub subject: String,
-    pub stream: String,
-    pub headers: HeaderMap,
-    pub payload: Vec<u8>,
+struct CertRenewalPublish {
+    subject: String,
+    stream: String,
+    headers: HeaderMap,
+    payload: Vec<u8>,
 }
 
-impl CertRenewalPublishSpec {
-    pub fn build(hostname: impl Into<String>, schedule: JobSchedule) -> Result<Self> {
-        Self::build_in(&NatsScope::default(), hostname, schedule)
-    }
-
-    pub fn build_in(
-        scope: &NatsScope,
-        hostname: impl Into<String>,
-        schedule: JobSchedule,
-    ) -> Result<Self> {
-        let job = CertRenewalJob::new_in(scope, hostname);
-        let stream = NatsAssetNames::new(scope).cert_jobs_stream;
-        let mut headers = HeaderMap::new();
-        headers.insert(NATS_EXPECTED_STREAM, stream.as_str());
-        let message_id = cert_renewal_message_id(&job.hostname, &schedule);
-        headers.insert(NATS_MESSAGE_ID, message_id.as_str());
-        let subject = match schedule_header_value(&schedule)? {
-            Some(schedule) => {
-                headers.insert(NATS_SCHEDULE, schedule);
-                headers.insert(NATS_SCHEDULE_TARGET, job.renewal_subject.as_str());
-                job.schedule_subject
-            }
-            None => job.renewal_subject,
-        };
-        let payload = serde_json::to_vec(&CertRenewalJobPayload {
-            hostname: job.hostname,
-        })
-        .map_err(|error| Error::operation("nats_cert_job_encode", error.to_string()))?;
-        Ok(Self {
-            subject,
-            stream,
-            headers,
-            payload,
-        })
-    }
-
-    #[must_use]
-    pub fn publish_message(&self) -> PublishMessage {
-        PublishMessage::build()
-            .payload(self.payload.clone().into())
-            .headers(self.headers.clone())
-            .expected_stream(self.stream.clone())
-    }
-}
-
-pub async fn publish_cert_renewal_job(
-    js: &jetstream::Context,
+fn cert_renewal_publish_in(
+    scope: &NatsScope,
     hostname: impl Into<String>,
     schedule: JobSchedule,
-) -> Result<()> {
-    publish_cert_renewal_job_in(js, &NatsScope::default(), hostname, schedule).await
+) -> Result<CertRenewalPublish> {
+    let job = CertRenewalJob::new_in(scope, hostname);
+    let stream = NatsAssetNames::new(scope).cert_jobs_stream;
+    let mut headers = HeaderMap::new();
+    headers.insert(NATS_EXPECTED_STREAM, stream.as_str());
+    let message_id = cert_renewal_message_id(&job.hostname, &schedule);
+    headers.insert(NATS_MESSAGE_ID, message_id.as_str());
+    let subject = match schedule_header_value(&schedule)? {
+        Some(schedule) => {
+            headers.insert(NATS_SCHEDULE, schedule);
+            headers.insert(NATS_SCHEDULE_TARGET, job.renewal_subject.as_str());
+            job.schedule_subject
+        }
+        None => job.renewal_subject,
+    };
+    let payload = serde_json::to_vec(&CertRenewalJobPayload {
+        hostname: job.hostname,
+    })
+    .map_err(|error| Error::operation("nats_cert_job_encode", error.to_string()))?;
+    Ok(CertRenewalPublish {
+        subject,
+        stream,
+        headers,
+        payload,
+    })
+}
+
+fn publish_message(message: &CertRenewalPublish) -> PublishMessage {
+    PublishMessage::build()
+        .payload(message.payload.clone().into())
+        .headers(message.headers.clone())
+        .expected_stream(message.stream.clone())
 }
 
 pub async fn publish_cert_renewal_job_in(
@@ -125,9 +106,9 @@ pub async fn publish_cert_renewal_job_in(
     hostname: impl Into<String>,
     schedule: JobSchedule,
 ) -> Result<()> {
-    let spec = CertRenewalPublishSpec::build_in(scope, hostname, schedule)?;
+    let message = cert_renewal_publish_in(scope, hostname, schedule)?;
     let ack = js
-        .send_publish(spec.subject.clone(), spec.publish_message())
+        .send_publish(message.subject.clone(), publish_message(&message))
         .await
         .map_err(|error| Error::operation("nats_cert_job_publish", format!("{error:?}")))?;
     ack.await
@@ -135,11 +116,7 @@ pub async fn publish_cert_renewal_job_in(
         .map_err(|error| Error::operation("nats_cert_job_ack", format!("{error:?}")))
 }
 
-pub fn cert_renewal_consumer_config(policy: CertRenewalConsumerPolicy) -> Result<pull::Config> {
-    cert_renewal_consumer_config_in(&NatsScope::default(), policy)
-}
-
-pub fn cert_renewal_consumer_config_in(
+fn cert_renewal_consumer_config_in(
     scope: &NatsScope,
     policy: CertRenewalConsumerPolicy,
 ) -> Result<pull::Config> {
@@ -169,20 +146,18 @@ pub struct NatsCertRenewalJobConsumer {
 }
 
 impl NatsCertRenewalJobConsumer {
-    pub async fn connect(
-        js: &jetstream::Context,
-        policy: CertRenewalConsumerPolicy,
-    ) -> Result<Self> {
-        Self::connect_in(js, &NatsScope::default(), policy).await
+    pub async fn connect(store: &NatsStore, policy: CertRenewalConsumerPolicy) -> Result<Self> {
+        Self::connect_in(store.jetstream(), store.scope(), policy).await
     }
 
-    pub async fn connect_in(
+    pub(crate) async fn connect_in(
         js: &jetstream::Context,
         scope: &NatsScope,
         policy: CertRenewalConsumerPolicy,
     ) -> Result<Self> {
+        let stream_name = NatsAssetNames::new(scope).cert_jobs_stream;
         let stream = js
-            .get_stream(NatsAssetNames::new(scope).cert_jobs_stream.as_str())
+            .get_stream(stream_name.as_str())
             .await
             .map_err(|error| Error::operation("nats_cert_job_stream", format!("{error:?}")))?;
         let consumer = stream
@@ -286,14 +261,6 @@ struct CertRenewalJobDecodeFailure {
     error: Error,
 }
 
-#[cfg(test)]
-fn decode_cert_renewal_message(
-    subject: &async_nats::Subject,
-    payload: &[u8],
-) -> Result<(String, String)> {
-    decode_cert_renewal_message_in(&NatsScope::default(), subject, payload)
-}
-
 fn decode_cert_renewal_message_in(
     scope: &NatsScope,
     subject: &async_nats::Subject,
@@ -365,8 +332,8 @@ mod tests {
 
     #[test]
     fn renewal_publish_dedupe_id_is_normalized_and_schedule_scoped() {
-        let first = CertRenewalJob::new("Api.Example.Com");
-        let second = CertRenewalJob::new("api.example.com");
+        let first = CertRenewalJob::new_in(&NatsScope::local_default(), "Api.Example.Com");
+        let second = CertRenewalJob::new_in(&NatsScope::local_default(), "api.example.com");
         assert_eq!(first.renewal_subject, second.renewal_subject);
         assert_eq!(first.schedule_subject, second.schedule_subject);
 
@@ -385,8 +352,9 @@ mod tests {
     }
 
     #[test]
-    fn renewal_publish_spec_sets_workqueue_headers_and_payload() {
-        let spec = CertRenewalPublishSpec::build(
+    fn renewal_publish_sets_workqueue_headers_and_payload() {
+        let spec = cert_renewal_publish_in(
+            &NatsScope::local_default(),
             "Api.Example.Com",
             JobSchedule::AtUnixSecs(1_803_619_200),
         )
@@ -398,11 +366,11 @@ mod tests {
         );
         assert_eq!(
             header(&spec.headers, NATS_EXPECTED_STREAM),
-            NatsAssetNames::new(&NatsScope::default()).cert_jobs_stream
+            NatsAssetNames::new(&NatsScope::local_default()).cert_jobs_stream
         );
         assert_eq!(
             spec.stream,
-            NatsAssetNames::new(&NatsScope::default()).cert_jobs_stream
+            NatsAssetNames::new(&NatsScope::local_default()).cert_jobs_stream
         );
         assert_eq!(
             header(&spec.headers, NATS_MESSAGE_ID),
@@ -422,9 +390,13 @@ mod tests {
     }
 
     #[test]
-    fn immediate_renewal_publish_spec_has_no_schedule_header() {
-        let spec = CertRenewalPublishSpec::build("api.example.com", JobSchedule::Immediate)
-            .expect("build renewal job");
+    fn immediate_renewal_publish_has_no_schedule_header() {
+        let spec = cert_renewal_publish_in(
+            &NatsScope::local_default(),
+            "api.example.com",
+            JobSchedule::Immediate,
+        )
+        .expect("build renewal job");
 
         assert!(spec.headers.get(NATS_SCHEDULE).is_none());
         assert!(spec.headers.get(NATS_SCHEDULE_TARGET).is_none());
@@ -439,10 +411,13 @@ mod tests {
     }
 
     #[test]
-    fn cron_renewal_publish_spec_uses_schedule_expression() {
-        let spec =
-            CertRenewalPublishSpec::build("api.example.com", JobSchedule::Cron("0 3 * * *".into()))
-                .expect("build renewal job");
+    fn cron_renewal_publish_uses_schedule_expression() {
+        let spec = cert_renewal_publish_in(
+            &NatsScope::local_default(),
+            "api.example.com",
+            JobSchedule::Cron("0 3 * * *".into()),
+        )
+        .expect("build renewal job");
 
         assert_eq!(header(&spec.headers, NATS_SCHEDULE), "0 3 * * *");
         assert_eq!(
@@ -461,8 +436,11 @@ mod tests {
 
     #[test]
     fn renewal_consumer_config_is_durable_workqueue_pull_consumer() {
-        let config = cert_renewal_consumer_config(CertRenewalConsumerPolicy::default())
-            .expect("consumer config");
+        let config = cert_renewal_consumer_config_in(
+            &NatsScope::local_default(),
+            CertRenewalConsumerPolicy::default(),
+        )
+        .expect("consumer config");
 
         assert_eq!(config.durable_name.as_deref(), Some(CERT_RENEWAL_CONSUMER));
         assert_eq!(config.name.as_deref(), Some(CERT_RENEWAL_CONSUMER));
@@ -503,7 +481,8 @@ mod tests {
         .expect("payload");
 
         let (actual_subject, hostname) =
-            decode_cert_renewal_message(&subject, &payload).expect("decode job");
+            decode_cert_renewal_message_in(&NatsScope::local_default(), &subject, &payload)
+                .expect("decode job");
 
         assert_eq!(actual_subject, subject.to_string());
         assert_eq!(hostname, "api.example.com");
@@ -542,7 +521,8 @@ mod tests {
         })
         .expect("payload");
 
-        let error = decode_cert_renewal_message(&subject, &payload).expect_err("decode fails");
+        let error = decode_cert_renewal_message_in(&NatsScope::local_default(), &subject, &payload)
+            .expect_err("decode fails");
 
         assert!(error.to_string().contains(
             "subject 'ployz.v1.local.auth-default.work.cert.renew.other%2Eexample%2Ecom'"

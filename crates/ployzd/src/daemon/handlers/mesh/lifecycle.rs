@@ -1,8 +1,8 @@
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::{DaemonRequest, MachineTransitionGoal};
-use ployz_nats::coord::rpc::{NodeCommandSubject, RpcPolicy};
+use ployz_nats::{NodeCommandSubject, RpcPolicy};
 use ployz_orchestrator::ipam::pick_candidate_subnet;
-use ployz_store_api::MachineRegistry;
+use ployz_store_api::MachineMembershipStore;
 use ployz_types::model::MachineMembership;
 use ployz_types::model::{
     MachineId, MachineLifecycle, MachineLifecycleGoal, MachineLifecycleTransition,
@@ -140,7 +140,7 @@ impl DaemonState {
     }
 
     pub(crate) async fn handle_mesh_stop(&mut self, force: bool) -> ployz_api::DaemonResponse {
-        let (network_name, overlay_ip, cached_subnet, current_lifecycle, previous_self_record) = {
+        let (network_name, overlay_ip, subnet_to_persist, current_lifecycle, previous_self_record) = {
             let Some(active) = self.active.as_ref() else {
                 return self.err("NO_RUNNING_NETWORK", "no mesh running");
             };
@@ -150,7 +150,7 @@ impl DaemonState {
             (
                 active.config.name.0.clone(),
                 active.config.overlay_ip,
-                active.config.subnet.or(active.cached_subnet),
+                active.subnet_to_persist_after_stop(),
                 self_record.lifecycle,
                 self_record,
             )
@@ -167,7 +167,7 @@ impl DaemonState {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
         active.stop_certificate_renewal().await;
-        active.stop_bootstrap_seed_cache().await;
+        active.stop_bootstrap_peer_seed().await;
         if let Err(error) = active.mesh.destroy().await {
             self.active = Some(active);
             return self.err("NETWORK_STOP_FAILED", format!("mesh stop failed: {error}"));
@@ -186,7 +186,7 @@ impl DaemonState {
                 },
                 at_unix_secs: ployz_types::time::now_unix_secs(),
             });
-        persisted.subnet = cached_subnet;
+        persisted.subnet = subnet_to_persist;
         let config_path = NetworkConfig::path(&self.data_dir, &network_name);
         if let Err(error) = persisted.save(&config_path) {
             return self.err(
@@ -525,7 +525,7 @@ impl DaemonState {
             gateway,
             dns,
             mut certificate_renewal,
-            mut bootstrap_seed_cache,
+            mut bootstrap_peer_seed,
             ..
         } = active;
         let network_name = config.name.0;
@@ -535,7 +535,7 @@ impl DaemonState {
             if let Some(task) = certificate_renewal.take() {
                 task.shutdown().await;
             }
-            if let Some(task) = bootstrap_seed_cache.take() {
+            if let Some(task) = bootstrap_peer_seed.take() {
                 task.shutdown().await;
             }
             if let Err(error) = mesh.destroy_and_wipe_store_data().await {
@@ -641,7 +641,8 @@ impl DaemonState {
                 self.stop_started_mesh_after_transition_failure().await;
                 return Err(format!("save network config: {error}"));
             }
-            active.cached_subnet = active.config.subnet;
+            active.retained_subnet =
+                crate::daemon::RetainedSubnet::from_running_config(active.config.subnet);
         }
 
         let verb = if initialized {
@@ -660,7 +661,7 @@ impl DaemonState {
             return;
         };
         active.stop_certificate_renewal().await;
-        active.stop_bootstrap_seed_cache().await;
+        active.stop_bootstrap_peer_seed().await;
         if let Err(error) = active.mesh.destroy().await {
             warn!(?error, "failed to stop mesh after transition error");
         }
@@ -712,7 +713,7 @@ async fn persist_stopped_self_record(
         .await
         .is_none()
     {
-        return Err("persist standby self record in authoritative cache".to_string());
+        return Err("update in-memory self record after standby persistence".to_string());
     }
 
     Ok(())

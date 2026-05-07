@@ -6,7 +6,7 @@ use std::time::Duration;
 use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineUpdatePayload, MachineUpdateRow,
 };
-use ployz_nats::coord::rpc::{NatsNodeRpcClient, NodeCommandSubject};
+use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject};
 use ployz_types::model::{MachineId, MachineMembership};
 use tokio::process::Command;
 use tokio::sync::oneshot;
