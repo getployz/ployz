@@ -195,6 +195,12 @@ fn render_plain_status(payload: &StatusPayload) -> String {
             .unwrap_or_else(|| "—".into()),
         payload.mesh_phase
     )];
+    if let Some(authority) = &payload.local_authority {
+        lines.push(format!(
+            "authority role={} data_bucket={} loss_impact={}",
+            authority.role, authority.data_bucket, authority.loss_impact
+        ));
+    }
     for sync in &payload.edge_sync {
         let state = match &sync.state {
             ployz_api::EdgeSyncHealthState::Healthy { failures_total } => {
@@ -247,8 +253,8 @@ fn render_plain_status(payload: &StatusPayload) -> String {
             scope.push_str(&format!(" scope={asset_scope}"));
         }
         lines.push(format!(
-            "nats_asset kind={} name={}{} state={}",
-            asset.kind, asset.name, scope, state
+            "nats_asset kind={} name={} data_bucket={} loss_impact={}{} state={}",
+            asset.kind, asset.name, asset.data_bucket, asset.loss_impact, scope, state
         ));
     }
     for control in &payload.control_plane {
@@ -319,9 +325,12 @@ fn render_plain_machine_list(payload: &MachineListPayload) -> String {
         .iter()
         .map(|row| {
             format!(
-                "id={} lifecycle={} region={} az={} overlay_ip={} subnet={} created_at={}",
+                "id={} lifecycle={} authority_role={} authority_bucket={} authority_loss_impact={} region={} az={} overlay_ip={} subnet={} created_at={}",
                 row.id,
                 row.lifecycle,
+                row.authority.role,
+                row.authority.data_bucket,
+                row.authority.loss_impact,
                 row.region,
                 row.availability_zone.as_deref().unwrap_or("—"),
                 row.overlay_ip,
@@ -570,6 +579,10 @@ mod tests {
                 rows: vec![MachineListRow {
                     id: String::from("peer"),
                     lifecycle: String::from("standby"),
+                    authority: ployz_types::model::AuthorityNodePosture::from_storage_participation(
+                        true,
+                        &ployz_types::model::StorageParticipation::Candidate,
+                    ),
                     region: String::from("us-east-1"),
                     availability_zone: None,
                     overlay_ip: String::from("fd00::2"),
@@ -581,7 +594,7 @@ mod tests {
 
         assert_eq!(
             render_plain_success(&response),
-            "id=peer lifecycle=standby region=us-east-1 az=— overlay_ip=fd00::2 subnet=— created_at=123"
+            "id=peer lifecycle=standby authority_role=storage_candidate authority_bucket=stored_intent authority_loss_impact=no_stored_truth_lost region=us-east-1 az=— overlay_ip=fd00::2 subnet=— created_at=123"
         );
     }
 
@@ -674,6 +687,7 @@ mod tests {
                 overlay_ip: Some(String::from("fd00::1")),
                 network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
                 local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                local_authority: None,
                 mesh_phase: String::from("Running"),
                 edge_sync: Vec::new(),
                 nats_assets: Vec::new(),
@@ -685,6 +699,39 @@ mod tests {
             render_plain_success(&response),
             "machine=founder version=0.1.0 network=alpha overlay=fd00::1 network_lifecycle=running local_machine_lifecycle=active mesh_phase=Running"
         );
+    }
+
+    #[test]
+    fn plain_status_renders_local_authority_posture() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("status"),
+            payload: Some(DaemonPayload::Status(StatusPayload {
+                machine_id: String::from("founder"),
+                public_key: ployz_types::model::PublicKey([1; 32]),
+                version: String::from("0.1.0"),
+                network: Some(String::from("alpha")),
+                overlay_ip: Some(String::from("fd00::1")),
+                network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
+                local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                local_authority: Some(
+                    ployz_types::model::AuthorityNodePosture::from_storage_participation(
+                        true,
+                        &ployz_types::model::StorageParticipation::default_authority(),
+                    ),
+                ),
+                mesh_phase: String::from("Running"),
+                edge_sync: Vec::new(),
+                nats_assets: Vec::new(),
+                control_plane: Vec::new(),
+            })),
+        };
+
+        let rendered = render_plain_success(&response);
+        assert!(rendered.contains(
+            "authority role=authority_storage:auth-default data_bucket=stored_intent loss_impact=stored_truth_lost"
+        ));
     }
 
     #[test]
@@ -701,6 +748,7 @@ mod tests {
                 overlay_ip: Some(String::from("fd00::1")),
                 network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
                 local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                local_authority: None,
                 mesh_phase: String::from("Running"),
                 edge_sync: vec![
                     ployz_api::EdgeSyncStatus {
@@ -758,11 +806,14 @@ mod tests {
                 overlay_ip: Some(String::from("fd00::1")),
                 network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
                 local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                local_authority: None,
                 mesh_phase: String::from("Running"),
                 edge_sync: Vec::new(),
                 nats_assets: vec![ployz_api::NatsAssetStatus {
                     kind: String::from("stream"),
                     name: String::from("routing_events_auth-default"),
+                    data_bucket: ployz_types::model::ControlPlaneDataBucket::Projection,
+                    loss_impact: ployz_types::model::ControlPlaneLossImpact::NoStoredTruthLost,
                     installation: Some(String::from("local")),
                     authority: Some(String::from("auth-default")),
                     domain: Some(String::from("dom-auth-default")),
@@ -783,7 +834,7 @@ mod tests {
 
         let rendered = render_plain_success(&response);
         assert!(rendered.contains(
-            "nats_asset kind=stream name=routing_events_auth-default installation=local authority=auth-default domain=dom-auth-default scope=authority_local state=healthy replicas=1 current=1 offline=0 max_lag=0 leader=nats-a"
+            "nats_asset kind=stream name=routing_events_auth-default data_bucket=projection loss_impact=no_stored_truth_lost installation=local authority=auth-default domain=dom-auth-default scope=authority_local state=healthy replicas=1 current=1 offline=0 max_lag=0 leader=nats-a"
         ));
     }
 
@@ -801,6 +852,7 @@ mod tests {
                 overlay_ip: Some(String::from("fd00::1")),
                 network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
                 local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                local_authority: None,
                 mesh_phase: String::from("Running"),
                 edge_sync: Vec::new(),
                 nats_assets: Vec::new(),

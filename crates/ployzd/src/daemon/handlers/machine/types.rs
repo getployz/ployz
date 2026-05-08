@@ -6,7 +6,7 @@ use ployz_api::{
 };
 use ployz_nats::NatsNodeRpcClient;
 use ployz_store_api::StoreDriver;
-use ployz_types::model::{MachineId, NetworkId};
+use ployz_types::model::{AuthorityNodePosture, MachineId, NetworkId};
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -193,6 +193,7 @@ impl MachineListReport {
 pub(super) struct MachineListReportRow {
     pub id: String,
     pub lifecycle: &'static str,
+    pub authority: AuthorityNodePosture,
     pub region: String,
     pub availability_zone: Option<String>,
     pub availability_zone_display: String,
@@ -209,6 +210,7 @@ impl MachineListReportRow {
         MachineListRow {
             id: self.id.clone(),
             lifecycle: self.lifecycle.into(),
+            authority: self.authority.clone(),
             region: self.region.clone(),
             availability_zone: self.availability_zone.clone(),
             overlay_ip: self.overlay.clone(),

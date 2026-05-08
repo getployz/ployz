@@ -1,4 +1,4 @@
-use ployz_types::model::MachineId;
+use ployz_types::model::{AuthorityNodePosture, MachineId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +55,7 @@ pub struct MachineListPayload {
 pub struct MachineListRow {
     pub id: String,
     pub lifecycle: String,
+    pub authority: AuthorityNodePosture,
     pub region: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub availability_zone: Option<String>,

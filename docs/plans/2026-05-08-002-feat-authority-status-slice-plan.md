@@ -1,7 +1,7 @@
 ---
 title: "feat: Authority status first slice"
 type: feat
-status: active
+status: completed
 date: 2026-05-08
 origin: docs/authority-roadmap.md
 ---
