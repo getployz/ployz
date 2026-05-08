@@ -13,8 +13,10 @@ all = "warn"
 pedantic = "warn"
 
 [dependencies]
+backon.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+xshell.workspace = true

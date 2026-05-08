@@ -16,6 +16,7 @@ ployz-orchestrator = { path = "../ployz-orchestrator" }
 ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
+backon = { workspace = true }
 tokio = { workspace = true, features = ["process", "fs"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
@@ -42,9 +43,5 @@ hostname = "0.4.2"
 if-addrs = "0.13"
 ed25519-dalek = "2"
 
-[lints.clippy]
-indexing_slicing = "warn"
-fallible_impl_from = "warn"
-wildcard_enum_match_arm = "warn"
-fn_params_excessive_bools = "warn"
-must_use_candidate = "warn"
+[lints]
+workspace = true
