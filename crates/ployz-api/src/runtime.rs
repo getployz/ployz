@@ -136,14 +136,15 @@ mod tests {
     use crate::{
         ControlPlaneHealthState, ControlPlaneStatus, DaemonPayload, DaemonResponse,
         EdgeSyncHealthState, EdgeSyncStatus, MachineOperationInfo, MachineOperationPayload,
-        MachineUpdatePayload, MachineUpdateRow, StatusPayload,
+        MachineStoragePromotionFailure, MachineStoragePromotionPayload, MachineUpdatePayload,
+        MachineUpdateRow, StatusPayload,
     };
     use ployz_types::model::{
         AuthorityNodePosture, DeployId, DrainState, InstanceId, InstancePhase,
         InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, MachineTopology,
         NetworkLifecycle, OverlayIp, PublicKey, RoutingEvent, RoutingState, ServiceRelease,
         ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy,
-        SlotId, StorageParticipation,
+        SlotId, StorageParticipation, StorageReplicaPolicy,
     };
     use ployz_types::spec::Namespace;
     use std::collections::BTreeMap;
@@ -456,6 +457,53 @@ mod tests {
         };
         assert_eq!(failed.id, "peer-1");
         assert_eq!(failed.message, "refused");
+    }
+
+    #[test]
+    fn daemon_storage_promotion_response_preserves_structured_payload() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("storage promotion complete"),
+            payload: Some(DaemonPayload::MachineStoragePromotion(
+                MachineStoragePromotionPayload {
+                    operation_id: String::from("storage-promote-1"),
+                    replicas: StorageReplicaPolicy::R3,
+                    promoted: vec![String::from("m2"), String::from("m3")],
+                    failed: vec![MachineStoragePromotionFailure {
+                        machine_id: String::from("m4"),
+                        message: String::from("not active"),
+                    }],
+                },
+            )),
+        };
+
+        let json = serde_json::to_value(&response).expect("serialize response");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "ok": true,
+                "code": "OK",
+                "message": "storage promotion complete",
+                "payload": {
+                    "kind": "machine-storage-promotion",
+                    "operation_id": "storage-promote-1",
+                    "replicas": "r3",
+                    "promoted": ["m2", "m3"],
+                    "failed": [{
+                        "machine_id": "m4",
+                        "message": "not active"
+                    }]
+                }
+            })
+        );
+        let decoded: DaemonResponse = serde_json::from_value(json).expect("deserialize response");
+        let Some(DaemonPayload::MachineStoragePromotion(payload)) = decoded.payload else {
+            panic!("expected machine storage promotion payload");
+        };
+        assert_eq!(payload.replicas, StorageReplicaPolicy::R3);
+        assert_eq!(payload.promoted, vec!["m2", "m3"]);
     }
 
     #[test]

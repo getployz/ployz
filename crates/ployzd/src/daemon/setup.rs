@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use crate::daemon::subnet_coordination::NatsSubnetCoordinator;
 
-use super::{ActiveMesh, DaemonState};
+use super::{ActiveMesh, DaemonState, RuntimeRestartMode};
 use crate::daemon::handlers::volume::transfer_listener;
 use crate::ipc::nats_listener;
 use crate::runtime_profile::MeshBuildRequest;
@@ -294,6 +294,7 @@ impl MeshStartAttempt {
                 bootstrap: &plan.bootstrap_addrs,
                 network_id: &self.config.id.0,
                 storage_participation: &self.config.storage_participation,
+                storage_replicas: self.config.storage_replicas,
             })
             .await
             .map_err(StartMeshError::NetworkDriver)?;
@@ -631,6 +632,15 @@ impl DaemonState {
         &mut self,
         network: &str,
     ) -> Result<(), String> {
+        self.restart_active_runtime_from_config_with_mode(network, RuntimeRestartMode::NetworkOnly)
+            .await
+    }
+
+    pub async fn restart_active_runtime_from_config_with_mode(
+        &mut self,
+        network: &str,
+        mode: RuntimeRestartMode,
+    ) -> Result<(), String> {
         let config_path = NetworkConfig::path(&self.data_dir, network);
         let net_config = NetworkConfig::load(&config_path)
             .map_err(|error| format!("load network config: {error}"))?;
@@ -640,6 +650,13 @@ impl DaemonState {
             None => Vec::new(),
         };
         let network_dir = self.network_dir(&net_config.name.0);
+        let bootstrap_peer_records = load_bootstrap_peer_records(&network_dir)
+            .map_err(|error| format!("load bootstrap peer records for runtime restart: {error}"))?;
+        let bootstrap_addrs = resolve_bootstrap_addrs(
+            &bootstrap_peer_records,
+            &self.identity.machine_id,
+            nats_config::ROUTE_PORT,
+        );
         let dns_bridge_listen_addr = self.dns_bridge_listen_addr();
 
         if self.active.is_none() {
@@ -654,9 +671,10 @@ impl DaemonState {
                 network_name: &net_config.name.0,
                 subnet: net_config.subnet,
                 exposed_tcp_ports: &exposed_tcp_ports,
-                bootstrap: &[],
+                bootstrap: &bootstrap_addrs,
                 network_id: &net_config.id.0,
                 storage_participation: &net_config.storage_participation,
+                storage_replicas: net_config.storage_replicas,
             })
             .await
             .map_err(|error| format!("runtime components failed: {error}"))?;
@@ -727,11 +745,29 @@ impl DaemonState {
             })
             .await;
 
-        active
-            .mesh
-            .restart_runtime_for_subnet_change(components.network, components.container_network)
-            .await
-            .map_err(|error| format!("mesh runtime restart failed: {error}"))?;
+        match mode {
+            RuntimeRestartMode::NetworkAndStore => {
+                active
+                    .mesh
+                    .restart_runtime_for_config_change(
+                        components.network,
+                        components.store,
+                        components.container_network,
+                    )
+                    .await
+                    .map_err(|error| format!("mesh runtime restart failed: {error}"))?;
+            }
+            RuntimeRestartMode::NetworkOnly => {
+                active
+                    .mesh
+                    .restart_runtime_for_subnet_change(
+                        components.network,
+                        components.container_network,
+                    )
+                    .await
+                    .map_err(|error| format!("mesh runtime restart failed: {error}"))?;
+            }
+        }
 
         let _ = active
             .mesh

@@ -1,6 +1,7 @@
 use crate::mesh::MeshNetwork;
 use crate::mesh::container_network::ContainerNetwork;
 use crate::mesh::driver::WireguardDriver;
+use ployz_store_api::StoreDriver;
 use ployz_store_api::StoreRuntimeControl;
 use tracing::{info, warn};
 
@@ -98,6 +99,44 @@ impl Mesh {
         match first_err {
             Some(e) => Err(e),
             None => Ok(()),
+        }
+    }
+
+    pub async fn restart_runtime_for_config_change(
+        &mut self,
+        network: WireguardDriver,
+        store: StoreDriver,
+        container_network: Option<ContainerNetwork>,
+    ) -> Result<()> {
+        self.apply(crate::mesh::phase::PhaseEvent::DestroyRequested)?;
+
+        let stop_err = self.stop_runtime(true).await;
+        self.network = network;
+        self.store = store;
+        self.container_network = container_network;
+
+        self.apply(crate::mesh::phase::PhaseEvent::TeardownComplete)?;
+        self.apply(crate::mesh::phase::PhaseEvent::UpRequested)?;
+
+        match self.bring_up().await {
+            Ok(()) => {
+                if let Some(error) = stop_err {
+                    warn!(
+                        ?error,
+                        "runtime stop reported an error before subnet restart"
+                    );
+                }
+                Ok(())
+            }
+            Err(error) => {
+                warn!(
+                    ?error,
+                    "subnet runtime restart failed, tearing down runtime"
+                );
+                let _ = self.stop_runtime(false).await;
+                self.apply(crate::mesh::phase::PhaseEvent::ComponentFailed)?;
+                Err(error)
+            }
         }
     }
 

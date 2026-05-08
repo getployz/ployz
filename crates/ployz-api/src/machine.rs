@@ -1,4 +1,4 @@
-use ployz_types::model::{AuthorityNodePosture, MachineId};
+use ployz_types::model::{AuthorityNodePosture, MachineId, StorageReplicaPolicy};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -7,6 +7,28 @@ pub struct MachineAddOptions {
     pub ssh_identity_private_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install: Option<MachineInstallOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachineStoragePromoteRequest {
+    pub targets: Vec<String>,
+    pub replicas: StorageReplicaPolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineStoragePromotionPayload {
+    pub operation_id: String,
+    pub replicas: StorageReplicaPolicy,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub promoted: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<MachineStoragePromotionFailure>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineStoragePromotionFailure {
+    pub machine_id: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

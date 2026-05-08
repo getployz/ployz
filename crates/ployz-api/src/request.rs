@@ -1,8 +1,10 @@
 use crate::deploy::DeployOptions;
-use crate::machine::{MachineAddOptions, MachineInstallOptions, MachineTransitionGoal};
+use crate::machine::{
+    MachineAddOptions, MachineInstallOptions, MachineStoragePromoteRequest, MachineTransitionGoal,
+};
 use crate::mesh::MeshBootstrapRequest;
 use ipnet::Ipv4Net;
-use ployz_types::model::{MachineId, NetworkId};
+use ployz_types::model::{MachineId, MachineMembership, NetworkId, StorageReplicaPolicy};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +76,9 @@ pub enum DaemonRequest {
         targets: Vec<String>,
         options: MachineAddOptions,
     },
+    MachineStoragePromote {
+        request: MachineStoragePromoteRequest,
+    },
     MachineUpdate {
         ids: Vec<String>,
         version: String,
@@ -129,6 +134,10 @@ pub enum DaemonRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         assigned_subnet: Option<Ipv4Net>,
         force: bool,
+    },
+    MachineStoragePromoteSelf {
+        replicas: StorageReplicaPolicy,
+        authority_peers: Vec<MachineMembership>,
     },
     AcmeChallengeReady {
         hostname: String,

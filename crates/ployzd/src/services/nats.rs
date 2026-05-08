@@ -24,7 +24,7 @@ use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
     MachineMembership, OverlayIp, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
-    StorageParticipation, VolumeRecord,
+    StorageParticipation, StorageReplicaPolicy, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -43,6 +43,7 @@ pub async fn nats_docker(
     bootstrap: &[String],
     network_id: &str,
     storage_participation: &StorageParticipation,
+    storage_replicas: StorageReplicaPolicy,
     image: &str,
 ) -> std::result::Result<StoreDriver, String> {
     let paths = config::Paths::new(network_dir);
@@ -77,6 +78,7 @@ pub async fn nats_docker(
         Arc::new(service),
         client_url,
         NatsScope::local_for_storage_participation(storage_participation),
+        storage_replicas,
     ))
 }
 
@@ -86,6 +88,7 @@ pub fn nats_host(
     bootstrap: &[String],
     network_id: &str,
     storage_participation: &StorageParticipation,
+    storage_replicas: StorageReplicaPolicy,
 ) -> std::result::Result<StoreDriver, String> {
     let paths = config::Paths::new(network_dir);
     write_node_config(
@@ -108,10 +111,16 @@ pub fn nats_host(
         Arc::new(service),
         client_url,
         NatsScope::local_for_storage_participation(storage_participation),
+        storage_replicas,
     ))
 }
 
-fn nats_driver<S>(service: Arc<S>, client_url: String, scope: NatsScope) -> StoreDriver
+fn nats_driver<S>(
+    service: Arc<S>,
+    client_url: String,
+    scope: NatsScope,
+    storage_replicas: StorageReplicaPolicy,
+) -> StoreDriver
 where
     S: StoreRuntimeControl + Send + Sync + 'static,
 {
@@ -119,6 +128,7 @@ where
         service,
         client_url,
         scope,
+        storage_replicas,
         store: Mutex::new(None),
     });
     StoreDriver::new(
@@ -201,6 +211,7 @@ struct NatsRuntime<S> {
     service: Arc<S>,
     client_url: String,
     scope: NatsScope,
+    storage_replicas: StorageReplicaPolicy,
     store: Mutex<Option<Arc<NatsStore>>>,
 }
 
@@ -239,16 +250,19 @@ where
             )
             .await
             {
-                Ok(Ok(store)) => match store.start().await {
-                    Ok(()) => {
-                        *self.store.lock().await = Some(Arc::new(store));
-                        return Ok(());
+                Ok(Ok(store)) => {
+                    let store = store.with_asset_policy(self.storage_replicas);
+                    match store.start().await {
+                        Ok(()) => {
+                            *self.store.lock().await = Some(Arc::new(store));
+                            return Ok(());
+                        }
+                        Err(error) => {
+                            last_error = Some(error);
+                            tokio::time::sleep(CONNECT_RETRY_DELAY).await;
+                        }
                     }
-                    Err(error) => {
-                        last_error = Some(error);
-                        tokio::time::sleep(CONNECT_RETRY_DELAY).await;
-                    }
-                },
+                }
                 Ok(Err(error)) => {
                     last_error = Some(error);
                     tokio::time::sleep(CONNECT_RETRY_DELAY).await;
