@@ -139,11 +139,11 @@ mod tests {
         MachineUpdatePayload, MachineUpdateRow, StatusPayload,
     };
     use ployz_types::model::{
-        DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
-        MachineLifecycle, MachineMembership, MachineTopology, NetworkLifecycle, OverlayIp,
-        PublicKey, RoutingEvent, RoutingState, ServiceRelease, ServiceReleaseRecord,
-        ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId,
-        StorageParticipation,
+        AuthorityNodePosture, DeployId, DrainState, InstanceId, InstancePhase,
+        InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, MachineTopology,
+        NetworkLifecycle, OverlayIp, PublicKey, RoutingEvent, RoutingState, ServiceRelease,
+        ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy,
+        SlotId, StorageParticipation,
     };
     use ployz_types::spec::Namespace;
     use std::collections::BTreeMap;
@@ -536,6 +536,10 @@ mod tests {
                 overlay_ip: Some(String::from("fd00::1")),
                 network_lifecycle: Some(NetworkLifecycle::Running),
                 local_machine_lifecycle: Some(MachineLifecycle::Active),
+                local_authority: Some(AuthorityNodePosture::from_storage_participation(
+                    true,
+                    &StorageParticipation::default_authority(),
+                )),
                 mesh_phase: String::from("Running"),
                 edge_sync: vec![EdgeSyncStatus {
                     service: String::from("gateway"),
@@ -572,6 +576,14 @@ mod tests {
                     "overlay_ip": "fd00::1",
                     "network_lifecycle": "Running",
                     "local_machine_lifecycle": "Active",
+                    "local_authority": {
+                        "role": {
+                            "kind": "authority_storage",
+                            "authority_id": "auth-default"
+                        },
+                        "data_bucket": "stored_intent",
+                        "loss_impact": "stored_truth_lost"
+                    },
                     "mesh_phase": "Running",
                     "edge_sync": [{
                         "service": "gateway",

@@ -191,6 +191,83 @@ impl StorageParticipation {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlPlaneDataBucket {
+    #[display("stored_intent")]
+    StoredIntent,
+    #[display("projection")]
+    Projection,
+    #[display("live_facts")]
+    LiveFacts,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlPlaneLossImpact {
+    #[display("stored_truth_lost")]
+    StoredTruthLost,
+    #[display("no_stored_truth_lost")]
+    NoStoredTruthLost,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AuthorityNodeRole {
+    AuthorityStorage { authority_id: AuthorityId },
+    StorageCandidate,
+    Compute,
+}
+
+impl fmt::Display for AuthorityNodeRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AuthorityStorage { authority_id } => {
+                write!(f, "authority_storage:{authority_id}")
+            }
+            Self::StorageCandidate => f.write_str("storage_candidate"),
+            Self::Compute => f.write_str("compute"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AuthorityNodePosture {
+    pub role: AuthorityNodeRole,
+    pub data_bucket: ControlPlaneDataBucket,
+    pub loss_impact: ControlPlaneLossImpact,
+}
+
+impl AuthorityNodePosture {
+    #[must_use]
+    pub fn from_storage_participation(storage: bool, participation: &StorageParticipation) -> Self {
+        match participation {
+            StorageParticipation::Authority { authority_id } => Self {
+                role: AuthorityNodeRole::AuthorityStorage {
+                    authority_id: authority_id.clone(),
+                },
+                data_bucket: ControlPlaneDataBucket::StoredIntent,
+                loss_impact: ControlPlaneLossImpact::StoredTruthLost,
+            },
+            StorageParticipation::Candidate if storage => Self {
+                role: AuthorityNodeRole::StorageCandidate,
+                data_bucket: ControlPlaneDataBucket::StoredIntent,
+                loss_impact: ControlPlaneLossImpact::NoStoredTruthLost,
+            },
+            StorageParticipation::Candidate => Self {
+                role: AuthorityNodeRole::Compute,
+                data_bucket: ControlPlaneDataBucket::LiveFacts,
+                loss_impact: ControlPlaneLossImpact::NoStoredTruthLost,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn from_machine_membership(machine: &MachineMembership) -> Self {
+        Self::from_storage_participation(machine.storage, &machine.storage_participation)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
 pub struct RegionName(pub String);
 
@@ -1676,6 +1753,78 @@ mod tests {
             MachineLifecycle::from_str("active"),
             Ok(MachineLifecycle::Active)
         );
+    }
+
+    #[test]
+    fn authority_posture_marks_default_authority_storage_as_stored_truth_owner() {
+        let posture = AuthorityNodePosture::from_storage_participation(
+            true,
+            &StorageParticipation::default_authority(),
+        );
+
+        assert_eq!(
+            posture.role,
+            AuthorityNodeRole::AuthorityStorage {
+                authority_id: AuthorityId::default_authority(),
+            }
+        );
+        assert_eq!(posture.data_bucket, ControlPlaneDataBucket::StoredIntent);
+        assert_eq!(posture.loss_impact, ControlPlaneLossImpact::StoredTruthLost);
+    }
+
+    #[test]
+    fn authority_posture_keeps_candidate_disposable_for_control_plane_truth() {
+        let posture = AuthorityNodePosture::from_storage_participation(
+            true,
+            &StorageParticipation::Candidate,
+        );
+
+        assert_eq!(posture.role, AuthorityNodeRole::StorageCandidate);
+        assert_eq!(posture.data_bucket, ControlPlaneDataBucket::StoredIntent);
+        assert_eq!(
+            posture.loss_impact,
+            ControlPlaneLossImpact::NoStoredTruthLost
+        );
+    }
+
+    #[test]
+    fn authority_posture_marks_non_storage_participant_as_compute_live_fact() {
+        let posture = AuthorityNodePosture::from_storage_participation(
+            false,
+            &StorageParticipation::Candidate,
+        );
+
+        assert_eq!(posture.role, AuthorityNodeRole::Compute);
+        assert_eq!(posture.data_bucket, ControlPlaneDataBucket::LiveFacts);
+        assert_eq!(
+            posture.loss_impact,
+            ControlPlaneLossImpact::NoStoredTruthLost
+        );
+    }
+
+    #[test]
+    fn authority_posture_serializes_with_typed_role_and_impact() {
+        let posture = AuthorityNodePosture::from_storage_participation(
+            true,
+            &StorageParticipation::default_authority(),
+        );
+
+        let json = serde_json::to_value(&posture).expect("serialize posture");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "role": {
+                    "kind": "authority_storage",
+                    "authority_id": "auth-default"
+                },
+                "data_bucket": "stored_intent",
+                "loss_impact": "stored_truth_lost"
+            })
+        );
+        let decoded: AuthorityNodePosture =
+            serde_json::from_value(json).expect("deserialize posture");
+        assert_eq!(decoded, posture);
     }
 
     #[test]

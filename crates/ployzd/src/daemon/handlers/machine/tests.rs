@@ -72,13 +72,86 @@ async fn machine_list_shows_active_lifecycle() {
 
 #[tokio::test]
 async fn machine_list_json_payload_contains_rows() {
-    let (state, _, _) = make_state(false).await;
+    let (state, store, _) = make_state(false).await;
+    let mut candidate = test_machine_record(
+        "peer-candidate",
+        "10.210.1.0/24",
+        MachineLifecycle::Standby,
+        PublicKey([2; 32]),
+    );
+    candidate.storage_participation = StorageParticipation::Candidate;
+    store
+        .upsert_self_machine(&candidate)
+        .await
+        .expect("upsert candidate");
+    let mut compute = test_machine_record(
+        "peer-compute",
+        "10.210.2.0/24",
+        MachineLifecycle::Standby,
+        PublicKey([3; 32]),
+    );
+    compute.storage = false;
+    compute.storage_participation = StorageParticipation::Candidate;
+    store
+        .upsert_self_machine(&compute)
+        .await
+        .expect("upsert compute");
+
     let response = state.handle_machine_list().await;
     let Some(DaemonPayload::MachineList(payload)) = response.payload else {
         panic!("expected machine list payload");
     };
-    assert_eq!(payload.rows.len(), 1);
-    assert_eq!(payload.rows.first().expect("founder row").id, "founder");
+    assert_eq!(payload.rows.len(), 3);
+    let founder = payload
+        .rows
+        .iter()
+        .find(|row| row.id == "founder")
+        .expect("founder row");
+    assert_eq!(founder.id, "founder");
+    assert_eq!(
+        founder.authority.role,
+        ployz_types::model::AuthorityNodeRole::AuthorityStorage {
+            authority_id: ployz_types::model::AuthorityId::default_authority(),
+        }
+    );
+    assert_eq!(
+        founder.authority.loss_impact,
+        ployz_types::model::ControlPlaneLossImpact::StoredTruthLost
+    );
+    let candidate = payload
+        .rows
+        .iter()
+        .find(|row| row.id == "peer-candidate")
+        .expect("candidate row");
+    assert_eq!(
+        candidate.authority.role,
+        ployz_types::model::AuthorityNodeRole::StorageCandidate
+    );
+    assert_eq!(
+        candidate.authority.data_bucket,
+        ployz_types::model::ControlPlaneDataBucket::StoredIntent
+    );
+    assert_eq!(
+        candidate.authority.loss_impact,
+        ployz_types::model::ControlPlaneLossImpact::NoStoredTruthLost
+    );
+    let compute = payload
+        .rows
+        .iter()
+        .find(|row| row.id == "peer-compute")
+        .expect("compute row");
+    assert_eq!(
+        compute.authority.role,
+        ployz_types::model::AuthorityNodeRole::Compute
+    );
+    assert_eq!(
+        compute.authority.data_bucket,
+        ployz_types::model::ControlPlaneDataBucket::LiveFacts
+    );
+    assert_eq!(
+        compute.authority.loss_impact,
+        ployz_types::model::ControlPlaneLossImpact::NoStoredTruthLost
+    );
 }
 
 #[tokio::test]
@@ -1017,6 +1090,7 @@ fn status_response_for_record(record: &MachineMembership) -> String {
             overlay_ip: None,
             network_lifecycle: None,
             local_machine_lifecycle: None,
+            local_authority: None,
             mesh_phase: "idle".into(),
             edge_sync: Vec::new(),
             nats_assets: Vec::new(),

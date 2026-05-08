@@ -370,6 +370,9 @@ pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineLis
             .map(|machine| MachineListReportRow {
                 id: machine.id.0.clone(),
                 lifecycle: format_lifecycle(machine),
+                authority: ployz_types::model::AuthorityNodePosture::from_machine_membership(
+                    machine,
+                ),
                 region: machine.topology.region.0.clone(),
                 availability_zone: machine
                     .topology
