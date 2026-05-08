@@ -8,6 +8,7 @@ use ployz_api::{
 };
 use ployz_config::RuntimeTarget;
 use ployz_nats::{NatsAssetScope, NatsAssetSpec, NatsStore};
+use ployz_types::model::{AuthorityNodePosture, ControlPlaneDataBucket, ControlPlaneLossImpact};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -33,6 +34,10 @@ impl DaemonState {
                     network: Some(net.name.0.clone()),
                     network_lifecycle: Some(net.lifecycle),
                     local_machine_lifecycle,
+                    local_authority: Some(AuthorityNodePosture::from_storage_participation(
+                        net.storage,
+                        &net.storage_participation,
+                    )),
                     overlay_ip: Some(net.overlay_ip.0.to_string()),
                     mesh_phase: format!("{:?}", active.mesh.phase()),
                     edge_sync: self.edge_sync_status().await,
@@ -68,6 +73,7 @@ impl DaemonState {
                     network: None,
                     network_lifecycle: None,
                     local_machine_lifecycle: None,
+                    local_authority: None,
                     overlay_ip: None,
                     mesh_phase: String::from("idle"),
                     edge_sync: Vec::new(),
@@ -285,6 +291,8 @@ fn nats_asset_status(
     NatsAssetStatus {
         name: asset.name.clone(),
         kind: asset.kind.to_string(),
+        data_bucket: asset.data_bucket,
+        loss_impact: asset.loss_impact,
         installation: Some(store.installation().to_string()),
         authority: nats_asset_authority(store, asset.scope),
         domain: Some(nats_asset_domain(store, asset.scope)),
@@ -363,6 +371,8 @@ fn nats_asset_probe_error(error: String) -> Vec<NatsAssetStatus> {
     vec![NatsAssetStatus {
         name: String::from("hub"),
         kind: String::from("connection"),
+        data_bucket: ControlPlaneDataBucket::HealthMetrics,
+        loss_impact: ControlPlaneLossImpact::Unknown,
         installation: Some(String::from("local")),
         authority: Some(String::from("auth-default")),
         domain: Some(String::from("dom-auth-default")),
@@ -508,9 +518,9 @@ fn parse_sync_metric_value(metrics: &str, metric: &str, stream: &str) -> Option<
 #[cfg(test)]
 mod tests {
     use super::{
-        SyncMetric, component_health_status, metric_status, nats_asset_is_healthy,
-        nats_asset_probe_error, nats_current_replicas, nats_max_lag, nats_offline_replicas,
-        parse_sync_metric, parse_sync_metric_u64,
+        ControlPlaneDataBucket, ControlPlaneLossImpact, SyncMetric, component_health_status,
+        metric_status, nats_asset_is_healthy, nats_asset_probe_error, nats_current_replicas,
+        nats_max_lag, nats_offline_replicas, parse_sync_metric, parse_sync_metric_u64,
     };
     use crate::health::ComponentHealth;
     use async_nats::jetstream::stream::{ClusterInfo, PeerInfo};
@@ -746,6 +756,8 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
 
         assert_eq!(status.name, "hub");
         assert_eq!(status.kind, "connection");
+        assert_eq!(status.data_bucket, ControlPlaneDataBucket::HealthMetrics);
+        assert_eq!(status.loss_impact, ControlPlaneLossImpact::Unknown);
         assert_eq!(status.installation.as_deref(), Some("local"));
         assert_eq!(status.authority.as_deref(), Some("auth-default"));
         assert_eq!(status.domain.as_deref(), Some("dom-auth-default"));

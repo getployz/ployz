@@ -1,4 +1,7 @@
-use ployz_types::model::{MachineLifecycle, NetworkLifecycle, PublicKey};
+use ployz_types::model::{
+    AuthorityNodePosture, ControlPlaneDataBucket, ControlPlaneLossImpact, MachineLifecycle,
+    NetworkLifecycle, PublicKey,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,6 +17,8 @@ pub struct StatusPayload {
     pub network_lifecycle: Option<NetworkLifecycle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_machine_lifecycle: Option<MachineLifecycle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_authority: Option<AuthorityNodePosture>,
     pub mesh_phase: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edge_sync: Vec<EdgeSyncStatus>,
@@ -52,6 +57,8 @@ pub enum EdgeSyncHealthState {
 pub struct NatsAssetStatus {
     pub name: String,
     pub kind: String,
+    pub data_bucket: ControlPlaneDataBucket,
+    pub loss_impact: ControlPlaneLossImpact,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

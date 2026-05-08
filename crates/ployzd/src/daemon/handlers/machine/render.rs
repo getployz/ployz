@@ -32,6 +32,27 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .max()
         .unwrap_or(0)
         .max("LIFECYCLE".len());
+    let w_authority = report
+        .rows
+        .iter()
+        .map(|row| row.authority.role.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max("AUTHORITY".len());
+    let w_bucket = report
+        .rows
+        .iter()
+        .map(|row| row.authority.data_bucket.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max("BUCKET".len());
+    let w_loss = report
+        .rows
+        .iter()
+        .map(|row| row.authority.loss_impact.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max("LOSS".len());
     let w_region = report
         .rows
         .iter()
@@ -49,14 +70,17 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
 
     let mut lines = Vec::with_capacity(report.rows.len() + 1);
     lines.push(format!(
-        "{:<w_id$}  {:<w_lifecycle$}  {:<w_region$}  {:<w_az$}  {:<w_ov$}  {:<w_sub$}  {}",
-        "ID", "LIFECYCLE", "REGION", "AZ", "OVERLAY IP", "SUBNET", "CREATED",
+        "{:<w_id$}  {:<w_lifecycle$}  {:<w_authority$}  {:<w_bucket$}  {:<w_loss$}  {:<w_region$}  {:<w_az$}  {:<w_ov$}  {:<w_sub$}  {}",
+        "ID", "LIFECYCLE", "AUTHORITY", "BUCKET", "LOSS", "REGION", "AZ", "OVERLAY IP", "SUBNET", "CREATED",
     ));
     for row in &report.rows {
         lines.push(format!(
-            "{:<w_id$}  {:<w_lifecycle$}  {:<w_region$}  {:<w_az$}  {:<w_ov$}  {:<w_sub$}  {}",
+            "{:<w_id$}  {:<w_lifecycle$}  {:<w_authority$}  {:<w_bucket$}  {:<w_loss$}  {:<w_region$}  {:<w_az$}  {:<w_ov$}  {:<w_sub$}  {}",
             row.id,
             row.lifecycle,
+            row.authority.role,
+            row.authority.data_bucket,
+            row.authority.loss_impact,
             row.region,
             row.availability_zone_display,
             row.overlay,

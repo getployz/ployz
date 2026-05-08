@@ -78,7 +78,18 @@ async fn machine_list_json_payload_contains_rows() {
         panic!("expected machine list payload");
     };
     assert_eq!(payload.rows.len(), 1);
-    assert_eq!(payload.rows.first().expect("founder row").id, "founder");
+    let founder = payload.rows.first().expect("founder row");
+    assert_eq!(founder.id, "founder");
+    assert_eq!(
+        founder.authority.role,
+        ployz_types::model::AuthorityNodeRole::AuthorityStorage {
+            authority_id: ployz_types::model::AuthorityId::default_authority(),
+        }
+    );
+    assert_eq!(
+        founder.authority.loss_impact,
+        ployz_types::model::ControlPlaneLossImpact::StoredTruthLost
+    );
 }
 
 #[tokio::test]
@@ -1017,6 +1028,7 @@ fn status_response_for_record(record: &MachineMembership) -> String {
             overlay_ip: None,
             network_lifecycle: None,
             local_machine_lifecycle: None,
+            local_authority: None,
             mesh_phase: "idle".into(),
             edge_sync: Vec::new(),
             nats_assets: Vec::new(),
