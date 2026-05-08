@@ -743,6 +743,7 @@ mod tests {
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(overlay),
             topology: MachineTopology::local(),
+            region_role: ployz_types::model::RegionRole::HomeData,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),

@@ -3,7 +3,7 @@ use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_runtime_api::Identity;
 use ployz_store_api::{MachineMembershipStore, StoreDriver};
 use ployz_types::model::{
-    MachineEvent, MachineId, MachineMembership, MachineTopology, OverlayIp, PublicKey,
+    MachineEvent, MachineId, MachineMembership, MachineTopology, OverlayIp, PublicKey, RegionRole,
     StorageParticipation,
 };
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,7 @@ pub struct BootstrapPeerRecord {
     pub bridge_ip: Option<OverlayIp>,
     pub storage: bool,
     pub storage_participation: StorageParticipation,
+    pub region_role: RegionRole,
     pub endpoints: Vec<String>,
 }
 
@@ -52,6 +53,7 @@ impl BootstrapPeerRecord {
         record.bridge_ip = self.bridge_ip;
         record.storage = self.storage;
         record.storage_participation = self.storage_participation;
+        record.region_role = self.region_role;
         record
     }
 
@@ -65,6 +67,7 @@ impl BootstrapPeerRecord {
             bridge_ip: record.bridge_ip,
             storage: record.storage,
             storage_participation: record.storage_participation.clone(),
+            region_role: record.region_role,
             endpoints: record.endpoints.clone(),
         }
     }
@@ -92,6 +95,7 @@ impl BootstrapPeerRecord {
             bridge_ip: None,
             storage: true,
             storage_participation: StorageParticipation::default_authority(),
+            region_role: RegionRole::HomeData,
             endpoints: invite.issuer_endpoints.clone(),
         })
     }
@@ -293,6 +297,7 @@ pub async fn build_seed_records(
     );
     self_record.storage = net_config.storage;
     self_record.storage_participation = net_config.storage_participation.clone();
+    self_record.region_role = net_config.region_role;
     if let Some(topology) = configured_topology {
         self_record.topology = topology.clone();
     }
@@ -599,6 +604,7 @@ mod tests {
             bridge_ip: Some(OverlayIp("fd00::55".parse().expect("valid bridge"))),
             storage: true,
             storage_participation: StorageParticipation::default_authority(),
+            region_role: RegionRole::HomeData,
             endpoints: vec!["peer:51820".into()],
         };
 
@@ -636,6 +642,7 @@ mod tests {
             bridge_ip: None,
             storage: true,
             storage_participation: StorageParticipation::default_authority(),
+            region_role: RegionRole::HomeData,
             endpoints: Vec::new(),
         };
         let remote_peer = BootstrapPeerRecord {
@@ -646,6 +653,7 @@ mod tests {
             bridge_ip: None,
             storage: true,
             storage_participation: StorageParticipation::default_authority(),
+            region_role: RegionRole::HomeData,
             endpoints: Vec::new(),
         };
         let candidate_peer = BootstrapPeerRecord {
@@ -656,6 +664,7 @@ mod tests {
             bridge_ip: None,
             storage: true,
             storage_participation: StorageParticipation::Candidate,
+            region_role: RegionRole::Compute,
             endpoints: Vec::new(),
         };
 
@@ -682,6 +691,7 @@ mod tests {
             bridge_ip: Some(OverlayIp("fd00::22".parse().expect("valid bridge"))),
             storage: true,
             storage_participation: StorageParticipation::default_authority(),
+            region_role: RegionRole::HomeData,
             endpoints: vec!["bootstrap:51820".into()],
         };
         let seed_records = build_seed_records(

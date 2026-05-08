@@ -20,3 +20,14 @@ pub struct DeployNamespaceSnapshotPayload {
 pub struct DeployCandidateStartedPayload {
     pub status: InstanceStatusRecord,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployFailurePayload {
+    pub reason: DeployFailureReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployFailureReason {
+    NoEligiblePlacementTargets,
+}

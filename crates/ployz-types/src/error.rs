@@ -48,6 +48,8 @@ pub enum DeployError {
     ZeroReplicas { service: String },
     #[error("volume '{volume}' is bound to unavailable machine '{machine_id}'")]
     VolumeBoundToUnavailableMachine { volume: String, machine_id: String },
+    #[error("no eligible machines are available for new deploy placement")]
+    NoEligiblePlacementTargets,
     #[error("service '{service}' attaches volumes bound to different machines")]
     ServiceVolumesOnDifferentMachines { service: String },
     #[error("volume '{volume}' cannot change scope")]

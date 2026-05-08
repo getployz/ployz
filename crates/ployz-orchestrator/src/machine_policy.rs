@@ -1,5 +1,5 @@
 use crate::model::{
-    MachineId, MachineLifecycle, MachineMembership, PlacementCandidate, RegionName,
+    MachineId, MachineLifecycle, MachineMembership, PlacementCandidate, RegionName, RegionRole,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,6 +11,10 @@ pub enum DiagnosticRole {
 #[must_use]
 pub fn is_new_placement_candidate(machine: &PlacementCandidate) -> bool {
     machine.lifecycle == MachineLifecycle::Active
+        && matches!(
+            machine.region_role,
+            RegionRole::HomeData | RegionRole::Compute
+        )
 }
 
 #[must_use]
@@ -34,7 +38,7 @@ pub fn can_keep_existing_slot(machine: &PlacementCandidate) -> bool {
     matches!(
         machine.lifecycle,
         MachineLifecycle::Active | MachineLifecycle::Draining
-    )
+    ) && machine.region_role != RegionRole::Disabled
 }
 
 #[must_use]
@@ -86,9 +90,18 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn machine(id: &str, lifecycle: MachineLifecycle) -> PlacementCandidate {
+        machine_in_region(id, lifecycle, RegionRole::HomeData)
+    }
+
+    fn machine_in_region(
+        id: &str,
+        lifecycle: MachineLifecycle,
+        region_role: RegionRole,
+    ) -> PlacementCandidate {
         PlacementCandidate {
             id: MachineId(id.into()),
             lifecycle,
+            region_role,
             labels: BTreeMap::new(),
         }
     }
@@ -107,6 +120,39 @@ mod tests {
             "disabled",
             MachineLifecycle::Standby
         )));
+    }
+
+    #[test]
+    fn compute_regions_are_new_placement_candidates() {
+        assert!(is_new_placement_candidate(&machine_in_region(
+            "home",
+            MachineLifecycle::Active,
+            RegionRole::HomeData
+        )));
+        assert!(is_new_placement_candidate(&machine_in_region(
+            "compute",
+            MachineLifecycle::Active,
+            RegionRole::Compute
+        )));
+    }
+
+    #[test]
+    fn disabled_and_draining_regions_do_not_receive_new_placements() {
+        let region_draining = machine_in_region(
+            "region-draining",
+            MachineLifecycle::Active,
+            RegionRole::Draining,
+        );
+        let region_disabled = machine_in_region(
+            "region-disabled",
+            MachineLifecycle::Active,
+            RegionRole::Disabled,
+        );
+
+        assert!(!is_new_placement_candidate(&region_draining));
+        assert!(!is_new_placement_candidate(&region_disabled));
+        assert!(can_keep_existing_slot(&region_draining));
+        assert!(!can_keep_existing_slot(&region_disabled));
     }
 
     #[test]

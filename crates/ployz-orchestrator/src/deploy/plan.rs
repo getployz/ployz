@@ -218,7 +218,11 @@ pub(super) async fn resolve_plan(
         let machine_id = match volume_map.get(&declaration.name) {
             Some(record) => {
                 validate_existing_volume(declaration, record)?;
-                if !machine_is_deployable(&record.machine_id, &machine_map, local_machine_id) {
+                if !machine_can_keep_existing_work(
+                    &record.machine_id,
+                    &machine_map,
+                    local_machine_id,
+                ) {
                     return Err(Error::Deploy(
                         DeployError::VolumeBoundToUnavailableMachine {
                             volume: declaration.name.clone(),
@@ -229,13 +233,12 @@ pub(super) async fn resolve_plan(
                 record.machine_id.clone()
             }
             None => new_volume_machine(
-                declaration,
                 &attached_services,
                 &current_slots_by_service,
                 &machine_map,
                 &desired_machines,
                 local_machine_id,
-            ),
+            )?,
         };
         volume_machine_map.insert(declaration.name.clone(), machine_id.clone());
         planned_volumes.push(PlannedVolume {
@@ -265,6 +268,8 @@ pub(super) async fn resolve_plan(
             current_slots_by_service.get(&spec.name).map(Vec::as_slice),
             &machine_map,
             volume_pin.as_ref(),
+            &revision_hash,
+            services_with_volume_changes.contains(&spec.name),
         )?;
         let current_release = current_release_map.get(&spec.name);
         let current_service_slots = current_slots_by_service
@@ -406,7 +411,10 @@ pub(super) fn deployable_machines(
         .map(|machine| machine.id.clone())
         .collect();
     enabled.sort_by(|left, right| left.0.cmp(&right.0));
-    if enabled.is_empty() {
+    if !enabled.is_empty() {
+        return enabled;
+    }
+    if machines.is_empty() {
         return vec![local_machine_id.clone()];
     }
     enabled
@@ -419,12 +427,10 @@ pub(super) fn desired_slots(
     current_slots: Option<&[ServiceReleaseSlot]>,
     machine_map: &HashMap<MachineId, MachineMembership>,
     pinned_machine: Option<&MachineId>,
+    next_revision_hash: &str,
+    service_has_volume_changes: bool,
 ) -> Result<Vec<DesiredSlot>> {
-    let candidates = if machines.is_empty() {
-        vec![MachineId("local".into())]
-    } else {
-        machines.to_vec()
-    };
+    let candidates = machines.to_vec();
 
     let mut desired = Vec::new();
     match spec.placement {
@@ -436,28 +442,27 @@ pub(super) fn desired_slots(
             }
             for index in 0..count {
                 let slot_id = SlotId(format!("slot-{number:04}", number = usize::from(index) + 1));
-                let machine_id = current_slots
-                    .and_then(|slots| {
-                        slots
-                            .iter()
-                            .find(|slot| slot.slot_id == slot_id)
-                            .map(|slot| slot.machine_id.clone())
-                    })
-                    .filter(|machine_id| {
+                let retained_machine = current_slots
+                    .and_then(|slots| slots.iter().find(|slot| slot.slot_id == slot_id))
+                    .filter(|slot| {
                         if let Some(pinned_machine) = pinned_machine
-                            && machine_id != pinned_machine
+                            && slot.machine_id != *pinned_machine
                         {
                             return false;
                         }
-                        machine_map.get(machine_id).is_some_and(|record| {
-                            can_keep_existing_slot(&record.placement_candidate())
+                        machine_map.get(&slot.machine_id).is_some_and(|record| {
+                            let candidate = record.placement_candidate();
+                            is_new_placement_candidate(&candidate)
+                                || (can_keep_existing_slot(&candidate)
+                                    && slot.revision_hash == next_revision_hash
+                                    && !service_has_volume_changes)
                         })
                     })
-                    .unwrap_or_else(|| {
-                        pinned_machine.cloned().unwrap_or_else(|| {
-                            candidates[usize::from(index) % candidates.len()].clone()
-                        })
-                    });
+                    .map(|slot| slot.machine_id.clone());
+                let machine_id = match retained_machine {
+                    Some(machine_id) => machine_id,
+                    None => new_slot_machine(pinned_machine, &candidates, usize::from(index))?,
+                };
                 desired.push(DesiredSlot {
                     slot_id,
                     machine_id,
@@ -465,6 +470,9 @@ pub(super) fn desired_slots(
             }
         }
         Placement::Global => {
+            if candidates.is_empty() {
+                return Err(Error::Deploy(DeployError::NoEligiblePlacementTargets));
+            }
             for machine_id in &candidates {
                 desired.push(DesiredSlot {
                     slot_id: SlotId(format!("slot-{}", machine_id.0)),
@@ -474,6 +482,23 @@ pub(super) fn desired_slots(
         }
     }
     Ok(desired)
+}
+
+fn new_slot_machine(
+    pinned_machine: Option<&MachineId>,
+    candidates: &[MachineId],
+    index: usize,
+) -> Result<MachineId> {
+    if let Some(pinned_machine) = pinned_machine {
+        if candidates.contains(pinned_machine) {
+            return Ok(pinned_machine.clone());
+        }
+        return Err(Error::Deploy(DeployError::NoEligiblePlacementTargets));
+    }
+    if candidates.is_empty() {
+        return Err(Error::Deploy(DeployError::NoEligiblePlacementTargets));
+    }
+    Ok(candidates[index % candidates.len()].clone())
 }
 
 fn service_volume_refs(manifest: &DeployManifest) -> HashMap<String, Vec<String>> {
@@ -610,26 +635,38 @@ fn validate_existing_volume(declaration: &VolumeDeclaration, record: &VolumeReco
 }
 
 fn new_volume_machine(
-    declaration: &VolumeDeclaration,
     attached_services: &[String],
     current_slots_by_service: &HashMap<String, Vec<ServiceReleaseSlot>>,
     machine_map: &HashMap<MachineId, MachineMembership>,
     desired_machines: &[MachineId],
     local_machine_id: &MachineId,
-) -> MachineId {
+) -> Result<MachineId> {
     for service in attached_services {
         if let Some(slots) = current_slots_by_service.get(service) {
             for slot in slots {
                 if machine_is_deployable(&slot.machine_id, machine_map, local_machine_id) {
-                    return slot.machine_id.clone();
+                    return Ok(slot.machine_id.clone());
                 }
             }
         }
     }
-    desired_machines.first().cloned().unwrap_or_else(|| {
-        let _ = declaration;
-        local_machine_id.clone()
-    })
+    desired_machines
+        .first()
+        .cloned()
+        .ok_or(Error::Deploy(DeployError::NoEligiblePlacementTargets))
+}
+
+fn machine_can_keep_existing_work(
+    machine_id: &MachineId,
+    machine_map: &HashMap<MachineId, MachineMembership>,
+    local_machine_id: &MachineId,
+) -> bool {
+    if machine_id == local_machine_id && !machine_map.contains_key(machine_id) {
+        return true;
+    }
+    machine_map
+        .get(machine_id)
+        .is_some_and(|record| can_keep_existing_slot(&record.placement_candidate()))
 }
 
 fn machine_is_deployable(

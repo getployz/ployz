@@ -83,6 +83,7 @@ mod tests {
             public_key: key,
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
+            region_role: crate::model::RegionRole::HomeData,
             subnet: None,
             bridge_ip: None,
             endpoints: endpoints.into_iter().map(String::from).collect(),

@@ -1,6 +1,7 @@
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineStoragePromoteRequest,
-    MachineStoragePromotionFailure, MachineStoragePromotionPayload, StatusPayload,
+    DaemonPayload, DaemonRequest, DaemonResponse, MachineStorageAuthorityPeer,
+    MachineStoragePromoteRequest, MachineStoragePromotionFailure,
+    MachineStoragePromotionFailureCause, MachineStoragePromotionPayload, StatusPayload,
 };
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
 use ployz_store_api::MachineMembershipStore;
@@ -136,6 +137,7 @@ impl DaemonState {
             if !seen_targets.insert(target.clone()) {
                 failed.push(MachineStoragePromotionFailure {
                     machine_id: target.clone(),
+                    cause: MachineStoragePromotionFailureCause::DuplicateTarget,
                     message: "duplicate promotion target".into(),
                 });
             }
@@ -195,6 +197,7 @@ impl DaemonState {
                 }
                 Some(machine) => failed.push(MachineStoragePromotionFailure {
                     machine_id: target.clone(),
+                    cause: MachineStoragePromotionFailureCause::InvalidCandidate,
                     message: format!(
                         "machine must be an active storage candidate (lifecycle={}, storage={}, participation={:?})",
                         machine.lifecycle, machine.storage, machine.storage_participation
@@ -202,6 +205,7 @@ impl DaemonState {
                 }),
                 None => failed.push(MachineStoragePromotionFailure {
                     machine_id: target.clone(),
+                    cause: MachineStoragePromotionFailureCause::MachineNotFound,
                     message: "machine not found".into(),
                 }),
             }
@@ -228,10 +232,6 @@ impl DaemonState {
             });
         }
 
-        let _ = self
-            .machine_operation_store()
-            .update_stage(operation, "promoting-authority-members");
-
         let mut authority_peers = authorities.clone();
         authority_peers.extend(targets.clone().into_iter().map(|mut target| {
             target.storage_participation = StorageParticipation::default_authority();
@@ -240,6 +240,9 @@ impl DaemonState {
 
         let mut promoted = Vec::new();
         if self.runtime_is_memory_test() {
+            let _ = self
+                .machine_operation_store()
+                .update_stage(operation, "promoting-authority-members");
             for target in &targets {
                 let mut promoted_record = target.clone();
                 promoted_record.storage_participation = StorageParticipation::default_authority();
@@ -247,13 +250,59 @@ impl DaemonState {
                 if let Err(error) = store.upsert_self_machine(&promoted_record).await {
                     failed.push(MachineStoragePromotionFailure {
                         machine_id: target.id.0.clone(),
+                        cause: MachineStoragePromotionFailureCause::PublishPromotedMembershipFailed,
                         message: format!("publish promoted membership: {error}"),
                     });
                 } else {
                     promoted.push(target.id.0.clone());
                 }
             }
+            if failed.is_empty() {
+                let _ = self
+                    .machine_operation_store()
+                    .update_stage(operation, "recording-replica-intent");
+                let previous_replicas = match self
+                    .record_storage_replica_intent(network_name, request.replicas)
+                {
+                    Ok(previous) => previous,
+                    Err(error) => {
+                        return Err(StoragePromotionError::RecordReplicaIntent { error, promoted });
+                    }
+                };
+                let network_dir = self.network_dir(network_name);
+                let previous_bootstrap_peers = match load_bootstrap_peer_records(&network_dir) {
+                    Ok(peers) => peers,
+                    Err(error) => {
+                        let rollback_error = self
+                            .restore_storage_replica_intent(network_name, previous_replicas)
+                            .err();
+                        return Err(StoragePromotionError::BootstrapPeerRead {
+                            error,
+                            rollback_error,
+                            promoted,
+                        });
+                    }
+                };
+                let peer_records = authority_peers
+                    .iter()
+                    .map(BootstrapPeerRecord::from_machine_record)
+                    .collect::<Vec<_>>();
+                if let Err(error) = write_bootstrap_peer_records(&network_dir, &peer_records) {
+                    let rollback_error = self
+                        .restore_storage_replica_intent(network_name, previous_replicas)
+                        .err();
+                    let _ = write_bootstrap_peer_records(&network_dir, &previous_bootstrap_peers);
+                    return Err(StoragePromotionError::BootstrapPeerWrite {
+                        error,
+                        rollback_error,
+                        promoted,
+                    });
+                }
+            }
         } else {
+            let _ = self
+                .machine_operation_store()
+                .update_stage(operation, "preflighting-authority-members");
             let client = match self.nats_node_rpc_client().await {
                 Ok(client) => client.with_policy(RpcPolicy::default()),
                 Err(error) => {
@@ -273,6 +322,49 @@ impl DaemonState {
                 return Err(StoragePromotionError::Preflight { failed });
             }
 
+            let _ = self
+                .machine_operation_store()
+                .update_stage(operation, "recording-replica-intent");
+            let previous_replicas =
+                match self.record_storage_replica_intent(network_name, request.replicas) {
+                    Ok(previous) => previous,
+                    Err(error) => {
+                        return Err(StoragePromotionError::RecordReplicaIntent { error, promoted });
+                    }
+                };
+
+            let network_dir = self.network_dir(network_name);
+            let previous_bootstrap_peers = match load_bootstrap_peer_records(&network_dir) {
+                Ok(peers) => peers,
+                Err(error) => {
+                    let rollback_error = self
+                        .restore_storage_replica_intent(network_name, previous_replicas)
+                        .err();
+                    return Err(StoragePromotionError::BootstrapPeerRead {
+                        error,
+                        rollback_error,
+                        promoted,
+                    });
+                }
+            };
+            let peer_records = authority_peers
+                .iter()
+                .map(BootstrapPeerRecord::from_machine_record)
+                .collect::<Vec<_>>();
+            if let Err(error) = write_bootstrap_peer_records(&network_dir, &peer_records) {
+                let rollback_error = self
+                    .restore_storage_replica_intent(network_name, previous_replicas)
+                    .err();
+                return Err(StoragePromotionError::BootstrapPeerWrite {
+                    error,
+                    rollback_error,
+                    promoted,
+                });
+            }
+
+            let _ = self
+                .machine_operation_store()
+                .update_stage(operation, "promoting-authority-members");
             for target in remote_authorities {
                 if let Err(error) =
                     promote_remote_storage(&client, target, request.replicas, &authority_peers)
@@ -280,59 +372,26 @@ impl DaemonState {
                 {
                     failed.push(MachineStoragePromotionFailure {
                         machine_id: target.id.0.clone(),
+                        cause: MachineStoragePromotionFailureCause::RpcUnavailable,
                         message: error,
                     });
                 } else if targets.iter().any(|candidate| candidate.id == target.id) {
                     promoted.push(target.id.0.clone());
                 }
             }
-        }
 
-        if !failed.is_empty() {
-            return Err(StoragePromotionError::PromoteTargets { promoted, failed });
-        }
-
-        let _ = self
-            .machine_operation_store()
-            .update_stage(operation, "recording-replica-intent");
-        let previous_replicas =
-            match self.record_storage_replica_intent(network_name, request.replicas) {
-                Ok(previous) => previous,
-                Err(error) => {
-                    return Err(StoragePromotionError::RecordReplicaIntent { error, promoted });
-                }
-            };
-
-        let network_dir = self.network_dir(network_name);
-        let previous_bootstrap_peers = match load_bootstrap_peer_records(&network_dir) {
-            Ok(peers) => peers,
-            Err(error) => {
+            if !failed.is_empty() {
                 let rollback_error = self
                     .restore_storage_replica_intent(network_name, previous_replicas)
                     .err();
-                return Err(StoragePromotionError::BootstrapPeerRead {
-                    error,
-                    rollback_error,
+                let peers_rollback_error =
+                    write_bootstrap_peer_records(&network_dir, &previous_bootstrap_peers).err();
+                return Err(StoragePromotionError::PromoteTargets {
                     promoted,
+                    failed: append_rollback_failures(failed, rollback_error, peers_rollback_error),
                 });
             }
-        };
-        let peer_records = authority_peers
-            .iter()
-            .map(BootstrapPeerRecord::from_machine_record)
-            .collect::<Vec<_>>();
-        if let Err(error) = write_bootstrap_peer_records(&network_dir, &peer_records) {
-            let rollback_error = self
-                .restore_storage_replica_intent(network_name, previous_replicas)
-                .err();
-            return Err(StoragePromotionError::BootstrapPeerWrite {
-                error,
-                rollback_error,
-                promoted,
-            });
-        }
 
-        if !self.runtime_is_memory_test() {
             let _ = self
                 .machine_operation_store()
                 .update_stage(operation, "restarting-authority-storage");
@@ -343,18 +402,12 @@ impl DaemonState {
                 )
                 .await
             {
-                let intent_rollback_error = self
-                    .restore_storage_replica_intent(network_name, previous_replicas)
-                    .err();
-                let peers_rollback_error =
-                    write_bootstrap_peer_records(&network_dir, &previous_bootstrap_peers).err();
-                return Err(StoragePromotionError::AuthorityRestart {
-                    error,
-                    intent_rollback_error,
-                    peers_rollback_error,
-                    promoted,
-                });
+                return Err(StoragePromotionError::AuthorityRestart { error, promoted });
             }
+        }
+
+        if !failed.is_empty() {
+            return Err(StoragePromotionError::PromoteTargets { promoted, failed });
         }
 
         Ok(promotion_payload(
@@ -405,9 +458,9 @@ impl DaemonState {
     pub(crate) async fn handle_machine_storage_promote_self(
         &mut self,
         replicas: StorageReplicaPolicy,
-        authority_peers: &[MachineMembership],
+        authority_peers: &[MachineStorageAuthorityPeer],
     ) -> DaemonResponse {
-        let (network_name, config_path, network_dir) = {
+        let (network_name, config_path, network_dir, store) = {
             let Some(active) = self.active.as_ref() else {
                 return self.err(
                     "NO_RUNNING_NETWORK",
@@ -419,6 +472,7 @@ impl DaemonState {
                 network_name.clone(),
                 NetworkConfig::path(&self.data_dir, &network_name),
                 self.network_dir(&network_name),
+                active.mesh.store.clone(),
             )
         };
 
@@ -426,6 +480,24 @@ impl DaemonState {
             Ok(config) => config,
             Err(error) => return self.err("IO_ERROR", format!("load network config: {error}")),
         };
+        let previous_peer_records = match load_bootstrap_peer_records(&network_dir) {
+            Ok(records) => records,
+            Err(error) => return self.err("IO_ERROR", format!("load bootstrap peers: {error}")),
+        };
+        if let Err(message) =
+            validate_authority_peer_payload(replicas, authority_peers, &self.identity.machine_id)
+        {
+            return self.err("INVALID_AUTHORITY_PEERS", message);
+        }
+        let machines = match store.list_machines().await {
+            Ok(machines) => machines,
+            Err(error) => return self.err("STORE_ERROR", format!("list machines: {error}")),
+        };
+        if let Err(message) = validate_authority_peers_match_membership(authority_peers, &machines)
+        {
+            return self.err("INVALID_AUTHORITY_PEERS", message);
+        }
+        let previous_storage = config.storage;
         let previous_participation = config.storage_participation.clone();
         let previous_replicas = config.storage_replicas;
         config.storage = true;
@@ -437,18 +509,15 @@ impl DaemonState {
             return self.err("IO_ERROR", format!("save network config: {error}"));
         }
 
-        let previous_peer_records = match load_bootstrap_peer_records(&network_dir) {
-            Ok(records) => records,
-            Err(error) => return self.err("IO_ERROR", format!("load bootstrap peers: {error}")),
-        };
         let peer_records = authority_peers
             .iter()
-            .map(BootstrapPeerRecord::from_machine_record)
+            .map(BootstrapPeerRecord::from)
             .collect::<Vec<_>>();
         if let Err(error) = write_bootstrap_peer_records(&network_dir, &peer_records) {
             let _ = restore_storage_config(
                 &config_path,
                 &mut config,
+                previous_storage,
                 previous_participation,
                 previous_replicas,
             );
@@ -465,6 +534,7 @@ impl DaemonState {
             let rollback_error = restore_storage_config(
                 &config_path,
                 &mut config,
+                previous_storage,
                 previous_participation,
                 previous_replicas,
             )
@@ -488,6 +558,14 @@ impl DaemonState {
             })
             .await;
         if update_result.is_none() {
+            let _ = restore_storage_config(
+                &config_path,
+                &mut config,
+                previous_storage,
+                previous_participation,
+                previous_replicas,
+            );
+            let _ = write_bootstrap_peer_records(&network_dir, &previous_peer_records);
             return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
         }
 
@@ -548,8 +626,6 @@ enum StoragePromotionError {
     },
     AuthorityRestart {
         error: String,
-        intent_rollback_error: Option<String>,
-        peers_rollback_error: Option<String>,
         promoted: Vec<String>,
     },
 }
@@ -586,18 +662,9 @@ impl StoragePromotionError {
                 format!("write authority bootstrap peers: {error}"),
                 rollback_error.as_deref(),
             ),
-            Self::AuthorityRestart {
-                error,
-                intent_rollback_error,
-                peers_rollback_error,
-                ..
-            } => {
-                let message = append_rollback_error(
-                    format!("restart authority storage: {error}"),
-                    intent_rollback_error.as_deref(),
-                );
-                append_rollback_error(message, peers_rollback_error.as_deref())
-            }
+            Self::AuthorityRestart { error, .. } => format!(
+                "restart authority storage after durable promotion intent was recorded: {error}; retry mesh start or inspect status before retrying promotion"
+            ),
         }
     }
 
@@ -637,6 +704,28 @@ fn append_rollback_error(mut message: String, rollback_error: Option<&str>) -> S
     message
 }
 
+fn append_rollback_failures(
+    mut failed: Vec<MachineStoragePromotionFailure>,
+    intent_rollback_error: Option<String>,
+    peers_rollback_error: Option<String>,
+) -> Vec<MachineStoragePromotionFailure> {
+    if let Some(message) = intent_rollback_error {
+        failed.push(MachineStoragePromotionFailure {
+            machine_id: String::from("local"),
+            cause: MachineStoragePromotionFailureCause::PublishPromotedMembershipFailed,
+            message: format!("rollback storage replica intent: {message}"),
+        });
+    }
+    if let Some(message) = peers_rollback_error {
+        failed.push(MachineStoragePromotionFailure {
+            machine_id: String::from("local"),
+            cause: MachineStoragePromotionFailureCause::PublishPromotedMembershipFailed,
+            message: format!("rollback bootstrap peers: {message}"),
+        });
+    }
+    failed
+}
+
 async fn promote_remote_storage(
     client: &NatsNodeRpcClient,
     target: &MachineMembership,
@@ -648,7 +737,10 @@ async fn promote_remote_storage(
             NodeCommandSubject::machine_storage_promote_self(&target.id),
             &DaemonRequest::MachineStoragePromoteSelf {
                 replicas,
-                authority_peers: authority_peers.to_vec(),
+                authority_peers: authority_peers
+                    .iter()
+                    .map(MachineStorageAuthorityPeer::from)
+                    .collect(),
             },
         )
         .await
@@ -671,6 +763,7 @@ async fn preflight_remote_storage_promotion(
                 if status.version != env!("CARGO_PKG_VERSION") {
                     failed.push(MachineStoragePromotionFailure {
                         machine_id: target.id.0.clone(),
+                        cause: MachineStoragePromotionFailureCause::VersionMismatch,
                         message: format!(
                             "remote daemon version {} does not match required version {} for storage promotion",
                             status.version,
@@ -681,6 +774,7 @@ async fn preflight_remote_storage_promotion(
             }
             Err(message) => failed.push(MachineStoragePromotionFailure {
                 machine_id: target.id.0.clone(),
+                cause: MachineStoragePromotionFailureCause::RpcUnavailable,
                 message,
             }),
         }
@@ -719,12 +813,106 @@ async fn remote_status(
     }
 }
 
+impl From<&MachineStorageAuthorityPeer> for BootstrapPeerRecord {
+    fn from(peer: &MachineStorageAuthorityPeer) -> Self {
+        Self {
+            machine_id: peer.machine_id.clone(),
+            public_key: peer.public_key.clone(),
+            overlay_ip: peer.overlay_ip,
+            subnet: peer.subnet,
+            bridge_ip: peer.bridge_ip,
+            storage: true,
+            storage_participation: StorageParticipation::default_authority(),
+            region_role: peer.region_role,
+            endpoints: peer.endpoints.clone(),
+        }
+    }
+}
+
+fn validate_authority_peer_payload(
+    replicas: StorageReplicaPolicy,
+    authority_peers: &[MachineStorageAuthorityPeer],
+    local_machine_id: &ployz_types::model::MachineId,
+) -> Result<(), String> {
+    if authority_peers.len() != replicas.replicas() {
+        return Err(format!(
+            "storage promotion self payload for {replicas} must contain exactly {} authority peers, got {}",
+            replicas.replicas(),
+            authority_peers.len()
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    let mut has_local = false;
+    for peer in authority_peers {
+        if !seen.insert(peer.machine_id.clone()) {
+            return Err(format!(
+                "storage promotion self payload contains duplicate authority peer '{}'",
+                peer.machine_id
+            ));
+        }
+        if peer.machine_id == *local_machine_id {
+            has_local = true;
+        }
+        if peer.endpoints.is_empty() {
+            return Err(format!(
+                "storage promotion self payload authority peer '{}' has no endpoints",
+                peer.machine_id
+            ));
+        }
+    }
+    if !has_local {
+        return Err(format!(
+            "storage promotion self payload must include local authority peer '{}'",
+            local_machine_id
+        ));
+    }
+    Ok(())
+}
+
+fn validate_authority_peers_match_membership(
+    authority_peers: &[MachineStorageAuthorityPeer],
+    machines: &[MachineMembership],
+) -> Result<(), String> {
+    for peer in authority_peers {
+        let Some(machine) = machines
+            .iter()
+            .find(|machine| machine.id == peer.machine_id)
+        else {
+            return Err(format!(
+                "storage promotion self payload authority peer '{}' is not in machine membership",
+                peer.machine_id
+            ));
+        };
+        if machine.public_key != peer.public_key
+            || machine.overlay_ip != peer.overlay_ip
+            || machine.subnet != peer.subnet
+            || machine.bridge_ip != peer.bridge_ip
+            || machine.region_role != peer.region_role
+            || machine.endpoints != peer.endpoints
+        {
+            return Err(format!(
+                "storage promotion self payload authority peer '{}' does not match machine membership",
+                peer.machine_id
+            ));
+        }
+        if machine.lifecycle != MachineLifecycle::Active || !machine.storage {
+            return Err(format!(
+                "storage promotion self payload authority peer '{}' is not active storage membership",
+                peer.machine_id
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn restore_storage_config(
     path: &std::path::Path,
     config: &mut NetworkConfig,
+    storage: bool,
     participation: StorageParticipation,
     replicas: StorageReplicaPolicy,
 ) -> Result<(), String> {
+    config.storage = storage;
     config.storage_participation = participation;
     config.storage_replicas = replicas;
     config
