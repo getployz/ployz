@@ -109,6 +109,7 @@ mod tests {
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
+            region_role: crate::model::RegionRole::HomeData,
             subnet,
             bridge_ip: None,
             endpoints: vec![],

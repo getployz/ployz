@@ -12,9 +12,10 @@ use crate::certificates::{
 };
 use crate::deploy::participant::{DeployParticipantClient, StartCandidateRequest};
 use crate::error::{DeployError, Error, Result};
+use crate::model::RegionRole;
 use crate::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
-    DeployId, DeployRecord, DeployState, DrainState, InstanceId, InstancePhase,
+    DeployChangeKind, DeployId, DeployRecord, DeployState, DrainState, InstanceId, InstancePhase,
     InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, MachineTopology,
     OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
     ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, VolumeRecord,
@@ -88,11 +89,41 @@ fn deployable_machines_filters_by_participation() {
 }
 
 #[test]
-fn deployable_machines_falls_back_to_local_when_none_are_enabled() {
+fn deployable_machines_returns_empty_when_stored_machines_are_not_eligible() {
     let machines = vec![test_machine("draining", MachineLifecycle::Draining)];
 
     let deployable = deployable_machines(&machines, &MachineId("local".into()));
+    assert!(deployable.is_empty());
+}
+
+#[test]
+fn deployable_machines_falls_back_to_local_when_inventory_is_empty() {
+    let deployable = deployable_machines(&[], &MachineId("local".into()));
     assert_eq!(deployable, vec![MachineId("local".into())]);
+}
+
+#[test]
+fn deployable_machines_includes_compute_region_and_excludes_draining_regions() {
+    let machines = vec![
+        test_machine_in_region("home", MachineLifecycle::Active, RegionRole::HomeData),
+        test_machine_in_region("compute", MachineLifecycle::Active, RegionRole::Compute),
+        test_machine_in_region(
+            "region-draining",
+            MachineLifecycle::Active,
+            RegionRole::Draining,
+        ),
+        test_machine_in_region(
+            "region-disabled",
+            MachineLifecycle::Active,
+            RegionRole::Disabled,
+        ),
+    ];
+
+    let deployable = deployable_machines(&machines, &MachineId("local".into()));
+    assert_eq!(
+        deployable,
+        vec![MachineId("compute".into()), MachineId("home".into())]
+    );
 }
 
 #[test]
@@ -117,8 +148,16 @@ fn replicated_one_reuses_existing_slot_machine() {
         ),
     ]);
 
-    let desired = desired_slots(&spec, &machines, Some(&current_slots), &machine_map, None)
-        .expect("desired slots");
+    let desired = desired_slots(
+        &spec,
+        &machines,
+        Some(&current_slots),
+        &machine_map,
+        None,
+        "rev-1",
+        false,
+    )
+    .expect("desired slots");
     let [slot] = desired.as_slice() else {
         panic!("expected one desired slot");
     };
@@ -148,8 +187,16 @@ fn replicated_slot_stays_on_draining_machine_instead_of_replacing_lifecycle_trut
         ),
     ]);
 
-    let desired = desired_slots(&spec, &machines, Some(&current_slots), &machine_map, None)
-        .expect("desired slots");
+    let desired = desired_slots(
+        &spec,
+        &machines,
+        Some(&current_slots),
+        &machine_map,
+        None,
+        "rev-1",
+        false,
+    )
+    .expect("desired slots");
 
     assert_eq!(desired.len(), 2);
     assert_eq!(desired[0].slot_id, SlotId("slot-0001".into()));
@@ -259,6 +306,63 @@ async fn resolve_plan_reuses_slot_machine_when_revision_changes() {
 }
 
 #[tokio::test]
+async fn resolve_plan_moves_replacement_off_region_draining_machine() {
+    let store = StoreDriver::memory();
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "nginx:1.28",
+    )]);
+    let old_spec = test_service_spec("api", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let old_revision_hash = old_spec.revision_hash().expect("old revision hash");
+
+    store
+        .upsert_self_machine(&test_machine_in_region(
+            "compute",
+            MachineLifecycle::Active,
+            RegionRole::Compute,
+        ))
+        .await
+        .expect("seed compute");
+    store
+        .upsert_self_machine(&test_machine_in_region(
+            "region-draining",
+            MachineLifecycle::Active,
+            RegionRole::Draining,
+        ))
+        .await
+        .expect("seed region-draining");
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "api",
+            &old_revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "region-draining",
+                "inst-1",
+                &old_revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve plan");
+
+    let [service_plan] = plan.services() else {
+        panic!("expected one service plan");
+    };
+    let [slot_plan] = service_plan.slots.as_slice() else {
+        panic!("expected one slot plan");
+    };
+    assert_eq!(slot_plan.action, DeployChangeKind::Replace);
+    assert_eq!(slot_plan.machine_id, MachineId("compute".into()));
+}
+
+#[tokio::test]
 async fn resolve_plan_pins_new_volume_to_existing_slot_machine() {
     let store = StoreDriver::memory();
     let local_machine_id = MachineId("local".into());
@@ -313,6 +417,76 @@ async fn resolve_plan_pins_new_volume_to_existing_slot_machine() {
         panic!("expected one slot plan");
     };
     assert_eq!(slot_plan.machine_id, MachineId("machine-b".into()));
+}
+
+#[tokio::test]
+async fn resolve_plan_keeps_existing_volume_on_region_draining_machine() {
+    let store = StoreDriver::memory();
+    let local_machine_id = MachineId("local".into());
+    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    let mut manifest = test_manifest(vec![service]);
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    let [spec] = manifest.services.as_slice() else {
+        panic!("expected one manifest service");
+    };
+    let revision_hash = spec.revision_hash().expect("revision hash");
+
+    store
+        .upsert_self_machine(&test_machine_in_region(
+            "region-draining",
+            MachineLifecycle::Active,
+            RegionRole::Draining,
+        ))
+        .await
+        .expect("seed machine");
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "data",
+        "region-draining",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "db",
+            &revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "region-draining",
+                "inst-1",
+                &revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve plan");
+
+    let [volume] = plan.volumes() else {
+        panic!("expected one volume");
+    };
+    assert_eq!(volume.machine_id, MachineId("region-draining".into()));
+    let [service_plan] = plan.services() else {
+        panic!("expected one service plan");
+    };
+    let [slot_plan] = service_plan.slots.as_slice() else {
+        panic!("expected one slot plan");
+    };
+    assert_eq!(slot_plan.machine_id, MachineId("region-draining".into()));
 }
 
 #[tokio::test]
@@ -873,6 +1047,174 @@ async fn resolve_plan_global_service_targets_enabled_machines_in_order() {
             ),
         ]
     );
+}
+
+#[tokio::test]
+async fn resolve_plan_global_service_targets_home_and_compute_regions_only() {
+    let store = StoreDriver::memory();
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Global,
+        "nginx:1.27",
+    )]);
+
+    for machine in [
+        test_machine_in_region("home", MachineLifecycle::Active, RegionRole::HomeData),
+        test_machine_in_region("compute", MachineLifecycle::Active, RegionRole::Compute),
+        test_machine_in_region(
+            "region-draining",
+            MachineLifecycle::Active,
+            RegionRole::Draining,
+        ),
+        test_machine_in_region(
+            "region-disabled",
+            MachineLifecycle::Active,
+            RegionRole::Disabled,
+        ),
+    ] {
+        store
+            .upsert_self_machine(&machine)
+            .await
+            .expect("seed machine");
+    }
+
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve plan");
+
+    let [resolution] = plan.services() else {
+        panic!("expected one service resolution");
+    };
+    let desired = resolution
+        .slots
+        .iter()
+        .map(|slot| slot.machine_id.clone())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        desired,
+        vec![MachineId("compute".into()), MachineId("home".into())]
+    );
+}
+
+#[tokio::test]
+async fn resolve_plan_fails_when_no_stored_machine_is_eligible_for_new_placement() {
+    let store = StoreDriver::memory();
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+
+    for machine in [
+        test_machine_in_region(
+            "region-draining",
+            MachineLifecycle::Active,
+            RegionRole::Draining,
+        ),
+        test_machine_in_region(
+            "region-disabled",
+            MachineLifecycle::Active,
+            RegionRole::Disabled,
+        ),
+    ] {
+        store
+            .upsert_self_machine(&machine)
+            .await
+            .expect("seed machine");
+    }
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("no eligible target should fail");
+    assert!(matches!(
+        error,
+        Error::Deploy(DeployError::NoEligiblePlacementTargets)
+    ));
+}
+
+#[tokio::test]
+async fn resolve_plan_fails_new_volume_when_no_machine_is_eligible() {
+    let store = StoreDriver::memory();
+    let local_machine_id = MachineId("local".into());
+    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    let mut manifest = test_manifest(vec![service]);
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+
+    for machine in [
+        test_machine_in_region(
+            "region-draining",
+            MachineLifecycle::Active,
+            RegionRole::Draining,
+        ),
+        test_machine_in_region(
+            "region-disabled",
+            MachineLifecycle::Active,
+            RegionRole::Disabled,
+        ),
+    ] {
+        store
+            .upsert_self_machine(&machine)
+            .await
+            .expect("seed machine");
+    }
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("new volume with no eligible target should fail");
+    assert!(matches!(
+        error,
+        Error::Deploy(DeployError::NoEligiblePlacementTargets)
+    ));
+}
+
+#[tokio::test]
+async fn resolve_plan_allows_removal_only_when_no_new_placement_target_exists() {
+    let store = StoreDriver::memory();
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(Vec::new());
+
+    store
+        .upsert_self_machine(&test_machine_in_region(
+            "region-draining",
+            MachineLifecycle::Active,
+            RegionRole::Draining,
+        ))
+        .await
+        .expect("seed machine");
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "old-api",
+            "rev-old",
+            vec![test_slot(
+                "slot-0001",
+                "region-draining",
+                "inst-old",
+                "rev-old",
+            )],
+        ))
+        .await
+        .expect("seed old-api release");
+
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("removal-only plan should not need a new placement target");
+
+    let [removed] = plan.services() else {
+        panic!("expected one removed service");
+    };
+    assert_eq!(removed.service, "old-api");
+    assert_eq!(removed.action, DeployChangeKind::Remove);
 }
 
 #[tokio::test]
@@ -2003,6 +2345,29 @@ async fn seed_volume_with(
     mode: &str,
     owner: &str,
 ) {
+    seed_volume_with_attached_services(
+        store,
+        namespace,
+        volume_name,
+        machine_id,
+        quota,
+        mode,
+        owner,
+        Vec::new(),
+    )
+    .await;
+}
+
+async fn seed_volume_with_attached_services(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    volume_name: &str,
+    machine_id: &str,
+    quota: &str,
+    mode: &str,
+    owner: &str,
+    attached_services: Vec<String>,
+) {
     let deploy_id = DeployId(format!("seed-{volume_name}"));
     let volume = VolumeRecord {
         namespace: namespace.clone(),
@@ -2012,7 +2377,7 @@ async fn seed_volume_with(
         quota: quota.into(),
         mode: mode.into(),
         owner: owner.into(),
-        attached_services: Vec::new(),
+        attached_services,
         created_at: 1,
         created_by_deploy_id: deploy_id.clone(),
         last_modified_at: 1,
@@ -2177,11 +2542,20 @@ fn test_slot(
 }
 
 fn test_machine(id: &str, lifecycle: MachineLifecycle) -> MachineMembership {
+    test_machine_in_region(id, lifecycle, RegionRole::HomeData)
+}
+
+fn test_machine_in_region(
+    id: &str,
+    lifecycle: MachineLifecycle,
+    region_role: RegionRole,
+) -> MachineMembership {
     MachineMembership {
         id: MachineId(id.into()),
         public_key: PublicKey([7; 32]),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
         topology: MachineTopology::local(),
+        region_role,
         subnet: None,
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],

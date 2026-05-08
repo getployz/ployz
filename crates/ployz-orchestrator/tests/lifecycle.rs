@@ -6,7 +6,7 @@ use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{MachineMembershipStore, SyncStatus};
 use ployz_types::model::{
     MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
-    StorageParticipation,
+    RegionRole, StorageParticipation,
 };
 use std::net::Ipv6Addr;
 use std::sync::Arc;
@@ -18,6 +18,7 @@ fn test_record(id: &str, key_byte: u8) -> MachineMembership {
         public_key: PublicKey([key_byte; 32]),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
         topology: MachineTopology::local(),
+        region_role: RegionRole::HomeData,
         subnet: None,
         bridge_ip: None,
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],

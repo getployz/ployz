@@ -16,7 +16,10 @@ One owning authority accepts durable deploy writes.
 | Placement probes | Live facts | NATS request/reply. No responder means unavailable now. |
 | Deploy lock | Live facts | Lease in `cp_locks_<authority>`. Coordination only. |
 
-Regions affect placement. They do not create write authority.
+Regions affect placement. They do not create write authority. Deploy planning
+may place workloads in `home_data` and `compute` regions; `draining` and
+`disabled` regions do not receive new placements. Deploy commits, status,
+instance records, and routing events still belong to the owning authority.
 
 ## Apply Flow
 

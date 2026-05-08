@@ -374,6 +374,7 @@ pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineLis
                     machine,
                 ),
                 region: machine.topology.region.0.clone(),
+                region_role: machine.region_role.to_string(),
                 availability_zone: machine
                     .topology
                     .availability_zone

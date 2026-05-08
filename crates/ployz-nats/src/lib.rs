@@ -31,7 +31,6 @@ struct NetworkConfig {
     overlay_ip: OverlayIp,
     #[serde(default)]
     storage_participation: Option<StorageParticipation>,
-    #[serde(default)]
     storage_replicas: StorageReplicaPolicy,
 }
 
