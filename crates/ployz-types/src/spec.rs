@@ -41,6 +41,8 @@ impl std::fmt::Display for Namespace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DeployManifest {
     pub namespace: Namespace,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<DeployIntent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volumes: Vec<VolumeDeclaration>,
     pub services: Vec<ServiceSpec>,
@@ -108,8 +110,202 @@ impl DeployManifest {
             }
         }
 
+        if let Some(intent) = &self.intent {
+            intent.validate(self)?;
+            return Err("deploy intent hints are not supported by deploy planning yet".to_string());
+        }
+
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeployIntent {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<ServiceIntentHint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<VolumeIntentHint>,
+}
+
+impl DeployIntent {
+    fn validate(&self, manifest: &DeployManifest) -> Result<(), String> {
+        let service_names = manifest
+            .services
+            .iter()
+            .map(|service| service.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let volume_names = manifest
+            .volumes
+            .iter()
+            .map(|volume| volume.name.as_str())
+            .collect::<BTreeSet<_>>();
+
+        let mut seen_services = BTreeSet::new();
+        for hint in &self.services {
+            hint.validate(&service_names)?;
+            if !seen_services.insert(hint.service.as_str()) {
+                return Err(format!(
+                    "deploy intent contains duplicate service hint '{}'",
+                    hint.service
+                ));
+            }
+        }
+
+        let mut seen_volumes = BTreeSet::new();
+        for hint in &self.volumes {
+            hint.validate(&volume_names)?;
+            if !seen_volumes.insert(hint.volume.as_str()) {
+                return Err(format!(
+                    "deploy intent contains duplicate volume hint '{}'",
+                    hint.volume
+                ));
+            }
+        }
+
+        if self.services.is_empty() && self.volumes.is_empty() {
+            return Err("deploy intent must include at least one service or volume hint".into());
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceIntentHint {
+    pub service: String,
+    pub intent: ServiceIntent,
+}
+
+impl ServiceIntentHint {
+    fn validate(&self, service_names: &BTreeSet<&str>) -> Result<(), String> {
+        if self.service.trim().is_empty() {
+            return Err("deploy intent service hint cannot have an empty service".into());
+        }
+        if !service_names.contains(self.service.as_str()) {
+            return Err(format!(
+                "deploy intent references unknown service '{}'",
+                self.service
+            ));
+        }
+        self.intent.validate(&self.service)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum ServiceIntent {
+    Branch {
+        source_namespace: Namespace,
+        source_service: String,
+    },
+    Move {
+        to_machine: String,
+    },
+    Portal {
+        source_namespace: Namespace,
+        source_service: String,
+    },
+}
+
+impl ServiceIntent {
+    fn validate(&self, service: &str) -> Result<(), String> {
+        match self {
+            Self::Branch {
+                source_namespace,
+                source_service,
+            } => validate_service_source("branch", service, source_namespace, source_service),
+            Self::Move { to_machine } => validate_machine_hint("move", service, to_machine),
+            Self::Portal {
+                source_namespace,
+                source_service,
+            } => validate_service_source("portal", service, source_namespace, source_service),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeIntentHint {
+    pub volume: String,
+    pub intent: VolumeIntent,
+}
+
+impl VolumeIntentHint {
+    fn validate(&self, volume_names: &BTreeSet<&str>) -> Result<(), String> {
+        if self.volume.trim().is_empty() {
+            return Err("deploy intent volume hint cannot have an empty volume".into());
+        }
+        if !volume_names.contains(self.volume.as_str()) {
+            return Err(format!(
+                "deploy intent references unknown volume '{}'",
+                self.volume
+            ));
+        }
+        self.intent.validate(&self.volume)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum VolumeIntent {
+    Move {
+        from_machine: String,
+        to_machine: String,
+    },
+}
+
+impl VolumeIntent {
+    fn validate(&self, volume: &str) -> Result<(), String> {
+        match self {
+            Self::Move {
+                from_machine,
+                to_machine,
+            } => {
+                if from_machine.trim().is_empty() {
+                    return Err(format!(
+                        "deploy intent move for volume '{volume}' cannot have an empty from_machine"
+                    ));
+                }
+                if to_machine.trim().is_empty() {
+                    return Err(format!(
+                        "deploy intent move for volume '{volume}' cannot have an empty to_machine"
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+fn validate_service_source(
+    intent: &str,
+    service: &str,
+    source_namespace: &Namespace,
+    source_service: &str,
+) -> Result<(), String> {
+    if !valid_namespace_name(&source_namespace.0) {
+        return Err(format!(
+            "deploy intent {intent} for service '{service}' has invalid source namespace '{}'",
+            source_namespace
+        ));
+    }
+    if source_service.trim().is_empty() {
+        return Err(format!(
+            "deploy intent {intent} for service '{service}' cannot have an empty source_service"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_machine_hint(intent: &str, service: &str, machine: &str) -> Result<(), String> {
+    if machine.trim().is_empty() {
+        return Err(format!(
+            "deploy intent {intent} for service '{service}' cannot have an empty to_machine"
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -810,6 +1006,7 @@ mod tests {
         let spec = sample_spec();
         let manifest = DeployManifest {
             namespace: Namespace::default_ns(),
+            intent: None,
             volumes: vec![VolumeDeclaration {
                 name: "data".into(),
                 scope: VolumeScope::Single,
@@ -827,6 +1024,7 @@ mod tests {
     fn manifest_accepts_empty_services() {
         let manifest = DeployManifest {
             namespace: Namespace::default_ns(),
+            intent: None,
             volumes: Vec::new(),
             services: Vec::new(),
         };
@@ -837,9 +1035,187 @@ mod tests {
     }
 
     #[test]
+    fn deploy_intent_roundtrips_in_manifest_json() {
+        let manifest = DeployManifest {
+            namespace: Namespace("pr_39".into()),
+            intent: Some(DeployIntent {
+                services: vec![ServiceIntentHint {
+                    service: "api".into(),
+                    intent: ServiceIntent::Branch {
+                        source_namespace: Namespace("prod".into()),
+                        source_service: "api".into(),
+                    },
+                }],
+                volumes: vec![VolumeIntentHint {
+                    volume: "data".into(),
+                    intent: VolumeIntent::Move {
+                        from_machine: "machine-a".into(),
+                        to_machine: "machine-b".into(),
+                    },
+                }],
+            }),
+            volumes: vec![VolumeDeclaration {
+                name: "data".into(),
+                scope: VolumeScope::Single,
+                quota: "10G".into(),
+                mode: "0750".into(),
+                owner: "999:999".into(),
+            }],
+            services: vec![sample_spec()],
+        };
+
+        let json = serde_json::to_string(&manifest).expect("serialize manifest");
+        assert!(json.contains("\"intent\""));
+        assert!(json.contains("\"branch\""));
+        assert!(json.contains("\"move\""));
+
+        let deserialized: DeployManifest =
+            serde_json::from_str(&json).expect("deserialize manifest");
+        assert_eq!(deserialized, manifest);
+    }
+
+    #[test]
+    fn deploy_intent_is_rejected_until_planner_support_exists() {
+        let manifest = DeployManifest {
+            namespace: Namespace("pr_39".into()),
+            intent: Some(DeployIntent {
+                services: vec![ServiceIntentHint {
+                    service: "api".into(),
+                    intent: ServiceIntent::Branch {
+                        source_namespace: Namespace("prod".into()),
+                        source_service: "api".into(),
+                    },
+                }],
+                volumes: Vec::new(),
+            }),
+            volumes: vec![VolumeDeclaration {
+                name: "data".into(),
+                scope: VolumeScope::Single,
+                quota: "10G".into(),
+                mode: "0750".into(),
+                owner: "999:999".into(),
+            }],
+            services: vec![sample_spec()],
+        };
+
+        let error = manifest
+            .validate()
+            .expect_err("intent should be rejected until deploy planning supports it");
+
+        assert!(
+            error.contains("intent hints are not supported"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn deploy_intent_validates_shape_before_rejecting_unsupported_modes() {
+        let manifest = DeployManifest {
+            namespace: Namespace("pr_39".into()),
+            intent: Some(DeployIntent {
+                services: vec![ServiceIntentHint {
+                    service: "api".into(),
+                    intent: ServiceIntent::Branch {
+                        source_namespace: Namespace("Prod".into()),
+                        source_service: "api".into(),
+                    },
+                }],
+                volumes: Vec::new(),
+            }),
+            volumes: vec![VolumeDeclaration {
+                name: "data".into(),
+                scope: VolumeScope::Single,
+                quota: "10G".into(),
+                mode: "0750".into(),
+                owner: "999:999".into(),
+            }],
+            services: vec![sample_spec()],
+        };
+
+        let error = manifest
+            .validate()
+            .expect_err("invalid source namespace should fail before unsupported mode");
+
+        assert!(error.contains("invalid source namespace"), "got: {error}");
+    }
+
+    #[test]
+    fn deploy_intent_rejects_unknown_nested_fields() {
+        let json = r#"{
+            "namespace":"pr_39",
+            "intent":{
+                "services":[
+                    {
+                        "service":"api",
+                        "intent":{
+                            "branch":{
+                                "source_namespace":"prod",
+                                "source_service":"api",
+                                "snapshot_policy":"clone"
+                            }
+                        }
+                    }
+                ]
+            },
+            "volumes":[
+                {
+                    "name":"data",
+                    "scope":"single",
+                    "quota":"10G",
+                    "mode":"0750",
+                    "owner":"999:999"
+                }
+            ],
+            "services":[]
+        }"#;
+
+        let error =
+            serde_json::from_str::<DeployManifest>(json).expect_err("unknown field should fail");
+
+        assert!(error.to_string().contains("snapshot_policy"));
+    }
+
+    #[test]
+    fn deploy_intent_rejects_unknown_targets() {
+        let manifest = DeployManifest {
+            namespace: Namespace::default_ns(),
+            intent: Some(DeployIntent {
+                services: vec![ServiceIntentHint {
+                    service: "worker".into(),
+                    intent: ServiceIntent::Move {
+                        to_machine: "machine-b".into(),
+                    },
+                }],
+                volumes: vec![VolumeIntentHint {
+                    volume: "cache".into(),
+                    intent: VolumeIntent::Move {
+                        from_machine: "machine-a".into(),
+                        to_machine: "machine-b".into(),
+                    },
+                }],
+            }),
+            volumes: vec![VolumeDeclaration {
+                name: "data".into(),
+                scope: VolumeScope::Single,
+                quota: "10G".into(),
+                mode: "0750".into(),
+                owner: "999:999".into(),
+            }],
+            services: vec![sample_spec()],
+        };
+
+        let error = manifest
+            .validate()
+            .expect_err("unknown service should fail before unsupported mode");
+
+        assert!(error.contains("unknown service"), "got: {error}");
+    }
+
+    #[test]
     fn manifest_rejects_empty_namespace() {
         let manifest = DeployManifest {
             namespace: Namespace(String::new()),
+            intent: None,
             volumes: vec![VolumeDeclaration {
                 name: "data".into(),
                 scope: VolumeScope::Single,
@@ -860,6 +1236,7 @@ mod tests {
         for namespace in ["../tmp", "prod/api", "prod api", ".prod", "Prod"] {
             let manifest = DeployManifest {
                 namespace: Namespace(namespace.into()),
+                intent: None,
                 volumes: vec![VolumeDeclaration {
                     name: "data".into(),
                     scope: VolumeScope::Single,
@@ -883,6 +1260,7 @@ mod tests {
         for name in ["../tmp", "data/extra", "data extra", ".data", "Data"] {
             let manifest = DeployManifest {
                 namespace: Namespace::default_ns(),
+                intent: None,
                 volumes: vec![VolumeDeclaration {
                     name: name.into(),
                     scope: VolumeScope::Single,
@@ -915,6 +1293,7 @@ mod tests {
         spec.placement = Placement::Replicated { count: 2 };
         let manifest = DeployManifest {
             namespace: Namespace::default_ns(),
+            intent: None,
             volumes: vec![VolumeDeclaration {
                 name: "data".into(),
                 scope: VolumeScope::Single,
@@ -942,6 +1321,7 @@ mod tests {
         spec.rollout = RolloutStrategy::Recreate;
         let manifest = DeployManifest {
             namespace: Namespace::default_ns(),
+            intent: None,
             volumes: Vec::new(),
             services: vec![spec],
         };

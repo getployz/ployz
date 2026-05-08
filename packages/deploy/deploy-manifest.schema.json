@@ -7,6 +7,16 @@
     "services"
   ],
   "properties": {
+    "intent": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/DeployIntent"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "namespace": {
       "$ref": "#/definitions/Namespace"
     },
@@ -120,6 +130,24 @@
           ]
         }
       }
+    },
+    "DeployIntent": {
+      "type": "object",
+      "properties": {
+        "services": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ServiceIntentHint"
+          }
+        },
+        "volumes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/VolumeIntentHint"
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "HttpRoute": {
       "type": "object",
@@ -457,6 +485,97 @@
         }
       ]
     },
+    "ServiceIntent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "branch"
+          ],
+          "properties": {
+            "branch": {
+              "type": "object",
+              "required": [
+                "source_namespace",
+                "source_service"
+              ],
+              "properties": {
+                "source_namespace": {
+                  "$ref": "#/definitions/Namespace"
+                },
+                "source_service": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "move"
+          ],
+          "properties": {
+            "move": {
+              "type": "object",
+              "required": [
+                "to_machine"
+              ],
+              "properties": {
+                "to_machine": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "portal"
+          ],
+          "properties": {
+            "portal": {
+              "type": "object",
+              "required": [
+                "source_namespace",
+                "source_service"
+              ],
+              "properties": {
+                "source_namespace": {
+                  "$ref": "#/definitions/Namespace"
+                },
+                "source_service": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ServiceIntentHint": {
+      "type": "object",
+      "required": [
+        "intent",
+        "service"
+      ],
+      "properties": {
+        "intent": {
+          "$ref": "#/definitions/ServiceIntent"
+        },
+        "service": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "ServicePort": {
       "type": "object",
       "required": [
@@ -598,6 +717,51 @@
           "$ref": "#/definitions/VolumeScope"
         }
       }
+    },
+    "VolumeIntent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "move"
+          ],
+          "properties": {
+            "move": {
+              "type": "object",
+              "required": [
+                "from_machine",
+                "to_machine"
+              ],
+              "properties": {
+                "from_machine": {
+                  "type": "string"
+                },
+                "to_machine": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "VolumeIntentHint": {
+      "type": "object",
+      "required": [
+        "intent",
+        "volume"
+      ],
+      "properties": {
+        "intent": {
+          "$ref": "#/definitions/VolumeIntent"
+        },
+        "volume": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
     },
     "VolumeScope": {
       "type": "string",
