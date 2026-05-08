@@ -1,8 +1,40 @@
 /**
  * This interface was referenced by `DeployManifest`'s JSON-Schema
+ * via the `definition` "ServiceIntent".
+ */
+export type ServiceIntent =
+  | {
+      branch: {
+        source_namespace: Namespace;
+        source_service: string;
+      };
+    }
+  | {
+      move: {
+        to_machine: string;
+      };
+    }
+  | {
+      portal: {
+        source_namespace: Namespace;
+        source_service: string;
+      };
+    };
+/**
+ * This interface was referenced by `DeployManifest`'s JSON-Schema
  * via the `definition` "Namespace".
  */
 export type Namespace = string;
+/**
+ * This interface was referenced by `DeployManifest`'s JSON-Schema
+ * via the `definition` "VolumeIntent".
+ */
+export type VolumeIntent = {
+  move: {
+    from_machine: string;
+    to_machine: string;
+  };
+};
 /**
  * This interface was referenced by `DeployManifest`'s JSON-Schema
  * via the `definition` "NetworkMode".
@@ -105,10 +137,35 @@ export type PullPolicy = "if_not_present" | "always" | "never";
 export type VolumeScope = "single" | "shared";
 
 export interface DeployManifest {
+  intent?: DeployIntent | null;
   namespace: Namespace;
   services: ServiceSpec[];
   volumes?: VolumeDeclaration[];
   [k: string]: any;
+}
+/**
+ * This interface was referenced by `DeployManifest`'s JSON-Schema
+ * via the `definition` "DeployIntent".
+ */
+export interface DeployIntent {
+  services?: ServiceIntentHint[];
+  volumes?: VolumeIntentHint[];
+}
+/**
+ * This interface was referenced by `DeployManifest`'s JSON-Schema
+ * via the `definition` "ServiceIntentHint".
+ */
+export interface ServiceIntentHint {
+  intent: ServiceIntent;
+  service: string;
+}
+/**
+ * This interface was referenced by `DeployManifest`'s JSON-Schema
+ * via the `definition` "VolumeIntentHint".
+ */
+export interface VolumeIntentHint {
+  intent: VolumeIntent;
+  volume: string;
 }
 /**
  * This interface was referenced by `DeployManifest`'s JSON-Schema

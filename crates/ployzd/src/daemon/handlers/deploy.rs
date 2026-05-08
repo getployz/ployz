@@ -609,6 +609,7 @@ async fn export_manifest(
 
     Ok(DeployManifest {
         namespace: namespace.clone(),
+        intent: None,
         volumes,
         services,
     })
@@ -666,6 +667,7 @@ mod tests {
     fn decode_manifest_accepts_empty_services() {
         let manifest_json = serde_json::to_string(&DeployManifest {
             namespace: Namespace("prod".into()),
+            intent: None,
             volumes: Vec::new(),
             services: Vec::new(),
         })
