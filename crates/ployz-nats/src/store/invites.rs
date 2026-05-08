@@ -1,3 +1,4 @@
+use async_nats::jetstream::kv::{CreateError, CreateErrorKind};
 use async_trait::async_trait;
 use ployz_store_api::InviteStore;
 use ployz_types::error::{Error, Result, StoreRecordKind};
@@ -16,7 +17,7 @@ impl InviteStore for NatsStore {
             .create(&invite.invite_id, payload.into())
             .await
             .map(|_| ())
-            .map_err(|_error| Error::invite_already_exists(invite.invite_id.clone()))
+            .map_err(|error| map_create_error(&invite.invite_id, error))
     }
 
     async fn get_invite(&self, invite_id: &str) -> Result<Option<InviteRecord>> {
@@ -80,6 +81,16 @@ impl InviteStore for NatsStore {
         next_invite.revoked_at = Some(now_unix_secs);
         update_invite(&bucket, invite_id, entry.revision, &next_invite).await?;
         Ok(next_invite)
+    }
+}
+
+fn map_create_error(invite_id: &str, error: CreateError) -> Error {
+    match error.kind() {
+        CreateErrorKind::AlreadyExists => Error::invite_already_exists(invite_id.to_string()),
+        CreateErrorKind::InvalidKey
+        | CreateErrorKind::Publish
+        | CreateErrorKind::Ack
+        | CreateErrorKind::Other => Error::operation("nats_invite_create", format!("{error:?}")),
     }
 }
 
@@ -164,10 +175,47 @@ fn validate_invite_key(key: &str, invite: InviteRecord) -> Result<InviteRecord> 
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_invite, invite_records_from_entries, validate_redeemable};
+    use super::{decode_invite, invite_records_from_entries, map_create_error, validate_redeemable};
     use crate::store::kv_json;
+    use async_nats::jetstream::kv::{CreateError, CreateErrorKind};
     use ployz_types::error::{Error, StoreRecordKind};
     use ployz_types::model::{InviteRecord, MachineId, NetworkId};
+
+    #[test]
+    fn create_error_already_exists_maps_to_invite_already_exists() {
+        let mapped = map_create_error("invite-a", CreateError::new(CreateErrorKind::AlreadyExists));
+
+        assert_eq!(mapped, Error::invite_already_exists("invite-a"));
+    }
+
+    #[test]
+    fn create_error_publish_preserves_backend_context() {
+        let mapped = map_create_error("invite-a", CreateError::new(CreateErrorKind::Publish));
+
+        assert_ne!(mapped, Error::invite_already_exists("invite-a"));
+        assert!(matches!(mapped, Error::Operation { ref operation, .. } if operation == &"nats_invite_create"));
+    }
+
+    #[test]
+    fn create_error_ack_preserves_backend_context() {
+        let mapped = map_create_error("invite-a", CreateError::new(CreateErrorKind::Ack));
+
+        assert!(matches!(mapped, Error::Operation { ref operation, .. } if operation == &"nats_invite_create"));
+    }
+
+    #[test]
+    fn create_error_other_preserves_backend_context() {
+        let mapped = map_create_error("invite-a", CreateError::new(CreateErrorKind::Other));
+
+        assert!(matches!(mapped, Error::Operation { ref operation, .. } if operation == &"nats_invite_create"));
+    }
+
+    #[test]
+    fn create_error_invalid_key_preserves_backend_context() {
+        let mapped = map_create_error("invite-a", CreateError::new(CreateErrorKind::InvalidKey));
+
+        assert!(matches!(mapped, Error::Operation { ref operation, .. } if operation == &"nats_invite_create"));
+    }
 
     #[test]
     fn invite_kv_decode_failure_is_visible() {
