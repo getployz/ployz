@@ -1334,7 +1334,7 @@ async fn machine_storage_promote_self_rejects_authority_peers_that_do_not_match_
         .into_iter()
         .map(MachineStorageAuthorityPeer::from)
         .collect::<Vec<_>>();
-    authority_peers[1].public_key = PublicKey([99; 32]);
+    authority_peers[0].public_key = PublicKey([99; 32]);
 
     let response = state
         .handle_machine_storage_promote_self(StorageReplicaPolicy::R3, &authority_peers)
@@ -1348,6 +1348,62 @@ async fn machine_storage_promote_self_rejects_authority_peers_that_do_not_match_
         StorageParticipation::Candidate
     );
     assert_eq!(restored.storage_replicas, StorageReplicaPolicy::Single);
+}
+
+#[tokio::test]
+async fn machine_storage_promote_self_accepts_unsynced_nonlocal_authority_peers() {
+    let (mut state, store, _) = make_state(true).await;
+    let config_path = NetworkConfig::path(&state.data_dir, "alpha");
+    let mut config = NetworkConfig::load(&config_path).expect("load network config");
+    config.storage = false;
+    config.storage_participation = StorageParticipation::Candidate;
+    config.storage_replicas = StorageReplicaPolicy::Single;
+    config.save(&config_path).expect("save candidate config");
+    state.active.as_mut().expect("active mesh").config = config;
+
+    let mut founder = test_machine_record(
+        "founder",
+        "10.210.0.0/24",
+        MachineLifecycle::Active,
+        PublicKey([1; 32]),
+    );
+    founder.storage = true;
+    founder.storage_participation = StorageParticipation::Candidate;
+    store
+        .upsert_self_machine(&founder)
+        .await
+        .expect("upsert founder");
+    let mut authority_founder = founder.clone();
+    authority_founder.storage_participation = StorageParticipation::default_authority();
+    let peer_a = test_machine_record(
+        "peer-a",
+        "10.210.2.0/24",
+        MachineLifecycle::Active,
+        PublicKey([16; 32]),
+    );
+    let peer_b = test_machine_record(
+        "peer-b",
+        "10.210.3.0/24",
+        MachineLifecycle::Active,
+        PublicKey([17; 32]),
+    );
+    let authority_peers = [&authority_founder, &peer_a, &peer_b]
+        .into_iter()
+        .map(MachineStorageAuthorityPeer::from)
+        .collect::<Vec<_>>();
+
+    let response = state
+        .handle_machine_storage_promote_self(StorageReplicaPolicy::R3, &authority_peers)
+        .await;
+
+    assert!(response.ok, "{}", response.message);
+    let peers = load_bootstrap_peer_records(&state.network_dir("alpha"))
+        .expect("load bootstrap peers after self promotion");
+    let peer_ids = peers
+        .iter()
+        .map(|peer| peer.machine_id.0.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(peer_ids, vec!["founder", "peer-a", "peer-b"]);
 }
 
 #[tokio::test]

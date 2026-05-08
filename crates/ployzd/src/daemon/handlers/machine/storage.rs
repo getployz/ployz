@@ -515,8 +515,11 @@ impl DaemonState {
             Ok(machines) => machines,
             Err(error) => return self.err("STORE_ERROR", format!("list machines: {error}")),
         };
-        if let Err(message) = validate_authority_peers_match_membership(authority_peers, &machines)
-        {
+        if let Err(message) = validate_authority_peers_match_membership(
+            authority_peers,
+            &machines,
+            &self.identity.machine_id,
+        ) {
             return self.err("INVALID_AUTHORITY_PEERS", message);
         }
         let previous_storage = config.storage;
@@ -580,15 +583,35 @@ impl DaemonState {
             })
             .await;
         if update_result.is_none() {
-            let _ = restore_storage_config(
+            let config_rollback_error = restore_storage_config(
                 &config_path,
                 &mut config,
                 previous_storage,
                 previous_participation,
                 previous_replicas,
+            )
+            .err();
+            let peer_rollback_error =
+                write_bootstrap_peer_records(&network_dir, &previous_peer_records).err();
+            let restart_rollback_error =
+                if config_rollback_error.is_none() && peer_rollback_error.is_none() {
+                    self.restart_active_runtime_from_config_with_mode(
+                        &network_name,
+                        RuntimeRestartMode::NetworkAndStore,
+                    )
+                    .await
+                    .err()
+                } else {
+                    None
+                };
+            return self.err(
+                "SELF_RECORD_MISSING",
+                promote_self_record_rollback_message(
+                    config_rollback_error,
+                    peer_rollback_error,
+                    restart_rollback_error,
+                ),
             );
-            let _ = write_bootstrap_peer_records(&network_dir, &previous_peer_records);
-            return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
         }
 
         self.ok(format!(
@@ -1018,35 +1041,43 @@ fn validate_authority_peer_payload(
 fn validate_authority_peers_match_membership(
     authority_peers: &[MachineStorageAuthorityPeer],
     machines: &[MachineMembership],
+    local_machine_id: &ployz_types::model::MachineId,
 ) -> Result<(), String> {
-    for peer in authority_peers {
-        let Some(machine) = machines
-            .iter()
-            .find(|machine| machine.id == peer.machine_id)
-        else {
-            return Err(format!(
-                "storage promotion self payload authority peer '{}' is not in machine membership",
-                peer.machine_id
-            ));
-        };
-        if machine.public_key != peer.public_key
-            || machine.overlay_ip != peer.overlay_ip
-            || machine.subnet != peer.subnet
-            || machine.bridge_ip != peer.bridge_ip
-            || machine.region_role != peer.region_role
-            || machine.endpoints != peer.endpoints
-        {
-            return Err(format!(
-                "storage promotion self payload authority peer '{}' does not match machine membership",
-                peer.machine_id
-            ));
-        }
-        if machine.lifecycle != MachineLifecycle::Active || !machine.storage {
-            return Err(format!(
-                "storage promotion self payload authority peer '{}' is not active storage membership",
-                peer.machine_id
-            ));
-        }
+    let Some(local_peer) = authority_peers
+        .iter()
+        .find(|peer| peer.machine_id == *local_machine_id)
+    else {
+        return Err(format!(
+            "storage promotion self payload must include local authority peer '{}'",
+            local_machine_id
+        ));
+    };
+    let Some(machine) = machines
+        .iter()
+        .find(|machine| machine.id == local_peer.machine_id)
+    else {
+        return Err(format!(
+            "storage promotion self payload local authority peer '{}' is not in machine membership",
+            local_peer.machine_id
+        ));
+    };
+    if machine.public_key != local_peer.public_key
+        || machine.overlay_ip != local_peer.overlay_ip
+        || machine.subnet != local_peer.subnet
+        || machine.bridge_ip != local_peer.bridge_ip
+        || machine.region_role != local_peer.region_role
+        || machine.endpoints != local_peer.endpoints
+    {
+        return Err(format!(
+            "storage promotion self payload local authority peer '{}' does not match machine membership",
+            local_peer.machine_id
+        ));
+    }
+    if machine.lifecycle != MachineLifecycle::Active || !machine.storage {
+        return Err(format!(
+            "storage promotion self payload local authority peer '{}' is not active storage membership",
+            local_peer.machine_id
+        ));
     }
     Ok(())
 }
@@ -1076,4 +1107,17 @@ fn promote_self_rollback_message(
         config_rollback_error.as_deref(),
     );
     append_rollback_error(message, peer_rollback_error.as_deref())
+}
+
+fn promote_self_record_rollback_message(
+    config_rollback_error: Option<String>,
+    peer_rollback_error: Option<String>,
+    restart_rollback_error: Option<String>,
+) -> String {
+    let message = append_rollback_error(
+        String::from("mesh self record unavailable after storage promotion restart"),
+        config_rollback_error.as_deref(),
+    );
+    let message = append_rollback_error(message, peer_rollback_error.as_deref());
+    append_rollback_error(message, restart_rollback_error.as_deref())
 }
