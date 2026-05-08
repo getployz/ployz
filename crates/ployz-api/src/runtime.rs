@@ -129,9 +129,9 @@ pub fn runtime_frame_from_event(event: RoutingEvent) -> RuntimeWatchFrame {
 #[cfg(test)]
 mod tests {
     use super::{
-        instance_runtime_key, machine_runtime_key, release_runtime_key, revision_runtime_key,
-        runtime_frame_from_event, sort_routing_state, RuntimeCollection, RuntimeRecord,
-        RuntimeWatchFrame,
+        RuntimeCollection, RuntimeRecord, RuntimeWatchFrame, instance_runtime_key,
+        machine_runtime_key, release_runtime_key, revision_runtime_key, runtime_frame_from_event,
+        sort_routing_state,
     };
     use crate::{
         ControlPlaneHealthState, ControlPlaneStatus, DaemonPayload, DaemonResponse,

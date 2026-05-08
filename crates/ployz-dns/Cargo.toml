@@ -20,6 +20,7 @@ ployz-metrics = { path = "../ployz-metrics" }
 ployz-nats = { path = "../ployz-nats" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
+backon = { workspace = true }
 hickory-server = "0.25"
 tokio = { workspace = true }
 # TODO: remove when upstream hickory drops async_trait
@@ -32,9 +33,5 @@ thiserror = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
-[lints.clippy]
-indexing_slicing = "warn"
-fallible_impl_from = "warn"
-wildcard_enum_match_arm = "warn"
-fn_params_excessive_bools = "warn"
-must_use_candidate = "warn"
+[lints]
+workspace = true

@@ -11,14 +11,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 derive_more = { workspace = true }
+humantime-serde = { workspace = true }
 ipnet = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
 strum = { workspace = true }
 
-[lints.clippy]
-indexing_slicing = "warn"
-fallible_impl_from = "warn"
-wildcard_enum_match_arm = "warn"
-fn_params_excessive_bools = "warn"
-must_use_candidate = "warn"
+[lints]
+workspace = true
