@@ -110,6 +110,9 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::MachineStoragePromoteSelf { .. } => {
             "machine_storage_promote_self"
         }
+        ployz_api::DaemonRequest::MachineStorageRestoreSelf { .. } => {
+            "machine_storage_restore_self"
+        }
         ployz_api::DaemonRequest::AcmeChallengeReady { .. } => "acme_challenge_ready",
         ployz_api::DaemonRequest::AcmeHttp01Status { .. } => "acme_http01_status",
         ployz_api::DaemonRequest::MeshSelfRecord => "mesh_self_record",
