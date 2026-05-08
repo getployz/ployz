@@ -3,7 +3,7 @@ use super::operations::{MachineOperationArtifacts, MachineOperationKind, Machine
 use crate::daemon::ActiveMesh;
 use crate::daemon::DaemonState;
 use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock};
-use crate::mesh_state::bootstrap::load_bootstrap_peer_records;
+use crate::mesh_state::bootstrap::{bootstrap_peers_path, load_bootstrap_peer_records};
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
 use ployz_api::{
@@ -1190,6 +1190,50 @@ async fn machine_storage_promote_self_persists_config_bootstrap_peers_and_self_r
     assert_eq!(
         self_record.storage_participation,
         StorageParticipation::default_authority()
+    );
+}
+
+#[tokio::test]
+async fn machine_storage_promote_self_restores_config_when_bootstrap_peer_read_fails() {
+    let (mut state, _, _) = make_state(true).await;
+    let config_path = NetworkConfig::path(&state.data_dir, "alpha");
+    let mut config = NetworkConfig::load(&config_path).expect("load network config");
+    config.storage = false;
+    config.storage_participation = StorageParticipation::Candidate;
+    config.storage_replicas = StorageReplicaPolicy::Single;
+    config.save(&config_path).expect("save candidate config");
+    state.active.as_mut().expect("active mesh").config = config;
+
+    std::fs::write(
+        bootstrap_peers_path(&state.network_dir("alpha")),
+        "{malformed bootstrap peers",
+    )
+    .expect("write malformed bootstrap peers");
+
+    let mut founder = test_machine_record(
+        "founder",
+        "10.210.0.0/24",
+        MachineLifecycle::Active,
+        PublicKey([1; 32]),
+    );
+    founder.storage = true;
+    founder.storage_participation = StorageParticipation::default_authority();
+
+    let response = state
+        .handle_machine_storage_promote_self(StorageReplicaPolicy::R3, &[founder])
+        .await;
+
+    assert!(!response.ok);
+    assert_eq!(response.code, "IO_ERROR");
+    assert!(response.message.contains("load bootstrap peers"));
+    let restored_config = NetworkConfig::load(&config_path).expect("load restored config");
+    assert_eq!(
+        restored_config.storage_participation,
+        StorageParticipation::Candidate
+    );
+    assert_eq!(
+        restored_config.storage_replicas,
+        StorageReplicaPolicy::Single
     );
 }
 

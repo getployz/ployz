@@ -439,7 +439,15 @@ impl DaemonState {
 
         let previous_peer_records = match load_bootstrap_peer_records(&network_dir) {
             Ok(records) => records,
-            Err(error) => return self.err("IO_ERROR", format!("load bootstrap peers: {error}")),
+            Err(error) => {
+                let _ = restore_storage_config(
+                    &config_path,
+                    &mut config,
+                    previous_participation,
+                    previous_replicas,
+                );
+                return self.err("IO_ERROR", format!("load bootstrap peers: {error}"));
+            }
         };
         let peer_records = authority_peers
             .iter()
