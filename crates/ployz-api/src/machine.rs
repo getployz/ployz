@@ -1,4 +1,7 @@
-use ployz_types::model::{AuthorityNodePosture, MachineId, StorageReplicaPolicy};
+use ipnet::Ipv4Net;
+use ployz_types::model::{
+    AuthorityNodePosture, MachineId, OverlayIp, PublicKey, RegionRole, StorageReplicaPolicy,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,7 +31,47 @@ pub struct MachineStoragePromotionPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineStoragePromotionFailure {
     pub machine_id: String,
+    pub cause: MachineStoragePromotionFailureCause,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineStoragePromotionFailureCause {
+    DuplicateTarget,
+    MachineNotFound,
+    InvalidCandidate,
+    VersionMismatch,
+    RpcUnavailable,
+    UnexpectedStatusPayload,
+    PublishPromotedMembershipFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachineStorageAuthorityPeer {
+    pub machine_id: MachineId,
+    pub public_key: PublicKey,
+    pub overlay_ip: OverlayIp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subnet: Option<Ipv4Net>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_ip: Option<OverlayIp>,
+    pub region_role: RegionRole,
+    pub endpoints: Vec<String>,
+}
+
+impl From<&ployz_types::model::MachineMembership> for MachineStorageAuthorityPeer {
+    fn from(record: &ployz_types::model::MachineMembership) -> Self {
+        Self {
+            machine_id: record.id.clone(),
+            public_key: record.public_key.clone(),
+            overlay_ip: record.overlay_ip,
+            subnet: record.subnet,
+            bridge_ip: record.bridge_ip,
+            region_role: record.region_role,
+            endpoints: record.endpoints.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +122,7 @@ pub struct MachineListRow {
     pub lifecycle: String,
     pub authority: AuthorityNodePosture,
     pub region: String,
+    pub region_role: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub availability_zone: Option<String>,
     pub overlay_ip: String,

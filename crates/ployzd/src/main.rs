@@ -344,6 +344,39 @@ mod tests {
     }
 
     #[test]
+    fn build_machine_storage_promote_request_accepts_r3() {
+        let request = build_machine_request(MachineAction::Storage {
+            action: MachineStorageAction::Promote {
+                replicas: 3,
+                targets: vec!["m2".into(), "m3".into()],
+            },
+        })
+        .expect("machine storage promote request");
+
+        let DaemonRequest::MachineStoragePromote { request } = request else {
+            panic!("expected machine storage promote request");
+        };
+        assert_eq!(
+            request.replicas,
+            ployz_types::model::StorageReplicaPolicy::R3
+        );
+        assert_eq!(request.targets, vec!["m2", "m3"]);
+    }
+
+    #[test]
+    fn build_machine_storage_promote_rejects_single_replica() {
+        let error = build_machine_request(MachineAction::Storage {
+            action: MachineStorageAction::Promote {
+                replicas: 1,
+                targets: vec!["m2".into()],
+            },
+        })
+        .expect_err("single replica promotion should fail before daemon request");
+
+        assert_eq!(error.exit_code(), 2);
+    }
+
+    #[test]
     fn build_machine_storage_promote_rejects_unsupported_replicas() {
         let error = build_machine_request(MachineAction::Storage {
             action: MachineStorageAction::Promote {

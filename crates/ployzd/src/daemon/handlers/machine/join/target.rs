@@ -4,7 +4,7 @@ use ployz_nats::NodeCommandSubject;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_store_api::MachineMembershipStore;
 use ployz_types::model::{
-    MachineLifecycle, MachineMembership, StorageParticipation, management_ip_from_key,
+    MachineLifecycle, MachineMembership, RegionRole, StorageParticipation, management_ip_from_key,
 };
 
 use super::super::operations::{
@@ -81,6 +81,7 @@ pub(super) async fn run_machine_add_target(
     );
     bootstrap_record.storage = true;
     bootstrap_record.storage_participation = StorageParticipation::Candidate;
+    bootstrap_record.region_role = RegionRole::Compute;
     bootstrap_record.created_at = ployz_types::time::now_unix_secs();
     bootstrap_record.updated_at = bootstrap_record.created_at;
     joiner_id = Some(remote_identity.machine_id.clone());

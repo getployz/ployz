@@ -136,8 +136,8 @@ mod tests {
     use crate::{
         ControlPlaneHealthState, ControlPlaneStatus, DaemonPayload, DaemonResponse,
         EdgeSyncHealthState, EdgeSyncStatus, MachineOperationInfo, MachineOperationPayload,
-        MachineStoragePromotionFailure, MachineStoragePromotionPayload, MachineUpdatePayload,
-        MachineUpdateRow, StatusPayload,
+        MachineStoragePromotionFailure, MachineStoragePromotionFailureCause,
+        MachineStoragePromotionPayload, MachineUpdatePayload, MachineUpdateRow, StatusPayload,
     };
     use ployz_types::model::{
         AuthorityNodePosture, DeployId, DrainState, InstanceId, InstancePhase,
@@ -472,6 +472,7 @@ mod tests {
                     promoted: vec![String::from("m2"), String::from("m3")],
                     failed: vec![MachineStoragePromotionFailure {
                         machine_id: String::from("m4"),
+                        cause: MachineStoragePromotionFailureCause::InvalidCandidate,
                         message: String::from("not active"),
                     }],
                 },
@@ -493,6 +494,7 @@ mod tests {
                     "promoted": ["m2", "m3"],
                     "failed": [{
                         "machine_id": "m4",
+                        "cause": "invalid_candidate",
                         "message": "not active"
                     }]
                 }
@@ -684,6 +686,7 @@ mod tests {
             public_key: PublicKey([7; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
+            region_role: ployz_types::model::RegionRole::HomeData,
             subnet: None,
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],

@@ -1,6 +1,7 @@
 ---
 title: Preflight Authority Promotions Before Mutation
 date: 2026-05-08
+last_updated: 2026-05-08
 category: docs/solutions/architecture-patterns/
 module: storage authority promotion
 problem_type: architecture_pattern
@@ -18,6 +19,7 @@ tags:
   - preflight
   - rollback
   - bootstrap-peers
+  - region-role
 ---
 
 # Preflight Authority Promotions Before Mutation
@@ -33,58 +35,58 @@ bootstrap peers were not written before restart, and remote peers were mutated
 without first proving that every final authority daemon understood the new
 command.
 
+The follow-up code-review pass found the same invariant at a wider boundary:
+persisted intent, compatibility, and placement eligibility have to be proven
+before mutation. Inferring them afterward leaves the operator with partial
+cluster truth and a weak recovery story.
+
 The durable pattern is to treat control-plane promotions as a small transaction:
 validate the final authority set, prove all remote participants are compatible,
-mutate peers only after preflight passes, then persist intent and bootstrap
-inputs with rollback around local restart.
+persist local intent and bootstrap inputs, mutate peers only after preflight
+passes, and roll back local files if the remote mutation does not complete.
 
 ## Guidance
 
-Build and validate the final authority set before any mutation. The storage
-promotion handler now rejects duplicate targets, requires active storage
-candidates, counts unique final authority IDs, and ensures the local record is
-active storage for the default authority.
+Use one transaction shape for authority promotion:
 
-```rust
-let final_authority_ids = authorities
-    .iter()
-    .chain(targets.iter())
-    .map(|machine| machine.id.clone())
-    .collect::<BTreeSet<_>>();
-if final_authority_ids.len() != request.replicas.replicas() {
-    return Err(StoragePromotionError::ReplicaCount { message });
-}
-```
+- Build and validate the final authority set before any mutation.
+- Preflight every remote final authority, including existing authorities during
+  R3 to R5 expansion.
+- Persist local replica intent and all bootstrap peer records before mutating
+  remote authority storage in the durable backend path.
+- Mutate remote peers only after the compatibility and local persistence checks
+  have passed.
+- Restore local intent and bootstrap files if remote mutation fails before the
+  operation reaches a consistent final authority set.
 
-Preflight every remote final authority before sending any mutating command. This
-includes existing authorities during R3 to R5 expansion, not only newly promoted
-candidates. A conservative same-version `Status` RPC is enough for this slice:
-older daemons, misrouted subjects, bad payloads, and mismatched machine IDs fail
-before the cluster is changed.
-
-```rust
-let remote_authorities = authority_peers
-    .iter()
-    .filter(|machine| machine.id != local_record.id)
-    .collect::<Vec<_>>();
-preflight_remote_storage_promotion(&client, &remote_authorities).await?;
-```
-
-Persist all bootstrap peer records before restarting local authority storage.
 The founder needs the same final authority peer set as remote promoted machines,
-otherwise restart can come up with stale single-node bootstrap inputs.
+otherwise restart can come up with stale single-node bootstrap inputs or
+rollback to truth that no longer matches already-promoted peers.
 
-```rust
-let peer_records = authority_peers
-    .iter()
-    .map(BootstrapPeerRecord::from_machine_record)
-    .collect::<Vec<_>>();
-write_bootstrap_peer_records(&network_dir, &peer_records)?;
-```
+Keep mutating RPC payloads narrow and validate them against current membership
+before writing local config. `MachineStoragePromoteSelf` now carries
+`MachineStorageAuthorityPeer` records instead of full membership records, and
+the receiver checks peer count, duplicate IDs, local inclusion, endpoints,
+public key, overlay IP, subnet, region role, lifecycle, and storage capability
+before changing `storage_replicas` or bootstrap peers.
 
-Make failures structured and audience-aware. `StoragePromotionError` carries the
-stage, promoted targets, per-machine failures, and rollback errors, so callers
-can return a useful payload without parsing display text.
+Make failures structured and audience-aware. `MachineStoragePromotionFailure`
+now carries a `MachineStoragePromotionFailureCause`, so callers can branch on
+`DuplicateTarget`, `InvalidCandidate`, `MachineNotFound`, `VersionMismatch`,
+`RpcUnavailable`, or publish failures without parsing display text. Deploy
+preview/apply uses the same rule for placement: a lack of eligible compute or
+home-data targets returns `DeployFailureReason::NoEligiblePlacementTargets`.
+
+Carry replica intent into every helper that can create or reconcile NATS assets.
+Any daemon path that calls `NatsStore::start()` must first apply
+`with_asset_policy(config.storage_replicas)`, including setup, deploy, and
+node-RPC helper clients. Otherwise an R3/R5 authority can be silently
+reconciled back to single-replica streams by an auxiliary client.
+
+The same invariant applies to placement, but keep it scoped: machines in active
+`home_data` and `compute` regions may receive new work; draining regions may
+keep unchanged existing slots; replacement work must move to an eligible target
+or fail with a structured placement reason.
 
 ## Why This Matters
 
@@ -101,6 +103,11 @@ problem.
 Rollback also has to cover the local files that feed restart. Restoring only the
 replica intent is incomplete if bootstrap peer records were already rewritten.
 
+The same principle explains why missing persisted `storage_replicas` or
+`region_role` should be rejected instead of defaulted. Constructors may choose a
+local default, but loaded cluster truth should not invent authority or placement
+intent that an operator never recorded.
+
 ## When to Apply
 
 - A command changes authority, coordination, placement, or storage participation.
@@ -108,30 +115,35 @@ replica intent is incomplete if bootstrap peer records were already rewritten.
 - Existing peers need to receive the new configuration as well as new members.
 - A daemon-to-daemon RPC is newly introduced and mixed-version peers may exist.
 - Restart depends on local files generated during the operation.
+- A helper client can create, update, or reconcile durable backend assets.
 
 ## Examples
 
-`crates/ployzd/src/daemon/handlers/machine/storage.rs` now sends
-`MachineStoragePromoteSelf` to every non-local final authority after a status
-capability preflight, so replica policy changes reach existing authorities and
-new targets together.
-
-`handle_machine_storage_promote_self` persists `storage_participation`,
-`storage_replicas`, and the final bootstrap peer records before
-`RuntimeRestartMode::NetworkAndStore`, then updates the authoritative self-record
-after restart succeeds.
-
-`machine_storage_promote_self_persists_config_bootstrap_peers_and_self_record`
-covers the remote self-promotion handler directly, and
-`machine_storage_promote_marks_active_candidates_as_authority_storage` verifies
-that the founder writes the final authority bootstrap peers in the memory path.
+- The storage promotion handler sends `MachineStoragePromoteSelf` to every
+  non-local final authority after status capability preflight, so replica policy
+  changes reach existing authorities and new targets together.
+- The promote-self handler validates `MachineStorageAuthorityPeer`, persists
+  `storage_participation`, `storage_replicas`, and bootstrap peers before
+  restart, restores previous config on failure, and returns typed failure
+  causes.
+- Setup, deploy, and node-RPC helper clients apply
+  `with_asset_policy(config.storage_replicas)` before starting NATS stores, so
+  auxiliary clients preserve the selected R1/R3/R5 policy.
+- Deploy planning applies the same principle at the placement boundary: keeping
+  unchanged draining-region work is allowed, but replacement placement must use
+  an eligible machine or return `NoEligiblePlacementTargets`.
 
 ## Related
 
 - `docs/authority-roadmap.md` tracks storage authority promotion as a stepping
   stone toward multi-authority NATS state.
+- `docs/routing-and-deploys.md` applies the same intent/status/observation
+  split to deploy planning and placement failure reporting.
 - `docs/plans/2026-05-08-003-feat-nats-storage-promotion-slice-plan.md`
   describes the slice that introduced this command.
+- `docs/plans/2026-05-08-004-feat-compute-only-region-placement-plan.md`
+  describes the placement slice that reused the same authority-roadmap
+  invariants for compute and draining regions.
 - `docs/solutions/architecture-patterns/authority-status-separates-truth-from-observation-2026-05-08.md`
   covers the adjacent status-surface rule: separate durable truth from live
   observation.

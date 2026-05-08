@@ -301,7 +301,8 @@ impl DaemonState {
         );
         let store = ployz_nats::NatsStore::connect_with_scope(&client_url, scope)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+            .with_asset_policy(active.config.storage_replicas);
         ployz_store_api::StoreRuntimeControl::start(&store)
             .await
             .map_err(|error| error.to_string())?;

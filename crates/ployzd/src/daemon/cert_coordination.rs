@@ -387,6 +387,7 @@ mod tests {
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
+            region_role: ployz_types::model::RegionRole::HomeData,
             subnet: has_subnet.then(|| "10.0.0.0/24".parse().expect("valid cidr")),
             bridge_ip: None,
             endpoints: Vec::new(),

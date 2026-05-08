@@ -1183,6 +1183,7 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
                 .map(OverlayIp)
                 .expect("valid overlay"),
             topology: MachineTopology::local(),
+            region_role: ployz_types::model::RegionRole::HomeData,
             subnet: Some(subnet),
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],

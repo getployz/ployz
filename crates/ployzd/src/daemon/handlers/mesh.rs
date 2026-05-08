@@ -238,6 +238,7 @@ mod tests {
                 public_key: identity.public_key.clone(),
                 overlay_ip: config.overlay_ip,
                 topology: MachineTopology::local(),
+                region_role: ployz_types::model::RegionRole::HomeData,
                 subnet: config.subnet,
                 bridge_ip: None,
                 endpoints: vec!["127.0.0.1:51820".into()],

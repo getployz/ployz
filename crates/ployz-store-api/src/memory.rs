@@ -771,6 +771,7 @@ mod tests {
             public_key: ployz_types::model::PublicKey([0; 32]),
             overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
             topology: ployz_types::model::MachineTopology::local(),
+            region_role: ployz_types::model::RegionRole::HomeData,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),
@@ -1669,6 +1670,7 @@ mod tests {
             id: MachineId("machine-1".into()),
             public_key: ployz_types::model::PublicKey([0; 32]),
             overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
+            region_role: ployz_types::model::RegionRole::HomeData,
             topology: ployz_types::model::MachineTopology::new("us-east", Some("use1-a"))
                 .expect("topology should parse"),
             subnet: None,
@@ -1745,6 +1747,7 @@ mod tests {
             public_key: ployz_types::model::PublicKey([0; 32]),
             overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
             topology: ployz_types::model::MachineTopology::local(),
+            region_role: ployz_types::model::RegionRole::HomeData,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),

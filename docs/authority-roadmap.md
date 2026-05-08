@@ -89,6 +89,12 @@ only. Authority storage expansion is explicit through `machine storage promote`,
 which records the requested R=3/R=5 policy and promotes selected candidates into
 `auth-default`.
 
+Persisted-format note: the authority/status/storage and region-placement slices
+make durable intent explicit. `network.json` must contain `storage_replicas`
+and machine/bootstrap membership records must contain `region_role`. Missing
+values are rejected instead of silently defaulted so operators see uncertain
+stored truth during rollout.
+
 ## Regions
 
 Regions answer "where can this run?" not "who owns truth?"
@@ -100,6 +106,12 @@ Regions answer "where can this run?" not "who owns truth?"
 | `draining` | No new placement. Existing work is moved by explicit command. |
 | `disabled` | Not eligible for placement. |
 
+Initial implementation note: machine records carry a per-machine region role.
+Deploy planning can place workloads in `home_data` and `compute` regions, while
+`draining` and `disabled` regions do not receive new placements. This is
+placement metadata only; it does not change authority ownership or NATS asset
+replica policy.
+
 Promote a region to its own authority only when it needs local writes during a
 partition, an ownership boundary, failure isolation, or dev/team autonomy.
 
@@ -109,7 +121,7 @@ partition, an ownership boundary, failure isolation, or dev/team autonomy.
 2. Status: show node role, failure impact, asset bucket, replica state, and lag.
 3. Single authority: machine add never changes authority or replica count. (implemented)
 4. HA: add explicit R=3/R=5 storage promotion. (initial implementation)
-5. Compute regions: global placement, one owning authority.
+5. Compute regions: global placement, one owning authority. (initial implementation)
 6. DR: async mirrors with visible lag and manual promotion.
 7. Multi-authority/dev: explicit ownership split; no queued remote intent.
 

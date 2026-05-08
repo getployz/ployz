@@ -59,9 +59,8 @@ async fn build_nats_subnet_coordinator(
         ployz_nats::NatsScope::local_for_storage_participation(&config.storage_participation);
     let nats_store = NatsStore::connect_with_scope(&client_url, scope)
         .await
-        .map_err(|error| {
-            StartMeshError::MeshUp(format!("nats connect for subnet coord: {error}"))
-        })?;
+        .map_err(|error| StartMeshError::MeshUp(format!("nats connect for subnet coord: {error}")))?
+        .with_asset_policy(config.storage_replicas);
     nats_store
         .start()
         .await
@@ -393,9 +392,8 @@ impl MeshStartAttempt {
         );
         let nats_store = NatsStore::connect_with_scope(&client_url, scope)
             .await
-            .map_err(|error| {
-                StartMeshError::MeshUp(format!("nats connect for node rpc: {error}"))
-            })?;
+            .map_err(|error| StartMeshError::MeshUp(format!("nats connect for node rpc: {error}")))?
+            .with_asset_policy(self.config.storage_replicas);
         nats_store
             .start()
             .await
@@ -480,7 +478,8 @@ impl MeshStartAttempt {
                 .await
                 .map_err(|error| {
                     StartMeshError::MeshUp(format!("nats connect for cert coord: {error}"))
-                })?;
+                })?
+                .with_asset_policy(self.config.storage_replicas);
             nats_store.start().await.map_err(|error| {
                 StartMeshError::MeshUp(format!("nats start for cert coord: {error}"))
             })?;
@@ -949,6 +948,7 @@ mod tests {
             bridge_ip: None,
             storage: true,
             storage_participation: ployz_types::model::StorageParticipation::default_authority(),
+            region_role: ployz_types::model::RegionRole::HomeData,
             endpoints: vec!["peer:51820".into()],
         };
         write_bootstrap_peer_records(&network_dir, std::slice::from_ref(&peer))

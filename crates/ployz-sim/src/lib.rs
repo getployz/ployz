@@ -1709,6 +1709,7 @@ pub mod fixture {
             public_key: PublicKey([index; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, u16::from(index))),
             topology: ployz_types::model::MachineTopology::local(),
+            region_role: ployz_types::model::RegionRole::HomeData,
             subnet,
             bridge_ip: None,
             endpoints: vec![format!("192.0.2.{index}:51820")],
