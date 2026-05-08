@@ -6,8 +6,8 @@ use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
 use ployz_api::{
-    DaemonPayload, DaemonResponse, MachineAddOptions, MachineTransitionGoal, MeshSelfRecordPayload,
-    StatusPayload,
+    DaemonPayload, DaemonResponse, MachineAddOptions, MachineStoragePromoteRequest,
+    MachineTransitionGoal, MeshSelfRecordPayload, StatusPayload,
 };
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::driver::WireguardDriver;
@@ -18,7 +18,7 @@ use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{InviteStore, MachineMembershipStore};
 use ployz_types::model::{
     MachineId, MachineLifecycle, MachineMembership, MachineTopology, NetworkLifecycle, OverlayIp,
-    PublicKey, StorageParticipation,
+    PublicKey, StorageParticipation, StorageReplicaPolicy,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -771,6 +771,188 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
     let invites = store.list_invites().await.expect("list invites");
     assert_eq!(invites.len(), 1);
     assert_eq!(invites.first().expect("invite created").consumed_by, None);
+}
+
+#[tokio::test]
+async fn machine_add_rejects_remote_authority_posture_before_invite_consume() {
+    let _guard = test_ssh_env_lock().lock().await;
+    let (state, store, _) = make_state(true).await;
+
+    let mut reserved = state
+        .reserve_machine_subnet(&MachineId("join-target".into()))
+        .await
+        .expect("reserve expected subnet");
+    let expected_subnet = reserved.subnet();
+    release_reserved_subnet(&mut reserved)
+        .await
+        .expect("release reserved subnet for re-acquire");
+
+    let mut joiner_record = test_machine_record(
+        "joiner-authority",
+        &expected_subnet.to_string(),
+        MachineLifecycle::Standby,
+        PublicKey([15; 32]),
+    );
+    joiner_record.overlay_ip = "fd00::15".parse().map(OverlayIp).expect("valid overlay");
+    joiner_record.storage = true;
+    joiner_record.storage_participation = StorageParticipation::default_authority();
+    joiner_record.endpoints = vec!["203.0.113.15:51820".into()];
+
+    let ssh_dir = unique_temp_dir("ployz-fake-ssh-authority-posture");
+    std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
+    let fake_ssh = write_fake_ssh(&ssh_dir);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
+    let _ployz_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_LOCAL_PLOYZCTL",
+        Some(fake_ssh.clone().into_os_string()),
+    );
+    let self_record_response = serde_json::to_string(&DaemonResponse {
+        ok: true,
+        code: "OK".into(),
+        message: "self-record".into(),
+        payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
+            record: joiner_record.clone(),
+        })),
+    })
+    .expect("encode self-record response");
+    let _join_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_SELF_RECORD_RESPONSE",
+        Some(self_record_response.into()),
+    );
+    let _status_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_STATUS_RESPONSE",
+        Some(status_response_for_record(&joiner_record).into()),
+    );
+
+    let response = state
+        .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
+        .await;
+    assert!(!response.ok, "{}", response.message);
+    assert_eq!(response.code, "MACHINE_ADD_FAILED");
+    assert!(response.message.contains("reported authority storage"));
+
+    let invites = store.list_invites().await.expect("list invites");
+    assert_eq!(invites.len(), 1);
+    assert_eq!(invites.first().expect("invite created").consumed_by, None);
+    let machines = store.list_machines().await.expect("list machines");
+    assert!(
+        !machines
+            .into_iter()
+            .any(|machine| machine.id.0 == "joiner-authority")
+    );
+}
+
+#[tokio::test]
+async fn machine_storage_promote_marks_active_candidates_as_authority_storage() {
+    let (mut state, store, _) = make_state(true).await;
+    let founder = test_machine_record(
+        "founder",
+        "10.210.0.0/24",
+        MachineLifecycle::Active,
+        PublicKey([1; 32]),
+    );
+    store
+        .upsert_self_machine(&founder)
+        .await
+        .expect("upsert active founder");
+    let mut candidate_a = test_machine_record(
+        "candidate-a",
+        "10.210.2.0/24",
+        MachineLifecycle::Active,
+        PublicKey([16; 32]),
+    );
+    candidate_a.storage_participation = StorageParticipation::Candidate;
+    let mut candidate_b = test_machine_record(
+        "candidate-b",
+        "10.210.3.0/24",
+        MachineLifecycle::Active,
+        PublicKey([17; 32]),
+    );
+    candidate_b.storage_participation = StorageParticipation::Candidate;
+    store
+        .upsert_self_machine(&candidate_a)
+        .await
+        .expect("upsert candidate a");
+    store
+        .upsert_self_machine(&candidate_b)
+        .await
+        .expect("upsert candidate b");
+
+    let response = state
+        .handle_machine_storage_promote(
+            &MachineStoragePromoteRequest {
+                targets: vec!["candidate-a".into(), "candidate-b".into()],
+                replicas: StorageReplicaPolicy::R3,
+            },
+            None,
+        )
+        .await;
+
+    assert!(response.ok, "{}", response.message);
+    let Some(DaemonPayload::MachineStoragePromotion(payload)) = response.payload else {
+        panic!("expected storage promotion payload");
+    };
+    assert_eq!(payload.replicas, StorageReplicaPolicy::R3);
+    assert_eq!(payload.promoted, vec!["candidate-a", "candidate-b"]);
+
+    let machines = store.list_machines().await.expect("list machines");
+    let authority_count = machines
+        .iter()
+        .filter(|machine| machine.storage_participation.is_authority())
+        .count();
+    assert_eq!(authority_count, 3);
+    let config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
+        .expect("load network config");
+    assert_eq!(config.storage_replicas, StorageReplicaPolicy::R3);
+}
+
+#[tokio::test]
+async fn machine_storage_promote_rejects_wrong_final_authority_count() {
+    let (mut state, store, _) = make_state(true).await;
+    let founder = test_machine_record(
+        "founder",
+        "10.210.0.0/24",
+        MachineLifecycle::Active,
+        PublicKey([1; 32]),
+    );
+    store
+        .upsert_self_machine(&founder)
+        .await
+        .expect("upsert active founder");
+    let mut candidate = test_machine_record(
+        "candidate-a",
+        "10.210.2.0/24",
+        MachineLifecycle::Active,
+        PublicKey([16; 32]),
+    );
+    candidate.storage_participation = StorageParticipation::Candidate;
+    store
+        .upsert_self_machine(&candidate)
+        .await
+        .expect("upsert candidate");
+
+    let response = state
+        .handle_machine_storage_promote(
+            &MachineStoragePromoteRequest {
+                targets: vec!["candidate-a".into()],
+                replicas: StorageReplicaPolicy::R3,
+            },
+            None,
+        )
+        .await;
+
+    assert!(!response.ok, "{}", response.message);
+    assert_eq!(response.code, "MACHINE_STORAGE_PROMOTION_FAILED");
+    assert!(response.message.contains("requires exactly 3 active"));
+    let machines = store.list_machines().await.expect("list machines");
+    let promoted = machines
+        .iter()
+        .find(|machine| machine.id.0 == "candidate-a")
+        .expect("candidate remains present");
+    assert_eq!(
+        promoted.storage_participation,
+        StorageParticipation::Candidate
+    );
 }
 
 #[tokio::test]

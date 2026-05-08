@@ -193,6 +193,45 @@ impl StorageParticipation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+pub enum StorageReplicaPolicy {
+    #[display("single")]
+    Single,
+    #[display("r3")]
+    R3,
+    #[display("r5")]
+    R5,
+}
+
+impl Default for StorageReplicaPolicy {
+    fn default() -> Self {
+        Self::Single
+    }
+}
+
+impl StorageReplicaPolicy {
+    #[must_use]
+    pub fn replicas(self) -> usize {
+        match self {
+            Self::Single => 1,
+            Self::R3 => 3,
+            Self::R5 => 5,
+        }
+    }
+
+    pub fn try_from_replicas(replicas: usize) -> std::result::Result<Self, String> {
+        match replicas {
+            1 => Ok(Self::Single),
+            3 => Ok(Self::R3),
+            5 => Ok(Self::R5),
+            _ => Err(format!(
+                "storage replicas must be 1, 3, or 5 (got {replicas})"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ControlPlaneDataBucket {
     #[display("stored_intent")]
     StoredIntent,

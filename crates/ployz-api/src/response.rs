@@ -3,7 +3,8 @@ use crate::deploy::{DeployCandidateStartedPayload, DeployNamespaceSnapshotPayloa
 use crate::doctor::DoctorPayload;
 use crate::machine::{
     MachineAddPayload, MachineInviteListPayload, MachineListPayload, MachineOperationListPayload,
-    MachineOperationPayload, MachineRemovePayload, MachineRttPayload, MachineUpdatePayload,
+    MachineOperationPayload, MachineRemovePayload, MachineRttPayload,
+    MachineStoragePromotionPayload, MachineUpdatePayload,
 };
 use crate::mesh::{MeshListPayload, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload};
 use crate::runtime::RuntimeStatePayload;
@@ -22,6 +23,7 @@ pub enum DaemonPayload {
     MachineList(MachineListPayload),
     MachineRtt(MachineRttPayload),
     MachineAdd(MachineAddPayload),
+    MachineStoragePromotion(MachineStoragePromotionPayload),
     MachineUpdate(MachineUpdatePayload),
     MachineRemove(MachineRemovePayload),
     MeshList(MeshListPayload),

@@ -27,6 +27,7 @@ impl DaemonState {
             | DaemonRequest::MeshJoin { .. }
             | DaemonRequest::MeshBootstrap { .. }
             | DaemonRequest::MachineTransitionSelf { .. }
+            | DaemonRequest::MachineStoragePromoteSelf { .. }
             | DaemonRequest::MeshInit { .. }
             | DaemonRequest::MeshStart { .. }
             | DaemonRequest::MeshStop { .. }
@@ -35,6 +36,7 @@ impl DaemonState {
             | DaemonRequest::MeshPeerCancelDestroy { .. }
             | DaemonRequest::MeshPeerExecuteDestroy { .. }
             | DaemonRequest::MachineUpdate { .. }
+            | DaemonRequest::MachineStoragePromote { .. }
             | DaemonRequest::MeshPeerPrepareUpdate { .. }
             | DaemonRequest::MeshPeerExecuteUpdate { .. }
             | DaemonRequest::MachineRemove { .. }
@@ -91,6 +93,7 @@ impl DaemonState {
             | DaemonRequest::MeshJoin { .. }
             | DaemonRequest::MeshBootstrap { .. }
             | DaemonRequest::MachineTransitionSelf { .. }
+            | DaemonRequest::MachineStoragePromoteSelf { .. }
             | DaemonRequest::MeshInit { .. }
             | DaemonRequest::MeshStart { .. }
             | DaemonRequest::MeshStop { .. }
@@ -99,6 +102,7 @@ impl DaemonState {
             | DaemonRequest::MeshPeerCancelDestroy { .. }
             | DaemonRequest::MeshPeerExecuteDestroy { .. }
             | DaemonRequest::MachineUpdate { .. }
+            | DaemonRequest::MachineStoragePromote { .. }
             | DaemonRequest::MeshPeerPrepareUpdate { .. }
             | DaemonRequest::MeshPeerExecuteUpdate { .. }
             | DaemonRequest::MachineRemove { .. }
@@ -297,6 +301,13 @@ impl DaemonState {
                 self.handle_machine_transition_self(goal, assigned_subnet, force)
                     .await
             }
+            DaemonRequest::MachineStoragePromoteSelf {
+                replicas,
+                authority_peers,
+            } => {
+                self.handle_machine_storage_promote_self(replicas, &authority_peers)
+                    .await
+            }
             DaemonRequest::MeshInit { network } => self.handle_mesh_init(&network).await,
             DaemonRequest::MeshStart { network } => self.handle_mesh_start(&network).await,
             DaemonRequest::MeshStop { force } => self.handle_mesh_stop(force).await,
@@ -330,6 +341,10 @@ impl DaemonState {
             }
             DaemonRequest::MachineUpdate { ids, version } => {
                 self.handle_machine_update(&ids, &version, response_flushed)
+                    .await
+            }
+            DaemonRequest::MachineStoragePromote { request } => {
+                self.handle_machine_storage_promote(&request, response_flushed)
                     .await
             }
             DaemonRequest::MeshPeerPrepareUpdate {

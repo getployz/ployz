@@ -27,6 +27,12 @@ use ployz_types::model::MachineTopology;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeRestartMode {
+    NetworkOnly,
+    NetworkAndStore,
+}
+
 pub struct ActiveMesh {
     pub config: NetworkConfig,
     pub retained_subnet: RetainedSubnet,

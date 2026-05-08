@@ -90,6 +90,7 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::MeshPeerRttSnapshot => "mesh_peer_rtt_snapshot",
         ployz_api::DaemonRequest::MachineInit { .. } => "machine_init",
         ployz_api::DaemonRequest::MachineAdd { .. } => "machine_add",
+        ployz_api::DaemonRequest::MachineStoragePromote { .. } => "machine_storage_promote",
         ployz_api::DaemonRequest::MachineUpdate { .. } => "machine_update",
         ployz_api::DaemonRequest::MeshPeerPrepareUpdate { .. } => "mesh_peer_prepare_update",
         ployz_api::DaemonRequest::MeshPeerExecuteUpdate { .. } => "mesh_peer_execute_update",
@@ -106,6 +107,9 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::MachineInviteImport { .. } => "machine_invite_import",
         ployz_api::DaemonRequest::MeshBootstrap { .. } => "mesh_bootstrap",
         ployz_api::DaemonRequest::MachineTransitionSelf { .. } => "machine_transition_self",
+        ployz_api::DaemonRequest::MachineStoragePromoteSelf { .. } => {
+            "machine_storage_promote_self"
+        }
         ployz_api::DaemonRequest::AcmeChallengeReady { .. } => "acme_challenge_ready",
         ployz_api::DaemonRequest::AcmeHttp01Status { .. } => "acme_http01_status",
         ployz_api::DaemonRequest::MeshSelfRecord => "mesh_self_record",

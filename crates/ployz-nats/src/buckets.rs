@@ -4,7 +4,7 @@ use async_nats::jetstream;
 use async_nats::jetstream::kv;
 use async_nats::jetstream::stream;
 use ployz_types::error::{Error, Result};
-use ployz_types::model::{ControlPlaneDataBucket, ControlPlaneLossImpact};
+use ployz_types::model::{ControlPlaneDataBucket, ControlPlaneLossImpact, StorageReplicaPolicy};
 
 use crate::subjects::{self, NatsScope};
 
@@ -154,6 +154,13 @@ pub(crate) struct AssetPolicy {
 
 impl AssetPolicy {
     #[must_use]
+    pub(crate) fn from_storage_replicas(storage_replicas: StorageReplicaPolicy) -> Self {
+        Self {
+            replicas: storage_replicas.replicas(),
+        }
+    }
+
+    #[must_use]
     pub(crate) fn replicas(self) -> usize {
         self.replicas
     }
@@ -204,10 +211,26 @@ pub(crate) async fn ensure_assets_in(
 }
 
 async fn ensure_stream(js: &jetstream::Context, config: stream::Config) -> Result<()> {
-    js.get_or_create_stream(config)
-        .await
-        .map(|_| ())
-        .map_err(|error| Error::operation("nats_ensure_stream", format!("{error:?}")))
+    match js.get_stream(config.name.clone()).await {
+        Ok(mut stream) => {
+            let info = stream
+                .info()
+                .await
+                .map_err(|error| Error::operation("nats_stream_info", format!("{error:?}")))?;
+            if info.config.num_replicas == config.num_replicas {
+                return Ok(());
+            }
+            js.update_stream(config)
+                .await
+                .map(|_| ())
+                .map_err(|error| Error::operation("nats_update_stream", format!("{error:?}")))
+        }
+        Err(_) => js
+            .create_stream(config)
+            .await
+            .map(|_| ())
+            .map_err(|error| Error::operation("nats_ensure_stream", format!("{error:?}"))),
+    }
 }
 
 async fn ensure_kv(js: &jetstream::Context, config: kv::Config) -> Result<()> {
@@ -241,7 +264,9 @@ async fn existing_kv_needs_update(bucket: &kv::Store, desired: &kv::Config) -> R
         .info()
         .await
         .map_err(|error| Error::operation("nats_kv_info", format!("{error:?}")))?;
-    Ok(ttl_policy_needs_update(
+    Ok(kv_config_needs_update(
+        info.config.num_replicas,
+        desired.num_replicas,
         info.config.allow_message_ttl,
         info.config.subject_delete_marker_ttl,
         desired.limit_markers,
@@ -257,6 +282,21 @@ fn ttl_policy_needs_update(
         Some(desired) => !allow_message_ttl || subject_delete_marker_ttl != Some(desired),
         None => false,
     }
+}
+
+fn kv_config_needs_update(
+    current_replicas: usize,
+    desired_replicas: usize,
+    allow_message_ttl: bool,
+    subject_delete_marker_ttl: Option<Duration>,
+    desired_limit_markers: Option<Duration>,
+) -> bool {
+    current_replicas != desired_replicas
+        || ttl_policy_needs_update(
+            allow_message_ttl,
+            subject_delete_marker_ttl,
+            desired_limit_markers,
+        )
 }
 
 fn deploy_commits_stream(
@@ -433,6 +473,57 @@ mod tests {
             assert_eq!(bucket.max_age, Duration::ZERO);
             assert_eq!(bucket.history, 1);
         }
+    }
+
+    #[test]
+    fn asset_policy_uses_storage_replica_policy() {
+        assert_eq!(
+            AssetPolicy::from_storage_replicas(StorageReplicaPolicy::Single).replicas(),
+            1
+        );
+        assert_eq!(
+            AssetPolicy::from_storage_replicas(StorageReplicaPolicy::R3).replicas(),
+            3
+        );
+        assert_eq!(
+            AssetPolicy::from_storage_replicas(StorageReplicaPolicy::R5).replicas(),
+            5
+        );
+    }
+
+    #[test]
+    fn r5_asset_configs_apply_replicas_to_streams_and_durable_buckets() {
+        let configs =
+            local_asset_configs(AssetPolicy::from_storage_replicas(StorageReplicaPolicy::R5));
+        assert_eq!(configs.deploy_commits.num_replicas, 5);
+        assert_eq!(configs.routing_events.num_replicas, 5);
+        assert_eq!(configs.cert_jobs.num_replicas, 5);
+        for bucket in configs
+            .authority_durable_kv
+            .into_iter()
+            .chain(configs.root_durable_kv)
+            .chain(configs.authority_lease_kv)
+        {
+            assert_eq!(bucket.num_replicas, 5);
+        }
+    }
+
+    #[test]
+    fn kv_config_update_detects_replica_drift() {
+        assert!(kv_config_needs_update(
+            1,
+            3,
+            true,
+            Some(LEASE_DELETE_MARKER_TTL),
+            Some(LEASE_DELETE_MARKER_TTL)
+        ));
+        assert!(!kv_config_needs_update(
+            3,
+            3,
+            true,
+            Some(LEASE_DELETE_MARKER_TTL),
+            Some(LEASE_DELETE_MARKER_TTL)
+        ));
     }
 
     #[test]

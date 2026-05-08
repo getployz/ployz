@@ -10,7 +10,8 @@ pub(crate) use cli::DebugTickTaskArg;
 pub(crate) use cli::{
     Cli, CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
     DeployServiceArgs, InstallSourceArg, MachineAction, MachineInviteAction,
-    MachineOperationAction, MeshAction, RuntimeAction, RuntimeTargetArg, ServiceModeArg,
+    MachineOperationAction, MachineStorageAction, MeshAction, RuntimeAction, RuntimeTargetArg,
+    ServiceModeArg,
 };
 use cli_io::{cmd_rpc_stdio, cmd_runtime_stream, render_response, request_daemon};
 #[cfg(test)]
@@ -302,6 +303,57 @@ mod tests {
         );
 
         std::fs::remove_file(path).expect("remove identity");
+    }
+
+    #[test]
+    fn parse_machine_storage_promote_defaults_to_r3() {
+        let cli = Cli::try_parse_from(["ployzd", "machine", "storage", "promote", "m2", "m3"])
+            .expect("machine storage promote args parse");
+
+        let Command::Machine {
+            action:
+                MachineAction::Storage {
+                    action: MachineStorageAction::Promote { replicas, targets },
+                },
+        } = cli.command
+        else {
+            panic!("expected machine storage promote command");
+        };
+        assert_eq!(replicas, 3);
+        assert_eq!(targets, vec!["m2", "m3"]);
+    }
+
+    #[test]
+    fn build_machine_storage_promote_request_encodes_replicas() {
+        let request = build_machine_request(MachineAction::Storage {
+            action: MachineStorageAction::Promote {
+                replicas: 5,
+                targets: vec!["m2".into(), "m3".into(), "m4".into(), "m5".into()],
+            },
+        })
+        .expect("machine storage promote request");
+
+        let DaemonRequest::MachineStoragePromote { request } = request else {
+            panic!("expected machine storage promote request");
+        };
+        assert_eq!(
+            request.replicas,
+            ployz_types::model::StorageReplicaPolicy::R5
+        );
+        assert_eq!(request.targets, vec!["m2", "m3", "m4", "m5"]);
+    }
+
+    #[test]
+    fn build_machine_storage_promote_rejects_unsupported_replicas() {
+        let error = build_machine_request(MachineAction::Storage {
+            action: MachineStorageAction::Promote {
+                replicas: 4,
+                targets: vec!["m2".into(), "m3".into()],
+            },
+        })
+        .expect_err("unsupported replicas should fail before daemon request");
+
+        assert_eq!(error.exit_code(), 2);
     }
 
     #[test]

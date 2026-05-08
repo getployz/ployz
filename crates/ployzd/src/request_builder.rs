@@ -3,13 +3,15 @@ use crate::cli_io::{read_optional_text_file, read_stdin_string, read_text_source
 use crate::{
     CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
     DeployServiceArgs, InstallSourceArg, MachineAction, MachineInviteAction,
-    MachineOperationAction, MeshAction, Result, RuntimeTargetArg, ServiceModeArg,
+    MachineOperationAction, MachineStorageAction, MeshAction, Result, RuntimeTargetArg,
+    ServiceModeArg,
 };
 use ployz_api::{
     DaemonRequest, DeployOptions, InstallSource as MachineInstallSource, MachineAddOptions,
-    MachineInstallOptions,
+    MachineInstallOptions, MachineStoragePromoteRequest,
 };
 use ployz_sdk::Transport;
+use ployz_types::model::StorageReplicaPolicy;
 use ployz_types::spec::{
     ContainerSpec, DeployManifest, Mount, MountSource, Namespace, NetworkMode, Placement,
     PortProtocol, PublishedPort, PullPolicy, Resources, RestartPolicy, RolloutStrategy,
@@ -325,6 +327,7 @@ pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonReque
             Ok(DaemonRequest::MachineAdd { targets, options })
         }
         MachineAction::Update { version, ids } => Ok(DaemonRequest::MachineUpdate { ids, version }),
+        MachineAction::Storage { action } => build_machine_storage_request(action),
         MachineAction::Activate { target } => Ok(DaemonRequest::MachineActivate { target }),
         MachineAction::Drain { target } => Ok(DaemonRequest::MachineDrain { target }),
         MachineAction::Standby { target, force } => {
@@ -347,6 +350,23 @@ pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonReque
             MachineOperationAction::List => Ok(DaemonRequest::MachineOperationList),
             MachineOperationAction::Get { id } => Ok(DaemonRequest::MachineOperationGet { id }),
         },
+    }
+}
+
+fn build_machine_storage_request(action: MachineStorageAction) -> Result<DaemonRequest> {
+    match action {
+        MachineStorageAction::Promote { replicas, targets } => {
+            let replicas =
+                StorageReplicaPolicy::try_from_replicas(replicas).map_err(CliError::Usage)?;
+            if replicas == StorageReplicaPolicy::Single {
+                return Err(CliError::Usage(
+                    "machine storage promote requires --replicas 3 or --replicas 5".into(),
+                ));
+            }
+            Ok(DaemonRequest::MachineStoragePromote {
+                request: MachineStoragePromoteRequest { targets, replicas },
+            })
+        }
     }
 }
 
