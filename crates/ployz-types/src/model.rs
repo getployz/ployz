@@ -120,6 +120,7 @@ pub struct AuthorityRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum RegionRole {
     #[display("home_data")]
     HomeData,
@@ -200,12 +201,6 @@ pub enum StorageReplicaPolicy {
     R3,
     #[display("r5")]
     R5,
-}
-
-impl Default for StorageReplicaPolicy {
-    fn default() -> Self {
-        Self::Single
-    }
 }
 
 impl StorageReplicaPolicy {
@@ -640,6 +635,7 @@ pub struct MachineMembership {
     pub public_key: PublicKey,
     pub overlay_ip: OverlayIp,
     pub topology: MachineTopology,
+    pub region_role: RegionRole,
     #[schemars(with = "Option<String>")]
     pub subnet: Option<Ipv4Net>,
     pub bridge_ip: Option<OverlayIp>,
@@ -671,6 +667,7 @@ impl MachineMembership {
             public_key,
             overlay_ip,
             topology: MachineTopology::local(),
+            region_role: RegionRole::Compute,
             subnet,
             bridge_ip: None,
             endpoints,
@@ -710,6 +707,7 @@ impl MachineMembership {
         PlacementCandidate {
             id: self.id.clone(),
             lifecycle: self.lifecycle,
+            region_role: self.region_role,
             labels: self.labels.clone(),
         }
     }
@@ -868,6 +866,7 @@ impl From<&MachineMembership> for WireGuardPeerSpec {
 pub struct PlacementCandidate {
     pub id: MachineId,
     pub lifecycle: MachineLifecycle,
+    pub region_role: RegionRole,
     pub labels: BTreeMap<String, String>,
 }
 
@@ -2356,7 +2355,7 @@ mod tests {
         assert!(
             serde_json::to_string(&region)
                 .expect("region json")
-                .contains("HomeData")
+                .contains("home_data")
         );
         assert!(
             serde_json::to_string(&participation)
@@ -2508,6 +2507,7 @@ mod tests {
             public_key: PublicKey([0x11; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 7)),
             topology: MachineTopology::local(),
+            region_role: RegionRole::HomeData,
             subnet: Some("10.42.7.0/24".parse().expect("valid subnet")),
             bridge_ip: Some(OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 8))),
             endpoints: vec!["1.2.3.4:51820".into(), "5.6.7.8:51820".into()],
@@ -2570,10 +2570,33 @@ mod tests {
         let candidate = record.placement_candidate();
         assert_eq!(candidate.id, record.id);
         assert_eq!(candidate.lifecycle, MachineLifecycle::Active);
+        assert_eq!(candidate.region_role, RegionRole::HomeData);
         assert_eq!(
             candidate.labels.get("region").map(String::as_str),
             Some("iad")
         );
+    }
+
+    #[test]
+    fn machine_record_serializes_region_role_with_operator_vocabulary() {
+        let record = sample_record();
+        let json = serde_json::to_value(&record).expect("serialize machine record");
+
+        assert_eq!(json["region_role"], "home_data");
+        let roundtrip: MachineMembership =
+            serde_json::from_value(json).expect("deserialize machine record");
+        assert_eq!(roundtrip.region_role, RegionRole::HomeData);
+    }
+
+    #[test]
+    fn machine_record_rejects_missing_region_role() {
+        let mut json = serde_json::to_value(sample_record()).expect("serialize machine record");
+        json.as_object_mut()
+            .expect("machine record object")
+            .remove("region_role");
+
+        serde_json::from_value::<MachineMembership>(json)
+            .expect_err("missing region role should not default");
     }
 
     #[test]

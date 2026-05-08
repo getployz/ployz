@@ -257,8 +257,8 @@ fn render_plain_status(payload: &StatusPayload) -> String {
             scope.push_str(&format!(" scope={asset_scope}"));
         }
         lines.push(format!(
-            "nats_asset kind={} name={} data_bucket={} loss_impact={}{} state={}",
-            asset.kind, asset.name, asset.data_bucket, asset.loss_impact, scope, state
+            "nats_asset kind={} name={}{} state={} data_bucket={} loss_impact={}",
+            asset.kind, asset.name, scope, state, asset.data_bucket, asset.loss_impact
         ));
     }
     for control in &payload.control_plane {
@@ -346,7 +346,7 @@ fn render_plain_machine_list(payload: &MachineListPayload) -> String {
         .iter()
         .map(|row| {
             format!(
-                "id={} lifecycle={} authority_role={} authority_data_bucket={} authority_loss_impact={} region={} az={} overlay_ip={} subnet={} created_at={}",
+                "id={} lifecycle={} authority_role={} authority_data_bucket={} authority_loss_impact={} region={} az={} overlay_ip={} subnet={} created_at={} region_role={}",
                 row.id,
                 row.lifecycle,
                 row.authority.role,
@@ -356,7 +356,8 @@ fn render_plain_machine_list(payload: &MachineListPayload) -> String {
                 row.availability_zone.as_deref().unwrap_or("—"),
                 row.overlay_ip,
                 row.subnet.as_deref().unwrap_or("—"),
-                row.created_at
+                row.created_at,
+                row.region_role
             )
         })
         .collect::<Vec<_>>()
@@ -606,6 +607,7 @@ mod tests {
                         &ployz_types::model::StorageParticipation::Candidate,
                     ),
                     region: String::from("us-east-1"),
+                    region_role: String::from("compute"),
                     availability_zone: None,
                     overlay_ip: String::from("fd00::2"),
                     subnet: None,
@@ -616,7 +618,7 @@ mod tests {
 
         assert_eq!(
             render_plain_success(&response),
-            "id=peer lifecycle=standby authority_role=storage_candidate authority_data_bucket=stored_intent authority_loss_impact=no_stored_truth_lost region=us-east-1 az=— overlay_ip=fd00::2 subnet=— created_at=123"
+            "id=peer lifecycle=standby authority_role=storage_candidate authority_data_bucket=stored_intent authority_loss_impact=no_stored_truth_lost region=us-east-1 az=— overlay_ip=fd00::2 subnet=— created_at=123 region_role=compute"
         );
     }
 
@@ -656,6 +658,7 @@ mod tests {
                     promoted: vec!["m2".into(), "m3".into()],
                     failed: vec![ployz_api::MachineStoragePromotionFailure {
                         machine_id: "m4".into(),
+                        cause: ployz_api::MachineStoragePromotionFailureCause::InvalidCandidate,
                         message: "not active".into(),
                     }],
                 },
@@ -881,7 +884,7 @@ mod tests {
 
         let rendered = render_plain_success(&response);
         assert!(rendered.contains(
-            "nats_asset kind=stream name=routing_events_auth-default data_bucket=projection loss_impact=no_stored_truth_lost installation=local authority=auth-default domain=dom-auth-default scope=authority_local state=healthy replicas=1 current=1 offline=0 max_lag=0 leader=nats-a"
+            "nats_asset kind=stream name=routing_events_auth-default installation=local authority=auth-default domain=dom-auth-default scope=authority_local state=healthy replicas=1 current=1 offline=0 max_lag=0 leader=nats-a data_bucket=projection loss_impact=no_stored_truth_lost"
         ));
     }
 

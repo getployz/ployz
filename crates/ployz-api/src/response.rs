@@ -1,5 +1,7 @@
 use crate::acme::AcmeHttp01StatusPayload;
-use crate::deploy::{DeployCandidateStartedPayload, DeployNamespaceSnapshotPayload};
+use crate::deploy::{
+    DeployCandidateStartedPayload, DeployFailurePayload, DeployNamespaceSnapshotPayload,
+};
 use crate::doctor::DoctorPayload;
 use crate::machine::{
     MachineAddPayload, MachineInviteListPayload, MachineListPayload, MachineOperationListPayload,
@@ -36,6 +38,7 @@ pub enum DaemonPayload {
     AcmeHttp01Status(AcmeHttp01StatusPayload),
     DeployNamespaceSnapshot(DeployNamespaceSnapshotPayload),
     DeployCandidateStarted(DeployCandidateStartedPayload),
+    DeployFailure(DeployFailurePayload),
     VolumeZfsInspect(VolumeZfsInspectPayload),
     VolumeZfsSnapshot(VolumeZfsSnapshotPayload),
     VolumeZfsPeerSend(VolumeZfsPeerSendPayload),

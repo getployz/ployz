@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use crate::daemon::DaemonState;
 use ployz_api::{
-    DaemonPayload, DaemonResponse, DeployCandidateStartedPayload, DeployNamespaceSnapshotPayload,
-    DeployOptions,
+    DaemonPayload, DaemonResponse, DeployCandidateStartedPayload, DeployFailurePayload,
+    DeployFailureReason, DeployNamespaceSnapshotPayload, DeployOptions,
 };
 use ployz_cert_backends::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
@@ -69,7 +69,7 @@ impl DaemonState {
         );
         let nats_store =
             match ployz_nats::NatsStore::connect_with_scope(&nats_client_url, nats_scope).await {
-                Ok(store) => store,
+                Ok(store) => store.with_asset_policy(active.config.storage_replicas),
                 Err(error) => return self.err("DEPLOY_PREVIEW_FAILED", error.to_string()),
             };
         if let Err(error) = nats_store.start().await {
@@ -88,7 +88,7 @@ impl DaemonState {
         .await
         {
             Ok(plan) => self.ok_json_pretty(&plan, "ENCODE_PREVIEW", "encode preview"),
-            Err(err) => self.err("DEPLOY_PREVIEW_FAILED", format!("{err}")),
+            Err(err) => self.deploy_error_response("DEPLOY_PREVIEW_FAILED", err),
         }
     }
 
@@ -115,7 +115,7 @@ impl DaemonState {
         );
         let nats_store =
             match ployz_nats::NatsStore::connect_with_scope(&nats_client_url, nats_scope).await {
-                Ok(store) => store,
+                Ok(store) => store.with_asset_policy(active.config.storage_replicas),
                 Err(error) => return self.err("DEPLOY_APPLY_FAILED", error.to_string()),
             };
         if let Err(error) = nats_store.start().await {
@@ -203,7 +203,20 @@ impl DaemonState {
         }
         match result {
             Ok(result) => self.ok_json_pretty(&result, "ENCODE_DEPLOY", "encode deploy result"),
-            Err(err) => self.err("DEPLOY_APPLY_FAILED", format!("{err}")),
+            Err(err) => self.deploy_error_response("DEPLOY_APPLY_FAILED", err),
+        }
+    }
+
+    fn deploy_error_response(&self, code: &str, error: PloyzError) -> DaemonResponse {
+        match &error {
+            PloyzError::Deploy(DeployError::NoEligiblePlacementTargets) => self.err_with_payload(
+                code,
+                error.to_string(),
+                Some(DaemonPayload::DeployFailure(DeployFailurePayload {
+                    reason: DeployFailureReason::NoEligiblePlacementTargets,
+                })),
+            ),
+            _ => self.err(code, error.to_string()),
         }
     }
 

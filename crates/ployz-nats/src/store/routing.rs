@@ -186,6 +186,7 @@ mod tests {
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay")),
             topology: MachineTopology::local(),
+            region_role: ployz_types::model::RegionRole::HomeData,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),
