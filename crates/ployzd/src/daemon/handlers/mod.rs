@@ -28,6 +28,7 @@ impl DaemonState {
             | DaemonRequest::MeshBootstrap { .. }
             | DaemonRequest::MachineTransitionSelf { .. }
             | DaemonRequest::MachineStoragePromoteSelf { .. }
+            | DaemonRequest::MachineStorageRestoreSelf { .. }
             | DaemonRequest::MeshInit { .. }
             | DaemonRequest::MeshStart { .. }
             | DaemonRequest::MeshStop { .. }
@@ -94,6 +95,7 @@ impl DaemonState {
             | DaemonRequest::MeshBootstrap { .. }
             | DaemonRequest::MachineTransitionSelf { .. }
             | DaemonRequest::MachineStoragePromoteSelf { .. }
+            | DaemonRequest::MachineStorageRestoreSelf { .. }
             | DaemonRequest::MeshInit { .. }
             | DaemonRequest::MeshStart { .. }
             | DaemonRequest::MeshStop { .. }
@@ -306,6 +308,14 @@ impl DaemonState {
                 authority_peers,
             } => {
                 self.handle_machine_storage_promote_self(replicas, &authority_peers)
+                    .await
+            }
+            DaemonRequest::MachineStorageRestoreSelf {
+                participation,
+                replicas,
+                authority_peers,
+            } => {
+                self.handle_machine_storage_restore_self(participation, replicas, &authority_peers)
                     .await
             }
             DaemonRequest::MeshInit { network } => self.handle_mesh_init(&network).await,
