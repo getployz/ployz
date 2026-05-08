@@ -200,8 +200,6 @@ pub enum ControlPlaneDataBucket {
     Projection,
     #[display("live_facts")]
     LiveFacts,
-    #[display("health_metrics")]
-    HealthMetrics,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema)]
@@ -209,12 +207,8 @@ pub enum ControlPlaneDataBucket {
 pub enum ControlPlaneLossImpact {
     #[display("stored_truth_lost")]
     StoredTruthLost,
-    #[display("quorum_dependent")]
-    QuorumDependent,
     #[display("no_stored_truth_lost")]
     NoStoredTruthLost,
-    #[display("unknown")]
-    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -223,9 +217,6 @@ pub enum AuthorityNodeRole {
     AuthorityStorage { authority_id: AuthorityId },
     StorageCandidate,
     Compute,
-    Gateway,
-    Dns,
-    Unknown,
 }
 
 impl fmt::Display for AuthorityNodeRole {
@@ -236,9 +227,6 @@ impl fmt::Display for AuthorityNodeRole {
             }
             Self::StorageCandidate => f.write_str("storage_candidate"),
             Self::Compute => f.write_str("compute"),
-            Self::Gateway => f.write_str("gateway"),
-            Self::Dns => f.write_str("dns"),
-            Self::Unknown => f.write_str("unknown"),
         }
     }
 }
@@ -272,6 +260,11 @@ impl AuthorityNodePosture {
                 loss_impact: ControlPlaneLossImpact::NoStoredTruthLost,
             },
         }
+    }
+
+    #[must_use]
+    pub fn from_machine_membership(machine: &MachineMembership) -> Self {
+        Self::from_storage_participation(machine.storage, &machine.storage_participation)
     }
 }
 

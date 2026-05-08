@@ -7,8 +7,8 @@ use ployz_api::{
     NatsAssetStatus, StatusPayload,
 };
 use ployz_config::RuntimeTarget;
-use ployz_nats::{NatsAssetScope, NatsAssetSpec, NatsStore};
-use ployz_types::model::{AuthorityNodePosture, ControlPlaneDataBucket, ControlPlaneLossImpact};
+use ployz_nats::{NatsAssetScope, NatsAssetSpec, NatsScope, NatsStore};
+use ployz_types::model::AuthorityNodePosture;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -21,11 +21,12 @@ impl DaemonState {
         let id = &self.identity;
         match &self.active {
             Some(active) => {
-                let local_machine_lifecycle = active
-                    .mesh
-                    .authoritative_self_record()
-                    .await
-                    .map(|machine| machine.lifecycle);
+                let local_machine = active.mesh.authoritative_self_record().await;
+                let local_machine_lifecycle =
+                    local_machine.as_ref().map(|machine| machine.lifecycle);
+                let local_authority = local_machine
+                    .as_ref()
+                    .map(AuthorityNodePosture::from_machine_membership);
                 let net = &active.config;
                 let payload = StatusPayload {
                     machine_id: id.machine_id.0.clone(),
@@ -34,10 +35,7 @@ impl DaemonState {
                     network: Some(net.name.0.clone()),
                     network_lifecycle: Some(net.lifecycle),
                     local_machine_lifecycle,
-                    local_authority: Some(AuthorityNodePosture::from_storage_participation(
-                        net.storage,
-                        &net.storage_participation,
-                    )),
+                    local_authority,
                     overlay_ip: Some(net.overlay_ip.0.to_string()),
                     mesh_phase: format!("{:?}", active.mesh.phase()),
                     edge_sync: self.edge_sync_status().await,
@@ -194,6 +192,9 @@ impl DaemonState {
         } else {
             crate::services::nats::overlay_client_url(active.config.overlay_ip)
         };
+        let scope =
+            NatsScope::local_for_storage_participation(&active.config.storage_participation);
+        let manifest = NatsStore::asset_manifest_for_scope(&scope);
         match tokio::time::timeout(
             NATS_ASSET_PROBE_TIMEOUT,
             read_nats_asset_status(&client_url, &active.config),
@@ -201,9 +202,11 @@ impl DaemonState {
         .await
         {
             Ok(assets) => assets,
-            Err(_) => {
-                nats_asset_probe_error(format!("nats asset probe timed out for {client_url}"))
-            }
+            Err(_) => nats_asset_probe_error(
+                &scope,
+                &manifest,
+                format!("nats asset probe timed out for {client_url}"),
+            ),
         }
     }
 }
@@ -236,12 +239,13 @@ async fn read_nats_asset_status(
 ) -> Vec<NatsAssetStatus> {
     let scope =
         ployz_nats::NatsScope::local_for_storage_participation(&config.storage_participation);
-    let store = match NatsStore::connect_with_scope(client_url, scope).await {
+    let manifest = NatsStore::asset_manifest_for_scope(&scope);
+    let store = match NatsStore::connect_with_scope(client_url, scope.clone()).await {
         Ok(store) => store,
-        Err(error) => return nats_asset_probe_error(error.to_string()),
+        Err(error) => return nats_asset_probe_error(&scope, &manifest, error.to_string()),
     };
     let mut status = Vec::new();
-    for asset in store.asset_manifest() {
+    for asset in manifest {
         status.push(read_stream_status(&store, &asset).await);
     }
     status
@@ -288,31 +292,38 @@ fn nats_asset_status(
     asset: &NatsAssetSpec,
     state: NatsAssetHealthState,
 ) -> NatsAssetStatus {
+    nats_asset_status_for_scope(store.scope(), asset, state)
+}
+
+fn nats_asset_status_for_scope(
+    scope: &NatsScope,
+    asset: &NatsAssetSpec,
+    state: NatsAssetHealthState,
+) -> NatsAssetStatus {
     NatsAssetStatus {
         name: asset.name.clone(),
         kind: asset.kind.to_string(),
         data_bucket: asset.data_bucket,
         loss_impact: asset.loss_impact,
-        installation: Some(store.installation().to_string()),
-        authority: nats_asset_authority(store, asset.scope),
-        domain: Some(nats_asset_domain(store, asset.scope)),
+        installation: Some(scope.installation().to_string()),
+        authority: nats_asset_authority(scope, asset.scope),
+        domain: Some(nats_asset_domain(scope, asset.scope)),
         scope: Some(asset.scope.as_str().to_string()),
         state,
     }
 }
 
-fn nats_asset_authority(store: &NatsStore, scope: NatsAssetScope) -> Option<String> {
-    match scope {
-        NatsAssetScope::AuthorityLocal => Some(store.authority().to_string()),
+fn nats_asset_authority(scope: &NatsScope, asset_scope: NatsAssetScope) -> Option<String> {
+    match asset_scope {
+        NatsAssetScope::AuthorityLocal => Some(scope.authority().to_string()),
         NatsAssetScope::InstallationRoot => None,
     }
 }
 
-fn nats_asset_domain(store: &NatsStore, scope: NatsAssetScope) -> String {
-    match scope {
-        NatsAssetScope::AuthorityLocal | NatsAssetScope::InstallationRoot => {
-            store.asset_domain(scope)
-        }
+fn nats_asset_domain(scope: &NatsScope, asset_scope: NatsAssetScope) -> String {
+    match asset_scope {
+        NatsAssetScope::AuthorityLocal => scope.authority_domain(),
+        NatsAssetScope::InstallationRoot => scope.root_domain(),
     }
 }
 
@@ -367,18 +378,23 @@ fn nats_max_lag(cluster: Option<&ClusterInfo>) -> u64 {
         .unwrap_or(0)
 }
 
-fn nats_asset_probe_error(error: String) -> Vec<NatsAssetStatus> {
-    vec![NatsAssetStatus {
-        name: String::from("hub"),
-        kind: String::from("connection"),
-        data_bucket: ControlPlaneDataBucket::HealthMetrics,
-        loss_impact: ControlPlaneLossImpact::Unknown,
-        installation: Some(String::from("local")),
-        authority: Some(String::from("auth-default")),
-        domain: Some(String::from("dom-auth-default")),
-        scope: Some(String::from("authority_local")),
-        state: NatsAssetHealthState::Unknown { error },
-    }]
+fn nats_asset_probe_error(
+    scope: &NatsScope,
+    manifest: &[NatsAssetSpec],
+    error: String,
+) -> Vec<NatsAssetStatus> {
+    manifest
+        .iter()
+        .map(|asset| {
+            nats_asset_status_for_scope(
+                scope,
+                asset,
+                NatsAssetHealthState::Unknown {
+                    error: error.clone(),
+                },
+            )
+        })
+        .collect()
 }
 
 async fn fetch_metrics(addr: &str) -> Result<String, String> {
@@ -518,16 +534,37 @@ fn parse_sync_metric_value(metrics: &str, metric: &str, stream: &str) -> Option<
 #[cfg(test)]
 mod tests {
     use super::{
-        ControlPlaneDataBucket, ControlPlaneLossImpact, SyncMetric, component_health_status,
-        metric_status, nats_asset_is_healthy, nats_asset_probe_error, nats_current_replicas,
-        nats_max_lag, nats_offline_replicas, parse_sync_metric, parse_sync_metric_u64,
+        SyncMetric, component_health_status, metric_status, nats_asset_is_healthy,
+        nats_asset_probe_error, nats_current_replicas, nats_max_lag, nats_offline_replicas,
+        parse_sync_metric, parse_sync_metric_u64,
     };
+    use crate::daemon::{ActiveMesh, DaemonState, RetainedSubnet};
     use crate::health::ComponentHealth;
+    use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
     use async_nats::jetstream::stream::{ClusterInfo, PeerInfo};
+    use ipnet::Ipv4Net;
     use ployz_api::{
-        ControlPlaneHealthState, EdgeSyncHealthState, NatsAssetHealthState, NatsAssetReplicaStatus,
+        ControlPlaneHealthState, DaemonPayload, EdgeSyncHealthState, NatsAssetHealthState,
+        NatsAssetReplicaStatus,
     };
+    use ployz_nats::{NatsScope, NatsStore};
+    use ployz_orchestrator::Mesh;
+    use ployz_orchestrator::mesh::driver::WireguardDriver;
+    use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
+    use ployz_runtime_api::Identity;
+    use ployz_store_api::memory::{MemoryService, MemoryStore};
+    use ployz_store_api::{MachineMembershipStore, StoreDriver};
+    use ployz_types::model::{
+        AuthorityId, AuthorityNodeRole, ControlPlaneDataBucket, ControlPlaneLossImpact, MachineId,
+        MachineLifecycle, MachineMembership, MachineTopology, NetworkLifecycle, NetworkName,
+        OverlayIp, PublicKey, StorageParticipation,
+    };
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn peer(name: &str, current: bool, offline: bool, lag: Option<u64>) -> PeerInfo {
         PeerInfo {
@@ -558,6 +595,50 @@ mod tests {
             max_lag: nats_max_lag(cluster),
             leader: cluster.and_then(|cluster| cluster.leader.clone()),
         }
+    }
+
+    #[tokio::test]
+    async fn status_derives_local_authority_from_authoritative_self_record() {
+        let mut state = make_status_state(true).await;
+        state
+            .active
+            .as_mut()
+            .expect("active mesh")
+            .config
+            .storage_participation = StorageParticipation::Candidate;
+
+        let response = state.handle_status().await;
+        let Some(DaemonPayload::Status(payload)) = response.payload else {
+            panic!("expected status payload");
+        };
+        let authority = payload.local_authority.expect("local authority posture");
+
+        assert_eq!(
+            authority.role,
+            AuthorityNodeRole::AuthorityStorage {
+                authority_id: AuthorityId::default_authority(),
+            }
+        );
+        assert_eq!(authority.data_bucket, ControlPlaneDataBucket::StoredIntent);
+        assert_eq!(
+            authority.loss_impact,
+            ControlPlaneLossImpact::StoredTruthLost
+        );
+        teardown_status_state(&mut state).await;
+    }
+
+    #[tokio::test]
+    async fn status_omits_local_authority_when_self_record_is_missing() {
+        let mut state = make_status_state(false).await;
+
+        let response = state.handle_status().await;
+        let Some(DaemonPayload::Status(payload)) = response.payload else {
+            panic!("expected status payload");
+        };
+
+        assert_eq!(payload.local_machine_lifecycle, None);
+        assert_eq!(payload.local_authority, None);
+        teardown_status_state(&mut state).await;
     }
 
     #[test]
@@ -749,23 +830,40 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
     }
 
     #[test]
-    fn nats_asset_probe_error_preserves_operator_context() {
-        let [status] = nats_asset_probe_error(String::from("connect failed"))
-            .try_into()
-            .expect("probe error returns one status entry");
+    fn nats_asset_probe_error_preserves_classified_asset_context() {
+        let scope = NatsScope::local_default();
+        let manifest = NatsStore::asset_manifest_for_scope(&scope);
+        let statuses = nats_asset_probe_error(&scope, &manifest, String::from("connect failed"));
 
-        assert_eq!(status.name, "hub");
-        assert_eq!(status.kind, "connection");
-        assert_eq!(status.data_bucket, ControlPlaneDataBucket::HealthMetrics);
-        assert_eq!(status.loss_impact, ControlPlaneLossImpact::Unknown);
+        assert_eq!(statuses.len(), manifest.len());
+        let status = statuses
+            .iter()
+            .find(|status| status.name == "routing_events_auth-default")
+            .expect("routing events status is present");
+        assert_eq!(status.kind, "stream");
+        assert_eq!(status.data_bucket, ControlPlaneDataBucket::Projection);
+        assert_eq!(
+            status.loss_impact,
+            ControlPlaneLossImpact::NoStoredTruthLost
+        );
         assert_eq!(status.installation.as_deref(), Some("local"));
         assert_eq!(status.authority.as_deref(), Some("auth-default"));
         assert_eq!(status.domain.as_deref(), Some("dom-auth-default"));
         assert_eq!(status.scope.as_deref(), Some("authority_local"));
-        match status.state {
+        match &status.state {
             NatsAssetHealthState::Unknown { error } => assert_eq!(error, "connect failed"),
             other => panic!("expected unknown NATS asset state, got {other:?}"),
         }
+
+        let status = statuses
+            .iter()
+            .find(|status| status.name == "machines_local")
+            .expect("machines status is present");
+        assert_eq!(status.data_bucket, ControlPlaneDataBucket::StoredIntent);
+        assert_eq!(status.loss_impact, ControlPlaneLossImpact::StoredTruthLost);
+        assert_eq!(status.authority, None);
+        assert_eq!(status.domain.as_deref(), Some("dom-local-root"));
+        assert_eq!(status.scope.as_deref(), Some("installation_root"));
     }
 
     #[test]
@@ -814,5 +912,117 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
         assert_eq!(nats_current_replicas(3, None), 0);
         assert_eq!(nats_offline_replicas(3, None), 3);
         assert_eq!(nats_max_lag(None), 0);
+    }
+
+    async fn make_status_state(start_mesh: bool) -> DaemonState {
+        let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
+        let founder_subnet: Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
+        let data_dir = unique_temp_dir("ployz-status-state");
+        let config = NetworkConfig::new(
+            NetworkName("alpha".into()),
+            &identity.public_key,
+            DEFAULT_CLUSTER_CIDR,
+            founder_subnet,
+        );
+        config
+            .save(&NetworkConfig::path(&data_dir, "alpha"))
+            .expect("save config");
+
+        let store = Arc::new(MemoryStore::new());
+        let service = Arc::new(MemoryService::new());
+        let network = Arc::new(MemoryWireGuard::new());
+        store
+            .upsert_self_machine(&test_machine_record(
+                "founder",
+                founder_subnet,
+                MachineLifecycle::Standby,
+                identity.public_key.clone(),
+            ))
+            .await
+            .expect("upsert founder");
+
+        let mut mesh = Mesh::new(
+            WireguardDriver::memory_with(network),
+            StoreDriver::memory_with(store, service),
+            None,
+            identity.machine_id.clone(),
+            51820,
+        );
+        if start_mesh {
+            mesh.up().await.expect("mesh up");
+        }
+
+        let mut state = DaemonState::new_for_tests(
+            &data_dir,
+            identity,
+            DEFAULT_CLUSTER_CIDR.into(),
+            24,
+            4319,
+            "127.0.0.1:0".into(),
+            None,
+            1,
+        );
+        let mut config = config;
+        config.lifecycle = if start_mesh {
+            NetworkLifecycle::Running
+        } else {
+            NetworkLifecycle::Stopped
+        };
+        let retained_subnet = RetainedSubnet::from_running_config(config.subnet);
+        state.active = Some(ActiveMesh {
+            config,
+            retained_subnet,
+            mesh,
+            nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            certificate_renewal: None,
+            bootstrap_peer_seed: None,
+        });
+        state
+    }
+
+    async fn teardown_status_state(state: &mut DaemonState) {
+        let Some(active) = state.active.as_mut() else {
+            return;
+        };
+        active.mesh.destroy().await.expect("destroy mesh");
+    }
+
+    fn test_machine_record(
+        id: &str,
+        subnet: Ipv4Net,
+        lifecycle: MachineLifecycle,
+        public_key: PublicKey,
+    ) -> MachineMembership {
+        MachineMembership {
+            id: MachineId(id.into()),
+            public_key,
+            overlay_ip: format!("fd00::{id_len:x}", id_len = id.len())
+                .parse()
+                .map(OverlayIp)
+                .expect("valid overlay"),
+            topology: MachineTopology::local(),
+            subnet: Some(subnet),
+            bridge_ip: None,
+            endpoints: vec!["127.0.0.1:51820".into()],
+            lifecycle,
+            storage: true,
+            storage_participation: StorageParticipation::default_authority(),
+            created_at: 0,
+            updated_at: 0,
+            labels: BTreeMap::new(),
+        }
+    }
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+        let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{label}-{}-{nanos}-{sequence}", std::process::id()))
     }
 }

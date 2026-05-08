@@ -524,38 +524,104 @@ mod tests {
             .into_iter()
             .chain(names.kv_assets())
             .collect::<Vec<_>>();
+        let expected = [
+            (
+                names.deploy_commits_stream.as_str(),
+                "stream",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.routing_events_stream.as_str(),
+                "stream",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::Projection,
+                ControlPlaneLossImpact::NoStoredTruthLost,
+            ),
+            (
+                names.cert_jobs_stream.as_str(),
+                "stream",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::Projection,
+                ControlPlaneLossImpact::NoStoredTruthLost,
+            ),
+            (
+                names.machines_bucket.as_str(),
+                "kv",
+                NatsAssetScope::InstallationRoot,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.invites_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.deploy_status_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.instances_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.acme_accounts_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.certificates_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.acme_challenges_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.acme_challenge_readiness_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.locks_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::LiveFacts,
+                ControlPlaneLossImpact::NoStoredTruthLost,
+            ),
+        ];
 
-        assert!(
-            assets
+        assert_eq!(assets.len(), expected.len());
+        for (name, kind, scope, data_bucket, loss_impact) in expected {
+            let asset = assets
                 .iter()
-                .all(|asset| asset.data_bucket != ControlPlaneDataBucket::HealthMetrics)
-        );
-        assert!(
-            assets
-                .iter()
-                .all(|asset| asset.loss_impact != ControlPlaneLossImpact::Unknown)
-        );
-
-        let asset = assets
-            .iter()
-            .find(|asset| asset.name == names.machines_bucket)
-            .expect("machines bucket is classified");
-        assert_eq!(asset.data_bucket, ControlPlaneDataBucket::StoredIntent);
-        assert_eq!(asset.loss_impact, ControlPlaneLossImpact::StoredTruthLost);
-
-        let asset = assets
-            .iter()
-            .find(|asset| asset.name == names.routing_events_stream)
-            .expect("routing events stream is classified");
-        assert_eq!(asset.data_bucket, ControlPlaneDataBucket::Projection);
-        assert_eq!(asset.loss_impact, ControlPlaneLossImpact::NoStoredTruthLost);
-
-        let asset = assets
-            .iter()
-            .find(|asset| asset.name == names.locks_bucket)
-            .expect("locks bucket is classified");
-        assert_eq!(asset.data_bucket, ControlPlaneDataBucket::LiveFacts);
-        assert_eq!(asset.loss_impact, ControlPlaneLossImpact::NoStoredTruthLost);
+                .find(|asset| asset.name == name)
+                .unwrap_or_else(|| panic!("{name} is classified"));
+            assert_eq!(asset.kind, kind);
+            assert_eq!(asset.scope, scope);
+            assert_eq!(asset.data_bucket, data_bucket);
+            assert_eq!(asset.loss_impact, loss_impact);
+        }
     }
 
     #[test]
