@@ -3,7 +3,7 @@ use super::operations::{MachineOperationArtifacts, MachineOperationKind, Machine
 use crate::daemon::ActiveMesh;
 use crate::daemon::DaemonState;
 use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock};
-use crate::mesh_state::bootstrap::load_bootstrap_peer_records;
+use crate::mesh_state::bootstrap::{bootstrap_peers_path, load_bootstrap_peer_records};
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
 use ployz_api::{
@@ -1220,7 +1220,7 @@ async fn machine_storage_promote_self_rejects_malformed_bootstrap_peers_before_c
     config.save(&config_path).expect("save candidate config");
     state.active.as_mut().expect("active mesh").config = config.clone();
     std::fs::write(
-        state.network_dir("alpha").join("bootstrap-peers.json"),
+        bootstrap_peers_path(&state.network_dir("alpha")),
         "not json",
     )
     .expect("write malformed peers");
@@ -1348,6 +1348,64 @@ async fn machine_storage_promote_self_rejects_authority_peers_that_do_not_match_
         StorageParticipation::Candidate
     );
     assert_eq!(restored.storage_replicas, StorageReplicaPolicy::Single);
+}
+
+#[tokio::test]
+async fn machine_storage_restore_self_restores_config_bootstrap_peers_and_self_record() {
+    let (mut state, _, _) = make_state(true).await;
+    let config_path = NetworkConfig::path(&state.data_dir, "alpha");
+    let mut config = NetworkConfig::load(&config_path).expect("load network config");
+    config.storage_participation = StorageParticipation::default_authority();
+    config.storage_replicas = StorageReplicaPolicy::R3;
+    config.save(&config_path).expect("save promoted config");
+    state.active.as_mut().expect("active mesh").config = config;
+
+    let mut founder = test_machine_record(
+        "founder",
+        "10.210.0.0/24",
+        MachineLifecycle::Active,
+        PublicKey([1; 32]),
+    );
+    founder.storage = true;
+    founder.storage_participation = StorageParticipation::default_authority();
+
+    let response = state
+        .handle_machine_storage_restore_self(
+            StorageParticipation::Candidate,
+            StorageReplicaPolicy::Single,
+            &[founder],
+        )
+        .await;
+
+    assert!(response.ok, "{}", response.message);
+    let restored_config = NetworkConfig::load(&config_path).expect("load restored config");
+    assert_eq!(
+        restored_config.storage_participation,
+        StorageParticipation::Candidate
+    );
+    assert_eq!(
+        restored_config.storage_replicas,
+        StorageReplicaPolicy::Single
+    );
+    let peers = load_bootstrap_peer_records(&state.network_dir("alpha"))
+        .expect("load restored bootstrap peers");
+    let peer_ids = peers
+        .iter()
+        .map(|peer| peer.machine_id.0.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(peer_ids, vec!["founder"]);
+    let self_record = state
+        .active
+        .as_ref()
+        .expect("active mesh")
+        .mesh
+        .authoritative_self_record()
+        .await
+        .expect("self record");
+    assert_eq!(
+        self_record.storage_participation,
+        StorageParticipation::Candidate
+    );
 }
 
 #[tokio::test]
