@@ -1194,6 +1194,64 @@ async fn machine_storage_promote_self_persists_config_bootstrap_peers_and_self_r
 }
 
 #[tokio::test]
+async fn machine_storage_restore_self_restores_config_bootstrap_peers_and_self_record() {
+    let (mut state, _, _) = make_state(true).await;
+    let config_path = NetworkConfig::path(&state.data_dir, "alpha");
+    let mut config = NetworkConfig::load(&config_path).expect("load network config");
+    config.storage_participation = StorageParticipation::default_authority();
+    config.storage_replicas = StorageReplicaPolicy::R3;
+    config.save(&config_path).expect("save promoted config");
+    state.active.as_mut().expect("active mesh").config = config;
+
+    let mut founder = test_machine_record(
+        "founder",
+        "10.210.0.0/24",
+        MachineLifecycle::Active,
+        PublicKey([1; 32]),
+    );
+    founder.storage = true;
+    founder.storage_participation = StorageParticipation::default_authority();
+
+    let response = state
+        .handle_machine_storage_restore_self(
+            StorageParticipation::Candidate,
+            StorageReplicaPolicy::Single,
+            &[founder],
+        )
+        .await;
+
+    assert!(response.ok, "{}", response.message);
+    let restored_config = NetworkConfig::load(&config_path).expect("load restored config");
+    assert_eq!(
+        restored_config.storage_participation,
+        StorageParticipation::Candidate
+    );
+    assert_eq!(
+        restored_config.storage_replicas,
+        StorageReplicaPolicy::Single
+    );
+    let peers = load_bootstrap_peer_records(&state.network_dir("alpha"))
+        .expect("load restored bootstrap peers");
+    let peer_ids = peers
+        .iter()
+        .map(|peer| peer.machine_id.0.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(peer_ids, vec!["founder"]);
+    let self_record = state
+        .active
+        .as_ref()
+        .expect("active mesh")
+        .mesh
+        .authoritative_self_record()
+        .await
+        .expect("self record");
+    assert_eq!(
+        self_record.storage_participation,
+        StorageParticipation::Candidate
+    );
+}
+
+#[tokio::test]
 async fn machine_storage_promote_self_restores_config_when_bootstrap_peer_read_fails() {
     let (mut state, _, _) = make_state(true).await;
     let config_path = NetworkConfig::path(&state.data_dir, "alpha");
