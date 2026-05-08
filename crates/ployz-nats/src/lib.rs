@@ -9,7 +9,7 @@ use async_nats::Client;
 use buckets::NatsAssetNames;
 use ployz_store_api::StoreRuntimeControl;
 use ployz_types::error::{Error, Result};
-use ployz_types::model::{MachineId, OverlayIp, StorageParticipation};
+use ployz_types::model::{MachineId, OverlayIp, StorageParticipation, StorageReplicaPolicy};
 use serde::Deserialize;
 use std::net::Ipv4Addr;
 use std::path::Path;
@@ -31,6 +31,8 @@ struct NetworkConfig {
     overlay_ip: OverlayIp,
     #[serde(default)]
     storage_participation: Option<StorageParticipation>,
+    #[serde(default)]
+    storage_replicas: StorageReplicaPolicy,
 }
 
 #[derive(Clone)]
@@ -87,6 +89,12 @@ impl NatsStore {
             assets,
             scope,
         }
+    }
+
+    #[must_use]
+    pub fn with_asset_policy(mut self, storage_replicas: StorageReplicaPolicy) -> Self {
+        self.asset_policy = AssetPolicy::from_storage_replicas(storage_replicas);
+        self
     }
 
     #[must_use]
@@ -208,10 +216,13 @@ impl NatsStore {
         let mut last_error = None;
         for url in client_urls_for_network(config.overlay_ip) {
             match Self::connect_with_scope(&url, scope.clone()).await {
-                Ok(store) => match store.start().await {
-                    Ok(()) => return Ok(store),
-                    Err(error) => last_error = Some(error),
-                },
+                Ok(store) => {
+                    let store = store.with_asset_policy(config.storage_replicas);
+                    match store.start().await {
+                        Ok(()) => return Ok(store),
+                        Err(error) => last_error = Some(error),
+                    }
+                }
                 Err(error) => last_error = Some(error),
             }
         }
@@ -241,7 +252,7 @@ fn client_urls_for_network(overlay_ip: OverlayIp) -> [String; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{AuthorityId, InstallationId};
+    use ployz_types::model::{AuthorityId, InstallationId, StorageReplicaPolicy};
 
     #[test]
     fn network_client_urls_try_local_bridge_before_overlay() {
@@ -258,6 +269,7 @@ mod tests {
             storage_participation: Some(StorageParticipation::Authority {
                 authority_id: AuthorityId("auth-sin".into()),
             }),
+            storage_replicas: StorageReplicaPolicy::Single,
         };
 
         let scope = nats_scope_for_network_config(&config);
@@ -271,6 +283,7 @@ mod tests {
         let config = NetworkConfig {
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid ip")),
             storage_participation: Some(StorageParticipation::Candidate),
+            storage_replicas: StorageReplicaPolicy::Single,
         };
 
         let scope = nats_scope_for_network_config(&config);

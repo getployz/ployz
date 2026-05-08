@@ -393,6 +393,10 @@ pub(crate) enum MachineAction {
         #[arg(required = true, num_args = 1..)]
         targets: Vec<String>,
     },
+    Storage {
+        #[command(subcommand)]
+        action: MachineStorageAction,
+    },
     #[command(disable_version_flag = true)]
     Update {
         #[arg(long = "version", id = "update-version", default_value = "latest")]
@@ -443,6 +447,16 @@ pub(crate) enum MachineInviteAction {
     Import {
         #[arg(long)]
         token: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum MachineStorageAction {
+    Promote {
+        #[arg(long, default_value_t = 3)]
+        replicas: usize,
+        #[arg(required = true, num_args = 1.., value_name = "machine-id")]
+        targets: Vec<String>,
     },
 }
 

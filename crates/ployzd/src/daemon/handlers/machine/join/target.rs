@@ -199,6 +199,19 @@ pub(super) async fn run_machine_add_target(
             failure: MachineAddFailure::SelfRecord { reason: err },
         };
     }
+    if let Err(err) = validate_joined_machine_authority_posture(&record) {
+        let _ = release_reserved_subnet(&mut subnet_claim).await;
+        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
+        let _ = operation_store.update_status(
+            &mut operation,
+            MachineOperationStatus::Failed,
+            Some(err.clone()),
+        );
+        return MachineAddTargetResult::Failed {
+            target,
+            failure: MachineAddFailure::SelfRecord { reason: err },
+        };
+    }
     stage = MachineAddStage::SelfRecorded;
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, "machine add target: self-record complete");
@@ -535,6 +548,16 @@ fn validate_joined_machine_subnet(
         None => Err(format!(
             "remote machine '{}' reported no subnet but founder reserved '{}'",
             record.id, expected_subnet
+        )),
+    }
+}
+
+fn validate_joined_machine_authority_posture(record: &MachineMembership) -> Result<(), String> {
+    match &record.storage_participation {
+        StorageParticipation::Candidate => Ok(()),
+        StorageParticipation::Authority { authority_id } => Err(format!(
+            "remote machine '{}' reported authority storage for '{}' during machine add; use explicit storage promotion",
+            record.id, authority_id
         )),
     }
 }

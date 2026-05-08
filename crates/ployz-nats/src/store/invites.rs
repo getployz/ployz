@@ -175,7 +175,9 @@ fn validate_invite_key(key: &str, invite: InviteRecord) -> Result<InviteRecord> 
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_invite, invite_records_from_entries, map_create_error, validate_redeemable};
+    use super::{
+        decode_invite, invite_records_from_entries, map_create_error, validate_redeemable,
+    };
     use crate::store::kv_json;
     use async_nats::jetstream::kv::{CreateError, CreateErrorKind};
     use ployz_types::error::{Error, StoreRecordKind};
@@ -193,28 +195,36 @@ mod tests {
         let mapped = map_create_error("invite-a", CreateError::new(CreateErrorKind::Publish));
 
         assert_ne!(mapped, Error::invite_already_exists("invite-a"));
-        assert!(matches!(mapped, Error::Operation { ref operation, .. } if operation == &"nats_invite_create"));
+        assert!(
+            matches!(mapped, Error::Operation { ref operation, .. } if operation == &"nats_invite_create")
+        );
     }
 
     #[test]
     fn create_error_ack_preserves_backend_context() {
         let mapped = map_create_error("invite-a", CreateError::new(CreateErrorKind::Ack));
 
-        assert!(matches!(mapped, Error::Operation { ref operation, .. } if operation == &"nats_invite_create"));
+        assert!(
+            matches!(mapped, Error::Operation { ref operation, .. } if operation == &"nats_invite_create")
+        );
     }
 
     #[test]
     fn create_error_other_preserves_backend_context() {
         let mapped = map_create_error("invite-a", CreateError::new(CreateErrorKind::Other));
 
-        assert!(matches!(mapped, Error::Operation { ref operation, .. } if operation == &"nats_invite_create"));
+        assert!(
+            matches!(mapped, Error::Operation { ref operation, .. } if operation == &"nats_invite_create")
+        );
     }
 
     #[test]
     fn create_error_invalid_key_preserves_backend_context() {
         let mapped = map_create_error("invite-a", CreateError::new(CreateErrorKind::InvalidKey));
 
-        assert!(matches!(mapped, Error::Operation { ref operation, .. } if operation == &"nats_invite_create"));
+        assert!(
+            matches!(mapped, Error::Operation { ref operation, .. } if operation == &"nats_invite_create")
+        );
     }
 
     #[test]

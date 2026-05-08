@@ -8,7 +8,7 @@ use ployz_api::{
 };
 use ployz_config::RuntimeTarget;
 use ployz_nats::{NatsAssetScope, NatsAssetSpec, NatsScope, NatsStore};
-use ployz_types::model::AuthorityNodePosture;
+use ployz_types::model::{AuthorityNodePosture, StorageReplicaPolicy};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -28,6 +28,13 @@ impl DaemonState {
                     .as_ref()
                     .map(AuthorityNodePosture::from_machine_membership);
                 let net = &active.config;
+                let nats_assets = self.nats_asset_status().await;
+                let mut control_plane = self.control_plane_status().await;
+                if let Some(status) =
+                    storage_replica_intent_status(net.storage_replicas, &nats_assets)
+                {
+                    control_plane.push(status);
+                }
                 let payload = StatusPayload {
                     machine_id: id.machine_id.0.clone(),
                     public_key: id.public_key.clone(),
@@ -39,8 +46,8 @@ impl DaemonState {
                     overlay_ip: Some(net.overlay_ip.0.to_string()),
                     mesh_phase: format!("{:?}", active.mesh.phase()),
                     edge_sync: self.edge_sync_status().await,
-                    nats_assets: self.nats_asset_status().await,
-                    control_plane: self.control_plane_status().await,
+                    nats_assets,
+                    control_plane,
                 };
                 self.ok_with_payload(
                     format!(
@@ -209,6 +216,88 @@ impl DaemonState {
             ),
         }
     }
+}
+
+fn storage_replica_intent_status(
+    desired: StorageReplicaPolicy,
+    assets: &[NatsAssetStatus],
+) -> Option<ControlPlaneStatus> {
+    if desired == StorageReplicaPolicy::Single {
+        return None;
+    }
+    let expected = desired.replicas();
+    let mut observed = 0usize;
+    let mut stale_asset = None;
+    for asset in assets {
+        match &asset.state {
+            NatsAssetHealthState::Healthy(replicas) => {
+                observed += 1;
+                if replicas.replicas != expected {
+                    return Some(ControlPlaneStatus {
+                        component: String::from("storage_replica_intent"),
+                        state: ControlPlaneHealthState::Stale {
+                            stale_since_unix_secs: ployz_types::time::now_unix_secs(),
+                            consecutive_failures: 1,
+                            error: format!(
+                                "asset '{}' reports {} replicas; expected {}",
+                                asset.name, replicas.replicas, expected
+                            ),
+                        },
+                    });
+                }
+            }
+            NatsAssetHealthState::Stale(replicas) => {
+                observed += 1;
+                if replicas.replicas != expected {
+                    return Some(ControlPlaneStatus {
+                        component: String::from("storage_replica_intent"),
+                        state: ControlPlaneHealthState::Stale {
+                            stale_since_unix_secs: ployz_types::time::now_unix_secs(),
+                            consecutive_failures: 1,
+                            error: format!(
+                                "asset '{}' reports {} replicas; expected {}",
+                                asset.name, replicas.replicas, expected
+                            ),
+                        },
+                    });
+                }
+                stale_asset.get_or_insert_with(|| asset.name.clone());
+            }
+            NatsAssetHealthState::Unknown { error } => {
+                return Some(ControlPlaneStatus {
+                    component: String::from("storage_replica_intent"),
+                    state: ControlPlaneHealthState::Unknown {
+                        error: format!(
+                            "asset '{}' replica observation unavailable: {error}",
+                            asset.name
+                        ),
+                    },
+                });
+            }
+        }
+    }
+    if let Some(asset_name) = stale_asset {
+        return Some(ControlPlaneStatus {
+            component: String::from("storage_replica_intent"),
+            state: ControlPlaneHealthState::Stale {
+                stale_since_unix_secs: ployz_types::time::now_unix_secs(),
+                consecutive_failures: 1,
+                error: format!("asset '{asset_name}' replica observation is stale"),
+            },
+        });
+    }
+    if observed == 0 {
+        return Some(ControlPlaneStatus {
+            component: String::from("storage_replica_intent"),
+            state: ControlPlaneHealthState::Unknown {
+                error: format!("no NATS assets observed for desired {expected} replicas"),
+            },
+        });
+    }
+    Some(ControlPlaneStatus {
+        component: String::from("storage_replica_intent"),
+        state: ControlPlaneHealthState::Healthy,
+    })
 }
 
 fn component_health_status(
@@ -536,7 +625,7 @@ mod tests {
     use super::{
         SyncMetric, component_health_status, metric_status, nats_asset_is_healthy,
         nats_asset_probe_error, nats_current_replicas, nats_max_lag, nats_offline_replicas,
-        parse_sync_metric, parse_sync_metric_u64,
+        parse_sync_metric, parse_sync_metric_u64, storage_replica_intent_status,
     };
     use crate::daemon::{ActiveMesh, DaemonState, RetainedSubnet};
     use crate::health::ComponentHealth;
@@ -545,7 +634,7 @@ mod tests {
     use ipnet::Ipv4Net;
     use ployz_api::{
         ControlPlaneHealthState, DaemonPayload, EdgeSyncHealthState, NatsAssetHealthState,
-        NatsAssetReplicaStatus,
+        NatsAssetReplicaStatus, NatsAssetStatus,
     };
     use ployz_nats::{NatsScope, NatsStore};
     use ployz_orchestrator::Mesh;
@@ -557,7 +646,7 @@ mod tests {
     use ployz_types::model::{
         AuthorityId, AuthorityNodeRole, ControlPlaneDataBucket, ControlPlaneLossImpact, MachineId,
         MachineLifecycle, MachineMembership, MachineTopology, NetworkLifecycle, NetworkName,
-        OverlayIp, PublicKey, StorageParticipation,
+        OverlayIp, PublicKey, StorageParticipation, StorageReplicaPolicy,
     };
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -912,6 +1001,96 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
         assert_eq!(nats_current_replicas(3, None), 0);
         assert_eq!(nats_offline_replicas(3, None), 3);
         assert_eq!(nats_max_lag(None), 0);
+    }
+
+    #[test]
+    fn storage_replica_intent_reports_mismatched_observed_replicas() {
+        let status = storage_replica_intent_status(
+            StorageReplicaPolicy::R3,
+            &[NatsAssetStatus {
+                name: "cp_instances_auth-default".into(),
+                kind: "kv".into(),
+                data_bucket: ControlPlaneDataBucket::StoredIntent,
+                loss_impact: ControlPlaneLossImpact::StoredTruthLost,
+                installation: None,
+                authority: Some("auth-default".into()),
+                domain: Some("dom-auth-default".into()),
+                scope: Some("authority_local".into()),
+                state: NatsAssetHealthState::Healthy(NatsAssetReplicaStatus {
+                    replicas: 1,
+                    current_replicas: 1,
+                    offline_replicas: 0,
+                    max_lag: 0,
+                    leader: Some("nats-a".into()),
+                }),
+            }],
+        )
+        .expect("replica intent status");
+
+        assert_eq!(status.component, "storage_replica_intent");
+        let ControlPlaneHealthState::Stale { error, .. } = status.state else {
+            panic!("expected stale replica intent");
+        };
+        assert!(error.contains("expected 3"));
+    }
+
+    #[test]
+    fn storage_replica_intent_is_healthy_when_assets_match_desired_replicas() {
+        let status = storage_replica_intent_status(
+            StorageReplicaPolicy::R3,
+            &[NatsAssetStatus {
+                name: "cp_instances_auth-default".into(),
+                kind: "kv".into(),
+                data_bucket: ControlPlaneDataBucket::StoredIntent,
+                loss_impact: ControlPlaneLossImpact::StoredTruthLost,
+                installation: None,
+                authority: Some("auth-default".into()),
+                domain: Some("dom-auth-default".into()),
+                scope: Some("authority_local".into()),
+                state: NatsAssetHealthState::Healthy(NatsAssetReplicaStatus {
+                    replicas: 3,
+                    current_replicas: 3,
+                    offline_replicas: 0,
+                    max_lag: 0,
+                    leader: Some("nats-a".into()),
+                }),
+            }],
+        )
+        .expect("replica intent status");
+
+        assert_eq!(status.component, "storage_replica_intent");
+        assert!(matches!(status.state, ControlPlaneHealthState::Healthy));
+    }
+
+    #[test]
+    fn storage_replica_intent_stays_stale_when_asset_observation_is_stale() {
+        let status = storage_replica_intent_status(
+            StorageReplicaPolicy::R3,
+            &[NatsAssetStatus {
+                name: "cp_instances_auth-default".into(),
+                kind: "kv".into(),
+                data_bucket: ControlPlaneDataBucket::StoredIntent,
+                loss_impact: ControlPlaneLossImpact::StoredTruthLost,
+                installation: None,
+                authority: Some("auth-default".into()),
+                domain: Some("dom-auth-default".into()),
+                scope: Some("authority_local".into()),
+                state: NatsAssetHealthState::Stale(NatsAssetReplicaStatus {
+                    replicas: 3,
+                    current_replicas: 3,
+                    offline_replicas: 0,
+                    max_lag: 0,
+                    leader: Some("nats-a".into()),
+                }),
+            }],
+        )
+        .expect("replica intent status");
+
+        assert_eq!(status.component, "storage_replica_intent");
+        let ControlPlaneHealthState::Stale { error, .. } = status.state else {
+            panic!("expected stale replica intent");
+        };
+        assert!(error.contains("observation is stale"));
     }
 
     async fn make_status_state(start_mesh: bool) -> DaemonState {
