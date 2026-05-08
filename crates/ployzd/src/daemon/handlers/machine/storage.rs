@@ -1,15 +1,18 @@
 use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineStoragePromoteRequest,
-    MachineStoragePromotionFailure, MachineStoragePromotionPayload,
+    MachineStoragePromotionFailure, MachineStoragePromotionPayload, StatusPayload,
 };
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
 use ployz_store_api::MachineMembershipStore;
 use ployz_types::model::{
     AuthorityId, MachineLifecycle, MachineMembership, StorageParticipation, StorageReplicaPolicy,
 };
+use std::collections::BTreeSet;
 use tokio::sync::oneshot;
 
-use crate::mesh_state::bootstrap::{BootstrapPeerRecord, write_bootstrap_peer_records};
+use crate::mesh_state::bootstrap::{
+    BootstrapPeerRecord, load_bootstrap_peer_records, write_bootstrap_peer_records,
+};
 use crate::mesh_state::network::NetworkConfig;
 
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
@@ -94,7 +97,9 @@ impl DaemonState {
                     Some(DaemonPayload::MachineStoragePromotion(payload)),
                 )
             }
-            Err((message, mut payload)) => {
+            Err(error) => {
+                let message = error.message();
+                let mut payload = error.into_payload(&operation.id, request.replicas);
                 let _ = operation_store.update_status(
                     &mut operation,
                     MachineOperationStatus::Failed,
@@ -117,25 +122,38 @@ impl DaemonState {
         store: &ployz_store_api::StoreDriver,
         local_record: &MachineMembership,
         operation: &mut super::operations::MachineOperationRecord,
-    ) -> Result<MachineStoragePromotionPayload, (String, MachineStoragePromotionPayload)> {
+    ) -> Result<MachineStoragePromotionPayload, StoragePromotionError> {
         let mut failed = Vec::new();
         let machines = match store.list_machines().await {
             Ok(machines) => machines,
             Err(error) => {
-                return Err((
-                    format!("list machines for storage promotion: {error}"),
-                    promotion_payload(&operation.id, request.replicas, Vec::new(), failed),
-                ));
+                return Err(StoragePromotionError::StoreList { error });
             }
         };
 
+        let mut seen_targets = BTreeSet::new();
+        for target in &request.targets {
+            if !seen_targets.insert(target.clone()) {
+                failed.push(MachineStoragePromotionFailure {
+                    machine_id: target.clone(),
+                    message: "duplicate promotion target".into(),
+                });
+            }
+        }
+        if !failed.is_empty() {
+            return Err(StoragePromotionError::Preflight { failed });
+        }
+
+        let default_authority = AuthorityId::default_authority();
         let mut authorities = machines
             .iter()
             .filter(|machine| {
                 machine.lifecycle == MachineLifecycle::Active
+                    && machine.storage
                     && matches!(
-                        machine.storage_participation,
-                        StorageParticipation::Authority { .. }
+                        &machine.storage_participation,
+                        StorageParticipation::Authority { authority_id }
+                            if authority_id == &default_authority
                     )
             })
             .cloned()
@@ -144,6 +162,24 @@ impl DaemonState {
             .iter()
             .any(|machine| machine.id == local_record.id)
         {
+            if local_record.lifecycle != MachineLifecycle::Active
+                || !local_record.storage
+                || !matches!(
+                    &local_record.storage_participation,
+                    StorageParticipation::Authority { authority_id }
+                        if authority_id == &default_authority
+                )
+            {
+                return Err(StoragePromotionError::InvalidLocalAuthority {
+                    message: format!(
+                        "local authority must be active storage for {} (lifecycle={}, storage={}, participation={:?})",
+                        default_authority,
+                        local_record.lifecycle,
+                        local_record.storage,
+                        local_record.storage_participation
+                    ),
+                });
+            }
             authorities.push(local_record.clone());
         }
 
@@ -171,24 +207,25 @@ impl DaemonState {
             }
         }
         if !failed.is_empty() {
-            return Err((
-                "storage promotion preflight failed".into(),
-                promotion_payload(&operation.id, request.replicas, Vec::new(), failed),
-            ));
+            return Err(StoragePromotionError::Preflight { failed });
         }
 
-        let final_authority_count = authorities.len() + targets.len();
+        let final_authority_ids = authorities
+            .iter()
+            .chain(targets.iter())
+            .map(|machine| machine.id.clone())
+            .collect::<BTreeSet<_>>();
+        let final_authority_count = final_authority_ids.len();
         if final_authority_count != request.replicas.replicas() {
-            return Err((
-                format!(
+            return Err(StoragePromotionError::ReplicaCount {
+                message: format!(
                     "storage promotion to {} replicas requires exactly {} active authority participants after promotion; current authorities={}, targets={}",
                     request.replicas,
                     request.replicas.replicas(),
                     authorities.len(),
                     targets.len()
                 ),
-                promotion_payload(&operation.id, request.replicas, Vec::new(), failed),
-            ));
+            });
         }
 
         let _ = self
@@ -201,29 +238,42 @@ impl DaemonState {
             target
         }));
 
+        let mut promoted = Vec::new();
         if self.runtime_is_memory_test() {
             for target in &targets {
-                let mut promoted = target.clone();
-                promoted.storage_participation = StorageParticipation::default_authority();
-                promoted.updated_at = ployz_types::time::now_unix_secs();
-                if let Err(error) = store.upsert_self_machine(&promoted).await {
+                let mut promoted_record = target.clone();
+                promoted_record.storage_participation = StorageParticipation::default_authority();
+                promoted_record.updated_at = ployz_types::time::now_unix_secs();
+                if let Err(error) = store.upsert_self_machine(&promoted_record).await {
                     failed.push(MachineStoragePromotionFailure {
                         machine_id: target.id.0.clone(),
                         message: format!("publish promoted membership: {error}"),
                     });
+                } else {
+                    promoted.push(target.id.0.clone());
                 }
             }
         } else {
             let client = match self.nats_node_rpc_client().await {
                 Ok(client) => client.with_policy(RpcPolicy::default()),
                 Err(error) => {
-                    return Err((
-                        format!("NATS RPC unavailable for storage promotion: {error}"),
-                        promotion_payload(&operation.id, request.replicas, Vec::new(), failed),
-                    ));
+                    return Err(StoragePromotionError::RpcUnavailable {
+                        error: error.to_string(),
+                    });
                 }
             };
-            for target in &targets {
+
+            let remote_authorities = authority_peers
+                .iter()
+                .filter(|machine| machine.id != local_record.id)
+                .collect::<Vec<_>>();
+            if let Err(failed) =
+                preflight_remote_storage_promotion(&client, &remote_authorities).await
+            {
+                return Err(StoragePromotionError::Preflight { failed });
+            }
+
+            for target in remote_authorities {
                 if let Err(error) =
                     promote_remote_storage(&client, target, request.replicas, &authority_peers)
                         .await
@@ -232,25 +282,54 @@ impl DaemonState {
                         machine_id: target.id.0.clone(),
                         message: error,
                     });
+                } else if targets.iter().any(|candidate| candidate.id == target.id) {
+                    promoted.push(target.id.0.clone());
                 }
             }
         }
 
         if !failed.is_empty() {
-            return Err((
-                "storage promotion failed while promoting targets".into(),
-                promotion_payload(&operation.id, request.replicas, Vec::new(), failed),
-            ));
+            return Err(StoragePromotionError::PromoteTargets { promoted, failed });
         }
 
         let _ = self
             .machine_operation_store()
             .update_stage(operation, "recording-replica-intent");
-        if let Err(error) = self.record_storage_replica_intent(network_name, request.replicas) {
-            return Err((
-                format!("record storage replica intent: {error}"),
-                promotion_payload(&operation.id, request.replicas, Vec::new(), failed),
-            ));
+        let previous_replicas =
+            match self.record_storage_replica_intent(network_name, request.replicas) {
+                Ok(previous) => previous,
+                Err(error) => {
+                    return Err(StoragePromotionError::RecordReplicaIntent { error, promoted });
+                }
+            };
+
+        let network_dir = self.network_dir(network_name);
+        let previous_bootstrap_peers = match load_bootstrap_peer_records(&network_dir) {
+            Ok(peers) => peers,
+            Err(error) => {
+                let rollback_error = self
+                    .restore_storage_replica_intent(network_name, previous_replicas)
+                    .err();
+                return Err(StoragePromotionError::BootstrapPeerRead {
+                    error,
+                    rollback_error,
+                    promoted,
+                });
+            }
+        };
+        let peer_records = authority_peers
+            .iter()
+            .map(BootstrapPeerRecord::from_machine_record)
+            .collect::<Vec<_>>();
+        if let Err(error) = write_bootstrap_peer_records(&network_dir, &peer_records) {
+            let rollback_error = self
+                .restore_storage_replica_intent(network_name, previous_replicas)
+                .err();
+            return Err(StoragePromotionError::BootstrapPeerWrite {
+                error,
+                rollback_error,
+                promoted,
+            });
         }
 
         if !self.runtime_is_memory_test() {
@@ -264,22 +343,48 @@ impl DaemonState {
                 )
                 .await
             {
-                return Err((
-                    format!("restart authority storage with replica intent: {error}"),
-                    promotion_payload(&operation.id, request.replicas, Vec::new(), failed),
-                ));
+                let intent_rollback_error = self
+                    .restore_storage_replica_intent(network_name, previous_replicas)
+                    .err();
+                let peers_rollback_error =
+                    write_bootstrap_peer_records(&network_dir, &previous_bootstrap_peers).err();
+                return Err(StoragePromotionError::AuthorityRestart {
+                    error,
+                    intent_rollback_error,
+                    peers_rollback_error,
+                    promoted,
+                });
             }
         }
 
         Ok(promotion_payload(
             &operation.id,
             request.replicas,
-            targets.into_iter().map(|target| target.id.0).collect(),
+            promoted,
             failed,
         ))
     }
 
     fn record_storage_replica_intent(
+        &mut self,
+        network_name: &str,
+        replicas: StorageReplicaPolicy,
+    ) -> Result<StorageReplicaPolicy, String> {
+        let config_path = NetworkConfig::path(&self.data_dir, network_name);
+        let mut config =
+            NetworkConfig::load(&config_path).map_err(|error| format!("load config: {error}"))?;
+        let previous = config.storage_replicas;
+        config.storage_replicas = replicas;
+        config
+            .save(&config_path)
+            .map_err(|error| format!("save config: {error}"))?;
+        if let Some(active) = self.active.as_mut() {
+            active.config.storage_replicas = replicas;
+        }
+        Ok(previous)
+    }
+
+    fn restore_storage_replica_intent(
         &mut self,
         network_name: &str,
         replicas: StorageReplicaPolicy,
@@ -332,6 +437,10 @@ impl DaemonState {
             return self.err("IO_ERROR", format!("save network config: {error}"));
         }
 
+        let previous_peer_records = match load_bootstrap_peer_records(&network_dir) {
+            Ok(records) => records,
+            Err(error) => return self.err("IO_ERROR", format!("load bootstrap peers: {error}")),
+        };
         let peer_records = authority_peers
             .iter()
             .map(BootstrapPeerRecord::from_machine_record)
@@ -360,14 +469,11 @@ impl DaemonState {
                 previous_replicas,
             )
             .err();
+            let peer_rollback_error =
+                write_bootstrap_peer_records(&network_dir, &previous_peer_records).err();
             return self.err(
                 "NETWORK_RESTART_FAILED",
-                match rollback_error {
-                    Some(rollback_error) => format!(
-                        "failed to promote storage authority: {error}; failed to restore config: {rollback_error}"
-                    ),
-                    None => format!("failed to promote storage authority: {error}"),
-                },
+                promote_self_rollback_message(error, rollback_error, peer_rollback_error),
             );
         }
 
@@ -406,6 +512,131 @@ fn promotion_payload(
     }
 }
 
+enum StoragePromotionError {
+    StoreList {
+        error: ployz_types::error::Error,
+    },
+    InvalidLocalAuthority {
+        message: String,
+    },
+    Preflight {
+        failed: Vec<MachineStoragePromotionFailure>,
+    },
+    ReplicaCount {
+        message: String,
+    },
+    RpcUnavailable {
+        error: String,
+    },
+    PromoteTargets {
+        promoted: Vec<String>,
+        failed: Vec<MachineStoragePromotionFailure>,
+    },
+    RecordReplicaIntent {
+        error: String,
+        promoted: Vec<String>,
+    },
+    BootstrapPeerRead {
+        error: String,
+        rollback_error: Option<String>,
+        promoted: Vec<String>,
+    },
+    BootstrapPeerWrite {
+        error: String,
+        rollback_error: Option<String>,
+        promoted: Vec<String>,
+    },
+    AuthorityRestart {
+        error: String,
+        intent_rollback_error: Option<String>,
+        peers_rollback_error: Option<String>,
+        promoted: Vec<String>,
+    },
+}
+
+impl StoragePromotionError {
+    fn message(&self) -> String {
+        match self {
+            Self::StoreList { error } => format!("list machines for storage promotion: {error}"),
+            Self::InvalidLocalAuthority { message } => message.clone(),
+            Self::Preflight { .. } => "storage promotion preflight failed".into(),
+            Self::ReplicaCount { message } => message.clone(),
+            Self::RpcUnavailable { error } => {
+                format!("NATS RPC unavailable for storage promotion: {error}")
+            }
+            Self::PromoteTargets { .. } => {
+                "storage promotion failed while promoting authority members".into()
+            }
+            Self::RecordReplicaIntent { error, .. } => {
+                format!("record storage replica intent: {error}")
+            }
+            Self::BootstrapPeerRead {
+                error,
+                rollback_error,
+                ..
+            } => append_rollback_error(
+                format!("load bootstrap peers before storage promotion: {error}"),
+                rollback_error.as_deref(),
+            ),
+            Self::BootstrapPeerWrite {
+                error,
+                rollback_error,
+                ..
+            } => append_rollback_error(
+                format!("write authority bootstrap peers: {error}"),
+                rollback_error.as_deref(),
+            ),
+            Self::AuthorityRestart {
+                error,
+                intent_rollback_error,
+                peers_rollback_error,
+                ..
+            } => {
+                let message = append_rollback_error(
+                    format!("restart authority storage: {error}"),
+                    intent_rollback_error.as_deref(),
+                );
+                append_rollback_error(message, peers_rollback_error.as_deref())
+            }
+        }
+    }
+
+    fn into_payload(
+        self,
+        operation_id: &str,
+        replicas: StorageReplicaPolicy,
+    ) -> MachineStoragePromotionPayload {
+        match self {
+            Self::Preflight { failed } => {
+                promotion_payload(operation_id, replicas, Vec::new(), failed)
+            }
+            Self::PromoteTargets { promoted, failed } => {
+                promotion_payload(operation_id, replicas, promoted, failed)
+            }
+            Self::RecordReplicaIntent { promoted, .. }
+            | Self::BootstrapPeerRead { promoted, .. }
+            | Self::BootstrapPeerWrite { promoted, .. }
+            | Self::AuthorityRestart { promoted, .. } => {
+                promotion_payload(operation_id, replicas, promoted, Vec::new())
+            }
+            Self::StoreList { .. }
+            | Self::InvalidLocalAuthority { .. }
+            | Self::ReplicaCount { .. }
+            | Self::RpcUnavailable { .. } => {
+                promotion_payload(operation_id, replicas, Vec::new(), Vec::new())
+            }
+        }
+    }
+}
+
+fn append_rollback_error(mut message: String, rollback_error: Option<&str>) -> String {
+    if let Some(rollback_error) = rollback_error {
+        message.push_str("; rollback failed: ");
+        message.push_str(rollback_error);
+    }
+    message
+}
+
 async fn promote_remote_storage(
     client: &NatsNodeRpcClient,
     target: &MachineMembership,
@@ -429,6 +660,65 @@ async fn promote_remote_storage(
     }
 }
 
+async fn preflight_remote_storage_promotion(
+    client: &NatsNodeRpcClient,
+    targets: &[&MachineMembership],
+) -> Result<(), Vec<MachineStoragePromotionFailure>> {
+    let mut failed = Vec::new();
+    for target in targets {
+        match remote_status(client, target).await {
+            Ok(status) => {
+                if status.version != env!("CARGO_PKG_VERSION") {
+                    failed.push(MachineStoragePromotionFailure {
+                        machine_id: target.id.0.clone(),
+                        message: format!(
+                            "remote daemon version {} does not match required version {} for storage promotion",
+                            status.version,
+                            env!("CARGO_PKG_VERSION")
+                        ),
+                    });
+                }
+            }
+            Err(message) => failed.push(MachineStoragePromotionFailure {
+                machine_id: target.id.0.clone(),
+                message,
+            }),
+        }
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(failed)
+    }
+}
+
+async fn remote_status(
+    client: &NatsNodeRpcClient,
+    target: &MachineMembership,
+) -> Result<StatusPayload, String> {
+    let response = client
+        .request(
+            NodeCommandSubject::status(&target.id),
+            &DaemonRequest::Status,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.ok {
+        return Err(format!("{}: {}", response.code, response.message));
+    }
+    match response.payload {
+        Some(DaemonPayload::Status(status)) if status.machine_id == target.id.0 => Ok(status),
+        Some(DaemonPayload::Status(status)) => Err(format!(
+            "remote status reported machine {} instead of {}",
+            status.machine_id, target.id
+        )),
+        Some(payload) => Err(format!(
+            "remote status returned unexpected payload: {payload:?}"
+        )),
+        None => Err("remote status returned no payload".into()),
+    }
+}
+
 fn restore_storage_config(
     path: &std::path::Path,
     config: &mut NetworkConfig,
@@ -440,4 +730,16 @@ fn restore_storage_config(
     config
         .save(path)
         .map_err(|error| format!("restore network config: {error}"))
+}
+
+fn promote_self_rollback_message(
+    error: String,
+    config_rollback_error: Option<String>,
+    peer_rollback_error: Option<String>,
+) -> String {
+    let message = append_rollback_error(
+        format!("failed to promote storage authority: {error}"),
+        config_rollback_error.as_deref(),
+    );
+    append_rollback_error(message, peer_rollback_error.as_deref())
 }

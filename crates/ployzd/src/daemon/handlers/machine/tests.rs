@@ -3,6 +3,7 @@ use super::operations::{MachineOperationArtifacts, MachineOperationKind, Machine
 use crate::daemon::ActiveMesh;
 use crate::daemon::DaemonState;
 use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock};
+use crate::mesh_state::bootstrap::load_bootstrap_peer_records;
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
 use ployz_api::{
@@ -904,6 +905,13 @@ async fn machine_storage_promote_marks_active_candidates_as_authority_storage() 
     let config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
         .expect("load network config");
     assert_eq!(config.storage_replicas, StorageReplicaPolicy::R3);
+    let peers = load_bootstrap_peer_records(&state.network_dir("alpha"))
+        .expect("load bootstrap peers after promotion");
+    let peer_ids = peers
+        .iter()
+        .map(|peer| peer.machine_id.0.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(peer_ids, vec!["candidate-a", "candidate-b", "founder"]);
 }
 
 #[tokio::test]
@@ -952,6 +960,236 @@ async fn machine_storage_promote_rejects_wrong_final_authority_count() {
     assert_eq!(
         promoted.storage_participation,
         StorageParticipation::Candidate
+    );
+}
+
+#[tokio::test]
+async fn machine_storage_promote_rejects_duplicate_targets_without_changing_intent() {
+    let (mut state, store, _) = make_state(true).await;
+    let founder = test_machine_record(
+        "founder",
+        "10.210.0.0/24",
+        MachineLifecycle::Active,
+        PublicKey([1; 32]),
+    );
+    store
+        .upsert_self_machine(&founder)
+        .await
+        .expect("upsert active founder");
+    let mut candidate = test_machine_record(
+        "candidate-a",
+        "10.210.2.0/24",
+        MachineLifecycle::Active,
+        PublicKey([16; 32]),
+    );
+    candidate.storage_participation = StorageParticipation::Candidate;
+    store
+        .upsert_self_machine(&candidate)
+        .await
+        .expect("upsert candidate");
+
+    let response = state
+        .handle_machine_storage_promote(
+            &MachineStoragePromoteRequest {
+                targets: vec!["candidate-a".into(), "candidate-a".into()],
+                replicas: StorageReplicaPolicy::R3,
+            },
+            None,
+        )
+        .await;
+
+    assert!(!response.ok, "{}", response.message);
+    assert_eq!(response.code, "MACHINE_STORAGE_PROMOTION_FAILED");
+    let Some(DaemonPayload::MachineStoragePromotion(payload)) = response.payload else {
+        panic!("expected storage promotion payload");
+    };
+    assert_eq!(payload.promoted, Vec::<String>::new());
+    assert_eq!(payload.failed.len(), 1);
+    assert_eq!(payload.failed[0].machine_id, "candidate-a");
+    assert!(payload.failed[0].message.contains("duplicate"));
+
+    let machines = store.list_machines().await.expect("list machines");
+    let candidate = machines
+        .iter()
+        .find(|machine| machine.id.0 == "candidate-a")
+        .expect("candidate remains present");
+    assert_eq!(
+        candidate.storage_participation,
+        StorageParticipation::Candidate
+    );
+    let config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
+        .expect("load network config");
+    assert_eq!(config.storage_replicas, StorageReplicaPolicy::Single);
+}
+
+#[tokio::test]
+async fn machine_storage_promote_rejects_invalid_targets_without_changing_intent() {
+    let (mut state, store, _) = make_state(true).await;
+    let founder = test_machine_record(
+        "founder",
+        "10.210.0.0/24",
+        MachineLifecycle::Active,
+        PublicKey([1; 32]),
+    );
+    store
+        .upsert_self_machine(&founder)
+        .await
+        .expect("upsert active founder");
+    let mut inactive = test_machine_record(
+        "inactive-candidate",
+        "10.210.2.0/24",
+        MachineLifecycle::Standby,
+        PublicKey([16; 32]),
+    );
+    inactive.storage_participation = StorageParticipation::Candidate;
+    let mut compute = test_machine_record(
+        "compute-candidate",
+        "10.210.3.0/24",
+        MachineLifecycle::Active,
+        PublicKey([17; 32]),
+    );
+    compute.storage = false;
+    compute.storage_participation = StorageParticipation::Candidate;
+    let existing_authority = test_machine_record(
+        "existing-authority",
+        "10.210.4.0/24",
+        MachineLifecycle::Active,
+        PublicKey([18; 32]),
+    );
+    for machine in [&inactive, &compute, &existing_authority] {
+        store
+            .upsert_self_machine(machine)
+            .await
+            .expect("upsert invalid target");
+    }
+
+    let response = state
+        .handle_machine_storage_promote(
+            &MachineStoragePromoteRequest {
+                targets: vec![
+                    "inactive-candidate".into(),
+                    "compute-candidate".into(),
+                    "existing-authority".into(),
+                    "missing-candidate".into(),
+                ],
+                replicas: StorageReplicaPolicy::R5,
+            },
+            None,
+        )
+        .await;
+
+    assert!(!response.ok, "{}", response.message);
+    assert_eq!(response.code, "MACHINE_STORAGE_PROMOTION_FAILED");
+    let Some(DaemonPayload::MachineStoragePromotion(payload)) = response.payload else {
+        panic!("expected storage promotion payload");
+    };
+    assert_eq!(payload.promoted, Vec::<String>::new());
+    assert_eq!(payload.failed.len(), 4);
+    assert!(
+        payload
+            .failed
+            .iter()
+            .any(|failure| failure.machine_id == "missing-candidate")
+    );
+
+    let machines = store.list_machines().await.expect("list machines");
+    let inactive = machines
+        .iter()
+        .find(|machine| machine.id.0 == "inactive-candidate")
+        .expect("inactive candidate remains present");
+    assert_eq!(inactive.lifecycle, MachineLifecycle::Standby);
+    assert_eq!(
+        inactive.storage_participation,
+        StorageParticipation::Candidate
+    );
+    let compute = machines
+        .iter()
+        .find(|machine| machine.id.0 == "compute-candidate")
+        .expect("compute candidate remains present");
+    assert!(!compute.storage);
+    assert_eq!(
+        compute.storage_participation,
+        StorageParticipation::Candidate
+    );
+    let config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
+        .expect("load network config");
+    assert_eq!(config.storage_replicas, StorageReplicaPolicy::Single);
+}
+
+#[tokio::test]
+async fn machine_storage_promote_self_persists_config_bootstrap_peers_and_self_record() {
+    let (mut state, store, _) = make_state(true).await;
+    let mut config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
+        .expect("load network config");
+    config.storage = false;
+    config.storage_participation = StorageParticipation::Candidate;
+    config
+        .save(&NetworkConfig::path(&state.data_dir, "alpha"))
+        .expect("save candidate config");
+    state.active.as_mut().expect("active mesh").config = config;
+
+    let mut founder = test_machine_record(
+        "founder",
+        "10.210.0.0/24",
+        MachineLifecycle::Active,
+        PublicKey([1; 32]),
+    );
+    founder.storage = false;
+    founder.storage_participation = StorageParticipation::Candidate;
+    store
+        .upsert_self_machine(&founder)
+        .await
+        .expect("upsert candidate founder");
+    let mut authority_founder = founder.clone();
+    authority_founder.storage = true;
+    authority_founder.storage_participation = StorageParticipation::default_authority();
+
+    let peer_a = test_machine_record(
+        "peer-a",
+        "10.210.2.0/24",
+        MachineLifecycle::Active,
+        PublicKey([16; 32]),
+    );
+    let peer_b = test_machine_record(
+        "peer-b",
+        "10.210.3.0/24",
+        MachineLifecycle::Active,
+        PublicKey([17; 32]),
+    );
+    let authority_peers = vec![authority_founder, peer_a, peer_b];
+
+    let response = state
+        .handle_machine_storage_promote_self(StorageReplicaPolicy::R3, &authority_peers)
+        .await;
+
+    assert!(response.ok, "{}", response.message);
+    let config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
+        .expect("load promoted config");
+    assert!(config.storage);
+    assert_eq!(
+        config.storage_participation,
+        StorageParticipation::default_authority()
+    );
+    assert_eq!(config.storage_replicas, StorageReplicaPolicy::R3);
+    let peers = load_bootstrap_peer_records(&state.network_dir("alpha"))
+        .expect("load bootstrap peers after self promotion");
+    let peer_ids = peers
+        .iter()
+        .map(|peer| peer.machine_id.0.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(peer_ids, vec!["founder", "peer-a", "peer-b"]);
+    let self_record = state
+        .active
+        .as_ref()
+        .expect("active mesh")
+        .mesh
+        .authoritative_self_record()
+        .await
+        .expect("self record");
+    assert!(self_record.storage);
+    assert_eq!(
+        self_record.storage_participation,
+        StorageParticipation::default_authority()
     );
 }
 
