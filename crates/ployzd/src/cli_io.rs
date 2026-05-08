@@ -197,7 +197,7 @@ fn render_plain_status(payload: &StatusPayload) -> String {
     )];
     if let Some(authority) = &payload.local_authority {
         lines.push(format!(
-            "authority role={} data_bucket={} loss_impact={}",
+            "authority authority_role={} authority_data_bucket={} authority_loss_impact={}",
             authority.role, authority.data_bucket, authority.loss_impact
         ));
     }
@@ -325,7 +325,7 @@ fn render_plain_machine_list(payload: &MachineListPayload) -> String {
         .iter()
         .map(|row| {
             format!(
-                "id={} lifecycle={} authority_role={} authority_bucket={} authority_loss_impact={} region={} az={} overlay_ip={} subnet={} created_at={}",
+                "id={} lifecycle={} authority_role={} authority_data_bucket={} authority_loss_impact={} region={} az={} overlay_ip={} subnet={} created_at={}",
                 row.id,
                 row.lifecycle,
                 row.authority.role,
@@ -594,7 +594,7 @@ mod tests {
 
         assert_eq!(
             render_plain_success(&response),
-            "id=peer lifecycle=standby authority_role=storage_candidate authority_bucket=stored_intent authority_loss_impact=no_stored_truth_lost region=us-east-1 az=— overlay_ip=fd00::2 subnet=— created_at=123"
+            "id=peer lifecycle=standby authority_role=storage_candidate authority_data_bucket=stored_intent authority_loss_impact=no_stored_truth_lost region=us-east-1 az=— overlay_ip=fd00::2 subnet=— created_at=123"
         );
     }
 
@@ -730,7 +730,7 @@ mod tests {
 
         let rendered = render_plain_success(&response);
         assert!(rendered.contains(
-            "authority role=authority_storage:auth-default data_bucket=stored_intent loss_impact=stored_truth_lost"
+            "authority authority_role=authority_storage:auth-default authority_data_bucket=stored_intent authority_loss_impact=stored_truth_lost"
         ));
     }
 

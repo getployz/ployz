@@ -111,10 +111,16 @@ impl NatsStore {
 
     #[must_use]
     pub fn asset_manifest(&self) -> Vec<NatsAssetSpec> {
-        self.assets
+        Self::asset_manifest_for_scope(&self.scope)
+    }
+
+    #[must_use]
+    pub fn asset_manifest_for_scope(scope: &NatsScope) -> Vec<NatsAssetSpec> {
+        let assets = NatsAssetNames::new(scope);
+        assets
             .stream_assets()
             .into_iter()
-            .chain(self.assets.kv_assets())
+            .chain(assets.kv_assets())
             .collect()
     }
 
@@ -148,7 +154,7 @@ impl NatsStore {
     }
 
     #[must_use]
-    pub(crate) fn scope(&self) -> &NatsScope {
+    pub fn scope(&self) -> &NatsScope {
         &self.scope
     }
 
