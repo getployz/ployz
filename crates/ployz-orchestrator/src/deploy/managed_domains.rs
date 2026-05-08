@@ -9,7 +9,7 @@ use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
 
 use crate::certificates::account_id_for_issuer_url;
 use crate::deploy::plan::ResolvedPlan;
-use crate::error::{Error, Result};
+use crate::error::{DeployError, Error, Result};
 
 pub(super) async fn warnings_for_plan(
     store: &StoreDriver,
@@ -76,17 +76,13 @@ pub(super) async fn validate_hostname_ownership(
         else {
             continue;
         };
-        return Err(Error::operation(
-            "deploy_preview",
-            format!(
-                "hostname '{}' is already owned by {}/{} and cannot be used by {}/{}",
-                desired_owner.hostname,
-                existing_owner.namespace,
-                existing_owner.service,
-                desired_owner.namespace,
-                desired_owner.service
-            ),
-        ));
+        return Err(Error::Deploy(DeployError::HostnameAlreadyOwned {
+            hostname: desired_owner.hostname,
+            owner_namespace: existing_owner.namespace.0.clone(),
+            owner_service: existing_owner.service.clone(),
+            request_namespace: desired_owner.namespace.0,
+            request_service: desired_owner.service,
+        }));
     }
     Ok(())
 }
@@ -142,24 +138,20 @@ fn hostname_owners_for_routing_state(
             continue;
         }
         let Some(revision) = active_revision_for_release(state, release) else {
-            return Err(Error::operation(
-                "deploy_preview",
-                format!(
-                    "missing active revision '{}' for committed service {}/{}",
-                    routing_revision_hash(&release.release),
-                    release.namespace,
-                    release.service
-                ),
+            return Err(Error::Deploy(
+                DeployError::CommittedServiceMissingActiveRevision {
+                    namespace: release.namespace.0.clone(),
+                    service: release.service.clone(),
+                    revision_hash: routing_revision_hash(&release.release).to_string(),
+                },
             ));
         };
         let spec: ServiceSpec = serde_json::from_str(&revision.spec_json).map_err(|error| {
-            Error::operation(
-                "deploy_preview",
-                format!(
-                    "decode committed service spec for {}/{}: {error}",
-                    revision.namespace, revision.service
-                ),
-            )
+            Error::Deploy(DeployError::CommittedServiceSpecDecode {
+                namespace: revision.namespace.0.clone(),
+                service: revision.service.clone(),
+                message: error.to_string(),
+            })
         })?;
         for hostname in hostnames_for_spec(&spec) {
             owners.push(HostnameOwner {
@@ -215,12 +207,14 @@ fn reject_duplicate_owner(existing: &[HostnameOwner], next: &HostnameOwner) -> R
     else {
         return Ok(());
     };
-    Err(Error::operation(
-        "deploy_preview",
-        format!(
-            "hostname '{}' is declared by both {}/{} and {}/{}",
-            next.hostname, previous.namespace, previous.service, next.namespace, next.service
-        ),
+    Err(Error::Deploy(
+        DeployError::HostnameDeclaredByMultipleServices {
+            hostname: next.hostname.clone(),
+            first_namespace: previous.namespace.0.clone(),
+            first_service: previous.service.clone(),
+            second_namespace: next.namespace.0.clone(),
+            second_service: next.service.clone(),
+        },
     ))
 }
 

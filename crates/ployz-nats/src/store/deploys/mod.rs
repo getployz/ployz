@@ -4,7 +4,7 @@ use async_nats::jetstream::message::PublishMessage;
 use async_nats::jetstream::stream::DirectGetErrorKind;
 use async_trait::async_trait;
 use ployz_store_api::{DeployCommit, DeployCommitFacts, DeployStore};
-use ployz_types::error::{Error, Result};
+use ployz_types::error::{Error, Result, StoreRecordKind};
 use ployz_types::model::{
     DeployId, DeployRecord, RoutingEvent, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
 };
@@ -292,12 +292,10 @@ async fn read_deploy_status(
 fn decode_deploy_status(key: &str, bytes: &[u8]) -> Result<DeployRecord> {
     let record: DeployRecord = kv_json::decode_json("nats_deploy_status_decode", bytes)?;
     if record.deploy_id.0 != key {
-        return Err(Error::operation(
-            "nats_deploy_status_decode",
-            format!(
-                "deploy status key {key} does not match payload id {}",
-                record.deploy_id.0
-            ),
+        return Err(Error::store_key_mismatch(
+            StoreRecordKind::DeployStatus,
+            key,
+            record.deploy_id.0,
         ));
     }
     Ok(record)
@@ -306,6 +304,7 @@ fn decode_deploy_status(key: &str, bytes: &[u8]) -> Result<DeployRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_types::error::{Error, StoreRecordKind};
     use ployz_types::model::{
         DeployState, MachineId, ServiceRelease, ServiceRevisionRecord, ServiceRoutingPolicy,
     };
@@ -396,8 +395,14 @@ mod tests {
         let error = decode_deploy_status("key-deploy", &bytes)
             .expect_err("deploy status key mismatch should fail");
 
-        assert!(error.to_string().contains("key-deploy"));
-        assert!(error.to_string().contains("payload-deploy"));
+        assert_eq!(
+            error,
+            Error::store_key_mismatch(
+                StoreRecordKind::DeployStatus,
+                "key-deploy",
+                "payload-deploy"
+            )
+        );
     }
 
     #[test]

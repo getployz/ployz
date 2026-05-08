@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, StorageError};
 use crate::spec::parse_quota_bytes;
 
 use super::{ShellRunner, ShellStdio, ShellStreamer, TokioShellRunner};
@@ -57,12 +57,9 @@ struct PathPermissions {
 impl<R: ShellRunner> ZfsDriver<R> {
     pub async fn new(runner: R, zfs_root: &str, overcommit_ratio: f64) -> Result<Self> {
         if !overcommit_ratio.is_finite() || overcommit_ratio <= 0.0 {
-            return Err(Error::operation(
-                "zfs_driver",
-                format!(
-                    "overcommit_ratio must be a positive finite number, got {overcommit_ratio}"
-                ),
-            ));
+            return Err(Error::Storage(StorageError::InvalidOvercommitRatio {
+                value: overcommit_ratio.to_string(),
+            }));
         }
         let output = runner
             .run("zfs", &["list", "-H", "-o", "mountpoint", zfs_root])
@@ -82,15 +79,11 @@ impl<R: ShellRunner> ZfsDriver<R> {
         match existing {
             Some(existing) => {
                 if existing.mountpoint != spec.mountpoint {
-                    return Err(Error::operation(
-                        "zfs_ensure",
-                        format!(
-                            "dataset '{}' has mountpoint '{}', expected '{}'",
-                            spec.dataset,
-                            existing.mountpoint.display(),
-                            spec.mountpoint.display()
-                        ),
-                    ));
+                    return Err(Error::Storage(StorageError::DatasetMountpointMismatch {
+                        dataset: spec.dataset.clone(),
+                        actual: existing.mountpoint.display().to_string(),
+                        expected: spec.mountpoint.display().to_string(),
+                    }));
                 }
                 if existing.quota != spec.quota {
                     self.update_quota(&spec.dataset, &existing.quota, &spec.quota)
@@ -129,13 +122,24 @@ impl<R: ShellRunner> ZfsDriver<R> {
         let mut parts = raw.splitn(3, ':');
         let mode = parts
             .next()
-            .ok_or_else(|| Error::operation("stat mountpoint", format!("missing mode in '{raw}'")))?
+            .ok_or_else(|| {
+                Error::Storage(StorageError::StatFieldMissing {
+                    field: "mode",
+                    raw: raw.clone(),
+                })
+            })?
             .to_string();
         let uid = parts.next().ok_or_else(|| {
-            Error::operation("stat mountpoint", format!("missing uid in '{raw}'"))
+            Error::Storage(StorageError::StatFieldMissing {
+                field: "uid",
+                raw: raw.clone(),
+            })
         })?;
         let gid = parts.next().ok_or_else(|| {
-            Error::operation("stat mountpoint", format!("missing gid in '{raw}'"))
+            Error::Storage(StorageError::StatFieldMissing {
+                field: "gid",
+                raw: raw.clone(),
+            })
         })?;
         Ok(PathPermissions {
             mode,
@@ -145,7 +149,9 @@ impl<R: ShellRunner> ZfsDriver<R> {
 
     pub async fn inspect_dataset(&self, dataset: &str) -> Result<DatasetInspection> {
         let existing = self.read_dataset(dataset).await?.ok_or_else(|| {
-            Error::operation("zfs_inspect", format!("dataset '{dataset}' does not exist"))
+            Error::Storage(StorageError::DatasetMissing {
+                dataset: dataset.to_string(),
+            })
         })?;
         let used_bytes = self.used_bytes(dataset).await?;
         let snapshots = self.list_snapshots(dataset).await?;
@@ -168,10 +174,9 @@ impl<R: ShellRunner> ZfsDriver<R> {
     /// namespaces.
     pub async fn ensure_parent_dataset(&self, dataset: &str) -> Result<()> {
         let Some((parent, _)) = dataset.rsplit_once('/') else {
-            return Err(Error::operation(
-                "zfs_ensure_parent",
-                format!("dataset '{dataset}' has no parent"),
-            ));
+            return Err(Error::Storage(StorageError::DatasetMissingParent {
+                dataset: dataset.to_string(),
+            }));
         };
         if parent.is_empty() || parent == self.zfs_root_dataset {
             return Ok(());
@@ -246,7 +251,7 @@ impl<R: ShellRunner> ZfsDriver<R> {
         let value = parse_single_field(&output.stdout, "snapshot guid")?;
         value
             .parse::<u64>()
-            .map_err(|err| Error::operation("zfs_parse", format!("parse snapshot guid: {err}")))
+            .map_err(|err| zfs_parse_error("snapshot_guid", err.to_string()))
     }
 
     pub async fn list_snapshots(&self, dataset: &str) -> Result<Vec<SnapshotInfo>> {
@@ -275,8 +280,12 @@ impl<R: ShellRunner> ZfsDriver<R> {
                 command_failure_message(&output.stderr, output.status),
             ));
         }
-        let text = String::from_utf8(output.stdout)
-            .map_err(|err| Error::operation("zfs_parse", err.to_string()))?;
+        let text = String::from_utf8(output.stdout).map_err(|err| {
+            Error::Storage(StorageError::ZfsParse {
+                field: "snapshots",
+                message: err.to_string(),
+            })
+        })?;
         let mut snapshots = Vec::new();
         for line in text.lines() {
             let trimmed = line.trim();
@@ -285,10 +294,10 @@ impl<R: ShellRunner> ZfsDriver<R> {
             }
             let parts = trimmed.split('\t').collect::<Vec<_>>();
             let [name, guid] = parts.as_slice() else {
-                return Err(Error::operation(
-                    "zfs_parse",
-                    format!("expected snapshot name and guid for line '{trimmed}'"),
-                ));
+                return Err(Error::Storage(StorageError::ZfsParse {
+                    field: "snapshots",
+                    message: format!("expected snapshot name and guid for line '{trimmed}'"),
+                }));
             };
             let Some((listed_dataset, snap)) = name.split_once('@') else {
                 continue;
@@ -299,7 +308,10 @@ impl<R: ShellRunner> ZfsDriver<R> {
             snapshots.push(SnapshotInfo {
                 name: snap.to_string(),
                 guid: guid.parse::<u64>().map_err(|err| {
-                    Error::operation("zfs_parse", format!("parse snapshot guid: {err}"))
+                    Error::Storage(StorageError::ZfsParse {
+                        field: "snapshot_guid",
+                        message: err.to_string(),
+                    })
                 })?,
             });
         }
@@ -333,21 +345,25 @@ impl<R: ShellRunner> ZfsDriver<R> {
                 command_failure_message(&output.stderr, output.status),
             ));
         }
-        let text = String::from_utf8(output.stdout)
-            .map_err(|err| Error::operation("zfs_parse", err.to_string()))?;
+        let text = String::from_utf8(output.stdout).map_err(|err| {
+            Error::Storage(StorageError::ZfsParse {
+                field: "dataset",
+                message: err.to_string(),
+            })
+        })?;
         let line = text.trim();
         let parts = line.split('\t').collect::<Vec<_>>();
         let [name, quota, mountpoint] = parts.as_slice() else {
-            return Err(Error::operation(
-                "zfs_parse",
-                format!("expected name, quota, mountpoint for dataset '{dataset}'"),
-            ));
+            return Err(Error::Storage(StorageError::ZfsParse {
+                field: "dataset",
+                message: format!("expected name, quota, mountpoint for dataset '{dataset}'"),
+            }));
         };
         if *name != dataset {
-            return Err(Error::operation(
-                "zfs_parse",
-                format!("zfs listed dataset '{name}', expected '{dataset}'"),
-            ));
+            return Err(Error::Storage(StorageError::ZfsParse {
+                field: "dataset",
+                message: format!("zfs listed dataset '{name}', expected '{dataset}'"),
+            }));
         }
         Ok(Some(ExistingDataset {
             quota: normalize_quota(quota),
@@ -357,7 +373,7 @@ impl<R: ShellRunner> ZfsDriver<R> {
 
     async fn create_dataset(&self, spec: &DatasetSpec) -> Result<()> {
         let requested_bytes =
-            parse_quota_bytes(&spec.quota).map_err(|err| Error::operation("zfs_quota", err))?;
+            parse_quota_bytes(&spec.quota).map_err(|err| zfs_parse_error("quota", err))?;
         self.check_overcommit(&spec.dataset, requested_bytes)
             .await?;
 
@@ -390,21 +406,20 @@ impl<R: ShellRunner> ZfsDriver<R> {
 
     async fn update_quota(&self, dataset: &str, current: &str, requested: &str) -> Result<()> {
         let current_bytes =
-            parse_quota_bytes(current).map_err(|err| Error::operation("zfs_quota", err))?;
+            parse_quota_bytes(current).map_err(|err| zfs_parse_error("quota", err))?;
         let requested_bytes =
-            parse_quota_bytes(requested).map_err(|err| Error::operation("zfs_quota", err))?;
+            parse_quota_bytes(requested).map_err(|err| zfs_parse_error("quota", err))?;
         if requested_bytes == current_bytes {
             return Ok(());
         }
         if requested_bytes < current_bytes {
             let used = self.used_bytes(dataset).await?;
             if used > requested_bytes {
-                return Err(Error::operation(
-                    "zfs_quota",
-                    format!(
-                        "requested quota {requested} is below current used bytes {used} for dataset '{dataset}'"
-                    ),
-                ));
+                return Err(Error::Storage(StorageError::QuotaBelowUsed {
+                    dataset: dataset.to_string(),
+                    requested: requested.to_string(),
+                    used,
+                }));
             }
         } else if requested_bytes > current_bytes {
             self.check_overcommit(dataset, requested_bytes).await?;
@@ -420,14 +435,12 @@ impl<R: ShellRunner> ZfsDriver<R> {
         let total = other.saturating_add(requested_bytes);
         let budget = (pool_size as f64 * self.overcommit_ratio).floor() as u64;
         if total > budget {
-            return Err(Error::operation(
-                "zfs_overcommit",
-                format!(
-                    "quota for '{dataset}' would overcommit pool '{}': declared total {total} bytes exceeds budget {budget} bytes (pool size {pool_size}, ratio {})",
-                    self.pool_name(),
-                    self.overcommit_ratio,
-                ),
-            ));
+            return Err(Error::Storage(StorageError::QuotaWouldOvercommit {
+                dataset: dataset.to_string(),
+                pool: self.pool_name().to_string(),
+                total,
+                budget,
+            }));
         }
         Ok(())
     }
@@ -449,7 +462,7 @@ impl<R: ShellRunner> ZfsDriver<R> {
         let value = parse_single_field(&output.stdout, "pool size")?;
         value
             .parse::<u64>()
-            .map_err(|err| Error::operation("zfs_parse", format!("parse pool size: {err}")))
+            .map_err(|err| zfs_parse_error("pool_size", err.to_string()))
     }
 
     async fn declared_quota_bytes_excluding(&self, exclude_dataset: &str) -> Result<u64> {
@@ -469,7 +482,7 @@ impl<R: ShellRunner> ZfsDriver<R> {
             .await?;
         ensure_success("zfs list quotas", &output.stderr, output.status)?;
         let text = String::from_utf8(output.stdout)
-            .map_err(|err| Error::operation("zfs_parse", err.to_string()))?;
+            .map_err(|err| zfs_parse_error("quotas", err.to_string()))?;
         let mut sum: u64 = 0;
         for line in text.lines() {
             let trimmed = line.trim();
@@ -478,8 +491,8 @@ impl<R: ShellRunner> ZfsDriver<R> {
             }
             let parts = trimmed.split('\t').collect::<Vec<_>>();
             let [name, quota] = parts.as_slice() else {
-                return Err(Error::operation(
-                    "zfs_parse",
+                return Err(zfs_parse_error(
+                    "quotas",
                     format!("expected name and quota for line '{trimmed}'"),
                 ));
             };
@@ -493,10 +506,7 @@ impl<R: ShellRunner> ZfsDriver<R> {
             let bytes = match quota.trim() {
                 "" | "-" => 0,
                 value => value.parse::<u64>().map_err(|err| {
-                    Error::operation(
-                        "zfs_parse",
-                        format!("parse quota for '{name}': {err} (got {value:?})"),
-                    )
+                    zfs_parse_error("quota", format!("parse quota for '{name}': {err}"))
                 })?,
             };
             sum = sum.saturating_add(bytes);
@@ -513,7 +523,7 @@ impl<R: ShellRunner> ZfsDriver<R> {
         let value = parse_single_field(&output.stdout, "used bytes")?;
         value
             .parse::<u64>()
-            .map_err(|err| Error::operation("zfs_parse", format!("parse used bytes: {err}")))
+            .map_err(|err| zfs_parse_error("used_bytes", err.to_string()))
     }
 
     async fn run_success(&self, context: &'static str, program: &str, args: &[&str]) -> Result<()> {
@@ -577,14 +587,21 @@ fn zfs_reports_not_found(stderr: &[u8]) -> bool {
     message.contains("dataset does not exist") || message.contains("snapshot does not exist")
 }
 
-fn parse_single_field(stdout: &[u8], field: &str) -> Result<String> {
+fn parse_single_field(stdout: &[u8], field: &'static str) -> Result<String> {
     let text = String::from_utf8(stdout.to_vec())
-        .map_err(|err| Error::operation("zfs_parse", err.to_string()))?;
+        .map_err(|err| zfs_parse_error(field, err.to_string()))?;
     let value = text.trim();
     if value.is_empty() {
-        return Err(Error::operation("zfs_parse", format!("missing {field}")));
+        return Err(zfs_parse_error(field, format!("missing {field}")));
     }
     Ok(value.to_string())
+}
+
+fn zfs_parse_error(field: &'static str, message: impl Into<String>) -> Error {
+    Error::Storage(StorageError::ZfsParse {
+        field,
+        message: message.into(),
+    })
 }
 
 fn normalize_quota(value: &str) -> String {
@@ -839,7 +856,14 @@ mod tests {
             .await
             .expect_err("shrink should fail");
 
-        assert!(err.to_string().contains("below current used bytes"));
+        assert_eq!(
+            err,
+            Error::Storage(StorageError::QuotaBelowUsed {
+                dataset: "tank/ployz/prod/data".into(),
+                requested: "1G".into(),
+                used: 1_610_612_736
+            })
+        );
     }
 
     #[tokio::test]
@@ -853,7 +877,14 @@ mod tests {
             .await
             .expect_err("mismatch should fail");
 
-        assert!(err.to_string().contains("has mountpoint"));
+        assert_eq!(
+            err,
+            Error::Storage(StorageError::DatasetMountpointMismatch {
+                dataset: "tank/ployz/prod/data".into(),
+                actual: "/other".into(),
+                expected: "/tank/ployz/prod/data".into()
+            })
+        );
     }
 
     #[tokio::test]
@@ -1038,9 +1069,14 @@ mod tests {
             .await
             .expect_err("overcommit should fail");
 
-        assert!(
-            err.to_string().contains("would overcommit pool"),
-            "got: {err}"
+        assert_eq!(
+            err,
+            Error::Storage(StorageError::QuotaWouldOvercommit {
+                dataset: "tank/ployz/prod/data".into(),
+                pool: "tank".into(),
+                total: 1_610_612_736,
+                budget: 1_073_741_824
+            })
         );
     }
 
@@ -1064,9 +1100,14 @@ mod tests {
             .await
             .expect_err("overcommit on grow should fail");
 
-        assert!(
-            err.to_string().contains("would overcommit pool"),
-            "got: {err}"
+        assert_eq!(
+            err,
+            Error::Storage(StorageError::QuotaWouldOvercommit {
+                dataset: "tank/ployz/prod/data".into(),
+                pool: "tank".into(),
+                total: 2_684_354_560,
+                budget: 1_073_741_824
+            })
         );
     }
 
@@ -1098,6 +1139,9 @@ mod tests {
         let err = ZfsDriver::new(fake, "tank/ployz", 0.0)
             .await
             .expect_err("zero ratio should be rejected");
-        assert!(err.to_string().contains("overcommit_ratio"));
+        assert_eq!(
+            err,
+            Error::Storage(StorageError::InvalidOvercommitRatio { value: "0".into() })
+        );
     }
 }

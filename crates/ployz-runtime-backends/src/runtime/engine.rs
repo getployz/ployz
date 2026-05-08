@@ -9,6 +9,7 @@ use bollard::query_parameters::{
     StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
+use ployz_types::error::RuntimeError;
 use ployz_types::{Error, Result};
 use tracing::{info, warn};
 
@@ -529,18 +530,18 @@ fn workload_resource_snapshot(
 fn require_observed<T: Clone>(observation: &Observation<T>, field: &str) -> Result<T> {
     match observation {
         Observation::Observed(value) => Ok(value.clone()),
-        Observation::Missing => Err(Error::operation(
-            "docker observe",
-            format!("missing required observed field {field}"),
-        )),
-        Observation::Malformed(message) => Err(Error::operation(
-            "docker observe",
-            format!("malformed observed field {field}: {message}"),
-        )),
-        Observation::Unknown => Err(Error::operation(
-            "docker observe",
-            format!("unknown required observed field {field}"),
-        )),
+        Observation::Missing => Err(Error::Runtime(RuntimeError::RequiredObservationMissing {
+            field: field.to_string(),
+        })),
+        Observation::Malformed(message) => {
+            Err(Error::Runtime(RuntimeError::RequiredObservationMalformed {
+                field: field.to_string(),
+                message: message.clone(),
+            }))
+        }
+        Observation::Unknown => Err(Error::Runtime(RuntimeError::RequiredObservationUnknown {
+            field: field.to_string(),
+        })),
     }
 }
 
@@ -549,7 +550,8 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        Observation, ObservedContainer, WorkloadResourceSnapshot, workload_resource_snapshot,
+        Observation, ObservedContainer, WorkloadResourceSnapshot, require_observed,
+        workload_resource_snapshot,
     };
     use crate::runtime::labels::{
         LABEL_INSTANCE, LABEL_KIND, LABEL_MACHINE, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE,
@@ -557,6 +559,8 @@ mod tests {
     use bollard::models::{
         ContainerCpuStats, ContainerCpuUsage, ContainerMemoryStats, ContainerStatsResponse,
     };
+    use ployz_types::Error;
+    use ployz_types::error::RuntimeError;
 
     #[test]
     fn workload_resource_snapshot_reads_cpu_and_memory_stats() {
@@ -619,6 +623,34 @@ mod tests {
 
         let snapshot = workload_resource_snapshot(&container, &ContainerStatsResponse::default());
         assert!(snapshot.is_none());
+    }
+
+    #[test]
+    fn require_observed_returns_structured_missing_error() {
+        let result = require_observed::<String>(&Observation::Missing, "container_id");
+
+        assert_eq!(
+            result,
+            Err(Error::Runtime(RuntimeError::RequiredObservationMissing {
+                field: String::from("container_id")
+            }))
+        );
+    }
+
+    #[test]
+    fn require_observed_returns_structured_malformed_error() {
+        let result = require_observed::<String>(
+            &Observation::Malformed(String::from("not an IP address")),
+            "ip_address",
+        );
+
+        assert_eq!(
+            result,
+            Err(Error::Runtime(RuntimeError::RequiredObservationMalformed {
+                field: String::from("ip_address"),
+                message: String::from("not an IP address")
+            }))
+        );
     }
 
     #[test]

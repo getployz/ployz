@@ -1,6 +1,6 @@
 use async_nats::jetstream::kv;
 use futures_util::StreamExt;
-use ployz_types::error::{Error, Result};
+use ployz_types::error::{Error, Result, StoreError};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -28,7 +28,12 @@ where
     let mut watch = bucket
         .watch_all_from_revision(kv_json::next_sequence(observed_revision))
         .await
-        .map_err(|error| Error::operation(watch_operation, format!("{error:?}")))?;
+        .map_err(|error| {
+            Error::Store(StoreError::WatchFailed {
+                watch: watch_operation,
+                message: format!("{error:?}"),
+            })
+        })?;
     let mut live_records = snapshot
         .iter()
         .map(|record| (snapshot_key(record), record.clone()))
@@ -46,7 +51,10 @@ where
             let entry = match next {
                 Ok(entry) => entry,
                 Err(error) => {
-                    let error = Error::operation(watch_operation, format!("{error:?}"));
+                    let error = Error::Store(StoreError::WatchFailed {
+                        watch: watch_operation,
+                        message: format!("{error:?}"),
+                    });
                     warn!(?error, "{watch_failure_message}");
                     let _ = tx.send(Err(error)).await;
                     break;
