@@ -4,6 +4,7 @@ use async_nats::jetstream;
 use async_nats::jetstream::kv;
 use async_nats::jetstream::stream;
 use ployz_types::error::{Error, Result};
+use ployz_types::model::{ControlPlaneDataBucket, ControlPlaneLossImpact};
 
 use crate::subjects::{self, NatsScope};
 
@@ -30,6 +31,8 @@ pub struct NatsAssetSpec {
     pub name: String,
     pub kind: &'static str,
     pub scope: NatsAssetScope,
+    pub data_bucket: ControlPlaneDataBucket,
+    pub loss_impact: ControlPlaneLossImpact,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,73 +75,75 @@ impl NatsAssetNames {
     #[must_use]
     pub(crate) fn stream_assets(&self) -> Vec<NatsAssetSpec> {
         vec![
-            NatsAssetSpec {
-                name: self.deploy_commits_stream.clone(),
-                kind: "stream",
-                scope: NatsAssetScope::AuthorityLocal,
-            },
-            NatsAssetSpec {
-                name: self.routing_events_stream.clone(),
-                kind: "stream",
-                scope: NatsAssetScope::AuthorityLocal,
-            },
-            NatsAssetSpec {
-                name: self.cert_jobs_stream.clone(),
-                kind: "stream",
-                scope: NatsAssetScope::AuthorityLocal,
-            },
+            stored_intent_stream(self.deploy_commits_stream.clone()),
+            projection_stream(self.routing_events_stream.clone()),
+            projection_stream(self.cert_jobs_stream.clone()),
         ]
     }
 
     #[must_use]
     pub(crate) fn kv_assets(&self) -> Vec<NatsAssetSpec> {
         vec![
-            NatsAssetSpec {
-                name: self.machines_bucket.clone(),
-                kind: "kv",
-                scope: NatsAssetScope::InstallationRoot,
-            },
-            NatsAssetSpec {
-                name: self.invites_bucket.clone(),
-                kind: "kv",
-                scope: NatsAssetScope::AuthorityLocal,
-            },
-            NatsAssetSpec {
-                name: self.deploy_status_bucket.clone(),
-                kind: "kv",
-                scope: NatsAssetScope::AuthorityLocal,
-            },
-            NatsAssetSpec {
-                name: self.instances_bucket.clone(),
-                kind: "kv",
-                scope: NatsAssetScope::AuthorityLocal,
-            },
-            NatsAssetSpec {
-                name: self.acme_accounts_bucket.clone(),
-                kind: "kv",
-                scope: NatsAssetScope::AuthorityLocal,
-            },
-            NatsAssetSpec {
-                name: self.certificates_bucket.clone(),
-                kind: "kv",
-                scope: NatsAssetScope::AuthorityLocal,
-            },
-            NatsAssetSpec {
-                name: self.acme_challenges_bucket.clone(),
-                kind: "kv",
-                scope: NatsAssetScope::AuthorityLocal,
-            },
-            NatsAssetSpec {
-                name: self.acme_challenge_readiness_bucket.clone(),
-                kind: "kv",
-                scope: NatsAssetScope::AuthorityLocal,
-            },
-            NatsAssetSpec {
-                name: self.locks_bucket.clone(),
-                kind: "kv",
-                scope: NatsAssetScope::AuthorityLocal,
-            },
+            root_stored_intent_kv(self.machines_bucket.clone()),
+            stored_intent_kv(self.invites_bucket.clone()),
+            stored_intent_kv(self.deploy_status_bucket.clone()),
+            stored_intent_kv(self.instances_bucket.clone()),
+            stored_intent_kv(self.acme_accounts_bucket.clone()),
+            stored_intent_kv(self.certificates_bucket.clone()),
+            stored_intent_kv(self.acme_challenges_bucket.clone()),
+            stored_intent_kv(self.acme_challenge_readiness_bucket.clone()),
+            live_fact_kv(self.locks_bucket.clone()),
         ]
+    }
+}
+
+fn stored_intent_stream(name: String) -> NatsAssetSpec {
+    NatsAssetSpec {
+        name,
+        kind: "stream",
+        scope: NatsAssetScope::AuthorityLocal,
+        data_bucket: ControlPlaneDataBucket::StoredIntent,
+        loss_impact: ControlPlaneLossImpact::StoredTruthLost,
+    }
+}
+
+fn projection_stream(name: String) -> NatsAssetSpec {
+    NatsAssetSpec {
+        name,
+        kind: "stream",
+        scope: NatsAssetScope::AuthorityLocal,
+        data_bucket: ControlPlaneDataBucket::Projection,
+        loss_impact: ControlPlaneLossImpact::NoStoredTruthLost,
+    }
+}
+
+fn root_stored_intent_kv(name: String) -> NatsAssetSpec {
+    NatsAssetSpec {
+        name,
+        kind: "kv",
+        scope: NatsAssetScope::InstallationRoot,
+        data_bucket: ControlPlaneDataBucket::StoredIntent,
+        loss_impact: ControlPlaneLossImpact::StoredTruthLost,
+    }
+}
+
+fn stored_intent_kv(name: String) -> NatsAssetSpec {
+    NatsAssetSpec {
+        name,
+        kind: "kv",
+        scope: NatsAssetScope::AuthorityLocal,
+        data_bucket: ControlPlaneDataBucket::StoredIntent,
+        loss_impact: ControlPlaneLossImpact::StoredTruthLost,
+    }
+}
+
+fn live_fact_kv(name: String) -> NatsAssetSpec {
+    NatsAssetSpec {
+        name,
+        kind: "kv",
+        scope: NatsAssetScope::AuthorityLocal,
+        data_bucket: ControlPlaneDataBucket::LiveFacts,
+        loss_impact: ControlPlaneLossImpact::NoStoredTruthLost,
     }
 }
 
@@ -509,6 +514,114 @@ mod tests {
 
         assert_eq!(manifest_streams, configured_streams);
         assert_eq!(manifest_buckets, configured_buckets);
+    }
+
+    #[test]
+    fn asset_manifest_classifies_every_asset_bucket_and_loss_impact() {
+        let names = NatsAssetNames::new(&NatsScope::local_default());
+        let assets = names
+            .stream_assets()
+            .into_iter()
+            .chain(names.kv_assets())
+            .collect::<Vec<_>>();
+        let expected = [
+            (
+                names.deploy_commits_stream.as_str(),
+                "stream",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.routing_events_stream.as_str(),
+                "stream",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::Projection,
+                ControlPlaneLossImpact::NoStoredTruthLost,
+            ),
+            (
+                names.cert_jobs_stream.as_str(),
+                "stream",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::Projection,
+                ControlPlaneLossImpact::NoStoredTruthLost,
+            ),
+            (
+                names.machines_bucket.as_str(),
+                "kv",
+                NatsAssetScope::InstallationRoot,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.invites_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.deploy_status_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.instances_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.acme_accounts_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.certificates_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.acme_challenges_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.acme_challenge_readiness_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::StoredIntent,
+                ControlPlaneLossImpact::StoredTruthLost,
+            ),
+            (
+                names.locks_bucket.as_str(),
+                "kv",
+                NatsAssetScope::AuthorityLocal,
+                ControlPlaneDataBucket::LiveFacts,
+                ControlPlaneLossImpact::NoStoredTruthLost,
+            ),
+        ];
+
+        assert_eq!(assets.len(), expected.len());
+        for (name, kind, scope, data_bucket, loss_impact) in expected {
+            let asset = assets
+                .iter()
+                .find(|asset| asset.name == name)
+                .unwrap_or_else(|| panic!("{name} is classified"));
+            assert_eq!(asset.kind, kind);
+            assert_eq!(asset.scope, scope);
+            assert_eq!(asset.data_bucket, data_bucket);
+            assert_eq!(asset.loss_impact, loss_impact);
+        }
     }
 
     #[test]
