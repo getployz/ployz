@@ -18,6 +18,7 @@ use ployz_orchestrator::deploy::{apply_with_certificate_coordination, preview};
 use ployz_runtime_backends::deploy::remote::DeployAgent;
 use ployz_store_api::{DeployStore, StoreDriver, StoreRuntimeControl};
 use ployz_types::Error as PloyzError;
+use ployz_types::error::DeployError;
 use ployz_types::model::SlotId;
 use ployz_types::model::{
     DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineMembership,
@@ -406,19 +407,16 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             .await
             .map_err(PloyzError::from)?;
         if !response.ok {
-            return Err(PloyzError::operation(
-                "deploy_node_inspect",
-                format!(
-                    "remote daemon error [{}]: {}",
-                    response.code, response.message
-                ),
-            ));
+            return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
+                operation: "deploy_node_inspect",
+                code: response.code,
+                message: response.message,
+            }));
         }
         let Some(DaemonPayload::DeployNamespaceSnapshot(payload)) = response.payload else {
-            return Err(PloyzError::operation(
-                "deploy_node_inspect",
-                "response missing namespace snapshot payload",
-            ));
+            return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
+                payload: "namespace snapshot",
+            }));
         };
         Ok(payload.instances)
     }
@@ -447,19 +445,16 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             .await
             .map_err(PloyzError::from)?;
         if !response.ok {
-            return Err(PloyzError::operation(
-                "deploy_node_start_candidate",
-                format!(
-                    "remote daemon error [{}]: {}",
-                    response.code, response.message
-                ),
-            ));
+            return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
+                operation: "deploy_node_start_candidate",
+                code: response.code,
+                message: response.message,
+            }));
         }
         let Some(DaemonPayload::DeployCandidateStarted(payload)) = response.payload else {
-            return Err(PloyzError::operation(
-                "deploy_node_start_candidate",
-                "response missing candidate payload",
-            ));
+            return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
+                payload: "candidate",
+            }));
         };
         Ok(payload.status)
     }
@@ -518,13 +513,11 @@ impl NatsDeployParticipantClient {
         if response.ok {
             return Ok(());
         }
-        Err(PloyzError::operation(
+        Err(PloyzError::Deploy(DeployError::RemoteNodeError {
             operation,
-            format!(
-                "remote daemon error [{}]: {}",
-                response.code, response.message
-            ),
-        ))
+            code: response.code,
+            message: response.message,
+        }))
     }
 }
 
@@ -565,31 +558,25 @@ async fn export_manifest(
             release.release.primary_revision_hash.clone(),
         );
         let Some(spec_json) = revisions_by_key.get(&key) else {
-            return Err(PloyzError::operation(
-                "deploy_export",
-                format!(
-                    "current release for service '{}' referenced missing revision '{}'",
-                    release.service, release.release.primary_revision_hash
-                ),
+            return Err(PloyzError::Deploy(
+                DeployError::StoredReleaseMissingRevision {
+                    service: release.service,
+                    revision_hash: release.release.primary_revision_hash,
+                },
             ));
         };
         let spec: ServiceSpec = serde_json::from_str(spec_json).map_err(|err| {
-            PloyzError::operation(
-                "deploy_export",
-                format!(
-                    "invalid stored spec for service '{}': {err}",
-                    release.service
-                ),
-            )
+            PloyzError::Deploy(DeployError::CommittedServiceSpecDecode {
+                namespace: namespace.0.clone(),
+                service: release.service.clone(),
+                message: err.to_string(),
+            })
         })?;
         if spec.name != release.service {
-            return Err(PloyzError::operation(
-                "deploy_export",
-                format!(
-                    "stored spec service '{}' did not match release service '{}'",
-                    spec.name, release.service
-                ),
-            ));
+            return Err(PloyzError::Deploy(DeployError::StoredSpecServiceMismatch {
+                stored_service: spec.name,
+                release_service: release.service,
+            }));
         }
         services.push(spec);
     }
@@ -811,10 +798,13 @@ mod tests {
             .await
             .expect_err("missing revision should fail export");
 
-        assert!(error.to_string().contains("deploy_export"));
-        assert!(error.to_string().contains(
-            "current release for service 'api' referenced missing revision 'missing-rev'"
-        ));
+        assert_eq!(
+            error,
+            PloyzError::Deploy(DeployError::StoredReleaseMissingRevision {
+                service: "api".into(),
+                revision_hash: "missing-rev".into()
+            })
+        );
     }
 
     #[tokio::test]
@@ -871,11 +861,12 @@ mod tests {
             .await
             .expect_err("mismatched stored spec should fail export");
 
-        assert!(error.to_string().contains("deploy_export"));
-        assert!(
-            error.to_string().contains(
-                "stored spec service 'wrong-service' did not match release service 'api'"
-            )
+        assert_eq!(
+            error,
+            PloyzError::Deploy(DeployError::StoredSpecServiceMismatch {
+                stored_service: "wrong-service".into(),
+                release_service: "api".into()
+            })
         );
     }
 }

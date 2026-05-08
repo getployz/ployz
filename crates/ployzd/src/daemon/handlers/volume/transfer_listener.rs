@@ -20,6 +20,111 @@ const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_CONCURRENT_TRANSFERS: usize = 4;
 const GUID_MISMATCH_MESSAGE: &str = "zfs transfer rejected: snapshot guid mismatch";
 const TRANSFER_FAILED_MESSAGE: &str = "zfs transfer failed";
+const VOLUME_NOT_AUTHORIZED: &str = "zfs transfer not authorized";
+
+#[derive(Debug, thiserror::Error)]
+enum ZfsTransferValidationError {
+    #[error("connection closed before zfs transfer header")]
+    HeaderClosed,
+    #[error("zfs transfer header exceeded {max_bytes} bytes")]
+    HeaderTooLarge { max_bytes: usize },
+    #[error("zfs transfer header missing newline")]
+    HeaderMissingNewline,
+    #[error("zfs transfer header was not UTF-8: {message}")]
+    HeaderNotUtf8 { message: String },
+    #[error("zfs transfer header missing source_machine_id")]
+    MissingSourceMachineId,
+    #[error("list machines for zfs transfer source validation: {message}")]
+    SourceMachineLookupFailed { message: String },
+    #[error("source machine '{machine_id}' not found")]
+    SourceMachineNotFound { machine_id: MachineId },
+    #[error("zfs transfer source '{machine_id}' connected from {actual}, expected {expected}")]
+    SourceOverlayIpMismatch {
+        machine_id: MachineId,
+        actual: IpAddr,
+        expected: IpAddr,
+    },
+    #[error("{VOLUME_NOT_AUTHORIZED}")]
+    VolumeNotAuthorized {
+        namespace: Namespace,
+        volume: String,
+        source_machine_id: MachineId,
+        reason: VolumeAuthorizationRejection,
+    },
+    #[error(
+        "snapshot '{dataset}@{snapshot}' already exists on target with guid {actual_guid}, source claims {expected_guid}"
+    )]
+    ExistingSnapshotGuidMismatch {
+        dataset: String,
+        snapshot: String,
+        actual_guid: u64,
+        expected_guid: u64,
+    },
+    #[error("incremental base snapshot '{dataset}@{snapshot}' missing on target")]
+    IncrementalBaseMissing { dataset: String, snapshot: String },
+    #[error(
+        "incremental base snapshot '{dataset}@{snapshot}' guid {actual_guid} did not match source {expected_guid}"
+    )]
+    IncrementalBaseGuidMismatch {
+        dataset: String,
+        snapshot: String,
+        actual_guid: u64,
+        expected_guid: u64,
+    },
+    #[error("{operation}: {message}")]
+    Backend {
+        operation: &'static str,
+        message: String,
+    },
+}
+
+#[derive(Debug)]
+enum VolumeAuthorizationRejection {
+    OwnedByOtherMachine { owner: MachineId },
+    VolumeNotFound,
+    LookupFailed { message: String },
+}
+
+impl ZfsTransferValidationError {
+    fn backend(operation: &'static str, error: impl std::fmt::Display) -> Self {
+        Self::Backend {
+            operation,
+            message: error.to_string(),
+        }
+    }
+
+    fn log_context(&self) {
+        if let Self::VolumeNotAuthorized {
+            namespace,
+            volume,
+            source_machine_id,
+            reason,
+        } = self
+        {
+            match reason {
+                VolumeAuthorizationRejection::OwnedByOtherMachine { owner } => tracing::warn!(
+                    namespace = %namespace.0,
+                    volume,
+                    source = %source_machine_id,
+                    owner = %owner,
+                    "zfs transfer rejected: source is not the volume owner",
+                ),
+                VolumeAuthorizationRejection::VolumeNotFound => tracing::warn!(
+                    namespace = %namespace.0,
+                    volume,
+                    source = %source_machine_id,
+                    "zfs transfer rejected: volume not found",
+                ),
+                VolumeAuthorizationRejection::LookupFailed { message } => tracing::warn!(
+                    error = %message,
+                    namespace = %namespace.0,
+                    volume,
+                    "zfs transfer authorization lookup failed",
+                ),
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ZfsTransferOpen {
@@ -145,7 +250,9 @@ async fn handle_transfer(
     let line = line.map_err(|error| format!("read zfs transfer header: {error}"))?;
     let open: ZfsTransferOpen =
         serde_json::from_str(&line).map_err(|error| format!("decode transfer header: {error}"))?;
-    let source = validate_open_source(&store, &open, remote_addr).await?;
+    let source = validate_open_source(&store, &open, remote_addr)
+        .await
+        .map_err(|error| error.to_string())?;
     tracing::info!(
         %remote_addr,
         source_machine_id = %source.0,
@@ -210,43 +317,52 @@ async fn handle_transfer(
     Ok(())
 }
 
-async fn read_transfer_header<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<String, String> {
+async fn read_transfer_header<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> Result<String, ZfsTransferValidationError> {
     let mut header = Vec::new();
     let bytes_read = {
         let mut limited = reader.take((MAX_HEADER_BYTES + 1) as u64);
         limited
             .read_until(b'\n', &mut header)
             .await
-            .map_err(|error| error.to_string())?
+            .map_err(|error| ZfsTransferValidationError::backend("read_transfer_header", error))?
     };
     if bytes_read == 0 {
-        return Err("connection closed before zfs transfer header".to_string());
+        return Err(ZfsTransferValidationError::HeaderClosed);
     }
     // take() lets us read up to MAX_HEADER_BYTES of content plus the trailing
     // newline. If we hit that limit without finding `\n`, the content itself
     // already exceeded the limit; otherwise the read terminated early.
     if header.last() != Some(&b'\n') {
         if header.len() > MAX_HEADER_BYTES {
-            return Err(format!(
-                "zfs transfer header exceeded {MAX_HEADER_BYTES} bytes"
-            ));
+            return Err(ZfsTransferValidationError::HeaderTooLarge {
+                max_bytes: MAX_HEADER_BYTES,
+            });
         }
-        return Err("zfs transfer header missing newline".to_string());
+        return Err(ZfsTransferValidationError::HeaderMissingNewline);
     }
     header.pop();
-    String::from_utf8(header).map_err(|error| format!("header was not UTF-8: {error}"))
+    String::from_utf8(header).map_err(|error| ZfsTransferValidationError::HeaderNotUtf8 {
+        message: error.to_string(),
+    })
 }
 
 async fn validate_open_source(
     store: &StoreDriver,
     open: &ZfsTransferOpen,
     remote_addr: SocketAddr,
-) -> Result<MachineId, String> {
+) -> Result<MachineId, ZfsTransferValidationError> {
     let Some(source) = open.source_machine_id.as_ref() else {
-        return Err("zfs transfer header missing source_machine_id".to_string());
+        return Err(ZfsTransferValidationError::MissingSourceMachineId);
     };
     validate_source_overlay(store, source, remote_addr).await?;
-    validate_volume_ownership(store, source, &open.namespace, &open.volume).await?;
+    if let Err(error) =
+        validate_volume_ownership(store, source, &open.namespace, &open.volume).await
+    {
+        error.log_context();
+        return Err(error);
+    }
     Ok(source.clone())
 }
 
@@ -263,64 +379,59 @@ async fn validate_volume_ownership(
     source: &MachineId,
     namespace: &str,
     volume: &str,
-) -> Result<(), String> {
+) -> Result<(), ZfsTransferValidationError> {
     let namespace = Namespace(namespace.to_string());
     match store.get_volume(&namespace, volume).await {
         Ok(Some(record)) if record.machine_id == *source => Ok(()),
-        Ok(Some(record)) => {
-            tracing::warn!(
-                namespace = %namespace.0,
-                volume,
-                source = %source,
-                owner = %record.machine_id,
-                "zfs transfer rejected: source is not the volume owner",
-            );
-            Err(VOLUME_NOT_AUTHORIZED.to_string())
-        }
-        Ok(None) => {
-            tracing::warn!(
-                namespace = %namespace.0,
-                volume,
-                source = %source,
-                "zfs transfer rejected: volume not found",
-            );
-            Err(VOLUME_NOT_AUTHORIZED.to_string())
-        }
+        Ok(Some(record)) => Err(ZfsTransferValidationError::VolumeNotAuthorized {
+            namespace,
+            volume: volume.to_string(),
+            source_machine_id: source.clone(),
+            reason: VolumeAuthorizationRejection::OwnedByOtherMachine {
+                owner: record.machine_id,
+            },
+        }),
+        Ok(None) => Err(ZfsTransferValidationError::VolumeNotAuthorized {
+            namespace,
+            volume: volume.to_string(),
+            source_machine_id: source.clone(),
+            reason: VolumeAuthorizationRejection::VolumeNotFound,
+        }),
         Err(error) => {
-            tracing::warn!(
-                %error,
-                namespace = %namespace.0,
-                volume,
-                "zfs transfer authorization lookup failed",
-            );
-            Err(VOLUME_NOT_AUTHORIZED.to_string())
+            let message = error.to_string();
+            Err(ZfsTransferValidationError::VolumeNotAuthorized {
+                namespace,
+                volume: volume.to_string(),
+                source_machine_id: source.clone(),
+                reason: VolumeAuthorizationRejection::LookupFailed { message },
+            })
         }
     }
 }
-
-const VOLUME_NOT_AUTHORIZED: &str = "zfs transfer not authorized";
 
 async fn validate_source_overlay(
     store: &StoreDriver,
     source: &MachineId,
     remote_addr: SocketAddr,
-) -> Result<(), String> {
-    let machines = store
-        .list_machines()
-        .await
-        .map_err(|error| format!("list machines for zfs transfer source validation: {error}"))?;
+) -> Result<(), ZfsTransferValidationError> {
+    let machines = store.list_machines().await.map_err(|error| {
+        ZfsTransferValidationError::SourceMachineLookupFailed {
+            message: error.to_string(),
+        }
+    })?;
     let source_machine = machines
         .into_iter()
         .find(|machine| machine.id == *source)
-        .ok_or_else(|| format!("source machine '{source}' not found"))?;
+        .ok_or_else(|| ZfsTransferValidationError::SourceMachineNotFound {
+            machine_id: source.clone(),
+        })?;
     let expected = IpAddr::V6(source_machine.overlay_ip.0);
     if remote_addr.ip() != expected {
-        return Err(format!(
-            "zfs transfer source '{}' connected from {}, expected {}",
-            source,
-            remote_addr.ip(),
-            expected
-        ));
+        return Err(ZfsTransferValidationError::SourceOverlayIpMismatch {
+            machine_id: source.clone(),
+            actual: remote_addr.ip(),
+            expected,
+        });
     }
     Ok(())
 }
@@ -338,26 +449,28 @@ async fn prepare_receive<R: ShellRunner>(
     driver: &ZfsDriver<R>,
     dataset: &str,
     open: &ZfsTransferOpen,
-) -> Result<ReceiveDecision, String> {
+) -> Result<ReceiveDecision, ZfsTransferValidationError> {
     // Idempotency: if a previous attempt already landed this snapshot with
     // the right GUID, the caller drains the source stream and returns the
     // guid without touching ZFS.
     if driver
         .snapshot_exists(dataset, &open.snapshot)
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(|error| ZfsTransferValidationError::backend("snapshot_exists", error))?
     {
         let guid = driver
             .snapshot_guid(dataset, &open.snapshot)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| ZfsTransferValidationError::backend("snapshot_guid", error))?;
         if guid == open.expected_guid {
             return Ok(ReceiveDecision::AlreadyHave(guid));
         }
-        return Err(format!(
-            "snapshot '{}@{}' already exists on target with guid {guid}, source claims {}",
-            dataset, open.snapshot, open.expected_guid
-        ));
+        return Err(ZfsTransferValidationError::ExistingSnapshotGuidMismatch {
+            dataset: dataset.to_string(),
+            snapshot: open.snapshot.clone(),
+            actual_guid: guid,
+            expected_guid: open.expected_guid,
+        });
     }
 
     // For incrementals, refuse to recv unless the named base snapshot is
@@ -368,21 +481,25 @@ async fn prepare_receive<R: ShellRunner>(
         if !driver
             .snapshot_exists(dataset, from_snapshot)
             .await
-            .map_err(|error| error.to_string())?
+            .map_err(|error| ZfsTransferValidationError::backend("snapshot_exists", error))?
         {
-            return Err(format!(
-                "incremental base snapshot '{dataset}@{from_snapshot}' missing on target"
-            ));
+            return Err(ZfsTransferValidationError::IncrementalBaseMissing {
+                dataset: dataset.to_string(),
+                snapshot: from_snapshot.to_string(),
+            });
         }
         if let Some(expected_from_guid) = open.from_snapshot_guid {
             let actual = driver
                 .snapshot_guid(dataset, from_snapshot)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| ZfsTransferValidationError::backend("snapshot_guid", error))?;
             if actual != expected_from_guid {
-                return Err(format!(
-                    "incremental base snapshot '{dataset}@{from_snapshot}' guid {actual} did not match source {expected_from_guid}",
-                ));
+                return Err(ZfsTransferValidationError::IncrementalBaseGuidMismatch {
+                    dataset: dataset.to_string(),
+                    snapshot: from_snapshot.to_string(),
+                    actual_guid: actual,
+                    expected_guid: expected_from_guid,
+                });
             }
         }
     } else {
@@ -391,7 +508,7 @@ async fn prepare_receive<R: ShellRunner>(
         driver
             .ensure_parent_dataset(dataset)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| ZfsTransferValidationError::backend("ensure_parent_dataset", error))?;
     }
     Ok(ReceiveDecision::Proceed)
 }
@@ -410,7 +527,10 @@ async fn receive_stream<R: tokio::io::AsyncRead + Unpin>(
         .map_err(|error| error.to_string())?;
     let dataset = format!("{root}/{}/{}", open.namespace, open.volume);
 
-    if let ReceiveDecision::AlreadyHave(guid) = prepare_receive(&driver, &dataset, open).await? {
+    if let ReceiveDecision::AlreadyHave(guid) = prepare_receive(&driver, &dataset, open)
+        .await
+        .map_err(|error| error.to_string())?
+    {
         // Drain whatever the source already started to write so the source
         // process exits cleanly instead of breaking on EPIPE.
         let _ = tokio::io::copy(reader, &mut tokio::io::sink()).await;
@@ -463,8 +583,9 @@ async fn cleanup_partial(driver: &ZfsDriver<TokioShellRunner>, dataset: &str, sn
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_HEADER_BYTES, ReceiveDecision, ZfsTransferOpen, prepare_receive, read_transfer_header,
-        validate_open_source, validate_source_overlay, validate_volume_ownership,
+        MAX_HEADER_BYTES, ReceiveDecision, ZfsTransferOpen, ZfsTransferValidationError,
+        prepare_receive, read_transfer_header, validate_open_source, validate_source_overlay,
+        validate_volume_ownership,
     };
     use async_trait::async_trait;
     use ployz_runtime_backends::storage::{ShellOutput, ShellRunner, ZfsDriver};
@@ -556,8 +677,14 @@ mod tests {
             .await
             .expect_err("mismatched guid should fail");
 
-        assert!(err.contains("guid 7"), "got: {err}");
-        assert!(err.contains("source claims 42"), "got: {err}");
+        assert!(matches!(
+            err,
+            ZfsTransferValidationError::ExistingSnapshotGuidMismatch {
+                actual_guid: 7,
+                expected_guid: 42,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -576,8 +703,10 @@ mod tests {
             .await
             .expect_err("missing base should fail");
 
-        assert!(err.contains("base snapshot"), "got: {err}");
-        assert!(err.contains("missing on target"), "got: {err}");
+        assert!(matches!(
+            err,
+            ZfsTransferValidationError::IncrementalBaseMissing { .. }
+        ));
     }
 
     #[tokio::test]
@@ -598,8 +727,14 @@ mod tests {
             .await
             .expect_err("mismatched base guid should fail");
 
-        assert!(err.contains("guid 99"), "got: {err}");
-        assert!(err.contains("source 11"), "got: {err}");
+        assert!(matches!(
+            err,
+            ZfsTransferValidationError::IncrementalBaseGuidMismatch {
+                actual_guid: 99,
+                expected_guid: 11,
+                ..
+            }
+        ));
     }
 
     fn machine(id: &str, overlay: Ipv6Addr) -> MachineMembership {
@@ -689,7 +824,10 @@ mod tests {
         let err = validate_source_overlay(&store, &MachineId("source".into()), remote)
             .await
             .expect_err("mismatched ip rejected");
-        assert!(err.contains("connected from"), "unexpected error: {err}");
+        assert!(matches!(
+            err,
+            ZfsTransferValidationError::SourceOverlayIpMismatch { .. }
+        ));
     }
 
     #[tokio::test]
@@ -700,7 +838,10 @@ mod tests {
         let err = validate_source_overlay(&store, &MachineId("ghost".into()), remote)
             .await
             .expect_err("unknown machine rejected");
-        assert!(err.contains("not found"), "unexpected error: {err}");
+        assert!(matches!(
+            err,
+            ZfsTransferValidationError::SourceMachineNotFound { .. }
+        ));
     }
 
     #[tokio::test]
@@ -721,10 +862,10 @@ mod tests {
         let err = validate_open_source(&store, &open, remote)
             .await
             .expect_err("missing source rejected");
-        assert!(
-            err.contains("missing source_machine_id"),
-            "unexpected error: {err}"
-        );
+        assert!(matches!(
+            err,
+            ZfsTransferValidationError::MissingSourceMachineId
+        ));
     }
 
     #[tokio::test]
@@ -750,8 +891,19 @@ mod tests {
         let err = validate_open_source(&store, &open("snap", 1), remote)
             .await
             .expect_err("non-owner rejected");
-        assert!(err.contains("not authorized"), "unexpected error: {err}");
-        assert!(!err.contains("owner"), "ownership detail leaked: {err}");
+        let rendered = err.to_string();
+        assert!(matches!(
+            err,
+            ZfsTransferValidationError::VolumeNotAuthorized { .. }
+        ));
+        assert!(
+            rendered.contains("not authorized"),
+            "unexpected error: {rendered}"
+        );
+        assert!(
+            !rendered.contains("owner"),
+            "ownership detail leaked: {rendered}"
+        );
     }
 
     #[tokio::test]
@@ -761,8 +913,19 @@ mod tests {
             validate_volume_ownership(&store, &MachineId("source".into()), "default", "missing")
                 .await
                 .expect_err("unknown volume rejected");
-        assert!(err.contains("not authorized"), "unexpected error: {err}");
-        assert!(!err.contains("missing"), "volume name leaked: {err}");
+        let rendered = err.to_string();
+        assert!(matches!(
+            err,
+            ZfsTransferValidationError::VolumeNotAuthorized { .. }
+        ));
+        assert!(
+            rendered.contains("not authorized"),
+            "unexpected error: {rendered}"
+        );
+        assert!(
+            !rendered.contains("missing"),
+            "volume name leaked: {rendered}"
+        );
     }
 
     #[tokio::test]
@@ -774,7 +937,12 @@ mod tests {
         let err = read_transfer_header(&mut reader)
             .await
             .expect_err("oversized header rejected");
-        assert!(err.contains("exceeded"), "unexpected error: {err}");
+        assert!(matches!(
+            err,
+            ZfsTransferValidationError::HeaderTooLarge {
+                max_bytes: MAX_HEADER_BYTES
+            }
+        ));
     }
 
     #[tokio::test]
@@ -785,6 +953,9 @@ mod tests {
         let err = read_transfer_header(&mut reader)
             .await
             .expect_err("unterminated header rejected");
-        assert!(err.contains("missing newline"), "unexpected error: {err}");
+        assert!(matches!(
+            err,
+            ZfsTransferValidationError::HeaderMissingNewline
+        ));
     }
 }

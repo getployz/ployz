@@ -11,7 +11,7 @@ use ployz_orchestrator::certificates::{
 };
 use ployz_orchestrator::coordination::ReservationId;
 use ployz_store_api::{CertificateStore, RoutingStateStore, StoreDriver};
-use ployz_types::error::{Error, Result};
+use ployz_types::error::{CertificateError, Error, Result};
 use ployz_types::model::{
     MachineId, MachineLifecycle, MachineMembership, RoutingState, ServiceReleaseRecord,
     ServiceRevisionRecord, ServiceRoutingPolicy,
@@ -128,13 +128,11 @@ impl Http01ChallengeReadiness for NatsChallengeReadiness {
         })?;
         let eligibility = challenge_eligibility(&routing, hostname)?;
         if eligibility.eligible.is_empty() {
-            return Err(Error::operation(
-                "acme_challenge_visibility",
-                format!(
-                    "eligibility_unknown: no active advertised gateway is eligible for HTTP-01 challenge {hostname}; excluded={}",
-                    format_exclusions(&eligibility.excluded)
-                ),
-            ));
+            return Err(CertificateError::Http01NoEligibleGateway {
+                hostname: hostname.to_string(),
+                excluded: exclusion_codes(&eligibility.excluded),
+            }
+            .into());
         }
 
         let deadline = Instant::now() + HTTP01_CHALLENGE_VISIBILITY_TIMEOUT;
@@ -160,14 +158,13 @@ impl Http01ChallengeReadiness for NatsChallengeReadiness {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                return Err(Error::operation(
-                    "acme_challenge_visibility",
-                    format!(
-                        "HTTP-01 challenge for {hostname} token {token} is missing readiness observations from advertised eligible gateways: {}; reason=missing_ack; excluded={}",
-                        format_machine_ids(&missing),
-                        format_exclusions(&eligibility.excluded)
-                    ),
-                ));
+                return Err(CertificateError::Http01MissingReadiness {
+                    hostname: hostname.to_string(),
+                    token: token.to_string(),
+                    missing_machine_ids: machine_id_strings(&missing),
+                    excluded: exclusion_codes(&eligibility.excluded),
+                }
+                .into());
             }
             sleep(Duration::from_millis(100)).await;
         }
@@ -176,12 +173,10 @@ impl Http01ChallengeReadiness for NatsChallengeReadiness {
 
 fn challenge_eligibility(routing: &RoutingState, hostname: &str) -> Result<ChallengeEligibility> {
     if !hostname_is_advertised(routing, hostname)? {
-        return Err(Error::operation(
-            "acme_challenge_visibility",
-            format!(
-                "eligibility_unknown: hostname {hostname} is not in the current advertised routing state"
-            ),
-        ));
+        return Err(CertificateError::Http01HostnameNotAdvertised {
+            hostname: hostname.to_string(),
+        }
+        .into());
     }
 
     let mut eligible = BTreeSet::new();
@@ -231,13 +226,12 @@ fn hostname_is_advertised(routing: &RoutingState, hostname: &str) -> Result<bool
             for record in matching_revisions(routing, release, revision) {
                 let spec: ServiceSpec =
                     serde_json::from_str(&record.spec_json).map_err(|error| {
-                        Error::operation(
-                            "acme_challenge_visibility",
-                            format!(
-                                "eligibility_unknown: invalid service revision {}/{}@{}: {error}",
-                                record.namespace, record.service, record.revision_hash
-                            ),
-                        )
+                        CertificateError::Http01InvalidServiceRevision {
+                            namespace: record.namespace.0.clone(),
+                            service: record.service.clone(),
+                            revision_hash: record.revision_hash.clone(),
+                            message: error.to_string(),
+                        }
                     })?;
                 if spec.routes.iter().any(|route| match route {
                     RouteSpec::Http(route) => route
@@ -281,23 +275,18 @@ fn normalize_hostname(hostname: &str) -> String {
     hostname.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
-fn format_machine_ids(machine_ids: &[MachineId]) -> String {
+fn machine_id_strings(machine_ids: &[MachineId]) -> Vec<String> {
     machine_ids
         .iter()
-        .map(|machine_id| machine_id.0.as_str())
+        .map(|machine_id| machine_id.0.clone())
         .collect::<Vec<_>>()
-        .join(",")
 }
 
-fn format_exclusions(exclusions: &[ChallengeReadinessExclusion]) -> String {
-    if exclusions.is_empty() {
-        return "none".into();
-    }
+fn exclusion_codes(exclusions: &[ChallengeReadinessExclusion]) -> Vec<String> {
     exclusions
         .iter()
         .map(|excluded| format!("{}:{}", excluded.machine_id, excluded.reason))
-        .collect::<Vec<_>>()
-        .join(",")
+        .collect()
 }
 
 #[cfg(test)]
@@ -351,7 +340,10 @@ mod tests {
         let error =
             challenge_eligibility(&routing, "missing.example.com").expect_err("must fail loudly");
 
-        assert!(error.to_string().contains("eligibility_unknown"));
+        assert!(matches!(
+            error,
+            Error::Certificate(CertificateError::Http01HostnameNotAdvertised { .. })
+        ));
     }
 
     #[test]
@@ -526,13 +518,11 @@ async fn wait_for_local_challenge(store: &StoreDriver, hostname: &str, token: &s
             return Ok(());
         }
         if start.elapsed() >= HTTP01_CHALLENGE_VISIBILITY_TIMEOUT {
-            return Err(Error::operation(
-                "acme_challenge_visibility",
-                format!(
-                    "HTTP-01 challenge for {hostname} was not visible in local store within {:?}",
-                    HTTP01_CHALLENGE_VISIBILITY_TIMEOUT
-                ),
-            ));
+            return Err(CertificateError::Http01LocalChallengeNotVisible {
+                hostname: hostname.to_string(),
+                token: token.to_string(),
+            }
+            .into());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

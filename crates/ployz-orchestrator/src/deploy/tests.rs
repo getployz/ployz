@@ -11,7 +11,7 @@ use crate::certificates::{
     NoopIssuanceCoordinator,
 };
 use crate::deploy::participant::{DeployParticipantClient, StartCandidateRequest};
-use crate::error::Result;
+use crate::error::{DeployError, Error, Result};
 use crate::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
     DeployId, DeployRecord, DeployState, DrainState, InstanceId, InstancePhase,
@@ -353,10 +353,11 @@ async fn resolve_plan_rejects_service_with_volumes_on_different_machines() {
         .await
         .expect_err("volume machine conflict should fail");
 
-    assert!(
-        error
-            .to_string()
-            .contains("attaches volumes bound to different machines")
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::ServiceVolumesOnDifferentMachines {
+            service: "api".into()
+        })
     );
 }
 
@@ -725,38 +726,61 @@ async fn resolve_plan_rejects_existing_volume_quota_shrink() {
         .await
         .expect_err("quota shrink should fail");
 
-    assert!(error.to_string().contains("quota cannot shrink"));
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::VolumeQuotaShrink {
+            volume: "data".into()
+        })
+    );
 }
 
 #[tokio::test]
 async fn resolve_plan_rejects_existing_volume_scope_mode_or_owner_changes() {
     let local_machine_id = MachineId("local".into());
 
-    for (field, manifest) in [
-        ("scope", {
-            let mut manifest = volume_manifest();
-            let Some(volume) = manifest.volumes.first_mut() else {
-                panic!("expected volume");
-            };
-            volume.scope = VolumeScope::Shared;
-            manifest
-        }),
-        ("mode", {
-            let mut manifest = volume_manifest();
-            let Some(volume) = manifest.volumes.first_mut() else {
-                panic!("expected volume");
-            };
-            volume.mode = "0700".into();
-            manifest
-        }),
-        ("owner", {
-            let mut manifest = volume_manifest();
-            let Some(volume) = manifest.volumes.first_mut() else {
-                panic!("expected volume");
-            };
-            volume.owner = "1000:1000".into();
-            manifest
-        }),
+    for (field, manifest, expected) in [
+        (
+            "scope",
+            {
+                let mut manifest = volume_manifest();
+                let Some(volume) = manifest.volumes.first_mut() else {
+                    panic!("expected volume");
+                };
+                volume.scope = VolumeScope::Shared;
+                manifest
+            },
+            Error::Deploy(DeployError::VolumeScopeChange {
+                volume: "data".into(),
+            }),
+        ),
+        (
+            "mode",
+            {
+                let mut manifest = volume_manifest();
+                let Some(volume) = manifest.volumes.first_mut() else {
+                    panic!("expected volume");
+                };
+                volume.mode = "0700".into();
+                manifest
+            },
+            Error::Deploy(DeployError::VolumeModeChange {
+                volume: "data".into(),
+            }),
+        ),
+        (
+            "owner",
+            {
+                let mut manifest = volume_manifest();
+                let Some(volume) = manifest.volumes.first_mut() else {
+                    panic!("expected volume");
+                };
+                volume.owner = "1000:1000".into();
+                manifest
+            },
+            Error::Deploy(DeployError::VolumeOwnerChange {
+                volume: "data".into(),
+            }),
+        ),
     ] {
         let store = seeded_store_with_machines(&["machine-a"]).await;
         seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
@@ -766,11 +790,38 @@ async fn resolve_plan_rejects_existing_volume_scope_mode_or_owner_changes() {
             Err(error) => error,
         };
 
-        assert!(
-            error.to_string().contains("cannot change"),
-            "{field} error should mention immutability: {error}"
-        );
+        assert_eq!(error, expected, "{field} error should be typed");
     }
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_invalid_stored_volume_quota_with_structured_error() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = volume_manifest();
+    seed_volume_with(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "bogus",
+        "0750",
+        "999:999",
+    )
+    .await;
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("invalid stored quota should fail");
+
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::VolumeQuotaInvalid {
+            volume: "data".into(),
+            quota_kind: "current",
+            message: "unsupported quota suffix in 'bogus'".into()
+        })
+    );
 }
 
 #[tokio::test]
@@ -1141,11 +1192,7 @@ async fn ensure_plan_stable_rejects_post_lock_drift() {
 
     let error = ensure_plan_stable(&initial_plan.fingerprint(), &final_plan.fingerprint())
         .expect_err("plan drift should fail");
-    assert!(
-        error
-            .to_string()
-            .contains("resolved execution plan changed after lock acquisition")
-    );
+    assert_eq!(error, Error::Deploy(DeployError::ExecutionPlanChanged));
 }
 
 #[tokio::test]
@@ -1161,9 +1208,16 @@ async fn preview_rejects_duplicate_hostname_in_final_plan() {
         .await
         .expect_err("duplicate hostname should fail preview");
 
-    assert!(error.to_string().contains("api.example.com"));
-    assert!(error.to_string().contains("test/api"));
-    assert!(error.to_string().contains("test/web"));
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::HostnameDeclaredByMultipleServices {
+            hostname: "api.example.com".into(),
+            first_namespace: "test".into(),
+            first_service: "api".into(),
+            second_namespace: "test".into(),
+            second_service: "web".into()
+        })
+    );
 }
 
 #[tokio::test]
@@ -1177,9 +1231,16 @@ async fn preview_rejects_hostname_owned_by_another_namespace() {
         .await
         .expect_err("cross-namespace hostname conflict should fail preview");
 
-    assert!(error.to_string().contains("api.example.com"));
-    assert!(error.to_string().contains("prod/api"));
-    assert!(error.to_string().contains("test/web"));
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::HostnameAlreadyOwned {
+            hostname: "api.example.com".into(),
+            owner_namespace: "prod".into(),
+            owner_service: "api".into(),
+            request_namespace: "test".into(),
+            request_service: "web".into()
+        })
+    );
 }
 
 #[tokio::test]
@@ -1199,7 +1260,16 @@ async fn apply_rejects_hostname_owned_by_another_namespace_before_commit() {
             .await
             .expect_err("cross-namespace hostname conflict should fail apply");
 
-    assert!(error.to_string().contains("prod/api"));
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::HostnameAlreadyOwned {
+            hostname: "api.example.com".into(),
+            owner_namespace: "prod".into(),
+            owner_service: "api".into(),
+            request_namespace: "test".into(),
+            request_service: "web".into()
+        })
+    );
     assert_eq!(backend.commit_count(), 0);
 }
 
@@ -1232,8 +1302,14 @@ async fn apply_rejects_unreachable_participant_before_inspect_or_commit() {
     .await
     .expect_err("unreachable participant should block deploy");
 
-    assert!(error.to_string().contains("deploy blocked"));
-    assert!(error.to_string().contains("machine-b"));
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::ParticipantsUnreachable {
+            unreachable_count: 1,
+            participant_count: 2,
+            machine_ids: vec!["machine-b".into()]
+        })
+    );
     assert_eq!(backend.deploy_status_write_count(), 0);
     assert_eq!(backend.commit_count(), 0);
     assert_eq!(controller.max_open_seen(), 0);
@@ -1533,10 +1609,12 @@ async fn started_candidates_rejects_missing_started_create_slot() {
         .into_commit_plan(Vec::new(), Vec::new())
         .expect_err("missing started candidate should fail");
 
-    assert!(
-        error
-            .to_string()
-            .contains("missing started instance for service 'api'")
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::MissingStartedInstance {
+            service: "api".into(),
+            slot: "slot-0001".into()
+        })
     );
 }
 

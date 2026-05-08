@@ -5,7 +5,7 @@ use crate::{
     RoutingEventSubscription, RoutingStateStore, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
-use ployz_types::error::{Error, Result};
+use ployz_types::error::{Error, Result, SubscriptionStream};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     CertificateEvent, CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord,
@@ -166,7 +166,10 @@ impl MemoryStore {
     }
 }
 
-fn subscribe_broadcast<T>(mut events: broadcast::Receiver<T>) -> mpsc::Receiver<Result<T>>
+fn subscribe_broadcast<T>(
+    stream: SubscriptionStream,
+    mut events: broadcast::Receiver<T>,
+) -> mpsc::Receiver<Result<T>>
 where
     T: Clone + Send + 'static,
 {
@@ -181,12 +184,9 @@ where
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    warn!(skipped, "memory subscriber lagged, closing event stream");
+                    warn!(%stream, skipped, "memory subscriber lagged, closing event stream");
                     let _ = tx
-                        .send(Err(Error::operation(
-                            "memory_subscription_lagged",
-                            format!("subscriber lagged by {skipped} events"),
-                        )))
+                        .send(Err(Error::subscription_lagged(stream, skipped)))
                         .await;
                     break;
                 }
@@ -217,9 +217,9 @@ fn subscribe_routing_broadcast(
                         "memory routing subscriber lagged, closing event stream"
                     );
                     let _ = tx
-                        .send(Err(Error::operation(
-                            "memory_subscription_lagged",
-                            format!("routing subscriber lagged by {skipped} events"),
+                        .send(Err(Error::subscription_lagged(
+                            SubscriptionStream::Routing,
+                            skipped,
                         )))
                         .await;
                     break;
@@ -282,7 +282,10 @@ impl MachineMembershipStore for MemoryStore {
     async fn subscribe_machines(&self) -> Result<crate::MachineSubscription> {
         let inner = self.lock_inner();
         let snapshot = inner.machines.values().cloned().collect::<Vec<_>>();
-        let receiver = subscribe_broadcast(inner.machine_events.subscribe());
+        let receiver = subscribe_broadcast(
+            SubscriptionStream::Machine,
+            inner.machine_events.subscribe(),
+        );
         Ok((snapshot, receiver))
     }
 }
@@ -312,10 +315,7 @@ impl InviteStore for MemoryStore {
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
         let mut inner = self.lock_inner();
         if inner.invites.contains_key(&invite.invite_id) {
-            return Err(Error::operation(
-                "invite_exists",
-                format!("invite '{}' already exists", invite.invite_id),
-            ));
+            return Err(Error::invite_already_exists(invite.invite_id.clone()));
         }
         inner
             .invites
@@ -341,34 +341,22 @@ impl InviteStore for MemoryStore {
     ) -> Result<InviteRecord> {
         let mut inner = self.lock_inner();
         let Some(invite) = inner.invites.get(invite_id).cloned() else {
-            return Err(Error::operation(
-                "invite_not_found",
-                format!("invite '{invite_id}' not found"),
-            ));
+            return Err(Error::invite_not_found(invite_id));
         };
 
         if invite.revoked_at.is_some() {
-            return Err(Error::operation(
-                "invite_revoked",
-                format!("invite '{invite_id}' is revoked"),
-            ));
+            return Err(Error::invite_revoked(invite_id));
         }
 
         if now_unix_secs > invite.expires_at {
-            return Err(Error::operation(
-                "invite_expired",
-                format!("invite '{invite_id}' is expired"),
-            ));
+            return Err(Error::invite_expired(invite_id));
         }
 
         if let Some(consumed_by) = &invite.consumed_by {
             if consumed_by == machine_id {
                 return Ok(invite);
             }
-            return Err(Error::operation(
-                "invite_consumed",
-                format!("invite '{invite_id}' is already consumed"),
-            ));
+            return Err(Error::invite_consumed(invite_id));
         }
 
         let mut next_invite = invite.clone();
@@ -383,17 +371,12 @@ impl InviteStore for MemoryStore {
 
     async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord> {
         let mut inner = self.lock_inner();
-        let invite = inner.invites.get(invite_id).ok_or_else(|| {
-            Error::operation(
-                "invite_not_found",
-                format!("invite '{invite_id}' not found"),
-            )
-        })?;
+        let invite = inner
+            .invites
+            .get(invite_id)
+            .ok_or_else(|| Error::invite_not_found(invite_id))?;
         if invite.consumed_by.is_some() {
-            return Err(Error::operation(
-                "invite_consumed",
-                format!("invite '{invite_id}' is already consumed"),
-            ));
+            return Err(Error::invite_consumed(invite_id));
         }
 
         let mut next_invite = invite.clone();
@@ -600,14 +583,20 @@ impl CertificateStore for MemoryStore {
     async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
         let inner = self.lock_inner();
         let snapshot = inner.certificates.values().cloned().collect::<Vec<_>>();
-        let receiver = subscribe_broadcast(inner.certificate_events.subscribe());
+        let receiver = subscribe_broadcast(
+            SubscriptionStream::Certificate,
+            inner.certificate_events.subscribe(),
+        );
         Ok((snapshot, receiver))
     }
 
     async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
         let inner = self.lock_inner();
         let snapshot = inner.acme_challenges.values().cloned().collect::<Vec<_>>();
-        let receiver = subscribe_broadcast(inner.acme_challenge_events.subscribe());
+        let receiver = subscribe_broadcast(
+            SubscriptionStream::AcmeChallenge,
+            inner.acme_challenge_events.subscribe(),
+        );
         Ok((snapshot, receiver))
     }
 
@@ -820,10 +809,7 @@ mod tests {
             .await;
         assert!(matches!(
             second,
-            Err(Error::Operation {
-                operation: "invite_consumed",
-                ..
-            })
+            Err(Error::InviteConsumed { invite_id }) if invite_id == "inv-1"
         ));
     }
 
@@ -849,10 +835,7 @@ mod tests {
             .await;
         assert!(matches!(
             expired,
-            Err(Error::Operation {
-                operation: "invite_expired",
-                ..
-            })
+            Err(Error::InviteExpired { invite_id }) if invite_id == "inv-2"
         ));
     }
 
@@ -1900,14 +1883,20 @@ mod tests {
             .await
             .expect("lag error should be delivered")
             .expect_err("lagged routing stream should report an error");
-        assert!(error.to_string().contains("lagged by 1 events"));
+        assert_eq!(
+            error,
+            Error::SubscriptionLagged {
+                stream: SubscriptionStream::Routing,
+                skipped: 1
+            }
+        );
         assert!(event_rx.recv().await.is_none());
     }
 
     #[tokio::test]
     async fn lagged_event_broadcast_reports_error_then_closes() {
         let (sender, receiver) = broadcast::channel(2);
-        let mut event_rx = subscribe_broadcast(receiver);
+        let mut event_rx = subscribe_broadcast(SubscriptionStream::Machine, receiver);
 
         for index in 0..3 {
             sender
@@ -1922,7 +1911,13 @@ mod tests {
             .await
             .expect("lag error should be delivered")
             .expect_err("lagged stream should report an error");
-        assert!(error.to_string().contains("lagged by 1 events"));
+        assert_eq!(
+            error,
+            Error::SubscriptionLagged {
+                stream: SubscriptionStream::Machine,
+                skipped: 1
+            }
+        );
         assert!(event_rx.recv().await.is_none());
     }
 

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use async_nats::jetstream::kv;
 use async_nats::{HeaderMap, header};
-use ployz_types::error::{Error, Result};
+use ployz_types::error::{CoordinationError, Error, Result};
 use ployz_types::model::MachineId;
 use ployz_types::spec::Namespace;
 use ployz_types::time::now_unix_secs;
@@ -66,10 +66,10 @@ impl NatsDeployLock {
         if current_lease.revision != lease.revision
             || current_lease.value.nonce != lease.value.nonce
         {
-            return Err(Error::operation(
-                "nats_deploy_lock_renew",
-                "deploy lock changed before renewal completed",
-            ));
+            return Err(CoordinationError::LockChangedBeforeRenewal {
+                key: lease.key.clone(),
+            }
+            .into());
         }
         *current = Some(renewed);
         Ok(())
@@ -142,13 +142,12 @@ impl LockAcquireError {
     #[must_use]
     pub fn into_error(self) -> Error {
         match self {
-            Self::AlreadyHeld { key } => {
-                Error::operation("nats_lock_acquire", format!("lock '{key}' is already held"))
+            Self::AlreadyHeld { key } => CoordinationError::LockAlreadyHeld { key }.into(),
+            Self::Contention { key, source } => CoordinationError::LockContention {
+                key,
+                message: source.to_string(),
             }
-            Self::Contention { key, source } => Error::operation(
-                "nats_lock_acquire",
-                format!("lock '{key}' contention: {source}"),
-            ),
+            .into(),
             Self::Backend(error) => error,
         }
     }
@@ -276,13 +275,10 @@ impl NatsLocks {
             return Ok(());
         };
         if !release_is_allowed(entry.revision, &current, &guard) {
-            return Err(Error::operation(
-                "nats_lock_release",
-                format!(
-                    "lock '{}' is held by another lease; refusing stale release",
-                    guard.key
-                ),
-            ));
+            return Err(CoordinationError::StaleLockRelease {
+                key: guard.key.clone(),
+            }
+            .into());
         }
         self.bucket
             .delete_expect_revision(&guard.key, Some(guard.expected_revision))
@@ -384,6 +380,28 @@ mod tests {
             ..current
         };
         assert!(!release_is_allowed(7, &stale_nonce, &guard));
+    }
+
+    #[test]
+    fn lock_acquire_expected_failures_convert_to_coordination_errors() {
+        let held = LockAcquireError::AlreadyHeld {
+            key: "locks.deploy.default".into(),
+        }
+        .into_error();
+        assert!(matches!(
+            held,
+            Error::Coordination(CoordinationError::LockAlreadyHeld { .. })
+        ));
+
+        let raced = LockAcquireError::Contention {
+            key: "locks.deploy.default".into(),
+            source: Error::operation("nats_lock_publish", "wrong last sequence"),
+        }
+        .into_error();
+        assert!(matches!(
+            raced,
+            Error::Coordination(CoordinationError::LockContention { .. })
+        ));
     }
 
     #[test]
