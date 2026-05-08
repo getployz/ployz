@@ -692,30 +692,8 @@ fn parse_duration(value: &str) -> Result<Duration, String> {
     if trimmed.is_empty() {
         return Err("cannot be empty".into());
     }
-
-    let units = [
-        ("ms", 1_u64),
-        ("s", 1_000_u64),
-        ("m", 60_000_u64),
-        ("h", 3_600_000_u64),
-    ];
-
-    for (suffix, multiplier_ms) in units {
-        let Some(raw_value) = trimmed.strip_suffix(suffix) else {
-            continue;
-        };
-        let amount = raw_value.trim().parse::<u64>().map_err(|_| {
-            format!("must be an integer duration like '30s' or '5m', got '{value}'")
-        })?;
-        let total_ms = amount
-            .checked_mul(multiplier_ms)
-            .ok_or_else(|| format!("is too large to represent as a duration: '{value}'"))?;
-        return Ok(Duration::from_millis(total_ms));
-    }
-
-    Err(format!(
-        "must use one of the supported suffixes: ms, s, m, h; got '{value}'"
-    ))
+    humantime_serde::re::humantime::parse_duration(trimmed)
+        .map_err(|error| format!("must be a duration like '30s' or '5m', got '{value}': {error}"))
 }
 
 #[must_use]

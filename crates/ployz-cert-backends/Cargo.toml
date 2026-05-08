@@ -16,9 +16,5 @@ tokio = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 instant-acme = { version = "0.8.5", default-features = false, features = ["hyper-rustls", "ring"] }
 
-[lints.clippy]
-indexing_slicing = "warn"
-fallible_impl_from = "warn"
-wildcard_enum_match_arm = "warn"
-fn_params_excessive_bools = "warn"
-must_use_candidate = "warn"
+[lints]
+workspace = true

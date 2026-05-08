@@ -2,9 +2,10 @@ use std::future::Future;
 use std::time::Duration;
 
 use crate::routes::{GatewayProjectionEvent, GatewayProjector, GatewaySnapshot, ProjectionDelta};
+use backon::{ConstantBuilder, Retryable};
 use ployz_store_api::{
     AcmeChallengeSubscriptionUpdate, CertificateSubscriptionUpdate, RoutingEventEnvelope,
-    RoutingEventSubscription,
+    RoutingEventSubscription, RoutingEventSubscriptionUpdate,
 };
 use ployz_types::model::{
     AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateEvent,
@@ -24,6 +25,7 @@ const STREAM_ROUTING: &str = "routing";
 const STREAM_CERTIFICATES: &str = "certificates";
 const STREAM_ACME_CHALLENGES: &str = "acme_challenges";
 const STORE_SYNC_STREAMS: [&str; 3] = [STREAM_ROUTING, STREAM_CERTIFICATES, STREAM_ACME_CHALLENGES];
+const STORE_SYNC_SETUP_RETRY: Duration = Duration::from_secs(1);
 
 // ---------------------------------------------------------------------------
 // RoutingStateStore trait — consumer contract
@@ -102,53 +104,13 @@ where
     S: RoutingStateStore + Send + Sync + 'static,
 {
     loop {
-        let (routing_state, mut routing_rx) = match store.subscribe_routing_events().await {
-            Ok(subscription) => subscription,
-            Err(error) => {
-                set_store_sync_generation_healthy(false);
-                warn!(
-                    ?error,
-                    "gateway routing subscription setup failed; retrying"
-                );
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue;
-            }
-        };
-        let (cert_records, mut cert_rx) = match store.subscribe_certificates().await {
-            Ok(subscription) => subscription,
-            Err(error) => {
-                set_store_sync_generation_healthy(false);
-                warn!(
-                    ?error,
-                    "gateway certificate subscription setup failed; retrying"
-                );
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue;
-            }
-        };
-        let (challenge_records, mut chal_rx) = match store.subscribe_acme_challenges().await {
-            Ok(subscription) => subscription,
-            Err(error) => {
-                set_store_sync_generation_healthy(false);
-                warn!(
-                    ?error,
-                    "gateway ACME challenge subscription setup failed; retrying"
-                );
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue;
-            }
-        };
-        let mut projector = match GatewayProjector::new(routing_state) {
-            Ok(projector) => projector,
-            Err(error) => {
-                set_store_sync_generation_healthy(false);
-                warn!(?error, "gateway routing projection setup failed; retrying");
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue;
-            }
-        };
-        apply_initial_certificates(&mut projector, cert_records);
-        let ready_challenges = apply_initial_challenges(&mut projector, challenge_records);
+        let SyncGeneration {
+            mut projector,
+            mut routing_rx,
+            mut cert_rx,
+            mut chal_rx,
+            ready_challenges,
+        } = open_sync_generation(&store).await;
         publish_full_snapshot(&snapshot, projector.snapshot_value());
         publish_challenge_readiness(&store, &machine_id, &ready_challenges).await;
         set_store_sync_generation_healthy(true);
@@ -215,6 +177,63 @@ where
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+}
+
+struct SyncGeneration {
+    projector: GatewayProjector,
+    routing_rx: mpsc::Receiver<RoutingEventSubscriptionUpdate>,
+    cert_rx: mpsc::Receiver<CertificateSubscriptionUpdate>,
+    chal_rx: mpsc::Receiver<AcmeChallengeSubscriptionUpdate>,
+    ready_challenges: Vec<AcmeChallengeRecord>,
+}
+
+async fn open_sync_generation<S>(store: &S) -> SyncGeneration
+where
+    S: RoutingStateStore + Send + Sync,
+{
+    (|| async { try_open_sync_generation(store).await })
+        .retry(
+            ConstantBuilder::default()
+                .with_delay(STORE_SYNC_SETUP_RETRY)
+                .without_max_times(),
+        )
+        .notify(|error, delay| {
+            set_store_sync_generation_healthy(false);
+            warn!(
+                ?error,
+                ?delay,
+                "gateway sync generation setup failed; retrying"
+            );
+        })
+        .await
+        .expect("unbounded gateway sync generation retry should not exhaust")
+}
+
+async fn try_open_sync_generation<S>(store: &S) -> Result<SyncGeneration, GatewayError>
+where
+    S: RoutingStateStore + Send + Sync,
+{
+    let (routing_state, routing_rx) = store.subscribe_routing_events().await.map_err(|error| {
+        GatewayError::Store(format!("routing subscription setup failed: {error}"))
+    })?;
+    let (cert_records, cert_rx) = store.subscribe_certificates().await.map_err(|error| {
+        GatewayError::Store(format!("certificate subscription setup failed: {error}"))
+    })?;
+    let (challenge_records, chal_rx) =
+        store.subscribe_acme_challenges().await.map_err(|error| {
+            GatewayError::Store(format!("ACME challenge subscription setup failed: {error}"))
+        })?;
+    let mut projector = GatewayProjector::new(routing_state)
+        .map_err(|error| GatewayError::Projection(format!("routing setup failed: {error}")))?;
+    apply_initial_certificates(&mut projector, cert_records);
+    let ready_challenges = apply_initial_challenges(&mut projector, challenge_records);
+    Ok(SyncGeneration {
+        projector,
+        routing_rx,
+        cert_rx,
+        chal_rx,
+        ready_challenges,
+    })
 }
 
 fn set_store_sync_generation_healthy(healthy: bool) {
