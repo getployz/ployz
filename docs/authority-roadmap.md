@@ -84,6 +84,11 @@ plane and should outlive daemon restart.
 Every asset uses the authority's configured replica policy. R=1 is simple, not
 disposable. R=3/R=5 is explicit operator intent.
 
+Current implementation note: ordinary `machine add` creates storage candidates
+only. Authority storage expansion is explicit through `machine storage promote`,
+which records the requested R=3/R=5 policy and promotes selected candidates into
+`auth-default`.
+
 ## Regions
 
 Regions answer "where can this run?" not "who owns truth?"
@@ -102,8 +107,8 @@ partition, an ownership boundary, failure isolation, or dev/team autonomy.
 
 1. Docs: keep this page as the single story. Delete old NATS topology docs.
 2. Status: show node role, failure impact, asset bucket, replica state, and lag.
-3. Single authority: machine add never changes authority or replica count.
-4. HA: add explicit R=3/R=5 storage promotion.
+3. Single authority: machine add never changes authority or replica count. (implemented)
+4. HA: add explicit R=3/R=5 storage promotion. (initial implementation)
 5. Compute regions: global placement, one owning authority.
 6. DR: async mirrors with visible lag and manual promotion.
 7. Multi-authority/dev: explicit ownership split; no queued remote intent.

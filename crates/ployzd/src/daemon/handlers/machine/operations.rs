@@ -24,6 +24,7 @@ pub(super) enum MachineOperationKind {
     Init,
     Add,
     Update,
+    StoragePromote,
 }
 
 impl MachineOperationKind {
@@ -33,6 +34,7 @@ impl MachineOperationKind {
             Self::Init => "init",
             Self::Add => "add",
             Self::Update => "update",
+            Self::StoragePromote => "storage-promote",
         }
     }
 }
@@ -441,6 +443,9 @@ impl DaemonState {
             MachineOperationKind::Init => Ok(None),
             MachineOperationKind::Add => self.recover_machine_add_operation(record).await,
             MachineOperationKind::Update => self.recover_machine_update_operation(record).await,
+            MachineOperationKind::StoragePromote => Ok(Some(
+                "daemon restarted before storage promotion completed; inspect machine list and status before retrying".into(),
+            )),
         }
     }
 

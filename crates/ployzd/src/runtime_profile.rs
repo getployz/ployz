@@ -16,7 +16,7 @@ use ployz_runtime_api::Identity;
 use ployz_runtime_backends::mesh::driver as mesh_backends;
 use ployz_runtime_backends::network::docker_bridge_network;
 use ployz_store_api::StoreDriver;
-use ployz_types::model::{OverlayIp, StorageParticipation};
+use ployz_types::model::{OverlayIp, StorageParticipation, StorageReplicaPolicy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecutionBackend {
@@ -57,6 +57,7 @@ pub(crate) struct MeshBuildRequest<'a> {
     pub(crate) bootstrap: &'a [String],
     pub(crate) network_id: &'a str,
     pub(crate) storage_participation: &'a StorageParticipation,
+    pub(crate) storage_replicas: StorageReplicaPolicy,
 }
 
 impl RuntimeProfile {
@@ -123,6 +124,7 @@ impl RuntimeProfile {
             bootstrap,
             network_id,
             storage_participation,
+            storage_replicas,
         } = request;
         let network = match self.execution_backend {
             ExecutionBackend::Memory => WireguardDriver::memory(),
@@ -151,6 +153,7 @@ impl RuntimeProfile {
                     bootstrap,
                     network_id,
                     storage_participation,
+                    storage_replicas,
                     self.built_in_images.resolve(BuiltInImage::Nats),
                 )
                 .await?
@@ -161,6 +164,7 @@ impl RuntimeProfile {
                 bootstrap,
                 network_id,
                 storage_participation,
+                storage_replicas,
             )?,
         };
 

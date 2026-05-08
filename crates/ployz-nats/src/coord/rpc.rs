@@ -102,6 +102,11 @@ impl NodeCommandSubject {
     }
 
     #[must_use]
+    pub fn machine_storage_promote_self(machine_id: &MachineId) -> Self {
+        Self::new_substrate(machine_id, "machine.storage.promote_self")
+    }
+
+    #[must_use]
     pub fn machine_update_prepare(machine_id: &MachineId) -> Self {
         Self::new_substrate(machine_id, "machine.update.prepare")
     }

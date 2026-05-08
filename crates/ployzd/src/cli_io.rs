@@ -2,8 +2,9 @@ use crate::{CliError, Result};
 use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, DoctorPayload, DoctorPeer,
     MachineInviteListPayload, MachineListPayload, MachineOperationInfo,
-    MachineOperationListPayload, MachineOperationPayload, MachineRttPayload, MeshListPayload,
-    MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload, StatusPayload,
+    MachineOperationListPayload, MachineOperationPayload, MachineRttPayload,
+    MachineStoragePromotionPayload, MeshListPayload, MeshReadyPayload, MeshSelfRecordPayload,
+    MeshStatusPayload, StatusPayload,
 };
 use ployz_sdk::{Transport, UnixSocketTransport};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -174,6 +175,9 @@ fn render_plain_success(response: &DaemonResponse) -> String {
         }
         Some(DaemonPayload::MachineOperation(payload)) => render_plain_machine_operation(payload),
         Some(DaemonPayload::MachineUpdate(payload)) => render_plain_machine_update(payload),
+        Some(DaemonPayload::MachineStoragePromotion(payload)) => {
+            render_plain_machine_storage_promotion(payload)
+        }
         _ => response.message.clone(),
     }
 }
@@ -313,6 +317,23 @@ fn render_plain_machine_update(payload: &ployz_api::MachineUpdatePayload) -> Str
     } else {
         lines.join("\n")
     }
+}
+
+fn render_plain_machine_storage_promotion(payload: &MachineStoragePromotionPayload) -> String {
+    let mut lines = vec![format!(
+        "operation={} replicas={}",
+        payload.operation_id, payload.replicas
+    )];
+    for machine in &payload.promoted {
+        lines.push(format!("promoted machine={machine}"));
+    }
+    for failure in &payload.failed {
+        lines.push(format!(
+            "failed machine={} message={}",
+            failure.machine_id, failure.message
+        ));
+    }
+    lines.join("\n")
 }
 
 fn render_plain_machine_list(payload: &MachineListPayload) -> String {
@@ -566,7 +587,8 @@ mod tests {
     use super::*;
     use ployz_api::{
         DoctorLocal, DoctorOverall, DoctorPayload, DoctorPeer, MachineListPayload, MachineListRow,
-        MachineRttPayload, MachineRttRow, MeshListEntry, MeshListPayload, StatusPayload,
+        MachineRttPayload, MachineRttRow, MachineStoragePromotionPayload, MeshListEntry,
+        MeshListPayload, StatusPayload,
     };
 
     #[test]
@@ -618,6 +640,31 @@ mod tests {
         assert_eq!(
             render_plain_success(&response),
             "machine=machine-1 peer=machine-2 median=140ms stddev=±19.4ms\nwarning=machine 'machine-3' RTT snapshot unreachable"
+        );
+    }
+
+    #[test]
+    fn plain_machine_storage_promotion_renders_promoted_and_failed_rows() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("promoted"),
+            payload: Some(DaemonPayload::MachineStoragePromotion(
+                MachineStoragePromotionPayload {
+                    operation_id: "storage-promote-1".into(),
+                    replicas: ployz_types::model::StorageReplicaPolicy::R3,
+                    promoted: vec!["m2".into(), "m3".into()],
+                    failed: vec![ployz_api::MachineStoragePromotionFailure {
+                        machine_id: "m4".into(),
+                        message: "not active".into(),
+                    }],
+                },
+            )),
+        };
+
+        assert_eq!(
+            render_plain_success(&response),
+            "operation=storage-promote-1 replicas=r3\npromoted machine=m2\npromoted machine=m3\nfailed machine=m4 message=not active"
         );
     }
 
