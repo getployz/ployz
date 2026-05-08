@@ -205,6 +205,7 @@ mod tests {
     fn upsert_service_replaces_existing_service_and_sorts() {
         let mut manifest = DeployManifest {
             namespace: ployz_types::spec::Namespace("prod".into()),
+            intent: None,
             volumes: Vec::new(),
             services: vec![
                 build_service_spec(

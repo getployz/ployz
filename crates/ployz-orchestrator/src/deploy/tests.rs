@@ -2289,6 +2289,7 @@ async fn counting_store_with_machines(machine_ids: &[&str]) -> (StoreDriver, Arc
 fn test_manifest(services: Vec<ServiceSpec>) -> DeployManifest {
     DeployManifest {
         namespace: Namespace("test".into()),
+        intent: None,
         volumes: Vec::new(),
         services,
     }
