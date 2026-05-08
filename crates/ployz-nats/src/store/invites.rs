@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use ployz_store_api::InviteStore;
-use ployz_types::error::{Error, Result};
+use ployz_types::error::{Error, Result, StoreRecordKind};
 use ployz_types::model::{InviteRecord, MachineId};
 
 use crate::NatsStore;
@@ -16,15 +16,7 @@ impl InviteStore for NatsStore {
             .create(&invite.invite_id, payload.into())
             .await
             .map(|_| ())
-            .map_err(|error| {
-                Error::operation(
-                    "invite_exists",
-                    format!(
-                        "invite '{}' already exists or could not be created: {error:?}",
-                        invite.invite_id
-                    ),
-                )
-            })
+            .map_err(|_error| Error::invite_already_exists(invite.invite_id.clone()))
     }
 
     async fn get_invite(&self, invite_id: &str) -> Result<Option<InviteRecord>> {
@@ -56,10 +48,7 @@ impl InviteStore for NatsStore {
             .await
             .map_err(|error| Error::operation("nats_invite_get", format!("{error:?}")))?
         else {
-            return Err(Error::operation(
-                "invite_not_found",
-                format!("invite '{invite_id}' not found"),
-            ));
+            return Err(Error::invite_not_found(invite_id));
         };
         let invite = decode_invite(invite_id, entry.value.as_ref())?;
         validate_redeemable(invite_id, &invite, machine_id, now_unix_secs)?;
@@ -81,17 +70,11 @@ impl InviteStore for NatsStore {
             .await
             .map_err(|error| Error::operation("nats_invite_get", format!("{error:?}")))?
         else {
-            return Err(Error::operation(
-                "invite_not_found",
-                format!("invite '{invite_id}' not found"),
-            ));
+            return Err(Error::invite_not_found(invite_id));
         };
         let invite = decode_invite(invite_id, entry.value.as_ref())?;
         if invite.consumed_by.is_some() {
-            return Err(Error::operation(
-                "invite_consumed",
-                format!("invite '{invite_id}' is already consumed"),
-            ));
+            return Err(Error::invite_consumed(invite_id));
         }
         let mut next_invite = invite;
         next_invite.revoked_at = Some(now_unix_secs);
@@ -116,24 +99,15 @@ fn validate_redeemable(
     now_unix_secs: u64,
 ) -> Result<()> {
     if invite.revoked_at.is_some() {
-        return Err(Error::operation(
-            "invite_revoked",
-            format!("invite '{invite_id}' is revoked"),
-        ));
+        return Err(Error::invite_revoked(invite_id));
     }
     if now_unix_secs > invite.expires_at {
-        return Err(Error::operation(
-            "invite_expired",
-            format!("invite '{invite_id}' is expired"),
-        ));
+        return Err(Error::invite_expired(invite_id));
     }
     if let Some(consumed_by) = &invite.consumed_by
         && consumed_by != machine_id
     {
-        return Err(Error::operation(
-            "invite_consumed",
-            format!("invite '{invite_id}' is already consumed"),
-        ));
+        return Err(Error::invite_consumed(invite_id));
     }
     Ok(())
 }
@@ -179,12 +153,10 @@ fn decode_invite(key: &str, bytes: &[u8]) -> Result<InviteRecord> {
 
 fn validate_invite_key(key: &str, invite: InviteRecord) -> Result<InviteRecord> {
     if invite.invite_id != key {
-        return Err(Error::operation(
-            "nats_invite_decode",
-            format!(
-                "invite key {key} does not match payload id {}",
-                invite.invite_id
-            ),
+        return Err(Error::store_key_mismatch(
+            StoreRecordKind::Invite,
+            key,
+            invite.invite_id,
         ));
     }
     Ok(invite)
@@ -192,8 +164,9 @@ fn validate_invite_key(key: &str, invite: InviteRecord) -> Result<InviteRecord> 
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_invite, invite_records_from_entries};
+    use super::{decode_invite, invite_records_from_entries, validate_redeemable};
     use crate::store::kv_json;
+    use ployz_types::error::{Error, StoreRecordKind};
     use ployz_types::model::{InviteRecord, MachineId, NetworkId};
 
     #[test]
@@ -210,8 +183,10 @@ mod tests {
 
         let error = decode_invite("key-invite", &bytes).expect_err("key mismatch should fail");
 
-        assert!(error.to_string().contains("key-invite"));
-        assert!(error.to_string().contains("payload-invite"));
+        assert_eq!(
+            error,
+            Error::store_key_mismatch(StoreRecordKind::Invite, "key-invite", "payload-invite")
+        );
     }
 
     #[test]
@@ -245,6 +220,37 @@ mod tests {
                 .map(|invite| invite.invite_id.as_str())
                 .collect::<Vec<_>>(),
             ["invite-a", "invite-b"]
+        );
+    }
+
+    #[test]
+    fn validate_redeemable_returns_structured_lifecycle_errors() {
+        let machine = MachineId("machine-a".into());
+
+        let mut revoked = test_invite("revoked");
+        revoked.revoked_at = Some(1);
+        assert_eq!(
+            validate_redeemable("revoked", &revoked, &machine, 2),
+            Err(Error::InviteRevoked {
+                invite_id: "revoked".into()
+            })
+        );
+
+        let expired = test_invite("expired");
+        assert_eq!(
+            validate_redeemable("expired", &expired, &machine, 101),
+            Err(Error::InviteExpired {
+                invite_id: "expired".into()
+            })
+        );
+
+        let mut consumed = test_invite("consumed");
+        consumed.consumed_by = Some(MachineId("machine-b".into()));
+        assert_eq!(
+            validate_redeemable("consumed", &consumed, &machine, 2),
+            Err(Error::InviteConsumed {
+                invite_id: "consumed".into()
+            })
         );
     }
 

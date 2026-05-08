@@ -11,7 +11,7 @@ use crate::deploy::plan::{
     PlanFingerprint, ResolvedPlan, VolumeChange, resolve_plan, volume_record_change,
 };
 use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_participants};
-use crate::error::{Error, Result};
+use crate::error::{DeployError, Error, Result};
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPreview, DeployRecord,
     DeployState, InstanceId, InstanceStatusRecord, MachineId, MachineMembership, VolumeRecord,
@@ -90,13 +90,9 @@ impl ParticipantSet {
                 let deploy_id = deploy_id.clone();
                 async move {
                     let Some(machine) = machine else {
-                        return Err(Error::operation(
-                            "deploy_apply",
-                            format!(
-                                "participant '{}' is missing from machine inventory",
-                                participant
-                            ),
-                        ));
+                        return Err(Error::Deploy(DeployError::ParticipantMissing {
+                            machine_id: participant.0,
+                        }));
                     };
                     let instances = participant_client
                         .inspect_namespace(&machine, &namespace, &deploy_id, local_machine_id)
@@ -119,13 +115,9 @@ impl ParticipantSet {
             .iter()
             .map(|machine_id| {
                 let machine = plan.machine_map().get(machine_id).cloned().ok_or_else(|| {
-                    Error::operation(
-                        "deploy_apply",
-                        format!(
-                            "participant '{}' is missing from machine inventory",
-                            machine_id
-                        ),
-                    )
+                    Error::Deploy(DeployError::ParticipantMissing {
+                        machine_id: machine_id.0.clone(),
+                    })
                 })?;
                 Ok((machine_id.clone(), machine))
             })
@@ -153,10 +145,9 @@ impl ParticipantSet {
 
     fn get(&self, machine_id: &MachineId) -> Result<&MachineMembership> {
         self.machines.get(machine_id).ok_or_else(|| {
-            Error::operation(
-                "deploy_apply",
-                format!("no participant was available for machine '{}'", machine_id),
-            )
+            Error::Deploy(DeployError::ParticipantMissing {
+                machine_id: machine_id.0.clone(),
+            })
         })
     }
 }
@@ -200,21 +191,16 @@ pub(super) async fn apply_with_certificate_coordination(
     )
     .await;
     if !reachability.unreachable.is_empty() {
-        let unreachable = reachability
+        let machine_ids = reachability
             .unreachable
             .iter()
             .map(|machine_id| machine_id.0.clone())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(Error::operation(
-            "deploy_apply",
-            format!(
-                "deploy blocked: {} of {} participants unreachable: {}",
-                reachability.unreachable.len(),
-                initial_plan.participants().len(),
-                unreachable
-            ),
-        ));
+            .collect::<Vec<_>>();
+        return Err(Error::Deploy(DeployError::ParticipantsUnreachable {
+            unreachable_count: machine_ids.len(),
+            participant_count: initial_plan.participants().len(),
+            machine_ids,
+        }));
     }
 
     apply_with_initial_plan_and_certificate_coordination(
@@ -469,16 +455,10 @@ pub(super) fn ensure_plan_stable(
     final_plan: &PlanFingerprint,
 ) -> Result<()> {
     if final_plan.participants != initial.participants {
-        return Err(Error::operation(
-            "deploy_apply",
-            "participant set changed after lock acquisition; retry deploy",
-        ));
+        return Err(Error::Deploy(DeployError::ParticipantSetChanged));
     }
     if final_plan != initial {
-        return Err(Error::operation(
-            "deploy_apply",
-            "resolved execution plan changed after lock acquisition; retry deploy",
-        ));
+        return Err(Error::Deploy(DeployError::ExecutionPlanChanged));
     }
     Ok(())
 }
@@ -493,7 +473,7 @@ async fn run_machine_start_queue(
     let machine_id = tasks
         .first()
         .map(|task| task.machine_id.clone())
-        .ok_or_else(|| Error::operation("deploy_apply", "empty machine start queue"))?;
+        .ok_or(Error::Deploy(DeployError::EmptyMachineStartQueue))?;
     let mut events = Vec::new();
     let mut started = Vec::new();
 
@@ -570,13 +550,9 @@ fn build_committed_volumes(
                     .any(|(started_service, _)| started_service == service)
             })
         {
-            return Err(Error::operation(
-                "deploy_apply",
-                format!(
-                    "volume '{}' changed but no attached service was restarted",
-                    planned.declaration.name
-                ),
-            ));
+            return Err(Error::Deploy(DeployError::VolumeChangedWithoutRestart {
+                volume: planned.declaration.name.clone(),
+            }));
         }
 
         let created_at = planned

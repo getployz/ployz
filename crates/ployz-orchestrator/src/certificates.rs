@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use ployz_store_api::{CertificateStore, StoreDriver};
-use ployz_types::error::{Error, Result};
+use ployz_types::error::{CertificateError, Error, Result};
 use ployz_types::model::{
     CertificateRecord, CertificateState, CertificateStateGoal, CertificateStateTransition,
     CertificateTransitionEvidence, CertificateVersion,
@@ -228,10 +228,7 @@ pub struct NoopAcmeIssuer;
 #[async_trait]
 impl AcmeIssuer for NoopAcmeIssuer {
     async fn start_order(&self, _store: &StoreDriver, _hostname: &str) -> Result<StartedOrder> {
-        Err(Error::operation(
-            "acme_disabled",
-            "no ACME issuer is configured for this orchestrator",
-        ))
+        Err(CertificateError::AcmeDisabled.into())
     }
 
     async fn finalize_order(
@@ -240,10 +237,7 @@ impl AcmeIssuer for NoopAcmeIssuer {
         _hostname: &str,
         _order_url: &str,
     ) -> Result<IssuedCertificate> {
-        Err(Error::operation(
-            "acme_disabled",
-            "no ACME issuer is configured for this orchestrator",
-        ))
+        Err(CertificateError::AcmeDisabled.into())
     }
 }
 
@@ -429,10 +423,12 @@ where
             return Ok(None);
         }
         IssuanceAcquisition::CoordinationFailed(reason) => {
-            return Err(Error::operation(
-                "certificate_issuance_coordination",
-                format!("could not acquire certificate lock for {hostname}: {reason}"),
-            ));
+            return Err(CertificateError::CertificateLockAcquireFailed {
+                phase: "issuance",
+                hostname,
+                message: reason,
+            }
+            .into());
         }
     };
 
@@ -572,10 +568,12 @@ where
             return Ok(());
         }
         IssuanceAcquisition::CoordinationFailed(reason) => {
-            return Err(Error::operation(
-                "certificate_finalization_coordination",
-                format!("could not acquire certificate lock for {hostname}: {reason}"),
-            ));
+            return Err(CertificateError::CertificateLockAcquireFailed {
+                phase: "finalization",
+                hostname,
+                message: reason,
+            }
+            .into());
         }
     };
 
@@ -729,7 +727,13 @@ fn is_same_inflight_order(record: &CertificateRecord, order_url: &str) -> bool {
 fn is_retryable_challenge_visibility(error: &Error) -> bool {
     matches!(
         error,
-        Error::Operation {
+        Error::Certificate(
+            CertificateError::Http01LocalChallengeNotVisible { .. }
+                | CertificateError::Http01NoEligibleGateway { .. }
+                | CertificateError::Http01HostnameNotAdvertised { .. }
+                | CertificateError::Http01MissingReadiness { .. }
+                | CertificateError::Http01InvalidServiceRevision { .. }
+        ) | Error::Operation {
             operation: "acme_challenge_visibility",
             ..
         }
@@ -752,13 +756,11 @@ async fn wait_for_http01_challenge_visible(
             return Ok(());
         }
         if start.elapsed() >= HTTP01_CHALLENGE_VISIBILITY_TIMEOUT {
-            return Err(Error::operation(
-                "acme_challenge_visibility",
-                format!(
-                    "HTTP-01 challenge for {hostname} was not visible in store within {:?}",
-                    HTTP01_CHALLENGE_VISIBILITY_TIMEOUT
-                ),
-            ));
+            return Err(CertificateError::Http01LocalChallengeNotVisible {
+                hostname: hostname.to_string(),
+                token: token.to_string(),
+            }
+            .into());
         }
         tokio::time::sleep(HTTP01_CHALLENGE_VISIBILITY_POLL).await;
     }
@@ -1645,7 +1647,7 @@ mod tests {
         let [warning] = warnings.as_slice() else {
             panic!("expected one coordination warning, got {warnings:?}");
         };
-        assert!(warning.contains("certificate_issuance_coordination"));
+        assert!(warning.contains("during issuance"));
         assert!(warning.contains("nats lock backend unavailable"));
     }
 
@@ -1664,11 +1666,13 @@ mod tests {
                 .await
                 .expect_err("renewal job should fail on lock backend error");
 
-        assert!(
-            error
-                .to_string()
-                .contains("certificate_issuance_coordination")
-        );
+        assert!(matches!(
+            &error,
+            Error::Certificate(CertificateError::CertificateLockAcquireFailed {
+                phase: "issuance",
+                ..
+            })
+        ));
         assert!(error.to_string().contains("nats lock backend unavailable"));
     }
 
@@ -1732,11 +1736,13 @@ mod tests {
         .await
         .expect_err("lock backend failure should fail finalization");
 
-        assert!(
-            error
-                .to_string()
-                .contains("certificate_finalization_coordination")
-        );
+        assert!(matches!(
+            &error,
+            Error::Certificate(CertificateError::CertificateLockAcquireFailed {
+                phase: "finalization",
+                ..
+            })
+        ));
         assert!(error.to_string().contains("nats lock backend unavailable"));
         assert_eq!(issuer.finalize_call_count(), 0);
     }
@@ -2260,12 +2266,9 @@ mod tests {
         assert!(
             matches!(
                 &error,
-                Error::Operation {
-                    operation: "acme_challenge_visibility",
-                    ..
-                }
+                Error::Certificate(CertificateError::Http01LocalChallengeNotVisible { .. })
             ),
-            "expected acme_challenge_visibility tag, got: {error:?}"
+            "expected HTTP-01 visibility error, got: {error:?}"
         );
         assert!(
             error.to_string().contains("example.com"),

@@ -72,12 +72,8 @@ impl RoutingEventEnvelope {
         let Some(ack) = self.ack.take() else {
             return Ok(());
         };
-        ack.send(()).map_err(|()| {
-            Error::operation(
-                "routing_event_ack_failed",
-                format!("routing event '{}' ack receiver closed", self.event_id),
-            )
-        })
+        ack.send(())
+            .map_err(|()| Error::routing_event_ack_receiver_closed(self.event_id))
     }
 }
 
@@ -160,6 +156,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{RoutingEventEnvelope, apply_routing_event, apply_routing_events};
+    use ployz_types::error::Error;
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
         MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey, RoutingEvent,
@@ -197,8 +194,12 @@ mod tests {
         .await
         .expect_err("closed ack receiver should be visible to caller");
 
-        assert!(error.to_string().contains("event-1"));
-        assert!(error.to_string().contains("ack receiver closed"));
+        assert_eq!(
+            error,
+            Error::RoutingEventAckReceiverClosed {
+                event_id: "event-1".into()
+            }
+        );
     }
 
     #[test]

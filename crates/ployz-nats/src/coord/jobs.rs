@@ -8,7 +8,7 @@ use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy, ReplayPolicy, pu
 use async_nats::jetstream::message::PublishMessage;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
-use ployz_types::error::{Error, Result};
+use ployz_types::error::{CoordinationError, Error, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::NatsStore;
@@ -272,10 +272,7 @@ fn decode_cert_renewal_message_in(
     let expected_subject = subjects::cert_renewal_job_in(scope, &hostname);
     let subject = subject.to_string();
     if subject != expected_subject {
-        return Err(Error::operation(
-            "nats_cert_job_subject",
-            format!("subject '{subject}' did not match hostname '{hostname}'"),
-        ));
+        return Err(CoordinationError::CertRenewalSubjectMismatch { subject, hostname }.into());
     }
     Ok((subject, hostname))
 }
@@ -294,13 +291,18 @@ fn schedule_header_value(schedule: &JobSchedule) -> Result<Option<String>> {
         JobSchedule::Immediate => Ok(None),
         JobSchedule::Cron(expression) => Ok(Some(expression.clone())),
         JobSchedule::AtUnixSecs(timestamp) => {
-            let timestamp = i64::try_from(*timestamp)
-                .map_err(|error| Error::operation("nats_cert_job_schedule", error.to_string()))?;
+            let timestamp = i64::try_from(*timestamp).map_err(|error| {
+                CoordinationError::CertRenewalInvalidSchedule {
+                    timestamp: timestamp.to_string(),
+                    message: error.to_string(),
+                }
+            })?;
             let Some(at) = DateTime::<Utc>::from_timestamp(timestamp, 0) else {
-                return Err(Error::operation(
-                    "nats_cert_job_schedule",
-                    format!("invalid unix timestamp {timestamp}"),
-                ));
+                return Err(CoordinationError::CertRenewalInvalidSchedule {
+                    timestamp: timestamp.to_string(),
+                    message: "out of range".to_string(),
+                }
+                .into());
             };
             Ok(Some(format!(
                 "@at {}",
@@ -524,8 +526,9 @@ mod tests {
         let error = decode_cert_renewal_message_in(&NatsScope::local_default(), &subject, &payload)
             .expect_err("decode fails");
 
-        assert!(error.to_string().contains(
-            "subject 'ployz.v1.local.auth-default.work.cert.renew.other%2Eexample%2Ecom'"
+        assert!(matches!(
+            error,
+            Error::Coordination(CoordinationError::CertRenewalSubjectMismatch { .. })
         ));
     }
 
