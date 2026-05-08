@@ -7,6 +7,13 @@
 - Treat new features as greenfield. No compatibility shims unless explicitly
   requested for a concrete rollout.
 
+# Documented Solutions
+
+`docs/solutions/` contains documented solutions to past problems and reusable
+patterns, organized by category with YAML frontmatter such as `module`, `tags`,
+and `problem_type`. Relevant when implementing, debugging, or making decisions
+in documented areas.
+
 # Architecture
 
 - Thin edge apps over a small orchestration kernel.
