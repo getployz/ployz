@@ -1,9 +1,10 @@
 use crate::error::{Error, Result};
+use backon::{BlockingRetryable, ConstantBuilder};
 use serde::Deserialize;
 use std::net::TcpListener;
-use std::process::{Command, ExitStatus};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::ExitStatus;
+use std::time::Duration;
+use xshell::{Shell, cmd};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -156,10 +157,11 @@ pub(crate) fn docker_outer_raw<const N: usize>(args: [&str; N]) -> Result<Comman
 }
 
 pub(crate) fn run_command(program: &str, args: &[&str]) -> Result<CommandOutput> {
-    let output = Command::new(program)
-        .args(args)
+    let sh = Shell::new().map_err(|error| Error::Io(format!("create shell: {error}")))?;
+    let output = cmd!(sh, "{program} {args...}")
+        .ignore_status()
         .output()
-        .map_err(|error| Error::Io(format!("spawn {program}: {error}")))?;
+        .map_err(|error| Error::Io(format!("run {program}: {error}")))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     Ok(CommandOutput {
@@ -196,19 +198,41 @@ pub(crate) fn wait_until_with_interval<F>(
 where
     F: FnMut() -> Result<bool>,
 {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if predicate()? {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            return Err(Error::Message(format!(
-                "timed out after {}s",
-                timeout.as_secs()
-            )));
-        }
-        thread::sleep(poll_interval);
+    let attempts = attempts_for_duration(timeout, poll_interval);
+    let result = (|| match predicate() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(WaitAttemptError::Pending),
+        Err(error) => Err(WaitAttemptError::Predicate(error)),
+    })
+    .retry(
+        ConstantBuilder::default()
+            .with_delay(poll_interval)
+            .with_max_times(attempts),
+    )
+    .when(|error| matches!(error, WaitAttemptError::Pending))
+    .call();
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(WaitAttemptError::Pending) => Err(Error::Message(format!(
+            "timed out after {}s",
+            timeout.as_secs()
+        ))),
+        Err(WaitAttemptError::Predicate(error)) => Err(error),
     }
+}
+
+enum WaitAttemptError {
+    Pending,
+    Predicate(Error),
+}
+
+fn attempts_for_duration(timeout: Duration, interval: Duration) -> usize {
+    if interval.is_zero() {
+        return 1;
+    }
+    let attempts = timeout.as_nanos() / interval.as_nanos() + 1;
+    attempts.min(usize::MAX as u128) as usize
 }
 
 pub(crate) fn pick_free_port() -> Result<u16> {

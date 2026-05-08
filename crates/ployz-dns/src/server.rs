@@ -3,6 +3,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use backon::{ConstantBuilder, Retryable};
 use hickory_server::ServerFuture;
 use hickory_server::authority::MessageResponseBuilder;
 use hickory_server::proto::op::{Header, ResponseCode};
@@ -11,7 +12,7 @@ use hickory_server::proto::rr::{Name, RData, Record, RecordType};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::oneshot;
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 use tracing::{info, trace, warn};
 
 use crate::config::{DnsConfig, DnsError};
@@ -298,35 +299,48 @@ where
     S: DnsStore + Send + Sync,
 {
     let deadline = tokio::time::Instant::now() + STORE_READY_TIMEOUT;
-    loop {
+    (|| async {
         match timeout(
             STORE_READY_ATTEMPT_TIMEOUT,
             store.subscribe_routing_events(),
         )
         .await
         {
-            Ok(Ok((state, _rx))) => return Ok(state),
-            Ok(Err(error)) if tokio::time::Instant::now() < deadline => {
-                warn!(?error, "dns waiting for store readiness");
-            }
-            Err(_) if tokio::time::Instant::now() < deadline => {
-                warn!("dns timed out loading initial routing state; retrying");
-            }
-            Ok(Err(error)) => {
-                return Err(DnsError::Store(format!(
-                    "store did not become ready within {:?}: {error}",
-                    STORE_READY_TIMEOUT
-                )));
-            }
-            Err(_) => {
-                return Err(DnsError::Store(format!(
-                    "store did not return initial routing state within {:?}",
-                    STORE_READY_TIMEOUT
-                )));
-            }
+            Ok(Ok((state, _rx))) => Ok(state),
+            Ok(Err(error)) => Err(InitialRoutingAttempt::Store(error)),
+            Err(_) => Err(InitialRoutingAttempt::AttemptTimedOut),
         }
-        sleep(STORE_READY_POLL).await;
-    }
+    })
+    .retry(
+        ConstantBuilder::default()
+            .with_delay(STORE_READY_POLL)
+            .without_max_times(),
+    )
+    .when(|_| tokio::time::Instant::now() < deadline)
+    .notify(|error, _delay| match error {
+        InitialRoutingAttempt::Store(error) => {
+            warn!(?error, "dns waiting for store readiness");
+        }
+        InitialRoutingAttempt::AttemptTimedOut => {
+            warn!("dns timed out loading initial routing state; retrying");
+        }
+    })
+    .await
+    .map_err(|error| match error {
+        InitialRoutingAttempt::Store(error) => DnsError::Store(format!(
+            "store did not become ready within {:?}: {error}",
+            STORE_READY_TIMEOUT
+        )),
+        InitialRoutingAttempt::AttemptTimedOut => DnsError::Store(format!(
+            "store did not return initial routing state within {:?}",
+            STORE_READY_TIMEOUT
+        )),
+    })
+}
+
+enum InitialRoutingAttempt {
+    Store(DnsError),
+    AttemptTimedOut,
 }
 
 #[cfg(test)]

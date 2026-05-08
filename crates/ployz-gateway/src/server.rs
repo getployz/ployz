@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use backon::{ConstantBuilder, Retryable};
 use pingora::listeners::{TlsAccept, tls::TlsSettings};
 use pingora::prelude::*;
 use pingora::protocols::tls::TlsRef;
@@ -10,7 +11,7 @@ use pingora::server::{RunArgs, ShutdownSignal, ShutdownSignalWatch};
 use pingora::services::listening::Service as ListeningService;
 use pingora::tls::{ext, ssl};
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 use tracing::{error, info, warn};
 
 use crate::config::{GatewayConfig, GatewayError};
@@ -294,35 +295,48 @@ where
     S: crate::sync::RoutingStateStore + Send + Sync,
 {
     let deadline = tokio::time::Instant::now() + STORE_READY_TIMEOUT;
-    loop {
+    (|| async {
         match timeout(
             STORE_READY_ATTEMPT_TIMEOUT,
             load_projected_snapshot_from_store(store),
         )
         .await
         {
-            Ok(Ok(snapshot)) => return Ok(snapshot),
-            Ok(Err(error)) if tokio::time::Instant::now() < deadline => {
-                warn!(?error, "gateway waiting for store readiness");
-            }
-            Err(_) if tokio::time::Instant::now() < deadline => {
-                warn!("gateway timed out loading initial store snapshot; retrying");
-            }
-            Ok(Err(error)) => {
-                return Err(GatewayError::Store(format!(
-                    "store did not become ready within {:?}: {error}",
-                    STORE_READY_TIMEOUT
-                )));
-            }
-            Err(_) => {
-                return Err(GatewayError::Store(format!(
-                    "store did not return initial snapshot within {:?}",
-                    STORE_READY_TIMEOUT
-                )));
-            }
+            Ok(Ok(snapshot)) => Ok(snapshot),
+            Ok(Err(error)) => Err(InitialSnapshotAttempt::Store(error)),
+            Err(_) => Err(InitialSnapshotAttempt::AttemptTimedOut),
         }
-        sleep(STORE_READY_POLL).await;
-    }
+    })
+    .retry(
+        ConstantBuilder::default()
+            .with_delay(STORE_READY_POLL)
+            .without_max_times(),
+    )
+    .when(|_| tokio::time::Instant::now() < deadline)
+    .notify(|error, _delay| match error {
+        InitialSnapshotAttempt::Store(error) => {
+            warn!(?error, "gateway waiting for store readiness");
+        }
+        InitialSnapshotAttempt::AttemptTimedOut => {
+            warn!("gateway timed out loading initial store snapshot; retrying");
+        }
+    })
+    .await
+    .map_err(|error| match error {
+        InitialSnapshotAttempt::Store(error) => GatewayError::Store(format!(
+            "store did not become ready within {:?}: {error}",
+            STORE_READY_TIMEOUT
+        )),
+        InitialSnapshotAttempt::AttemptTimedOut => GatewayError::Store(format!(
+            "store did not return initial snapshot within {:?}",
+            STORE_READY_TIMEOUT
+        )),
+    })
+}
+
+enum InitialSnapshotAttempt {
+    Store(GatewayError),
+    AttemptTimedOut,
 }
 
 fn gateway_tls_listener(config: &GatewayConfig) -> Option<GatewayTlsListener<'_>> {

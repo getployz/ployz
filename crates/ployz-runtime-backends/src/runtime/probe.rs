@@ -1,13 +1,14 @@
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
+use backon::{ConstantBuilder, Retryable};
 use bollard::Docker;
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use futures_util::StreamExt;
 use ployz_types::{Error, Result};
 use reqwest::StatusCode;
 use tokio::net::TcpStream;
-use tokio::time::{Instant, sleep, timeout};
+use tokio::time::timeout;
 
 pub enum Probe {
     Tcp {
@@ -67,30 +68,64 @@ impl ProbeRunner {
         attempt_timeout: Duration,
         retries: u32,
     ) -> Result<()> {
-        let start_deadline = Instant::now() + start_period;
-        loop {
-            if self.check_with_timeout(probe, attempt_timeout).await? {
-                return Ok(());
-            }
-            if Instant::now() >= start_deadline {
-                break;
-            }
-            sleep(interval).await;
+        let start_attempts = attempts_for_duration(start_period, interval);
+        if self
+            .retry_probe(probe, interval, attempt_timeout, start_attempts)
+            .await?
+        {
+            return Ok(());
         }
 
-        let mut failures = 0_u32;
-        loop {
-            if self.check_with_timeout(probe, attempt_timeout).await? {
-                return Ok(());
-            }
-            failures += 1;
-            if failures >= retries {
-                return Err(Error::operation(
-                    "wait_ready",
-                    "probe did not become ready before retries were exhausted",
-                ));
-            }
-            sleep(interval).await;
+        if self
+            .retry_probe(probe, interval, attempt_timeout, retries as usize)
+            .await?
+        {
+            return Ok(());
+        }
+
+        Err(Error::operation(
+            "wait_ready",
+            "probe did not become ready before retries were exhausted",
+        ))
+    }
+
+    async fn retry_probe(
+        &self,
+        probe: &Probe,
+        interval: Duration,
+        attempt_timeout: Duration,
+        max_attempts: usize,
+    ) -> Result<bool> {
+        let max_attempts = max_attempts.max(1);
+        let result = (|| async { self.ready_attempt(probe, attempt_timeout).await })
+            .retry(
+                ConstantBuilder::default()
+                    .with_delay(interval)
+                    .with_max_times(max_attempts),
+            )
+            .when(|error| matches!(error, ProbeAttemptError::NotReady))
+            .await;
+
+        match result {
+            Ok(()) => Ok(true),
+            Err(ProbeAttemptError::NotReady) => Ok(false),
+            Err(ProbeAttemptError::Probe(error)) => Err(error),
+        }
+    }
+
+    async fn ready_attempt(
+        &self,
+        probe: &Probe,
+        probe_timeout: Duration,
+    ) -> std::result::Result<(), ProbeAttemptError> {
+        if self
+            .check_with_timeout(probe, probe_timeout)
+            .await
+            .map_err(ProbeAttemptError::Probe)?
+        {
+            Ok(())
+        } else {
+            Err(ProbeAttemptError::NotReady)
         }
     }
 
@@ -131,4 +166,17 @@ impl ProbeRunner {
             .map_err(|e| Error::operation("probe_exec", format!("inspect exec: {e}")))?;
         Ok(inspect.exit_code == Some(0))
     }
+}
+
+enum ProbeAttemptError {
+    NotReady,
+    Probe(Error),
+}
+
+fn attempts_for_duration(duration: Duration, interval: Duration) -> usize {
+    if interval.is_zero() {
+        return 1;
+    }
+    let attempts = duration.as_nanos() / interval.as_nanos() + 1;
+    attempts.min(usize::MAX as u128) as usize
 }

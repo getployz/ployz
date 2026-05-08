@@ -16,8 +16,10 @@ use ployz_types::spec::Namespace;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
+
+const MEMORY_SUBSCRIPTION_CAPACITY: usize = 1024;
 
 pub struct MemoryStore {
     inner: Mutex<StoreInner>,
@@ -25,19 +27,26 @@ pub struct MemoryStore {
 
 struct StoreInner {
     machines: BTreeMap<MachineId, MachineMembership>,
-    machine_subscribers: Vec<mpsc::Sender<crate::MachineSubscriptionUpdate>>,
-    routing_subscribers: Vec<mpsc::Sender<crate::RoutingEventSubscriptionUpdate>>,
+    machine_events: broadcast::Sender<MachineEvent>,
+    routing_events: broadcast::Sender<MemoryRoutingEvent>,
     invites: BTreeMap<String, InviteRecord>,
     deploy_commit_facts: DeployCommitFacts,
     deploy_records: HashMap<DeployId, DeployRecord>,
     instance_status: HashMap<InstanceId, InstanceStatusRecord>,
     acme_accounts: HashMap<String, AcmeAccountRecord>,
     certificates: BTreeMap<String, CertificateRecord>,
-    certificate_subscribers: Vec<mpsc::Sender<crate::CertificateSubscriptionUpdate>>,
+    certificate_events: broadcast::Sender<CertificateEvent>,
     acme_challenges: BTreeMap<(String, String), AcmeChallengeRecord>,
-    acme_challenge_subscribers: Vec<mpsc::Sender<crate::AcmeChallengeSubscriptionUpdate>>,
+    acme_challenge_events: broadcast::Sender<AcmeChallengeEvent>,
     acme_challenge_readiness: BTreeMap<(String, String, MachineId), AcmeChallengeReadinessRecord>,
     sync_status: SyncStatus,
+}
+
+#[derive(Debug, Clone)]
+struct MemoryRoutingEvent {
+    event_id: String,
+    cause: Option<String>,
+    event: RoutingEvent,
 }
 
 impl Default for MemoryStore {
@@ -52,17 +61,17 @@ impl MemoryStore {
         Self {
             inner: Mutex::new(StoreInner {
                 machines: BTreeMap::new(),
-                machine_subscribers: Vec::new(),
-                routing_subscribers: Vec::new(),
+                machine_events: broadcast::channel(MEMORY_SUBSCRIPTION_CAPACITY).0,
+                routing_events: broadcast::channel(MEMORY_SUBSCRIPTION_CAPACITY).0,
                 invites: BTreeMap::new(),
                 deploy_commit_facts: DeployCommitFacts::new(),
                 deploy_records: HashMap::new(),
                 instance_status: HashMap::new(),
                 acme_accounts: HashMap::new(),
                 certificates: BTreeMap::new(),
-                certificate_subscribers: Vec::new(),
+                certificate_events: broadcast::channel(MEMORY_SUBSCRIPTION_CAPACITY).0,
                 acme_challenges: BTreeMap::new(),
-                acme_challenge_subscribers: Vec::new(),
+                acme_challenge_events: broadcast::channel(MEMORY_SUBSCRIPTION_CAPACITY).0,
                 acme_challenge_readiness: BTreeMap::new(),
                 sync_status: SyncStatus::Synced,
             }),
@@ -80,16 +89,7 @@ impl MemoryStore {
     }
 
     fn broadcast_machine(inner: &mut StoreInner, event: MachineEvent) {
-        inner
-            .machine_subscribers
-            .retain(|sender| match sender.try_send(Ok(event.clone())) {
-                Ok(()) => true,
-                Err(mpsc::error::TrySendError::Closed(_)) => false,
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    warn!("machine subscriber channel full, closing stale event stream");
-                    false
-                }
-            });
+        let _ = inner.machine_events.send(event);
     }
 
     fn broadcast_routing_events(
@@ -116,19 +116,10 @@ impl MemoryStore {
         event: RoutingEvent,
     ) {
         let event_id = event_id.into();
-        inner.routing_subscribers.retain(|sender| {
-            match sender.try_send(Ok(RoutingEventEnvelope::unacked(
-                event_id.clone(),
-                cause.clone(),
-                event.clone(),
-            ))) {
-                Ok(()) => true,
-                Err(mpsc::error::TrySendError::Closed(_)) => false,
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    warn!("routing subscriber channel full, closing stale event stream");
-                    false
-                }
-            }
+        let _ = inner.routing_events.send(MemoryRoutingEvent {
+            event_id,
+            cause,
+            event,
         });
     }
 
@@ -167,30 +158,76 @@ impl MemoryStore {
     }
 
     fn broadcast_certificate(inner: &mut StoreInner, event: CertificateEvent) {
-        inner
-            .certificate_subscribers
-            .retain(|sender| match sender.try_send(Ok(event.clone())) {
-                Ok(()) => true,
-                Err(mpsc::error::TrySendError::Closed(_)) => false,
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    warn!("certificate subscriber channel full, closing stale event stream");
-                    false
-                }
-            });
+        let _ = inner.certificate_events.send(event);
     }
 
     fn broadcast_acme_challenge(inner: &mut StoreInner, event: AcmeChallengeEvent) {
-        inner.acme_challenge_subscribers.retain(|sender| {
-            match sender.try_send(Ok(event.clone())) {
-                Ok(()) => true,
-                Err(mpsc::error::TrySendError::Closed(_)) => false,
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    warn!("acme challenge subscriber channel full, closing stale event stream");
-                    false
+        let _ = inner.acme_challenge_events.send(event);
+    }
+}
+
+fn subscribe_broadcast<T>(mut events: broadcast::Receiver<T>) -> mpsc::Receiver<Result<T>>
+where
+    T: Clone + Send + 'static,
+{
+    let (tx, rx) = mpsc::channel(MEMORY_SUBSCRIPTION_CAPACITY);
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(event) => {
+                    if tx.send(Ok(event)).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(skipped, "memory subscriber lagged, closing event stream");
+                    let _ = tx
+                        .send(Err(Error::operation(
+                            "memory_subscription_lagged",
+                            format!("subscriber lagged by {skipped} events"),
+                        )))
+                        .await;
+                    break;
                 }
             }
-        });
-    }
+        }
+    });
+    rx
+}
+
+fn subscribe_routing_broadcast(
+    mut events: broadcast::Receiver<MemoryRoutingEvent>,
+) -> mpsc::Receiver<crate::RoutingEventSubscriptionUpdate> {
+    let (tx, rx) = mpsc::channel(MEMORY_SUBSCRIPTION_CAPACITY);
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(event) => {
+                    let envelope =
+                        RoutingEventEnvelope::unacked(event.event_id, event.cause, event.event);
+                    if tx.send(Ok(envelope)).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(
+                        skipped,
+                        "memory routing subscriber lagged, closing event stream"
+                    );
+                    let _ = tx
+                        .send(Err(Error::operation(
+                            "memory_subscription_lagged",
+                            format!("routing subscriber lagged by {skipped} events"),
+                        )))
+                        .await;
+                    break;
+                }
+            }
+        }
+    });
+    rx
 }
 
 #[async_trait]
@@ -243,10 +280,9 @@ impl MachineMembershipStore for MemoryStore {
     }
 
     async fn subscribe_machines(&self) -> Result<crate::MachineSubscription> {
-        let mut inner = self.lock_inner();
+        let inner = self.lock_inner();
         let snapshot = inner.machines.values().cloned().collect::<Vec<_>>();
-        let (sender, receiver) = mpsc::channel(64);
-        inner.machine_subscribers.push(sender);
+        let receiver = subscribe_broadcast(inner.machine_events.subscribe());
         Ok((snapshot, receiver))
     }
 }
@@ -264,10 +300,9 @@ impl RoutingStateStore for MemoryStore {
 
 impl MemoryStore {
     async fn subscribe_routing_events_internal(&self) -> Result<RoutingEventSubscription> {
-        let mut inner = self.lock_inner();
+        let inner = self.lock_inner();
         let state = Self::routing_state(&inner);
-        let (sender, receiver) = mpsc::channel(1024);
-        inner.routing_subscribers.push(sender);
+        let receiver = subscribe_routing_broadcast(inner.routing_events.subscribe());
         Ok((state, receiver))
     }
 }
@@ -563,18 +598,16 @@ impl CertificateStore for MemoryStore {
     }
 
     async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
-        let mut inner = self.lock_inner();
+        let inner = self.lock_inner();
         let snapshot = inner.certificates.values().cloned().collect::<Vec<_>>();
-        let (sender, receiver) = mpsc::channel(64);
-        inner.certificate_subscribers.push(sender);
+        let receiver = subscribe_broadcast(inner.certificate_events.subscribe());
         Ok((snapshot, receiver))
     }
 
     async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
-        let mut inner = self.lock_inner();
+        let inner = self.lock_inner();
         let snapshot = inner.acme_challenges.values().cloned().collect::<Vec<_>>();
-        let (sender, receiver) = mpsc::channel(64);
-        inner.acme_challenge_subscribers.push(sender);
+        let receiver = subscribe_broadcast(inner.acme_challenge_events.subscribe());
         Ok((snapshot, receiver))
     }
 
@@ -1844,64 +1877,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn full_routing_event_channel_closes_subscriber() {
-        let store = MemoryStore::new();
-        let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
+    async fn lagged_routing_broadcast_reports_error_then_closes() {
+        let (sender, receiver) = broadcast::channel(2);
+        let mut event_rx = subscribe_routing_broadcast(receiver);
+        let event = RoutingEvent::ReleaseRemoved {
+            namespace: Namespace("prod".into()),
+            service: "api".into(),
+        };
 
-        for index in 0..1030 {
-            let namespace = Namespace("prod".into());
-            let revision = ServiceRevisionRecord {
-                namespace: namespace.clone(),
-                service: format!("api-{index}"),
-                revision_hash: "rev-1".into(),
-                spec_json: "{}".into(),
-                created_by: MachineId("machine-1".into()),
-                created_at: 1,
-            };
-            store
-                .commit_deploy(&DeployCommit {
-                    namespace: namespace.clone(),
-                    revisions: vec![revision],
-                    removed_services: Vec::new(),
-                    removed_volumes: Vec::new(),
-                    releases: Vec::new(),
-                    volumes: Vec::new(),
-                    deploy: test_deploy(&namespace, &format!("deploy-{index}")),
+        for index in 0..3 {
+            sender
+                .send(MemoryRoutingEvent {
+                    event_id: format!("event-{index}"),
+                    cause: Some("test".into()),
+                    event: event.clone(),
                 })
-                .await
-                .expect("commit deploy");
+                .expect("subscriber should be present");
         }
 
-        let mut received = 0;
-        while event_rx.recv().await.is_some() {
-            received += 1;
-        }
-        assert_eq!(
-            received, 1024,
-            "full delta channels must close after buffered events instead of silently skipping one"
-        );
+        let error = event_rx
+            .recv()
+            .await
+            .expect("lag error should be delivered")
+            .expect_err("lagged routing stream should report an error");
+        assert!(error.to_string().contains("lagged by 1 events"));
+        assert!(event_rx.recv().await.is_none());
     }
 
     #[tokio::test]
-    async fn full_machine_event_channel_closes_subscriber() {
-        let store = MemoryStore::new();
-        let (_snapshot, mut event_rx) = store.subscribe_machines().await.expect("subscribe");
+    async fn lagged_event_broadcast_reports_error_then_closes() {
+        let (sender, receiver) = broadcast::channel(2);
+        let mut event_rx = subscribe_broadcast(receiver);
 
-        for index in 0..70 {
-            store
-                .upsert_self_machine(&test_machine(format!("machine-{index}")))
-                .await
-                .expect("upsert machine");
+        for index in 0..3 {
+            sender
+                .send(MachineEvent::Upsert(test_machine(format!(
+                    "machine-{index}"
+                ))))
+                .expect("subscriber should be present");
         }
 
-        let mut received = 0;
-        while event_rx.recv().await.is_some() {
-            received += 1;
-        }
-        assert_eq!(
-            received, 64,
-            "full machine event channels must close after buffered events instead of silently skipping one"
-        );
+        let error = event_rx
+            .recv()
+            .await
+            .expect("lag error should be delivered")
+            .expect_err("lagged stream should report an error");
+        assert!(error.to_string().contains("lagged by 1 events"));
+        assert!(event_rx.recv().await.is_none());
     }
 
     #[tokio::test]
