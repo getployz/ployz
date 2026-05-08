@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use ployz_store_api::InstanceStatusStore;
-use ployz_types::error::{Error, Result};
+use ployz_types::error::{Error, Result, StoreRecordKind};
 use ployz_types::model::{InstanceId, InstanceStatusRecord, RoutingEvent};
 use ployz_types::spec::Namespace;
 
@@ -94,12 +94,10 @@ fn decode_instance(key: &str, bytes: &[u8]) -> Result<InstanceStatusRecord> {
 
 fn validate_instance_key(key: &str, record: InstanceStatusRecord) -> Result<InstanceStatusRecord> {
     if record.instance_id.0 != key {
-        return Err(Error::operation(
-            "nats_instance_decode",
-            format!(
-                "instance key {key} does not match payload id {}",
-                record.instance_id.0
-            ),
+        return Err(Error::store_key_mismatch(
+            StoreRecordKind::Instance,
+            key,
+            record.instance_id.0,
         ));
     }
     Ok(record)
@@ -115,6 +113,7 @@ fn sort_instances(records: &mut [InstanceStatusRecord]) {
 #[cfg(test)]
 mod tests {
     use super::{decode_instance, sort_instances};
+    use ployz_types::error::{Error, StoreRecordKind};
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, SlotId,
     };
@@ -135,8 +134,14 @@ mod tests {
 
         let error = decode_instance("key-instance", &bytes).expect_err("key mismatch should fail");
 
-        assert!(error.to_string().contains("key-instance"));
-        assert!(error.to_string().contains("payload-instance"));
+        assert_eq!(
+            error,
+            Error::store_key_mismatch(
+                StoreRecordKind::Instance,
+                "key-instance",
+                "payload-instance"
+            )
+        );
     }
 
     #[test]

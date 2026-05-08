@@ -1,5 +1,5 @@
 use crate::deploy::plan::ResolvedPlan;
-use crate::error::{Error, Result};
+use crate::error::{DeployError, Error, Result};
 use crate::model::{
     DeployChangeKind, DeployEvent, DeployId, DeployPreview, DeployRecord, DeployState,
     DeployStateGoal, DeployStateTransition, DeployTransitionEvidence, InstanceStatusRecord,
@@ -172,7 +172,11 @@ impl StartedCandidates {
                 at_unix_secs: committed_at,
             })
             .map_err(|error| {
-                Error::operation("deploy_apply", format!("commit deploy transition: {error}"))
+                Error::Deploy(DeployError::StateTransitionRejected {
+                    transition: "commit",
+                    code: error.code(),
+                    message: error.message().to_string(),
+                })
             })?;
         let namespace = plan.namespace().clone();
         let participants = plan.participants().clone();
@@ -256,10 +260,11 @@ impl CommittedDeploy {
                 at_unix_secs: finished_at,
             })
             .map_err(|error| {
-                Error::operation(
-                    "deploy_apply",
-                    format!("mark cleanup pending transition: {error}"),
-                )
+                Error::Deploy(DeployError::StateTransitionRejected {
+                    transition: "mark cleanup pending",
+                    code: error.code(),
+                    message: error.message().to_string(),
+                })
             })?;
         Ok(deploy)
     }
@@ -320,26 +325,20 @@ fn build_committed_releases(
             let active_instance_id = match slot.action {
                 DeployChangeKind::Unchanged => {
                     let Some(current) = &slot.current else {
-                        return Err(Error::operation(
-                            "deploy_apply",
-                            format!(
-                                "missing current slot for unchanged service '{}' slot '{}'",
-                                service.service, slot.slot_id
-                            ),
-                        ));
+                        return Err(Error::Deploy(DeployError::MissingCurrentSlot {
+                            service: service.service.clone(),
+                            slot: slot.slot_id.0.clone(),
+                        }));
                     };
                     current.active_instance_id.clone()
                 }
                 DeployChangeKind::Create | DeployChangeKind::Replace => {
                     let key = (service.service.clone(), slot.slot_id.0.clone());
                     let Some(status) = started.get(&key) else {
-                        return Err(Error::operation(
-                            "deploy_apply",
-                            format!(
-                                "missing started instance for service '{}' slot '{}'",
-                                service.service, slot.slot_id
-                            ),
-                        ));
+                        return Err(Error::Deploy(DeployError::MissingStartedInstance {
+                            service: service.service.clone(),
+                            slot: slot.slot_id.0.clone(),
+                        }));
                     };
                     status.instance_id.clone()
                 }

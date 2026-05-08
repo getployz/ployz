@@ -10,7 +10,7 @@ use ployz_orchestrator::certificates::{
     account_id_for_issuer_url,
 };
 use ployz_store_api::{CertificateStore, StoreDriver};
-use ployz_types::error::{Error, Result};
+use ployz_types::error::{CertificateError, Error, Result};
 use ployz_types::model::{AcmeAccountRecord, AcmeChallengeRecord};
 use ployz_types::time::now_unix_secs;
 use std::sync::Arc;
@@ -76,15 +76,18 @@ impl AcmeIssuer for InstantAcmeIssuer {
                 | AuthorizationStatus::Revoked
                 | AuthorizationStatus::Expired
                 | AuthorizationStatus::Deactivated => {
-                    return Err(Error::operation(
-                        "acme_authorization",
-                        format!("authorization for {hostname} is {:?}", authorization.status),
-                    ));
+                    return Err(CertificateError::AcmeAuthorizationUnexpectedStatus {
+                        hostname: hostname.to_string(),
+                        status: format!("{:?}", authorization.status),
+                    }
+                    .into());
                 }
             }
             let challenge = authorization
                 .challenge(ChallengeType::Http01)
-                .ok_or_else(|| Error::operation("acme_challenge", "no http-01 challenge found"))?;
+                .ok_or_else(|| CertificateError::AcmeHttp01ChallengeMissing {
+                    hostname: hostname.to_string(),
+                })?;
             store
                 .upsert_acme_challenge(&AcmeChallengeRecord {
                     hostname: hostname.to_string(),
@@ -127,9 +130,12 @@ impl AcmeIssuer for InstantAcmeIssuer {
         while let Some(result) = authorizations.next().await {
             let mut authorization = result.map_err(acme_error("authorization"))?;
             let status = authorization.status;
-            let mut challenge = authorization
-                .challenge(ChallengeType::Http01)
-                .ok_or_else(|| Error::operation("acme_challenge", "no http-01 challenge found"))?;
+            let mut challenge =
+                authorization
+                    .challenge(ChallengeType::Http01)
+                    .ok_or_else(|| CertificateError::AcmeHttp01ChallengeMissing {
+                        hostname: hostname.to_string(),
+                    })?;
             order_tokens.push(challenge.token.clone());
             match status {
                 AuthorizationStatus::Valid => continue,
@@ -138,10 +144,11 @@ impl AcmeIssuer for InstantAcmeIssuer {
                 | AuthorizationStatus::Revoked
                 | AuthorizationStatus::Expired
                 | AuthorizationStatus::Deactivated => {
-                    return Err(Error::operation(
-                        "acme_authorization",
-                        format!("authorization for {hostname} is {status:?}"),
-                    ));
+                    return Err(CertificateError::AcmeAuthorizationUnexpectedStatus {
+                        hostname: hostname.to_string(),
+                        status: format!("{status:?}"),
+                    }
+                    .into());
                 }
             }
             self.readiness
@@ -160,10 +167,11 @@ impl AcmeIssuer for InstantAcmeIssuer {
             .await
             .map_err(acme_error("poll_ready"))?;
         if status != OrderStatus::Ready {
-            return Err(Error::operation(
-                "acme_order",
-                format!("order for {hostname} reached unexpected status {status:?}"),
-            ));
+            return Err(CertificateError::AcmeOrderUnexpectedStatus {
+                hostname: hostname.to_string(),
+                status: format!("{status:?}"),
+            }
+            .into());
         }
 
         let private_key_pem = order.finalize().await.map_err(acme_error("finalize"))?;
@@ -226,22 +234,18 @@ async fn load_or_create_account(
     let hold = match coordinator.try_acquire_account(&config.issuer_url).await {
         AccountAcquisition::Allowed(hold) => hold,
         AccountAcquisition::VetoedByPeer(reason) => {
-            return Err(Error::operation(
-                "acme_account_coordination",
-                format!(
-                    "ACME account creation deferred for {}: {reason}",
-                    config.issuer_url
-                ),
-            ));
+            return Err(CertificateError::AcmeAccountCreationDeferred {
+                issuer_url: config.issuer_url.clone(),
+                message: reason,
+            }
+            .into());
         }
         AccountAcquisition::CoordinationFailed(reason) => {
-            return Err(Error::operation(
-                "acme_account_coordination",
-                format!(
-                    "could not acquire ACME account lock for {}: {reason}",
-                    config.issuer_url
-                ),
-            ));
+            return Err(CertificateError::AcmeAccountLockAcquireFailed {
+                issuer_url: config.issuer_url.clone(),
+                message: reason,
+            }
+            .into());
         }
     };
 
@@ -332,10 +336,11 @@ fn ensure_order_url_matches_directory(directory_url: &str, order_url: &str) -> R
         && directory.host_str() == order.host_str()
         && directory.port_or_known_default() == order.port_or_known_default();
     if !same_origin {
-        return Err(Error::operation(
-            "acme_order_url_origin",
-            format!("ACME order URL {order} does not share an origin with directory {directory}"),
-        ));
+        return Err(CertificateError::AcmeOrderUrlOriginMismatch {
+            directory_url: directory.to_string(),
+            order_url: order.to_string(),
+        }
+        .into());
     }
     Ok(())
 }
@@ -393,10 +398,7 @@ mod tests {
         .expect_err("mismatched host should be rejected");
         assert!(matches!(
             mismatched_host,
-            Error::Operation {
-                operation: "acme_order_url_origin",
-                ..
-            }
+            Error::Certificate(CertificateError::AcmeOrderUrlOriginMismatch { .. })
         ));
 
         let mismatched_scheme = ensure_order_url_matches_directory(
@@ -406,10 +408,7 @@ mod tests {
         .expect_err("mismatched scheme should be rejected");
         assert!(matches!(
             mismatched_scheme,
-            Error::Operation {
-                operation: "acme_order_url_origin",
-                ..
-            }
+            Error::Certificate(CertificateError::AcmeOrderUrlOriginMismatch { .. })
         ));
 
         let bad_order = ensure_order_url_matches_directory(directory, "not a url")
@@ -435,10 +434,10 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(
-            error.to_string().contains("ACME account creation deferred"),
-            "{error}"
-        );
+        assert!(matches!(
+            error,
+            Error::Certificate(CertificateError::AcmeAccountCreationDeferred { .. })
+        ));
     }
 
     #[tokio::test]
@@ -456,11 +455,10 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(
-            error
-                .to_string()
-                .contains("could not acquire ACME account lock")
-        );
+        assert!(matches!(
+            &error,
+            Error::Certificate(CertificateError::AcmeAccountLockAcquireFailed { .. })
+        ));
         assert!(error.to_string().contains("lock backend failed"));
     }
 
@@ -475,10 +473,11 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         };
-        match account_from_record(&config, &record).await {
-            Ok(_) => panic!("malformed credentials JSON should fail to rehydrate"),
-            Err(Error::Operation { operation, .. }) => assert_eq!(operation, "acme_account_decode"),
-        }
+        let Err(Error::Operation { operation, .. }) = account_from_record(&config, &record).await
+        else {
+            panic!("malformed credentials JSON should fail to rehydrate with acme_account_decode");
+        };
+        assert_eq!(operation, "acme_account_decode");
     }
 
     #[tokio::test]
@@ -492,9 +491,12 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         };
-        match account_from_record(&config, &record).await {
-            Ok(_) => panic!("JSON missing AccountCredentials fields should fail to rehydrate"),
-            Err(Error::Operation { operation, .. }) => assert_eq!(operation, "acme_account_decode"),
-        }
+        let Err(Error::Operation { operation, .. }) = account_from_record(&config, &record).await
+        else {
+            panic!(
+                "JSON missing AccountCredentials fields should fail to rehydrate with acme_account_decode"
+            );
+        };
+        assert_eq!(operation, "acme_account_decode");
     }
 }

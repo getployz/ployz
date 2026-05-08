@@ -1,4 +1,4 @@
-use crate::error::{Error, Result};
+use crate::error::{DeployError, Error, Result};
 use crate::machine_policy::{can_keep_existing_slot, is_new_placement_candidate};
 use crate::model::{
     DeployChangeKind, DeployPreview, MachineId, MachineMembership, ServicePlan,
@@ -172,7 +172,7 @@ pub(super) async fn resolve_plan(
 ) -> Result<ResolvedPlan> {
     manifest
         .validate()
-        .map_err(|error| Error::operation("deploy_preview", error))?;
+        .map_err(|message| Error::Deploy(DeployError::ManifestInvalid { message }))?;
 
     let current_releases = store.list_deploy_releases(&manifest.namespace).await?;
     let current_volumes = store.list_volumes(&manifest.namespace).await?;
@@ -219,12 +219,11 @@ pub(super) async fn resolve_plan(
             Some(record) => {
                 validate_existing_volume(declaration, record)?;
                 if !machine_is_deployable(&record.machine_id, &machine_map, local_machine_id) {
-                    return Err(Error::operation(
-                        "deploy_preview",
-                        format!(
-                            "volume '{}' is bound to unavailable machine '{}'",
-                            declaration.name, record.machine_id
-                        ),
+                    return Err(Error::Deploy(
+                        DeployError::VolumeBoundToUnavailableMachine {
+                            volume: declaration.name.clone(),
+                            machine_id: record.machine_id.0.clone(),
+                        },
                     ));
                 }
                 record.machine_id.clone()
@@ -431,10 +430,9 @@ pub(super) fn desired_slots(
     match spec.placement {
         Placement::Replicated { count } => {
             if count == 0 {
-                return Err(Error::operation(
-                    "desired_slots",
-                    format!("service '{}' requested zero replicas", spec.name),
-                ));
+                return Err(Error::Deploy(DeployError::ZeroReplicas {
+                    service: spec.name.clone(),
+                }));
             }
             for index in 0..count {
                 let slot_id = SlotId(format!("slot-{number:04}", number = usize::from(index) + 1));
@@ -538,9 +536,10 @@ fn service_volume_pin(
         if let Some(existing) = &pinned
             && existing != machine_id
         {
-            return Err(Error::operation(
-                "deploy_preview",
-                format!("service '{service}' attaches volumes bound to different machines"),
+            return Err(Error::Deploy(
+                DeployError::ServiceVolumesOnDifferentMachines {
+                    service: service.to_string(),
+                },
             ));
         }
         pinned = Some(machine_id.clone());
@@ -574,38 +573,38 @@ pub(super) fn volume_record_change(volume: &PlannedVolume) -> VolumeChange {
 
 fn validate_existing_volume(declaration: &VolumeDeclaration, record: &VolumeRecord) -> Result<()> {
     if declaration.scope != record.scope {
-        return Err(Error::operation(
-            "deploy_preview",
-            format!("volume '{}' cannot change scope", declaration.name),
-        ));
+        return Err(Error::Deploy(DeployError::VolumeScopeChange {
+            volume: declaration.name.clone(),
+        }));
     }
     if declaration.mode != record.mode {
-        return Err(Error::operation(
-            "deploy_preview",
-            format!(
-                "volume '{}' cannot change mode after creation",
-                declaration.name
-            ),
-        ));
+        return Err(Error::Deploy(DeployError::VolumeModeChange {
+            volume: declaration.name.clone(),
+        }));
     }
     if declaration.owner != record.owner {
-        return Err(Error::operation(
-            "deploy_preview",
-            format!(
-                "volume '{}' cannot change owner after creation",
-                declaration.name
-            ),
-        ));
+        return Err(Error::Deploy(DeployError::VolumeOwnerChange {
+            volume: declaration.name.clone(),
+        }));
     }
-    let requested = parse_quota_bytes(&declaration.quota)
-        .map_err(|error| Error::operation("deploy_preview", error))?;
-    let current = parse_quota_bytes(&record.quota)
-        .map_err(|error| Error::operation("deploy_preview", error))?;
+    let requested = parse_quota_bytes(&declaration.quota).map_err(|message| {
+        Error::Deploy(DeployError::VolumeQuotaInvalid {
+            volume: declaration.name.clone(),
+            quota_kind: "requested",
+            message,
+        })
+    })?;
+    let current = parse_quota_bytes(&record.quota).map_err(|message| {
+        Error::Deploy(DeployError::VolumeQuotaInvalid {
+            volume: declaration.name.clone(),
+            quota_kind: "current",
+            message,
+        })
+    })?;
     if requested < current {
-        return Err(Error::operation(
-            "deploy_preview",
-            format!("volume '{}' quota cannot shrink in v1", declaration.name),
-        ));
+        return Err(Error::Deploy(DeployError::VolumeQuotaShrink {
+            volume: declaration.name.clone(),
+        }));
     }
     Ok(())
 }

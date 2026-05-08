@@ -1,7 +1,7 @@
 use async_nats::jetstream::kv;
 use async_trait::async_trait;
 use ployz_store_api::{MachineMembershipStore, MachineSubscription};
-use ployz_types::error::{Error, Result};
+use ployz_types::error::{Error, Result, StoreRecordKind};
 use ployz_types::model::{MachineEvent, MachineId, MachineMembership, RoutingEvent};
 
 use crate::NatsStore;
@@ -102,12 +102,10 @@ fn machine_snapshot(
 fn decode_machine(key: &str, bytes: &[u8]) -> Result<MachineMembership> {
     let record: MachineMembership = kv_json::decode_json("nats_machine_decode", bytes)?;
     if record.id.0 != key {
-        return Err(Error::operation(
-            "nats_machine_decode",
-            format!(
-                "machine key {key} does not match payload id {}",
-                record.id.0
-            ),
+        return Err(Error::store_key_mismatch(
+            StoreRecordKind::Machine,
+            key,
+            record.id.0,
         ));
     }
     Ok(record)
@@ -115,12 +113,10 @@ fn decode_machine(key: &str, bytes: &[u8]) -> Result<MachineMembership> {
 
 fn validate_machine_key(key: &str, record: MachineMembership) -> Result<MachineMembership> {
     if record.id.0 != key {
-        return Err(Error::operation(
-            "nats_machine_decode",
-            format!(
-                "machine key {key} does not match payload id {}",
-                record.id.0
-            ),
+        return Err(Error::store_key_mismatch(
+            StoreRecordKind::Machine,
+            key,
+            record.id.0,
         ));
     }
     Ok(record)
@@ -141,8 +137,10 @@ mod tests {
         let error =
             decode_machine("key-machine", &bytes).expect_err("key mismatch should fail visibly");
 
-        assert!(error.to_string().contains("key-machine"));
-        assert!(error.to_string().contains("payload-machine"));
+        assert_eq!(
+            error,
+            Error::store_key_mismatch(StoreRecordKind::Machine, "key-machine", "payload-machine")
+        );
     }
 
     #[test]
@@ -190,8 +188,10 @@ mod tests {
 
         let error = machine_snapshot(entries).expect_err("key mismatch should fail");
 
-        assert!(error.to_string().contains("key-machine"));
-        assert!(error.to_string().contains("payload-machine"));
+        assert_eq!(
+            error,
+            Error::store_key_mismatch(StoreRecordKind::Machine, "key-machine", "payload-machine")
+        );
     }
 
     fn test_machine(id: &str) -> MachineMembership {

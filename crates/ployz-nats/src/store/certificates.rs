@@ -6,7 +6,7 @@ use crate::subjects;
 use async_nats::jetstream::kv;
 use async_trait::async_trait;
 use ployz_store_api::{AcmeChallengeSubscription, CertificateStore, CertificateSubscription};
-use ployz_types::error::{Error, Result};
+use ployz_types::error::{Error, Result, StoreRecordKind};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     CertificateEvent, CertificateRecord, CertificateState, MachineId,
@@ -290,9 +290,10 @@ fn decode_certificate(key: &str, bytes: &[u8]) -> Result<CertificateRecord> {
 fn validate_certificate_key(key: &str, record: CertificateRecord) -> Result<CertificateRecord> {
     let expected_key = certificate_key(&record.hostname);
     if expected_key != key {
-        return Err(Error::operation(
-            "nats_certificate_decode",
-            format!("certificate key {key} does not match payload key {expected_key}"),
+        return Err(Error::store_key_mismatch(
+            StoreRecordKind::Certificate,
+            key,
+            expected_key,
         ));
     }
     Ok(record)
@@ -313,9 +314,10 @@ async fn list_challenges(bucket: &kv::Store) -> Result<Vec<AcmeChallengeRecord>>
 fn validate_challenge_key(key: &str, record: AcmeChallengeRecord) -> Result<AcmeChallengeRecord> {
     let expected_key = challenge_key(&record.hostname, &record.token);
     if expected_key != key {
-        return Err(Error::operation(
-            "nats_acme_challenge_decode",
-            format!("ACME challenge key {key} does not match payload key {expected_key}"),
+        return Err(Error::store_key_mismatch(
+            StoreRecordKind::AcmeChallenge,
+            key,
+            expected_key,
         ));
     }
     Ok(record)
@@ -339,9 +341,10 @@ fn validate_readiness_key(
 ) -> Result<AcmeChallengeReadinessRecord> {
     let expected_key = readiness_key(&record.hostname, &record.token, &record.machine_id);
     if expected_key != key {
-        return Err(Error::operation(
-            "nats_acme_readiness_decode",
-            format!("ACME readiness key {key} does not match payload key {expected_key}"),
+        return Err(Error::store_key_mismatch(
+            StoreRecordKind::AcmeChallengeReadiness,
+            key,
+            expected_key,
         ));
     }
     Ok(record)
@@ -382,9 +385,10 @@ fn decode_acme_account(key: &str, bytes: &[u8]) -> Result<AcmeAccountRecord> {
     let record: AcmeAccountRecord = kv_json::decode_json("nats_acme_account_decode", bytes)?;
     let expected_key = acme_account_key(&record.issuer_url);
     if expected_key != key {
-        return Err(Error::operation(
-            "nats_acme_account_decode",
-            format!("ACME account key {key} does not match payload key {expected_key}"),
+        return Err(Error::store_key_mismatch(
+            StoreRecordKind::AcmeAccount,
+            key,
+            expected_key,
         ));
     }
     Ok(record)
@@ -393,6 +397,7 @@ fn decode_acme_account(key: &str, bytes: &[u8]) -> Result<AcmeAccountRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_types::error::{Error, StoreRecordKind};
     use ployz_types::model::CertificateState;
 
     #[test]
@@ -470,11 +475,13 @@ mod tests {
 
         let error = decode_acme_account("wrong-key", &bytes).expect_err("key mismatch should fail");
 
-        assert!(error.to_string().contains("wrong-key"));
-        assert!(
-            error
-                .to_string()
-                .contains(&acme_account_key(&record.issuer_url))
+        assert_eq!(
+            error,
+            Error::store_key_mismatch(
+                StoreRecordKind::AcmeAccount,
+                "wrong-key",
+                acme_account_key(&record.issuer_url)
+            )
         );
     }
 

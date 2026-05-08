@@ -38,6 +38,11 @@
 - Every failure needs an audience.
 - Model failure by audience: who learns it failed, when, and what can they do?
 - Foreground work returns `Result` to the caller.
+- Expected failures must be structured error variants with context, not ad hoc
+  strings.
+- Stringly fallback errors are only for unclassified backend/transport wrappers,
+  serialization/hash fallbacks, test fakes, or presentation-only messages.
+- Callers must branch on error types, not parse display text.
 - Background-with-consumer work preserves last good value and annotates
   freshness/health for the next reader.
 - Background-autonomous work preserves prior state, emits observations, retries
