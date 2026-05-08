@@ -5,7 +5,9 @@ use crate::machine::{
 };
 use crate::mesh::MeshBootstrapRequest;
 use ipnet::Ipv4Net;
-use ployz_types::model::{MachineId, NetworkId, StorageReplicaPolicy};
+use ployz_types::model::{
+    MachineId, MachineMembership, NetworkId, StorageParticipation, StorageReplicaPolicy,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,6 +141,11 @@ pub enum DaemonRequest {
     MachineStoragePromoteSelf {
         replicas: StorageReplicaPolicy,
         authority_peers: Vec<MachineStorageAuthorityPeer>,
+    },
+    MachineStorageRestoreSelf {
+        participation: StorageParticipation,
+        replicas: StorageReplicaPolicy,
+        authority_peers: Vec<MachineMembership>,
     },
     AcmeChallengeReady {
         hostname: String,

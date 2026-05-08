@@ -6,7 +6,8 @@ use ployz_api::{
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
 use ployz_store_api::MachineMembershipStore;
 use ployz_types::model::{
-    AuthorityId, MachineLifecycle, MachineMembership, StorageParticipation, StorageReplicaPolicy,
+    AuthorityId, MachineId, MachineLifecycle, MachineMembership, StorageParticipation,
+    StorageReplicaPolicy,
 };
 use std::collections::BTreeSet;
 use tokio::sync::oneshot;
@@ -232,6 +233,12 @@ impl DaemonState {
             });
         }
 
+        let previous_authority_peers = authorities.clone();
+        let previous_remote_replicas = self
+            .active
+            .as_ref()
+            .map(|active| active.config.storage_replicas)
+            .unwrap_or(StorageReplicaPolicy::Single);
         let mut authority_peers = authorities.clone();
         authority_peers.extend(targets.clone().into_iter().map(|mut target| {
             target.storage_participation = StorageParticipation::default_authority();
@@ -239,6 +246,7 @@ impl DaemonState {
         }));
 
         let mut promoted = Vec::new();
+        let mut remote_rollbacks = Vec::new();
         if self.runtime_is_memory_test() {
             let _ = self
                 .machine_operation_store()
@@ -375,12 +383,26 @@ impl DaemonState {
                         cause: MachineStoragePromotionFailureCause::RpcUnavailable,
                         message: error,
                     });
-                } else if targets.iter().any(|candidate| candidate.id == target.id) {
-                    promoted.push(target.id.0.clone());
+                } else {
+                    remote_rollbacks.push(RemoteStorageRollback {
+                        machine_id: target.id.clone(),
+                        participation: target.storage_participation.clone(),
+                        replicas: previous_remote_replicas,
+                        authority_peers: previous_authority_peers.clone(),
+                    });
+                    if targets.iter().any(|candidate| candidate.id == target.id) {
+                        promoted.push(target.id.0.clone());
+                    }
                 }
             }
-
             if !failed.is_empty() {
+                let rollback_failed =
+                    rollback_remote_storage_promotions(&client, &remote_rollbacks).await;
+                if rollback_failed.is_empty() {
+                    promoted.clear();
+                } else {
+                    failed.extend(rollback_failed);
+                }
                 let rollback_error = self
                     .restore_storage_replica_intent(network_name, previous_replicas)
                     .err();
@@ -574,6 +596,84 @@ impl DaemonState {
             replicas.replicas()
         ))
     }
+
+    pub(crate) async fn handle_machine_storage_restore_self(
+        &mut self,
+        participation: StorageParticipation,
+        replicas: StorageReplicaPolicy,
+        authority_peers: &[MachineMembership],
+    ) -> DaemonResponse {
+        let (network_name, config_path, network_dir) = {
+            let Some(active) = self.active.as_ref() else {
+                return self.err(
+                    "NO_RUNNING_NETWORK",
+                    "storage rollback requires a running network",
+                );
+            };
+            let network_name = active.config.name.0.clone();
+            (
+                network_name.clone(),
+                NetworkConfig::path(&self.data_dir, &network_name),
+                self.network_dir(&network_name),
+            )
+        };
+
+        let mut config = match NetworkConfig::load(&config_path) {
+            Ok(config) => config,
+            Err(error) => return self.err("IO_ERROR", format!("load network config: {error}")),
+        };
+        config.storage = true;
+        config.storage_participation = participation.clone();
+        config.storage_replicas = replicas;
+        if let Err(error) = config.save(&config_path) {
+            return self.err("IO_ERROR", format!("save network config: {error}"));
+        }
+        if let Some(active) = self.active.as_mut() {
+            active.config.storage = true;
+            active.config.storage_participation = participation.clone();
+            active.config.storage_replicas = replicas;
+        }
+
+        let peer_records = authority_peers
+            .iter()
+            .map(BootstrapPeerRecord::from_machine_record)
+            .collect::<Vec<_>>();
+        if let Err(error) = write_bootstrap_peer_records(&network_dir, &peer_records) {
+            return self.err("IO_ERROR", format!("write bootstrap peers: {error}"));
+        }
+
+        if let Err(error) = self
+            .restart_active_runtime_from_config_with_mode(
+                &network_name,
+                RuntimeRestartMode::NetworkAndStore,
+            )
+            .await
+        {
+            return self.err(
+                "NETWORK_RESTART_FAILED",
+                format!("restart storage rollback: {error}"),
+            );
+        }
+
+        let Some(active) = self.active.as_mut() else {
+            return self.err("NO_RUNNING_NETWORK", "no mesh running");
+        };
+        let update_result = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.storage = true;
+                record.storage_participation = participation.clone();
+            })
+            .await;
+        if update_result.is_none() {
+            return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
+        }
+
+        self.ok(format!(
+            "machine storage config restored\n  replicas: {}",
+            replicas.replicas()
+        ))
+    }
 }
 
 fn promotion_payload(
@@ -588,6 +688,13 @@ fn promotion_payload(
         promoted,
         failed,
     }
+}
+
+struct RemoteStorageRollback {
+    machine_id: MachineId,
+    participation: StorageParticipation,
+    replicas: StorageReplicaPolicy,
+    authority_peers: Vec<MachineMembership>,
 }
 
 enum StoragePromotionError {
@@ -724,6 +831,45 @@ fn append_rollback_failures(
         });
     }
     failed
+}
+
+async fn rollback_remote_storage_promotions(
+    client: &NatsNodeRpcClient,
+    rollbacks: &[RemoteStorageRollback],
+) -> Vec<MachineStoragePromotionFailure> {
+    let mut failed = Vec::new();
+    for rollback in rollbacks.iter().rev() {
+        if let Err(error) = restore_remote_storage(client, rollback).await {
+            failed.push(MachineStoragePromotionFailure {
+                machine_id: rollback.machine_id.0.clone(),
+                cause: MachineStoragePromotionFailureCause::RpcUnavailable,
+                message: format!("rollback promoted storage config: {error}"),
+            });
+        }
+    }
+    failed
+}
+
+async fn restore_remote_storage(
+    client: &NatsNodeRpcClient,
+    rollback: &RemoteStorageRollback,
+) -> Result<(), String> {
+    let response = client
+        .request(
+            NodeCommandSubject::machine_storage_restore_self(&rollback.machine_id),
+            &DaemonRequest::MachineStorageRestoreSelf {
+                participation: rollback.participation.clone(),
+                replicas: rollback.replicas,
+                authority_peers: rollback.authority_peers.clone(),
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if response.ok {
+        Ok(())
+    } else {
+        Err(format!("{}: {}", response.code, response.message))
+    }
 }
 
 async fn promote_remote_storage(
