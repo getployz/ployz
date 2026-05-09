@@ -284,9 +284,10 @@ impl NatsNodeRpcClient {
                 format!("encode node rpc request: {error}"),
             )
         })?;
+        let request = nats_request(payload, self.policy);
         let response = tokio::time::timeout(
             self.policy.timeout,
-            self.client.request(subject_name.clone(), payload.into()),
+            self.client.send_request(subject_name.clone(), request),
         )
         .await
         .map_err(|_| {
@@ -321,6 +322,12 @@ impl NatsNodeRpcClient {
             ),
         ))
     }
+}
+
+fn nats_request(payload: Vec<u8>, policy: RpcPolicy) -> async_nats::Request {
+    async_nats::Request::new()
+        .timeout(Some(policy.timeout))
+        .payload(payload.into())
 }
 
 #[must_use]
@@ -427,5 +434,17 @@ mod tests {
         let failure = RpcFailure::new(RpcFailureKind::NoResponders, "none");
 
         assert_eq!(failure.code(), "NATS_RPC_NO_RESPONDERS");
+    }
+
+    #[test]
+    fn rpc_policy_sets_async_nats_request_timeout() {
+        let request = nats_request(
+            Vec::new(),
+            RpcPolicy {
+                timeout: Duration::from_secs(42),
+            },
+        );
+
+        assert_eq!(request.timeout, Some(Some(Duration::from_secs(42))));
     }
 }
