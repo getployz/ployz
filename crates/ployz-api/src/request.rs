@@ -1,4 +1,4 @@
-use crate::deploy::DeployOptions;
+use crate::deploy::{DeployOptions, MigrateServiceRequest};
 use crate::machine::{
     MachineAddOptions, MachineInstallOptions, MachineStorageAuthorityPeer,
     MachineStoragePromoteRequest, MachineTransitionGoal,
@@ -166,6 +166,9 @@ pub enum DaemonRequest {
     DeployExport {
         namespace: String,
     },
+    MigrateService {
+        request: MigrateServiceRequest,
+    },
     DeployNodeInspectNamespace {
         namespace: String,
         deploy_id: String,
@@ -230,4 +233,65 @@ pub enum DaemonRequest {
         id: String,
     },
     VolumeZfsTransferList,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::deploy::MigrateServiceMode;
+
+    #[test]
+    fn migrate_service_request_serializes_stable_wire_shape() {
+        let request = DaemonRequest::MigrateService {
+            request: MigrateServiceRequest {
+                namespace: "prod".into(),
+                service: "db".into(),
+                target_machine: "machine-b".into(),
+                mode: MigrateServiceMode::RenderManifest,
+            },
+        };
+
+        let json = serde_json::to_value(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "MigrateService": {
+                    "request": {
+                        "namespace": "prod",
+                        "service": "db",
+                        "target_machine": "machine-b",
+                        "mode": "render_manifest"
+                    }
+                }
+            })
+        );
+        let roundtrip: DaemonRequest = serde_json::from_value(json).expect("deserialize request");
+        assert!(matches!(
+            roundtrip,
+            DaemonRequest::MigrateService {
+                request: MigrateServiceRequest {
+                    mode: MigrateServiceMode::RenderManifest,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn migrate_service_modes_serialize_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&MigrateServiceMode::Apply).expect("serialize apply"),
+            "\"apply\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MigrateServiceMode::Preview).expect("serialize preview"),
+            "\"preview\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MigrateServiceMode::RenderManifest)
+                .expect("serialize render manifest"),
+            "\"render_manifest\""
+        );
+    }
 }

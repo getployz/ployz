@@ -66,7 +66,7 @@ pub(crate) enum Scenario {
     WireguardPartitionReconnect,
     DeployHttpAcmeGatewaySmoke,
     DockerBridgeForwardSmoke,
-    ZfsTransferRealSmoke,
+    MigrateServiceRealSmoke,
 }
 
 impl Scenario {
@@ -83,7 +83,7 @@ impl Scenario {
         let mut scenarios = Self::DEFAULT.to_vec();
         match zfs_mode {
             ZfsMode::Off | ZfsMode::Fake => {}
-            ZfsMode::Real => scenarios.push(Self::ZfsTransferRealSmoke),
+            ZfsMode::Real => scenarios.push(Self::MigrateServiceRealSmoke),
         }
         scenarios
     }
@@ -91,7 +91,7 @@ impl Scenario {
     #[must_use]
     pub(crate) fn ci_zfs_mode(self) -> ZfsMode {
         match self {
-            Self::ZfsTransferRealSmoke => ZfsMode::Real,
+            Self::MigrateServiceRealSmoke => ZfsMode::Real,
             Self::MeshBootstrapJoinSmoke
             | Self::NodeRestartAdoptsDataPlane
             | Self::WireguardPartitionReconnect
@@ -102,15 +102,15 @@ impl Scenario {
 
     pub(crate) fn validate_zfs_mode(self, zfs_mode: ZfsMode) -> Result<(), String> {
         match self {
-            Self::ZfsTransferRealSmoke if zfs_mode != ZfsMode::Real => {
-                Err("zfs_transfer_real_smoke requires --zfs real".into())
+            Self::MigrateServiceRealSmoke if zfs_mode != ZfsMode::Real => {
+                Err("migrate_service_real_smoke requires --zfs real".into())
             }
             Self::MeshBootstrapJoinSmoke
             | Self::NodeRestartAdoptsDataPlane
             | Self::WireguardPartitionReconnect
             | Self::DeployHttpAcmeGatewaySmoke
             | Self::DockerBridgeForwardSmoke
-            | Self::ZfsTransferRealSmoke => Ok(()),
+            | Self::MigrateServiceRealSmoke => Ok(()),
         }
     }
 
@@ -122,7 +122,7 @@ impl Scenario {
             | Self::NodeRestartAdoptsDataPlane
             | Self::WireguardPartitionReconnect
             | Self::DeployHttpAcmeGatewaySmoke
-            | Self::ZfsTransferRealSmoke => &["founder", "peer"],
+            | Self::MigrateServiceRealSmoke => &["founder", "peer"],
         }
     }
 
@@ -134,7 +134,7 @@ impl Scenario {
             Self::WireguardPartitionReconnect => "wireguard_partition_reconnect",
             Self::DeployHttpAcmeGatewaySmoke => "deploy_http_acme_gateway_smoke",
             Self::DockerBridgeForwardSmoke => "docker_bridge_forward_smoke",
-            Self::ZfsTransferRealSmoke => "zfs_transfer_real_smoke",
+            Self::MigrateServiceRealSmoke => "migrate_service_real_smoke",
         }
     }
 
@@ -146,7 +146,7 @@ impl Scenario {
             | Self::NodeRestartAdoptsDataPlane
             | Self::WireguardPartitionReconnect
             | Self::DeployHttpAcmeGatewaySmoke
-            | Self::ZfsTransferRealSmoke => "host",
+            | Self::MigrateServiceRealSmoke => "host",
         }
     }
 }
@@ -156,7 +156,7 @@ mod tests {
     use super::{Scenario, ZfsMode};
 
     #[test]
-    fn real_ci_order_only_adds_real_zfs_transfer() {
+    fn real_ci_order_only_adds_real_migrate_service() {
         let scenarios = Scenario::default_order(ZfsMode::Real);
 
         assert_eq!(
@@ -167,7 +167,7 @@ mod tests {
                 Scenario::WireguardPartitionReconnect,
                 Scenario::DeployHttpAcmeGatewaySmoke,
                 Scenario::DockerBridgeForwardSmoke,
-                Scenario::ZfsTransferRealSmoke,
+                Scenario::MigrateServiceRealSmoke,
             ]
         );
     }

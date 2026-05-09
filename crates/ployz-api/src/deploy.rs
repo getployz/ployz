@@ -1,6 +1,22 @@
 use ployz_types::model::InstanceStatusRecord;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrateServiceMode {
+    Apply,
+    Preview,
+    RenderManifest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrateServiceRequest {
+    pub namespace: String,
+    pub service: String,
+    pub target_machine: String,
+    pub mode: MigrateServiceMode,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DeployOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]

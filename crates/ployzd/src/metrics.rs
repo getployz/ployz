@@ -119,6 +119,7 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::DeployPreview { .. } => "deploy_preview",
         ployz_api::DaemonRequest::DeployApply { .. } => "deploy_apply",
         ployz_api::DaemonRequest::DeployExport { .. } => "deploy_export",
+        ployz_api::DaemonRequest::MigrateService { .. } => "migrate_service",
         ployz_api::DaemonRequest::DeployNodeInspectNamespace { .. } => {
             "deploy_node_inspect_namespace"
         }
