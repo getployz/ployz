@@ -1,13 +1,14 @@
 use crate::error::{DeployError, Error, Result};
 use crate::machine_policy::{can_keep_existing_slot, is_new_placement_candidate};
 use crate::model::{
-    DeployChangeKind, DeployPreview, MachineId, MachineMembership, ServicePlan,
-    ServiceReleaseRecord, ServiceReleaseSlot, SlotId, SlotPlan, VolumeRecord,
+    DeployChangeKind, DeployId, DeployPreview, MachineId, MachineMembership,
+    ServiceBranchLineageRecord, ServiceBranchSourcePlan, ServicePlan, ServiceReleaseRecord,
+    ServiceReleaseSlot, SlotId, SlotPlan, VolumeRecord,
 };
 use ployz_store_api::{DeployStore, MachineMembershipStore, StoreDriver};
 use ployz_types::spec::{
-    DeployManifest, MountSource, Namespace, Placement, ServiceSpec, VolumeDeclaration,
-    parse_quota_bytes, stable_hash_hex,
+    DeployManifest, MountSource, Namespace, Placement, ServiceIntent, ServiceSpec,
+    VolumeDeclaration, parse_quota_bytes, stable_hash_hex,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -29,6 +30,14 @@ pub(super) struct PlannedService {
     pub(super) next_revision_hash: Option<String>,
     pub(super) slots: Vec<PlannedSlot>,
     pub(super) action: DeployChangeKind,
+    pub(super) branch_source: Option<PlannedBranchSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PlannedBranchSource {
+    pub(super) source_namespace: Namespace,
+    pub(super) source_service: String,
+    pub(super) source_revision_hash: String,
 }
 
 #[derive(Debug, Clone)]
@@ -146,8 +155,45 @@ impl ResolvedPlan {
                     action: service.action,
                 })
                 .collect(),
+            service_branch_sources: self
+                .services
+                .iter()
+                .filter_map(|service| {
+                    let branch_source = service.branch_source.as_ref()?;
+                    Some(ServiceBranchSourcePlan {
+                        service: service.service.clone(),
+                        source_namespace: branch_source.source_namespace.clone(),
+                        source_service: branch_source.source_service.clone(),
+                        source_revision_hash: branch_source.source_revision_hash.clone(),
+                    })
+                })
+                .collect(),
             warnings,
         }
+    }
+
+    pub(super) fn service_branch_lineage_records(
+        &self,
+        deploy_id: &DeployId,
+        created_at: u64,
+    ) -> Vec<ServiceBranchLineageRecord> {
+        self.services
+            .iter()
+            .filter_map(|service| {
+                let branch_source = service.branch_source.as_ref()?;
+                let revision_hash = service.next_revision_hash.as_ref()?;
+                Some(ServiceBranchLineageRecord {
+                    namespace: self.namespace.clone(),
+                    service: service.service.clone(),
+                    revision_hash: revision_hash.clone(),
+                    source_namespace: branch_source.source_namespace.clone(),
+                    source_service: branch_source.source_service.clone(),
+                    source_revision_hash: branch_source.source_revision_hash.clone(),
+                    deploy_id: deploy_id.clone(),
+                    created_at,
+                })
+            })
+            .collect()
     }
 }
 
@@ -209,6 +255,7 @@ pub(super) async fn resolve_plan(
     let mut services = Vec::new();
     let mut planned_volumes = Vec::new();
     let mut volume_machine_map = HashMap::new();
+    let branch_intents = branch_intents(manifest);
 
     for declaration in &manifest.volumes {
         let attached_services = volume_attachments
@@ -255,6 +302,11 @@ pub(super) async fn resolve_plan(
         .collect::<BTreeSet<_>>();
 
     for spec in &manifest.services {
+        let branch_source = if let Some(intent) = branch_intents.get(&spec.name) {
+            Some(resolve_branch_source(store, &manifest.namespace, &spec.name, intent).await?)
+        } else {
+            None
+        };
         let revision_hash = spec
             .revision_hash()
             .map_err(|error| Error::operation("deploy_preview", error))?;
@@ -346,6 +398,7 @@ pub(super) async fn resolve_plan(
             next_revision_hash: Some(revision_hash),
             slots,
             action,
+            branch_source,
         });
     }
 
@@ -387,6 +440,7 @@ pub(super) async fn resolve_plan(
             next_revision_hash: None,
             slots,
             action: DeployChangeKind::Remove,
+            branch_source: None,
         });
     }
 
@@ -398,6 +452,97 @@ pub(super) async fn resolve_plan(
         participants,
         services,
         machine_map,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BranchIntent {
+    source_namespace: Namespace,
+    source_service: String,
+}
+
+fn branch_intents(manifest: &DeployManifest) -> HashMap<String, BranchIntent> {
+    let mut intents = HashMap::new();
+    let Some(deploy_intent) = &manifest.intent else {
+        return intents;
+    };
+
+    for hint in &deploy_intent.services {
+        match &hint.intent {
+            ServiceIntent::Branch {
+                source_namespace,
+                source_service,
+            } => {
+                intents.insert(
+                    hint.service.clone(),
+                    BranchIntent {
+                        source_namespace: source_namespace.clone(),
+                        source_service: source_service.clone(),
+                    },
+                );
+            }
+            ServiceIntent::Move { to_machine: _ }
+            | ServiceIntent::Portal {
+                source_namespace: _,
+                source_service: _,
+            } => {}
+        }
+    }
+
+    intents
+}
+
+async fn resolve_branch_source(
+    store: &StoreDriver,
+    target_namespace: &Namespace,
+    target_service: &str,
+    intent: &BranchIntent,
+) -> Result<PlannedBranchSource> {
+    if &intent.source_namespace == target_namespace && intent.source_service == target_service {
+        return Err(Error::Deploy(DeployError::BranchSourceIsTarget {
+            namespace: target_namespace.0.clone(),
+            service: target_service.to_string(),
+        }));
+    }
+
+    let source_releases = store.list_deploy_releases(&intent.source_namespace).await?;
+    let Some(source_release) = source_releases
+        .iter()
+        .find(|release| release.service == intent.source_service)
+    else {
+        return Err(Error::Deploy(DeployError::BranchSourceMissingRelease {
+            namespace: intent.source_namespace.0.clone(),
+            service: intent.source_service.clone(),
+        }));
+    };
+    let source_revision_hash = source_release.release.primary_revision_hash.clone();
+
+    let source_revisions = store
+        .list_deploy_revisions(&intent.source_namespace)
+        .await?;
+    let Some(source_revision) = source_revisions.iter().find(|revision| {
+        revision.service == intent.source_service && revision.revision_hash == source_revision_hash
+    }) else {
+        return Err(Error::Deploy(DeployError::BranchSourceMissingRevision {
+            namespace: intent.source_namespace.0.clone(),
+            service: intent.source_service.clone(),
+            revision_hash: source_revision_hash,
+        }));
+    };
+
+    let _source_spec: ServiceSpec =
+        serde_json::from_str(&source_revision.spec_json).map_err(|error| {
+            Error::Deploy(DeployError::BranchSourceSpecDecode {
+                namespace: intent.source_namespace.0.clone(),
+                service: intent.source_service.clone(),
+                message: error.to_string(),
+            })
+        })?;
+
+    Ok(PlannedBranchSource {
+        source_namespace: intent.source_namespace.clone(),
+        source_service: intent.source_service.clone(),
+        source_revision_hash: source_revision.revision_hash.clone(),
     })
 }
 

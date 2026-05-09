@@ -153,6 +153,7 @@ impl StartedCandidates {
         } = self.prepared;
         let committed_at = now_unix_secs();
         let releases = build_committed_releases(&plan, &self.started, &deploy_id, committed_at)?;
+        let branch_lineage = plan.service_branch_lineage_records(&deploy_id, committed_at);
         let removed_services = plan
             .services()
             .iter()
@@ -191,6 +192,7 @@ impl StartedCandidates {
                 revisions,
                 removed_services,
                 removed_volumes,
+                branch_lineage,
                 releases,
                 volumes,
                 deploy,

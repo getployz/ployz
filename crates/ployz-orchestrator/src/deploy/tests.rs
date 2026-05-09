@@ -17,8 +17,8 @@ use crate::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
     DeployChangeKind, DeployId, DeployRecord, DeployState, DrainState, InstanceId, InstancePhase,
     InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, MachineTopology,
-    OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
-    ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, VolumeRecord,
+    OverlayIp, PublicKey, ServiceBranchLineageRecord, ServiceRelease, ServiceReleaseRecord,
+    ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -29,9 +29,10 @@ use ployz_store_api::{
 };
 use ployz_types::Result as PloyzResult;
 use ployz_types::spec::{
-    ContainerSpec, DeployManifest, HttpRoute, Mount, MountSource, Namespace, NetworkMode,
-    Placement, PortProtocol, PullPolicy, Resources, RestartPolicy, RolloutStrategy, RouteSpec,
-    ServicePort, ServiceSpec, VolumeDeclaration, VolumeScope,
+    ContainerSpec, DeployIntent, DeployManifest, HttpRoute, Mount, MountSource, Namespace,
+    NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy, RolloutStrategy,
+    RouteSpec, ServiceIntent, ServiceIntentHint, ServicePort, ServiceSpec, VolumeDeclaration,
+    VolumeScope,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv6Addr;
@@ -58,6 +59,7 @@ impl TestStoreSeed for StoreDriver {
             revisions: Vec::new(),
             removed_services: Vec::new(),
             removed_volumes: Vec::new(),
+            branch_lineage: Vec::new(),
             releases: vec![record.clone()],
             volumes: Vec::new(),
             deploy: test_deploy_record(&record.namespace, "seed-deploy"),
@@ -1344,6 +1346,275 @@ async fn resolve_plan_fingerprint_is_stable_across_release_insert_order() {
 }
 
 #[tokio::test]
+async fn resolve_plan_includes_branch_source_preview_evidence() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    let source_spec = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let source_revision_hash = source_spec.revision_hash().expect("source revision hash");
+    seed_committed_service_release(&store, &source_namespace, source_spec).await;
+
+    let mut manifest = test_manifest(vec![test_service_spec(
+        "web",
+        Placement::Replicated { count: 1 },
+        "example/web:pr-39",
+    )]);
+    manifest.namespace = Namespace("pr-39".into());
+    manifest.intent = Some(DeployIntent {
+        services: vec![ServiceIntentHint {
+            service: "web".into(),
+            intent: ServiceIntent::Branch {
+                source_namespace: source_namespace.clone(),
+                source_service: "web".into(),
+            },
+        }],
+        volumes: Vec::new(),
+    });
+
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve branch plan");
+    let preview = plan.to_preview(Vec::new());
+
+    assert_eq!(preview.namespace, Namespace("pr-39".into()));
+    assert_eq!(preview.services[0].action, DeployChangeKind::Create);
+    assert_eq!(preview.service_branch_sources.len(), 1);
+    assert_eq!(preview.service_branch_sources[0].service, "web");
+    assert_eq!(
+        preview.service_branch_sources[0].source_revision_hash,
+        source_revision_hash
+    );
+    assert_eq!(
+        plan.fingerprint().services[0]
+            .branch_source
+            .as_ref()
+            .map(|source| source.source_revision_hash.as_str()),
+        Some(source_revision_hash.as_str())
+    );
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_missing_branch_source_release() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = test_manifest(vec![test_service_spec(
+        "web",
+        Placement::Replicated { count: 1 },
+        "example/web:pr-39",
+    )]);
+    manifest.namespace = Namespace("pr-39".into());
+    manifest.intent = Some(DeployIntent {
+        services: vec![ServiceIntentHint {
+            service: "web".into(),
+            intent: ServiceIntent::Branch {
+                source_namespace: Namespace("prod".into()),
+                source_service: "web".into(),
+            },
+        }],
+        volumes: Vec::new(),
+    });
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("missing source release should fail");
+
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::BranchSourceMissingRelease {
+            namespace: "prod".into(),
+            service: "web".into()
+        })
+    );
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_branch_source_missing_revision() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    store
+        .upsert_service_release(&test_release(
+            &source_namespace,
+            "web",
+            "missing-source-rev",
+            Vec::new(),
+        ))
+        .await
+        .expect("seed source release without revision");
+    let mut manifest = test_manifest(vec![test_service_spec(
+        "web",
+        Placement::Replicated { count: 1 },
+        "example/web:pr-39",
+    )]);
+    manifest.namespace = Namespace("pr-39".into());
+    manifest.intent = Some(DeployIntent {
+        services: vec![ServiceIntentHint {
+            service: "web".into(),
+            intent: ServiceIntent::Branch {
+                source_namespace: source_namespace.clone(),
+                source_service: "web".into(),
+            },
+        }],
+        volumes: Vec::new(),
+    });
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("missing source revision should fail");
+
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::BranchSourceMissingRevision {
+            namespace: "prod".into(),
+            service: "web".into(),
+            revision_hash: "missing-source-rev".into()
+        })
+    );
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_undecodable_branch_source_revision() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    store
+        .commit_deploy(&DeployCommit {
+            namespace: source_namespace.clone(),
+            revisions: vec![ServiceRevisionRecord {
+                namespace: source_namespace.clone(),
+                service: "web".into(),
+                revision_hash: "source-rev".into(),
+                spec_json: "{not-json".into(),
+                created_by: MachineId("seed".into()),
+                created_at: 0,
+            }],
+            removed_services: Vec::new(),
+            removed_volumes: Vec::new(),
+            branch_lineage: Vec::new(),
+            releases: vec![test_release(
+                &source_namespace,
+                "web",
+                "source-rev",
+                Vec::new(),
+            )],
+            volumes: Vec::new(),
+            deploy: test_deploy_record(&source_namespace, "seed-deploy"),
+        })
+        .await
+        .expect("seed undecodable source revision");
+    let mut manifest = test_manifest(vec![test_service_spec(
+        "web",
+        Placement::Replicated { count: 1 },
+        "example/web:pr-39",
+    )]);
+    manifest.namespace = Namespace("pr-39".into());
+    manifest.intent = Some(DeployIntent {
+        services: vec![ServiceIntentHint {
+            service: "web".into(),
+            intent: ServiceIntent::Branch {
+                source_namespace: source_namespace.clone(),
+                source_service: "web".into(),
+            },
+        }],
+        volumes: Vec::new(),
+    });
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("undecodable source revision should fail");
+
+    assert!(matches!(
+        error,
+        Error::Deploy(DeployError::BranchSourceSpecDecode {
+            namespace,
+            service,
+            ..
+        }) if namespace == "prod" && service == "web"
+    ));
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_branch_source_same_as_target() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = test_manifest(vec![test_service_spec(
+        "web",
+        Placement::Replicated { count: 1 },
+        "example/web:pr-39",
+    )]);
+    manifest.namespace = Namespace("pr-39".into());
+    manifest.intent = Some(DeployIntent {
+        services: vec![ServiceIntentHint {
+            service: "web".into(),
+            intent: ServiceIntent::Branch {
+                source_namespace: Namespace("pr-39".into()),
+                source_service: "web".into(),
+            },
+        }],
+        volumes: Vec::new(),
+    });
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("same-target branch source should fail");
+
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::BranchSourceIsTarget {
+            namespace: "pr-39".into(),
+            service: "web".into()
+        })
+    );
+}
+
+#[tokio::test]
+async fn ensure_plan_stable_rejects_branch_source_revision_drift() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    seed_committed_service_release(
+        &store,
+        &source_namespace,
+        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+    )
+    .await;
+
+    let mut manifest = test_manifest(vec![test_service_spec(
+        "web",
+        Placement::Replicated { count: 1 },
+        "example/web:pr-39",
+    )]);
+    manifest.namespace = Namespace("pr-39".into());
+    manifest.intent = Some(DeployIntent {
+        services: vec![ServiceIntentHint {
+            service: "web".into(),
+            intent: ServiceIntent::Branch {
+                source_namespace: source_namespace.clone(),
+                source_service: "web".into(),
+            },
+        }],
+        volumes: Vec::new(),
+    });
+
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial branch plan");
+    seed_committed_service_release(
+        &store,
+        &source_namespace,
+        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.28"),
+    )
+    .await;
+    let final_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("final branch plan");
+
+    let error = ensure_plan_stable(&initial_plan.fingerprint(), &final_plan.fingerprint())
+        .expect_err("source revision drift should fail");
+    assert_eq!(error, Error::Deploy(DeployError::ExecutionPlanChanged));
+}
+
+#[tokio::test]
 async fn participant_set_inspects_participants_in_parallel_for_noop_plan() {
     let store = seeded_store_with_machines(&[
         "machine-a",
@@ -2021,6 +2292,74 @@ async fn commit_plan_contains_removed_services() {
     );
 }
 
+#[tokio::test]
+async fn commit_plan_contains_branch_lineage() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    let source_spec = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let source_revision_hash = source_spec.revision_hash().expect("source revision hash");
+    seed_committed_service_release(&store, &source_namespace, source_spec).await;
+
+    let mut manifest = test_manifest(vec![test_service_spec(
+        "web",
+        Placement::Replicated { count: 1 },
+        "example/web:pr-39",
+    )]);
+    manifest.namespace = Namespace("pr-39".into());
+    manifest.intent = Some(DeployIntent {
+        services: vec![ServiceIntentHint {
+            service: "web".into(),
+            intent: ServiceIntent::Branch {
+                source_namespace: source_namespace.clone(),
+                source_service: "web".into(),
+            },
+        }],
+        volumes: Vec::new(),
+    });
+    let target_revision_hash = manifest.services[0]
+        .revision_hash()
+        .expect("target revision");
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve branch plan");
+    let slot = plan
+        .services()
+        .iter()
+        .find(|service| service.service == "web")
+        .and_then(|service| service.slots.first().map(|slot| slot.slot_id.clone()))
+        .expect("web slot");
+    let prepared =
+        PreparedDeploy::new(DeployId("deploy-branch".into()), 10, local_machine_id, plan)
+            .expect("prepared deploy");
+    let started = HashMap::from([(
+        (String::from("web"), slot.0.clone()),
+        test_instance_status(
+            &manifest.namespace,
+            "web",
+            &slot.0,
+            "machine-a",
+            "web-inst-1",
+            &target_revision_hash,
+        ),
+    )]);
+
+    let commit_plan = prepared
+        .into_started(started)
+        .into_commit_plan(Vec::new(), Vec::new())
+        .expect("commit plan");
+
+    assert_eq!(commit_plan.commit().branch_lineage.len(), 1);
+    let lineage = &commit_plan.commit().branch_lineage[0];
+    assert_eq!(lineage.namespace, Namespace("pr-39".into()));
+    assert_eq!(lineage.service, "web");
+    assert_eq!(lineage.revision_hash, target_revision_hash);
+    assert_eq!(lineage.source_namespace, source_namespace);
+    assert_eq!(lineage.source_service, "web");
+    assert_eq!(lineage.source_revision_hash, source_revision_hash);
+    assert_eq!(lineage.deploy_id, DeployId("deploy-branch".into()));
+}
+
 #[derive(Clone, Default)]
 struct FakeController {
     open_delay: Duration,
@@ -2401,6 +2740,7 @@ async fn seed_volume_with_attached_services(
             revisions: Vec::new(),
             removed_services: Vec::new(),
             removed_volumes: Vec::new(),
+            branch_lineage: Vec::new(),
             releases: Vec::new(),
             volumes: vec![volume],
             deploy,
@@ -2479,6 +2819,7 @@ async fn seed_committed_http_release(
             }],
             removed_services: Vec::new(),
             removed_volumes: Vec::new(),
+            branch_lineage: Vec::new(),
             releases: vec![test_release(
                 &namespace,
                 service,
@@ -2490,6 +2831,41 @@ async fn seed_committed_http_release(
         })
         .await
         .expect("seed release");
+}
+
+async fn seed_committed_service_release(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    spec: ServiceSpec,
+) {
+    let revision_hash = spec.revision_hash().expect("revision hash");
+    store
+        .commit_deploy(&DeployCommit {
+            namespace: namespace.clone(),
+            revisions: vec![crate::model::ServiceRevisionRecord {
+                namespace: namespace.clone(),
+                service: spec.name.clone(),
+                revision_hash: revision_hash.clone(),
+                spec_json: spec
+                    .canonical_revision_json()
+                    .expect("canonical revision json"),
+                created_by: MachineId("seed".into()),
+                created_at: 0,
+            }],
+            removed_services: Vec::new(),
+            removed_volumes: Vec::new(),
+            branch_lineage: Vec::new(),
+            releases: vec![test_release(
+                namespace,
+                &spec.name,
+                &revision_hash,
+                Vec::new(),
+            )],
+            volumes: Vec::new(),
+            deploy: test_deploy_record(namespace, "seed-deploy"),
+        })
+        .await
+        .expect("seed service release");
 }
 
 fn test_release(
@@ -2790,6 +3166,13 @@ impl DeployStore for CountingBackend {
         namespace: &Namespace,
     ) -> PloyzResult<Vec<crate::model::VolumeRecord>> {
         self.store.list_volumes(namespace).await
+    }
+
+    async fn list_service_branch_lineage(
+        &self,
+        namespace: &Namespace,
+    ) -> PloyzResult<Vec<ServiceBranchLineageRecord>> {
+        self.store.list_service_branch_lineage(namespace).await
     }
 
     async fn get_volume(
