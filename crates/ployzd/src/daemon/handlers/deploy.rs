@@ -5,16 +5,20 @@ use std::time::Duration;
 use crate::daemon::DaemonState;
 use ployz_api::{
     DaemonPayload, DaemonResponse, DeployCandidateStartedPayload, DeployFailurePayload,
-    DeployFailureReason, DeployNamespaceSnapshotPayload, DeployOptions,
+    DeployFailureReason, DeployNamespaceSnapshotPayload, DeployOptions, VolumeZfsTransferPayload,
 };
 use ployz_cert_backends::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
 use ployz_nats::{NatsDeployLock, NatsLocks};
-use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
+use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcFailure, RpcPolicy};
 use ployz_orchestrator::certificates::{AcmeAccountCoordinator, CertificateManagerConfig};
 use ployz_orchestrator::coordination::ReservationId;
-use ployz_orchestrator::deploy::participant::{DeployParticipantClient, StartCandidateRequest};
-use ployz_orchestrator::deploy::{apply_with_certificate_coordination, preview};
+use ployz_orchestrator::deploy::participant::{
+    DeployParticipantClient, MoveVolumeRequest, MoveVolumeResult, StartCandidateRequest,
+};
+use ployz_orchestrator::deploy::{
+    apply_with_deploy_id_and_certificate_coordination, new_deploy_id, preview,
+};
 use ployz_runtime_backends::deploy::remote::DeployAgent;
 use ployz_store_api::{DeployStore, StoreDriver, StoreRuntimeControl};
 use ployz_types::Error as PloyzError;
@@ -28,6 +32,36 @@ use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec, VolumeDeclaratio
 const DEPLOY_LOCK_TTL: Duration = Duration::from_secs(30 * 60);
 const DEPLOY_LOCK_RENEW_INTERVAL: Duration = Duration::from_secs(10 * 60);
 const DEPLOY_PARTICIPANT_RPC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const DEPLOY_VOLUME_MOVE_START_RPC_TIMEOUT: Duration = Duration::from_secs(60);
+const DEPLOY_VOLUME_MOVE_POLL_RPC_TIMEOUT: Duration = Duration::from_secs(60);
+const DEPLOY_VOLUME_MOVE_RPC_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+const DEPLOY_VOLUME_MOVE_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+#[async_trait::async_trait]
+trait DeployMoveRpcClient: Clone + Send + Sync {
+    fn with_rpc_policy(&self, policy: RpcPolicy) -> Self;
+
+    async fn request(
+        &self,
+        subject: NodeCommandSubject,
+        request: &ployz_api::DaemonRequest,
+    ) -> std::result::Result<DaemonResponse, RpcFailure>;
+}
+
+#[async_trait::async_trait]
+impl DeployMoveRpcClient for NatsNodeRpcClient {
+    fn with_rpc_policy(&self, policy: RpcPolicy) -> Self {
+        self.clone().with_policy(policy)
+    }
+
+    async fn request(
+        &self,
+        subject: NodeCommandSubject,
+        request: &ployz_api::DaemonRequest,
+    ) -> std::result::Result<DaemonResponse, RpcFailure> {
+        NatsNodeRpcClient::request(self, subject, request).await
+    }
+}
 
 impl DaemonState {
     fn overlay_network_name(&self) -> Option<String> {
@@ -161,11 +195,13 @@ impl DaemonState {
             }),
         );
 
-        let apply = apply_with_certificate_coordination(
+        let deploy_id = new_deploy_id();
+        let apply = apply_with_deploy_id_and_certificate_coordination(
             &active.mesh.store,
             &participant_client,
             &self.identity.machine_id,
             &manifest,
+            deploy_id.clone(),
             certificate_coordinator,
             account_coordinator,
             challenge_readiness,
@@ -186,10 +222,22 @@ impl DaemonState {
                     Ok(Err(error)) => error.to_string(),
                     Err(error) => format!("deploy lock renewal task failed: {error}"),
                 };
-                if let Err(error) = deploy_lock.release().await {
-                    tracing::warn!(%error, "failed to release NATS deploy lock after renewal failure");
+                match mark_deploy_failed_after_lock_loss(&active.mesh.store, &deploy_id, &message).await {
+                    DeployLockLossOutcome::PastCommit => {
+                        tracing::warn!(
+                            %deploy_id,
+                            %message,
+                            "deploy lock was lost after commit point; waiting for apply to finish"
+                        );
+                        (&mut apply).await
+                    }
+                    DeployLockLossOutcome::MarkedFailed | DeployLockLossOutcome::NotApplying => {
+                        if let Err(error) = deploy_lock.release().await {
+                            tracing::warn!(%error, "failed to release NATS deploy lock after renewal failure");
+                        }
+                        return self.err("DEPLOY_LOCK_FAILED", message);
+                    }
                 }
-                return self.err("DEPLOY_LOCK_FAILED", message);
             }
         };
         deploy_lock_renewer.abort();
@@ -208,15 +256,14 @@ impl DaemonState {
     }
 
     fn deploy_error_response(&self, code: &str, error: PloyzError) -> DaemonResponse {
-        match &error {
-            PloyzError::Deploy(DeployError::NoEligiblePlacementTargets) => self.err_with_payload(
+        if let Some(payload) = deploy_failure_payload_for_error(&error) {
+            self.err_with_payload(
                 code,
                 error.to_string(),
-                Some(DaemonPayload::DeployFailure(DeployFailurePayload {
-                    reason: DeployFailureReason::NoEligiblePlacementTargets,
-                })),
-            ),
-            _ => self.err(code, error.to_string()),
+                Some(DaemonPayload::DeployFailure(payload)),
+            )
+        } else {
+            self.err(code, error.to_string())
         }
     }
 
@@ -401,6 +448,10 @@ impl NatsDeployParticipantClient {
 
 #[async_trait::async_trait]
 impl DeployParticipantClient for NatsDeployParticipantClient {
+    fn supports_volume_moves(&self) -> bool {
+        true
+    }
+
     async fn inspect_namespace(
         &self,
         machine: &MachineMembership,
@@ -472,6 +523,26 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         Ok(payload.status)
     }
 
+    async fn move_volume(
+        &self,
+        machine_id: &MachineId,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+        request: MoveVolumeRequest,
+    ) -> ployz_types::Result<MoveVolumeResult> {
+        run_volume_move_rpc(
+            &self.client,
+            machine_id,
+            namespace,
+            deploy_id,
+            request,
+            DEPLOY_VOLUME_MOVE_START_RPC_TIMEOUT,
+            DEPLOY_VOLUME_MOVE_RPC_TIMEOUT,
+            DEPLOY_VOLUME_MOVE_POLL_INTERVAL,
+        )
+        .await
+    }
+
     async fn drain_instance(
         &self,
         machine_id: &MachineId,
@@ -531,6 +602,266 @@ impl NatsDeployParticipantClient {
             code: response.code,
             message: response.message,
         }))
+    }
+}
+
+async fn run_volume_move_rpc<R: DeployMoveRpcClient>(
+    client: &R,
+    machine_id: &MachineId,
+    namespace: &Namespace,
+    _deploy_id: &DeployId,
+    request: MoveVolumeRequest,
+    start_timeout: Duration,
+    wait_timeout: Duration,
+    poll_interval: Duration,
+) -> ployz_types::Result<MoveVolumeResult> {
+    let MoveVolumeRequest {
+        volume,
+        from_machine,
+        to_machine,
+        snapshot,
+    } = request;
+    if *machine_id != from_machine {
+        return Err(PloyzError::operation(
+            "deploy_node_move_volume",
+            format!(
+                "move volume '{volume}' was sent to '{machine_id}' but request source was '{from_machine}'"
+            ),
+        ));
+    }
+    let move_client = client.with_rpc_policy(RpcPolicy {
+        timeout: start_timeout,
+    });
+    let response = move_client
+        .request(
+            NodeCommandSubject::volume_zfs_send(machine_id),
+            &ployz_api::DaemonRequest::VolumeZfsSend {
+                namespace: namespace.0.clone(),
+                volume,
+                snapshot,
+                target_machine: to_machine.0,
+                from_snapshot: None,
+            },
+        )
+        .await
+        .map_err(|error| volume_move_rpc_error("volume_zfs_send", error))?;
+    if !response.ok {
+        return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
+            operation: "volume_zfs_send",
+            code: response.code,
+            message: response.message,
+        }));
+    }
+    let Some(DaemonPayload::VolumeZfsTransfer(payload)) = response.payload else {
+        return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
+            payload: "volume zfs transfer",
+        }));
+    };
+    wait_for_volume_transfer(
+        client,
+        machine_id,
+        payload.transfer.id,
+        wait_timeout,
+        DEPLOY_VOLUME_MOVE_POLL_RPC_TIMEOUT,
+        poll_interval,
+    )
+    .await
+}
+
+async fn wait_for_volume_transfer<R: DeployMoveRpcClient>(
+    client: &R,
+    machine_id: &MachineId,
+    transfer_id: String,
+    timeout: Duration,
+    poll_rpc_timeout: Duration,
+    poll_interval: Duration,
+) -> ployz_types::Result<MoveVolumeResult> {
+    let started = tokio::time::Instant::now();
+    let mut retry_delay = poll_interval;
+    loop {
+        let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+            return Err(PloyzError::operation(
+                "volume_zfs_transfer",
+                format!("timed out waiting for zfs transfer '{transfer_id}'"),
+            ));
+        };
+        let poll_client = client.with_rpc_policy(RpcPolicy {
+            timeout: std::cmp::min(poll_rpc_timeout, remaining),
+        });
+        let response = match tokio::time::timeout(
+            remaining,
+            poll_client.request(
+                NodeCommandSubject::volume_zfs_transfer_get(machine_id),
+                &ployz_api::DaemonRequest::VolumeZfsTransferGet {
+                    id: transfer_id.clone(),
+                },
+            ),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                if started.elapsed() >= timeout {
+                    return Err(volume_move_rpc_error("volume_zfs_transfer_get", error));
+                }
+                tracing::warn!(
+                    %error,
+                    transfer_id,
+                    machine_id = %machine_id,
+                    "retrying zfs transfer status read after transient RPC failure"
+                );
+                tokio::time::sleep(retry_delay + retry_jitter(retry_delay)).await;
+                retry_delay = std::cmp::min(retry_delay + retry_delay, Duration::from_secs(30));
+                continue;
+            }
+            Err(error) => {
+                return Err(PloyzError::operation(
+                    "volume_zfs_transfer",
+                    format!("timed out waiting for zfs transfer '{transfer_id}': {error}"),
+                ));
+            }
+        };
+        retry_delay = poll_interval;
+        if !response.ok {
+            return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
+                operation: "volume_zfs_transfer_get",
+                code: response.code,
+                message: response.message,
+            }));
+        }
+        let Some(DaemonPayload::VolumeZfsTransfer(payload)) = response.payload else {
+            return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
+                payload: "volume zfs transfer",
+            }));
+        };
+        if let Some(result) = volume_move_result_from_transfer(payload)? {
+            return Ok(result);
+        }
+        if started.elapsed() >= timeout {
+            return Err(PloyzError::operation(
+                "volume_zfs_transfer",
+                format!("timed out waiting for zfs transfer '{transfer_id}'"),
+            ));
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+}
+
+fn retry_jitter(delay: Duration) -> Duration {
+    let max_millis = (delay.as_millis() as u64 / 2).min(1_000);
+    if max_millis == 0 {
+        Duration::ZERO
+    } else {
+        Duration::from_millis(rand::random::<u64>() % (max_millis + 1))
+    }
+}
+
+fn volume_move_rpc_error(operation: &'static str, error: RpcFailure) -> PloyzError {
+    PloyzError::Deploy(DeployError::RemoteNodeError {
+        operation,
+        code: error.code().into(),
+        message: error.message,
+    })
+}
+
+fn volume_move_result_from_transfer(
+    payload: VolumeZfsTransferPayload,
+) -> ployz_types::Result<Option<MoveVolumeResult>> {
+    match payload.transfer.status.as_str() {
+        "succeeded" => {
+            let Some(snapshot_guid) = payload.transfer.snapshot_guid else {
+                return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
+                    payload: "volume zfs transfer snapshot guid",
+                }));
+            };
+            let Some(bytes_transferred) = payload.transfer.bytes_transferred else {
+                return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
+                    payload: "volume zfs transfer bytes",
+                }));
+            };
+            Ok(Some(MoveVolumeResult {
+                snapshot: payload.transfer.snapshot_name,
+                snapshot_guid,
+                bytes_transferred,
+            }))
+        }
+        "failed" | "interrupted" => Err(PloyzError::Deploy(DeployError::RemoteNodeError {
+            operation: "volume_zfs_transfer",
+            code: payload.transfer.status,
+            message: payload.transfer.last_error.unwrap_or_else(|| {
+                format!("zfs transfer '{}' did not succeed", payload.transfer.id)
+            }),
+        })),
+        "running" => Ok(None),
+        other => Err(PloyzError::Deploy(DeployError::RemoteNodeError {
+            operation: "volume_zfs_transfer",
+            code: other.to_string(),
+            message: format!(
+                "zfs transfer '{}' reported unknown status '{other}'",
+                payload.transfer.id
+            ),
+        })),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeployLockLossOutcome {
+    MarkedFailed,
+    PastCommit,
+    NotApplying,
+}
+
+async fn mark_deploy_failed_after_lock_loss(
+    store: &StoreDriver,
+    deploy_id: &DeployId,
+    message: &str,
+) -> DeployLockLossOutcome {
+    let deploy = match store.get_deploy(deploy_id).await {
+        Ok(Some(mut deploy)) => {
+            match deploy.state {
+                ployz_types::model::DeployState::Committed
+                | ployz_types::model::DeployState::CleanupPending => {
+                    return DeployLockLossOutcome::PastCommit;
+                }
+                ployz_types::model::DeployState::Applying => {}
+                ployz_types::model::DeployState::Planning
+                | ployz_types::model::DeployState::Failed => {
+                    return DeployLockLossOutcome::NotApplying;
+                }
+            }
+            deploy.state = ployz_types::model::DeployState::Failed;
+            deploy.finished_at = Some(ployz_types::time::now_unix_secs());
+            if let Ok(mut preview) =
+                serde_json::from_str::<ployz_types::model::DeployPreview>(&deploy.summary_json)
+            {
+                preview
+                    .warnings
+                    .push(format!("deploy lock lost during apply: {message}"));
+                if let Ok(summary_json) = serde_json::to_string(&preview) {
+                    deploy.summary_json = summary_json;
+                }
+            }
+            deploy
+        }
+        Ok(None) => return DeployLockLossOutcome::NotApplying,
+        Err(error) => {
+            tracing::warn!(%error, %deploy_id, "failed to read deploy record after lock loss");
+            return DeployLockLossOutcome::NotApplying;
+        }
+    };
+    if let Err(error) = store.write_deploy_status(&deploy).await {
+        tracing::warn!(%error, %deploy_id, "failed to mark deploy failed after lock loss");
+        return DeployLockLossOutcome::NotApplying;
+    }
+    DeployLockLossOutcome::MarkedFailed
+}
+
+fn deploy_failure_payload_for_error(error: &PloyzError) -> Option<DeployFailurePayload> {
+    match error {
+        PloyzError::Deploy(DeployError::NoEligiblePlacementTargets) => Some(DeployFailurePayload {
+            reason: DeployFailureReason::NoEligiblePlacementTargets,
+        }),
+        _ => None,
     }
 }
 
@@ -618,15 +949,19 @@ async fn export_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_api::{DaemonRequest, VolumeZfsTransferInfo};
+    use ployz_nats::{RpcFailureKind, RpcPolicy};
     use ployz_store_api::{DeployCommit, DeployStore};
     use ployz_types::model::{
-        DeployId, DeployRecord, DeployState, MachineId, ServiceRelease, ServiceReleaseRecord,
-        ServiceRevisionRecord, ServiceRoutingPolicy, VolumeRecord,
+        DeployId, DeployPreview, DeployRecord, DeployState, MachineId, ServiceRelease,
+        ServiceReleaseRecord, ServiceRevisionRecord, ServiceRoutingPolicy, VolumeRecord,
     };
     use ployz_types::spec::{
         ContainerSpec, Mount, MountSource, NetworkMode, Placement, PullPolicy, Resources,
         RestartPolicy, RolloutStrategy, VolumeScope,
     };
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
 
     fn test_service() -> ServiceSpec {
         ServiceSpec {
@@ -688,6 +1023,503 @@ mod tests {
         assert_eq!(error.code, "INVALID_MANIFEST");
         assert!(error.message.starts_with("invalid deploy manifest:"));
         assert!(error.payload.is_none());
+    }
+
+    #[test]
+    fn volume_move_result_maps_succeeded_transfer() {
+        let result = volume_move_result_from_transfer(transfer_payload(
+            "succeeded",
+            Some(42),
+            Some(4096),
+            None,
+        ))
+        .expect("transfer result")
+        .expect("succeeded transfer should complete");
+
+        assert_eq!(result.snapshot, "ployz-move-manifest-data");
+        assert_eq!(result.snapshot_guid, 42);
+        assert_eq!(result.bytes_transferred, 4096);
+    }
+
+    #[test]
+    fn volume_move_result_keeps_running_transfer_pending() {
+        let result =
+            volume_move_result_from_transfer(transfer_payload("running", None, None, None))
+                .expect("running transfer is not an error");
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn volume_move_result_rejects_terminal_failed_transfer() {
+        let error = volume_move_result_from_transfer(transfer_payload(
+            "failed",
+            None,
+            None,
+            Some("receiver disconnected".into()),
+        ))
+        .expect_err("failed transfer should fail deploy move");
+
+        assert_eq!(
+            error,
+            PloyzError::Deploy(DeployError::RemoteNodeError {
+                operation: "volume_zfs_transfer",
+                code: "failed".into(),
+                message: "receiver disconnected".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn volume_move_result_requires_success_evidence() {
+        let missing_guid =
+            volume_move_result_from_transfer(transfer_payload("succeeded", None, Some(4096), None))
+                .expect_err("missing guid should fail");
+        assert_eq!(
+            missing_guid,
+            PloyzError::Deploy(DeployError::MissingNodePayload {
+                payload: "volume zfs transfer snapshot guid",
+            })
+        );
+
+        let missing_bytes =
+            volume_move_result_from_transfer(transfer_payload("succeeded", Some(42), None, None))
+                .expect_err("missing bytes should fail");
+        assert_eq!(
+            missing_bytes,
+            PloyzError::Deploy(DeployError::MissingNodePayload {
+                payload: "volume zfs transfer bytes",
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn volume_move_rpc_waits_for_terminal_transfer_success() {
+        let client = FakeMoveRpcClient::with_responses(vec![
+            Ok(transfer_response("running", None, None, None)),
+            Ok(transfer_response("running", None, None, None)),
+            Ok(transfer_response("succeeded", Some(42), Some(4096), None)),
+        ]);
+
+        let result = run_volume_move_rpc(
+            &client,
+            &MachineId("machine-a".into()),
+            &Namespace("prod".into()),
+            &DeployId("deploy-1".into()),
+            MoveVolumeRequest {
+                volume: "data".into(),
+                from_machine: MachineId("machine-a".into()),
+                to_machine: MachineId("machine-b".into()),
+                snapshot: "ployz-move-manifest-data".into(),
+            },
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("move result");
+
+        assert_eq!(result.snapshot_guid, 42);
+        assert_eq!(result.bytes_transferred, 4096);
+        let requests = client.requests();
+        let [send, first_poll, second_poll] = requests.as_slice() else {
+            panic!("expected send plus two polls, got {requests:?}");
+        };
+        assert!(send.0.contains("volume.zfs.send"), "{send:?}");
+        assert!(
+            first_poll.0.contains("volume.zfs.transfer_get"),
+            "{first_poll:?}"
+        );
+        assert!(
+            second_poll.0.contains("volume.zfs.transfer_get"),
+            "{second_poll:?}"
+        );
+        match &send.1 {
+            DaemonRequest::VolumeZfsSend {
+                namespace,
+                volume,
+                snapshot,
+                target_machine,
+                from_snapshot,
+            } => {
+                assert_eq!(namespace, "prod");
+                assert_eq!(volume, "data");
+                assert_eq!(snapshot, "ployz-move-manifest-data");
+                assert_eq!(target_machine, "machine-b");
+                assert_eq!(from_snapshot, &None);
+            }
+            other => panic!("expected VolumeZfsSend, got {other:?}"),
+        }
+        assert_eq!(
+            client
+                .policies()
+                .first()
+                .expect("move start timeout policy should be applied")
+                .timeout,
+            Duration::from_secs(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn volume_move_rpc_classifies_transport_failure_as_volume_move_failure() {
+        let client = FakeMoveRpcClient::with_responses(vec![Err(RpcFailure::new(
+            RpcFailureKind::NoResponders,
+            "no responder",
+        ))]);
+
+        let error = run_volume_move_rpc(
+            &client,
+            &MachineId("machine-a".into()),
+            &Namespace("prod".into()),
+            &DeployId("deploy-1".into()),
+            MoveVolumeRequest {
+                volume: "data".into(),
+                from_machine: MachineId("machine-a".into()),
+                to_machine: MachineId("machine-b".into()),
+                snapshot: "ployz-move-manifest-data".into(),
+            },
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_millis(1),
+        )
+        .await
+        .expect_err("transport error should fail move");
+
+        assert_eq!(
+            error,
+            PloyzError::Deploy(DeployError::RemoteNodeError {
+                operation: "volume_zfs_send",
+                code: "NATS_RPC_NO_RESPONDERS".into(),
+                message: "no responder".into(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn volume_move_rpc_rejects_source_machine_mismatch_before_rpc() {
+        let client = FakeMoveRpcClient::with_responses(Vec::new());
+
+        let error = run_volume_move_rpc(
+            &client,
+            &MachineId("machine-a".into()),
+            &Namespace("prod".into()),
+            &DeployId("deploy-1".into()),
+            MoveVolumeRequest {
+                volume: "data".into(),
+                from_machine: MachineId("machine-other".into()),
+                to_machine: MachineId("machine-b".into()),
+                snapshot: "ployz-move-manifest-data".into(),
+            },
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_millis(1),
+        )
+        .await
+        .expect_err("source mismatch should fail before RPC");
+
+        assert!(matches!(
+            error,
+            PloyzError::Operation {
+                operation: "deploy_node_move_volume",
+                ..
+            }
+        ));
+        assert!(client.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn volume_move_rpc_surfaces_start_response_failure() {
+        let client = FakeMoveRpcClient::with_responses(vec![Ok(DaemonResponse {
+            ok: false,
+            code: "START_FAILED".into(),
+            message: "cannot snapshot".into(),
+            payload: None,
+        })]);
+
+        let error = run_volume_move_rpc(
+            &client,
+            &MachineId("machine-a".into()),
+            &Namespace("prod".into()),
+            &DeployId("deploy-1".into()),
+            MoveVolumeRequest {
+                volume: "data".into(),
+                from_machine: MachineId("machine-a".into()),
+                to_machine: MachineId("machine-b".into()),
+                snapshot: "ployz-move-manifest-data".into(),
+            },
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_millis(1),
+        )
+        .await
+        .expect_err("failed start response should fail move");
+
+        assert_eq!(
+            error,
+            PloyzError::Deploy(DeployError::RemoteNodeError {
+                operation: "volume_zfs_send",
+                code: "START_FAILED".into(),
+                message: "cannot snapshot".into(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn volume_move_rpc_requires_start_payload() {
+        let client = FakeMoveRpcClient::with_responses(vec![Ok(DaemonResponse {
+            ok: true,
+            code: "OK".into(),
+            message: "ok".into(),
+            payload: None,
+        })]);
+
+        let error = run_volume_move_rpc(
+            &client,
+            &MachineId("machine-a".into()),
+            &Namespace("prod".into()),
+            &DeployId("deploy-1".into()),
+            MoveVolumeRequest {
+                volume: "data".into(),
+                from_machine: MachineId("machine-a".into()),
+                to_machine: MachineId("machine-b".into()),
+                snapshot: "ployz-move-manifest-data".into(),
+            },
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_millis(1),
+        )
+        .await
+        .expect_err("missing start payload should fail move");
+
+        assert_eq!(
+            error,
+            PloyzError::Deploy(DeployError::MissingNodePayload {
+                payload: "volume zfs transfer",
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn volume_move_rpc_retries_transient_transfer_poll_failure() {
+        let client = FakeMoveRpcClient::with_responses(vec![
+            Ok(transfer_response("running", None, None, None)),
+            Err(RpcFailure::new(
+                RpcFailureKind::NoResponders,
+                "no responder",
+            )),
+            Ok(transfer_response("succeeded", Some(42), Some(4096), None)),
+        ]);
+
+        let result = run_volume_move_rpc(
+            &client,
+            &MachineId("machine-a".into()),
+            &Namespace("prod".into()),
+            &DeployId("deploy-1".into()),
+            MoveVolumeRequest {
+                volume: "data".into(),
+                from_machine: MachineId("machine-a".into()),
+                to_machine: MachineId("machine-b".into()),
+                snapshot: "ployz-move-manifest-data".into(),
+            },
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("move result");
+
+        assert_eq!(result.snapshot_guid, 42);
+        assert_eq!(client.requests().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn volume_move_rpc_surfaces_terminal_poll_response_failure() {
+        let client = FakeMoveRpcClient::with_responses(vec![
+            Ok(transfer_response("running", None, None, None)),
+            Ok(DaemonResponse {
+                ok: false,
+                code: "TRANSFER_FAILED".into(),
+                message: "receiver disconnected".into(),
+                payload: None,
+            }),
+        ]);
+
+        let error = run_volume_move_rpc(
+            &client,
+            &MachineId("machine-a".into()),
+            &Namespace("prod".into()),
+            &DeployId("deploy-1".into()),
+            MoveVolumeRequest {
+                volume: "data".into(),
+                from_machine: MachineId("machine-a".into()),
+                to_machine: MachineId("machine-b".into()),
+                snapshot: "ployz-move-manifest-data".into(),
+            },
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_millis(1),
+        )
+        .await
+        .expect_err("failed poll response should fail move");
+
+        assert_eq!(
+            error,
+            PloyzError::Deploy(DeployError::RemoteNodeError {
+                operation: "volume_zfs_transfer_get",
+                code: "TRANSFER_FAILED".into(),
+                message: "receiver disconnected".into(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn volume_move_rpc_requires_poll_payload() {
+        let client = FakeMoveRpcClient::with_responses(vec![
+            Ok(transfer_response("running", None, None, None)),
+            Ok(DaemonResponse {
+                ok: true,
+                code: "OK".into(),
+                message: "ok".into(),
+                payload: None,
+            }),
+        ]);
+
+        let error = run_volume_move_rpc(
+            &client,
+            &MachineId("machine-a".into()),
+            &Namespace("prod".into()),
+            &DeployId("deploy-1".into()),
+            MoveVolumeRequest {
+                volume: "data".into(),
+                from_machine: MachineId("machine-a".into()),
+                to_machine: MachineId("machine-b".into()),
+                snapshot: "ployz-move-manifest-data".into(),
+            },
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_millis(1),
+        )
+        .await
+        .expect_err("missing poll payload should fail move");
+
+        assert_eq!(
+            error,
+            PloyzError::Deploy(DeployError::MissingNodePayload {
+                payload: "volume zfs transfer",
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn volume_move_rpc_times_out_waiting_for_running_transfer() {
+        let client = FakeMoveRpcClient::with_responses(vec![
+            Ok(transfer_response("running", None, None, None)),
+            Ok(transfer_response("running", None, None, None)),
+        ]);
+
+        let error = run_volume_move_rpc(
+            &client,
+            &MachineId("machine-a".into()),
+            &Namespace("prod".into()),
+            &DeployId("deploy-1".into()),
+            MoveVolumeRequest {
+                volume: "data".into(),
+                from_machine: MachineId("machine-a".into()),
+                to_machine: MachineId("machine-b".into()),
+                snapshot: "ployz-move-manifest-data".into(),
+            },
+            Duration::from_secs(1),
+            Duration::ZERO,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect_err("running transfer should time out");
+
+        assert!(matches!(
+            error,
+            PloyzError::Operation {
+                operation: "volume_zfs_transfer",
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn lock_loss_marks_applying_deploy_failed_with_warning() {
+        let store = StoreDriver::memory();
+        let deploy_id = DeployId("deploy-lock-loss".into());
+        let preview = DeployPreview {
+            namespace: Namespace("prod".into()),
+            manifest_hash: "manifest".into(),
+            participants: Vec::new(),
+            services: Vec::new(),
+            service_branch_sources: Vec::new(),
+            volume_moves: Vec::new(),
+            warnings: Vec::new(),
+        };
+        store
+            .write_deploy_status(&DeployRecord {
+                deploy_id: deploy_id.clone(),
+                namespace: Namespace("prod".into()),
+                coordinator_machine_id: MachineId("local".into()),
+                manifest_hash: "manifest".into(),
+                state: DeployState::Applying,
+                started_at: 1,
+                committed_at: None,
+                finished_at: None,
+                summary_json: serde_json::to_string(&preview).expect("preview json"),
+            })
+            .await
+            .expect("seed applying deploy");
+
+        let outcome = mark_deploy_failed_after_lock_loss(&store, &deploy_id, "renew failed").await;
+        assert_eq!(outcome, DeployLockLossOutcome::MarkedFailed);
+
+        let record = store
+            .get_deploy(&deploy_id)
+            .await
+            .expect("get deploy")
+            .expect("deploy");
+        assert_eq!(record.state, DeployState::Failed);
+        assert!(record.finished_at.is_some());
+        let preview: DeployPreview =
+            serde_json::from_str(&record.summary_json).expect("preview json");
+        assert!(
+            preview
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("renew failed"))
+        );
+    }
+
+    #[tokio::test]
+    async fn lock_loss_after_commit_does_not_mark_deploy_failed() {
+        let store = StoreDriver::memory();
+        let deploy_id = DeployId("deploy-lock-loss-committed".into());
+        store
+            .write_deploy_status(&DeployRecord {
+                deploy_id: deploy_id.clone(),
+                namespace: Namespace("prod".into()),
+                coordinator_machine_id: MachineId("local".into()),
+                manifest_hash: "manifest".into(),
+                state: DeployState::Committed,
+                started_at: 1,
+                committed_at: Some(2),
+                finished_at: Some(2),
+                summary_json: "{}".into(),
+            })
+            .await
+            .expect("seed committed deploy");
+
+        let outcome = mark_deploy_failed_after_lock_loss(&store, &deploy_id, "renew failed").await;
+
+        assert_eq!(outcome, DeployLockLossOutcome::PastCommit);
+        let record = store
+            .get_deploy(&deploy_id)
+            .await
+            .expect("get deploy")
+            .expect("deploy");
+        assert_eq!(record.state, DeployState::Committed);
     }
 
     #[tokio::test]
@@ -886,5 +1718,100 @@ mod tests {
                 release_service: "api".into()
             })
         );
+    }
+
+    #[derive(Clone, Default)]
+    struct FakeMoveRpcClient {
+        responses: Arc<Mutex<VecDeque<std::result::Result<DaemonResponse, RpcFailure>>>>,
+        requests: Arc<Mutex<Vec<(String, DaemonRequest)>>>,
+        policies: Arc<Mutex<Vec<RpcPolicy>>>,
+    }
+
+    impl FakeMoveRpcClient {
+        fn with_responses(responses: Vec<std::result::Result<DaemonResponse, RpcFailure>>) -> Self {
+            Self {
+                responses: Arc::new(Mutex::new(responses.into())),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                policies: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn requests(&self) -> Vec<(String, DaemonRequest)> {
+            self.requests.lock().expect("requests").clone()
+        }
+
+        fn policies(&self) -> Vec<RpcPolicy> {
+            self.policies.lock().expect("policies").clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DeployMoveRpcClient for FakeMoveRpcClient {
+        fn with_rpc_policy(&self, policy: RpcPolicy) -> Self {
+            self.policies.lock().expect("policies").push(policy);
+            self.clone()
+        }
+
+        async fn request(
+            &self,
+            subject: NodeCommandSubject,
+            request: &DaemonRequest,
+        ) -> std::result::Result<DaemonResponse, RpcFailure> {
+            self.requests
+                .lock()
+                .expect("requests")
+                .push((format!("{subject:?}"), request.clone()));
+            self.responses
+                .lock()
+                .expect("responses")
+                .pop_front()
+                .expect("fake response queued")
+        }
+    }
+
+    fn transfer_response(
+        status: &str,
+        snapshot_guid: Option<u64>,
+        bytes_transferred: Option<u64>,
+        last_error: Option<String>,
+    ) -> DaemonResponse {
+        DaemonResponse {
+            ok: true,
+            code: "OK".into(),
+            message: "ok".into(),
+            payload: Some(DaemonPayload::VolumeZfsTransfer(transfer_payload(
+                status,
+                snapshot_guid,
+                bytes_transferred,
+                last_error,
+            ))),
+        }
+    }
+
+    fn transfer_payload(
+        status: &str,
+        snapshot_guid: Option<u64>,
+        bytes_transferred: Option<u64>,
+        last_error: Option<String>,
+    ) -> VolumeZfsTransferPayload {
+        VolumeZfsTransferPayload {
+            transfer: VolumeZfsTransferInfo {
+                id: "transfer-1".into(),
+                namespace: "prod".into(),
+                volume: "data".into(),
+                source_machine: MachineId("machine-a".into()),
+                target_machine: MachineId("machine-b".into()),
+                status: status.into(),
+                stage: "finished".into(),
+                snapshot_name: "ployz-move-manifest-data".into(),
+                snapshot_guid,
+                from_snapshot_name: None,
+                from_snapshot_guid: None,
+                bytes_transferred,
+                started_at: 1,
+                updated_at: 2,
+                last_error,
+            },
+        }
     }
 }

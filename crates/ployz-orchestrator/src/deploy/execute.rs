@@ -14,7 +14,8 @@ use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_partici
 use crate::error::{DeployError, Error, Result};
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPreview, DeployRecord,
-    DeployState, InstanceId, InstanceStatusRecord, MachineId, MachineMembership, VolumeRecord,
+    DeployState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineMembership,
+    VolumeRecord,
 };
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use ployz_store_api::{DeployStore, InstanceStatusStore, StoreDriver};
@@ -26,6 +27,10 @@ use uuid::Uuid;
 
 const PARTICIPANT_INSPECT_CONCURRENCY: usize = 64;
 const PHASE_MACHINE_CONCURRENCY: usize = 64;
+
+pub(super) fn new_deploy_id() -> DeployId {
+    DeployId(Uuid::new_v4().to_string())
+}
 
 #[derive(Debug, Clone)]
 struct StartTask {
@@ -65,11 +70,12 @@ struct CleanupResult {
 
 struct InspectedParticipant {
     participant: MachineId,
-    instance_count: usize,
+    instances: Vec<InstanceStatusRecord>,
 }
 
 pub(super) struct ParticipantSet {
     machines: BTreeMap<MachineId, MachineMembership>,
+    instances: Vec<InstanceStatusRecord>,
     namespace: ployz_types::spec::Namespace,
     deploy_id: DeployId,
 }
@@ -99,7 +105,7 @@ impl ParticipantSet {
                         .await?;
                     Ok(InspectedParticipant {
                         participant,
-                        instance_count: instances.len(),
+                        instances,
                     })
                 }
             })
@@ -123,19 +129,24 @@ impl ParticipantSet {
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
         let mut events = Vec::new();
+        let mut instances = Vec::new();
         for inspected in inspected {
+            let instance_count = inspected.instances.len();
             events.push(DeployEvent {
                 step: "inspect".into(),
                 message: format!(
                     "inspected '{}' ({} instances)",
-                    inspected.participant, inspected.instance_count
+                    inspected.participant, instance_count
                 ),
             });
+            instances.extend(inspected.instances);
         }
+        instances.sort_by(|left, right| left.instance_id.0.cmp(&right.instance_id.0));
 
         Ok((
             Self {
                 machines,
+                instances,
                 namespace,
                 deploy_id: deploy_id.clone(),
             },
@@ -183,36 +194,17 @@ pub(super) async fn apply_with_certificate_coordination(
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
     prober: &dyn ParticipantProbe,
 ) -> Result<DeployApplyResult> {
-    let initial_plan = resolve_plan(store, local_machine_id, manifest).await?;
-    let reachability = probe_participants(
-        prober,
-        initial_plan.participants(),
-        initial_plan.machine_map(),
-    )
-    .await;
-    if !reachability.unreachable.is_empty() {
-        let machine_ids = reachability
-            .unreachable
-            .iter()
-            .map(|machine_id| machine_id.0.clone())
-            .collect::<Vec<_>>();
-        return Err(Error::Deploy(DeployError::ParticipantsUnreachable {
-            unreachable_count: machine_ids.len(),
-            participant_count: initial_plan.participants().len(),
-            machine_ids,
-        }));
-    }
-
-    apply_with_initial_plan_and_certificate_coordination(
+    apply_with_deploy_id_and_certificate_coordination(
         store,
         participant_client,
         local_machine_id,
         manifest,
-        initial_plan,
+        new_deploy_id(),
         certificate_coordinator,
         account_coordinator,
         challenge_readiness,
         issuer_factory,
+        prober,
     )
     .await
 }
@@ -239,6 +231,7 @@ pub(super) async fn apply_with_initial_plan(
     .await
 }
 
+#[cfg(test)]
 pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
@@ -250,9 +243,84 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
 ) -> Result<DeployApplyResult> {
-    let deploy_id = DeployId(Uuid::new_v4().to_string());
+    apply_with_deploy_id_initial_plan_and_certificate_coordination(
+        store,
+        participant_client,
+        local_machine_id,
+        manifest,
+        new_deploy_id(),
+        initial_plan,
+        certificate_coordinator,
+        account_coordinator,
+        challenge_readiness,
+        issuer_factory,
+    )
+    .await
+}
+
+pub(super) async fn apply_with_deploy_id_and_certificate_coordination(
+    store: &StoreDriver,
+    participant_client: &dyn DeployParticipantClient,
+    local_machine_id: &MachineId,
+    manifest: &ployz_types::spec::DeployManifest,
+    deploy_id: DeployId,
+    certificate_coordinator: Arc<dyn IssuanceCoordinator>,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
+    issuer_factory: Arc<dyn AcmeIssuerFactory>,
+    prober: &dyn ParticipantProbe,
+) -> Result<DeployApplyResult> {
+    let initial_plan = resolve_plan(store, local_machine_id, manifest).await?;
+    ensure_volume_move_execution_supported(participant_client, &initial_plan)?;
+    let reachability = probe_participants(
+        prober,
+        initial_plan.participants(),
+        initial_plan.machine_map(),
+    )
+    .await;
+    if !reachability.unreachable.is_empty() {
+        let machine_ids = reachability
+            .unreachable
+            .iter()
+            .map(|machine_id| machine_id.0.clone())
+            .collect::<Vec<_>>();
+        return Err(Error::Deploy(DeployError::ParticipantsUnreachable {
+            unreachable_count: machine_ids.len(),
+            participant_count: initial_plan.participants().len(),
+            machine_ids,
+        }));
+    }
+
+    apply_with_deploy_id_initial_plan_and_certificate_coordination(
+        store,
+        participant_client,
+        local_machine_id,
+        manifest,
+        deploy_id,
+        initial_plan,
+        certificate_coordinator,
+        account_coordinator,
+        challenge_readiness,
+        issuer_factory,
+    )
+    .await
+}
+
+async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
+    store: &StoreDriver,
+    participant_client: &dyn DeployParticipantClient,
+    local_machine_id: &MachineId,
+    manifest: &ployz_types::spec::DeployManifest,
+    deploy_id: DeployId,
+    initial_plan: ResolvedPlan,
+    certificate_coordinator: Arc<dyn IssuanceCoordinator>,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
+    issuer_factory: Arc<dyn AcmeIssuerFactory>,
+) -> Result<DeployApplyResult> {
     let started_at = now_unix_secs();
     let initial_fingerprint = initial_plan.fingerprint();
+    ensure_volume_move_execution_supported(participant_client, &initial_plan)?;
 
     let (participants, mut events) = ParticipantSet::inspect(
         participant_client,
@@ -267,7 +335,6 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
         let final_plan = resolve_plan(store, local_machine_id, manifest).await?;
         let final_fingerprint = final_plan.fingerprint();
         ensure_plan_stable(&initial_fingerprint, &final_fingerprint)?;
-        ensure_volume_moves_are_not_executed(&final_plan)?;
         managed_domains::validate_hostname_ownership(store, &final_plan).await?;
 
         let prepared = PreparedDeploy::new(
@@ -280,6 +347,10 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
             .write_deploy_status(prepared.applying_record())
             .await?;
         last_written_deploy_record = Some(prepared.applying_record().clone());
+
+        let volume_move_events =
+            execute_volume_moves(participant_client, &participants, prepared.plan()).await?;
+        events.extend(volume_move_events);
 
         let startup =
             run_phase_startup(store, participant_client, &participants, prepared.plan()).await?;
@@ -297,6 +368,8 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
         let commit_plan = started.into_commit_plan(removed_volumes_list, committed_volumes)?;
         store.commit_deploy(commit_plan.commit()).await?;
         let mut committed = commit_plan.into_committed();
+        last_written_deploy_record = Some(committed.deploy_record().clone());
+        store.write_deploy_status(committed.deploy_record()).await?;
         events.push(committed.commit_event());
 
         let managed_hostnames = managed_domains::ensure_certificate_intents(
@@ -388,6 +461,25 @@ fn failed_deploy_record(mut record: DeployRecord, error: &Error) -> DeployRecord
     record
 }
 
+fn ensure_volume_move_execution_supported(
+    participant_client: &dyn DeployParticipantClient,
+    plan: &ResolvedPlan,
+) -> Result<()> {
+    if participant_client.supports_volume_moves() {
+        return Ok(());
+    }
+    if let Some(volume) = plan
+        .volumes()
+        .iter()
+        .find(|volume| matches!(volume_record_change(volume), VolumeChange::Move))
+    {
+        return Err(Error::Deploy(DeployError::VolumeMoveExecutionUnsupported {
+            volume: volume.declaration.name.clone(),
+        }));
+    }
+    Ok(())
+}
+
 pub(super) async fn run_phase_startup(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
@@ -464,17 +556,148 @@ pub(super) fn ensure_plan_stable(
     Ok(())
 }
 
-fn ensure_volume_moves_are_not_executed(plan: &ResolvedPlan) -> Result<()> {
-    if let Some(volume) = plan
+async fn execute_volume_moves(
+    participant_client: &dyn DeployParticipantClient,
+    participants: &ParticipantSet,
+    plan: &ResolvedPlan,
+) -> Result<Vec<DeployEvent>> {
+    let mut events = Vec::new();
+    for volume in plan
         .volumes()
         .iter()
-        .find(|volume| matches!(volume_record_change(volume), VolumeChange::Move))
+        .filter(|volume| matches!(volume_record_change(volume), VolumeChange::Move))
     {
-        return Err(Error::Deploy(DeployError::VolumeMoveExecutionUnsupported {
-            volume: volume.declaration.name.clone(),
-        }));
+        let Some(movement) = &volume.movement else {
+            continue;
+        };
+        participants.get(&movement.from_machine)?;
+        participants.get(&movement.to_machine)?;
+
+        let mut stopped_writer_events =
+            stop_volume_writers(participant_client, participants, plan, volume).await?;
+        events.append(&mut stopped_writer_events);
+
+        let snapshot = volume_move_snapshot_name(plan.manifest_hash(), &volume.declaration.name);
+        events.push(DeployEvent {
+            step: "move_volume".into(),
+            message: format!(
+                "moving volume {} from {} to {} using snapshot {}",
+                volume.declaration.name, movement.from_machine, movement.to_machine, snapshot
+            ),
+        });
+
+        let result = participant_client
+            .move_volume(
+                &movement.from_machine,
+                plan.namespace(),
+                &participants.deploy_id,
+                participant::MoveVolumeRequest {
+                    volume: volume.declaration.name.clone(),
+                    from_machine: movement.from_machine.clone(),
+                    to_machine: movement.to_machine.clone(),
+                    snapshot,
+                },
+            )
+            .await?;
+        events.push(DeployEvent {
+            step: "move_volume".into(),
+            message: format!(
+                "moved volume {} to {} with snapshot {} guid {} ({} bytes)",
+                volume.declaration.name,
+                movement.to_machine,
+                result.snapshot,
+                result.snapshot_guid,
+                result.bytes_transferred
+            ),
+        });
     }
-    Ok(())
+    Ok(events)
+}
+
+async fn stop_volume_writers(
+    participant_client: &dyn DeployParticipantClient,
+    participants: &ParticipantSet,
+    plan: &ResolvedPlan,
+    moving_volume: &crate::deploy::plan::PlannedVolume,
+) -> Result<Vec<DeployEvent>> {
+    let mut current_instances = BTreeMap::new();
+    let writer_services = moving_volume
+        .attached_services
+        .iter()
+        .chain(
+            moving_volume
+                .current
+                .as_ref()
+                .into_iter()
+                .flat_map(|record| record.attached_services.iter()),
+        )
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for status in &participants.instances {
+        if status.namespace == *plan.namespace()
+            && writer_services.contains(&status.service)
+            && !matches!(status.phase, InstancePhase::Failed | InstancePhase::Removed)
+        {
+            current_instances.insert(
+                status.instance_id.0.clone(),
+                (
+                    status.instance_id.clone(),
+                    status.machine_id.clone(),
+                    status.service.clone(),
+                ),
+            );
+        }
+    }
+    for writer in &moving_volume.current_writer_slots {
+        current_instances.insert(
+            writer.slot.active_instance_id.0.clone(),
+            (
+                writer.slot.active_instance_id.clone(),
+                writer.slot.machine_id.clone(),
+                writer.service.clone(),
+            ),
+        );
+    }
+
+    let mut events = Vec::new();
+    for (_instance_id_key, (instance_id, machine_id, service)) in current_instances {
+        participants.get(&machine_id)?;
+        participant_client
+            .drain_instance(
+                &machine_id,
+                plan.namespace(),
+                &participants.deploy_id,
+                &instance_id,
+            )
+            .await?;
+        events.push(DeployEvent {
+            step: "stop_volume_writer".into(),
+            message: format!(
+                "drained writer instance {} for service {} before moving volume {}",
+                instance_id, service, moving_volume.declaration.name
+            ),
+        });
+        participant_client
+            .remove_instance(
+                &machine_id,
+                plan.namespace(),
+                &participants.deploy_id,
+                &instance_id,
+            )
+            .await?;
+        events.push(DeployEvent {
+            step: "stop_volume_writer".into(),
+            message: format!(
+                "removed writer instance {} for service {} before moving volume {}",
+                instance_id, service, moving_volume.declaration.name
+            ),
+        });
+    }
+    Ok(events)
+}
+
+fn volume_move_snapshot_name(manifest_hash: &str, volume: &str) -> String {
+    format!("ployz-move-{manifest_hash}-{volume}")
 }
 
 async fn run_machine_start_queue(
