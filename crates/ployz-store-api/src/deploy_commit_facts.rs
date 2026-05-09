@@ -1,18 +1,23 @@
 use std::collections::BTreeMap;
 
-use ployz_types::model::{RoutingEvent, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord};
+use ployz_types::model::{
+    RoutingEvent, ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
+    VolumeRecord,
+};
 use ployz_types::spec::Namespace;
 
 use crate::DeployCommit;
 
 type RevisionKey = (Namespace, String, String);
 type ReleaseKey = (Namespace, String);
+type BranchLineageKey = (Namespace, String, String);
 type VolumeKey = (Namespace, String);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeployCommitFacts {
     revisions: BTreeMap<RevisionKey, ServiceRevisionRecord>,
     releases: BTreeMap<ReleaseKey, ServiceReleaseRecord>,
+    branch_lineage: BTreeMap<BranchLineageKey, ServiceBranchLineageRecord>,
     volumes: BTreeMap<VolumeKey, VolumeRecord>,
 }
 
@@ -32,6 +37,17 @@ impl DeployCommitFacts {
         for service in &commit.removed_services {
             self.releases
                 .remove(&(commit.namespace.clone(), service.clone()));
+            let removed_lineage = self
+                .branch_lineage
+                .keys()
+                .filter(|(namespace, lineage_service, _revision_hash)| {
+                    namespace == &commit.namespace && lineage_service == service
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            for key in removed_lineage {
+                self.branch_lineage.remove(&key);
+            }
             events.push(RoutingEvent::ReleaseRemoved {
                 namespace: commit.namespace.clone(),
                 service: service.clone(),
@@ -44,6 +60,10 @@ impl DeployCommitFacts {
         for release in &commit.releases {
             self.releases.insert(release_key(release), release.clone());
             events.push(RoutingEvent::ReleaseUpsert(release.clone()));
+        }
+        for lineage in &commit.branch_lineage {
+            self.branch_lineage
+                .insert(branch_lineage_key(lineage), lineage.clone());
         }
         for volume in &commit.volumes {
             self.volumes.insert(volume_key(volume), volume.clone());
@@ -98,6 +118,15 @@ impl DeployCommitFacts {
     }
 
     #[must_use]
+    pub fn service_branch_lineage(&self, namespace: &Namespace) -> Vec<ServiceBranchLineageRecord> {
+        self.branch_lineage
+            .values()
+            .filter(|lineage| &lineage.namespace == namespace)
+            .cloned()
+            .collect()
+    }
+
+    #[must_use]
     pub fn volume(&self, namespace: &Namespace, volume_name: &str) -> Option<&VolumeRecord> {
         self.volumes
             .get(&(namespace.clone(), volume_name.to_string()))
@@ -132,6 +161,14 @@ fn release_key(record: &ServiceReleaseRecord) -> ReleaseKey {
     (record.namespace.clone(), record.service.clone())
 }
 
+fn branch_lineage_key(record: &ServiceBranchLineageRecord) -> BranchLineageKey {
+    (
+        record.namespace.clone(),
+        record.service.clone(),
+        record.revision_hash.clone(),
+    )
+}
+
 fn volume_key(record: &VolumeRecord) -> VolumeKey {
     (record.namespace.clone(), record.volume_name.clone())
 }
@@ -140,7 +177,8 @@ fn volume_key(record: &VolumeRecord) -> VolumeKey {
 mod tests {
     use super::*;
     use ployz_types::model::{
-        DeployId, DeployRecord, DeployState, MachineId, ServiceRelease, ServiceRoutingPolicy,
+        DeployId, DeployRecord, DeployState, MachineId, ServiceBranchLineageRecord, ServiceRelease,
+        ServiceRoutingPolicy,
     };
     use ployz_types::spec::VolumeScope;
 
@@ -268,6 +306,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn deploy_commit_facts_records_branch_lineage_with_commit_facts() {
+        let namespace = Namespace(String::from("pr-39"));
+        let mut facts = DeployCommitFacts::new();
+        let mut command = commit(
+            &namespace,
+            vec![revision(&namespace, "web", "rev-target")],
+            vec![release(&namespace, "web", "rev-target")],
+            Vec::new(),
+        );
+        command.branch_lineage = vec![branch_lineage(&namespace, "web", "rev-target")];
+
+        facts.apply_commit_events(&command);
+
+        assert_eq!(
+            facts.service_branch_lineage(&namespace),
+            vec![branch_lineage(&namespace, "web", "rev-target")]
+        );
+    }
+
+    #[test]
+    fn deploy_commit_facts_removes_branch_lineage_when_service_is_removed() {
+        let namespace = Namespace(String::from("pr-39"));
+        let mut facts = DeployCommitFacts::new();
+        let mut command = commit(
+            &namespace,
+            vec![revision(&namespace, "web", "rev-target")],
+            vec![release(&namespace, "web", "rev-target")],
+            Vec::new(),
+        );
+        command.branch_lineage = vec![branch_lineage(&namespace, "web", "rev-target")];
+        facts.apply_commit_events(&command);
+
+        let mut remove = commit(&namespace, Vec::new(), Vec::new(), Vec::new());
+        remove.removed_services = vec![String::from("web")];
+        facts.apply_commit_events(&remove);
+
+        assert!(facts.service_branch_lineage(&namespace).is_empty());
+    }
+
     fn commit(
         namespace: &Namespace,
         revisions: Vec<ServiceRevisionRecord>,
@@ -279,6 +357,7 @@ mod tests {
             revisions,
             removed_services: Vec::new(),
             removed_volumes: Vec::new(),
+            branch_lineage: Vec::new(),
             releases,
             volumes,
             deploy: DeployRecord {
@@ -342,6 +421,23 @@ mod tests {
             created_by_deploy_id: deploy_id.clone(),
             last_modified_at: 1,
             last_modified_by_deploy_id: deploy_id,
+        }
+    }
+
+    fn branch_lineage(
+        namespace: &Namespace,
+        service: &str,
+        revision_hash: &str,
+    ) -> ServiceBranchLineageRecord {
+        ServiceBranchLineageRecord {
+            namespace: namespace.clone(),
+            service: service.into(),
+            revision_hash: revision_hash.into(),
+            source_namespace: Namespace("prod".into()),
+            source_service: service.into(),
+            source_revision_hash: "rev-source".into(),
+            deploy_id: DeployId("deploy-branch".into()),
+            created_at: 2,
         }
     }
 }

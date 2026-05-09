@@ -23,8 +23,8 @@ use ployz_types::error::Error;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineMembership, OverlayIp, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
-    StorageParticipation, StorageReplicaPolicy, VolumeRecord,
+    MachineMembership, OverlayIp, RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord,
+    ServiceRevisionRecord, StorageParticipation, StorageReplicaPolicy, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -403,6 +403,13 @@ where
 
     async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
         DeployStore::list_volumes(self.store().await?.as_ref(), namespace).await
+    }
+
+    async fn list_service_branch_lineage(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceBranchLineageRecord>> {
+        DeployStore::list_service_branch_lineage(self.store().await?.as_ref(), namespace).await
     }
 
     async fn get_volume(
