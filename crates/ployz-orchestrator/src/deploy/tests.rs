@@ -33,10 +33,10 @@ use ployz_store_api::{
 };
 use ployz_types::Result as PloyzResult;
 use ployz_types::spec::{
-    ContainerSpec, DeployIntent, DeployManifest, HttpRoute, Mount, MountSource, Namespace,
-    NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy, RolloutStrategy,
-    RouteSpec, ServiceIntent, ServiceIntentHint, ServicePort, ServiceSpec, VolumeDeclaration,
-    VolumeIntent, VolumeIntentHint, VolumeScope,
+    ContainerSpec, DeployIntent, DeployManifest, DeployPhaseIntent, HttpRoute, Mount, MountSource,
+    Namespace, NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy,
+    RolloutStrategy, RouteSpec, ServiceIntent, ServiceIntentHint, ServicePort, ServiceSpec,
+    VolumeDeclaration, VolumeIntent, VolumeIntentHint, VolumeScope,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv6Addr;
@@ -541,6 +541,7 @@ async fn resolve_plan_moves_existing_volume_and_attached_service_to_target_machi
                 to_machine: "machine-b".into(),
             },
         }],
+        phases: Vec::new(),
     });
     let [spec] = manifest.services.as_slice() else {
         panic!("expected one service");
@@ -657,6 +658,7 @@ async fn resolve_plan_treats_volume_move_to_same_machine_as_noop() {
                 to_machine: "machine-a".into(),
             },
         }],
+        phases: Vec::new(),
     });
     let [spec] = manifest.services.as_slice() else {
         panic!("expected one service");
@@ -718,6 +720,7 @@ async fn resolve_plan_rejects_volume_move_source_mismatch() {
                 to_machine: "machine-a".into(),
             },
         }],
+        phases: Vec::new(),
     });
     seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
 
@@ -789,6 +792,7 @@ async fn resolve_plan_rejects_volume_move_to_missing_ineligible_or_compute_only_
                     to_machine: target.into(),
                 },
             }],
+            phases: Vec::new(),
         });
         seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
 
@@ -817,6 +821,7 @@ async fn resolve_plan_rejects_volume_move_for_shared_volume() {
                 to_machine: "machine-b".into(),
             },
         }],
+        phases: Vec::new(),
     });
     seed_volume_with_scope(
         &store,
@@ -862,6 +867,7 @@ async fn resolve_plan_rejects_volume_move_for_global_attached_service() {
                 to_machine: "machine-b".into(),
             },
         }],
+        phases: Vec::new(),
     });
     seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
 
@@ -1071,6 +1077,7 @@ async fn apply_executes_volume_move_before_startup_and_commits_target_owner() {
                 to_machine: "machine-b".into(),
             },
         }],
+        phases: Vec::new(),
     });
     seed_volume_with_attached_services(
         &store,
@@ -1163,6 +1170,7 @@ async fn apply_stops_stale_live_volume_writers_before_move() {
                 to_machine: "machine-b".into(),
             },
         }],
+        phases: Vec::new(),
     });
     seed_volume_with_attached_services(
         &store,
@@ -1238,6 +1246,7 @@ async fn apply_fails_volume_move_before_startup_or_commit() {
                 to_machine: "machine-b".into(),
             },
         }],
+        phases: Vec::new(),
     });
     seed_volume_with_attached_services(
         &store,
@@ -1340,6 +1349,7 @@ async fn apply_reuses_volume_move_snapshot_when_retrying_after_startup_failure()
                 to_machine: "machine-b".into(),
             },
         }],
+        phases: Vec::new(),
     });
     seed_volume_with_attached_services(
         &store,
@@ -1450,6 +1460,7 @@ async fn apply_stops_current_volume_writers_even_when_service_is_removed() {
                 to_machine: "machine-b".into(),
             },
         }],
+        phases: Vec::new(),
     });
     seed_volume_with_attached_services(
         &store,
@@ -1533,6 +1544,7 @@ async fn apply_does_not_mark_committed_volume_move_failed_after_post_commit_stat
                 to_machine: "machine-b".into(),
             },
         }],
+        phases: Vec::new(),
     });
     seed_volume_with_attached_services(
         &store,
@@ -1618,6 +1630,7 @@ async fn apply_rejects_volume_move_when_target_loses_eligibility_before_mutation
                 to_machine: "machine-b".into(),
             },
         }],
+        phases: Vec::new(),
     });
     seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
     backend.reset_counts();
@@ -1662,6 +1675,7 @@ async fn apply_rejects_unsupported_volume_move_before_probe_or_inspect() {
                 to_machine: "machine-b".into(),
             },
         }],
+        phases: Vec::new(),
     });
     seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
     let participant = UnsupportedParticipantClient::default();
@@ -2431,6 +2445,7 @@ async fn resolve_plan_includes_branch_source_preview_evidence() {
             },
         }],
         volumes: Vec::new(),
+        phases: Vec::new(),
     });
 
     let plan = resolve_plan(&store, &local_machine_id, &manifest)
@@ -2482,6 +2497,7 @@ async fn resolve_plan_rejects_missing_branch_source_release() {
             },
         }],
         volumes: Vec::new(),
+        phases: Vec::new(),
     });
 
     let error = resolve_plan(&store, &local_machine_id, &manifest)
@@ -2526,6 +2542,7 @@ async fn resolve_plan_rejects_branch_source_missing_revision() {
             },
         }],
         volumes: Vec::new(),
+        phases: Vec::new(),
     });
 
     let error = resolve_plan(&store, &local_machine_id, &manifest)
@@ -2587,6 +2604,7 @@ async fn resolve_plan_rejects_undecodable_branch_source_revision() {
             },
         }],
         volumes: Vec::new(),
+        phases: Vec::new(),
     });
 
     let error = resolve_plan(&store, &local_machine_id, &manifest)
@@ -2622,6 +2640,7 @@ async fn resolve_plan_rejects_branch_source_same_as_target() {
             },
         }],
         volumes: Vec::new(),
+        phases: Vec::new(),
     });
 
     let error = resolve_plan(&store, &local_machine_id, &manifest)
@@ -2664,6 +2683,7 @@ async fn ensure_plan_stable_rejects_branch_source_revision_drift() {
             },
         }],
         volumes: Vec::new(),
+        phases: Vec::new(),
     });
 
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
@@ -3225,6 +3245,293 @@ async fn apply_records_committed_status_when_phase_success_evidence_fails() {
 }
 
 #[tokio::test]
+async fn apply_marks_phase_succeeded_when_first_committed_status_write_fails() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    backend.fail_committed_status_writes(true);
+    let factory = FakeParticipantClient::new(FakeController::default());
+
+    let error =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect_err("committed status write failure should fail response");
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected committed status failure")
+    );
+    assert_eq!(backend.commit_count(), 1);
+    let writes = backend.deploy_status_writes().await;
+    assert!(
+        writes
+            .iter()
+            .all(|record| record.state != DeployState::Failed),
+        "post-commit status failure must not mark committed deploy failed"
+    );
+    let committed_attempt = writes
+        .iter()
+        .find(|record| record.state == DeployState::Committed)
+        .expect("committed status write should have been attempted");
+    assert_default_phase_record(
+        &store,
+        &manifest.namespace,
+        &committed_attempt.deploy_id,
+        "succeeded",
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn resolve_plan_builds_manifest_phase_work_in_dependency_order() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = test_manifest(vec![
+        test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17"),
+        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+    ]);
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: Vec::new(),
+        phases: vec![
+            DeployPhaseIntent {
+                phase_id: "web".into(),
+                name: Some("Web".into()),
+                after: vec!["db".into()],
+                services: vec!["web".into()],
+                volumes: Vec::new(),
+                commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                advance_policy: DeployPhaseAdvancePolicy::Immediate,
+            },
+            DeployPhaseIntent {
+                phase_id: "db".into(),
+                name: Some("Database".into()),
+                after: Vec::new(),
+                services: vec!["db".into()],
+                volumes: Vec::new(),
+                commit_policy: DeployPhaseCommitPolicy::Checkpoint,
+                rollback_policy: DeployPhaseRollbackPolicy::ForwardOnly,
+                advance_policy: DeployPhaseAdvancePolicy::Immediate,
+            },
+        ],
+    });
+
+    let preview = preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
+        .await
+        .expect("preview");
+
+    let [db_phase, web_phase] = preview.phases.as_slice() else {
+        panic!("expected two phases, got {:?}", preview.phases);
+    };
+    assert_eq!(db_phase.phase_id, DeployPhaseId("db".into()));
+    assert_eq!(db_phase.order, 0);
+    assert_eq!(db_phase.commit_policy, DeployPhaseCommitPolicy::Checkpoint);
+    assert!(db_phase.after.is_empty());
+    assert_eq!(
+        db_phase.work.as_slice(),
+        &[DeployPhaseWork::Service {
+            service: "db".into(),
+            action: DeployChangeKind::Create,
+        }]
+    );
+    assert_eq!(web_phase.phase_id, DeployPhaseId("web".into()));
+    assert_eq!(web_phase.order, 1);
+    assert_eq!(web_phase.after, vec![DeployPhaseId("db".into())]);
+    assert_eq!(
+        web_phase.commit_policy,
+        DeployPhaseCommitPolicy::EndOfDeploy
+    );
+    assert_eq!(
+        web_phase.work.as_slice(),
+        &[DeployPhaseWork::Service {
+            service: "web".into(),
+            action: DeployChangeKind::Create,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn apply_checkpoint_phase_commits_before_final_phase() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = checkpointed_db_web_manifest();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let factory = FakeParticipantClient::new(FakeController::default());
+
+    let result =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect("apply");
+
+    assert_eq!(result.state, DeployState::Committed);
+    assert_eq!(backend.commit_count(), 2);
+    let writes = backend.deploy_status_writes().await;
+    assert!(
+        writes
+            .iter()
+            .any(|record| record.deploy_id == result.deploy_id
+                && record.state == DeployState::CheckpointCommitted),
+        "checkpoint should write status against the original deploy id"
+    );
+    let releases = store
+        .list_service_releases(&manifest.namespace)
+        .await
+        .expect("list releases");
+    assert!(
+        releases.iter().any(|release| release.service == "db"),
+        "checkpoint commit should publish db release"
+    );
+    assert!(
+        releases.iter().any(|release| release.service == "web"),
+        "final commit should publish web release"
+    );
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &result.deploy_id,
+        "db",
+        "succeeded",
+        None,
+    )
+    .await;
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &result.deploy_id,
+        "web",
+        "succeeded",
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_failure_after_checkpoint_preserves_committed_phase_facts() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = checkpointed_db_web_manifest();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let factory = FakeParticipantClient::new(FakeController {
+        fail_start_service: Some("web".into()),
+        ..Default::default()
+    });
+
+    let error =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect_err("web startup should fail after db checkpoint");
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected start failure for 'web'")
+    );
+    assert_eq!(backend.commit_count(), 1);
+    let last_update = backend
+        .last_deploy_status_write()
+        .await
+        .expect("failed deploy record should be written");
+    assert_eq!(last_update.state, DeployState::FailedAfterCheckpoint);
+    let releases = store
+        .list_service_releases(&manifest.namespace)
+        .await
+        .expect("list releases");
+    assert!(
+        releases.iter().any(|release| release.service == "db"),
+        "checkpointed db release must remain committed"
+    );
+    assert!(
+        releases.iter().all(|release| release.service != "web"),
+        "failed final phase must not publish web release"
+    );
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "db",
+        "succeeded",
+        None,
+    )
+    .await;
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "web",
+        "failed",
+        Some("injected start failure for 'web'"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_checkpointed_service_commits_changed_mounted_volume() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = checkpointed_db_volume_web_manifest();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let db_phase = initial_plan
+        .fingerprint()
+        .phases
+        .into_iter()
+        .find(|phase| phase.phase_id == DeployPhaseId("db".into()))
+        .expect("db phase");
+    assert!(
+        db_phase
+            .work
+            .iter()
+            .any(|work| matches!(work, DeployPhaseWork::Volume { volume, .. } if volume == "data")),
+        "changed mounted volume should be owned by the checkpointed service phase"
+    );
+    let factory = FakeParticipantClient::new(FakeController {
+        fail_start_service: Some("web".into()),
+        ..Default::default()
+    });
+
+    let error =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect_err("web startup should fail after db checkpoint");
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected start failure for 'web'")
+    );
+    assert_eq!(backend.commit_count(), 1);
+    let volume = store
+        .get_volume(&manifest.namespace, "data")
+        .await
+        .expect("get volume")
+        .expect("checkpointed volume record");
+    assert_eq!(volume.attached_services, vec!["db"]);
+    let releases = store
+        .list_service_releases(&manifest.namespace)
+        .await
+        .expect("list releases");
+    assert!(
+        releases.iter().any(|release| release.service == "db"),
+        "checkpointed db release must be committed with its volume"
+    );
+}
+
+#[tokio::test]
 async fn apply_with_initial_plan_sets_cleanup_pending_after_cleanup_failure() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
     let local_machine_id = MachineId("local".into());
@@ -3490,6 +3797,7 @@ async fn commit_plan_contains_branch_lineage() {
             },
         }],
         volumes: Vec::new(),
+        phases: Vec::new(),
     });
     let target_revision_hash = manifest.services[0]
         .revision_hash()
@@ -3981,6 +4289,45 @@ async fn assert_default_phase_record(
     }
 }
 
+async fn assert_phase_record_state(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    deploy_id: &DeployId,
+    phase_id: &str,
+    expected_state: &str,
+    failure_contains: Option<&str>,
+) {
+    let phase = store
+        .get_deploy_phase(namespace, deploy_id, &DeployPhaseId(phase_id.into()))
+        .await
+        .expect("get deploy phase")
+        .unwrap_or_else(|| panic!("expected deploy phase {phase_id}"));
+    match (&phase.state, expected_state) {
+        (DeployPhaseState::Running, "running") => {}
+        (DeployPhaseState::Succeeded { completed_at }, "succeeded") => {
+            assert!(*completed_at >= phase.started_at);
+        }
+        (
+            DeployPhaseState::Failed {
+                completed_at,
+                failure,
+            },
+            "failed",
+        ) => {
+            assert!(*completed_at >= phase.started_at);
+            let Some(expected) = failure_contains else {
+                panic!("failed phase assertion requires expected failure text");
+            };
+            assert!(
+                failure.message.contains(expected),
+                "failure message should contain {expected:?}: {}",
+                failure.message
+            );
+        }
+        (actual, expected) => panic!("expected phase state {expected}, got {actual:?}"),
+    }
+}
+
 fn test_manifest(services: Vec<ServiceSpec>) -> DeployManifest {
     DeployManifest {
         namespace: Namespace("test".into()),
@@ -3988,6 +4335,83 @@ fn test_manifest(services: Vec<ServiceSpec>) -> DeployManifest {
         volumes: Vec::new(),
         services,
     }
+}
+
+fn checkpointed_db_web_manifest() -> DeployManifest {
+    let mut manifest = test_manifest(vec![
+        test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17"),
+        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+    ]);
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: Vec::new(),
+        phases: vec![
+            DeployPhaseIntent {
+                phase_id: "db".into(),
+                name: Some("Database".into()),
+                after: Vec::new(),
+                services: vec!["db".into()],
+                volumes: Vec::new(),
+                commit_policy: DeployPhaseCommitPolicy::Checkpoint,
+                rollback_policy: DeployPhaseRollbackPolicy::ForwardOnly,
+                advance_policy: DeployPhaseAdvancePolicy::Immediate,
+            },
+            DeployPhaseIntent {
+                phase_id: "web".into(),
+                name: Some("Web".into()),
+                after: vec!["db".into()],
+                services: vec!["web".into()],
+                volumes: Vec::new(),
+                commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                advance_policy: DeployPhaseAdvancePolicy::Immediate,
+            },
+        ],
+    });
+    manifest
+}
+
+fn checkpointed_db_volume_web_manifest() -> DeployManifest {
+    let mut db = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    db.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    let mut manifest = test_manifest(vec![
+        db,
+        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+    ]);
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: Vec::new(),
+        phases: vec![
+            DeployPhaseIntent {
+                phase_id: "db".into(),
+                name: Some("Database".into()),
+                after: Vec::new(),
+                services: vec!["db".into()],
+                volumes: Vec::new(),
+                commit_policy: DeployPhaseCommitPolicy::Checkpoint,
+                rollback_policy: DeployPhaseRollbackPolicy::ForwardOnly,
+                advance_policy: DeployPhaseAdvancePolicy::Immediate,
+            },
+            DeployPhaseIntent {
+                phase_id: "web".into(),
+                name: Some("Web".into()),
+                after: vec!["db".into()],
+                services: vec!["web".into()],
+                volumes: Vec::new(),
+                commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                advance_policy: DeployPhaseAdvancePolicy::Immediate,
+            },
+        ],
+    });
+    manifest
 }
 
 fn volume_manifest() -> DeployManifest {
@@ -4382,6 +4806,7 @@ struct CountingBackend {
     deploy_status_writes: AtomicUsize,
     committed_status_writes: AtomicUsize,
     fail_commit: AtomicBool,
+    fail_committed_status_writes: AtomicBool,
     fail_committed_status_writes_after_first: AtomicBool,
     fail_succeeded_phase_upsert: AtomicBool,
     deploy_status_records: Mutex<Vec<DeployRecord>>,
@@ -4396,6 +4821,7 @@ impl CountingBackend {
             deploy_status_writes: AtomicUsize::new(0),
             committed_status_writes: AtomicUsize::new(0),
             fail_commit: AtomicBool::new(false),
+            fail_committed_status_writes: AtomicBool::new(false),
             fail_committed_status_writes_after_first: AtomicBool::new(false),
             fail_succeeded_phase_upsert: AtomicBool::new(false),
             deploy_status_records: Mutex::new(Vec::new()),
@@ -4418,6 +4844,11 @@ impl CountingBackend {
 
     fn fail_committed_status_writes_after_first(&self, fail: bool) {
         self.fail_committed_status_writes_after_first
+            .store(fail, Ordering::SeqCst);
+    }
+
+    fn fail_committed_status_writes(&self, fail: bool) {
+        self.fail_committed_status_writes
             .store(fail, Ordering::SeqCst);
     }
 
@@ -4617,10 +5048,11 @@ impl DeployStore for CountingBackend {
         self.deploy_status_records.lock().await.push(deploy.clone());
         if deploy.state == DeployState::Committed {
             let committed_writes = self.committed_status_writes.fetch_add(1, Ordering::SeqCst) + 1;
-            if committed_writes > 1
-                && self
-                    .fail_committed_status_writes_after_first
-                    .load(Ordering::SeqCst)
+            if self.fail_committed_status_writes.load(Ordering::SeqCst)
+                || (committed_writes > 1
+                    && self
+                        .fail_committed_status_writes_after_first
+                        .load(Ordering::SeqCst))
             {
                 return Err(Error::operation(
                     "counting_write_deploy_status",

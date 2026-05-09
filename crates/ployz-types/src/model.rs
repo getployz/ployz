@@ -1556,9 +1556,15 @@ pub enum DeployState {
     #[display("committed")]
     #[strum(serialize = "committed")]
     Committed,
+    #[display("checkpoint_committed")]
+    #[strum(serialize = "checkpoint_committed")]
+    CheckpointCommitted,
     #[display("cleanup_pending")]
     #[strum(serialize = "cleanup_pending")]
     CleanupPending,
+    #[display("failed_after_checkpoint")]
+    #[strum(serialize = "failed_after_checkpoint")]
+    FailedAfterCheckpoint,
     #[display("failed")]
     #[strum(serialize = "failed")]
     Failed,
@@ -1698,26 +1704,33 @@ pub enum DeployChangeKind {
     Unchanged,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, JsonSchema,
+)]
 #[display("{_0}")]
 pub struct DeployPhaseId(pub String);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DeployPhaseCommitPolicy {
     EndOfDeploy,
+    Checkpoint,
+    NoStoreCommit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DeployPhaseRollbackPolicy {
     Reversible,
+    ForwardOnly,
+    External,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DeployPhaseAdvancePolicy {
     Immediate,
+    Manual,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1725,6 +1738,10 @@ pub enum DeployPhaseAdvancePolicy {
 pub enum DeployPhaseWork {
     Service {
         service: String,
+        action: DeployChangeKind,
+    },
+    Volume {
+        volume: String,
         action: DeployChangeKind,
     },
     VolumeMove {
@@ -1740,6 +1757,8 @@ pub struct DeployPhasePlan {
     pub phase_id: DeployPhaseId,
     pub name: String,
     pub order: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub after: Vec<DeployPhaseId>,
     pub participants: Vec<MachineId>,
     pub work: Vec<DeployPhaseWork>,
     pub commit_policy: DeployPhaseCommitPolicy,
@@ -1750,6 +1769,7 @@ pub struct DeployPhasePlan {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeployPhaseState {
+    Pending,
     Running,
     Succeeded {
         completed_at: u64,
@@ -1773,9 +1793,13 @@ pub struct DeployPhaseRecord {
     pub phase_id: DeployPhaseId,
     pub name: String,
     pub order: u32,
+    pub after: Vec<DeployPhaseId>,
+    pub participants: Vec<MachineId>,
+    pub work: Vec<DeployPhaseWork>,
     pub state: DeployPhaseState,
     pub commit_policy: DeployPhaseCommitPolicy,
     pub rollback_policy: DeployPhaseRollbackPolicy,
+    pub advance_policy: DeployPhaseAdvancePolicy,
     pub started_at: u64,
 }
 

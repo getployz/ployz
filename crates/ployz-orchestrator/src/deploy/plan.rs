@@ -8,8 +8,8 @@ use crate::model::{
 };
 use ployz_store_api::{DeployStore, MachineMembershipStore, StoreDriver};
 use ployz_types::spec::{
-    DeployManifest, MountSource, Namespace, Placement, ServiceIntent, ServiceSpec,
-    VolumeDeclaration, VolumeIntent, VolumeScope, parse_quota_bytes, stable_hash_hex,
+    DeployManifest, DeployPhaseIntent, MountSource, Namespace, Placement, ServiceIntent,
+    ServiceSpec, VolumeDeclaration, VolumeIntent, VolumeScope, parse_quota_bytes, stable_hash_hex,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -48,6 +48,7 @@ pub(super) struct ResolvedPlan {
     volumes_json: String,
     volumes: Vec<PlannedVolume>,
     participants: BTreeSet<MachineId>,
+    phases: Vec<DeployPhasePlan>,
     services: Vec<PlannedService>,
     machine_map: HashMap<MachineId, MachineMembership>,
 }
@@ -81,6 +82,7 @@ pub(super) struct PlanFingerprint {
     pub(super) participants: Vec<MachineId>,
     pub(super) volumes: Vec<PlannedVolume>,
     pub(super) services: Vec<PlannedService>,
+    pub(super) phases: Vec<DeployPhasePlan>,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +132,7 @@ impl ResolvedPlan {
             participants: self.participants.iter().cloned().collect(),
             volumes: self.volumes.clone(),
             services: self.services.clone(),
+            phases: self.phases.clone(),
         }
     }
 
@@ -138,7 +141,7 @@ impl ResolvedPlan {
             namespace: self.namespace.clone(),
             manifest_hash: self.manifest_hash.clone(),
             participants: self.participants.iter().cloned().collect(),
-            phases: vec![self.default_phase()],
+            phases: self.phases.clone(),
             services: self
                 .services
                 .iter()
@@ -200,39 +203,6 @@ impl ResolvedPlan {
                 })
                 .collect(),
             warnings,
-        }
-    }
-
-    fn default_phase(&self) -> DeployPhasePlan {
-        let mut work = Vec::new();
-        work.extend(self.volumes.iter().filter_map(|volume| {
-            let movement = volume.movement.as_ref()?;
-            Some(DeployPhaseWork::VolumeMove {
-                volume: volume.declaration.name.clone(),
-                from_machine: movement.from_machine.clone(),
-                to_machine: movement.to_machine.clone(),
-                attached_services: volume.attached_services.clone(),
-            })
-        }));
-        work.extend(self.services.iter().filter_map(|service| {
-            if service.action == DeployChangeKind::Unchanged {
-                return None;
-            }
-            Some(DeployPhaseWork::Service {
-                service: service.service.clone(),
-                action: service.action,
-            })
-        }));
-
-        DeployPhasePlan {
-            phase_id: DeployPhaseId("deploy".into()),
-            name: "Deploy".into(),
-            order: 0,
-            participants: self.participants.iter().cloned().collect(),
-            work,
-            commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
-            rollback_policy: DeployPhaseRollbackPolicy::Reversible,
-            advance_policy: DeployPhaseAdvancePolicy::Immediate,
         }
     }
 
@@ -321,6 +291,9 @@ pub(super) async fn resolve_plan(
     let mut volume_machine_map = HashMap::new();
     let branch_intents = branch_intents(manifest);
     let volume_move_intents = volume_move_intents(manifest);
+    let phase_intents = ordered_phase_intents(manifest)?;
+    let mut service_phase_owners = phase_service_owners(&phase_intents);
+    let mut volume_phase_owners = phase_volume_owners(&phase_intents);
 
     for declaration in &manifest.volumes {
         let attached_services = volume_attachments
@@ -500,7 +473,11 @@ pub(super) async fn resolve_plan(
 
         services.push(PlannedService {
             service: spec.name.clone(),
-            phase: Some(0),
+            phase: Some(phase_index_for_service(
+                &spec.name,
+                &service_phase_owners,
+                &phase_intents,
+            )),
             spec: Some(spec.clone()),
             spec_json: Some(spec_json),
             current_revision_hash: current_release
@@ -554,12 +531,37 @@ pub(super) async fn resolve_plan(
         });
     }
 
+    assign_volume_attached_services_to_volume_phases(
+        &planned_volumes,
+        &services,
+        &mut volume_phase_owners,
+        &mut service_phase_owners,
+    )?;
+    for service in &mut services {
+        if service.spec.is_some() {
+            service.phase = Some(phase_index_for_service(
+                &service.service,
+                &service_phase_owners,
+                &phase_intents,
+            ));
+        }
+    }
+    let phases = build_phase_plans(
+        &phase_intents,
+        &planned_volumes,
+        &services,
+        &participants,
+        &service_phase_owners,
+        &volume_phase_owners,
+    );
+
     Ok(ResolvedPlan {
         namespace: manifest.namespace.clone(),
         manifest_hash,
         volumes_json,
         volumes: planned_volumes,
         participants,
+        phases,
         services,
         machine_map,
     })
@@ -575,6 +577,261 @@ struct BranchIntent {
 struct VolumeMoveIntent {
     from_machine: MachineId,
     to_machine: MachineId,
+}
+
+fn ordered_phase_intents(manifest: &DeployManifest) -> Result<Vec<DeployPhaseIntent>> {
+    let Some(deploy_intent) = &manifest.intent else {
+        return Ok(Vec::new());
+    };
+    let mut remaining = deploy_intent.phases.clone();
+    let mut ordered = Vec::new();
+    while !remaining.is_empty() {
+        let ordered_ids = ordered
+            .iter()
+            .map(|phase: &DeployPhaseIntent| phase.phase_id.as_str())
+            .collect::<BTreeSet<_>>();
+        let Some(index) = remaining.iter().position(|phase| {
+            phase
+                .after
+                .iter()
+                .all(|after| ordered_ids.contains(after.as_str()))
+        }) else {
+            return Err(Error::Deploy(DeployError::ManifestInvalid {
+                message: "deploy phase dependencies contain a cycle".into(),
+            }));
+        };
+        ordered.push(remaining.remove(index));
+    }
+    Ok(ordered)
+}
+
+fn phase_service_owners(phases: &[DeployPhaseIntent]) -> BTreeMap<String, DeployPhaseId> {
+    phases
+        .iter()
+        .flat_map(|phase| {
+            phase
+                .services
+                .iter()
+                .map(|service| (service.clone(), DeployPhaseId(phase.phase_id.clone())))
+        })
+        .collect()
+}
+
+fn phase_volume_owners(phases: &[DeployPhaseIntent]) -> BTreeMap<String, DeployPhaseId> {
+    phases
+        .iter()
+        .flat_map(|phase| {
+            phase
+                .volumes
+                .iter()
+                .map(|volume| (volume.clone(), DeployPhaseId(phase.phase_id.clone())))
+        })
+        .collect()
+}
+
+fn phase_index_for_service(
+    service: &str,
+    service_phase_owners: &BTreeMap<String, DeployPhaseId>,
+    phase_intents: &[DeployPhaseIntent],
+) -> u32 {
+    service_phase_owners
+        .get(service)
+        .and_then(|phase_id| {
+            phase_intents
+                .iter()
+                .position(|phase| phase.phase_id == phase_id.0)
+        })
+        .unwrap_or(phase_intents.len()) as u32
+}
+
+fn assign_volume_attached_services_to_volume_phases(
+    volumes: &[PlannedVolume],
+    services: &[PlannedService],
+    volume_phase_owners: &mut BTreeMap<String, DeployPhaseId>,
+    service_phase_owners: &mut BTreeMap<String, DeployPhaseId>,
+) -> Result<()> {
+    let manifest_services = services
+        .iter()
+        .filter(|service| service.spec.is_some())
+        .map(|service| service.service.as_str())
+        .collect::<BTreeSet<_>>();
+    for volume in volumes
+        .iter()
+        .filter(|volume| !matches!(volume_record_change(volume), VolumeChange::Skip))
+    {
+        let volume_phase_id = volume_phase_owners.get(&volume.declaration.name).cloned();
+        for service in &volume.attached_services {
+            if !manifest_services.contains(service.as_str()) {
+                continue;
+            }
+            match (volume_phase_id.as_ref(), service_phase_owners.get(service)) {
+                (Some(volume_phase_id), Some(service_phase_id))
+                    if service_phase_id != volume_phase_id =>
+                {
+                    return Err(Error::Deploy(DeployError::ManifestInvalid {
+                        message: format!(
+                            "volume '{}' and attached service '{}' must be assigned to the same deploy phase",
+                            volume.declaration.name, service
+                        ),
+                    }));
+                }
+                (Some(volume_phase_id), None) => {
+                    service_phase_owners.insert(service.clone(), volume_phase_id.clone());
+                }
+                (None, Some(service_phase_id)) => {
+                    volume_phase_owners
+                        .insert(volume.declaration.name.clone(), service_phase_id.clone());
+                }
+                (Some(_), Some(_)) | (None, None) => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn build_phase_plans(
+    phase_intents: &[DeployPhaseIntent],
+    volumes: &[PlannedVolume],
+    services: &[PlannedService],
+    participants: &BTreeSet<MachineId>,
+    service_phase_owners: &BTreeMap<String, DeployPhaseId>,
+    volume_phase_owners: &BTreeMap<String, DeployPhaseId>,
+) -> Vec<DeployPhasePlan> {
+    let default_phase_id = DeployPhaseId("deploy".into());
+    let mut phase_work: BTreeMap<DeployPhaseId, Vec<DeployPhaseWork>> = BTreeMap::new();
+    let mut phase_participants: BTreeMap<DeployPhaseId, BTreeSet<MachineId>> = BTreeMap::new();
+
+    for volume in volumes {
+        let change = volume_record_change(volume);
+        if matches!(change, VolumeChange::Skip) {
+            continue;
+        }
+        let phase_id = volume_phase_owners
+            .get(&volume.declaration.name)
+            .cloned()
+            .unwrap_or_else(|| default_phase_id.clone());
+        match change {
+            VolumeChange::Move => {
+                if let Some(movement) = &volume.movement {
+                    phase_participants
+                        .entry(phase_id.clone())
+                        .or_default()
+                        .insert(movement.from_machine.clone());
+                    phase_participants
+                        .entry(phase_id.clone())
+                        .or_default()
+                        .insert(movement.to_machine.clone());
+                    phase_work
+                        .entry(phase_id)
+                        .or_default()
+                        .push(DeployPhaseWork::VolumeMove {
+                            volume: volume.declaration.name.clone(),
+                            from_machine: movement.from_machine.clone(),
+                            to_machine: movement.to_machine.clone(),
+                            attached_services: volume.attached_services.clone(),
+                        });
+                }
+            }
+            VolumeChange::Create | VolumeChange::Update => {
+                phase_participants
+                    .entry(phase_id.clone())
+                    .or_default()
+                    .insert(volume.machine_id.clone());
+                phase_work
+                    .entry(phase_id)
+                    .or_default()
+                    .push(DeployPhaseWork::Volume {
+                        volume: volume.declaration.name.clone(),
+                        action: match change {
+                            VolumeChange::Create => DeployChangeKind::Create,
+                            VolumeChange::Update => DeployChangeKind::Replace,
+                            VolumeChange::Move | VolumeChange::Skip => DeployChangeKind::Unchanged,
+                        },
+                    });
+            }
+            VolumeChange::Skip => {}
+        }
+    }
+
+    for service in services {
+        if service.action == DeployChangeKind::Unchanged {
+            continue;
+        }
+        let phase_id = service_phase_owners
+            .get(&service.service)
+            .cloned()
+            .unwrap_or_else(|| default_phase_id.clone());
+        let participants_for_service = service
+            .slots
+            .iter()
+            .flat_map(|slot| {
+                [
+                    Some(slot.machine_id.clone()),
+                    slot.current
+                        .as_ref()
+                        .map(|current| current.machine_id.clone()),
+                ]
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        phase_participants
+            .entry(phase_id.clone())
+            .or_default()
+            .extend(participants_for_service);
+        phase_work
+            .entry(phase_id)
+            .or_default()
+            .push(DeployPhaseWork::Service {
+                service: service.service.clone(),
+                action: service.action,
+            });
+    }
+
+    let mut phases = Vec::new();
+    for (index, intent) in phase_intents.iter().enumerate() {
+        let phase_id = DeployPhaseId(intent.phase_id.clone());
+        phases.push(DeployPhasePlan {
+            phase_id: phase_id.clone(),
+            name: intent
+                .name
+                .clone()
+                .unwrap_or_else(|| intent.phase_id.clone()),
+            order: index as u32,
+            after: intent.after.iter().cloned().map(DeployPhaseId).collect(),
+            participants: phase_participants
+                .remove(&phase_id)
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
+            work: phase_work.remove(&phase_id).unwrap_or_default(),
+            commit_policy: intent.commit_policy,
+            rollback_policy: intent.rollback_policy,
+            advance_policy: intent.advance_policy,
+        });
+    }
+
+    if phase_intents.is_empty()
+        || phase_work.contains_key(&default_phase_id)
+        || phase_participants.contains_key(&default_phase_id)
+    {
+        phases.push(DeployPhasePlan {
+            phase_id: default_phase_id.clone(),
+            name: "Deploy".into(),
+            order: phases.len() as u32,
+            after: Vec::new(),
+            participants: phase_participants
+                .remove(&default_phase_id)
+                .unwrap_or_else(|| participants.clone())
+                .into_iter()
+                .collect(),
+            work: phase_work.remove(&default_phase_id).unwrap_or_default(),
+            commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+            rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+            advance_policy: DeployPhaseAdvancePolicy::Immediate,
+        });
+    }
+
+    phases
 }
 
 fn branch_intents(manifest: &DeployManifest) -> HashMap<String, BranchIntent> {

@@ -134,6 +134,12 @@
     "DeployIntent": {
       "type": "object",
       "properties": {
+        "phases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DeployPhaseIntent"
+          }
+        },
         "services": {
           "type": "array",
           "items": {
@@ -148,6 +154,89 @@
         }
       },
       "additionalProperties": false
+    },
+    "DeployPhaseAdvancePolicy": {
+      "type": "string",
+      "enum": [
+        "immediate",
+        "manual"
+      ]
+    },
+    "DeployPhaseCommitPolicy": {
+      "type": "string",
+      "enum": [
+        "end_of_deploy",
+        "checkpoint",
+        "no_store_commit"
+      ]
+    },
+    "DeployPhaseIntent": {
+      "type": "object",
+      "required": [
+        "phase_id"
+      ],
+      "properties": {
+        "advance_policy": {
+          "default": "immediate",
+          "allOf": [
+            {
+              "$ref": "#/definitions/DeployPhaseAdvancePolicy"
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "commit_policy": {
+          "default": "end_of_deploy",
+          "allOf": [
+            {
+              "$ref": "#/definitions/DeployPhaseCommitPolicy"
+            }
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "phase_id": {
+          "type": "string"
+        },
+        "rollback_policy": {
+          "default": "reversible",
+          "allOf": [
+            {
+              "$ref": "#/definitions/DeployPhaseRollbackPolicy"
+            }
+          ]
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "volumes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "DeployPhaseRollbackPolicy": {
+      "type": "string",
+      "enum": [
+        "reversible",
+        "forward_only",
+        "external"
+      ]
     },
     "HttpRoute": {
       "type": "object",
