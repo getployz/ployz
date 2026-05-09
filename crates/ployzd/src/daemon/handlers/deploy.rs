@@ -25,7 +25,8 @@ use ployz_types::Error as PloyzError;
 use ployz_types::error::DeployError;
 use ployz_types::model::SlotId;
 use ployz_types::model::{
-    DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineMembership,
+    DeployId, DeployPhaseCommitPolicy, DeployPhaseFailure, DeployPhaseState, InstanceId,
+    InstanceStatusRecord, MachineId, MachineMembership,
 };
 use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec, VolumeDeclaration};
 
@@ -823,13 +824,22 @@ async fn mark_deploy_failed_after_lock_loss(
                 | ployz_types::model::DeployState::CleanupPending => {
                     return DeployLockLossOutcome::PastCommit;
                 }
-                ployz_types::model::DeployState::Applying => {}
+                ployz_types::model::DeployState::Applying
+                | ployz_types::model::DeployState::CheckpointCommitted => {}
                 ployz_types::model::DeployState::Planning
+                | ployz_types::model::DeployState::FailedAfterCheckpoint
                 | ployz_types::model::DeployState::Failed => {
                     return DeployLockLossOutcome::NotApplying;
                 }
             }
-            deploy.state = ployz_types::model::DeployState::Failed;
+            let checkpoint_was_committed = deploy.state
+                == ployz_types::model::DeployState::CheckpointCommitted
+                || deploy_has_succeeded_checkpoint_phase(store, &deploy.namespace, deploy_id).await;
+            deploy.state = if checkpoint_was_committed {
+                ployz_types::model::DeployState::FailedAfterCheckpoint
+            } else {
+                ployz_types::model::DeployState::Failed
+            };
             deploy.finished_at = Some(ployz_types::time::now_unix_secs());
             if let Ok(mut preview) =
                 serde_json::from_str::<ployz_types::model::DeployPreview>(&deploy.summary_json)
@@ -853,7 +863,69 @@ async fn mark_deploy_failed_after_lock_loss(
         tracing::warn!(%error, %deploy_id, "failed to mark deploy failed after lock loss");
         return DeployLockLossOutcome::NotApplying;
     }
+    if let Err(error) = mark_running_deploy_phases_failed_after_lock_loss(
+        store,
+        &deploy.namespace,
+        deploy_id,
+        message,
+    )
+    .await
+    {
+        tracing::warn!(
+            %error,
+            %deploy_id,
+            "failed to mark running deploy phases failed after lock loss"
+        );
+    }
     DeployLockLossOutcome::MarkedFailed
+}
+
+async fn deploy_has_succeeded_checkpoint_phase(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    deploy_id: &DeployId,
+) -> bool {
+    match store.list_deploy_phases(namespace, deploy_id).await {
+        Ok(phases) => phases.iter().any(|phase| {
+            phase.commit_policy == DeployPhaseCommitPolicy::Checkpoint
+                && matches!(phase.state, DeployPhaseState::Succeeded { .. })
+        }),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                %deploy_id,
+                "failed to inspect deploy phases while classifying lock loss"
+            );
+            false
+        }
+    }
+}
+
+async fn mark_running_deploy_phases_failed_after_lock_loss(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    deploy_id: &DeployId,
+    message: &str,
+) -> ployz_types::Result<()> {
+    let phases = store.list_deploy_phases(namespace, deploy_id).await?;
+    let completed_at = ployz_types::time::now_unix_secs();
+    for mut phase in phases {
+        if !matches!(
+            phase.state,
+            DeployPhaseState::Pending | DeployPhaseState::Running
+        ) {
+            continue;
+        }
+        phase.state = DeployPhaseState::Failed {
+            completed_at,
+            failure: DeployPhaseFailure {
+                code: "DEPLOY_LOCK_LOST".into(),
+                message: format!("deploy lock lost during apply: {message}"),
+            },
+        };
+        store.upsert_deploy_phase(&phase).await?;
+    }
+    Ok(())
 }
 
 fn deploy_failure_payload_for_error(error: &PloyzError) -> Option<DeployFailurePayload> {
@@ -953,8 +1025,10 @@ mod tests {
     use ployz_nats::{RpcFailureKind, RpcPolicy};
     use ployz_store_api::{DeployCommit, DeployStore};
     use ployz_types::model::{
-        DeployId, DeployPreview, DeployRecord, DeployState, MachineId, ServiceRelease,
-        ServiceReleaseRecord, ServiceRevisionRecord, ServiceRoutingPolicy, VolumeRecord,
+        DeployId, DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord,
+        DeployPhaseRollbackPolicy, DeployPreview, DeployRecord, DeployState, MachineId,
+        ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord, ServiceRoutingPolicy,
+        VolumeRecord,
     };
     use ployz_types::spec::{
         ContainerSpec, Mount, MountSource, NetworkMode, Placement, PullPolicy, Resources,
@@ -1491,6 +1565,71 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("renew failed"))
         );
+    }
+
+    #[tokio::test]
+    async fn lock_loss_marks_running_deploy_phases_failed() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        let deploy_id = DeployId("deploy-lock-loss-phase".into());
+        store
+            .write_deploy_status(&DeployRecord {
+                deploy_id: deploy_id.clone(),
+                namespace: namespace.clone(),
+                coordinator_machine_id: MachineId("local".into()),
+                manifest_hash: "manifest".into(),
+                state: DeployState::Applying,
+                started_at: 1,
+                committed_at: None,
+                finished_at: None,
+                summary_json: serde_json::to_string(&DeployPreview {
+                    namespace: namespace.clone(),
+                    manifest_hash: "manifest".into(),
+                    participants: Vec::new(),
+                    phases: Vec::new(),
+                    services: Vec::new(),
+                    service_branch_sources: Vec::new(),
+                    volume_moves: Vec::new(),
+                    warnings: Vec::new(),
+                })
+                .expect("preview json"),
+            })
+            .await
+            .expect("seed applying deploy");
+        store
+            .upsert_deploy_phase(&DeployPhaseRecord {
+                namespace: namespace.clone(),
+                deploy_id: deploy_id.clone(),
+                phase_id: DeployPhaseId("deploy".into()),
+                name: "Deploy".into(),
+                order: 0,
+                after: Vec::new(),
+                participants: Vec::new(),
+                work: Vec::new(),
+                state: DeployPhaseState::Running,
+                commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                advance_policy: ployz_types::model::DeployPhaseAdvancePolicy::Immediate,
+                started_at: 1,
+            })
+            .await
+            .expect("seed running phase");
+
+        let outcome = mark_deploy_failed_after_lock_loss(&store, &deploy_id, "renew failed").await;
+
+        assert_eq!(outcome, DeployLockLossOutcome::MarkedFailed);
+        let phases = store
+            .list_deploy_phases(&namespace, &deploy_id)
+            .await
+            .expect("list phases");
+        let [phase] = phases.as_slice() else {
+            panic!("expected one phase, got {phases:?}");
+        };
+        let DeployPhaseState::Failed { failure, .. } = &phase.state else {
+            panic!("expected failed phase, got {:?}", phase.state);
+        };
+        assert_eq!(failure.code, "DEPLOY_LOCK_LOST");
+        assert!(failure.message.contains("renew failed"));
     }
 
     #[tokio::test]

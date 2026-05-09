@@ -1775,9 +1775,13 @@ mod tests {
             phase_id: ployz_types::model::DeployPhaseId(phase_id.into()),
             name: phase_id.into(),
             order,
+            after: Vec::new(),
+            participants: Vec::new(),
+            work: Vec::new(),
             state: DeployPhaseState::Running,
             commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
             rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+            advance_policy: ployz_types::model::DeployPhaseAdvancePolicy::Immediate,
             started_at: 10,
         }
     }

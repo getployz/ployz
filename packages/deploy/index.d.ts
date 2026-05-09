@@ -1,5 +1,20 @@
 /**
  * This interface was referenced by `DeployManifest`'s JSON-Schema
+ * via the `definition` "DeployPhaseAdvancePolicy".
+ */
+export type DeployPhaseAdvancePolicy = "immediate" | "manual";
+/**
+ * This interface was referenced by `DeployManifest`'s JSON-Schema
+ * via the `definition` "DeployPhaseCommitPolicy".
+ */
+export type DeployPhaseCommitPolicy = "end_of_deploy" | "checkpoint" | "no_store_commit";
+/**
+ * This interface was referenced by `DeployManifest`'s JSON-Schema
+ * via the `definition` "DeployPhaseRollbackPolicy".
+ */
+export type DeployPhaseRollbackPolicy = "reversible" | "forward_only" | "external";
+/**
+ * This interface was referenced by `DeployManifest`'s JSON-Schema
  * via the `definition` "ServiceIntent".
  */
 export type ServiceIntent =
@@ -148,8 +163,23 @@ export interface DeployManifest {
  * via the `definition` "DeployIntent".
  */
 export interface DeployIntent {
+  phases?: DeployPhaseIntent[];
   services?: ServiceIntentHint[];
   volumes?: VolumeIntentHint[];
+}
+/**
+ * This interface was referenced by `DeployManifest`'s JSON-Schema
+ * via the `definition` "DeployPhaseIntent".
+ */
+export interface DeployPhaseIntent {
+  advance_policy?: DeployPhaseAdvancePolicy & string;
+  after?: string[];
+  commit_policy?: DeployPhaseCommitPolicy & string;
+  name?: string | null;
+  phase_id: string;
+  rollback_policy?: DeployPhaseRollbackPolicy & string;
+  services?: string[];
+  volumes?: string[];
 }
 /**
  * This interface was referenced by `DeployManifest`'s JSON-Schema
