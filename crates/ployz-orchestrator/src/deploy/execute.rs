@@ -369,7 +369,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         let mut checkpointed_volumes = BTreeSet::new();
 
         for phase in &phases {
-            let phase_execution = execute_phase(
+            let phase_execution_result = execute_phase(
                 store,
                 participant_client,
                 &participants,
@@ -377,7 +377,20 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                 phase,
                 started_at,
             )
-            .await?;
+            .await;
+            let phase_execution = match phase_execution_result {
+                Ok(phase_execution) => phase_execution,
+                Err(error) => {
+                    mark_phases_failed_best_effort(
+                        store,
+                        std::mem::take(&mut pending_phase_successes),
+                        &error,
+                        prepared.deploy_id(),
+                    )
+                    .await;
+                    return Err(error);
+                }
+            };
             events.extend(phase_execution.events);
             started.extend(phase_execution.started);
 
@@ -401,9 +414,10 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                     let commit = match commit_result {
                         Ok(commit) => commit,
                         Err(error) => {
-                            mark_phase_failed_best_effort(
+                            mark_phase_and_pending_phases_failed_best_effort(
                                 store,
                                 phase_execution.running_phase,
+                                &mut pending_phase_successes,
                                 &error,
                                 prepared.deploy_id(),
                             )
@@ -412,9 +426,10 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                         }
                     };
                     if let Err(error) = store.commit_deploy(&commit).await {
-                        mark_phase_failed_best_effort(
+                        mark_phase_and_pending_phases_failed_best_effort(
                             store,
                             phase_execution.running_phase,
+                            &mut pending_phase_successes,
                             &error,
                             prepared.deploy_id(),
                         )
@@ -430,7 +445,16 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                     let status = checkpoint_deploy_record(&prepared)?;
                     last_written_deploy_record = Some(status.clone());
                     let status_result = store.write_deploy_status(&status).await;
-                    status_result?;
+                    if let Err(error) = status_result {
+                        mark_phases_failed_best_effort(
+                            store,
+                            std::mem::take(&mut pending_phase_successes),
+                            &error,
+                            prepared.deploy_id(),
+                        )
+                        .await;
+                        return Err(error);
+                    }
                     events.push(DeployEvent {
                         step: "phase".into(),
                         message: format!("checkpointed phase {} ({})", phase.phase_id, phase.name),
@@ -779,6 +803,17 @@ async fn mark_phase_failed_best_effort(
             "failed to record terminal failed deploy phase after phase error"
         );
     }
+}
+
+async fn mark_phase_and_pending_phases_failed_best_effort(
+    store: &StoreDriver,
+    phase: DeployPhaseRecord,
+    pending_phases: &mut Vec<DeployPhaseRecord>,
+    error: &Error,
+    deploy_id: &DeployId,
+) {
+    mark_phase_failed_best_effort(store, phase, error, deploy_id).await;
+    mark_phases_failed_best_effort(store, std::mem::take(pending_phases), error, deploy_id).await;
 }
 
 async fn mark_phases_failed_best_effort(
