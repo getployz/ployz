@@ -1881,6 +1881,7 @@ mod tests {
             revisions,
             removed_services,
             removed_volumes,
+            branch_lineage: Vec::new(),
             releases,
             volumes,
             deploy,

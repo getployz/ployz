@@ -9,9 +9,9 @@ use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineMembership, RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord,
-    ServiceRevisionRecord, VolumeRecord,
+    DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord, InstanceId, InstanceStatusRecord,
+    InviteRecord, MachineId, MachineMembership, RoutingState, ServiceBranchLineageRecord,
+    ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::sync::Arc;
@@ -208,6 +208,29 @@ impl DeployStore for StoreDriver {
 
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
         self.deploys.get_deploy(deploy_id).await
+    }
+
+    async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> Result<()> {
+        self.deploys.upsert_deploy_phase(phase).await
+    }
+
+    async fn get_deploy_phase(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+        phase_id: &DeployPhaseId,
+    ) -> Result<Option<DeployPhaseRecord>> {
+        self.deploys
+            .get_deploy_phase(namespace, deploy_id, phase_id)
+            .await
+    }
+
+    async fn list_deploy_phases(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+    ) -> Result<Vec<DeployPhaseRecord>> {
+        self.deploys.list_deploy_phases(namespace, deploy_id).await
     }
 }
 

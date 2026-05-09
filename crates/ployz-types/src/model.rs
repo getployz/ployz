@@ -1698,6 +1698,87 @@ pub enum DeployChangeKind {
     Unchanged,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display)]
+#[display("{_0}")]
+pub struct DeployPhaseId(pub String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployPhaseCommitPolicy {
+    EndOfDeploy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployPhaseRollbackPolicy {
+    Reversible,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployPhaseAdvancePolicy {
+    Immediate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeployPhaseWork {
+    Service {
+        service: String,
+        action: DeployChangeKind,
+    },
+    VolumeMove {
+        volume: String,
+        from_machine: MachineId,
+        to_machine: MachineId,
+        attached_services: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployPhasePlan {
+    pub phase_id: DeployPhaseId,
+    pub name: String,
+    pub order: u32,
+    pub participants: Vec<MachineId>,
+    pub work: Vec<DeployPhaseWork>,
+    pub commit_policy: DeployPhaseCommitPolicy,
+    pub rollback_policy: DeployPhaseRollbackPolicy,
+    pub advance_policy: DeployPhaseAdvancePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployPhaseState {
+    Running,
+    Succeeded {
+        completed_at: u64,
+    },
+    Failed {
+        completed_at: u64,
+        failure: DeployPhaseFailure,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployPhaseFailure {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployPhaseRecord {
+    pub namespace: Namespace,
+    pub deploy_id: DeployId,
+    pub phase_id: DeployPhaseId,
+    pub name: String,
+    pub order: u32,
+    pub state: DeployPhaseState,
+    pub commit_policy: DeployPhaseCommitPolicy,
+    pub rollback_policy: DeployPhaseRollbackPolicy,
+    pub started_at: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotPlan {
     pub slot_id: SlotId,
@@ -1739,6 +1820,7 @@ pub struct DeployPreview {
     pub namespace: Namespace,
     pub manifest_hash: String,
     pub participants: Vec<MachineId>,
+    pub phases: Vec<DeployPhasePlan>,
     pub services: Vec<ServicePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub service_branch_sources: Vec<ServiceBranchSourcePlan>,

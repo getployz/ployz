@@ -1,9 +1,10 @@
 use crate::error::{DeployError, Error, Result};
 use crate::machine_policy::{can_keep_existing_slot, is_new_placement_candidate};
 use crate::model::{
-    DeployChangeKind, DeployId, DeployPreview, MachineId, MachineMembership,
-    ServiceBranchLineageRecord, ServiceBranchSourcePlan, ServicePlan, ServiceReleaseRecord,
-    ServiceReleaseSlot, SlotId, SlotPlan, VolumeMovePlan, VolumeRecord,
+    DeployChangeKind, DeployId, DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseId,
+    DeployPhasePlan, DeployPhaseRollbackPolicy, DeployPhaseWork, DeployPreview, MachineId,
+    MachineMembership, ServiceBranchLineageRecord, ServiceBranchSourcePlan, ServicePlan,
+    ServiceReleaseRecord, ServiceReleaseSlot, SlotId, SlotPlan, VolumeMovePlan, VolumeRecord,
 };
 use ployz_store_api::{DeployStore, MachineMembershipStore, StoreDriver};
 use ployz_types::spec::{
@@ -137,6 +138,7 @@ impl ResolvedPlan {
             namespace: self.namespace.clone(),
             manifest_hash: self.manifest_hash.clone(),
             participants: self.participants.iter().cloned().collect(),
+            phases: vec![self.default_phase()],
             services: self
                 .services
                 .iter()
@@ -198,6 +200,39 @@ impl ResolvedPlan {
                 })
                 .collect(),
             warnings,
+        }
+    }
+
+    fn default_phase(&self) -> DeployPhasePlan {
+        let mut work = Vec::new();
+        work.extend(self.volumes.iter().filter_map(|volume| {
+            let movement = volume.movement.as_ref()?;
+            Some(DeployPhaseWork::VolumeMove {
+                volume: volume.declaration.name.clone(),
+                from_machine: movement.from_machine.clone(),
+                to_machine: movement.to_machine.clone(),
+                attached_services: volume.attached_services.clone(),
+            })
+        }));
+        work.extend(self.services.iter().filter_map(|service| {
+            if service.action == DeployChangeKind::Unchanged {
+                return None;
+            }
+            Some(DeployPhaseWork::Service {
+                service: service.service.clone(),
+                action: service.action,
+            })
+        }));
+
+        DeployPhasePlan {
+            phase_id: DeployPhaseId("deploy".into()),
+            name: "Deploy".into(),
+            order: 0,
+            participants: self.participants.iter().cloned().collect(),
+            work,
+            commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+            rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+            advance_policy: DeployPhaseAdvancePolicy::Immediate,
         }
     }
 
