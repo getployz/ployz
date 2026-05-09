@@ -164,6 +164,39 @@ async fn resolve_plan_preview_includes_default_phase_for_basic_manifest() {
     ));
 }
 
+#[tokio::test]
+async fn resolve_plan_rejects_manifest_phase_named_deploy() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = test_manifest(vec![
+        test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17"),
+        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+    ]);
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: Vec::new(),
+        phases: vec![DeployPhaseIntent {
+            phase_id: "deploy".into(),
+            name: Some("Database".into()),
+            after: Vec::new(),
+            services: vec!["db".into()],
+            volumes: Vec::new(),
+            commit_policy: DeployPhaseCommitPolicy::Checkpoint,
+            rollback_policy: DeployPhaseRollbackPolicy::ForwardOnly,
+            advance_policy: DeployPhaseAdvancePolicy::Immediate,
+        }],
+    });
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("reserved phase id should be rejected");
+
+    assert!(
+        error.to_string().contains("reserved"),
+        "expected reserved phase id error, got {error}"
+    );
+}
+
 #[test]
 fn replicated_one_reuses_existing_slot_machine() {
     let spec = test_service_spec("api", Placement::Replicated { count: 1 }, "nginx:latest");
@@ -3479,6 +3512,176 @@ async fn apply_failure_after_checkpoint_preserves_committed_phase_facts() {
 }
 
 #[tokio::test]
+async fn apply_failure_after_end_of_deploy_phase_fails_pending_phase() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = end_of_deploy_db_web_manifest();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let factory = FakeParticipantClient::new(FakeController {
+        fail_start_service: Some("web".into()),
+        ..Default::default()
+    });
+
+    let error =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect_err("web startup should fail after db phase work");
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected start failure for 'web'")
+    );
+    assert_eq!(backend.commit_count(), 0);
+    let last_update = backend
+        .last_deploy_status_write()
+        .await
+        .expect("failed deploy record should be written");
+    assert_eq!(last_update.state, DeployState::Failed);
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "db",
+        "failed",
+        Some("injected start failure for 'web'"),
+    )
+    .await;
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "web",
+        "failed",
+        Some("injected start failure for 'web'"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_failure_after_end_of_deploy_phase_fails_prior_pending_phases() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = test_manifest(vec![
+        test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17"),
+        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+    ]);
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: Vec::new(),
+        phases: vec![
+            DeployPhaseIntent {
+                phase_id: "db".into(),
+                name: Some("Database".into()),
+                after: Vec::new(),
+                services: vec!["db".into()],
+                volumes: Vec::new(),
+                commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                advance_policy: DeployPhaseAdvancePolicy::Immediate,
+            },
+            DeployPhaseIntent {
+                phase_id: "web".into(),
+                name: Some("Web".into()),
+                after: vec!["db".into()],
+                services: vec!["web".into()],
+                volumes: Vec::new(),
+                commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                advance_policy: DeployPhaseAdvancePolicy::Immediate,
+            },
+        ],
+    });
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let factory = FakeParticipantClient::new(FakeController {
+        fail_start_service: Some("web".into()),
+        ..Default::default()
+    });
+
+    let error =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect_err("web startup should fail after db phase work");
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected start failure for 'web'")
+    );
+    assert_eq!(backend.commit_count(), 0);
+    let last_update = backend
+        .last_deploy_status_write()
+        .await
+        .expect("failed deploy record should be written");
+    assert_eq!(last_update.state, DeployState::Failed);
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "db",
+        "failed",
+        Some("injected start failure for 'web'"),
+    )
+    .await;
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "web",
+        "failed",
+        Some("injected start failure for 'web'"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_checkpoint_commit_failure_fails_prior_end_of_deploy_phase() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = end_of_deploy_db_checkpoint_web_manifest();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let factory = FakeParticipantClient::new(FakeController::default());
+    backend.fail_commit(true);
+
+    let error =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect_err("checkpoint commit failure should fail deploy");
+
+    assert!(error.to_string().contains("injected commit failure"));
+    assert_eq!(backend.commit_count(), 1);
+    let last_update = backend
+        .last_deploy_status_write()
+        .await
+        .expect("failed deploy record should be written");
+    assert_eq!(last_update.state, DeployState::Failed);
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "db",
+        "failed",
+        Some("injected commit failure"),
+    )
+    .await;
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "web",
+        "failed",
+        Some("injected commit failure"),
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn apply_checkpointed_service_commits_changed_mounted_volume() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
     let local_machine_id = MachineId("local".into());
@@ -4368,6 +4571,57 @@ fn checkpointed_db_web_manifest() -> DeployManifest {
             },
         ],
     });
+    manifest
+}
+
+fn end_of_deploy_db_web_manifest() -> DeployManifest {
+    let mut manifest = test_manifest(vec![
+        test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17"),
+        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+    ]);
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: Vec::new(),
+        phases: vec![
+            DeployPhaseIntent {
+                phase_id: "db".into(),
+                name: Some("Database".into()),
+                after: Vec::new(),
+                services: vec!["db".into()],
+                volumes: Vec::new(),
+                commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                advance_policy: DeployPhaseAdvancePolicy::Immediate,
+            },
+            DeployPhaseIntent {
+                phase_id: "web".into(),
+                name: Some("Web".into()),
+                after: vec!["db".into()],
+                services: vec!["web".into()],
+                volumes: Vec::new(),
+                commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                advance_policy: DeployPhaseAdvancePolicy::Immediate,
+            },
+        ],
+    });
+    manifest
+}
+
+fn end_of_deploy_db_checkpoint_web_manifest() -> DeployManifest {
+    let mut manifest = end_of_deploy_db_web_manifest();
+    let Some(intent) = manifest.intent.as_mut() else {
+        panic!("expected deploy intent");
+    };
+    let Some(web_phase) = intent
+        .phases
+        .iter_mut()
+        .find(|phase| phase.phase_id == "web")
+    else {
+        panic!("expected web phase");
+    };
+    web_phase.commit_policy = DeployPhaseCommitPolicy::Checkpoint;
+    web_phase.rollback_policy = DeployPhaseRollbackPolicy::ForwardOnly;
     manifest
 }
 

@@ -579,10 +579,23 @@ struct VolumeMoveIntent {
     to_machine: MachineId,
 }
 
+const SYNTHETIC_DEPLOY_PHASE_ID: &str = "deploy";
+
 fn ordered_phase_intents(manifest: &DeployManifest) -> Result<Vec<DeployPhaseIntent>> {
     let Some(deploy_intent) = &manifest.intent else {
         return Ok(Vec::new());
     };
+    if deploy_intent
+        .phases
+        .iter()
+        .any(|phase| phase.phase_id == SYNTHETIC_DEPLOY_PHASE_ID)
+    {
+        return Err(Error::Deploy(DeployError::ManifestInvalid {
+            message: format!(
+                "deploy phase id '{SYNTHETIC_DEPLOY_PHASE_ID}' is reserved for the synthetic final deploy phase"
+            ),
+        }));
+    }
     let mut remaining = deploy_intent.phases.clone();
     let mut ordered = Vec::new();
     while !remaining.is_empty() {
@@ -697,7 +710,7 @@ fn build_phase_plans(
     service_phase_owners: &BTreeMap<String, DeployPhaseId>,
     volume_phase_owners: &BTreeMap<String, DeployPhaseId>,
 ) -> Vec<DeployPhasePlan> {
-    let default_phase_id = DeployPhaseId("deploy".into());
+    let default_phase_id = DeployPhaseId(SYNTHETIC_DEPLOY_PHASE_ID.into());
     let mut phase_work: BTreeMap<DeployPhaseId, Vec<DeployPhaseWork>> = BTreeMap::new();
     let mut phase_participants: BTreeMap<DeployPhaseId, BTreeSet<MachineId>> = BTreeMap::new();
 
