@@ -11,7 +11,7 @@ use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
     DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord, InstanceId, InstanceStatusRecord,
     InviteRecord, MachineId, MachineMembership, RoutingState, ServiceBranchLineageRecord,
-    ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
+    ServiceReleaseRecord, ServiceRevisionRecord, VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::sync::Arc;
@@ -188,6 +188,13 @@ impl DeployStore for StoreDriver {
         namespace: &Namespace,
     ) -> Result<Vec<ServiceBranchLineageRecord>> {
         self.deploys.list_service_branch_lineage(namespace).await
+    }
+
+    async fn list_volume_movements(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<VolumeMovementRecord>> {
+        self.deploys.list_volume_movements(namespace).await
     }
 
     async fn get_volume(

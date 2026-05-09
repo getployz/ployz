@@ -908,6 +908,8 @@ mod tests {
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
+                volume_movements: Vec::new(),
+                phase_commits: Vec::new(),
                 releases: Vec::new(),
                 volumes: vec![record],
                 deploy,

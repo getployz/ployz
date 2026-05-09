@@ -3,10 +3,10 @@ use ployz_types::Result;
 use ployz_types::error::Error;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
-    CertificateEvent, CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord,
-    InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership,
-    RoutingEvent, RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord,
-    ServiceRevisionRecord, VolumeRecord,
+    CertificateEvent, CertificateRecord, DeployId, DeployPhaseCommitRecord, DeployPhaseId,
+    DeployPhaseRecord, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
+    MachineId, MachineMembership, RoutingEvent, RoutingState, ServiceBranchLineageRecord,
+    ServiceReleaseRecord, ServiceRevisionRecord, VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use serde::{Deserialize, Serialize};
@@ -555,6 +555,10 @@ pub struct DeployCommit {
     pub removed_volumes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub branch_lineage: Vec<ServiceBranchLineageRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volume_movements: Vec<VolumeMovementRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phase_commits: Vec<DeployPhaseCommitRecord>,
     pub releases: Vec<ServiceReleaseRecord>,
     pub volumes: Vec<VolumeRecord>,
     pub deploy: DeployRecord,
@@ -618,6 +622,11 @@ pub trait DeployStore: Send + Sync {
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<ServiceBranchLineageRecord>>;
+
+    async fn list_volume_movements(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<VolumeMovementRecord>>;
 
     async fn get_volume(
         &self,

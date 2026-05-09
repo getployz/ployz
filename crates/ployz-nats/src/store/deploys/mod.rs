@@ -6,8 +6,9 @@ use async_trait::async_trait;
 use ployz_store_api::{DeployCommit, DeployCommitFacts, DeployStore};
 use ployz_types::error::{Error, Result, StoreRecordKind};
 use ployz_types::model::{
-    DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord, RoutingEvent,
-    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
+    DeployId, DeployPhaseId, DeployPhaseRecord, DeployPhaseState, DeployRecord, RoutingEvent,
+    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord, VolumeMovementRecord,
+    VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 
@@ -50,6 +51,16 @@ impl DeployStore for NatsStore {
             .deploy_commit_facts()
             .await?
             .service_branch_lineage(namespace))
+    }
+
+    async fn list_volume_movements(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<VolumeMovementRecord>> {
+        Ok(self
+            .deploy_commit_facts()
+            .await?
+            .volume_movements(namespace))
     }
 
     async fn get_volume(
@@ -116,14 +127,23 @@ impl DeployStore for NatsStore {
         deploy_id: &DeployId,
         phase_id: &DeployPhaseId,
     ) -> Result<Option<DeployPhaseRecord>> {
-        read_deploy_phase(
+        let mut phase = read_deploy_phase(
             self.jetstream(),
             self.assets().deploy_phases_bucket.as_str(),
             namespace,
             deploy_id,
             phase_id,
         )
-        .await
+        .await?;
+        if let Some(phase) = phase.as_mut() {
+            apply_phase_commit_fact(
+                phase,
+                self.deploy_commit_facts()
+                    .await?
+                    .phase_commit(namespace, deploy_id, phase_id),
+            );
+        }
+        Ok(phase)
     }
 
     async fn list_deploy_phases(
@@ -131,13 +151,21 @@ impl DeployStore for NatsStore {
         namespace: &Namespace,
         deploy_id: &DeployId,
     ) -> Result<Vec<DeployPhaseRecord>> {
-        list_deploy_phases(
+        let mut phases = list_deploy_phases(
             self.jetstream(),
             self.assets().deploy_phases_bucket.as_str(),
             namespace,
             deploy_id,
         )
-        .await
+        .await?;
+        let facts = self.deploy_commit_facts().await?;
+        for phase in &mut phases {
+            apply_phase_commit_fact(
+                phase,
+                facts.phase_commit(namespace, deploy_id, &phase.phase_id),
+            );
+        }
+        Ok(phases)
     }
 }
 
@@ -463,6 +491,24 @@ fn sort_deploy_phases(phases: &mut [DeployPhaseRecord]) {
     });
 }
 
+fn apply_phase_commit_fact(
+    phase: &mut DeployPhaseRecord,
+    commit: Option<&ployz_types::model::DeployPhaseCommitRecord>,
+) {
+    let Some(commit) = commit else {
+        return;
+    };
+    phase.commit_deploy_id = Some(commit.commit_deploy_id.clone());
+    if matches!(
+        phase.state,
+        DeployPhaseState::Pending | DeployPhaseState::Running
+    ) {
+        phase.state = DeployPhaseState::Succeeded {
+            completed_at: commit.committed_at,
+        };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,6 +733,7 @@ mod tests {
             namespace: Namespace(namespace.into()),
             deploy_id: DeployId(deploy_id.into()),
             phase_id: DeployPhaseId(phase_id.into()),
+            commit_deploy_id: None,
             name: phase_id.into(),
             order,
             after: Vec::new(),
@@ -713,6 +760,8 @@ mod tests {
             removed_services,
             removed_volumes: Vec::new(),
             branch_lineage: Vec::new(),
+            volume_movements: Vec::new(),
+            phase_commits: Vec::new(),
             releases,
             volumes: Vec::new(),
             deploy: DeployRecord {

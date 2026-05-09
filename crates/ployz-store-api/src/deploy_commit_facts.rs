@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use ployz_types::model::{
-    RoutingEvent, ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
-    VolumeRecord,
+    DeployPhaseCommitRecord, DeployPhaseId, RoutingEvent, ServiceBranchLineageRecord,
+    ServiceReleaseRecord, ServiceRevisionRecord, VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 
@@ -11,6 +11,8 @@ use crate::DeployCommit;
 type RevisionKey = (Namespace, String, String);
 type ReleaseKey = (Namespace, String);
 type BranchLineageKey = (Namespace, String, String);
+type VolumeMovementKey = (Namespace, String, String);
+type PhaseCommitKey = (Namespace, String, DeployPhaseId);
 type VolumeKey = (Namespace, String);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -18,6 +20,8 @@ pub struct DeployCommitFacts {
     revisions: BTreeMap<RevisionKey, ServiceRevisionRecord>,
     releases: BTreeMap<ReleaseKey, ServiceReleaseRecord>,
     branch_lineage: BTreeMap<BranchLineageKey, ServiceBranchLineageRecord>,
+    volume_movements: BTreeMap<VolumeMovementKey, VolumeMovementRecord>,
+    phase_commits: BTreeMap<PhaseCommitKey, DeployPhaseCommitRecord>,
     volumes: BTreeMap<VolumeKey, VolumeRecord>,
 }
 
@@ -56,6 +60,17 @@ impl DeployCommitFacts {
         for volume in &commit.removed_volumes {
             self.volumes
                 .remove(&(commit.namespace.clone(), volume.clone()));
+            let removed_movements = self
+                .volume_movements
+                .keys()
+                .filter(|(namespace, movement_volume, _deploy_id)| {
+                    namespace == &commit.namespace && movement_volume == volume
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            for key in removed_movements {
+                self.volume_movements.remove(&key);
+            }
         }
         for release in &commit.releases {
             self.releases.insert(release_key(release), release.clone());
@@ -64,6 +79,14 @@ impl DeployCommitFacts {
         for lineage in &commit.branch_lineage {
             self.branch_lineage
                 .insert(branch_lineage_key(lineage), lineage.clone());
+        }
+        for movement in valid_volume_movements(commit) {
+            self.volume_movements
+                .insert(volume_movement_key(movement), movement.clone());
+        }
+        for phase_commit in valid_phase_commits(commit) {
+            self.phase_commits
+                .insert(phase_commit_key(phase_commit), phase_commit.clone());
         }
         for volume in &commit.volumes {
             self.volumes.insert(volume_key(volume), volume.clone());
@@ -127,6 +150,39 @@ impl DeployCommitFacts {
     }
 
     #[must_use]
+    pub fn volume_movements(&self, namespace: &Namespace) -> Vec<VolumeMovementRecord> {
+        self.volume_movements
+            .values()
+            .filter(|movement| &movement.namespace == namespace)
+            .cloned()
+            .collect()
+    }
+
+    #[must_use]
+    pub fn phase_commits(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &ployz_types::model::DeployId,
+    ) -> Vec<DeployPhaseCommitRecord> {
+        self.phase_commits
+            .values()
+            .filter(|record| &record.namespace == namespace && &record.deploy_id == deploy_id)
+            .cloned()
+            .collect()
+    }
+
+    #[must_use]
+    pub fn phase_commit(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &ployz_types::model::DeployId,
+        phase_id: &DeployPhaseId,
+    ) -> Option<&DeployPhaseCommitRecord> {
+        self.phase_commits
+            .get(&(namespace.clone(), deploy_id.0.clone(), phase_id.clone()))
+    }
+
+    #[must_use]
     pub fn volume(&self, namespace: &Namespace, volume_name: &str) -> Option<&VolumeRecord> {
         self.volumes
             .get(&(namespace.clone(), volume_name.to_string()))
@@ -169,16 +225,50 @@ fn branch_lineage_key(record: &ServiceBranchLineageRecord) -> BranchLineageKey {
     )
 }
 
+fn volume_movement_key(record: &VolumeMovementRecord) -> VolumeMovementKey {
+    (
+        record.namespace.clone(),
+        record.volume_name.clone(),
+        record.deploy_id.0.clone(),
+    )
+}
+
+fn phase_commit_key(record: &DeployPhaseCommitRecord) -> PhaseCommitKey {
+    (
+        record.namespace.clone(),
+        record.deploy_id.0.clone(),
+        record.phase_id.clone(),
+    )
+}
+
 fn volume_key(record: &VolumeRecord) -> VolumeKey {
     (record.namespace.clone(), record.volume_name.clone())
+}
+
+fn valid_volume_movements(commit: &DeployCommit) -> impl Iterator<Item = &VolumeMovementRecord> {
+    commit.volume_movements.iter().filter(|movement| {
+        movement.namespace == commit.namespace
+            && movement.commit_deploy_id == commit.deploy.deploy_id
+            && commit.volumes.iter().any(|volume| {
+                volume.namespace == movement.namespace
+                    && volume.volume_name == movement.volume_name
+                    && volume.machine_id == movement.final_machine
+            })
+    })
+}
+
+fn valid_phase_commits(commit: &DeployCommit) -> impl Iterator<Item = &DeployPhaseCommitRecord> {
+    commit.phase_commits.iter().filter(|record| {
+        record.namespace == commit.namespace && record.commit_deploy_id == commit.deploy.deploy_id
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ployz_types::model::{
-        DeployId, DeployRecord, DeployState, MachineId, ServiceBranchLineageRecord, ServiceRelease,
-        ServiceRoutingPolicy,
+        DeployId, DeployPhaseCommitRecord, DeployPhaseId, DeployRecord, DeployState, MachineId,
+        ServiceBranchLineageRecord, ServiceRelease, ServiceRoutingPolicy, VolumeMovementRecord,
     };
     use ployz_types::spec::VolumeScope;
 
@@ -327,6 +417,92 @@ mod tests {
     }
 
     #[test]
+    fn deploy_commit_facts_records_volume_movements_with_commit_facts() {
+        let namespace = Namespace(String::from("prod"));
+        let mut facts = DeployCommitFacts::new();
+        let mut command = commit(
+            &namespace,
+            Vec::new(),
+            Vec::new(),
+            vec![moved_volume(&namespace, "pgdata", "deploy-move")],
+        );
+        command.volume_movements = vec![volume_movement(&namespace, "pgdata", "deploy-prod")];
+
+        facts.apply_commit_events(&command);
+
+        assert_eq!(
+            facts.volume_movements(&namespace),
+            vec![volume_movement(&namespace, "pgdata", "deploy-prod")]
+        );
+    }
+
+    #[test]
+    fn deploy_commit_facts_ignores_orphaned_volume_movement_evidence() {
+        let namespace = Namespace(String::from("prod"));
+        let mut facts = DeployCommitFacts::new();
+        let mut command = commit(&namespace, Vec::new(), Vec::new(), Vec::new());
+        command.volume_movements = vec![volume_movement(&namespace, "pgdata", "deploy-prod")];
+
+        facts.apply_commit_events(&command);
+
+        assert!(facts.volume_movements(&namespace).is_empty());
+    }
+
+    #[test]
+    fn deploy_commit_facts_ignores_mismatched_volume_movement_evidence() {
+        let namespace = Namespace(String::from("prod"));
+        let mut facts = DeployCommitFacts::new();
+        let mut command = commit(
+            &namespace,
+            Vec::new(),
+            Vec::new(),
+            vec![moved_volume(&namespace, "pgdata", "deploy-prod")],
+        );
+        let mut movement = volume_movement(&namespace, "pgdata", "deploy-prod");
+        movement.final_machine = MachineId("machine-c".into());
+        command.volume_movements = vec![movement];
+
+        facts.apply_commit_events(&command);
+
+        assert!(facts.volume_movements(&namespace).is_empty());
+    }
+
+    #[test]
+    fn deploy_commit_facts_records_phase_commit_linkage_with_commit_facts() {
+        let namespace = Namespace(String::from("prod"));
+        let mut facts = DeployCommitFacts::new();
+        let mut command = commit(&namespace, Vec::new(), Vec::new(), Vec::new());
+        command.phase_commits = vec![phase_commit(&namespace, "deploy-prod", "deploy")];
+
+        facts.apply_commit_events(&command);
+
+        assert_eq!(
+            facts.phase_commits(&namespace, &DeployId("deploy-prod".into())),
+            vec![phase_commit(&namespace, "deploy-prod", "deploy")]
+        );
+    }
+
+    #[test]
+    fn deploy_commit_facts_removes_volume_movements_when_volume_is_removed() {
+        let namespace = Namespace(String::from("prod"));
+        let mut facts = DeployCommitFacts::new();
+        let mut command = commit(
+            &namespace,
+            Vec::new(),
+            Vec::new(),
+            vec![moved_volume(&namespace, "pgdata", "deploy-move")],
+        );
+        command.volume_movements = vec![volume_movement(&namespace, "pgdata", "deploy-prod")];
+        facts.apply_commit_events(&command);
+
+        let mut remove = commit(&namespace, Vec::new(), Vec::new(), Vec::new());
+        remove.removed_volumes = vec![String::from("pgdata")];
+        facts.apply_commit_events(&remove);
+
+        assert!(facts.volume_movements(&namespace).is_empty());
+    }
+
+    #[test]
     fn deploy_commit_facts_removes_branch_lineage_when_service_is_removed() {
         let namespace = Namespace(String::from("pr-39"));
         let mut facts = DeployCommitFacts::new();
@@ -358,6 +534,8 @@ mod tests {
             removed_services: Vec::new(),
             removed_volumes: Vec::new(),
             branch_lineage: Vec::new(),
+            volume_movements: Vec::new(),
+            phase_commits: Vec::new(),
             releases,
             volumes,
             deploy: DeployRecord {
@@ -424,6 +602,12 @@ mod tests {
         }
     }
 
+    fn moved_volume(namespace: &Namespace, volume_name: &str, deploy_id: &str) -> VolumeRecord {
+        let mut volume = volume(namespace, volume_name, deploy_id);
+        volume.machine_id = MachineId("machine-b".into());
+        volume
+    }
+
     fn branch_lineage(
         namespace: &Namespace,
         service: &str,
@@ -438,6 +622,43 @@ mod tests {
             source_revision_hash: "rev-source".into(),
             deploy_id: DeployId("deploy-branch".into()),
             created_at: 2,
+        }
+    }
+
+    fn volume_movement(
+        namespace: &Namespace,
+        volume_name: &str,
+        deploy_id: &str,
+    ) -> VolumeMovementRecord {
+        let deploy_id = DeployId(deploy_id.into());
+        VolumeMovementRecord {
+            namespace: namespace.clone(),
+            volume_name: volume_name.into(),
+            from_machine: MachineId("machine-a".into()),
+            to_machine: MachineId("machine-b".into()),
+            final_machine: MachineId("machine-b".into()),
+            deploy_id: deploy_id.clone(),
+            commit_deploy_id: deploy_id,
+            phase_id: None,
+            snapshot_name: "ployz-deploy-snap".into(),
+            snapshot_guid: 42,
+            bytes_transferred: 4096,
+            created_at: 2,
+        }
+    }
+
+    fn phase_commit(
+        namespace: &Namespace,
+        deploy_id: &str,
+        phase_id: &str,
+    ) -> DeployPhaseCommitRecord {
+        let deploy_id = DeployId(deploy_id.into());
+        DeployPhaseCommitRecord {
+            namespace: namespace.clone(),
+            deploy_id: deploy_id.clone(),
+            phase_id: DeployPhaseId(phase_id.into()),
+            commit_deploy_id: deploy_id,
+            committed_at: 2,
         }
     }
 }

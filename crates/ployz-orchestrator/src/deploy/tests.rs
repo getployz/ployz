@@ -22,7 +22,7 @@ use crate::model::{
     DeployState, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
     MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
     ServiceBranchLineageRecord, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
-    ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, VolumeRecord,
+    ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, VolumeMovementRecord, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -64,6 +64,8 @@ impl TestStoreSeed for StoreDriver {
             removed_services: Vec::new(),
             removed_volumes: Vec::new(),
             branch_lineage: Vec::new(),
+            volume_movements: Vec::new(),
+            phase_commits: Vec::new(),
             releases: vec![record.clone()],
             volumes: Vec::new(),
             deploy: test_deploy_record(&record.namespace, "seed-deploy"),
@@ -1201,6 +1203,22 @@ async fn apply_executes_volume_move_before_startup_and_commits_target_owner() {
         panic!("expected moved volume record");
     };
     assert_eq!(record.machine_id, MachineId("machine-b".into()));
+    let movements = store
+        .list_volume_movements(&manifest.namespace)
+        .await
+        .expect("list volume movements");
+    let [movement] = movements.as_slice() else {
+        panic!("expected movement evidence");
+    };
+    assert_eq!(movement.volume_name, "data");
+    assert_eq!(movement.from_machine, MachineId("machine-a".into()));
+    assert_eq!(movement.to_machine, MachineId("machine-b".into()));
+    assert_eq!(movement.final_machine, MachineId("machine-b".into()));
+    assert_eq!(movement.deploy_id, result.deploy_id);
+    assert_eq!(movement.commit_deploy_id, result.deploy_id);
+    assert_eq!(movement.phase_id, Some(DeployPhaseId("deploy".into())));
+    assert_eq!(movement.snapshot_guid, 42);
+    assert_eq!(movement.bytes_transferred, 4096);
     let log = controller.operation_log().await;
     let drain_index = log
         .iter()
@@ -1380,6 +1398,13 @@ async fn apply_fails_volume_move_before_startup_or_commit() {
         panic!("expected source volume record");
     };
     assert_eq!(record.machine_id, MachineId("machine-a".into()));
+    assert!(
+        store
+            .list_volume_movements(&manifest.namespace)
+            .await
+            .expect("list volume movements")
+            .is_empty()
+    );
     let last_update = backend
         .last_deploy_status_write()
         .await
@@ -1681,6 +1706,11 @@ async fn apply_does_not_mark_committed_volume_move_failed_after_post_commit_stat
         panic!("expected moved volume record");
     };
     assert_eq!(record.machine_id, MachineId("machine-b".into()));
+    let movements = store
+        .list_volume_movements(&manifest.namespace)
+        .await
+        .expect("list volume movements");
+    assert_eq!(movements.len(), 1);
 }
 
 #[tokio::test]
@@ -2645,6 +2675,8 @@ async fn resolve_plan_rejects_undecodable_branch_source_revision() {
             removed_services: Vec::new(),
             removed_volumes: Vec::new(),
             branch_lineage: Vec::new(),
+            volume_movements: Vec::new(),
+            phase_commits: Vec::new(),
             releases: vec![test_release(
                 &source_namespace,
                 "web",
@@ -3305,10 +3337,20 @@ async fn apply_records_committed_status_when_phase_success_evidence_fails() {
         &store,
         &manifest.namespace,
         &result.deploy_id,
-        "running",
+        "succeeded",
         None,
     )
     .await;
+    let phase = store
+        .get_deploy_phase(
+            &manifest.namespace,
+            &result.deploy_id,
+            &DeployPhaseId("deploy".into()),
+        )
+        .await
+        .expect("get phase")
+        .expect("phase");
+    assert_eq!(phase.commit_deploy_id, Some(result.deploy_id));
 }
 
 #[tokio::test]
@@ -3482,6 +3524,29 @@ async fn apply_checkpoint_phase_commits_before_final_phase() {
         None,
     )
     .await;
+    let db_phase = store
+        .get_deploy_phase(
+            &manifest.namespace,
+            &result.deploy_id,
+            &DeployPhaseId("db".into()),
+        )
+        .await
+        .expect("get db phase")
+        .expect("db phase");
+    assert_eq!(
+        db_phase.commit_deploy_id,
+        Some(DeployId(format!("{}:phase:db", result.deploy_id.0)))
+    );
+    let web_phase = store
+        .get_deploy_phase(
+            &manifest.namespace,
+            &result.deploy_id,
+            &DeployPhaseId("web".into()),
+        )
+        .await
+        .expect("get web phase")
+        .expect("web phase");
+    assert_eq!(web_phase.commit_deploy_id, Some(result.deploy_id));
 }
 
 #[tokio::test]
@@ -3543,6 +3608,29 @@ async fn apply_failure_after_checkpoint_preserves_committed_phase_facts() {
         Some("injected start failure for 'web'"),
     )
     .await;
+    let db_phase = store
+        .get_deploy_phase(
+            &manifest.namespace,
+            &last_update.deploy_id,
+            &DeployPhaseId("db".into()),
+        )
+        .await
+        .expect("get db phase")
+        .expect("db phase");
+    assert_eq!(
+        db_phase.commit_deploy_id,
+        Some(DeployId(format!("{}:phase:db", last_update.deploy_id.0)))
+    );
+    let web_phase = store
+        .get_deploy_phase(
+            &manifest.namespace,
+            &last_update.deploy_id,
+            &DeployPhaseId("web".into()),
+        )
+        .await
+        .expect("get web phase")
+        .expect("web phase");
+    assert_eq!(web_phase.commit_deploy_id, None);
 }
 
 #[tokio::test]
@@ -5042,6 +5130,8 @@ async fn seed_volume_with_scope_and_attached_services(
             removed_services: Vec::new(),
             removed_volumes: Vec::new(),
             branch_lineage: Vec::new(),
+            volume_movements: Vec::new(),
+            phase_commits: Vec::new(),
             releases: Vec::new(),
             volumes: vec![volume],
             deploy,
@@ -5121,6 +5211,8 @@ async fn seed_committed_http_release(
             removed_services: Vec::new(),
             removed_volumes: Vec::new(),
             branch_lineage: Vec::new(),
+            volume_movements: Vec::new(),
+            phase_commits: Vec::new(),
             releases: vec![test_release(
                 &namespace,
                 service,
@@ -5156,6 +5248,8 @@ async fn seed_committed_service_release(
             removed_services: Vec::new(),
             removed_volumes: Vec::new(),
             branch_lineage: Vec::new(),
+            volume_movements: Vec::new(),
+            phase_commits: Vec::new(),
             releases: vec![test_release(
                 namespace,
                 &spec.name,
@@ -5524,6 +5618,13 @@ impl DeployStore for CountingBackend {
         namespace: &Namespace,
     ) -> PloyzResult<Vec<ServiceBranchLineageRecord>> {
         self.store.list_service_branch_lineage(namespace).await
+    }
+
+    async fn list_volume_movements(
+        &self,
+        namespace: &Namespace,
+    ) -> PloyzResult<Vec<VolumeMovementRecord>> {
+        self.store.list_volume_movements(namespace).await
     }
 
     async fn get_volume(

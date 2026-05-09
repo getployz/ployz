@@ -1039,6 +1039,32 @@ pub struct ServiceBranchLineageRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct VolumeMovementRecord {
+    pub namespace: Namespace,
+    pub volume_name: String,
+    pub from_machine: MachineId,
+    pub to_machine: MachineId,
+    pub final_machine: MachineId,
+    pub deploy_id: DeployId,
+    pub commit_deploy_id: DeployId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_id: Option<DeployPhaseId>,
+    pub snapshot_name: String,
+    pub snapshot_guid: u64,
+    pub bytes_transferred: u64,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DeployPhaseCommitRecord {
+    pub namespace: Namespace,
+    pub deploy_id: DeployId,
+    pub phase_id: DeployPhaseId,
+    pub commit_deploy_id: DeployId,
+    pub committed_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RoutingState {
     pub machines: Vec<MachineMembership>,
     pub revisions: Vec<ServiceRevisionRecord>,
@@ -1791,6 +1817,8 @@ pub struct DeployPhaseRecord {
     pub namespace: Namespace,
     pub deploy_id: DeployId,
     pub phase_id: DeployPhaseId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_deploy_id: Option<DeployId>,
     pub name: String,
     pub order: u32,
     pub after: Vec<DeployPhaseId>,
