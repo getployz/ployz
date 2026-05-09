@@ -112,7 +112,7 @@ impl DeployManifest {
 
         if let Some(intent) = &self.intent {
             intent.validate(self)?;
-            return Err("deploy intent hints are not supported by deploy planning yet".to_string());
+            intent.validate_planning_support()?;
         }
 
         Ok(())
@@ -165,6 +165,48 @@ impl DeployIntent {
 
         if self.services.is_empty() && self.volumes.is_empty() {
             return Err("deploy intent must include at least one service or volume hint".into());
+        }
+
+        Ok(())
+    }
+
+    fn validate_planning_support(&self) -> Result<(), String> {
+        for hint in &self.services {
+            match &hint.intent {
+                ServiceIntent::Branch {
+                    source_namespace: _,
+                    source_service: _,
+                } => {}
+                ServiceIntent::Move { to_machine: _ } => {
+                    return Err(format!(
+                        "deploy intent move for service '{}' is not supported by deploy planning yet",
+                        hint.service
+                    ));
+                }
+                ServiceIntent::Portal {
+                    source_namespace: _,
+                    source_service: _,
+                } => {
+                    return Err(format!(
+                        "deploy intent portal for service '{}' is not supported by deploy planning yet",
+                        hint.service
+                    ));
+                }
+            }
+        }
+
+        for hint in &self.volumes {
+            match &hint.intent {
+                VolumeIntent::Move {
+                    from_machine: _,
+                    to_machine: _,
+                } => {
+                    return Err(format!(
+                        "deploy intent move for volume '{}' is not supported by deploy planning yet",
+                        hint.volume
+                    ));
+                }
+            }
         }
 
         Ok(())
@@ -1075,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn deploy_intent_is_rejected_until_planner_support_exists() {
+    fn deploy_intent_accepts_service_branch_planner_support() {
         let manifest = DeployManifest {
             namespace: Namespace("pr_39".into()),
             intent: Some(DeployIntent {
@@ -1098,12 +1140,59 @@ mod tests {
             services: vec![sample_spec()],
         };
 
+        manifest
+            .validate()
+            .expect("service branch intent is supported by deploy planning");
+    }
+
+    #[test]
+    fn deploy_intent_rejects_unplanned_modes_after_shape_validation() {
+        let mut manifest = DeployManifest {
+            namespace: Namespace("pr_39".into()),
+            intent: Some(DeployIntent {
+                services: vec![ServiceIntentHint {
+                    service: "api".into(),
+                    intent: ServiceIntent::Portal {
+                        source_namespace: Namespace("prod".into()),
+                        source_service: "api".into(),
+                    },
+                }],
+                volumes: Vec::new(),
+            }),
+            volumes: vec![VolumeDeclaration {
+                name: "data".into(),
+                scope: VolumeScope::Single,
+                quota: "10G".into(),
+                mode: "0750".into(),
+                owner: "999:999".into(),
+            }],
+            services: vec![sample_spec()],
+        };
+
         let error = manifest
             .validate()
-            .expect_err("intent should be rejected until deploy planning supports it");
-
+            .expect_err("portal should be rejected until deploy planning supports it");
         assert!(
-            error.contains("intent hints are not supported"),
+            error.contains("portal for service 'api' is not supported"),
+            "got: {error}"
+        );
+
+        manifest.intent = Some(DeployIntent {
+            services: Vec::new(),
+            volumes: vec![VolumeIntentHint {
+                volume: "data".into(),
+                intent: VolumeIntent::Move {
+                    from_machine: "machine-a".into(),
+                    to_machine: "machine-b".into(),
+                },
+            }],
+        });
+
+        let error = manifest
+            .validate()
+            .expect_err("volume move should be rejected until deploy planning supports it");
+        assert!(
+            error.contains("move for volume 'data' is not supported"),
             "got: {error}"
         );
     }

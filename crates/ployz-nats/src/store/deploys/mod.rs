@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use ployz_store_api::{DeployCommit, DeployCommitFacts, DeployStore};
 use ployz_types::error::{Error, Result, StoreRecordKind};
 use ployz_types::model::{
-    DeployId, DeployRecord, RoutingEvent, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
+    DeployId, DeployRecord, RoutingEvent, ServiceBranchLineageRecord, ServiceReleaseRecord,
+    ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 
@@ -39,6 +40,16 @@ impl DeployStore for NatsStore {
 
     async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
         Ok(self.deploy_commit_facts().await?.volumes(namespace))
+    }
+
+    async fn list_service_branch_lineage(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceBranchLineageRecord>> {
+        Ok(self
+            .deploy_commit_facts()
+            .await?
+            .service_branch_lineage(namespace))
     }
 
     async fn get_volume(

@@ -10,7 +10,7 @@ use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     CertificateEvent, CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord,
     InviteRecord, MachineEvent, MachineId, MachineMembership, RoutingEvent, RoutingState,
-    ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
+    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::{BTreeMap, HashMap};
@@ -411,6 +411,14 @@ impl DeployStore for MemoryStore {
         Ok(inner.deploy_commit_facts.volumes(namespace))
     }
 
+    async fn list_service_branch_lineage(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceBranchLineageRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.deploy_commit_facts.service_branch_lineage(namespace))
+    }
+
     async fn get_volume(
         &self,
         namespace: &Namespace,
@@ -763,7 +771,7 @@ impl StoreRuntimeControl for MemoryService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::ServiceRevisionRecord;
+    use ployz_types::model::{ServiceBranchLineageRecord, ServiceRevisionRecord};
 
     fn test_machine(id: impl Into<String>) -> MachineMembership {
         MachineMembership {
@@ -859,6 +867,7 @@ mod tests {
                 revisions: vec![revision],
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: vec![test_release(&namespace, "api", "rev-1", "deploy-1")],
                 volumes: Vec::new(),
                 deploy: test_deploy(&namespace, "deploy-1"),
@@ -875,6 +884,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn commit_deploy_records_service_branch_lineage() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("pr-39".into());
+        let lineage = ServiceBranchLineageRecord {
+            namespace: namespace.clone(),
+            service: "web".into(),
+            revision_hash: "rev-target".into(),
+            source_namespace: Namespace("prod".into()),
+            source_service: "web".into(),
+            source_revision_hash: "rev-source".into(),
+            deploy_id: DeployId("deploy-branch".into()),
+            created_at: 2,
+        };
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: Vec::new(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                branch_lineage: vec![lineage.clone()],
+                releases: Vec::new(),
+                volumes: Vec::new(),
+                deploy: test_deploy(&namespace, "deploy-branch"),
+            })
+            .await
+            .expect("commit deploy");
+
+        let records = store
+            .list_service_branch_lineage(&namespace)
+            .await
+            .expect("list branch lineage");
+        assert_eq!(records, vec![lineage]);
+    }
+
+    #[tokio::test]
     async fn commit_deploy_replaces_touched_releases() {
         let store = MemoryStore::new();
         let namespace = Namespace("prod".into());
@@ -885,6 +930,7 @@ mod tests {
                 revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: vec![
                     test_release(&namespace, "api", "rev-old", "deploy-old"),
                     untouched.clone(),
@@ -901,6 +947,7 @@ mod tests {
                 revisions: Vec::new(),
                 removed_services: vec!["worker".into()],
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: vec![test_release(&namespace, "api", "rev-new", "deploy-new")],
                 volumes: Vec::new(),
                 deploy: test_deploy(&namespace, "deploy-new"),
@@ -960,6 +1007,7 @@ mod tests {
                 ],
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: vec![
                     test_release(&namespace, "worker", "rev-b", "deploy-1"),
                     test_release(&namespace, "api", "rev-a", "deploy-1"),
@@ -1027,6 +1075,7 @@ mod tests {
                 revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: vec![
                     test_release(&namespace, "worker", "rev-b", "deploy-1"),
                     test_release(&namespace, "api", "rev-a", "deploy-1"),
@@ -1062,6 +1111,7 @@ mod tests {
                 revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: vec![test_release(&namespace, "api", "rev-old", "deploy-old")],
                 volumes: Vec::new(),
                 deploy: test_deploy(&namespace, "deploy-old"),
@@ -1077,6 +1127,7 @@ mod tests {
                 revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: vec![test_release(&namespace, "api", "rev-new", "deploy-new")],
                 volumes: Vec::new(),
                 deploy: test_deploy(&namespace, "deploy-new"),
@@ -1112,6 +1163,7 @@ mod tests {
                 revisions: vec![test_revision(&namespace, "api", "rev-a")],
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: vec![test_release(&namespace, "api", "rev-a", "deploy-new")],
                 volumes: Vec::new(),
                 deploy: test_deploy(&namespace, "deploy-new"),
@@ -1148,6 +1200,7 @@ mod tests {
                 revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: vec![
                     test_release(&namespace, "api", "rev-old", "deploy-old"),
                     removed.clone(),
@@ -1165,6 +1218,7 @@ mod tests {
                 revisions: Vec::new(),
                 removed_services: vec!["worker".into()],
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: Vec::new(),
                 volumes: Vec::new(),
                 deploy: test_deploy(&namespace, "deploy-new"),
@@ -1198,6 +1252,7 @@ mod tests {
                 revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: Vec::new(),
                 volumes: vec![test_volume(&prod, "data", &deploy_id)],
                 deploy: test_deploy(&prod, "deploy-prod"),
@@ -1210,6 +1265,7 @@ mod tests {
                 revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: Vec::new(),
                 volumes: vec![test_volume(&staging, "data", &deploy_id)],
                 deploy: test_deploy(&staging, "deploy-staging"),
@@ -1223,6 +1279,7 @@ mod tests {
                 revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: vec!["data".into()],
+                branch_lineage: Vec::new(),
                 releases: Vec::new(),
                 volumes: Vec::new(),
                 deploy: test_deploy(&prod, "deploy-prod-remove"),
@@ -1258,6 +1315,7 @@ mod tests {
                 revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: Vec::new(),
                 volumes: vec![
                     test_volume(&namespace, "z-data", &deploy_id),
@@ -1961,6 +2019,7 @@ mod tests {
                 revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: Vec::new(),
                 volumes: vec![volume],
                 deploy,

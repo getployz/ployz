@@ -114,6 +114,22 @@ pub enum DeployError {
         service: String,
         message: String,
     },
+    #[error("branch source {namespace}/{service} has no committed release")]
+    BranchSourceMissingRelease { namespace: String, service: String },
+    #[error("branch source for {namespace}/{service} cannot reference the target service itself")]
+    BranchSourceIsTarget { namespace: String, service: String },
+    #[error("branch source {namespace}/{service} references missing revision '{revision_hash}'")]
+    BranchSourceMissingRevision {
+        namespace: String,
+        service: String,
+        revision_hash: String,
+    },
+    #[error("could not decode branch source spec for {namespace}/{service}: {message}")]
+    BranchSourceSpecDecode {
+        namespace: String,
+        service: String,
+        message: String,
+    },
     #[error("empty machine start queue")]
     EmptyMachineStartQueue,
     #[error("volume '{volume}' changed but no attached service was restarted")]
