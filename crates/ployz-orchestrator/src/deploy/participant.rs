@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{DeployError, Error, Result};
 use crate::model::{
     DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineMembership, SlotId,
 };
@@ -6,6 +6,10 @@ use ployz_types::spec::Namespace;
 
 #[async_trait::async_trait]
 pub trait DeployParticipantClient: Send + Sync {
+    fn supports_volume_moves(&self) -> bool {
+        false
+    }
+
     async fn inspect_namespace(
         &self,
         machine: &MachineMembership,
@@ -21,6 +25,18 @@ pub trait DeployParticipantClient: Send + Sync {
         deploy_id: &DeployId,
         request: StartCandidateRequest,
     ) -> Result<InstanceStatusRecord>;
+
+    async fn move_volume(
+        &self,
+        _machine_id: &MachineId,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
+        request: MoveVolumeRequest,
+    ) -> Result<MoveVolumeResult> {
+        Err(Error::Deploy(DeployError::VolumeMoveExecutionUnsupported {
+            volume: request.volume,
+        }))
+    }
 
     async fn drain_instance(
         &self,
@@ -46,4 +62,19 @@ pub struct StartCandidateRequest {
     pub instance_id: InstanceId,
     pub spec_json: String,
     pub volumes_json: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MoveVolumeRequest {
+    pub volume: String,
+    pub from_machine: MachineId,
+    pub to_machine: MachineId,
+    pub snapshot: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MoveVolumeResult {
+    pub snapshot: String,
+    pub snapshot_guid: u64,
+    pub bytes_transferred: u64,
 }

@@ -10,7 +10,9 @@ use crate::certificates::{
     LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, NoopAcmeIssuerFactory,
     NoopIssuanceCoordinator,
 };
-use crate::deploy::participant::{DeployParticipantClient, StartCandidateRequest};
+use crate::deploy::participant::{
+    DeployParticipantClient, MoveVolumeRequest, MoveVolumeResult, StartCandidateRequest,
+};
 use crate::error::{DeployError, Error, Result};
 use crate::model::RegionRole;
 use crate::model::{
@@ -37,7 +39,7 @@ use ployz_types::spec::{
 use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -992,7 +994,7 @@ async fn apply_restarts_attached_service_before_committing_volume_quota_change()
 }
 
 #[tokio::test]
-async fn apply_rejects_volume_move_before_mutating_deploy_state() {
+async fn apply_executes_volume_move_before_startup_and_commits_target_owner() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
     let local_machine_id = MachineId("local".into());
     let mut manifest = volume_manifest();
@@ -1017,6 +1019,24 @@ async fn apply_rejects_volume_move_before_mutating_deploy_state() {
         vec!["db".into()],
     )
     .await;
+    let [spec] = manifest.services.as_slice() else {
+        panic!("expected one service");
+    };
+    let revision_hash = spec.revision_hash().expect("revision hash");
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "db",
+            &revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-a",
+                "inst-1",
+                &revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
     backend.reset_counts();
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -1024,20 +1044,492 @@ async fn apply_rejects_volume_move_before_mutating_deploy_state() {
     let controller = FakeController::default();
     let factory = FakeParticipantClient::new(controller.clone());
 
+    let result =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect("move deploy");
+
+    assert_eq!(result.state, DeployState::Committed);
+    assert_eq!(backend.commit_count(), 1);
+    assert_eq!(controller.drain_count(), 1);
+    assert_eq!(controller.remove_count(), 1);
+    assert_eq!(controller.move_count(), 1);
+    assert_eq!(controller.start_count(), 1);
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected moved volume record");
+    };
+    assert_eq!(record.machine_id, MachineId("machine-b".into()));
+    let log = controller.operation_log().await;
+    let drain_index = log
+        .iter()
+        .position(|entry| entry.starts_with("drain:"))
+        .expect("drain operation logged");
+    let remove_index = log
+        .iter()
+        .position(|entry| entry.starts_with("remove:"))
+        .expect("remove operation logged");
+    let move_index = log
+        .iter()
+        .position(|entry| entry.starts_with("move:data:"))
+        .expect("move operation logged");
+    let start_index = log
+        .iter()
+        .position(|entry| entry.starts_with("start:db:"))
+        .expect("start operation logged");
+    assert!(drain_index < remove_index);
+    assert!(remove_index < move_index);
+    assert!(move_index < start_index);
+}
+
+#[tokio::test]
+async fn apply_stops_stale_live_volume_writers_before_move() {
+    let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = volume_manifest();
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-a".into(),
+                to_machine: "machine-b".into(),
+            },
+        }],
+    });
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    let [spec] = manifest.services.as_slice() else {
+        panic!("expected one service");
+    };
+    let revision_hash = spec.revision_hash().expect("revision hash");
+    backend.reset_counts();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("move plan");
+    let controller = FakeController::default();
+    controller
+        .set_inspect_instances(vec![test_instance_status(
+            &manifest.namespace,
+            "db",
+            "stale-slot",
+            "machine-a",
+            "stale-inst",
+            &revision_hash,
+        )])
+        .await;
+    let factory = FakeParticipantClient::new(controller.clone());
+
+    let result =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect("move deploy");
+
+    assert_eq!(result.state, DeployState::Committed);
+    assert_eq!(backend.commit_count(), 1);
+    assert_eq!(controller.drain_count(), 1);
+    assert_eq!(controller.remove_count(), 1);
+    assert_eq!(controller.move_count(), 1);
+    assert_eq!(controller.start_count(), 1);
+    let log = controller.operation_log().await;
+    let drain_index = log
+        .iter()
+        .position(|entry| entry == "drain:stale-inst")
+        .expect("stale drain operation logged");
+    let remove_index = log
+        .iter()
+        .position(|entry| entry == "remove:stale-inst")
+        .expect("stale remove operation logged");
+    let move_index = log
+        .iter()
+        .position(|entry| entry.starts_with("move:data:"))
+        .expect("move operation logged");
+    assert!(drain_index < remove_index);
+    assert!(remove_index < move_index);
+}
+
+#[tokio::test]
+async fn apply_fails_volume_move_before_startup_or_commit() {
+    let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = volume_manifest();
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-a".into(),
+                to_machine: "machine-b".into(),
+            },
+        }],
+    });
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    let [spec] = manifest.services.as_slice() else {
+        panic!("expected one service");
+    };
+    let revision_hash = spec.revision_hash().expect("revision hash");
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "db",
+            &revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-a",
+                "inst-1",
+                &revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+    backend.reset_counts();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("move plan");
+    let controller = FakeController {
+        fail_move_volume: Some("data".into()),
+        ..Default::default()
+    };
+    let factory = FakeParticipantClient::new(controller.clone());
+
     let error =
         apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
             .await
-            .expect_err("move execution should not run in planning slice");
+            .expect_err("move failure should fail deploy");
 
     assert_eq!(
         error,
-        Error::Deploy(DeployError::VolumeMoveExecutionUnsupported {
-            volume: "data".into()
-        })
+        Error::Operation {
+            operation: "fake_move_volume",
+            message: "injected move failure for 'data'".into(),
+        }
     );
     assert_eq!(backend.commit_count(), 0);
-    assert_eq!(backend.deploy_status_write_count(), 0);
+    assert_eq!(backend.deploy_status_write_count(), 2);
+    assert_eq!(controller.drain_count(), 1);
+    assert_eq!(controller.remove_count(), 1);
+    assert_eq!(controller.move_count(), 1);
     assert_eq!(controller.start_count(), 0);
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected source volume record");
+    };
+    assert_eq!(record.machine_id, MachineId("machine-a".into()));
+    let last_update = backend
+        .last_deploy_status_write()
+        .await
+        .expect("failed deploy record should be written");
+    assert_eq!(last_update.state, DeployState::Failed);
+    assert!(
+        last_update
+            .summary_json
+            .contains("injected move failure for 'data'"),
+        "failed deploy summary should mention the move error: {}",
+        last_update.summary_json
+    );
+}
+
+#[tokio::test]
+async fn apply_reuses_volume_move_snapshot_when_retrying_after_startup_failure() {
+    let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = volume_manifest();
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-a".into(),
+                to_machine: "machine-b".into(),
+            },
+        }],
+    });
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    let [spec] = manifest.services.as_slice() else {
+        panic!("expected one service");
+    };
+    let revision_hash = spec.revision_hash().expect("revision hash");
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "db",
+            &revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-a",
+                "inst-1",
+                &revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+    backend.reset_counts();
+
+    let controller = FakeController {
+        fail_start_service: Some("db".into()),
+        ..Default::default()
+    };
+    let first_client = FakeParticipantClient::new(controller.clone());
+    let first_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("first plan");
+
+    apply_with_initial_plan(
+        &store,
+        &first_client,
+        &local_machine_id,
+        &manifest,
+        first_plan,
+    )
+    .await
+    .expect_err("startup failure should fail first deploy");
+
+    assert_eq!(backend.commit_count(), 0);
+    assert_eq!(controller.move_count(), 1);
+    assert_eq!(controller.start_count(), 1);
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected source volume record");
+    };
+    assert_eq!(record.machine_id, MachineId("machine-a".into()));
+
+    let retry_controller = FakeController::default();
+    let retry_client = FakeParticipantClient::new(retry_controller.clone());
+    let retry_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("retry plan");
+
+    let result = apply_with_initial_plan(
+        &store,
+        &retry_client,
+        &local_machine_id,
+        &manifest,
+        retry_plan,
+    )
+    .await
+    .expect("retry deploy");
+
+    assert_eq!(result.state, DeployState::Committed);
+    let first_requests = controller.move_requests().await;
+    let retry_requests = retry_controller.move_requests().await;
+    let [first_request] = first_requests.as_slice() else {
+        panic!("expected one first move");
+    };
+    let [retry_request] = retry_requests.as_slice() else {
+        panic!("expected one retry move");
+    };
+    assert_eq!(first_request.snapshot, retry_request.snapshot);
+}
+
+#[tokio::test]
+async fn apply_stops_current_volume_writers_even_when_service_is_removed() {
+    let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = volume_manifest();
+    let [spec] = manifest.services.as_slice() else {
+        panic!("expected one service");
+    };
+    let revision_hash = spec.revision_hash().expect("revision hash");
+    manifest.services.clear();
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-a".into(),
+                to_machine: "machine-b".into(),
+            },
+        }],
+    });
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "db",
+            &revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-a",
+                "inst-1",
+                &revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+    backend.reset_counts();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("move plan");
+    let controller = FakeController::default();
+    let factory = FakeParticipantClient::new(controller.clone());
+
+    let result =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect("move deploy");
+
+    assert_eq!(result.state, DeployState::Committed);
+    assert_eq!(backend.commit_count(), 1);
+    assert_eq!(controller.drain_count(), 1);
+    assert_eq!(controller.remove_count(), 1);
+    assert_eq!(controller.move_count(), 1);
+    assert_eq!(controller.start_count(), 0);
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected moved volume record");
+    };
+    assert_eq!(record.machine_id, MachineId("machine-b".into()));
+    let log = controller.operation_log().await;
+    let drain_index = log
+        .iter()
+        .position(|entry| entry.starts_with("drain:"))
+        .expect("drain operation logged");
+    let remove_index = log
+        .iter()
+        .position(|entry| entry.starts_with("remove:"))
+        .expect("remove operation logged");
+    let move_index = log
+        .iter()
+        .position(|entry| entry.starts_with("move:data:"))
+        .expect("move operation logged");
+    assert!(drain_index < remove_index);
+    assert!(remove_index < move_index);
+}
+
+#[tokio::test]
+async fn apply_does_not_mark_committed_volume_move_failed_after_post_commit_status_error() {
+    let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = volume_manifest();
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-a".into(),
+                to_machine: "machine-b".into(),
+            },
+        }],
+    });
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    let [spec] = manifest.services.as_slice() else {
+        panic!("expected one service");
+    };
+    let revision_hash = spec.revision_hash().expect("revision hash");
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "db",
+            &revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-a",
+                "inst-1",
+                &revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+    backend.reset_counts();
+    backend.fail_committed_status_writes_after_first(true);
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("move plan");
+    let factory = FakeParticipantClient::new(FakeController::default());
+
+    apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+        .await
+        .expect_err("post-commit status write should fail apply response");
+
+    assert_eq!(backend.commit_count(), 1);
+    assert_eq!(backend.deploy_status_write_count(), 3);
+    let writes = backend.deploy_status_writes().await;
+    assert_eq!(
+        writes
+            .iter()
+            .filter(|record| record.state == DeployState::Failed)
+            .count(),
+        0
+    );
+    let committed_attempt = writes
+        .last()
+        .expect("committed status write should have been attempted");
+    assert_eq!(committed_attempt.state, DeployState::Committed);
+    let committed_record = store
+        .get_deploy(&committed_attempt.deploy_id)
+        .await
+        .expect("get deploy")
+        .expect("committed deploy record");
+    assert_eq!(committed_record.state, DeployState::Committed);
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected moved volume record");
+    };
+    assert_eq!(record.machine_id, MachineId("machine-b".into()));
 }
 
 #[tokio::test]
@@ -1082,6 +1574,88 @@ async fn apply_rejects_volume_move_when_target_loses_eligibility_before_mutation
     assert_eq!(backend.commit_count(), 0);
     assert_eq!(backend.deploy_status_write_count(), 0);
     assert_eq!(controller.start_count(), 0);
+}
+
+#[tokio::test]
+async fn apply_rejects_unsupported_volume_move_before_probe_or_inspect() {
+    let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = volume_manifest();
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-a".into(),
+                to_machine: "machine-b".into(),
+            },
+        }],
+    });
+    seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
+    let participant = UnsupportedParticipantClient::default();
+    let prober = FailingParticipantProbe {
+        machine_id: MachineId("machine-b".into()),
+    };
+
+    let error = apply_with_certificate_coordination(
+        &store,
+        &participant,
+        &local_machine_id,
+        &manifest,
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &prober,
+    )
+    .await
+    .expect_err("unsupported move should fail before participant work");
+
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::VolumeMoveExecutionUnsupported {
+            volume: "data".into()
+        })
+    );
+    assert_eq!(participant.inspect_count(), 0);
+}
+
+#[tokio::test]
+async fn apply_allows_unsupported_volume_move_client_when_plan_has_no_moves() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    let participant = UnsupportedParticipantClient::default();
+    let prober = FailingParticipantProbe {
+        machine_id: MachineId("unused".into()),
+    };
+
+    let error = apply_with_certificate_coordination(
+        &store,
+        &participant,
+        &local_machine_id,
+        &manifest,
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &prober,
+    )
+    .await
+    .expect_err("non-move deploy should reach participant startup");
+
+    assert_eq!(
+        error,
+        Error::Operation {
+            operation: "unsupported_participant",
+            message: "start".into()
+        }
+    );
+    assert_eq!(participant.inspect_count(), 1);
 }
 
 #[tokio::test]
@@ -2514,8 +3088,8 @@ async fn apply_with_initial_plan_sets_cleanup_pending_after_cleanup_failure() {
 
     assert_eq!(result.state, crate::model::DeployState::CleanupPending);
     assert_eq!(backend.commit_count(), 1);
-    // deploying -> post-cert warning refresh -> cleanup_pending
-    assert_eq!(backend.deploy_status_write_count(), 3);
+    // deploying -> committed point-of-no-return -> post-cert warning refresh -> cleanup_pending
+    assert_eq!(backend.deploy_status_write_count(), 4);
     let commit_index = result
         .events
         .iter()
@@ -2783,8 +3357,10 @@ struct FakeController {
     fail_open_machine: Option<String>,
     fail_start_service: Option<String>,
     fail_remove_instance: Option<String>,
+    fail_move_volume: Option<String>,
     open_active: Arc<AtomicUsize>,
     max_open: Arc<AtomicUsize>,
+    move_count: Arc<AtomicUsize>,
     start_count: Arc<AtomicUsize>,
     start_active: Arc<AtomicUsize>,
     max_global_start: Arc<AtomicUsize>,
@@ -2793,7 +3369,10 @@ struct FakeController {
     machine_state: Arc<std::sync::Mutex<HashMap<String, usize>>>,
     machine_max: Arc<std::sync::Mutex<HashMap<String, usize>>>,
     start_log_entries: Arc<Mutex<Vec<String>>>,
+    operation_log_entries: Arc<Mutex<Vec<String>>>,
     start_requests: Arc<Mutex<Vec<StartCandidateRequest>>>,
+    move_requests: Arc<Mutex<Vec<MoveVolumeRequest>>>,
+    inspect_instances: Arc<Mutex<Vec<InstanceStatusRecord>>>,
 }
 
 impl FakeController {
@@ -2803,6 +3382,10 @@ impl FakeController {
 
     fn start_count(&self) -> usize {
         self.start_count.load(Ordering::SeqCst)
+    }
+
+    fn move_count(&self) -> usize {
+        self.move_count.load(Ordering::SeqCst)
     }
 
     fn max_global_start_seen(&self) -> usize {
@@ -2830,8 +3413,20 @@ impl FakeController {
         self.start_log_entries.lock().await.clone()
     }
 
+    async fn operation_log(&self) -> Vec<String> {
+        self.operation_log_entries.lock().await.clone()
+    }
+
     async fn start_requests(&self) -> Vec<StartCandidateRequest> {
         self.start_requests.lock().await.clone()
+    }
+
+    async fn move_requests(&self) -> Vec<MoveVolumeRequest> {
+        self.move_requests.lock().await.clone()
+    }
+
+    async fn set_inspect_instances(&self, instances: Vec<InstanceStatusRecord>) {
+        *self.inspect_instances.lock().await = instances;
     }
 
     async fn on_open_start(&self) {
@@ -2861,6 +3456,10 @@ impl FakeController {
             .lock()
             .await
             .push(format!("{service}:{machine_id}:{slot_id}"));
+        self.operation_log_entries
+            .lock()
+            .await
+            .push(format!("start:{service}:{machine_id}:{slot_id}"));
     }
 
     fn should_fail_start(&self, service: &str) -> bool {
@@ -2876,16 +3475,37 @@ impl FakeController {
         *current -= 1;
     }
 
-    fn on_drain(&self) {
+    async fn on_drain(&self, instance_id: &InstanceId) {
         self.drain_count.fetch_add(1, Ordering::SeqCst);
+        self.operation_log_entries
+            .lock()
+            .await
+            .push(format!("drain:{instance_id}"));
     }
 
-    fn on_remove(&self) {
+    async fn on_remove(&self, instance_id: &InstanceId) {
         self.remove_count.fetch_add(1, Ordering::SeqCst);
+        self.operation_log_entries
+            .lock()
+            .await
+            .push(format!("remove:{instance_id}"));
     }
 
     fn should_fail_remove(&self, instance_id: &InstanceId) -> bool {
         self.fail_remove_instance.as_deref() == Some(instance_id.0.as_str())
+    }
+
+    async fn on_move_volume(&self, machine_id: &MachineId, request: &MoveVolumeRequest) {
+        self.move_count.fetch_add(1, Ordering::SeqCst);
+        self.move_requests.lock().await.push(request.clone());
+        self.operation_log_entries.lock().await.push(format!(
+            "move:{}:{}:{}:{}",
+            request.volume, machine_id, request.from_machine, request.to_machine
+        ));
+    }
+
+    fn should_fail_move(&self, volume: &str) -> bool {
+        self.fail_move_volume.as_deref() == Some(volume)
     }
 }
 
@@ -2901,6 +3521,10 @@ impl FakeParticipantClient {
 
 #[async_trait::async_trait]
 impl DeployParticipantClient for FakeParticipantClient {
+    fn supports_volume_moves(&self) -> bool {
+        true
+    }
+
     async fn inspect_namespace(
         &self,
         machine: &MachineMembership,
@@ -2915,7 +3539,15 @@ impl DeployParticipantClient for FakeParticipantClient {
                 format!("injected open failure for '{}'", machine.id),
             ));
         }
-        Ok(Vec::new())
+        Ok(self
+            .controller
+            .inspect_instances
+            .lock()
+            .await
+            .iter()
+            .filter(|status| status.machine_id == machine.id)
+            .cloned()
+            .collect())
     }
 
     async fn start_candidate(
@@ -2962,14 +3594,35 @@ impl DeployParticipantClient for FakeParticipantClient {
         })
     }
 
+    async fn move_volume(
+        &self,
+        machine_id: &MachineId,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
+        request: MoveVolumeRequest,
+    ) -> Result<MoveVolumeResult> {
+        self.controller.on_move_volume(machine_id, &request).await;
+        if self.controller.should_fail_move(&request.volume) {
+            return Err(ployz_types::error::Error::operation(
+                "fake_move_volume",
+                format!("injected move failure for '{}'", request.volume),
+            ));
+        }
+        Ok(MoveVolumeResult {
+            snapshot: request.snapshot,
+            snapshot_guid: 42,
+            bytes_transferred: 4096,
+        })
+    }
+
     async fn drain_instance(
         &self,
         _machine_id: &MachineId,
         _namespace: &Namespace,
         _deploy_id: &DeployId,
-        _instance_id: &InstanceId,
+        instance_id: &InstanceId,
     ) -> Result<()> {
-        self.controller.on_drain();
+        self.controller.on_drain(instance_id).await;
         Ok(())
     }
 
@@ -2980,7 +3633,7 @@ impl DeployParticipantClient for FakeParticipantClient {
         _deploy_id: &DeployId,
         instance_id: &InstanceId,
     ) -> Result<()> {
-        self.controller.on_remove();
+        self.controller.on_remove(instance_id).await;
         if self.controller.should_fail_remove(instance_id) {
             return Err(ployz_types::error::Error::operation(
                 "fake_remove",
@@ -2988,6 +3641,61 @@ impl DeployParticipantClient for FakeParticipantClient {
             ));
         }
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct UnsupportedParticipantClient {
+    inspect_count: AtomicUsize,
+}
+
+impl UnsupportedParticipantClient {
+    fn inspect_count(&self) -> usize {
+        self.inspect_count.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl DeployParticipantClient for UnsupportedParticipantClient {
+    async fn inspect_namespace(
+        &self,
+        _machine: &MachineMembership,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
+        _coordinator_id: &MachineId,
+    ) -> Result<Vec<InstanceStatusRecord>> {
+        self.inspect_count.fetch_add(1, Ordering::SeqCst);
+        Ok(Vec::new())
+    }
+
+    async fn start_candidate(
+        &self,
+        _machine_id: &MachineId,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
+        _request: StartCandidateRequest,
+    ) -> Result<InstanceStatusRecord> {
+        Err(Error::operation("unsupported_participant", "start"))
+    }
+
+    async fn drain_instance(
+        &self,
+        _machine_id: &MachineId,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
+        _instance_id: &InstanceId,
+    ) -> Result<()> {
+        Err(Error::operation("unsupported_participant", "drain"))
+    }
+
+    async fn remove_instance(
+        &self,
+        _machine_id: &MachineId,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
+        _instance_id: &InstanceId,
+    ) -> Result<()> {
+        Err(Error::operation("unsupported_participant", "remove"))
     }
 }
 
@@ -3440,6 +4148,8 @@ struct CountingBackend {
     service: Arc<MemoryService>,
     commit_calls: AtomicUsize,
     deploy_status_writes: AtomicUsize,
+    committed_status_writes: AtomicUsize,
+    fail_committed_status_writes_after_first: AtomicBool,
     deploy_status_records: Mutex<Vec<DeployRecord>>,
 }
 
@@ -3450,6 +4160,8 @@ impl CountingBackend {
             service: Arc::new(MemoryService::new()),
             commit_calls: AtomicUsize::new(0),
             deploy_status_writes: AtomicUsize::new(0),
+            committed_status_writes: AtomicUsize::new(0),
+            fail_committed_status_writes_after_first: AtomicBool::new(false),
             deploy_status_records: Mutex::new(Vec::new()),
         }
     }
@@ -3465,10 +4177,20 @@ impl CountingBackend {
     fn reset_counts(&self) {
         self.commit_calls.store(0, Ordering::SeqCst);
         self.deploy_status_writes.store(0, Ordering::SeqCst);
+        self.committed_status_writes.store(0, Ordering::SeqCst);
+    }
+
+    fn fail_committed_status_writes_after_first(&self, fail: bool) {
+        self.fail_committed_status_writes_after_first
+            .store(fail, Ordering::SeqCst);
     }
 
     async fn last_deploy_status_write(&self) -> Option<DeployRecord> {
         self.deploy_status_records.lock().await.last().cloned()
+    }
+
+    async fn deploy_status_writes(&self) -> Vec<DeployRecord> {
+        self.deploy_status_records.lock().await.clone()
     }
 }
 
@@ -3648,6 +4370,19 @@ impl DeployStore for CountingBackend {
     async fn write_deploy_status(&self, deploy: &DeployRecord) -> PloyzResult<()> {
         self.deploy_status_writes.fetch_add(1, Ordering::SeqCst);
         self.deploy_status_records.lock().await.push(deploy.clone());
+        if deploy.state == DeployState::Committed {
+            let committed_writes = self.committed_status_writes.fetch_add(1, Ordering::SeqCst) + 1;
+            if committed_writes > 1
+                && self
+                    .fail_committed_status_writes_after_first
+                    .load(Ordering::SeqCst)
+            {
+                return Err(Error::operation(
+                    "counting_write_deploy_status",
+                    "injected committed status failure",
+                ));
+            }
+        }
         self.store.write_deploy_status(deploy).await
     }
 

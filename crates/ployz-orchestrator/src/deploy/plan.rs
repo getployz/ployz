@@ -56,8 +56,15 @@ pub(super) struct PlannedVolume {
     pub(super) declaration: VolumeDeclaration,
     pub(super) machine_id: MachineId,
     pub(super) attached_services: Vec<String>,
+    pub(super) current_writer_slots: Vec<PlannedVolumeWriter>,
     pub(super) current: Option<VolumeRecord>,
     pub(super) movement: Option<PlannedVolumeMove>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PlannedVolumeWriter {
+    pub(super) service: String,
+    pub(super) slot: ServiceReleaseSlot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -285,6 +292,31 @@ pub(super) async fn resolve_plan(
             .get(&declaration.name)
             .cloned()
             .unwrap_or_default();
+        let current_attached_services = volume_map
+            .get(&declaration.name)
+            .map(|record| record.attached_services.clone())
+            .unwrap_or_default();
+        let writer_services = attached_services
+            .iter()
+            .chain(current_attached_services.iter())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut current_writer_slots = Vec::new();
+        for service in writer_services {
+            if let Some(slots) = current_slots_by_service.get(&service) {
+                for slot in slots {
+                    current_writer_slots.push(PlannedVolumeWriter {
+                        service: service.clone(),
+                        slot: slot.clone(),
+                    });
+                }
+            }
+        }
+        current_writer_slots.sort_by(|left, right| {
+            left.service
+                .cmp(&right.service)
+                .then_with(|| left.slot.slot_id.0.cmp(&right.slot.slot_id.0))
+        });
         let volume_move_intent = volume_move_intents.get(&declaration.name);
         let (machine_id, movement) = match volume_map.get(&declaration.name) {
             Some(record) => {
@@ -333,6 +365,7 @@ pub(super) async fn resolve_plan(
             declaration: declaration.clone(),
             machine_id,
             attached_services,
+            current_writer_slots,
             current: volume_map.get(&declaration.name).cloned(),
             movement,
         });
