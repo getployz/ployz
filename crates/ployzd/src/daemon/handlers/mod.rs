@@ -48,6 +48,7 @@ impl DaemonState {
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::MigrateService { .. }
             | DaemonRequest::DeployNodeInspectNamespace { .. }
             | DaemonRequest::DeployNodeStartCandidate { .. }
             | DaemonRequest::DeployNodeDrainInstance { .. }
@@ -125,6 +126,7 @@ impl DaemonState {
             DaemonRequest::DeployExport { namespace } => {
                 self.handle_deploy_export(&namespace).await
             }
+            DaemonRequest::MigrateService { request } => self.handle_migrate_service(request).await,
             DaemonRequest::DeployNodeInspectNamespace {
                 namespace,
                 deploy_id,
@@ -390,6 +392,7 @@ impl DaemonState {
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::MigrateService { .. }
             | DaemonRequest::DeployNodeInspectNamespace { .. }
             | DaemonRequest::DeployNodeStartCandidate { .. }
             | DaemonRequest::DeployNodeDrainInstance { .. }

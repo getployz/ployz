@@ -75,7 +75,7 @@ pub(crate) fn deploy_volume_manifest(
       "placement": {{"replicated": {{"count": 1}}}},
       "template": {{
         "image": "ployz-e2e-preload/http-smoke:latest",
-        "command": ["sh", "-c", "printf '{value}\\n' >{VOLUME_TARGET}/value && sleep 3600"],
+        "command": ["sh", "-c", "test -f {VOLUME_TARGET}/value || printf '{value}\\n' >{VOLUME_TARGET}/value; sleep 3600"],
         "mounts": [
           {{
             "source": {{"volume": "data"}},
@@ -131,6 +131,19 @@ pub(crate) fn wait_for_container_bind(
     .map_err(|error| {
         Error::Message(format!(
             "db container on {node_name} did not have managed volume bind {volume_source}:{VOLUME_TARGET}: {error}"
+        ))
+    })
+}
+
+pub(crate) fn wait_for_no_service_container(run: &ScenarioRun, node_name: &str) -> Result<()> {
+    let command = "test -z \"$(docker ps -q --filter label=dev.ployz.namespace=default --filter label=dev.ployz.service=db)\"";
+    wait_until(VOLUME_WAIT_TIMEOUT, || {
+        let output = run.ssh_run_name(node_name, command)?;
+        Ok(output.status.success())
+    })
+    .map_err(|error| {
+        Error::Message(format!(
+            "db container on {node_name} was still running after migrate: {error}"
         ))
     })
 }
