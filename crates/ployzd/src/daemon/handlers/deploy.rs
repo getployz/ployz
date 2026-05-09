@@ -1639,6 +1639,7 @@ mod tests {
                 namespace: namespace.clone(),
                 deploy_id: deploy_id.clone(),
                 phase_id: DeployPhaseId("deploy".into()),
+                commit_deploy_id: None,
                 name: "Deploy".into(),
                 order: 0,
                 after: Vec::new(),
@@ -1862,6 +1863,8 @@ mod tests {
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
+                volume_movements: Vec::new(),
+                phase_commits: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
                     service: service.name.clone(),
@@ -1931,6 +1934,8 @@ mod tests {
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
+                volume_movements: Vec::new(),
+                phase_commits: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
                     service: "api".into(),
@@ -1997,6 +2002,8 @@ mod tests {
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
+                volume_movements: Vec::new(),
+                phase_commits: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
                     service: "api".into(),
