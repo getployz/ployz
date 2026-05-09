@@ -1727,6 +1727,14 @@ pub struct ServiceBranchSourcePlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeMovePlan {
+    pub volume: String,
+    pub from_machine: MachineId,
+    pub to_machine: MachineId,
+    pub attached_services: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployPreview {
     pub namespace: Namespace,
     pub manifest_hash: String,
@@ -1734,6 +1742,8 @@ pub struct DeployPreview {
     pub services: Vec<ServicePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub service_branch_sources: Vec<ServiceBranchSourcePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volume_moves: Vec<VolumeMovePlan>,
     pub warnings: Vec<String>,
 }
 

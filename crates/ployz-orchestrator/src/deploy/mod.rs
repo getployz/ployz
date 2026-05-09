@@ -23,6 +23,10 @@ use std::sync::Arc;
 
 pub use probe::{NoopParticipantProbe, ParticipantProbe, ProbeError, ProbeErrorKind};
 
+pub fn new_deploy_id() -> crate::model::DeployId {
+    execute::new_deploy_id()
+}
+
 pub async fn preview(
     store: &StoreDriver,
     local_machine_id: &MachineId,
@@ -62,6 +66,33 @@ pub async fn apply_with_certificate_coordination(
         participant_client,
         local_machine_id,
         manifest,
+        certificate_coordinator,
+        account_coordinator,
+        challenge_readiness,
+        issuer_factory,
+        prober,
+    )
+    .await
+}
+
+pub async fn apply_with_deploy_id_and_certificate_coordination(
+    store: &StoreDriver,
+    participant_client: &dyn DeployParticipantClient,
+    local_machine_id: &MachineId,
+    manifest: &DeployManifest,
+    deploy_id: crate::model::DeployId,
+    certificate_coordinator: Arc<dyn IssuanceCoordinator>,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
+    issuer_factory: Arc<dyn AcmeIssuerFactory>,
+    prober: &dyn ParticipantProbe,
+) -> Result<DeployApplyResult> {
+    execute::apply_with_deploy_id_and_certificate_coordination(
+        store,
+        participant_client,
+        local_machine_id,
+        manifest,
+        deploy_id,
         certificate_coordinator,
         account_coordinator,
         challenge_readiness,
