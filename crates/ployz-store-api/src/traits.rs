@@ -3,9 +3,10 @@ use ployz_types::Result;
 use ployz_types::error::Error;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
-    CertificateEvent, CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord,
-    InviteRecord, MachineEvent, MachineId, MachineMembership, RoutingEvent, RoutingState,
-    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
+    CertificateEvent, CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord,
+    InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership,
+    RoutingEvent, RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord,
+    ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use serde::{Deserialize, Serialize};
@@ -629,6 +630,21 @@ pub trait DeployStore: Send + Sync {
     async fn write_deploy_status(&self, deploy: &DeployRecord) -> Result<()>;
 
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>>;
+
+    async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> Result<()>;
+
+    async fn get_deploy_phase(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+        phase_id: &DeployPhaseId,
+    ) -> Result<Option<DeployPhaseRecord>>;
+
+    async fn list_deploy_phases(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+    ) -> Result<Vec<DeployPhaseRecord>>;
 }
 
 #[async_trait]

@@ -106,6 +106,14 @@ impl PreparedDeploy {
         &self.plan
     }
 
+    pub(super) fn deploy_id(&self) -> &DeployId {
+        &self.deploy_id
+    }
+
+    pub(super) fn preview(&self) -> &DeployPreview {
+        &self.preview
+    }
+
     pub(super) fn applying_record(&self) -> &DeployRecord {
         &self.applying_record
     }

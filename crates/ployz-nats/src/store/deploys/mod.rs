@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use ployz_store_api::{DeployCommit, DeployCommitFacts, DeployStore};
 use ployz_types::error::{Error, Result, StoreRecordKind};
 use ployz_types::model::{
-    DeployId, DeployRecord, RoutingEvent, ServiceBranchLineageRecord, ServiceReleaseRecord,
-    ServiceRevisionRecord, VolumeRecord,
+    DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord, RoutingEvent,
+    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 
@@ -96,6 +96,45 @@ impl DeployStore for NatsStore {
         read_deploy_status(
             self.jetstream(),
             self.assets().deploy_status_bucket.as_str(),
+            deploy_id,
+        )
+        .await
+    }
+
+    async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> Result<()> {
+        write_deploy_phase_entry(
+            self.jetstream(),
+            self.assets().deploy_phases_bucket.as_str(),
+            phase,
+        )
+        .await
+    }
+
+    async fn get_deploy_phase(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+        phase_id: &DeployPhaseId,
+    ) -> Result<Option<DeployPhaseRecord>> {
+        read_deploy_phase(
+            self.jetstream(),
+            self.assets().deploy_phases_bucket.as_str(),
+            namespace,
+            deploy_id,
+            phase_id,
+        )
+        .await
+    }
+
+    async fn list_deploy_phases(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+    ) -> Result<Vec<DeployPhaseRecord>> {
+        list_deploy_phases(
+            self.jetstream(),
+            self.assets().deploy_phases_bucket.as_str(),
+            namespace,
             deploy_id,
         )
         .await
@@ -312,12 +351,126 @@ fn decode_deploy_status(key: &str, bytes: &[u8]) -> Result<DeployRecord> {
     Ok(record)
 }
 
+async fn write_deploy_phase_entry(
+    js: &jetstream::Context,
+    bucket_name: &str,
+    phase: &DeployPhaseRecord,
+) -> Result<()> {
+    let bucket = kv_json::get_bucket(js, bucket_name, "nats_deploy_phases_bucket").await?;
+    kv_json::put_json(
+        &bucket,
+        &deploy_phase_key(&phase.namespace, &phase.deploy_id, &phase.phase_id),
+        phase,
+        "nats_deploy_phase_encode",
+        "nats_deploy_phase_put",
+    )
+    .await
+}
+
+async fn read_deploy_phase(
+    js: &jetstream::Context,
+    bucket_name: &str,
+    namespace: &Namespace,
+    deploy_id: &DeployId,
+    phase_id: &DeployPhaseId,
+) -> Result<Option<DeployPhaseRecord>> {
+    let bucket = kv_json::get_bucket(js, bucket_name, "nats_deploy_phases_bucket").await?;
+    let key = deploy_phase_key(namespace, deploy_id, phase_id);
+    let Some(bytes) = bucket
+        .get(key.as_str())
+        .await
+        .map_err(|error| Error::operation("nats_deploy_phase_get", format!("{error:?}")))?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(decode_deploy_phase(&key, bytes.as_ref())?))
+}
+
+async fn list_deploy_phases(
+    js: &jetstream::Context,
+    bucket_name: &str,
+    namespace: &Namespace,
+    deploy_id: &DeployId,
+) -> Result<Vec<DeployPhaseRecord>> {
+    let bucket = kv_json::get_bucket(js, bucket_name, "nats_deploy_phases_bucket").await?;
+    let prefix = deploy_phase_prefix(namespace, deploy_id);
+    let mut phases = Vec::new();
+    for key in kv_json::list_keys_with_prefix(&bucket, &prefix, "nats_deploy_phase_keys").await? {
+        let Some(entry) = bucket
+            .entry(key)
+            .await
+            .map_err(|error| Error::operation("nats_deploy_phase_entry", format!("{error:?}")))?
+        else {
+            continue;
+        };
+        if entry.operation != async_nats::jetstream::kv::Operation::Put {
+            continue;
+        }
+        phases.push(decode_deploy_phase(&entry.key, entry.value.as_ref())?);
+    }
+    sort_deploy_phases(&mut phases);
+    Ok(phases)
+}
+
+fn decode_deploy_phase(key: &str, bytes: &[u8]) -> Result<DeployPhaseRecord> {
+    let record: DeployPhaseRecord = kv_json::decode_json("nats_deploy_phase_decode", bytes)?;
+    let payload_key = deploy_phase_key(&record.namespace, &record.deploy_id, &record.phase_id);
+    if payload_key != key {
+        return Err(Error::store_key_mismatch(
+            StoreRecordKind::DeployPhase,
+            key,
+            payload_key,
+        ));
+    }
+    Ok(record)
+}
+
+fn deploy_phase_key(
+    namespace: &Namespace,
+    deploy_id: &DeployId,
+    phase_id: &DeployPhaseId,
+) -> String {
+    format!(
+        "{}.{}.{}",
+        subjects::subject_token(namespace.0.as_str()),
+        subjects::subject_token(deploy_id.0.as_str()),
+        subjects::subject_token(phase_id.0.as_str())
+    )
+}
+
+fn deploy_phase_prefix(namespace: &Namespace, deploy_id: &DeployId) -> String {
+    format!(
+        "{}.{}.",
+        subjects::subject_token(namespace.0.as_str()),
+        subjects::subject_token(deploy_id.0.as_str())
+    )
+}
+
+fn sort_deploy_phases(phases: &mut [DeployPhaseRecord]) {
+    phases.sort_by(|left, right| {
+        (
+            left.namespace.0.as_str(),
+            left.deploy_id.0.as_str(),
+            left.order,
+            left.phase_id.0.as_str(),
+        )
+            .cmp(&(
+                right.namespace.0.as_str(),
+                right.deploy_id.0.as_str(),
+                right.order,
+                right.phase_id.0.as_str(),
+            ))
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ployz_types::error::{Error, StoreRecordKind};
     use ployz_types::model::{
-        DeployState, MachineId, ServiceRelease, ServiceRevisionRecord, ServiceRoutingPolicy,
+        DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord, DeployPhaseRollbackPolicy,
+        DeployPhaseState, DeployState, MachineId, ServiceRelease, ServiceRevisionRecord,
+        ServiceRoutingPolicy,
     };
     use ployz_types::spec::Namespace;
 
@@ -428,6 +581,69 @@ mod tests {
         assert_eq!(decoded, record);
     }
 
+    #[test]
+    fn deploy_phase_decode_rejects_malformed_payload() {
+        let error = decode_deploy_phase("prod.deploy-a.deploy", b"{")
+            .expect_err("malformed deploy phase should fail");
+
+        assert!(error.to_string().contains("nats_deploy_phase_decode"));
+    }
+
+    #[test]
+    fn deploy_phase_decode_rejects_key_payload_mismatch() {
+        let record = deploy_phase("prod", "deploy-a", "deploy", 0);
+        let bytes = serde_json::to_vec(&record).expect("encode deploy phase");
+
+        let error = decode_deploy_phase("prod.deploy-a.other", &bytes)
+            .expect_err("deploy phase key mismatch should fail");
+
+        assert!(matches!(
+            error,
+            Error::Store(ployz_types::error::StoreError::KeyMismatch {
+                record: StoreRecordKind::DeployPhase,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn deploy_phase_decode_accepts_matching_key() {
+        let record = deploy_phase("prod", "deploy-a", "deploy", 0);
+        let key = deploy_phase_key(&record.namespace, &record.deploy_id, &record.phase_id);
+        let bytes = serde_json::to_vec(&record).expect("encode deploy phase");
+
+        let decoded = decode_deploy_phase(&key, &bytes).expect("matching phase key");
+
+        assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn sort_deploy_phases_orders_by_contract_identity() {
+        let mut phases = vec![
+            deploy_phase("prod", "deploy-a", "web", 1),
+            deploy_phase("prod", "deploy-a", "db", 0),
+            deploy_phase("prod", "deploy-b", "deploy", 0),
+        ];
+
+        sort_deploy_phases(&mut phases);
+
+        assert_eq!(
+            phases
+                .iter()
+                .map(|phase| (
+                    phase.deploy_id.0.as_str(),
+                    phase.order,
+                    phase.phase_id.0.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("deploy-a", 0, "db"),
+                ("deploy-a", 1, "web"),
+                ("deploy-b", 0, "deploy")
+            ]
+        );
+    }
+
     fn revision(hash: &str, spec_json: &str) -> ServiceRevisionRecord {
         ServiceRevisionRecord {
             namespace: Namespace(String::from("prod")),
@@ -458,6 +674,25 @@ mod tests {
                 updated_by_deploy_id: DeployId(deploy_id.into()),
                 updated_at: 1,
             },
+        }
+    }
+
+    fn deploy_phase(
+        namespace: &str,
+        deploy_id: &str,
+        phase_id: &str,
+        order: u32,
+    ) -> DeployPhaseRecord {
+        DeployPhaseRecord {
+            namespace: Namespace(namespace.into()),
+            deploy_id: DeployId(deploy_id.into()),
+            phase_id: DeployPhaseId(phase_id.into()),
+            name: phase_id.into(),
+            order,
+            state: DeployPhaseState::Running,
+            commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+            rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+            started_at: 1,
         }
     }
 
