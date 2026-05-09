@@ -1748,6 +1748,38 @@ pub struct DeployPhasePlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployPhaseState {
+    Running,
+    Succeeded {
+        completed_at: u64,
+    },
+    Failed {
+        completed_at: u64,
+        failure: DeployPhaseFailure,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployPhaseFailure {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployPhaseRecord {
+    pub namespace: Namespace,
+    pub deploy_id: DeployId,
+    pub phase_id: DeployPhaseId,
+    pub name: String,
+    pub order: u32,
+    pub state: DeployPhaseState,
+    pub commit_policy: DeployPhaseCommitPolicy,
+    pub rollback_policy: DeployPhaseRollbackPolicy,
+    pub started_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotPlan {
     pub slot_id: SlotId,
     pub machine_id: MachineId,

@@ -8,9 +8,10 @@ use async_trait::async_trait;
 use ployz_types::error::{Error, Result, SubscriptionStream};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
-    CertificateEvent, CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord,
-    InviteRecord, MachineEvent, MachineId, MachineMembership, RoutingEvent, RoutingState,
-    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
+    CertificateEvent, CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord,
+    InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership,
+    RoutingEvent, RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord,
+    ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::{BTreeMap, HashMap};
@@ -32,6 +33,7 @@ struct StoreInner {
     invites: BTreeMap<String, InviteRecord>,
     deploy_commit_facts: DeployCommitFacts,
     deploy_records: HashMap<DeployId, DeployRecord>,
+    deploy_phase_records: HashMap<(Namespace, DeployId, DeployPhaseId), DeployPhaseRecord>,
     instance_status: HashMap<InstanceId, InstanceStatusRecord>,
     acme_accounts: HashMap<String, AcmeAccountRecord>,
     certificates: BTreeMap<String, CertificateRecord>,
@@ -66,6 +68,7 @@ impl MemoryStore {
                 invites: BTreeMap::new(),
                 deploy_commit_facts: DeployCommitFacts::new(),
                 deploy_records: HashMap::new(),
+                deploy_phase_records: HashMap::new(),
                 instance_status: HashMap::new(),
                 acme_accounts: HashMap::new(),
                 certificates: BTreeMap::new(),
@@ -455,6 +458,65 @@ impl DeployStore for MemoryStore {
         let inner = self.lock_inner();
         Ok(inner.deploy_records.get(deploy_id).cloned())
     }
+
+    async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner.deploy_phase_records.insert(
+            (
+                phase.namespace.clone(),
+                phase.deploy_id.clone(),
+                phase.phase_id.clone(),
+            ),
+            phase.clone(),
+        );
+        Ok(())
+    }
+
+    async fn get_deploy_phase(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+        phase_id: &DeployPhaseId,
+    ) -> Result<Option<DeployPhaseRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner
+            .deploy_phase_records
+            .get(&(namespace.clone(), deploy_id.clone(), phase_id.clone()))
+            .cloned())
+    }
+
+    async fn list_deploy_phases(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+    ) -> Result<Vec<DeployPhaseRecord>> {
+        let inner = self.lock_inner();
+        let mut phases = inner
+            .deploy_phase_records
+            .values()
+            .filter(|phase| phase.namespace == *namespace && phase.deploy_id == *deploy_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        sort_deploy_phases(&mut phases);
+        Ok(phases)
+    }
+}
+
+fn sort_deploy_phases(phases: &mut [DeployPhaseRecord]) {
+    phases.sort_by(|left, right| {
+        (
+            left.namespace.0.as_str(),
+            left.deploy_id.0.as_str(),
+            left.order,
+            left.phase_id.0.as_str(),
+        )
+            .cmp(&(
+                right.namespace.0.as_str(),
+                right.deploy_id.0.as_str(),
+                right.order,
+                right.phase_id.0.as_str(),
+            ))
+    });
 }
 
 #[async_trait]
@@ -660,6 +722,7 @@ impl MemoryStore {
             .drain()
             .map(|(_, record)| record)
             .collect::<Vec<_>>();
+        inner.deploy_phase_records.clear();
         inner.invites.clear();
         inner.acme_accounts.clear();
         inner.certificates.clear();
@@ -771,7 +834,10 @@ impl StoreRuntimeControl for MemoryService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{ServiceBranchLineageRecord, ServiceRevisionRecord};
+    use ployz_types::model::{
+        DeployPhaseCommitPolicy, DeployPhaseFailure, DeployPhaseRollbackPolicy, DeployPhaseState,
+        ServiceBranchLineageRecord, ServiceRevisionRecord,
+    };
 
     fn test_machine(id: impl Into<String>) -> MachineMembership {
         MachineMembership {
@@ -846,6 +912,75 @@ mod tests {
             expired,
             Err(Error::InviteExpired { invite_id }) if invite_id == "inv-2"
         ));
+    }
+
+    #[tokio::test]
+    async fn deploy_phase_records_roundtrip_and_list_in_contract_order() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let deploy_id = DeployId("deploy-1".into());
+        let later = test_deploy_phase(&namespace, &deploy_id, "web", 1);
+        let earlier = test_deploy_phase(&namespace, &deploy_id, "db", 0);
+
+        store
+            .upsert_deploy_phase(&later)
+            .await
+            .expect("write later phase");
+        store
+            .upsert_deploy_phase(&earlier)
+            .await
+            .expect("write earlier phase");
+
+        assert_eq!(
+            store
+                .get_deploy_phase(
+                    &namespace,
+                    &deploy_id,
+                    &ployz_types::model::DeployPhaseId("db".into())
+                )
+                .await
+                .expect("read deploy phase"),
+            Some(earlier.clone())
+        );
+        assert_eq!(
+            store
+                .list_deploy_phases(&namespace, &deploy_id)
+                .await
+                .expect("list deploy phases"),
+            vec![earlier, later]
+        );
+    }
+
+    #[tokio::test]
+    async fn deploy_phase_upsert_replaces_state_for_same_identity() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let deploy_id = DeployId("deploy-1".into());
+        let mut phase = test_deploy_phase(&namespace, &deploy_id, "deploy", 0);
+        store
+            .upsert_deploy_phase(&phase)
+            .await
+            .expect("write running phase");
+
+        phase.state = DeployPhaseState::Failed {
+            completed_at: 20,
+            failure: DeployPhaseFailure {
+                code: "START_FAILED".into(),
+                message: "start failed".into(),
+            },
+        };
+        store
+            .upsert_deploy_phase(&phase)
+            .await
+            .expect("replace phase");
+
+        assert_eq!(
+            store
+                .list_deploy_phases(&namespace, &deploy_id)
+                .await
+                .expect("list deploy phases"),
+            vec![phase]
+        );
     }
 
     #[tokio::test]
@@ -1628,6 +1763,25 @@ mod tests {
         }
     }
 
+    fn test_deploy_phase(
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+        phase_id: &str,
+        order: u32,
+    ) -> DeployPhaseRecord {
+        DeployPhaseRecord {
+            namespace: namespace.clone(),
+            deploy_id: deploy_id.clone(),
+            phase_id: ployz_types::model::DeployPhaseId(phase_id.into()),
+            name: phase_id.into(),
+            order,
+            state: DeployPhaseState::Running,
+            commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+            rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+            started_at: 10,
+        }
+    }
+
     fn test_revision(
         namespace: &Namespace,
         service: &str,
@@ -2034,6 +2188,15 @@ mod tests {
                 .len(),
             1
         );
+        store
+            .upsert_deploy_phase(&test_deploy_phase(
+                &namespace,
+                &DeployId("dep-1".into()),
+                "deploy",
+                0,
+            ))
+            .await
+            .expect("write phase before wipe");
 
         store.wipe_data().await.expect("wipe data");
 
@@ -2042,6 +2205,13 @@ mod tests {
                 .list_volumes(&namespace)
                 .await
                 .expect("list volumes after wipe")
+                .is_empty()
+        );
+        assert!(
+            store
+                .list_deploy_phases(&namespace, &DeployId("dep-1".into()))
+                .await
+                .expect("list phases after wipe")
                 .is_empty()
         );
     }
