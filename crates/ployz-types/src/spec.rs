@@ -200,12 +200,7 @@ impl DeployIntent {
                 VolumeIntent::Move {
                     from_machine: _,
                     to_machine: _,
-                } => {
-                    return Err(format!(
-                        "deploy intent move for volume '{}' is not supported by deploy planning yet",
-                        hint.volume
-                    ));
-                }
+                } => {}
             }
         }
 
@@ -1188,13 +1183,9 @@ mod tests {
             }],
         });
 
-        let error = manifest
+        manifest
             .validate()
-            .expect_err("volume move should be rejected until deploy planning supports it");
-        assert!(
-            error.contains("move for volume 'data' is not supported"),
-            "got: {error}"
-        );
+            .expect("volume move intent is supported by deploy planning");
     }
 
     #[test]

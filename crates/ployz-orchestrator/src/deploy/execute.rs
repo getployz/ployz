@@ -267,6 +267,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
         let final_plan = resolve_plan(store, local_machine_id, manifest).await?;
         let final_fingerprint = final_plan.fingerprint();
         ensure_plan_stable(&initial_fingerprint, &final_fingerprint)?;
+        ensure_volume_moves_are_not_executed(&final_plan)?;
         managed_domains::validate_hostname_ownership(store, &final_plan).await?;
 
         let prepared = PreparedDeploy::new(
@@ -459,6 +460,19 @@ pub(super) fn ensure_plan_stable(
     }
     if final_plan != initial {
         return Err(Error::Deploy(DeployError::ExecutionPlanChanged));
+    }
+    Ok(())
+}
+
+fn ensure_volume_moves_are_not_executed(plan: &ResolvedPlan) -> Result<()> {
+    if let Some(volume) = plan
+        .volumes()
+        .iter()
+        .find(|volume| matches!(volume_record_change(volume), VolumeChange::Move))
+    {
+        return Err(Error::Deploy(DeployError::VolumeMoveExecutionUnsupported {
+            volume: volume.declaration.name.clone(),
+        }));
     }
     Ok(())
 }
