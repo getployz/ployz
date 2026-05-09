@@ -22,9 +22,10 @@ use ployz_types::Result;
 use ployz_types::error::Error;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineMembership, OverlayIp, RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord,
-    ServiceRevisionRecord, StorageParticipation, StorageReplicaPolicy, VolumeRecord,
+    DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord, InstanceId, InstanceStatusRecord,
+    InviteRecord, MachineId, MachineMembership, OverlayIp, RoutingState,
+    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord, StorageParticipation,
+    StorageReplicaPolicy, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -430,6 +431,28 @@ where
 
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
         DeployStore::get_deploy(self.store().await?.as_ref(), deploy_id).await
+    }
+
+    async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> Result<()> {
+        DeployStore::upsert_deploy_phase(self.store().await?.as_ref(), phase).await
+    }
+
+    async fn get_deploy_phase(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+        phase_id: &DeployPhaseId,
+    ) -> Result<Option<DeployPhaseRecord>> {
+        DeployStore::get_deploy_phase(self.store().await?.as_ref(), namespace, deploy_id, phase_id)
+            .await
+    }
+
+    async fn list_deploy_phases(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+    ) -> Result<Vec<DeployPhaseRecord>> {
+        DeployStore::list_deploy_phases(self.store().await?.as_ref(), namespace, deploy_id).await
     }
 }
 
