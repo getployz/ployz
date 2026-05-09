@@ -22,6 +22,8 @@ use crate::daemon::handlers::volume::transfer_listener::{ZfsTransferOpen, ZfsTra
 const TRANSFERS_DIR_NAME: &str = "zfs-transfers";
 const ACK_READ_TIMEOUT: Duration = Duration::from_secs(30);
 const ZFS_SEND_RPC_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+const MOVE_CLAIM_RECORD_WAIT: Duration = Duration::from_millis(20);
+const MOVE_CLAIM_RECORD_WAIT_ATTEMPTS: usize = 5;
 const MAX_ACK_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy)]
@@ -457,6 +459,32 @@ enum MoveClaimOutcome {
     Exists(String),
 }
 
+enum ClaimedTransfer {
+    Running(TransferRecord),
+    Terminal(TransferRecord),
+    MissingAfterWait,
+}
+
+async fn wait_for_claimed_transfer_record(
+    store: &TransferStore,
+    transfer_id: &str,
+) -> Result<ClaimedTransfer, String> {
+    for attempt in 0..MOVE_CLAIM_RECORD_WAIT_ATTEMPTS {
+        match store.load(transfer_id)? {
+            Some(record) if record.status == TransferStatus::Running => {
+                return Ok(ClaimedTransfer::Running(record));
+            }
+            Some(record) => return Ok(ClaimedTransfer::Terminal(record)),
+            None if attempt + 1 < MOVE_CLAIM_RECORD_WAIT_ATTEMPTS => {
+                tokio::time::sleep(MOVE_CLAIM_RECORD_WAIT).await;
+            }
+            None => return Ok(ClaimedTransfer::MissingAfterWait),
+        }
+    }
+
+    Ok(ClaimedTransfer::MissingAfterWait)
+}
+
 fn move_claim_key(
     namespace: &Namespace,
     volume: &str,
@@ -713,8 +741,8 @@ impl DaemonState {
                             );
                             continue;
                         }
-                        match store.load(&existing_id) {
-                            Ok(Some(existing)) if existing.status == TransferStatus::Running => {
+                        match wait_for_claimed_transfer_record(&store, &existing_id).await {
+                            Ok(ClaimedTransfer::Running(existing)) => {
                                 let info = existing.info();
                                 return self.ok_with_payload(
                                     serde_json::to_string_pretty(&info)
@@ -724,7 +752,7 @@ impl DaemonState {
                                     )),
                                 );
                             }
-                            Ok(Some(existing)) => {
+                            Ok(ClaimedTransfer::Terminal(existing)) => {
                                 tracing::warn!(
                                     transfer_id = %existing.id,
                                     status = ?existing.status,
@@ -739,7 +767,7 @@ impl DaemonState {
                                     from_snapshot,
                                 );
                             }
-                            Ok(None) => {
+                            Ok(ClaimedTransfer::MissingAfterWait) => {
                                 tracing::warn!(
                                     transfer_id = %existing_id,
                                     "deleting stale zfs transfer claim for missing transfer"
@@ -1555,6 +1583,7 @@ mod tests {
     use ployz_types::model::MachineId;
     use ployz_types::spec::Namespace;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     fn tmp_root(label: &str) -> PathBuf {
         let id = super::unique_transfer_id(0).expect("unique id");
@@ -1690,6 +1719,49 @@ mod tests {
             create_claim(&store, "transfer-b"),
             MoveClaimOutcome::Created
         ));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn claimed_transfer_waits_for_record_creation() {
+        let root = tmp_root("claim-waits-for-record");
+        let store = TransferStore::new(root.clone());
+
+        assert!(matches!(
+            create_claim(&store, "transfer-a"),
+            MoveClaimOutcome::Created
+        ));
+
+        let delayed_store = store.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            delayed_store
+                .begin_with_id(
+                    "transfer-a".into(),
+                    &Namespace("default".into()),
+                    "data",
+                    MachineId("source".into()),
+                    MachineId("target".into()),
+                    "snap".into(),
+                    None,
+                    super::now_unix_secs(),
+                )
+                .expect("begin delayed transfer");
+        });
+
+        match super::wait_for_claimed_transfer_record(&store, "transfer-a")
+            .await
+            .expect("wait for claimed transfer")
+        {
+            super::ClaimedTransfer::Running(record) => assert_eq!(record.id, "transfer-a"),
+            super::ClaimedTransfer::Terminal(record) => {
+                panic!("expected running transfer, got {:?}", record.status)
+            }
+            super::ClaimedTransfer::MissingAfterWait => {
+                panic!("claim should wait for newly created transfer record")
+            }
+        }
 
         let _ = std::fs::remove_dir_all(root);
     }
