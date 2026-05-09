@@ -18,11 +18,11 @@ use crate::model::RegionRole;
 use crate::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
     DeployChangeKind, DeployId, DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseId,
-    DeployPhaseRollbackPolicy, DeployPhaseWork, DeployRecord, DeployState, DrainState, InstanceId,
-    InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership,
-    MachineTopology, OverlayIp, PublicKey, ServiceBranchLineageRecord, ServiceRelease,
-    ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId,
-    VolumeRecord,
+    DeployPhaseRecord, DeployPhaseRollbackPolicy, DeployPhaseState, DeployPhaseWork, DeployRecord,
+    DeployState, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
+    MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
+    ServiceBranchLineageRecord, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
+    ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -1316,6 +1316,14 @@ async fn apply_fails_volume_move_before_startup_or_commit() {
         "failed deploy summary should mention the move error: {}",
         last_update.summary_json
     );
+    assert_default_phase_record(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "failed",
+        Some("injected move failure for 'data'"),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -3118,6 +3126,102 @@ async fn apply_with_initial_plan_does_not_commit_when_start_candidate_fails() {
         "failed deploy summary should mention the apply error: {}",
         last_update.summary_json
     );
+    assert_default_phase_record(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "failed",
+        Some("injected start failure for 'api'"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_marks_default_phase_failed_when_commit_fails_after_phase_work() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    backend.fail_commit(true);
+    let factory = FakeParticipantClient::new(FakeController::default());
+
+    let error =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect_err("commit failure should fail deploy");
+
+    assert!(error.to_string().contains("injected commit failure"));
+    assert_eq!(backend.commit_count(), 1);
+    let last_update = backend
+        .last_deploy_status_write()
+        .await
+        .expect("failed deploy record should be written");
+    assert_eq!(last_update.state, DeployState::Failed);
+    assert_default_phase_record(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "failed",
+        Some("injected commit failure"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_records_committed_status_when_phase_success_evidence_fails() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    backend.fail_succeeded_phase_upsert(true);
+    let factory = FakeParticipantClient::new(FakeController::default());
+
+    let result =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect("phase success evidence failure should not fail committed deploy");
+
+    assert_eq!(result.state, DeployState::Committed);
+    assert_eq!(backend.commit_count(), 1);
+    let writes = backend.deploy_status_writes().await;
+    assert!(
+        writes
+            .iter()
+            .any(|record| record.state == DeployState::Committed),
+        "committed deploy status should be written even when phase evidence fails"
+    );
+    assert!(
+        writes
+            .iter()
+            .all(|record| record.state != DeployState::Failed),
+        "phase evidence failure must not mark committed deploy failed"
+    );
+    let committed_record = store
+        .get_deploy(&result.deploy_id)
+        .await
+        .expect("get deploy")
+        .expect("committed deploy record");
+    assert_eq!(committed_record.state, DeployState::Committed);
+    assert_default_phase_record(
+        &store,
+        &manifest.namespace,
+        &result.deploy_id,
+        "running",
+        None,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -3227,6 +3331,14 @@ async fn apply_with_initial_plan_commits_once_after_all_starts_finish() {
             .skip(commit_index + 1)
             .all(|(_, event)| event.step != "start_candidate")
     );
+    assert_default_phase_record(
+        &store,
+        &manifest.namespace,
+        &result.deploy_id,
+        "succeeded",
+        None,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -3821,6 +3933,54 @@ async fn counting_store_with_machines(machine_ids: &[&str]) -> (StoreDriver, Arc
     (store, backend)
 }
 
+async fn assert_default_phase_record(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    deploy_id: &DeployId,
+    expected_state: &str,
+    failure_contains: Option<&str>,
+) {
+    let phases = store
+        .list_deploy_phases(namespace, deploy_id)
+        .await
+        .expect("list deploy phases");
+    let [phase] = phases.as_slice() else {
+        panic!("expected one default deploy phase record, got {phases:?}");
+    };
+    assert_eq!(phase.namespace, *namespace);
+    assert_eq!(phase.deploy_id, *deploy_id);
+    assert_eq!(phase.phase_id, DeployPhaseId("deploy".into()));
+    assert_eq!(phase.name, "Deploy");
+    assert_eq!(phase.order, 0);
+    assert_eq!(phase.commit_policy, DeployPhaseCommitPolicy::EndOfDeploy);
+    assert_eq!(phase.rollback_policy, DeployPhaseRollbackPolicy::Reversible);
+    match (&phase.state, expected_state) {
+        (DeployPhaseState::Running, "running") => {}
+        (DeployPhaseState::Succeeded { completed_at }, "succeeded") => {
+            assert!(*completed_at >= phase.started_at);
+        }
+        (
+            DeployPhaseState::Failed {
+                completed_at,
+                failure,
+            },
+            "failed",
+        ) => {
+            assert!(*completed_at >= phase.started_at);
+            let Some(expected) = failure_contains else {
+                panic!("failed phase assertion requires expected failure text");
+            };
+            assert!(!failure.code.is_empty());
+            assert!(
+                failure.message.contains(expected),
+                "failure message should contain {expected:?}: {}",
+                failure.message
+            );
+        }
+        (actual, expected) => panic!("expected phase state {expected}, got {actual:?}"),
+    }
+}
+
 fn test_manifest(services: Vec<ServiceSpec>) -> DeployManifest {
     DeployManifest {
         namespace: Namespace("test".into()),
@@ -4221,7 +4381,9 @@ struct CountingBackend {
     commit_calls: AtomicUsize,
     deploy_status_writes: AtomicUsize,
     committed_status_writes: AtomicUsize,
+    fail_commit: AtomicBool,
     fail_committed_status_writes_after_first: AtomicBool,
+    fail_succeeded_phase_upsert: AtomicBool,
     deploy_status_records: Mutex<Vec<DeployRecord>>,
 }
 
@@ -4233,7 +4395,9 @@ impl CountingBackend {
             commit_calls: AtomicUsize::new(0),
             deploy_status_writes: AtomicUsize::new(0),
             committed_status_writes: AtomicUsize::new(0),
+            fail_commit: AtomicBool::new(false),
             fail_committed_status_writes_after_first: AtomicBool::new(false),
+            fail_succeeded_phase_upsert: AtomicBool::new(false),
             deploy_status_records: Mutex::new(Vec::new()),
         }
     }
@@ -4254,6 +4418,15 @@ impl CountingBackend {
 
     fn fail_committed_status_writes_after_first(&self, fail: bool) {
         self.fail_committed_status_writes_after_first
+            .store(fail, Ordering::SeqCst);
+    }
+
+    fn fail_commit(&self, fail: bool) {
+        self.fail_commit.store(fail, Ordering::SeqCst);
+    }
+
+    fn fail_succeeded_phase_upsert(&self, fail: bool) {
+        self.fail_succeeded_phase_upsert
             .store(fail, Ordering::SeqCst);
     }
 
@@ -4460,6 +4633,12 @@ impl DeployStore for CountingBackend {
 
     async fn commit_deploy(&self, command: &DeployCommit) -> PloyzResult<()> {
         self.commit_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_commit.load(Ordering::SeqCst) {
+            return Err(Error::operation(
+                "counting_commit_deploy",
+                "injected commit failure",
+            ));
+        }
         self.store.commit_deploy(command).await
     }
 
@@ -4468,6 +4647,37 @@ impl DeployStore for CountingBackend {
         deploy_id: &DeployId,
     ) -> PloyzResult<Option<crate::model::DeployRecord>> {
         self.store.get_deploy(deploy_id).await
+    }
+
+    async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> PloyzResult<()> {
+        if matches!(phase.state, DeployPhaseState::Succeeded { .. })
+            && self.fail_succeeded_phase_upsert.load(Ordering::SeqCst)
+        {
+            return Err(Error::operation(
+                "counting_upsert_deploy_phase",
+                "injected succeeded phase failure",
+            ));
+        }
+        self.store.upsert_deploy_phase(phase).await
+    }
+
+    async fn get_deploy_phase(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+        phase_id: &DeployPhaseId,
+    ) -> PloyzResult<Option<DeployPhaseRecord>> {
+        self.store
+            .get_deploy_phase(namespace, deploy_id, phase_id)
+            .await
+    }
+
+    async fn list_deploy_phases(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+    ) -> PloyzResult<Vec<DeployPhaseRecord>> {
+        self.store.list_deploy_phases(namespace, deploy_id).await
     }
 }
 

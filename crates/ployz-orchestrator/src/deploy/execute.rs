@@ -4,7 +4,7 @@ use crate::certificates::{
     NoopIssuanceCoordinator, spawn_certificate_finalization_with_coordination,
     start_pending_orders,
 };
-use crate::deploy::lifecycle::{CleanupPlan, PreparedDeploy};
+use crate::deploy::lifecycle::{CleanupPlan, PreparedDeploy, StartedCandidates};
 use crate::deploy::managed_domains;
 use crate::deploy::participant::{self, DeployParticipantClient};
 use crate::deploy::plan::{
@@ -13,9 +13,9 @@ use crate::deploy::plan::{
 use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_participants};
 use crate::error::{DeployError, Error, Result};
 use crate::model::{
-    DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPreview, DeployRecord,
-    DeployState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineMembership,
-    VolumeRecord,
+    DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPhaseFailure,
+    DeployPhasePlan, DeployPhaseRecord, DeployPhaseState, DeployPreview, DeployRecord, DeployState,
+    InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineMembership, VolumeRecord,
 };
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use ployz_store_api::{DeployStore, InstanceStatusStore, StoreDriver};
@@ -331,6 +331,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
     .await?;
 
     let mut last_written_deploy_record = None;
+    let mut running_default_phase = None;
     let result = async {
         let final_plan = resolve_plan(store, local_machine_id, manifest).await?;
         let final_fingerprint = final_plan.fingerprint();
@@ -348,15 +349,17 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             .await?;
         last_written_deploy_record = Some(prepared.applying_record().clone());
 
-        let volume_move_events =
-            execute_volume_moves(participant_client, &participants, prepared.plan()).await?;
-        events.extend(volume_move_events);
-
-        let startup =
-            run_phase_startup(store, participant_client, &participants, prepared.plan()).await?;
-        events.extend(startup.events);
-
-        let started = prepared.into_started(startup.started);
+        let phase_execution = execute_default_phase(
+            store,
+            participant_client,
+            &participants,
+            prepared,
+            started_at,
+        )
+        .await?;
+        events.extend(phase_execution.events);
+        running_default_phase = Some(phase_execution.running_phase.clone());
+        let started = phase_execution.started;
         let committed_volumes = build_committed_volumes(
             started.plan(),
             started.started(),
@@ -370,6 +373,16 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         let mut committed = commit_plan.into_committed();
         last_written_deploy_record = Some(committed.deploy_record().clone());
         store.write_deploy_status(committed.deploy_record()).await?;
+        record_default_phase_succeeded_after_commit(
+            store,
+            &deploy_id,
+            running_default_phase.take(),
+        )
+        .await;
+        events.push(DeployEvent {
+            step: "phase".into(),
+            message: "succeeded phase deploy (Deploy)".into(),
+        });
         events.push(committed.commit_event());
 
         let managed_hostnames = managed_domains::ensure_certificate_intents(
@@ -444,9 +457,175 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                 "failed to record terminal failed deploy state after apply error"
             );
         }
+        if let Some(running_phase) = running_default_phase
+            && let Err(update_error) =
+                mark_default_phase_failed(store, running_phase, error, now_unix_secs()).await
+        {
+            warn!(
+                ?update_error,
+                deploy_id = %deploy_id,
+                "failed to record terminal failed deploy phase after apply error"
+            );
+        }
     }
 
     result
+}
+
+struct DefaultPhaseExecution {
+    started: StartedCandidates,
+    events: Vec<DeployEvent>,
+    running_phase: DeployPhaseRecord,
+}
+
+async fn execute_default_phase(
+    store: &StoreDriver,
+    participant_client: &dyn DeployParticipantClient,
+    participants: &ParticipantSet,
+    prepared: PreparedDeploy,
+    started_at: u64,
+) -> Result<DefaultPhaseExecution> {
+    let phase = default_deploy_phase(prepared.preview())?.clone();
+    let running = deploy_phase_record(&prepared, &phase, DeployPhaseState::Running, started_at);
+    store.upsert_deploy_phase(&running).await?;
+
+    let execution = async {
+        let mut events = Vec::new();
+        events.push(DeployEvent {
+            step: "phase".into(),
+            message: format!("started phase {} ({})", phase.phase_id, phase.name),
+        });
+
+        let volume_move_events =
+            execute_volume_moves(participant_client, participants, prepared.plan()).await?;
+        events.extend(volume_move_events);
+
+        let startup =
+            run_phase_startup(store, participant_client, participants, prepared.plan()).await?;
+        events.extend(startup.events);
+
+        Ok::<_, Error>((startup.started, events))
+    }
+    .await;
+
+    match execution {
+        Ok((started, events)) => Ok(DefaultPhaseExecution {
+            started: prepared.into_started(started),
+            events,
+            running_phase: running,
+        }),
+        Err(error) => {
+            if let Err(update_error) =
+                mark_default_phase_failed(store, running, &error, now_unix_secs()).await
+            {
+                warn!(
+                    ?update_error,
+                    deploy_id = %prepared.deploy_id(),
+                    phase_id = %phase.phase_id,
+                    "failed to record terminal failed deploy phase after phase error"
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
+async fn mark_default_phase_succeeded(
+    store: &StoreDriver,
+    running_phase: Option<DeployPhaseRecord>,
+) -> Result<()> {
+    let Some(mut phase) = running_phase else {
+        return Ok(());
+    };
+    phase.state = DeployPhaseState::Succeeded {
+        completed_at: now_unix_secs(),
+    };
+    store.upsert_deploy_phase(&phase).await
+}
+
+async fn record_default_phase_succeeded_after_commit(
+    store: &StoreDriver,
+    deploy_id: &DeployId,
+    running_phase: Option<DeployPhaseRecord>,
+) {
+    if let Err(update_error) = mark_default_phase_succeeded(store, running_phase).await {
+        warn!(
+            ?update_error,
+            deploy_id = %deploy_id,
+            "failed to record terminal succeeded deploy phase after commit"
+        );
+    }
+}
+
+async fn mark_default_phase_failed(
+    store: &StoreDriver,
+    mut phase: DeployPhaseRecord,
+    error: &Error,
+    completed_at: u64,
+) -> Result<()> {
+    phase.state = DeployPhaseState::Failed {
+        completed_at,
+        failure: deploy_phase_failure(error),
+    };
+    store.upsert_deploy_phase(&phase).await
+}
+
+fn deploy_phase_failure(error: &Error) -> DeployPhaseFailure {
+    DeployPhaseFailure {
+        code: deploy_phase_failure_code(error).into(),
+        message: error.to_string(),
+    }
+}
+
+fn deploy_phase_failure_code(error: &Error) -> &'static str {
+    match error {
+        Error::Deploy(_) => "DEPLOY_ERROR",
+        Error::Runtime(_) => "RUNTIME_ERROR",
+        Error::Storage(_) => "STORAGE_ERROR",
+        Error::Store(_) => "STORE_ERROR",
+        Error::Coordination(_) => "COORDINATION_ERROR",
+        Error::Certificate(_) => "CERTIFICATE_ERROR",
+        Error::InviteAlreadyExists { .. } => "INVITE_ALREADY_EXISTS",
+        Error::InviteNotFound { .. } => "INVITE_NOT_FOUND",
+        Error::InviteRevoked { .. } => "INVITE_REVOKED",
+        Error::InviteExpired { .. } => "INVITE_EXPIRED",
+        Error::InviteConsumed { .. } => "INVITE_CONSUMED",
+        Error::SubscriptionLagged { .. } => "SUBSCRIPTION_LAGGED",
+        Error::RoutingEventAckReceiverClosed { .. } => "ROUTING_EVENT_ACK_RECEIVER_CLOSED",
+        Error::Operation { operation, .. } => operation,
+    }
+}
+
+fn default_deploy_phase(preview: &DeployPreview) -> Result<&DeployPhasePlan> {
+    let [phase] = preview.phases.as_slice() else {
+        return Err(Error::operation(
+            "deploy_apply",
+            format!(
+                "expected exactly one default deploy phase, found {}",
+                preview.phases.len()
+            ),
+        ));
+    };
+    Ok(phase)
+}
+
+fn deploy_phase_record(
+    prepared: &PreparedDeploy,
+    phase: &DeployPhasePlan,
+    state: DeployPhaseState,
+    started_at: u64,
+) -> DeployPhaseRecord {
+    DeployPhaseRecord {
+        namespace: prepared.plan().namespace().clone(),
+        deploy_id: prepared.deploy_id().clone(),
+        phase_id: phase.phase_id.clone(),
+        name: phase.name.clone(),
+        order: phase.order,
+        state,
+        commit_policy: phase.commit_policy,
+        rollback_policy: phase.rollback_policy,
+        started_at,
+    }
 }
 
 fn failed_deploy_record(mut record: DeployRecord, error: &Error) -> DeployRecord {
