@@ -32,7 +32,7 @@ use ployz_types::spec::{
     ContainerSpec, DeployIntent, DeployManifest, HttpRoute, Mount, MountSource, Namespace,
     NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy, RolloutStrategy,
     RouteSpec, ServiceIntent, ServiceIntentHint, ServicePort, ServiceSpec, VolumeDeclaration,
-    VolumeScope,
+    VolumeIntent, VolumeIntentHint, VolumeScope,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv6Addr;
@@ -492,6 +492,329 @@ async fn resolve_plan_keeps_existing_volume_on_region_draining_machine() {
 }
 
 #[tokio::test]
+async fn resolve_plan_moves_existing_volume_and_attached_service_to_target_machine() {
+    let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = volume_manifest();
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-a".into(),
+                to_machine: "machine-b".into(),
+            },
+        }],
+    });
+    let [spec] = manifest.services.as_slice() else {
+        panic!("expected one service");
+    };
+    let revision_hash = spec.revision_hash().expect("revision hash");
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "db",
+            &revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-a",
+                "inst-1",
+                &revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve move plan");
+
+    let [volume] = plan.volumes() else {
+        panic!("expected one planned volume");
+    };
+    assert_eq!(volume.machine_id, MachineId("machine-b".into()));
+    assert_eq!(
+        volume
+            .movement
+            .as_ref()
+            .map(|movement| (&movement.from_machine, &movement.to_machine)),
+        Some((
+            &MachineId("machine-a".into()),
+            &MachineId("machine-b".into())
+        ))
+    );
+    assert!(plan.participants().contains(&MachineId("machine-a".into())));
+    assert!(plan.participants().contains(&MachineId("machine-b".into())));
+
+    let [service_plan] = plan.services() else {
+        panic!("expected one service plan");
+    };
+    let [slot_plan] = service_plan.slots.as_slice() else {
+        panic!("expected one slot plan");
+    };
+    assert_eq!(service_plan.action, DeployChangeKind::Replace);
+    assert_eq!(slot_plan.action, DeployChangeKind::Replace);
+    assert_eq!(slot_plan.machine_id, MachineId("machine-b".into()));
+
+    let preview = plan.to_preview(Vec::new());
+    let [volume_move] = preview.volume_moves.as_slice() else {
+        panic!("expected one preview volume move");
+    };
+    assert_eq!(volume_move.volume, "data");
+    assert_eq!(volume_move.from_machine, MachineId("machine-a".into()));
+    assert_eq!(volume_move.to_machine, MachineId("machine-b".into()));
+    assert_eq!(volume_move.attached_services, vec!["db"]);
+}
+
+#[tokio::test]
+async fn resolve_plan_treats_volume_move_to_same_machine_as_noop() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = volume_manifest();
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-a".into(),
+                to_machine: "machine-a".into(),
+            },
+        }],
+    });
+    let [spec] = manifest.services.as_slice() else {
+        panic!("expected one service");
+    };
+    let revision_hash = spec.revision_hash().expect("revision hash");
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "db",
+            &revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-a",
+                "inst-1",
+                &revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve no-op move plan");
+
+    let [volume] = plan.volumes() else {
+        panic!("expected one planned volume");
+    };
+    assert_eq!(volume.machine_id, MachineId("machine-a".into()));
+    assert_eq!(volume.movement, None);
+    assert!(plan.to_preview(Vec::new()).volume_moves.is_empty());
+    let [service_plan] = plan.services() else {
+        panic!("expected one service plan");
+    };
+    assert_eq!(service_plan.action, DeployChangeKind::Unchanged);
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_volume_move_source_mismatch() {
+    let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = volume_manifest();
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-b".into(),
+                to_machine: "machine-a".into(),
+            },
+        }],
+    });
+    seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("source mismatch should fail");
+
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::VolumeMoveSourceMismatch {
+            volume: "data".into(),
+            expected_machine: "machine-b".into(),
+            actual_machine: "machine-a".into()
+        })
+    );
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_volume_move_to_missing_ineligible_or_compute_only_target() {
+    let local_machine_id = MachineId("local".into());
+    for (target, maybe_machine, expected) in [
+        (
+            "missing",
+            None,
+            Error::Deploy(DeployError::VolumeMoveTargetMissing {
+                volume: "data".into(),
+                machine_id: "missing".into(),
+            }),
+        ),
+        (
+            "standby",
+            Some({
+                let mut machine = test_machine("standby", MachineLifecycle::Standby);
+                machine.storage = true;
+                machine
+            }),
+            Error::Deploy(DeployError::VolumeMoveTargetIneligible {
+                volume: "data".into(),
+                machine_id: "standby".into(),
+            }),
+        ),
+        (
+            "compute-only",
+            Some({
+                let mut machine = test_machine("compute-only", MachineLifecycle::Active);
+                machine.storage = false;
+                machine
+            }),
+            Error::Deploy(DeployError::VolumeMoveTargetNotStorageCapable {
+                volume: "data".into(),
+                machine_id: "compute-only".into(),
+            }),
+        ),
+    ] {
+        let store = seeded_store_with_machines(&["machine-a"]).await;
+        if let Some(machine) = maybe_machine {
+            store
+                .upsert_self_machine(&machine)
+                .await
+                .expect("seed target");
+        }
+        let mut manifest = volume_manifest();
+        manifest.intent = Some(DeployIntent {
+            services: Vec::new(),
+            volumes: vec![VolumeIntentHint {
+                volume: "data".into(),
+                intent: VolumeIntent::Move {
+                    from_machine: "machine-a".into(),
+                    to_machine: target.into(),
+                },
+            }],
+        });
+        seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
+
+        let error = resolve_plan(&store, &local_machine_id, &manifest)
+            .await
+            .expect_err("bad target should fail");
+
+        assert_eq!(error, expected);
+    }
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_volume_move_for_shared_volume() {
+    let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = test_manifest(Vec::new());
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Shared));
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-a".into(),
+                to_machine: "machine-b".into(),
+            },
+        }],
+    });
+    seed_volume_with_scope(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        VolumeScope::Shared,
+    )
+    .await;
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("shared volume move should fail");
+
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::VolumeMoveRequiresSingleScope {
+            volume: "data".into()
+        })
+    );
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_volume_move_for_global_attached_service() {
+    let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut service = test_service_spec("db", Placement::Global, "postgres:17");
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    let mut manifest = test_manifest(vec![service]);
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-a".into(),
+                to_machine: "machine-b".into(),
+            },
+        }],
+    });
+    seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("global service cannot attach a moved single-scope volume");
+
+    match error {
+        Error::Deploy(DeployError::ManifestInvalid { message }) => {
+            assert!(
+                message.contains("cannot use global placement with managed volumes"),
+                "got: {message}"
+            );
+        }
+        other => panic!("expected manifest validation failure, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn resolve_plan_rejects_service_with_volumes_on_different_machines() {
     let store = StoreDriver::memory();
     let local_machine_id = MachineId("local".into());
@@ -666,6 +989,99 @@ async fn apply_restarts_attached_service_before_committing_volume_quota_change()
     assert_eq!(record.quota, "2G");
     assert_eq!(record.created_by_deploy_id, first.deploy_id);
     assert_eq!(record.last_modified_by_deploy_id, second.deploy_id);
+}
+
+#[tokio::test]
+async fn apply_rejects_volume_move_before_mutating_deploy_state() {
+    let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = volume_manifest();
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-a".into(),
+                to_machine: "machine-b".into(),
+            },
+        }],
+    });
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    backend.reset_counts();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("move plan");
+    let controller = FakeController::default();
+    let factory = FakeParticipantClient::new(controller.clone());
+
+    let error =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect_err("move execution should not run in planning slice");
+
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::VolumeMoveExecutionUnsupported {
+            volume: "data".into()
+        })
+    );
+    assert_eq!(backend.commit_count(), 0);
+    assert_eq!(backend.deploy_status_write_count(), 0);
+    assert_eq!(controller.start_count(), 0);
+}
+
+#[tokio::test]
+async fn apply_rejects_volume_move_when_target_loses_eligibility_before_mutation() {
+    let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = volume_manifest();
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-a".into(),
+                to_machine: "machine-b".into(),
+            },
+        }],
+    });
+    seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
+    backend.reset_counts();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial move plan");
+    store
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Standby))
+        .await
+        .expect("target becomes standby");
+    let controller = FakeController::default();
+    let factory = FakeParticipantClient::new(controller.clone());
+
+    let error =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect_err("target eligibility drift should fail before mutation");
+
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::VolumeMoveTargetIneligible {
+            volume: "data".into(),
+            machine_id: "machine-b".into()
+        })
+    );
+    assert_eq!(backend.commit_count(), 0);
+    assert_eq!(backend.deploy_status_write_count(), 0);
+    assert_eq!(controller.start_count(), 0);
 }
 
 #[tokio::test]
@@ -2708,11 +3124,57 @@ async fn seed_volume_with_attached_services(
     owner: &str,
     attached_services: Vec<String>,
 ) {
+    seed_volume_with_scope_and_attached_services(
+        store,
+        namespace,
+        volume_name,
+        machine_id,
+        VolumeScope::Single,
+        quota,
+        mode,
+        owner,
+        attached_services,
+    )
+    .await;
+}
+
+async fn seed_volume_with_scope(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    volume_name: &str,
+    machine_id: &str,
+    scope: VolumeScope,
+) {
+    seed_volume_with_scope_and_attached_services(
+        store,
+        namespace,
+        volume_name,
+        machine_id,
+        scope,
+        "1G",
+        "0750",
+        "999:999",
+        Vec::new(),
+    )
+    .await;
+}
+
+async fn seed_volume_with_scope_and_attached_services(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    volume_name: &str,
+    machine_id: &str,
+    scope: VolumeScope,
+    quota: &str,
+    mode: &str,
+    owner: &str,
+    attached_services: Vec<String>,
+) {
     let deploy_id = DeployId(format!("seed-{volume_name}"));
     let volume = VolumeRecord {
         namespace: namespace.clone(),
         volume_name: volume_name.into(),
-        scope: VolumeScope::Single,
+        scope,
         machine_id: MachineId(machine_id.into()),
         quota: quota.into(),
         mode: mode.into(),
