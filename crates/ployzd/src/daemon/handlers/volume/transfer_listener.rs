@@ -798,6 +798,7 @@ mod tests {
                 revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: Vec::new(),
                 volumes: vec![record],
                 deploy,

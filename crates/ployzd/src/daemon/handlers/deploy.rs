@@ -711,6 +711,7 @@ mod tests {
                 }],
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
                     service: service.name.clone(),
@@ -779,6 +780,7 @@ mod tests {
                 revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
                     service: "api".into(),
@@ -844,6 +846,7 @@ mod tests {
                 }],
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
                     service: "api".into(),

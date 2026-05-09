@@ -1027,6 +1027,18 @@ pub struct ServiceReleaseSlot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ServiceBranchLineageRecord {
+    pub namespace: Namespace,
+    pub service: String,
+    pub revision_hash: String,
+    pub source_namespace: Namespace,
+    pub source_service: String,
+    pub source_revision_hash: String,
+    pub deploy_id: DeployId,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RoutingState {
     pub machines: Vec<MachineMembership>,
     pub revisions: Vec<ServiceRevisionRecord>,
@@ -1707,11 +1719,21 @@ pub struct ServicePlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceBranchSourcePlan {
+    pub service: String,
+    pub source_namespace: Namespace,
+    pub source_service: String,
+    pub source_revision_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployPreview {
     pub namespace: Namespace,
     pub manifest_hash: String,
     pub participants: Vec<MachineId>,
     pub services: Vec<ServicePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_branch_sources: Vec<ServiceBranchSourcePlan>,
     pub warnings: Vec<String>,
 }
 
