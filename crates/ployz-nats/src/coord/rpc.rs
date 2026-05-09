@@ -147,6 +147,16 @@ impl NodeCommandSubject {
     }
 
     #[must_use]
+    pub fn volume_zfs_send(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "volume.zfs.send")
+    }
+
+    #[must_use]
+    pub fn volume_zfs_transfer_get(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "volume.zfs.transfer_get")
+    }
+
+    #[must_use]
     pub(crate) fn subject_in(&self, scope: &NatsScope) -> String {
         match self.plane {
             NodeCommandPlane::Authority => {
@@ -394,6 +404,21 @@ mod tests {
         assert_eq!(
             NodeCommandSubject::deploy_start_candidate(&machine_id).subject_in(&scope),
             "ployz.v1.local.auth-default.rpc.node.machine-a.deploy.start_candidate"
+        );
+    }
+
+    #[test]
+    fn volume_zfs_command_subjects_remain_authority_scoped() {
+        let machine_id = MachineId("machine.a".into());
+        let scope = NatsScope::local_default();
+
+        assert_eq!(
+            NodeCommandSubject::volume_zfs_send(&machine_id).subject_in(&scope),
+            "ployz.v1.local.auth-default.rpc.node.machine%2Ea.volume.zfs.send"
+        );
+        assert_eq!(
+            NodeCommandSubject::volume_zfs_transfer_get(&machine_id).subject_in(&scope),
+            "ployz.v1.local.auth-default.rpc.node.machine%2Ea.volume.zfs.transfer_get"
         );
     }
 

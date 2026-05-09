@@ -66,6 +66,26 @@ pub enum DeployError {
     },
     #[error("volume '{volume}' quota cannot shrink in v1")]
     VolumeQuotaShrink { volume: String },
+    #[error("volume '{volume}' move requires an existing committed volume")]
+    VolumeMoveMissingSource { volume: String },
+    #[error(
+        "volume '{volume}' move expected source machine '{expected_machine}' but current owner is '{actual_machine}'"
+    )]
+    VolumeMoveSourceMismatch {
+        volume: String,
+        expected_machine: String,
+        actual_machine: String,
+    },
+    #[error("volume '{volume}' move requires scope=single")]
+    VolumeMoveRequiresSingleScope { volume: String },
+    #[error("volume '{volume}' move target machine '{machine_id}' is missing")]
+    VolumeMoveTargetMissing { volume: String, machine_id: String },
+    #[error("volume '{volume}' move target machine '{machine_id}' is not deployable")]
+    VolumeMoveTargetIneligible { volume: String, machine_id: String },
+    #[error("volume '{volume}' move target machine '{machine_id}' is not storage-capable")]
+    VolumeMoveTargetNotStorageCapable { volume: String, machine_id: String },
+    #[error("volume '{volume}' move execution is not supported yet")]
+    VolumeMoveExecutionUnsupported { volume: String },
     #[error("participant '{machine_id}' is missing from machine inventory")]
     ParticipantMissing { machine_id: String },
     #[error(

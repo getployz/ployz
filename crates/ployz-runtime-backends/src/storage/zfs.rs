@@ -204,6 +204,21 @@ impl<R: ShellRunner> ZfsDriver<R> {
         ))
     }
 
+    pub async fn destroy_dataset_recursive(&self, dataset: &str) -> Result<()> {
+        let output = self.runner.run("zfs", &["destroy", "-r", dataset]).await?;
+        if output.status == 0 {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("does not exist") || stderr.contains("dataset does not exist") {
+            return Ok(());
+        }
+        Err(Error::operation(
+            "zfs destroy dataset",
+            stderr.trim().to_string(),
+        ))
+    }
+
     pub async fn create_snapshot(&self, dataset: &str, snapshot: &str) -> Result<SnapshotInfo> {
         if self.snapshot_exists(dataset, snapshot).await? {
             return Ok(SnapshotInfo {
@@ -1049,6 +1064,25 @@ mod tests {
             .destroy_snapshot("tank/ployz/prod/data", "missing")
             .await
             .expect("destroy missing snapshot");
+    }
+
+    #[tokio::test]
+    async fn destroy_dataset_recursive_treats_missing_as_success() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        fake.push(
+            1,
+            "",
+            "cannot open 'tank/ployz/prod/data': dataset does not exist",
+        );
+
+        driver
+            .destroy_dataset_recursive("tank/ployz/prod/data")
+            .await
+            .expect("destroy missing dataset");
+
+        let calls = fake.calls();
+        assert_eq!(calls[1], ["zfs", "destroy", "-r", "tank/ployz/prod/data"]);
     }
 
     #[tokio::test]

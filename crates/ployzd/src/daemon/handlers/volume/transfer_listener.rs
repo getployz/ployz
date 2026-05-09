@@ -439,7 +439,12 @@ async fn validate_source_overlay(
 #[derive(Debug, PartialEq, Eq)]
 enum ReceiveDecision {
     AlreadyHave(u64),
-    Proceed,
+    Proceed { cleanup: ReceiveFailureCleanup },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiveFailureCleanup {
+    SnapshotOnly,
 }
 
 /// Pure decision logic for an incoming `zfs recv`. Generic over `ShellRunner`
@@ -477,7 +482,7 @@ async fn prepare_receive<R: ShellRunner>(
     // already on disk with the GUID the source claims it had. Catches the
     // "wrong base" footgun that `zfs recv` would otherwise surface as a
     // confusing checksum/lineage error mid-stream.
-    if let Some(from_snapshot) = open.from_snapshot.as_deref() {
+    let cleanup = if let Some(from_snapshot) = open.from_snapshot.as_deref() {
         if !driver
             .snapshot_exists(dataset, from_snapshot)
             .await
@@ -502,6 +507,7 @@ async fn prepare_receive<R: ShellRunner>(
                 });
             }
         }
+        ReceiveFailureCleanup::SnapshotOnly
     } else {
         // Full sends require the parent namespace dataset to exist; `zfs recv`
         // does not auto-create ancestors.
@@ -509,8 +515,9 @@ async fn prepare_receive<R: ShellRunner>(
             .ensure_parent_dataset(dataset)
             .await
             .map_err(|error| ZfsTransferValidationError::backend("ensure_parent_dataset", error))?;
-    }
-    Ok(ReceiveDecision::Proceed)
+        ReceiveFailureCleanup::SnapshotOnly
+    };
+    Ok(ReceiveDecision::Proceed { cleanup })
 }
 
 async fn receive_stream<R: tokio::io::AsyncRead + Unpin>(
@@ -527,15 +534,18 @@ async fn receive_stream<R: tokio::io::AsyncRead + Unpin>(
         .map_err(|error| error.to_string())?;
     let dataset = format!("{root}/{}/{}", open.namespace, open.volume);
 
-    if let ReceiveDecision::AlreadyHave(guid) = prepare_receive(&driver, &dataset, open)
+    let cleanup = match prepare_receive(&driver, &dataset, open)
         .await
         .map_err(|error| error.to_string())?
     {
-        // Drain whatever the source already started to write so the source
-        // process exits cleanly instead of breaking on EPIPE.
-        let _ = tokio::io::copy(reader, &mut tokio::io::sink()).await;
-        return Ok(guid);
-    }
+        ReceiveDecision::AlreadyHave(guid) => {
+            // Drain whatever the source already started to write so the source
+            // process exits cleanly instead of breaking on EPIPE.
+            let _ = tokio::io::copy(reader, &mut tokio::io::sink()).await;
+            return Ok(guid);
+        }
+        ReceiveDecision::Proceed { cleanup } => cleanup,
+    };
 
     let mut recv = driver
         .spawn_recv(&dataset)
@@ -550,11 +560,11 @@ async fn receive_stream<R: tokio::io::AsyncRead + Unpin>(
         .await
         .map_err(|error| format!("wait for zfs recv: {error}"))?;
     if let Err(error) = copy_result {
-        cleanup_partial(&driver, &dataset, &open.snapshot).await;
+        cleanup_partial(&driver, &dataset, open, cleanup).await;
         return Err(format!("copy stream into zfs recv: {error}"));
     }
     if !output.status.success() {
-        cleanup_partial(&driver, &dataset, &open.snapshot).await;
+        cleanup_partial(&driver, &dataset, open, cleanup).await;
         return Err(format!(
             "zfs recv failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
@@ -566,26 +576,34 @@ async fn receive_stream<R: tokio::io::AsyncRead + Unpin>(
         .map_err(|error| error.to_string())
 }
 
-/// Best-effort cleanup of a partial snapshot left behind by a failed `zfs
-/// recv`. The dataset itself is intentionally not destroyed; an operator may
-/// want to inspect it before retrying.
-async fn cleanup_partial(driver: &ZfsDriver<TokioShellRunner>, dataset: &str, snapshot: &str) {
-    if let Err(error) = driver.destroy_snapshot(dataset, snapshot).await {
+/// Best-effort cleanup of partial state left behind by a failed `zfs recv`.
+/// Dataset cleanup is deliberately conservative. A failed receive may leave an
+/// empty dataset behind, but deleting recursively would require an ownership
+/// marker or per-dataset receive lock to prove the dataset still belongs to
+/// this transfer.
+async fn cleanup_partial<R: ShellRunner>(
+    driver: &ZfsDriver<R>,
+    dataset: &str,
+    open: &ZfsTransferOpen,
+    cleanup: ReceiveFailureCleanup,
+) {
+    if let Err(error) = driver.destroy_snapshot(dataset, &open.snapshot).await {
         tracing::warn!(
             %error,
             dataset,
-            snapshot,
+            snapshot = %open.snapshot,
             "failed to clean up partial snapshot after recv failure"
         );
     }
+    let _ = cleanup;
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_HEADER_BYTES, ReceiveDecision, ZfsTransferOpen, ZfsTransferValidationError,
-        prepare_receive, read_transfer_header, validate_open_source, validate_source_overlay,
-        validate_volume_ownership,
+        MAX_HEADER_BYTES, ReceiveDecision, ReceiveFailureCleanup, ZfsTransferOpen,
+        ZfsTransferValidationError, cleanup_partial, prepare_receive, read_transfer_header,
+        validate_open_source, validate_source_overlay, validate_volume_ownership,
     };
     use async_trait::async_trait;
     use ployz_runtime_backends::storage::{ShellOutput, ShellRunner, ZfsDriver};
@@ -602,6 +620,7 @@ mod tests {
 
     #[derive(Debug, Clone, Default)]
     struct FakeShellRunner {
+        calls: Arc<Mutex<Vec<Vec<String>>>>,
         outputs: Arc<Mutex<VecDeque<ShellOutput>>>,
     }
 
@@ -616,11 +635,18 @@ mod tests {
                     stderr: stderr.as_bytes().to_vec(),
                 });
         }
+
+        fn calls(&self) -> Vec<Vec<String>> {
+            self.calls.lock().expect("calls").clone()
+        }
     }
 
     #[async_trait]
     impl ShellRunner for FakeShellRunner {
-        async fn run(&self, _program: &str, _args: &[&str]) -> Result<ShellOutput> {
+        async fn run(&self, program: &str, args: &[&str]) -> Result<ShellOutput> {
+            let mut call = vec![program.to_string()];
+            call.extend(args.iter().map(|arg| (*arg).to_string()));
+            self.calls.lock().expect("calls").push(call);
             self.outputs
                 .lock()
                 .expect("outputs")
@@ -648,6 +674,47 @@ mod tests {
             from_snapshot: None,
             from_snapshot_guid: None,
         }
+    }
+
+    #[tokio::test]
+    async fn cleanup_partial_full_receive_keeps_dataset() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        fake.push(0, "", "");
+
+        cleanup_partial(
+            &driver,
+            "tank/ployz/default/data",
+            &open("snap", 42),
+            ReceiveFailureCleanup::SnapshotOnly,
+        )
+        .await;
+
+        let calls = fake.calls();
+        assert_eq!(calls[1], ["zfs", "destroy", "tank/ployz/default/data@snap"]);
+        assert_eq!(calls.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn cleanup_partial_incremental_receive_keeps_dataset() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        fake.push(0, "", "");
+        let mut transfer = open("snap", 42);
+        transfer.from_snapshot = Some("base".into());
+        transfer.from_snapshot_guid = Some(11);
+
+        cleanup_partial(
+            &driver,
+            "tank/ployz/default/data",
+            &transfer,
+            ReceiveFailureCleanup::SnapshotOnly,
+        )
+        .await;
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1], ["zfs", "destroy", "tank/ployz/default/data@snap"]);
     }
 
     #[tokio::test]
@@ -735,6 +802,48 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn prepare_receive_keeps_existing_dataset_on_full_receive_failure() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        // target snapshot missing
+        fake.push(1, "", "snapshot does not exist");
+        // parent lookup performed by ensure_parent_dataset
+        fake.push(0, "tank/ployz/default\t1G\t/tank/ployz/default\n", "");
+
+        let decision = prepare_receive(&driver, "tank/ployz/default/data", &open("snap", 42))
+            .await
+            .expect("prepare");
+
+        assert_eq!(
+            decision,
+            ReceiveDecision::Proceed {
+                cleanup: ReceiveFailureCleanup::SnapshotOnly
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_receive_keeps_new_full_receive_dataset_on_failure() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        // target snapshot missing
+        fake.push(1, "", "snapshot does not exist");
+        // parent lookup performed by ensure_parent_dataset
+        fake.push(0, "tank/ployz/default\t1G\t/tank/ployz/default\n", "");
+
+        let decision = prepare_receive(&driver, "tank/ployz/default/data", &open("snap", 42))
+            .await
+            .expect("prepare");
+
+        assert_eq!(
+            decision,
+            ReceiveDecision::Proceed {
+                cleanup: ReceiveFailureCleanup::SnapshotOnly
+            }
+        );
     }
 
     fn machine(id: &str, overlay: Ipv6Addr) -> MachineMembership {
