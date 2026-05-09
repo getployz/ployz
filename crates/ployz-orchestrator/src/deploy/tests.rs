@@ -17,10 +17,12 @@ use crate::error::{DeployError, Error, Result};
 use crate::model::RegionRole;
 use crate::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
-    DeployChangeKind, DeployId, DeployRecord, DeployState, DrainState, InstanceId, InstancePhase,
-    InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, MachineTopology,
-    OverlayIp, PublicKey, ServiceBranchLineageRecord, ServiceRelease, ServiceReleaseRecord,
-    ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, VolumeRecord,
+    DeployChangeKind, DeployId, DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseId,
+    DeployPhaseRollbackPolicy, DeployPhaseWork, DeployRecord, DeployState, DrainState, InstanceId,
+    InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership,
+    MachineTopology, OverlayIp, PublicKey, ServiceBranchLineageRecord, ServiceRelease,
+    ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId,
+    VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -128,6 +130,38 @@ fn deployable_machines_includes_compute_region_and_excludes_draining_regions() {
         deployable,
         vec![MachineId("compute".into()), MachineId("home".into())]
     );
+}
+
+#[tokio::test]
+async fn resolve_plan_preview_includes_default_phase_for_basic_manifest() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "nginx:latest",
+    )]);
+
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve plan");
+    let preview = plan.to_preview(Vec::new());
+
+    let [phase] = preview.phases.as_slice() else {
+        panic!("expected one default deploy phase");
+    };
+    assert_eq!(phase.phase_id, DeployPhaseId("deploy".into()));
+    assert_eq!(phase.name, "Deploy");
+    assert_eq!(phase.order, 0);
+    assert_eq!(phase.participants, vec![MachineId("machine-a".into())]);
+    assert_eq!(phase.commit_policy, DeployPhaseCommitPolicy::EndOfDeploy);
+    assert_eq!(phase.rollback_policy, DeployPhaseRollbackPolicy::Reversible);
+    assert_eq!(phase.advance_policy, DeployPhaseAdvancePolicy::Immediate);
+    assert!(matches!(
+        phase.work.as_slice(),
+        [DeployPhaseWork::Service { service, action }]
+            if service == "api" && *action == DeployChangeKind::Create
+    ));
 }
 
 #[test]
@@ -577,6 +611,36 @@ async fn resolve_plan_moves_existing_volume_and_attached_service_to_target_machi
     assert_eq!(volume_move.from_machine, MachineId("machine-a".into()));
     assert_eq!(volume_move.to_machine, MachineId("machine-b".into()));
     assert_eq!(volume_move.attached_services, vec!["db"]);
+    let [phase] = preview.phases.as_slice() else {
+        panic!("expected one default deploy phase");
+    };
+    assert_eq!(phase.phase_id, DeployPhaseId("deploy".into()));
+    assert_eq!(phase.name, "Deploy");
+    assert_eq!(phase.order, 0);
+    assert_eq!(phase.commit_policy, DeployPhaseCommitPolicy::EndOfDeploy);
+    assert_eq!(phase.rollback_policy, DeployPhaseRollbackPolicy::Reversible);
+    assert_eq!(phase.advance_policy, DeployPhaseAdvancePolicy::Immediate);
+    assert_eq!(
+        phase.participants,
+        vec![MachineId("machine-a".into()), MachineId("machine-b".into())]
+    );
+    assert!(matches!(
+        phase.work.as_slice(),
+        [
+            DeployPhaseWork::VolumeMove {
+                volume,
+                from_machine,
+                to_machine,
+                attached_services
+            },
+            DeployPhaseWork::Service { service, action }
+        ] if volume == "data"
+            && from_machine == &MachineId("machine-a".into())
+            && to_machine == &MachineId("machine-b".into())
+            && attached_services.as_slice() == ["db"]
+            && service == "db"
+            && *action == DeployChangeKind::Replace
+    ));
 }
 
 #[tokio::test]
@@ -2374,6 +2438,14 @@ async fn resolve_plan_includes_branch_source_preview_evidence() {
         preview.service_branch_sources[0].source_revision_hash,
         source_revision_hash
     );
+    let [phase] = preview.phases.as_slice() else {
+        panic!("expected one default deploy phase");
+    };
+    assert!(matches!(
+        phase.work.as_slice(),
+        [DeployPhaseWork::Service { service, action }]
+            if service == "web" && *action == DeployChangeKind::Create
+    ));
     assert_eq!(
         plan.fingerprint().services[0]
             .branch_source
