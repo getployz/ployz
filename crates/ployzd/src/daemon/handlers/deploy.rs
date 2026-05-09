@@ -1452,6 +1452,7 @@ mod tests {
             namespace: Namespace("prod".into()),
             manifest_hash: "manifest".into(),
             participants: Vec::new(),
+            phases: Vec::new(),
             services: Vec::new(),
             service_branch_sources: Vec::new(),
             volume_moves: Vec::new(),
