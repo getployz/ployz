@@ -9,9 +9,7 @@ use crate::deploy::lifecycle::{
 };
 use crate::deploy::managed_domains;
 use crate::deploy::participant::{self, DeployParticipantClient};
-use crate::deploy::plan::{
-    PlanFingerprint, ResolvedPlan, VolumeChange, resolve_plan, volume_record_change,
-};
+use crate::deploy::plan::{ResolvedPlan, VolumeChange, resolve_plan, volume_record_change};
 use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_participants};
 use crate::error::{DeployError, Error, Result, StoreError};
 use crate::model::{
@@ -182,6 +180,11 @@ impl ParticipantSet {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeployApplyPreconditions<'a> {
+    pub expected_service_source_fingerprint: Option<&'a str>,
+}
+
 pub(super) async fn apply(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
@@ -213,7 +216,7 @@ pub(super) async fn apply_with_certificate_coordination(
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
     prober: &dyn ParticipantProbe,
 ) -> Result<DeployApplyResult> {
-    apply_with_deploy_id_and_certificate_coordination(
+    apply_with_deploy_id_and_preconditions(
         store,
         participant_client,
         local_machine_id,
@@ -224,6 +227,7 @@ pub(super) async fn apply_with_certificate_coordination(
         challenge_readiness,
         issuer_factory,
         prober,
+        DeployApplyPreconditions::default(),
     )
     .await
 }
@@ -273,11 +277,12 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
         account_coordinator,
         challenge_readiness,
         issuer_factory,
+        None,
     )
     .await
 }
 
-pub(super) async fn apply_with_deploy_id_and_certificate_coordination(
+pub(super) async fn apply_with_deploy_id_and_preconditions(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
     local_machine_id: &MachineId,
@@ -288,8 +293,17 @@ pub(super) async fn apply_with_deploy_id_and_certificate_coordination(
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
     prober: &dyn ParticipantProbe,
+    preconditions: DeployApplyPreconditions<'_>,
 ) -> Result<DeployApplyResult> {
     let initial_plan = resolve_plan(store, local_machine_id, manifest).await?;
+    ensure_service_source_baseline(
+        preconditions.expected_service_source_fingerprint,
+        &initial_plan,
+    )?;
+    let expected_service_source_fingerprint = preconditions
+        .expected_service_source_fingerprint
+        .filter(|expected| !expected.is_empty())
+        .map(str::to_string);
     ensure_volume_move_execution_supported(participant_client, &initial_plan)?;
     ensure_volume_clone_execution_supported(participant_client, &initial_plan)?;
     let reachability = probe_participants(
@@ -322,6 +336,7 @@ pub(super) async fn apply_with_deploy_id_and_certificate_coordination(
         account_coordinator,
         challenge_readiness,
         issuer_factory,
+        expected_service_source_fingerprint,
     )
     .await
 }
@@ -337,9 +352,9 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
     account_coordinator: Arc<dyn AcmeAccountCoordinator>,
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
+    expected_service_source_fingerprint: Option<String>,
 ) -> Result<DeployApplyResult> {
     let started_at = now_unix_secs();
-    let initial_fingerprint = initial_plan.fingerprint();
     ensure_volume_move_execution_supported(participant_client, &initial_plan)?;
     ensure_volume_clone_execution_supported(participant_client, &initial_plan)?;
 
@@ -359,8 +374,11 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
     let mut started_clone_volumes = BTreeSet::new();
     let result = async {
         let final_plan = resolve_plan(store, local_machine_id, manifest).await?;
-        let final_fingerprint = final_plan.fingerprint();
-        ensure_plan_stable(&initial_fingerprint, &final_fingerprint)?;
+        ensure_plan_stable(
+            &initial_plan,
+            &final_plan,
+            expected_service_source_fingerprint.as_deref(),
+        )?;
         managed_domains::validate_hostname_ownership(store, &final_plan).await?;
 
         let prepared = PreparedDeploy::new(
@@ -464,6 +482,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                         &started,
                         &executed_volume_moves,
                         &executed_volume_clones,
+                        &phase_services,
                         &phase_services,
                         &phase_volumes,
                         removed_services,
@@ -572,6 +591,8 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
 
         let remaining_services =
             remaining_changed_services(prepared.plan(), &checkpointed_services);
+        let remaining_branch_lineage_services =
+            remaining_branch_lineage_services(prepared.plan(), &checkpointed_services);
         let remaining_volumes = remaining_changed_volumes(prepared.plan(), &checkpointed_volumes);
         let removed_services =
             removed_services_for_final_commit(prepared.plan(), &checkpointed_services);
@@ -584,6 +605,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                 &executed_volume_moves,
                 &executed_volume_clones,
                 &remaining_services,
+                &remaining_branch_lineage_services,
                 &remaining_volumes,
                 removed_services,
                 removed_volumes_list,
@@ -1509,16 +1531,52 @@ async fn run_phase_startup_for_services(
 }
 
 pub(super) fn ensure_plan_stable(
-    initial: &PlanFingerprint,
-    final_plan: &PlanFingerprint,
+    initial: &ResolvedPlan,
+    final_plan: &ResolvedPlan,
+    expected_service_source_fingerprint: Option<&str>,
 ) -> Result<()> {
-    if final_plan.participants != initial.participants {
+    let initial_fingerprint = initial.fingerprint();
+    let final_fingerprint = final_plan.fingerprint();
+    if final_fingerprint.participants != initial_fingerprint.participants {
         return Err(Error::Deploy(DeployError::ParticipantSetChanged));
     }
-    if final_plan != initial {
+    let initial_service_source_fingerprint = initial.service_source_fingerprint();
+    let final_service_source_fingerprint = final_plan.service_source_fingerprint();
+    if let Some(expected) = expected_service_source_fingerprint
+        && initial_service_source_fingerprint != final_service_source_fingerprint
+    {
+        return Err(Error::Deploy(DeployError::ServiceSourceBaselineChanged {
+            expected: expected.to_string(),
+            actual: final_service_source_fingerprint,
+        }));
+    }
+    if final_fingerprint != initial_fingerprint {
         return Err(Error::Deploy(DeployError::ExecutionPlanChanged));
     }
     Ok(())
+}
+
+fn ensure_service_source_baseline(
+    expected_service_source_fingerprint: Option<&str>,
+    plan: &ResolvedPlan,
+) -> Result<()> {
+    let Some(expected) = expected_service_source_fingerprint else {
+        return Ok(());
+    };
+    if expected.is_empty() {
+        return Err(Error::Deploy(DeployError::DeployOptionInvalid {
+            field: "expected_service_source_fingerprint".into(),
+            message: "must be omitted or set to a non-empty preview fingerprint".into(),
+        }));
+    }
+    let actual = plan.service_source_fingerprint();
+    if actual == expected {
+        return Ok(());
+    }
+    Err(Error::Deploy(DeployError::ServiceSourceBaselineChanged {
+        expected: expected.to_string(),
+        actual,
+    }))
 }
 
 async fn execute_volume_moves(
@@ -2136,6 +2194,18 @@ fn remaining_changed_services(
         .collect()
 }
 
+fn remaining_branch_lineage_services(
+    plan: &ResolvedPlan,
+    checkpointed_services: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    plan.services()
+        .iter()
+        .filter(|service| service.branch_source.is_some())
+        .filter(|service| !checkpointed_services.contains(&service.service))
+        .map(|service| service.service.clone())
+        .collect()
+}
+
 fn remaining_changed_volumes(
     plan: &ResolvedPlan,
     checkpointed_volumes: &BTreeSet<String>,
@@ -2176,6 +2246,7 @@ fn build_phase_commit(
     executed_volume_moves: &BTreeMap<String, ExecutedVolumeMove>,
     executed_volume_clones: &BTreeMap<String, ExecutedVolumeClone>,
     included_services: &BTreeSet<String>,
+    included_branch_lineage_services: &BTreeSet<String>,
     included_volumes: &BTreeSet<String>,
     removed_services: Vec<String>,
     removed_volumes: Vec<String>,
@@ -2201,7 +2272,7 @@ fn build_phase_commit(
         .plan()
         .service_branch_lineage_records(prepared.deploy_id(), committed_at)
         .into_iter()
-        .filter(|record| included_services.contains(&record.service))
+        .filter(|record| included_branch_lineage_services.contains(&record.service))
         .collect::<Vec<_>>();
     let volume_movements = build_volume_movement_records(
         prepared,

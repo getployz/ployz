@@ -4,9 +4,9 @@ use crate::model::{
     DeployChangeKind, DeployId, DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseId,
     DeployPhasePlan, DeployPhaseRollbackPolicy, DeployPhaseWork, DeployPreview, MachineId,
     MachineLifecycle, MachineMembership, ServiceBranchLineageRecord, ServiceBranchSourcePlan,
-    ServicePlan, ServiceReleaseRecord, ServiceReleaseSlot, SlotId, SlotPlan, VolumeClonePlan,
-    VolumeClonePreflightAction, VolumeClonePreflightPlan, VolumeClonePreflightScope,
-    VolumeMovePlan, VolumeRecord,
+    ServicePlan, ServiceReleaseRecord, ServiceReleaseSlot, ServiceSourceMode, ServiceSourcePlan,
+    SlotId, SlotPlan, VolumeClonePlan, VolumeClonePreflightAction, VolumeClonePreflightPlan,
+    VolumeClonePreflightScope, VolumeMovePlan, VolumeRecord, service_source_fingerprint,
 };
 use ployz_store_api::{DeployStore, MachineMembershipStore, StoreDriver};
 use ployz_types::spec::{
@@ -150,7 +150,35 @@ impl ResolvedPlan {
         }
     }
 
+    pub(super) fn service_sources(&self) -> Vec<ServiceSourcePlan> {
+        self.services
+            .iter()
+            .filter(|service| service.spec.is_some())
+            .map(|service| {
+                let mode = match &service.branch_source {
+                    Some(branch_source) => ServiceSourceMode::Branch {
+                        source_namespace: branch_source.source_namespace.clone(),
+                        source_service: branch_source.source_service.clone(),
+                        source_revision_hash: branch_source.source_revision_hash.clone(),
+                    },
+                    None => ServiceSourceMode::Fresh,
+                };
+                ServiceSourcePlan {
+                    service: service.service.clone(),
+                    mode,
+                }
+            })
+            .collect()
+    }
+
+    pub(super) fn service_source_fingerprint(&self) -> String {
+        service_source_fingerprint(&self.service_sources())
+    }
+
     pub(super) fn to_preview(&self, warnings: Vec<String>) -> DeployPreview {
+        let service_sources = self.service_sources();
+        let service_source_fingerprint = service_source_fingerprint(&service_sources);
+        let service_branch_sources = service_branch_sources_from_sources(&service_sources);
         DeployPreview {
             namespace: self.namespace.clone(),
             manifest_hash: self.manifest_hash.clone(),
@@ -190,19 +218,9 @@ impl ResolvedPlan {
                     action: service.action,
                 })
                 .collect(),
-            service_branch_sources: self
-                .services
-                .iter()
-                .filter_map(|service| {
-                    let branch_source = service.branch_source.as_ref()?;
-                    Some(ServiceBranchSourcePlan {
-                        service: service.service.clone(),
-                        source_namespace: branch_source.source_namespace.clone(),
-                        source_service: branch_source.source_service.clone(),
-                        source_revision_hash: branch_source.source_revision_hash.clone(),
-                    })
-                })
-                .collect(),
+            service_sources,
+            service_source_fingerprint,
+            service_branch_sources,
             volume_moves: self
                 .volumes
                 .iter()
@@ -285,6 +303,27 @@ impl ResolvedPlan {
             })
             .collect()
     }
+}
+
+fn service_branch_sources_from_sources(
+    sources: &[ServiceSourcePlan],
+) -> Vec<ServiceBranchSourcePlan> {
+    sources
+        .iter()
+        .filter_map(|source| match &source.mode {
+            ServiceSourceMode::Fresh => None,
+            ServiceSourceMode::Branch {
+                source_namespace,
+                source_service,
+                source_revision_hash,
+            } => Some(ServiceBranchSourcePlan {
+                service: source.service.clone(),
+                source_namespace: source_namespace.clone(),
+                source_service: source_service.clone(),
+                source_revision_hash: source_revision_hash.clone(),
+            }),
+        })
+        .collect()
 }
 
 impl PlannedService {
