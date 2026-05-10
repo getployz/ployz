@@ -331,7 +331,7 @@ fn unique_operation_id(kind: ImageOperationKind, now: u64) -> String {
     format!("image-{kind}-{now}-{nanos}")
 }
 
-fn validate_operation_id(id: &str) -> Result<(), String> {
+pub(super) fn validate_operation_id(id: &str) -> Result<(), String> {
     if id.is_empty() {
         return Err("image operation id cannot be empty".into());
     }

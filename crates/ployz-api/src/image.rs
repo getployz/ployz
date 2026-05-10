@@ -50,6 +50,19 @@ pub struct ImageReceiveSessionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageReceivedImportRequest {
+    pub operation_id: String,
+    pub source_machine: MachineId,
+    pub repository: String,
+    pub reference: String,
+    pub expected_digest: ImageDigest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<ImagePlatform>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repo_tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageStatusPayload {
     pub records: Vec<ImageAvailabilityRecord>,
 }
@@ -82,6 +95,12 @@ pub struct ImageReceiveSessionPayload {
     pub token: String,
     pub expires_at_unix_secs: u64,
     pub headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageReceivedImportPayload {
+    pub target_machine: MachineId,
+    pub record: ImageAvailabilityRecord,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

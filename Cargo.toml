@@ -83,6 +83,7 @@ backon = "1.6"
 axum = "0.8"
 xshell = "0.3.0-pre.2"
 humantime-serde = "1.1"
+tar = "0.4"
 
 [workspace.lints.clippy]
 indexing_slicing = "warn"

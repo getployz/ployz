@@ -6,7 +6,7 @@ use crate::deploy::{
 use crate::doctor::DoctorPayload;
 use crate::image::{
     ImageDistributePayload, ImageInspectPayload, ImageOperationListPayload, ImageOperationPayload,
-    ImagePushPayload, ImageReceiveSessionPayload, ImageStatusPayload,
+    ImagePushPayload, ImageReceiveSessionPayload, ImageReceivedImportPayload, ImageStatusPayload,
 };
 use crate::machine::{
     MachineAddPayload, MachineInviteListPayload, MachineListPayload, MachineOperationListPayload,
@@ -49,6 +49,7 @@ pub enum DaemonPayload {
     ImagePush(ImagePushPayload),
     ImageDistribute(ImageDistributePayload),
     ImageReceiveSession(ImageReceiveSessionPayload),
+    ImageReceivedImport(ImageReceivedImportPayload),
     ImageOperation(ImageOperationPayload),
     ImageOperationList(ImageOperationListPayload),
     BuildOperation(BuildOperationPayload),
