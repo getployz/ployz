@@ -1222,9 +1222,7 @@ async fn mark_running_deploy_phases_failed_after_lock_loss(
 
 fn deploy_error_code<'a>(default_code: &'a str, error: &PloyzError) -> &'a str {
     match error {
-        PloyzError::Deploy(DeployError::ServiceSourceBaselineChanged { .. }) => {
-            "SERVICE_SOURCE_BASELINE_CHANGED"
-        }
+        PloyzError::Deploy(DeployError::DeployBaselineChanged { .. }) => "DEPLOY_BASELINE_CHANGED",
         PloyzError::Deploy(DeployError::DeployOptionInvalid { .. }) => "INVALID_DEPLOY_OPTIONS",
         _ => default_code,
     }
@@ -1234,16 +1232,21 @@ fn deploy_apply_preconditions(
     options: &DeployOptions,
 ) -> Result<DeployApplyPreconditions<'_>, &'static str> {
     Ok(DeployApplyPreconditions {
-        expected_service_source_fingerprint: expected_service_source_fingerprint(options)?,
+        expected_baseline: expected_baseline(options)?,
     })
 }
 
-fn expected_service_source_fingerprint(
+fn expected_baseline(
     options: &DeployOptions,
-) -> Result<Option<&str>, &'static str> {
-    match options.expected_service_source_fingerprint.as_deref() {
-        Some("") => Err("expected_service_source_fingerprint must be omitted or non-empty"),
-        Some(fingerprint) => Ok(Some(fingerprint)),
+) -> Result<Option<&ployz_types::model::DeployPreviewBaseline>, &'static str> {
+    match options.expected_baseline.as_ref() {
+        Some(baseline) if baseline.is_empty() => {
+            Err("expected_baseline must be omitted or non-empty")
+        }
+        Some(baseline) if !baseline.is_canonical() => {
+            Err("expected_baseline fingerprint must match baseline components")
+        }
+        Some(baseline) => Ok(Some(baseline)),
         None => Ok(None),
     }
 }
@@ -1252,14 +1255,16 @@ fn deploy_failure_payload_for_error(error: &PloyzError) -> Option<DeployFailureP
     match error {
         PloyzError::Deploy(DeployError::NoEligiblePlacementTargets) => Some(DeployFailurePayload {
             reason: DeployFailureReason::NoEligiblePlacementTargets,
-            expected_service_source_fingerprint: None,
-            actual_service_source_fingerprint: None,
+            expected_baseline: None,
+            actual_baseline: None,
+            baseline_changed_components: Vec::new(),
         }),
-        PloyzError::Deploy(DeployError::ServiceSourceBaselineChanged { expected, actual }) => {
+        PloyzError::Deploy(DeployError::DeployBaselineChanged { diff }) => {
             Some(DeployFailurePayload {
-                reason: DeployFailureReason::ServiceSourceBaselineChanged,
-                expected_service_source_fingerprint: Some(expected.clone()),
-                actual_service_source_fingerprint: Some(actual.clone()),
+                reason: DeployFailureReason::DeployBaselineChanged,
+                expected_baseline: Some(diff.expected.clone()),
+                actual_baseline: Some(diff.actual.clone()),
+                baseline_changed_components: diff.changed_components(),
             })
         }
         _ => None,
@@ -1496,10 +1501,11 @@ mod tests {
     use ployz_runtime_api::Identity;
     use ployz_store_api::{DeployCommit, DeployStore};
     use ployz_types::model::{
-        DeployId, DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord,
-        DeployPhaseRollbackPolicy, DeployPreview, DeployRecord, DeployState, MachineId,
-        ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord, ServiceRoutingPolicy,
-        VolumeRecord,
+        DeployBaselineComponent, DeployBaselineDiff, DeployId, DeployPhaseCommitPolicy,
+        DeployPhaseId, DeployPhaseRecord, DeployPhaseRollbackPolicy, DeployPreview,
+        DeployPreviewBaseline, DeployPreviewBaselineComponents, DeployRecord, DeployState,
+        MachineId, ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord,
+        ServiceRoutingPolicy, VolumeRecord,
     };
     use ployz_types::spec::{
         ContainerSpec, Mount, MountSource, NetworkMode, Placement, PullPolicy, Resources,
@@ -1531,6 +1537,19 @@ mod tests {
             .as_nanos();
         path.push(format!("{prefix}-{nanos}"));
         path
+    }
+
+    fn test_baseline(service_sources: &str) -> DeployPreviewBaseline {
+        DeployPreviewBaseline::new(DeployPreviewBaselineComponents {
+            manifest: "manifest".into(),
+            participants: "participants".into(),
+            phases: "phases".into(),
+            services: "services".into(),
+            service_sources: service_sources.into(),
+            volumes: "volumes".into(),
+            volume_moves: "moves".into(),
+            volume_clones: "clones".into(),
+        })
     }
 
     fn test_service() -> ServiceSpec {
@@ -2452,105 +2471,108 @@ mod tests {
     }
 
     #[test]
-    fn deploy_failure_payload_preserves_service_source_baseline_details() {
+    fn deploy_failure_payload_preserves_baseline_details() {
+        let expected = test_baseline("old");
+        let actual = test_baseline("new");
         let payload = deploy_failure_payload_for_error(&PloyzError::Deploy(
-            DeployError::ServiceSourceBaselineChanged {
-                expected: "old".into(),
-                actual: "new".into(),
+            DeployError::DeployBaselineChanged {
+                diff: DeployBaselineDiff::new(expected.clone(), actual.clone()),
             },
         ))
         .expect("baseline failure payload");
 
+        assert_eq!(payload.reason, DeployFailureReason::DeployBaselineChanged);
+        assert_eq!(payload.expected_baseline, Some(expected));
+        assert_eq!(payload.actual_baseline, Some(actual));
         assert_eq!(
-            payload.reason,
-            DeployFailureReason::ServiceSourceBaselineChanged
-        );
-        assert_eq!(
-            payload.expected_service_source_fingerprint.as_deref(),
-            Some("old")
-        );
-        assert_eq!(
-            payload.actual_service_source_fingerprint.as_deref(),
-            Some("new")
+            payload.baseline_changed_components,
+            vec![DeployBaselineComponent::ServiceSources]
         );
     }
 
     #[test]
-    fn deploy_error_response_wraps_service_source_baseline_payload() {
+    fn deploy_error_response_wraps_baseline_payload() {
+        let expected = test_baseline("old");
+        let actual = test_baseline("new");
         let response = test_daemon_state().deploy_error_response(
             "DEPLOY_APPLY_FAILED",
-            PloyzError::Deploy(DeployError::ServiceSourceBaselineChanged {
-                expected: "old".into(),
-                actual: "new".into(),
+            PloyzError::Deploy(DeployError::DeployBaselineChanged {
+                diff: DeployBaselineDiff::new(expected.clone(), actual.clone()),
             }),
         );
 
         assert!(!response.ok);
-        assert_eq!(response.code, "SERVICE_SOURCE_BASELINE_CHANGED");
-        assert!(response.message.contains("service source baseline changed"));
+        assert_eq!(response.code, "DEPLOY_BASELINE_CHANGED");
+        assert!(response.message.contains("deploy baseline changed"));
         let Some(DaemonPayload::DeployFailure(payload)) = response.payload else {
             panic!("expected deploy failure payload");
         };
+        assert_eq!(payload.reason, DeployFailureReason::DeployBaselineChanged);
+        assert_eq!(payload.expected_baseline, Some(expected));
+        assert_eq!(payload.actual_baseline, Some(actual));
         assert_eq!(
-            payload.reason,
-            DeployFailureReason::ServiceSourceBaselineChanged
-        );
-        assert_eq!(
-            payload.expected_service_source_fingerprint.as_deref(),
-            Some("old")
-        );
-        assert_eq!(
-            payload.actual_service_source_fingerprint.as_deref(),
-            Some("new")
+            payload.baseline_changed_components,
+            vec![DeployBaselineComponent::ServiceSources]
         );
     }
 
     #[test]
-    fn expected_service_source_fingerprint_rejects_empty_baseline() {
+    fn expected_baseline_rejects_empty_baseline() {
         let no_baseline = DeployOptions::default();
-        assert_eq!(
-            expected_service_source_fingerprint(&no_baseline).expect("no baseline"),
-            None
-        );
+        assert_eq!(expected_baseline(&no_baseline).expect("no baseline"), None);
 
         let empty_baseline = DeployOptions {
-            expected_service_source_fingerprint: Some(String::new()),
+            expected_baseline: Some(DeployPreviewBaseline {
+                fingerprint: String::new(),
+                components: test_baseline("sources").components,
+            }),
             ..DeployOptions::default()
         };
-        assert!(expected_service_source_fingerprint(&empty_baseline).is_err());
+        assert!(expected_baseline(&empty_baseline).is_err());
 
+        let malformed_baseline = DeployOptions {
+            expected_baseline: Some(DeployPreviewBaseline {
+                fingerprint: "bogus".into(),
+                components: test_baseline("sources").components,
+            }),
+            ..DeployOptions::default()
+        };
+        assert!(expected_baseline(&malformed_baseline).is_err());
+
+        let expected = test_baseline("sources");
         let baseline = DeployOptions {
-            expected_service_source_fingerprint: Some("source-fingerprint".into()),
+            expected_baseline: Some(expected.clone()),
             ..DeployOptions::default()
         };
         assert_eq!(
-            expected_service_source_fingerprint(&baseline).expect("baseline"),
-            Some("source-fingerprint")
+            expected_baseline(&baseline).expect("baseline"),
+            Some(&expected)
         );
     }
 
     #[test]
-    fn deploy_apply_preconditions_preserve_non_empty_service_source_baseline() {
+    fn deploy_apply_preconditions_preserve_non_empty_baseline() {
+        let expected = test_baseline("sources");
         let options = DeployOptions {
-            expected_service_source_fingerprint: Some("source-fingerprint".into()),
+            expected_baseline: Some(expected.clone()),
             ..DeployOptions::default()
         };
 
         let preconditions = deploy_apply_preconditions(&options).expect("preconditions");
 
-        assert_eq!(
-            preconditions.expected_service_source_fingerprint,
-            Some("source-fingerprint")
-        );
+        assert_eq!(preconditions.expected_baseline, Some(&expected));
     }
 
     #[tokio::test]
-    async fn deploy_apply_rejects_empty_service_source_baseline_option_before_mesh_setup() {
+    async fn deploy_apply_rejects_empty_baseline_option_before_mesh_setup() {
         let response = test_daemon_state()
             .handle_deploy_apply(
                 "{}",
                 &DeployOptions {
-                    expected_service_source_fingerprint: Some(String::new()),
+                    expected_baseline: Some(DeployPreviewBaseline {
+                        fingerprint: String::new(),
+                        components: test_baseline("sources").components,
+                    }),
                     ..DeployOptions::default()
                 },
             )
@@ -2558,11 +2580,7 @@ mod tests {
 
         assert!(!response.ok);
         assert_eq!(response.code, "INVALID_DEPLOY_OPTIONS");
-        assert!(
-            response
-                .message
-                .contains("expected_service_source_fingerprint")
-        );
+        assert!(response.message.contains("expected_baseline"));
         assert!(response.payload.is_none());
     }
 
@@ -2573,6 +2591,7 @@ mod tests {
         let preview = DeployPreview {
             namespace: Namespace("prod".into()),
             manifest_hash: "manifest".into(),
+            baseline: None,
             participants: Vec::new(),
             phases: Vec::new(),
             services: Vec::new(),
@@ -2637,6 +2656,7 @@ mod tests {
                 summary_json: serde_json::to_string(&DeployPreview {
                     namespace: namespace.clone(),
                     manifest_hash: "manifest".into(),
+                    baseline: None,
                     participants: Vec::new(),
                     phases: Vec::new(),
                     services: Vec::new(),
@@ -2771,6 +2791,7 @@ mod tests {
                 summary_json: serde_json::to_string(&DeployPreview {
                     namespace: namespace.clone(),
                     manifest_hash: "manifest".into(),
+                    baseline: None,
                     participants: Vec::new(),
                     phases: Vec::new(),
                     services: Vec::new(),

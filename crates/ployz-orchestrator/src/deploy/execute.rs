@@ -13,10 +13,11 @@ use crate::deploy::plan::{ResolvedPlan, VolumeChange, resolve_plan, volume_recor
 use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_participants};
 use crate::error::{DeployError, Error, Result, StoreError};
 use crate::model::{
-    DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPhaseCommitPolicy,
-    DeployPhaseCommitRecord, DeployPhaseFailure, DeployPhaseId, DeployPhasePlan, DeployPhaseRecord,
-    DeployPhaseState, DeployPhaseWork, DeployPreview, DeployRecord, DeployState, InstanceId,
-    InstancePhase, InstanceStatusRecord, MachineId, MachineMembership, VolumeBranchLineageRecord,
+    DeployApplyResult, DeployBaselineDiff, DeployChangeKind, DeployEvent, DeployId,
+    DeployPhaseCommitPolicy, DeployPhaseCommitRecord, DeployPhaseFailure, DeployPhaseId,
+    DeployPhasePlan, DeployPhaseRecord, DeployPhaseState, DeployPhaseWork, DeployPreview,
+    DeployPreviewBaseline, DeployRecord, DeployState, InstanceId, InstancePhase,
+    InstanceStatusRecord, MachineId, MachineMembership, VolumeBranchLineageRecord,
     VolumeMovementRecord, VolumeRecord,
 };
 use futures_util::stream::{self, FuturesUnordered, StreamExt, TryStreamExt};
@@ -182,7 +183,7 @@ impl ParticipantSet {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DeployApplyPreconditions<'a> {
-    pub expected_service_source_fingerprint: Option<&'a str>,
+    pub expected_baseline: Option<&'a DeployPreviewBaseline>,
 }
 
 pub(super) async fn apply(
@@ -296,14 +297,8 @@ pub(super) async fn apply_with_deploy_id_and_preconditions(
     preconditions: DeployApplyPreconditions<'_>,
 ) -> Result<DeployApplyResult> {
     let initial_plan = resolve_plan(store, local_machine_id, manifest).await?;
-    ensure_service_source_baseline(
-        preconditions.expected_service_source_fingerprint,
-        &initial_plan,
-    )?;
-    let expected_service_source_fingerprint = preconditions
-        .expected_service_source_fingerprint
-        .filter(|expected| !expected.is_empty())
-        .map(str::to_string);
+    ensure_deploy_baseline(preconditions.expected_baseline, &initial_plan)?;
+    let expected_baseline = preconditions.expected_baseline.cloned();
     ensure_volume_move_execution_supported(participant_client, &initial_plan)?;
     ensure_volume_clone_execution_supported(participant_client, &initial_plan)?;
     let reachability = probe_participants(
@@ -336,7 +331,7 @@ pub(super) async fn apply_with_deploy_id_and_preconditions(
         account_coordinator,
         challenge_readiness,
         issuer_factory,
-        expected_service_source_fingerprint,
+        expected_baseline,
     )
     .await
 }
@@ -352,7 +347,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
     account_coordinator: Arc<dyn AcmeAccountCoordinator>,
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
-    expected_service_source_fingerprint: Option<String>,
+    expected_baseline: Option<DeployPreviewBaseline>,
 ) -> Result<DeployApplyResult> {
     let started_at = now_unix_secs();
     ensure_volume_move_execution_supported(participant_client, &initial_plan)?;
@@ -374,11 +369,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
     let mut started_clone_volumes = BTreeSet::new();
     let result = async {
         let final_plan = resolve_plan(store, local_machine_id, manifest).await?;
-        ensure_plan_stable(
-            &initial_plan,
-            &final_plan,
-            expected_service_source_fingerprint.as_deref(),
-        )?;
+        ensure_plan_stable(&initial_plan, &final_plan, expected_baseline.as_ref())?;
         managed_domains::validate_hostname_ownership(store, &final_plan).await?;
 
         let prepared = PreparedDeploy::new(
@@ -1533,22 +1524,18 @@ async fn run_phase_startup_for_services(
 pub(super) fn ensure_plan_stable(
     initial: &ResolvedPlan,
     final_plan: &ResolvedPlan,
-    expected_service_source_fingerprint: Option<&str>,
+    expected_baseline: Option<&DeployPreviewBaseline>,
 ) -> Result<()> {
     let initial_fingerprint = initial.fingerprint();
     let final_fingerprint = final_plan.fingerprint();
     if final_fingerprint.participants != initial_fingerprint.participants {
         return Err(Error::Deploy(DeployError::ParticipantSetChanged));
     }
-    let initial_service_source_fingerprint = initial.service_source_fingerprint();
-    let final_service_source_fingerprint = final_plan.service_source_fingerprint();
-    if let Some(expected) = expected_service_source_fingerprint
-        && initial_service_source_fingerprint != final_service_source_fingerprint
-    {
-        return Err(Error::Deploy(DeployError::ServiceSourceBaselineChanged {
-            expected: expected.to_string(),
-            actual: final_service_source_fingerprint,
-        }));
+    if let Some(expected) = expected_baseline {
+        let actual = final_plan.baseline();
+        if &actual != expected {
+            return Err(deploy_baseline_changed_error(expected.clone(), actual));
+        }
     }
     if final_fingerprint != initial_fingerprint {
         return Err(Error::Deploy(DeployError::ExecutionPlanChanged));
@@ -1556,27 +1543,39 @@ pub(super) fn ensure_plan_stable(
     Ok(())
 }
 
-fn ensure_service_source_baseline(
-    expected_service_source_fingerprint: Option<&str>,
+fn ensure_deploy_baseline(
+    expected_baseline: Option<&DeployPreviewBaseline>,
     plan: &ResolvedPlan,
 ) -> Result<()> {
-    let Some(expected) = expected_service_source_fingerprint else {
+    let Some(expected) = expected_baseline else {
         return Ok(());
     };
     if expected.is_empty() {
         return Err(Error::Deploy(DeployError::DeployOptionInvalid {
-            field: "expected_service_source_fingerprint".into(),
-            message: "must be omitted or set to a non-empty preview fingerprint".into(),
+            field: "expected_baseline".into(),
+            message: "must be omitted or set to a non-empty preview baseline".into(),
         }));
     }
-    let actual = plan.service_source_fingerprint();
-    if actual == expected {
+    if !expected.is_canonical() {
+        return Err(Error::Deploy(DeployError::DeployOptionInvalid {
+            field: "expected_baseline".into(),
+            message: "fingerprint must match preview baseline components".into(),
+        }));
+    }
+    let actual = plan.baseline();
+    if &actual == expected {
         return Ok(());
     }
-    Err(Error::Deploy(DeployError::ServiceSourceBaselineChanged {
-        expected: expected.to_string(),
-        actual,
-    }))
+    Err(deploy_baseline_changed_error(expected.clone(), actual))
+}
+
+fn deploy_baseline_changed_error(
+    expected: DeployPreviewBaseline,
+    actual: DeployPreviewBaseline,
+) -> Error {
+    Error::Deploy(DeployError::DeployBaselineChanged {
+        diff: DeployBaselineDiff::new(expected, actual),
+    })
 }
 
 async fn execute_volume_moves(
