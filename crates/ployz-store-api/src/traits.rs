@@ -5,9 +5,10 @@ use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     CertificateEvent, CertificateRecord, DeployId, DeployPhaseCommitRecord, DeployPhaseId,
     DeployPhaseRecord, DeployRecord, ImageAvailabilityRecord, ImageDigest, InstanceId,
-    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership, RoutingEvent,
-    RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
-    VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
+    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership,
+    PreparedDeployRecord, RoutingEvent, RoutingState, ServiceBranchLineageRecord,
+    ServiceReleaseRecord, ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord,
+    VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use serde::{Deserialize, Serialize};
@@ -660,6 +661,31 @@ pub trait DeployStore: Send + Sync {
     async fn write_deploy_status(&self, deploy: &DeployRecord) -> Result<()>;
 
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>>;
+
+    async fn write_prepared_deploy(&self, prepared: &PreparedDeployRecord) -> Result<()>;
+
+    async fn get_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+    ) -> Result<Option<PreparedDeployRecord>>;
+
+    async fn mark_prepared_deploy_applied(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord>;
+
+    async fn expire_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord>;
+
+    async fn supersede_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord>;
 
     async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> Result<()>;
 

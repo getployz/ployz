@@ -49,7 +49,9 @@ impl DaemonState {
             | DaemonRequest::Status
             | DaemonRequest::Doctor
             | DaemonRequest::DeployPreview { .. }
+            | DaemonRequest::DeployPrepare { .. }
             | DaemonRequest::DeployApply { .. }
+            | DaemonRequest::DeployApplyPrepared { .. }
             | DaemonRequest::DeployExport { .. }
             | DaemonRequest::MigrateService { .. }
             | DaemonRequest::ImageStatus { .. }
@@ -145,10 +147,16 @@ impl DaemonState {
                 manifest_json,
                 options,
             } => self.handle_deploy_preview(&manifest_json, &options).await,
+            DaemonRequest::DeployPrepare { manifest_json } => {
+                self.handle_deploy_prepare(&manifest_json).await
+            }
             DaemonRequest::DeployApply {
                 manifest_json,
                 options,
             } => self.handle_deploy_apply(&manifest_json, &options).await,
+            DaemonRequest::DeployApplyPrepared { request } => {
+                self.handle_deploy_apply_prepared(&request).await
+            }
             DaemonRequest::DeployExport { namespace } => {
                 self.handle_deploy_export(&namespace).await
             }
@@ -474,7 +482,9 @@ impl DaemonState {
             | DaemonRequest::Status
             | DaemonRequest::Doctor
             | DaemonRequest::DeployPreview { .. }
+            | DaemonRequest::DeployPrepare { .. }
             | DaemonRequest::DeployApply { .. }
+            | DaemonRequest::DeployApplyPrepared { .. }
             | DaemonRequest::DeployExport { .. }
             | DaemonRequest::MigrateService { .. }
             | DaemonRequest::ImageStatus { .. }
@@ -529,8 +539,11 @@ impl DaemonState {
 mod tests {
     use super::RequestLane;
     use crate::daemon::DaemonState;
-    use ployz_api::{DaemonRequest, DebugTickTask, ImageDistributeRequest, ImagePushRequest};
-    use ployz_types::model::{ImageDigest, MachineId};
+    use ployz_api::{
+        DaemonRequest, DebugTickTask, DeployApplyPreparedRequest, ImageDistributeRequest,
+        ImagePushRequest,
+    };
+    use ployz_types::model::{DeployId, ImageDigest, MachineId};
 
     #[test]
     fn debug_tick_routes_to_exclusive_lane() {
@@ -575,6 +588,21 @@ mod tests {
                 snapshot: "snap".into(),
             });
         assert_eq!(cleanup_lane, RequestLane::Shared);
+    }
+
+    #[test]
+    fn deploy_prepare_and_apply_prepared_route_to_shared_lane() {
+        let prepare_lane = DaemonState::request_lane(&DaemonRequest::DeployPrepare {
+            manifest_json: "{}".into(),
+        });
+        let apply_prepared_lane = DaemonState::request_lane(&DaemonRequest::DeployApplyPrepared {
+            request: DeployApplyPreparedRequest {
+                prepared_deploy_id: DeployId("prepare-1".into()),
+            },
+        });
+
+        assert_eq!(prepare_lane, RequestLane::Shared);
+        assert_eq!(apply_prepared_lane, RequestLane::Shared);
     }
 
     #[test]

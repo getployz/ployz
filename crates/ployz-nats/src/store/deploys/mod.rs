@@ -1,14 +1,16 @@
 use async_nats::jetstream;
 use async_nats::jetstream::context::PublishErrorKind;
+use async_nats::jetstream::kv;
 use async_nats::jetstream::message::PublishMessage;
 use async_nats::jetstream::stream::DirectGetErrorKind;
 use async_trait::async_trait;
 use ployz_store_api::{DeployCommit, DeployCommitFacts, DeployStore};
-use ployz_types::error::{Error, Result, StoreError, StoreRecordKind};
+use ployz_types::error::{DeployError, Error, Result, StoreError, StoreRecordKind};
 use ployz_types::model::{
-    DeployId, DeployPhaseId, DeployPhaseRecord, DeployPhaseState, DeployRecord, RoutingEvent,
-    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
-    VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
+    DeployId, DeployPhaseId, DeployPhaseRecord, DeployPhaseState, DeployRecord,
+    PreparedDeployRecord, PreparedDeployState, RoutingEvent, ServiceBranchLineageRecord,
+    ServiceReleaseRecord, ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord,
+    VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 
@@ -121,6 +123,72 @@ impl DeployStore for NatsStore {
             self.jetstream(),
             self.assets().deploy_status_bucket.as_str(),
             deploy_id,
+        )
+        .await
+    }
+
+    async fn write_prepared_deploy(&self, prepared: &PreparedDeployRecord) -> Result<()> {
+        write_prepared_deploy_entry(
+            self.jetstream(),
+            self.assets().prepared_deploys_bucket.as_str(),
+            prepared,
+        )
+        .await
+    }
+
+    async fn get_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+    ) -> Result<Option<PreparedDeployRecord>> {
+        read_prepared_deploy(
+            self.jetstream(),
+            self.assets().prepared_deploys_bucket.as_str(),
+            prepared_deploy_id,
+        )
+        .await
+    }
+
+    async fn mark_prepared_deploy_applied(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord> {
+        transition_prepared_deploy_entry(
+            self.jetstream(),
+            self.assets().prepared_deploys_bucket.as_str(),
+            prepared_deploy_id,
+            PreparedDeployState::Applied,
+            updated_at,
+        )
+        .await
+    }
+
+    async fn expire_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord> {
+        transition_prepared_deploy_entry(
+            self.jetstream(),
+            self.assets().prepared_deploys_bucket.as_str(),
+            prepared_deploy_id,
+            PreparedDeployState::Expired,
+            updated_at,
+        )
+        .await
+    }
+
+    async fn supersede_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord> {
+        transition_prepared_deploy_entry(
+            self.jetstream(),
+            self.assets().prepared_deploys_bucket.as_str(),
+            prepared_deploy_id,
+            PreparedDeployState::Superseded,
+            updated_at,
         )
         .await
     }
@@ -392,6 +460,99 @@ fn decode_deploy_status(key: &str, bytes: &[u8]) -> Result<DeployRecord> {
     Ok(record)
 }
 
+async fn write_prepared_deploy_entry(
+    js: &jetstream::Context,
+    bucket_name: &str,
+    prepared: &PreparedDeployRecord,
+) -> Result<()> {
+    let bucket = kv_json::get_bucket(js, bucket_name, "nats_prepared_deploys_bucket").await?;
+    kv_json::put_json(
+        &bucket,
+        &prepared.prepared_deploy_id.0,
+        prepared,
+        "nats_prepared_deploy_encode",
+        "nats_prepared_deploy_put",
+    )
+    .await
+}
+
+async fn read_prepared_deploy(
+    js: &jetstream::Context,
+    bucket_name: &str,
+    prepared_deploy_id: &DeployId,
+) -> Result<Option<PreparedDeployRecord>> {
+    let bucket = kv_json::get_bucket(js, bucket_name, "nats_prepared_deploys_bucket").await?;
+    let Some(bytes) = bucket
+        .get(prepared_deploy_id.0.as_str())
+        .await
+        .map_err(|error| Error::operation("nats_prepared_deploy_get", format!("{error:?}")))?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(decode_prepared_deploy(
+        &prepared_deploy_id.0,
+        bytes.as_ref(),
+    )?))
+}
+
+async fn transition_prepared_deploy_entry(
+    js: &jetstream::Context,
+    bucket_name: &str,
+    prepared_deploy_id: &DeployId,
+    state: PreparedDeployState,
+    updated_at: u64,
+) -> Result<PreparedDeployRecord> {
+    let bucket = kv_json::get_bucket(js, bucket_name, "nats_prepared_deploys_bucket").await?;
+    let Some(entry) = bucket
+        .entry(prepared_deploy_id.0.as_str())
+        .await
+        .map_err(|error| Error::operation("nats_prepared_deploy_get", format!("{error:?}")))?
+    else {
+        return Err(Error::operation(
+            "nats_prepared_deploy_state",
+            format!("prepared deploy '{prepared_deploy_id}' not found"),
+        ));
+    };
+    if entry.operation != kv::Operation::Put {
+        return Err(Error::operation(
+            "nats_prepared_deploy_state",
+            format!("prepared deploy '{prepared_deploy_id}' not found"),
+        ));
+    }
+    let mut record = decode_prepared_deploy(&prepared_deploy_id.0, entry.value.as_ref())?;
+    if record.state != PreparedDeployState::Prepared {
+        return Err(Error::Deploy(DeployError::PreparedDeployNotApplicable {
+            prepared_deploy_id: prepared_deploy_id.0.clone(),
+            state: record.state,
+        }));
+    }
+    record.state = state;
+    record.updated_at = updated_at;
+    let payload = serde_json::to_vec(&record)
+        .map_err(|error| Error::operation("nats_prepared_deploy_encode", error.to_string()))?;
+    bucket
+        .update(
+            prepared_deploy_id.0.as_str(),
+            payload.into(),
+            entry.revision,
+        )
+        .await
+        .map_err(|error| Error::operation("nats_prepared_deploy_update", format!("{error:?}")))?;
+    Ok(record)
+}
+
+fn decode_prepared_deploy(key: &str, bytes: &[u8]) -> Result<PreparedDeployRecord> {
+    let record: PreparedDeployRecord = kv_json::decode_json("nats_prepared_deploy_decode", bytes)?;
+    if record.prepared_deploy_id.0 != key {
+        return Err(Error::store_key_mismatch(
+            StoreRecordKind::PreparedDeploy,
+            key,
+            record.prepared_deploy_id.0,
+        ));
+    }
+    Ok(record)
+}
+
 async fn write_deploy_phase_entry(
     js: &jetstream::Context,
     bucket_name: &str,
@@ -523,8 +684,9 @@ mod tests {
     use ployz_types::error::{Error, StoreRecordKind};
     use ployz_types::model::{
         DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord, DeployPhaseRollbackPolicy,
-        DeployPhaseState, DeployState, MachineId, ServiceRelease, ServiceRevisionRecord,
-        ServiceRoutingPolicy,
+        DeployPhaseState, DeployPreview, DeployPreviewBaseline, DeployPreviewBaselineComponents,
+        DeployState, MachineId, PreparedDeployRecord, PreparedDeployState, ServiceRelease,
+        ServiceRevisionRecord, ServiceRoutingPolicy,
     };
     use ployz_types::spec::Namespace;
 
@@ -631,6 +793,36 @@ mod tests {
         let bytes = serde_json::to_vec(&record).expect("encode deploy status");
 
         let decoded = decode_deploy_status("deploy-a", &bytes).expect("matching status key");
+
+        assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn prepared_deploy_decode_rejects_key_payload_mismatch() {
+        let namespace = Namespace(String::from("prod"));
+        let record = prepared_deploy(&namespace, "payload-prepare");
+        let bytes = serde_json::to_vec(&record).expect("encode prepared deploy");
+
+        let error = decode_prepared_deploy("key-prepare", &bytes)
+            .expect_err("prepared deploy key mismatch should fail");
+
+        assert_eq!(
+            error,
+            Error::store_key_mismatch(
+                StoreRecordKind::PreparedDeploy,
+                "key-prepare",
+                "payload-prepare"
+            )
+        );
+    }
+
+    #[test]
+    fn prepared_deploy_decode_accepts_matching_key() {
+        let namespace = Namespace(String::from("prod"));
+        let record = prepared_deploy(&namespace, "prepare-a");
+        let bytes = serde_json::to_vec(&record).expect("encode prepared deploy");
+
+        let decoded = decode_prepared_deploy("prepare-a", &bytes).expect("matching prepared key");
 
         assert_eq!(decoded, record);
     }
@@ -817,6 +1009,46 @@ mod tests {
                 finished_at: Some(2),
                 summary_json: String::from("{}"),
             },
+        }
+    }
+
+    fn prepared_deploy(namespace: &Namespace, prepared_deploy_id: &str) -> PreparedDeployRecord {
+        let baseline = DeployPreviewBaseline::new(DeployPreviewBaselineComponents {
+            manifest: "manifest".into(),
+            participants: "participants".into(),
+            phases: "phases".into(),
+            services: "services".into(),
+            service_sources: "sources".into(),
+            volumes: "volumes".into(),
+            volume_moves: "moves".into(),
+            volume_clones: "clones".into(),
+        });
+        PreparedDeployRecord {
+            prepared_deploy_id: DeployId(prepared_deploy_id.into()),
+            namespace: namespace.clone(),
+            manifest_hash: "manifest".into(),
+            manifest_json: "{}".into(),
+            preview: DeployPreview {
+                namespace: namespace.clone(),
+                manifest_hash: "manifest".into(),
+                baseline: Some(baseline.clone()),
+                participants: Vec::new(),
+                phases: Vec::new(),
+                services: Vec::new(),
+                service_sources: Vec::new(),
+                service_source_fingerprint: String::new(),
+                service_branch_sources: Vec::new(),
+                volume_moves: Vec::new(),
+                volume_clones: Vec::new(),
+                volume_clone_preflights: Vec::new(),
+                warnings: Vec::new(),
+            },
+            baseline,
+            coordinator_machine_id: MachineId("founder".into()),
+            state: PreparedDeployState::Prepared,
+            created_at: 1,
+            expires_at: 100,
+            updated_at: 1,
         }
     }
 }

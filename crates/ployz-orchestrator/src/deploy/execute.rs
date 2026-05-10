@@ -17,8 +17,8 @@ use crate::model::{
     DeployPhaseCommitPolicy, DeployPhaseCommitRecord, DeployPhaseFailure, DeployPhaseId,
     DeployPhasePlan, DeployPhaseRecord, DeployPhaseState, DeployPhaseWork, DeployPreview,
     DeployPreviewBaseline, DeployRecord, DeployState, InstanceId, InstancePhase,
-    InstanceStatusRecord, MachineId, MachineMembership, VolumeBranchLineageRecord,
-    VolumeMovementRecord, VolumeRecord,
+    InstanceStatusRecord, MachineId, MachineMembership, PreparedDeployRecord, PreparedDeployState,
+    VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use futures_util::stream::{self, FuturesUnordered, StreamExt, TryStreamExt};
 use ployz_store_api::{DeployCommit, DeployStore, InstanceStatusStore, StoreDriver};
@@ -279,6 +279,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
         challenge_readiness,
         issuer_factory,
         None,
+        None,
     )
     .await
 }
@@ -295,6 +296,37 @@ pub(super) async fn apply_with_deploy_id_and_preconditions(
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
     prober: &dyn ParticipantProbe,
     preconditions: DeployApplyPreconditions<'_>,
+) -> Result<DeployApplyResult> {
+    apply_with_deploy_id_and_preconditions_for_prepared(
+        store,
+        participant_client,
+        local_machine_id,
+        manifest,
+        deploy_id,
+        certificate_coordinator,
+        account_coordinator,
+        challenge_readiness,
+        issuer_factory,
+        prober,
+        preconditions,
+        None,
+    )
+    .await
+}
+
+async fn apply_with_deploy_id_and_preconditions_for_prepared(
+    store: &StoreDriver,
+    participant_client: &dyn DeployParticipantClient,
+    local_machine_id: &MachineId,
+    manifest: &ployz_types::spec::DeployManifest,
+    deploy_id: DeployId,
+    certificate_coordinator: Arc<dyn IssuanceCoordinator>,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
+    issuer_factory: Arc<dyn AcmeIssuerFactory>,
+    prober: &dyn ParticipantProbe,
+    preconditions: DeployApplyPreconditions<'_>,
+    prepared_record: Option<&PreparedDeployRecord>,
 ) -> Result<DeployApplyResult> {
     let initial_plan = resolve_plan(store, local_machine_id, manifest).await?;
     ensure_deploy_baseline(preconditions.expected_baseline, &initial_plan)?;
@@ -332,8 +364,160 @@ pub(super) async fn apply_with_deploy_id_and_preconditions(
         challenge_readiness,
         issuer_factory,
         expected_baseline,
+        prepared_record,
     )
     .await
+}
+
+pub(super) async fn apply_prepared_with_certificate_coordination(
+    store: &StoreDriver,
+    participant_client: &dyn DeployParticipantClient,
+    local_machine_id: &MachineId,
+    prepared_deploy_id: DeployId,
+    certificate_coordinator: Arc<dyn IssuanceCoordinator>,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
+    issuer_factory: Arc<dyn AcmeIssuerFactory>,
+    prober: &dyn ParticipantProbe,
+) -> Result<DeployApplyResult> {
+    let prepared = load_applicable_prepared_deploy(store, &prepared_deploy_id).await?;
+    let manifest = super::validated_prepared_manifest(&prepared)?;
+    if let Some(result) = existing_terminal_prepared_apply_result(store, &prepared).await? {
+        return Ok(result);
+    }
+    ensure_prepared_not_expired(store, &prepared).await?;
+    let result = apply_with_deploy_id_and_preconditions_for_prepared(
+        store,
+        participant_client,
+        local_machine_id,
+        &manifest,
+        prepared.prepared_deploy_id.clone(),
+        certificate_coordinator,
+        account_coordinator,
+        challenge_readiness,
+        issuer_factory,
+        prober,
+        DeployApplyPreconditions {
+            expected_baseline: Some(&prepared.baseline),
+        },
+        Some(&prepared),
+    )
+    .await;
+    if matches!(
+        result,
+        Err(Error::Deploy(DeployError::DeployBaselineChanged { .. }))
+    ) {
+        let _ = store
+            .supersede_prepared_deploy(&prepared.prepared_deploy_id, now_unix_secs())
+            .await;
+    }
+    result
+}
+
+async fn load_applicable_prepared_deploy(
+    store: &StoreDriver,
+    prepared_deploy_id: &DeployId,
+) -> Result<PreparedDeployRecord> {
+    let Some(prepared) = store.get_prepared_deploy(prepared_deploy_id).await? else {
+        return Err(Error::Deploy(DeployError::PreparedDeployMissing {
+            prepared_deploy_id: prepared_deploy_id.0.clone(),
+        }));
+    };
+    if prepared.state != PreparedDeployState::Prepared {
+        return Err(Error::Deploy(DeployError::PreparedDeployNotApplicable {
+            prepared_deploy_id: prepared.prepared_deploy_id.0,
+            state: prepared.state,
+        }));
+    }
+    Ok(prepared)
+}
+
+async fn ensure_prepared_not_expired(
+    store: &StoreDriver,
+    prepared: &PreparedDeployRecord,
+) -> Result<()> {
+    if prepared.expires_at > now_unix_secs() {
+        return Ok(());
+    }
+    store
+        .expire_prepared_deploy(&prepared.prepared_deploy_id, now_unix_secs())
+        .await?;
+    Err(Error::Deploy(DeployError::PreparedDeployExpired {
+        prepared_deploy_id: prepared.prepared_deploy_id.0.clone(),
+        expires_at: prepared.expires_at,
+    }))
+}
+
+async fn existing_terminal_prepared_apply_result(
+    store: &StoreDriver,
+    prepared: &PreparedDeployRecord,
+) -> Result<Option<DeployApplyResult>> {
+    let Some(record) = store.get_deploy(&prepared.prepared_deploy_id).await? else {
+        return Ok(None);
+    };
+    match record.state {
+        DeployState::Committed | DeployState::CleanupPending => {
+            let mut events = vec![DeployEvent {
+                step: "prepared_deploy".into(),
+                message: "prepared deploy already has a terminal committed deploy record".into(),
+            }];
+            if let Err(error) = store
+                .mark_prepared_deploy_applied(&prepared.prepared_deploy_id, now_unix_secs())
+                .await
+            {
+                events.push(DeployEvent {
+                    step: "prepared_deploy".into(),
+                    message: format!(
+                        "prepared deploy replayed committed deploy but could not mark state applied: {error}"
+                    ),
+                });
+            }
+            let preview: DeployPreview =
+                serde_json::from_str(&record.summary_json).map_err(|error| {
+                    Error::operation(
+                        "prepared_deploy_replay",
+                        format!("decode committed deploy preview: {error}"),
+                    )
+                })?;
+            Ok(Some(DeployApplyResult {
+                deploy_id: record.deploy_id,
+                preview,
+                state: record.state,
+                events,
+            }))
+        }
+        DeployState::CheckpointCommitted | DeployState::FailedAfterCheckpoint => {
+            store
+                .supersede_prepared_deploy(&prepared.prepared_deploy_id, now_unix_secs())
+                .await?;
+            Err(Error::Deploy(DeployError::PreparedDeployNotApplicable {
+                prepared_deploy_id: prepared.prepared_deploy_id.0.clone(),
+                state: PreparedDeployState::Superseded,
+            }))
+        }
+        DeployState::Planning | DeployState::Applying | DeployState::Failed => Ok(None),
+    }
+}
+
+async fn mark_prepared_applied_after_durable_commit(
+    store: &StoreDriver,
+    prepared: Option<&PreparedDeployRecord>,
+    events: &mut Vec<DeployEvent>,
+) {
+    let Some(prepared) = prepared else {
+        return;
+    };
+    if let Err(error) = store
+        .mark_prepared_deploy_applied(&prepared.prepared_deploy_id, now_unix_secs())
+        .await
+    {
+        events.push(DeployEvent {
+            step: "prepared_deploy".into(),
+            message: format!(
+                "deploy committed but prepared deploy state could not be marked applied: {error}"
+            ),
+        });
+    }
 }
 
 async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
@@ -348,6 +532,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
     expected_baseline: Option<DeployPreviewBaseline>,
+    prepared_record: Option<&PreparedDeployRecord>,
 ) -> Result<DeployApplyResult> {
     let started_at = now_unix_secs();
     ensure_volume_move_execution_supported(participant_client, &initial_plan)?;
@@ -634,6 +819,8 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         if let Err(error) = store.commit_deploy(&final_commit).await {
             if is_post_commit_routing_publish_failure(&error) {
                 durable_final_commit_record = Some(final_commit.deploy.clone());
+                mark_prepared_applied_after_durable_commit(store, prepared_record, &mut events)
+                    .await;
                 record_phases_succeeded_after_commit(
                     store,
                     &deploy_id,
@@ -661,6 +848,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             return Err(error);
         }
         durable_final_commit_record = Some(final_commit.deploy.clone());
+        mark_prepared_applied_after_durable_commit(store, prepared_record, &mut events).await;
         let committed_status_result = store.write_deploy_status(&final_commit.deploy).await;
         record_phases_succeeded_after_commit(
             store,
