@@ -491,29 +491,29 @@ impl DaemonState {
     ) -> Result<Option<String>, String> {
         let mut notes = Vec::new();
         if let Some(machine_id) = &record.artifacts.machine_id {
-            let Some(active) = self.active.as_ref() else {
-                notes.push("bootstrap membership cleanup skipped: no running network".into());
-                return Ok(Some(notes.join("; ")));
-            };
-            match super::list::find_machine_record(&active.mesh.store, machine_id).await {
-                Ok(Some(machine)) if machine.lifecycle == MachineLifecycle::Active => {
-                    notes.push(format!(
-                        "bootstrap membership cleanup skipped: machine '{}' is active",
-                        machine_id.0
-                    ));
-                }
-                Ok(Some(_machine)) => {
-                    if let Err(err) = active.mesh.store.delete_machine(machine_id).await {
-                        notes.push(format!("bootstrap membership cleanup failed: {err}"));
-                    } else {
+            if let Some(active) = self.active.as_ref() {
+                match super::list::find_machine_record(&active.mesh.store, machine_id).await {
+                    Ok(Some(machine)) if machine.lifecycle == MachineLifecycle::Active => {
                         notes.push(format!(
-                            "bootstrap membership seed '{}' removed",
+                            "bootstrap membership cleanup skipped: machine '{}' is active",
                             machine_id.0
                         ));
                     }
+                    Ok(Some(_machine)) => {
+                        if let Err(err) = active.mesh.store.delete_machine(machine_id).await {
+                            notes.push(format!("bootstrap membership cleanup failed: {err}"));
+                        } else {
+                            notes.push(format!(
+                                "bootstrap membership seed '{}' removed",
+                                machine_id.0
+                            ));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(err) => notes.push(format!("bootstrap membership lookup failed: {err}")),
                 }
-                Ok(None) => {}
-                Err(err) => notes.push(format!("bootstrap membership lookup failed: {err}")),
+            } else {
+                notes.push("bootstrap membership cleanup skipped: no running network".into());
             }
         }
 

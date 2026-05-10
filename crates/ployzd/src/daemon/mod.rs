@@ -106,6 +106,9 @@ pub struct DaemonState {
     pub active: Option<ActiveMesh>,
     pub subnet_coord: Arc<dyn SubnetReservationCoordinator>,
     pub command_tx: Option<mpsc::Sender<IncomingCommand>>,
+    #[cfg(test)]
+    pub machine_add_remote_ready_wait_policy:
+        Option<crate::daemon::handlers::machine::types::RemoteReadyWaitPolicy>,
 }
 
 impl DaemonState {
@@ -219,6 +222,8 @@ impl DaemonState {
             active: None,
             subnet_coord: Arc::new(MemorySubnetCoordinator::new()),
             command_tx: None,
+            #[cfg(test)]
+            machine_add_remote_ready_wait_policy: None,
         }
     }
 
