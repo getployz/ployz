@@ -2,16 +2,17 @@ use crate::cli::{VolumeAction, VolumeZfsAction, VolumeZfsTransferAction};
 use crate::cli_io::{read_optional_text_file, read_stdin_string, read_text_source, request_daemon};
 use crate::{
     CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
-    DeployServiceArgs, InstallSourceArg, MachineAction, MachineInviteAction,
-    MachineOperationAction, MachineStorageAction, MeshAction, MigrateAction, MigrateServiceArgs,
-    Result, RuntimeTargetArg, ServiceModeArg,
+    DeployServiceArgs, ImageAction, ImageOperationAction, InstallSourceArg, MachineAction,
+    MachineInviteAction, MachineOperationAction, MachineStorageAction, MeshAction, MigrateAction,
+    MigrateServiceArgs, Result, RuntimeTargetArg, ServiceModeArg,
 };
 use ployz_api::{
-    DaemonRequest, DeployOptions, InstallSource as MachineInstallSource, MachineAddOptions,
-    MachineInstallOptions, MachineStoragePromoteRequest, MigrateServiceMode, MigrateServiceRequest,
+    DaemonRequest, DeployOptions, ImageStatusRequest, InstallSource as MachineInstallSource,
+    MachineAddOptions, MachineInstallOptions, MachineStoragePromoteRequest, MigrateServiceMode,
+    MigrateServiceRequest,
 };
 use ployz_sdk::Transport;
-use ployz_types::model::StorageReplicaPolicy;
+use ployz_types::model::{ImageDigest, MachineId, StorageReplicaPolicy};
 use ployz_types::spec::{
     ContainerSpec, DeployManifest, Mount, MountSource, Namespace, NetworkMode, Placement,
     PortProtocol, PublishedPort, PullPolicy, Resources, RestartPolicy, RolloutStrategy,
@@ -35,6 +36,7 @@ pub(crate) async fn build_request<T: Transport>(
         )),
         Command::Mesh { action } => build_mesh_request(action),
         Command::Machine { action } => build_machine_request(action),
+        Command::Image { action } => build_image_request(action),
         Command::Volume { action } => build_volume_request(action),
         Command::RpcStdio => Err(CliError::Usage(
             "internal error: rpc-stdio is handled directly".into(),
@@ -42,6 +44,27 @@ pub(crate) async fn build_request<T: Transport>(
         Command::Run { .. } => Err(CliError::Usage(
             "internal error: daemon command cannot be encoded as a daemon request".into(),
         )),
+    }
+}
+
+pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> {
+    match action {
+        ImageAction::Status { digest, machine } => {
+            let digest = digest
+                .map(ImageDigest::try_new)
+                .transpose()
+                .map_err(CliError::Usage)?;
+            Ok(DaemonRequest::ImageStatus {
+                request: ImageStatusRequest {
+                    digest,
+                    machine_id: machine.map(MachineId),
+                },
+            })
+        }
+        ImageAction::Operation { action } => match action {
+            ImageOperationAction::List => Ok(DaemonRequest::ImageOperationList),
+            ImageOperationAction::Get { id } => Ok(DaemonRequest::ImageOperationGet { id }),
+        },
     }
 }
 
@@ -98,17 +121,22 @@ fn build_volume_zfs_request(action: VolumeZfsAction) -> Result<DaemonRequest> {
 }
 
 fn parse_namespace_volume(value: &str) -> Result<(String, String)> {
-    let Some((namespace, volume)) = value.split_once('/') else {
+    parse_scoped_name(value, "volume")
+}
+
+fn parse_scoped_name(value: &str, item_label: &str) -> Result<(String, String)> {
+    let expected = format!("namespace/{item_label}");
+    let Some((namespace, item)) = value.split_once('/') else {
         return Err(CliError::Usage(format!(
-            "expected namespace/volume, got '{value}'"
+            "expected {expected}, got '{value}'"
         )));
     };
-    if namespace.is_empty() || volume.is_empty() || volume.contains('/') {
+    if namespace.is_empty() || item.is_empty() || item.contains('/') {
         return Err(CliError::Usage(format!(
-            "expected namespace/volume, got '{value}'"
+            "expected {expected}, got '{value}'"
         )));
     }
-    Ok((namespace.to_string(), volume.to_string()))
+    Ok((namespace.to_string(), item.to_string()))
 }
 
 pub(crate) fn build_debug_request(action: DebugAction) -> Result<DaemonRequest> {
@@ -153,17 +181,7 @@ pub(crate) fn build_migrate_service_request(
 }
 
 fn parse_namespace_service(value: &str) -> Result<(String, String)> {
-    let Some((namespace, service)) = value.split_once('/') else {
-        return Err(CliError::Usage(format!(
-            "expected namespace/service, got '{value}'"
-        )));
-    };
-    if namespace.is_empty() || service.is_empty() || service.contains('/') {
-        return Err(CliError::Usage(format!(
-            "expected namespace/service, got '{value}'"
-        )));
-    }
-    Ok((namespace.to_string(), service.to_string()))
+    parse_scoped_name(value, "service")
 }
 
 async fn build_deploy_request<T: Transport>(

@@ -1,8 +1,10 @@
 use crate::acme::AcmeHttp01StatusPayload;
+use crate::build::{BuildOperationListPayload, BuildOperationPayload};
 use crate::deploy::{
     DeployCandidateStartedPayload, DeployFailurePayload, DeployNamespaceSnapshotPayload,
 };
 use crate::doctor::DoctorPayload;
+use crate::image::{ImageOperationListPayload, ImageOperationPayload, ImageStatusPayload};
 use crate::machine::{
     MachineAddPayload, MachineInviteListPayload, MachineListPayload, MachineOperationListPayload,
     MachineOperationPayload, MachineRemovePayload, MachineRttPayload,
@@ -39,6 +41,11 @@ pub enum DaemonPayload {
     DeployNamespaceSnapshot(DeployNamespaceSnapshotPayload),
     DeployCandidateStarted(DeployCandidateStartedPayload),
     DeployFailure(DeployFailurePayload),
+    ImageStatus(ImageStatusPayload),
+    ImageOperation(ImageOperationPayload),
+    ImageOperationList(ImageOperationListPayload),
+    BuildOperation(BuildOperationPayload),
+    BuildOperationList(BuildOperationListPayload),
     VolumeZfsInspect(VolumeZfsInspectPayload),
     VolumeZfsSnapshot(VolumeZfsSnapshotPayload),
     VolumeZfsClone(VolumeZfsClonePayload),

@@ -14,18 +14,19 @@ use ployz_runtime_backends::runtime::{
 };
 use ployz_store_api::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
-    DeployStore, InstanceStatusStore, InviteStore, MachineMembershipStore, MachineSubscription,
-    PeerRttObservation, PeerRttStore, RoutingEventSubscription, RoutingStateStore, StoreDriver,
-    StoreRuntimeControl, SyncProbe, SyncStatus,
+    DeployStore, ImageAvailabilityStore, InstanceStatusStore, InviteStore, MachineMembershipStore,
+    MachineSubscription, PeerRttObservation, PeerRttStore, RoutingEventSubscription,
+    RoutingStateStore, StoreDriver, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use ployz_types::Result;
 use ployz_types::error::Error;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
-    DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord, InstanceId, InstanceStatusRecord,
-    InviteRecord, MachineId, MachineMembership, OverlayIp, RoutingState,
-    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord, StorageParticipation,
-    StorageReplicaPolicy, VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
+    DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord, ImageAvailabilityRecord, ImageDigest,
+    InstanceId, InstanceStatusRecord, InviteRecord, MachineId, MachineMembership, OverlayIp,
+    RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
+    StorageParticipation, StorageReplicaPolicy, VolumeBranchLineageRecord, VolumeMovementRecord,
+    VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -133,6 +134,7 @@ where
         store: Mutex::new(None),
     });
     StoreDriver::new(
+        backend.clone(),
         backend.clone(),
         backend.clone(),
         backend.clone(),
@@ -380,6 +382,34 @@ where
 
     async fn subscribe_routing_events(&self) -> Result<RoutingEventSubscription> {
         RoutingStateStore::subscribe_routing_events(self.store().await?.as_ref()).await
+    }
+}
+
+#[async_trait]
+impl<S> ImageAvailabilityStore for NatsRuntime<S>
+where
+    S: StoreRuntimeControl + Send + Sync + 'static,
+{
+    async fn upsert_image_availability(&self, record: &ImageAvailabilityRecord) -> Result<()> {
+        ImageAvailabilityStore::upsert_image_availability(self.store().await?.as_ref(), record)
+            .await
+    }
+
+    async fn get_image_availability(
+        &self,
+        machine_id: &MachineId,
+        digest: &ImageDigest,
+    ) -> Result<Option<ImageAvailabilityRecord>> {
+        ImageAvailabilityStore::get_image_availability(
+            self.store().await?.as_ref(),
+            machine_id,
+            digest,
+        )
+        .await
+    }
+
+    async fn list_image_availability(&self) -> Result<Vec<ImageAvailabilityRecord>> {
+        ImageAvailabilityStore::list_image_availability(self.store().await?.as_ref()).await
     }
 }
 

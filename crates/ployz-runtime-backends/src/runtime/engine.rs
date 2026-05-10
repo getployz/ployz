@@ -4,13 +4,20 @@ use std::time::Duration;
 use bollard::Docker;
 use bollard::models::{ContainerCreateBody, ContainerStatsResponse, HostConfig};
 use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, ListContainersOptionsBuilder,
-    RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder, StatsOptionsBuilder,
-    StopContainerOptionsBuilder,
+    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, ImportImageOptionsBuilder,
+    ListContainersOptionsBuilder, RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder,
+    StatsOptionsBuilder, StopContainerOptionsBuilder,
 };
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt};
+use ployz_runtime_api::{
+    ImageArchiveReader, ImageDiskPreflight, ImageReceivePreflightRequest, RuntimeImage,
+    RuntimeImageBackend, RuntimeImageError, RuntimeImageImportResult,
+};
 use ployz_types::error::RuntimeError;
+use ployz_types::model::{ImageDigest, ImagePlatform};
 use ployz_types::{Error, Result};
+use tokio_util::codec::{BytesCodec, FramedRead};
+use tokio_util::io::StreamReader;
 use tracing::{info, warn};
 
 use super::diff::{ChangedField, SpecChange, eval_spec_change, parent_id_matches};
@@ -19,7 +26,7 @@ use super::probe::ProbeRunner;
 use super::spec::{
     Observation, ObservedContainer, observe, port_map_to_bollard, restart_policy_to_bollard,
 };
-use super::{PullPolicy, RuntimeContainerSpec, parse_docker_image_ref};
+use super::{PullPolicy, RuntimeContainerSpec, digest_from_image_ref, parse_docker_image_ref};
 
 pub struct ContainerEngine {
     docker: Docker,
@@ -477,6 +484,115 @@ impl ContainerEngine {
             }
         }
     }
+}
+
+#[async_trait::async_trait]
+impl RuntimeImageBackend for ContainerEngine {
+    async fn inspect_image(
+        &self,
+        reference: &str,
+    ) -> std::result::Result<Option<RuntimeImage>, RuntimeImageError> {
+        match self.docker.inspect_image(reference).await {
+            Ok(info) => Ok(Some(runtime_image_from_inspect(reference, info))),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(None),
+            Err(error) => Err(RuntimeImageError::backend(
+                "docker inspect image",
+                error.to_string(),
+            )),
+        }
+    }
+
+    async fn export_image_archive<'a>(
+        &'a self,
+        reference: &'a str,
+    ) -> std::result::Result<ImageArchiveReader<'a>, RuntimeImageError> {
+        if self.inspect_image(reference).await?.is_none() {
+            return Err(RuntimeImageError::NotFound {
+                reference: reference.into(),
+            });
+        }
+        let reference_for_error = reference.to_string();
+        let stream = self.docker.export_image(reference).map_err(move |error| {
+            std::io::Error::other(format!(
+                "docker export image '{reference_for_error}': {error}"
+            ))
+        });
+        Ok(Box::pin(StreamReader::new(stream)))
+    }
+
+    async fn import_image_archive(
+        &self,
+        archive: ImageArchiveReader<'static>,
+    ) -> std::result::Result<RuntimeImageImportResult, RuntimeImageError> {
+        let byte_stream = FramedRead::new(archive, BytesCodec::new())
+            .map_ok(|bytes| bytes.freeze())
+            .map_err(std::io::Error::other);
+        let options = ImportImageOptionsBuilder::default().build();
+        let mut responses = self.docker.import_image_stream(options, byte_stream, None);
+        let mut messages = Vec::new();
+        while let Some(response) = responses.next().await {
+            let info = response.map_err(|error| {
+                RuntimeImageError::backend("docker import image", error.to_string())
+            })?;
+            if let Some(stream) = info.stream {
+                messages.push(stream);
+            }
+            if let Some(status) = info.status {
+                messages.push(status);
+            }
+        }
+        Ok(RuntimeImageImportResult { messages })
+    }
+
+    async fn preflight_image_receive(
+        &self,
+        request: ImageReceivePreflightRequest,
+    ) -> std::result::Result<ImageDiskPreflight, RuntimeImageError> {
+        let _ = request;
+        Ok(ImageDiskPreflight::Unknown)
+    }
+}
+
+fn runtime_image_from_inspect(
+    reference: &str,
+    info: bollard::models::ImageInspect,
+) -> RuntimeImage {
+    RuntimeImage {
+        reference: reference.into(),
+        id: info.id,
+        repo_digests: image_repo_digests(info.repo_digests),
+        platform: image_platform(info.os, info.architecture, info.variant),
+        size_bytes: info.size.and_then(|size| u64::try_from(size).ok()),
+    }
+}
+
+fn image_repo_digests(repo_digests: Option<Vec<String>>) -> Vec<ImageDigest> {
+    repo_digests
+        .into_iter()
+        .flatten()
+        .filter_map(|repo_digest| repo_digest_digest(&repo_digest))
+        .collect()
+}
+
+fn repo_digest_digest(repo_digest: &str) -> Option<ImageDigest> {
+    digest_from_image_ref(repo_digest)
+}
+
+fn image_platform(
+    os: Option<String>,
+    architecture: Option<String>,
+    variant: Option<String>,
+) -> Option<ImagePlatform> {
+    let (Some(os), Some(architecture)) = (os, architecture) else {
+        return None;
+    };
+    Some(ImagePlatform {
+        os,
+        architecture,
+        variant,
+    })
 }
 
 fn none_if_empty<T: Clone>(v: &[T]) -> Option<Vec<T>> {

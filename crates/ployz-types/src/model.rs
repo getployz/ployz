@@ -21,6 +21,262 @@ impl AsRef<str> for MachineId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Display, JsonSchema)]
+pub struct ImageDigest(pub String);
+
+impl ImageDigest {
+    pub fn try_new(value: impl Into<String>) -> std::result::Result<Self, String> {
+        let value = value.into();
+        validate_image_digest(&value)?;
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for ImageDigest {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl<'de> Deserialize<'de> for ImageDigest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(ImageDigestVisitor)
+    }
+}
+
+struct ImageDigestVisitor;
+
+impl Visitor<'_> for ImageDigestVisitor {
+    type Value = ImageDigest;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a valid image digest string")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        ImageDigest::try_new(value).map_err(E::custom)
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        ImageDigest::try_new(value).map_err(E::custom)
+    }
+}
+
+fn validate_image_digest(value: &str) -> std::result::Result<(), String> {
+    let Some((algorithm, encoded)) = value.split_once(':') else {
+        return Err(format!(
+            "image digest '{value}' must include algorithm prefix"
+        ));
+    };
+    if algorithm.is_empty()
+        || !algorithm
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-' | '+'))
+    {
+        return Err(format!("image digest '{value}' has invalid algorithm"));
+    }
+    if encoded.len() < 32 || !encoded.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(format!("image digest '{value}' has invalid encoded hash"));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ImagePlatform {
+    pub os: String,
+    pub architecture: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ImageRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    pub digest: ImageDigest,
+}
+
+impl ImageRef {
+    #[must_use]
+    pub fn digest(&self) -> &ImageDigest {
+        &self.digest
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildMethod {
+    #[display("dockerfile")]
+    Dockerfile,
+    #[display("railpack")]
+    Railpack,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BuildLocation {
+    Local,
+    Machine { machine_id: MachineId },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ImageArtifactProvenance {
+    External {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+    },
+    Build {
+        method: BuildMethod,
+        location: BuildLocation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_digest: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ImageArtifact {
+    pub image: ImageRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<ImagePlatform>,
+    pub provenance: ImageArtifactProvenance,
+    pub created_at: u64,
+}
+
+impl ImageArtifact {
+    #[must_use]
+    pub fn digest(&self) -> &ImageDigest {
+        self.image.digest()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ImagePresence {
+    Present {
+        artifact: ImageArtifact,
+        recorded_at: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_operation_id: Option<String>,
+    },
+    Absent {
+        observed_at: u64,
+    },
+    Transferring {
+        operation_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_transferred: Option<u64>,
+        updated_at: u64,
+    },
+    Failed {
+        reason: String,
+        failed_at: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operation_id: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ImageAvailabilityRecord {
+    pub machine_id: MachineId,
+    pub digest: ImageDigest,
+    pub presence: ImagePresence,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationStatus {
+    #[display("running")]
+    Running,
+    #[display("succeeded")]
+    Succeeded,
+    #[display("failed")]
+    Failed,
+    #[display("interrupted")]
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageOperationKind {
+    #[display("push")]
+    Push,
+    #[display("distribute")]
+    Distribute,
+    #[display("inspect")]
+    Inspect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildOperationKind {
+    #[display("local")]
+    Local,
+    #[display("machine")]
+    Machine,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ImageOperationTargetOutcome {
+    pub machine_id: MachineId,
+    pub status: OperationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_transferred: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ImageOperationRecord {
+    pub id: String,
+    pub kind: ImageOperationKind,
+    pub status: OperationStatus,
+    pub stage: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<ImageDigest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_machine: Option<MachineId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<ImageOperationTargetOutcome>,
+    pub started_at: u64,
+    pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BuildOperationRecord {
+    pub id: String,
+    pub kind: BuildOperationKind,
+    pub method: BuildMethod,
+    pub location: BuildLocation,
+    pub status: OperationStatus,
+    pub stage: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<ImageArtifact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    pub started_at: u64,
+    pub updated_at: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display, JsonSchema)]
 pub struct NetworkName(pub String);
 
@@ -1952,6 +2208,98 @@ pub fn management_ip_from_key(key: &PublicKey) -> OverlayIp {
 mod tests {
     use super::*;
     use std::str::FromStr;
+
+    #[test]
+    fn image_digest_requires_algorithm_and_hex_hash() {
+        assert!(ImageDigest::try_new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").is_ok());
+        assert!(ImageDigest::try_new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").is_err());
+        assert!(ImageDigest::try_new("sha256:not-hex").is_err());
+    }
+
+    #[test]
+    fn image_digest_json_deserialization_rejects_invalid_values() {
+        let result = serde_json::from_str::<ImageDigest>(r#""sha256:not-hex""#);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn image_availability_record_json_deserialization_rejects_invalid_digest() {
+        let json = r#"
+            {
+                "machine_id": "machine-a",
+                "digest": "sha256:not-hex",
+                "presence": {
+                    "state": "absent",
+                    "observed_at": 12
+                },
+                "updated_at": 12
+            }
+        "#;
+        let result = serde_json::from_str::<ImageAvailabilityRecord>(json);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn image_artifact_preserves_digest_identity_through_json() {
+        let artifact = ImageArtifact {
+            image: ImageRef {
+                repository: Some("registry.example/api".into()),
+                tag: Some("latest".into()),
+                digest: ImageDigest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            },
+            platform: Some(ImagePlatform {
+                os: "linux".into(),
+                architecture: "amd64".into(),
+                variant: None,
+            }),
+            provenance: ImageArtifactProvenance::Build {
+                method: BuildMethod::Railpack,
+                location: BuildLocation::Machine {
+                    machine_id: MachineId("builder-a".into()),
+                },
+                source_digest: Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()),
+            },
+            created_at: 42,
+        };
+
+        let json = serde_json::to_value(&artifact).expect("serialize artifact");
+        let roundtrip: ImageArtifact = serde_json::from_value(json).expect("deserialize artifact");
+
+        assert_eq!(
+            roundtrip.digest().as_str(),
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            roundtrip.provenance,
+            ImageArtifactProvenance::Build {
+                method: BuildMethod::Railpack,
+                location: BuildLocation::Machine {
+                    machine_id: MachineId("builder-a".into()),
+                },
+                source_digest: Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn image_availability_record_carries_machine_scoped_presence() {
+        let digest = ImageDigest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into());
+        let record = ImageAvailabilityRecord {
+            machine_id: MachineId("machine-a".into()),
+            digest: digest.clone(),
+            presence: ImagePresence::Failed {
+                reason: "transfer interrupted".into(),
+                failed_at: 12,
+                operation_id: Some("op-1".into()),
+            },
+            updated_at: 12,
+        };
+
+        assert_eq!(record.digest, digest);
+        assert_eq!(record.machine_id, MachineId("machine-a".into()));
+    }
 
     #[test]
     fn management_ip_deterministic() {

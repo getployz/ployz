@@ -29,9 +29,9 @@ use crate::model::{
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{
-    CertificateStore, DeployCommit, DeployStore, InstanceStatusStore, InviteStore,
-    MachineMembershipStore, MachineSubscription, PeerRttStore, RoutingEventSubscription,
-    RoutingStateStore, StoreDriver, StoreRuntimeControl, SyncProbe,
+    CertificateStore, DeployCommit, DeployStore, ImageAvailabilityStore, InstanceStatusStore,
+    InviteStore, MachineMembershipStore, MachineSubscription, PeerRttStore,
+    RoutingEventSubscription, RoutingStateStore, StoreDriver, StoreRuntimeControl, SyncProbe,
 };
 use ployz_types::Result as PloyzResult;
 use ployz_types::spec::{
@@ -6409,6 +6409,7 @@ async fn counting_store_with_machines(machine_ids: &[&str]) -> (StoreDriver, Arc
         backend.clone(),
         backend.clone(),
         backend.clone(),
+        backend.clone(),
     );
     for machine_id in machine_ids {
         store
@@ -7192,6 +7193,30 @@ impl RoutingStateStore for CountingBackend {
 
     async fn subscribe_routing_events(&self) -> PloyzResult<RoutingEventSubscription> {
         RoutingStateStore::subscribe_routing_events(self.store.as_ref()).await
+    }
+}
+
+#[async_trait]
+impl ImageAvailabilityStore for CountingBackend {
+    async fn upsert_image_availability(
+        &self,
+        record: &ployz_types::model::ImageAvailabilityRecord,
+    ) -> PloyzResult<()> {
+        self.store.upsert_image_availability(record).await
+    }
+
+    async fn get_image_availability(
+        &self,
+        machine_id: &MachineId,
+        digest: &ployz_types::model::ImageDigest,
+    ) -> PloyzResult<Option<ployz_types::model::ImageAvailabilityRecord>> {
+        self.store.get_image_availability(machine_id, digest).await
+    }
+
+    async fn list_image_availability(
+        &self,
+    ) -> PloyzResult<Vec<ployz_types::model::ImageAvailabilityRecord>> {
+        self.store.list_image_availability().await
     }
 }
 
