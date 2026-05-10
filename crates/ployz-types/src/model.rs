@@ -2164,6 +2164,124 @@ pub struct ServiceSourcePlan {
     pub mode: ServiceSourceMode,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployBaselineComponent {
+    Manifest,
+    Participants,
+    Phases,
+    Services,
+    ServiceSources,
+    Volumes,
+    VolumeMoves,
+    VolumeClones,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployPreviewBaselineComponents {
+    pub manifest: String,
+    pub participants: String,
+    pub phases: String,
+    pub services: String,
+    pub service_sources: String,
+    pub volumes: String,
+    pub volume_moves: String,
+    pub volume_clones: String,
+}
+
+impl DeployPreviewBaselineComponents {
+    #[must_use]
+    pub fn ordered(&self) -> [(DeployBaselineComponent, &str); 8] {
+        [
+            (DeployBaselineComponent::Manifest, &self.manifest),
+            (DeployBaselineComponent::Participants, &self.participants),
+            (DeployBaselineComponent::Phases, &self.phases),
+            (DeployBaselineComponent::Services, &self.services),
+            (
+                DeployBaselineComponent::ServiceSources,
+                &self.service_sources,
+            ),
+            (DeployBaselineComponent::Volumes, &self.volumes),
+            (DeployBaselineComponent::VolumeMoves, &self.volume_moves),
+            (DeployBaselineComponent::VolumeClones, &self.volume_clones),
+        ]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployPreviewBaseline {
+    pub fingerprint: String,
+    pub components: DeployPreviewBaselineComponents,
+}
+
+impl DeployPreviewBaseline {
+    #[must_use]
+    pub fn new(components: DeployPreviewBaselineComponents) -> Self {
+        let mut input = String::new();
+        for (_, component_fingerprint) in components.ordered() {
+            append_fingerprint_segment(&mut input, component_fingerprint);
+        }
+        Self {
+            fingerprint: stable_hash_hex(input.as_bytes()),
+            components,
+        }
+    }
+
+    #[must_use]
+    pub fn changed_components(&self, actual: &Self) -> Vec<DeployBaselineComponent> {
+        let mut changed = Vec::new();
+        for ((component, expected), (_, actual)) in self
+            .components
+            .ordered()
+            .into_iter()
+            .zip(actual.components.ordered())
+        {
+            if expected != actual {
+                changed.push(component);
+            }
+        }
+        changed
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.fingerprint.is_empty()
+    }
+
+    #[must_use]
+    pub fn is_canonical(&self) -> bool {
+        self.fingerprint == Self::new(self.components.clone()).fingerprint
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployBaselineDiff {
+    pub expected: DeployPreviewBaseline,
+    pub actual: DeployPreviewBaseline,
+}
+
+impl DeployBaselineDiff {
+    #[must_use]
+    pub fn new(expected: DeployPreviewBaseline, actual: DeployPreviewBaseline) -> Self {
+        Self { expected, actual }
+    }
+
+    #[must_use]
+    pub fn changed_components(&self) -> Vec<DeployBaselineComponent> {
+        self.expected.changed_components(&self.actual)
+    }
+}
+
+impl std::fmt::Display for DeployBaselineDiff {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "deploy baseline changed: expected fingerprint '{}', got '{}'",
+            self.expected.fingerprint, self.actual.fingerprint
+        )
+    }
+}
+
 #[must_use]
 pub fn service_source_fingerprint(sources: &[ServiceSourcePlan]) -> String {
     if sources.is_empty() {
@@ -2247,6 +2365,8 @@ pub struct VolumeClonePreflightPlan {
 pub struct DeployPreview {
     pub namespace: Namespace,
     pub manifest_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<DeployPreviewBaseline>,
     pub participants: Vec<MachineId>,
     pub phases: Vec<DeployPhasePlan>,
     pub services: Vec<ServicePlan>,
@@ -2330,6 +2450,7 @@ mod tests {
         let preview = DeployPreview {
             namespace: Namespace("pr-39".into()),
             manifest_hash: "manifest".into(),
+            baseline: None,
             participants: vec![MachineId("machine-a".into())],
             phases: Vec::new(),
             services: Vec::new(),
@@ -2390,8 +2511,114 @@ mod tests {
             serde_json::from_str(json).expect("deserialize legacy deploy preview");
 
         assert!(preview.volume_clone_preflights.is_empty());
+        assert!(preview.baseline.is_none());
         assert!(preview.service_sources.is_empty());
         assert!(preview.service_source_fingerprint.is_empty());
+    }
+
+    #[test]
+    fn deploy_preview_baseline_serializes_contract_and_changed_components() {
+        let baseline = DeployPreviewBaseline::new(DeployPreviewBaselineComponents {
+            manifest: "manifest".into(),
+            participants: "participants".into(),
+            phases: "phases".into(),
+            services: "services".into(),
+            service_sources: "sources".into(),
+            volumes: "volumes".into(),
+            volume_moves: "moves".into(),
+            volume_clones: "clones".into(),
+        });
+        let changed = DeployPreviewBaseline::new(DeployPreviewBaselineComponents {
+            service_sources: "other-sources".into(),
+            ..baseline.components.clone()
+        });
+        let preview = DeployPreview {
+            namespace: Namespace("pr-39".into()),
+            manifest_hash: "manifest".into(),
+            baseline: Some(baseline.clone()),
+            participants: Vec::new(),
+            phases: Vec::new(),
+            services: Vec::new(),
+            service_sources: Vec::new(),
+            service_source_fingerprint: String::new(),
+            service_branch_sources: Vec::new(),
+            volume_moves: Vec::new(),
+            volume_clones: Vec::new(),
+            volume_clone_preflights: Vec::new(),
+            warnings: Vec::new(),
+        };
+
+        let json = serde_json::to_value(&preview).expect("serialize deploy preview");
+
+        assert_eq!(
+            json["baseline"]["fingerprint"],
+            serde_json::json!(baseline.fingerprint)
+        );
+        assert_eq!(
+            json["baseline"]["components"]["service_sources"],
+            serde_json::json!("sources")
+        );
+        assert_eq!(
+            baseline.changed_components(&changed),
+            vec![DeployBaselineComponent::ServiceSources]
+        );
+        assert!(baseline.changed_components(&baseline).is_empty());
+        assert!(baseline.is_canonical());
+        assert!(
+            !DeployPreviewBaseline {
+                fingerprint: "bogus".into(),
+                components: baseline.components.clone(),
+            }
+            .is_canonical()
+        );
+        let roundtrip: DeployPreview =
+            serde_json::from_value(json).expect("deserialize deploy preview");
+        assert_eq!(roundtrip.baseline, Some(baseline));
+    }
+
+    #[test]
+    fn deploy_preview_baseline_changed_components_cover_every_component() {
+        let baseline = DeployPreviewBaseline::new(DeployPreviewBaselineComponents {
+            manifest: "manifest".into(),
+            participants: "participants".into(),
+            phases: "phases".into(),
+            services: "services".into(),
+            service_sources: "sources".into(),
+            volumes: "volumes".into(),
+            volume_moves: "moves".into(),
+            volume_clones: "clones".into(),
+        });
+
+        for component in [
+            DeployBaselineComponent::Manifest,
+            DeployBaselineComponent::Participants,
+            DeployBaselineComponent::Phases,
+            DeployBaselineComponent::Services,
+            DeployBaselineComponent::ServiceSources,
+            DeployBaselineComponent::Volumes,
+            DeployBaselineComponent::VolumeMoves,
+            DeployBaselineComponent::VolumeClones,
+        ] {
+            let mut components = baseline.components.clone();
+            match component {
+                DeployBaselineComponent::Manifest => components.manifest = "changed".into(),
+                DeployBaselineComponent::Participants => components.participants = "changed".into(),
+                DeployBaselineComponent::Phases => components.phases = "changed".into(),
+                DeployBaselineComponent::Services => components.services = "changed".into(),
+                DeployBaselineComponent::ServiceSources => {
+                    components.service_sources = "changed".into()
+                }
+                DeployBaselineComponent::Volumes => components.volumes = "changed".into(),
+                DeployBaselineComponent::VolumeMoves => components.volume_moves = "changed".into(),
+                DeployBaselineComponent::VolumeClones => {
+                    components.volume_clones = "changed".into()
+                }
+            }
+            let changed = DeployPreviewBaseline::new(components);
+
+            assert_ne!(baseline.fingerprint, changed.fingerprint);
+            assert_eq!(baseline.changed_components(&changed), vec![component]);
+        }
     }
 
     #[test]
@@ -2414,6 +2641,7 @@ mod tests {
         let preview = DeployPreview {
             namespace: Namespace("pr-39".into()),
             manifest_hash: "manifest".into(),
+            baseline: None,
             participants: Vec::new(),
             phases: Vec::new(),
             services: Vec::new(),

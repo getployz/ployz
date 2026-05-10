@@ -19,10 +19,11 @@ use crate::error::{DeployError, Error, Result};
 use crate::model::RegionRole;
 use crate::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
-    DeployChangeKind, DeployId, DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseId,
-    DeployPhaseRecord, DeployPhaseRollbackPolicy, DeployPhaseState, DeployPhaseWork, DeployRecord,
-    DeployState, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
-    MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
+    DeployBaselineComponent, DeployChangeKind, DeployId, DeployPhaseAdvancePolicy,
+    DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord, DeployPhaseRollbackPolicy,
+    DeployPhaseState, DeployPhaseWork, DeployPreviewBaseline, DeployPreviewBaselineComponents,
+    DeployRecord, DeployState, DrainState, InstanceId, InstancePhase, InstanceStatusRecord,
+    MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
     ServiceBranchLineageRecord, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
     ServiceRevisionRecord, ServiceRoutingPolicy, ServiceSourceMode, SlotId,
     VolumeBranchLineageRecord, VolumeClonePreflightAction, VolumeClonePreflightScope,
@@ -50,6 +51,22 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
+
+fn empty_deploy_baseline() -> DeployPreviewBaseline {
+    DeployPreviewBaseline {
+        fingerprint: String::new(),
+        components: DeployPreviewBaselineComponents {
+            manifest: String::new(),
+            participants: String::new(),
+            phases: String::new(),
+            services: String::new(),
+            service_sources: String::new(),
+            volumes: String::new(),
+            volume_moves: String::new(),
+            volume_clones: String::new(),
+        },
+    }
+}
 
 #[async_trait]
 trait TestStoreSeed {
@@ -1225,6 +1242,11 @@ async fn resolve_plan_moves_existing_volume_and_attached_service_to_target_machi
     assert_eq!(volume_move.from_machine, MachineId("machine-a".into()));
     assert_eq!(volume_move.to_machine, MachineId("machine-b".into()));
     assert_eq!(volume_move.attached_services, vec!["db"]);
+    let baseline = preview.baseline.as_ref().expect("preview baseline");
+    assert_eq!(
+        baseline.components.volume_moves,
+        plan.baseline().components.volume_moves
+    );
     let [phase] = preview.phases.as_slice() else {
         panic!("expected one default deploy phase");
     };
@@ -1638,6 +1660,9 @@ async fn preview_plans_volume_clone_on_source_machine() {
     let preview = preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
         .await
         .expect("clone preview");
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("clone plan");
 
     let [clone] = preview.volume_clones.as_slice() else {
         panic!("expected one volume clone");
@@ -1649,6 +1674,11 @@ async fn preview_plans_volume_clone_on_source_machine() {
     assert_eq!(clone.target_machine, MachineId("machine-b".into()));
     assert_eq!(clone.data_policy, VolumeCloneDataPolicy::Raw);
     assert_eq!(clone.consistency, VolumeCloneConsistency::CrashConsistent);
+    let baseline = preview.baseline.as_ref().expect("preview baseline");
+    assert_eq!(
+        baseline.components.volume_clones,
+        plan.baseline().components.volume_clones
+    );
     let [phase] = preview.phases.as_slice() else {
         panic!("expected synthetic deploy phase");
     };
@@ -4005,6 +4035,7 @@ async fn resolve_plan_allows_removal_only_when_no_new_placement_target_exists() 
     assert_eq!(removed.service, "old-api");
     assert_eq!(removed.action, DeployChangeKind::Remove);
     let preview = plan.to_preview(Vec::new());
+    assert!(preview.baseline.is_some());
     assert!(preview.service_sources.is_empty());
     assert!(preview.service_source_fingerprint.is_empty());
 }
@@ -4133,6 +4164,169 @@ async fn resolve_plan_fingerprint_is_stable_across_release_insert_order() {
         .expect("plan b");
 
     assert_eq!(plan_a.fingerprint(), plan_b.fingerprint());
+    assert_eq!(plan_a.baseline(), plan_b.baseline());
+}
+
+#[tokio::test]
+async fn resolve_plan_baseline_tracks_participant_changes() {
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "agent",
+        Placement::Global,
+        "busybox:1.0",
+    )]);
+    let store_a = seeded_store_with_machines(&["machine-a"]).await;
+    let store_b = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
+
+    let baseline_a = resolve_plan(&store_a, &local_machine_id, &manifest)
+        .await
+        .expect("plan a")
+        .baseline();
+    let baseline_b = resolve_plan(&store_b, &local_machine_id, &manifest)
+        .await
+        .expect("plan b")
+        .baseline();
+
+    assert_ne!(
+        baseline_a.components.participants,
+        baseline_b.components.participants
+    );
+    assert_ne!(baseline_a.fingerprint, baseline_b.fingerprint);
+}
+
+#[tokio::test]
+async fn resolve_plan_baseline_tracks_phase_work_changes() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let base_manifest = test_manifest(vec![
+        test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17"),
+        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+    ]);
+    let phased_manifest = checkpointed_db_web_manifest();
+
+    let baseline_a = resolve_plan(&store, &local_machine_id, &base_manifest)
+        .await
+        .expect("base plan")
+        .baseline();
+    let baseline_b = resolve_plan(&store, &local_machine_id, &phased_manifest)
+        .await
+        .expect("phased plan")
+        .baseline();
+
+    assert_ne!(baseline_a.components.phases, baseline_b.components.phases);
+    assert_ne!(baseline_a.fingerprint, baseline_b.fingerprint);
+}
+
+#[tokio::test]
+async fn resolve_plan_baseline_tracks_volume_move_changes() {
+    let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut move_manifest = volume_manifest();
+    move_manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-a".into(),
+                to_machine: "machine-b".into(),
+            },
+        }],
+        phases: Vec::new(),
+    });
+    let no_move_manifest = volume_manifest();
+    let [spec] = no_move_manifest.services.as_slice() else {
+        panic!("expected one service");
+    };
+    let revision_hash = spec.revision_hash().expect("revision hash");
+    seed_volume_with_attached_services(
+        &store,
+        &no_move_manifest.namespace,
+        "data",
+        "machine-a",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    store
+        .upsert_service_release(&test_release(
+            &no_move_manifest.namespace,
+            "db",
+            &revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-a",
+                "inst-1",
+                &revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+
+    let no_move = resolve_plan(&store, &local_machine_id, &no_move_manifest)
+        .await
+        .expect("no move plan")
+        .baseline();
+    let with_move = resolve_plan(&store, &local_machine_id, &move_manifest)
+        .await
+        .expect("move plan")
+        .baseline();
+
+    assert_ne!(
+        no_move.components.volume_moves,
+        with_move.components.volume_moves
+    );
+    assert_ne!(no_move.fingerprint, with_move.fingerprint);
+    assert!(
+        no_move
+            .changed_components(&with_move)
+            .contains(&DeployBaselineComponent::VolumeMoves)
+    );
+}
+
+#[tokio::test]
+async fn resolve_plan_baseline_tracks_volume_clone_changes() {
+    let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    seed_volume(&store, &source_namespace, "data", "machine-b").await;
+    let mut fresh_manifest = volume_manifest();
+    fresh_manifest.namespace = Namespace("pr-39".into());
+    let mut clone_manifest = fresh_manifest.clone();
+    clone_manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Clone {
+                source_namespace,
+                source_volume: "data".into(),
+                data_policy: VolumeCloneDataPolicy::Raw,
+                consistency: VolumeCloneConsistency::CrashConsistent,
+            },
+        }],
+        phases: Vec::new(),
+    });
+
+    let fresh = resolve_plan(&store, &local_machine_id, &fresh_manifest)
+        .await
+        .expect("fresh plan")
+        .baseline();
+    let cloned = resolve_plan(&store, &local_machine_id, &clone_manifest)
+        .await
+        .expect("clone plan")
+        .baseline();
+
+    assert_ne!(
+        fresh.components.volume_clones,
+        cloned.components.volume_clones
+    );
+    assert_ne!(fresh.fingerprint, cloned.fingerprint);
+    assert!(
+        fresh
+            .changed_components(&cloned)
+            .contains(&DeployBaselineComponent::VolumeClones)
+    );
 }
 
 #[tokio::test]
@@ -4157,6 +4351,15 @@ async fn resolve_plan_includes_fresh_service_source_preview_evidence() {
     assert_eq!(source.mode, ServiceSourceMode::Fresh);
     assert_eq!(
         preview.service_source_fingerprint,
+        plan.service_source_fingerprint()
+    );
+    assert_eq!(
+        preview
+            .baseline
+            .as_ref()
+            .expect("preview baseline")
+            .components
+            .service_sources,
         plan.service_source_fingerprint()
     );
 }
@@ -4211,6 +4414,7 @@ async fn resolve_plan_includes_branch_source_preview_evidence() {
         preview.service_source_fingerprint,
         plan.service_source_fingerprint()
     );
+    assert_eq!(preview.baseline, Some(plan.baseline()));
     assert_eq!(preview.service_branch_sources.len(), 1);
     assert_eq!(preview.service_branch_sources[0].service, "web");
     assert_eq!(
@@ -4458,17 +4662,16 @@ async fn ensure_plan_stable_rejects_branch_source_revision_drift() {
         .await
         .expect("final branch plan");
 
-    let expected_fingerprint = initial_plan.service_source_fingerprint();
-    let error = ensure_plan_stable(
-        &initial_plan,
-        &final_plan,
-        Some(expected_fingerprint.as_str()),
-    )
-    .expect_err("source revision drift should fail");
-    assert!(matches!(
-        error,
-        Error::Deploy(DeployError::ServiceSourceBaselineChanged { .. })
-    ));
+    let expected_baseline = initial_plan.baseline();
+    let error = ensure_plan_stable(&initial_plan, &final_plan, Some(&expected_baseline))
+        .expect_err("source revision drift should fail");
+    let Error::Deploy(DeployError::DeployBaselineChanged { diff }) = error else {
+        panic!("expected deploy baseline changed");
+    };
+    assert!(
+        diff.changed_components()
+            .contains(&DeployBaselineComponent::ServiceSources)
+    );
     assert_ne!(
         initial_plan.service_source_fingerprint(),
         final_plan.service_source_fingerprint()
@@ -4525,7 +4728,7 @@ async fn ensure_plan_stable_preserves_execution_plan_changed_without_service_sou
 }
 
 #[tokio::test]
-async fn apply_rejects_empty_service_source_baseline_before_participant_inspect() {
+async fn apply_rejects_empty_deploy_baseline_before_participant_inspect() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
     let local_machine_id = MachineId("local".into());
     let manifest = test_manifest(vec![test_service_spec(
@@ -4535,6 +4738,7 @@ async fn apply_rejects_empty_service_source_baseline_before_participant_inspect(
     )]);
     let controller = FakeController::default();
     let participant_client = FakeParticipantClient::new(controller.clone());
+    let empty_baseline = empty_deploy_baseline();
 
     let error = apply_with_deploy_id_and_preconditions(
         &store,
@@ -4548,11 +4752,11 @@ async fn apply_rejects_empty_service_source_baseline_before_participant_inspect(
         Arc::new(NoopAcmeIssuerFactory::default()),
         &NoopParticipantProbe,
         DeployApplyPreconditions {
-            expected_service_source_fingerprint: Some(""),
+            expected_baseline: Some(&empty_baseline),
         },
     )
     .await
-    .expect_err("empty service source baseline should fail");
+    .expect_err("empty deploy baseline should fail");
 
     assert!(matches!(
         error,
@@ -4595,17 +4799,17 @@ async fn apply_rejects_stale_service_source_baseline_before_participant_inspect(
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("initial branch plan");
-    let expected_fingerprint = initial_plan.service_source_fingerprint();
+    let expected_baseline = initial_plan.baseline();
     seed_committed_service_release(
         &store,
         &source_namespace,
         test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.28"),
     )
     .await;
-    let actual_fingerprint = resolve_plan(&store, &local_machine_id, &manifest)
+    let actual_baseline = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("post-drift branch plan")
-        .service_source_fingerprint();
+        .baseline();
 
     let controller = FakeController::default();
     let participant_client = FakeParticipantClient::new(controller.clone());
@@ -4621,18 +4825,76 @@ async fn apply_rejects_stale_service_source_baseline_before_participant_inspect(
         Arc::new(NoopAcmeIssuerFactory::default()),
         &NoopParticipantProbe,
         DeployApplyPreconditions {
-            expected_service_source_fingerprint: Some(expected_fingerprint.as_str()),
+            expected_baseline: Some(&expected_baseline),
         },
     )
     .await
     .expect_err("stale service source baseline should fail");
 
-    let Error::Deploy(DeployError::ServiceSourceBaselineChanged { expected, actual }) = error
-    else {
-        panic!("expected service source baseline changed");
+    let Error::Deploy(DeployError::DeployBaselineChanged { diff }) = error else {
+        panic!("expected deploy baseline changed");
     };
-    assert_eq!(expected, expected_fingerprint);
-    assert_eq!(actual, actual_fingerprint);
+    assert_eq!(diff.expected, expected_baseline);
+    assert_eq!(diff.actual, actual_baseline);
+    assert!(
+        diff.changed_components()
+            .contains(&DeployBaselineComponent::ServiceSources)
+    );
+    assert_eq!(controller.max_open_seen(), 0);
+    assert_eq!(controller.start_count(), 0);
+}
+
+#[tokio::test]
+async fn apply_rejects_stale_participant_baseline_before_participant_inspect() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "agent",
+        Placement::Global,
+        "busybox:1.0",
+    )]);
+    let expected_baseline = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan")
+        .baseline();
+    store
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Active))
+        .await
+        .expect("seed second participant");
+    let actual_baseline = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("post-drift plan")
+        .baseline();
+
+    let controller = FakeController::default();
+    let participant_client = FakeParticipantClient::new(controller.clone());
+    let error = apply_with_deploy_id_and_preconditions(
+        &store,
+        &participant_client,
+        &local_machine_id,
+        &manifest,
+        DeployId("deploy-stale-participants".into()),
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+        DeployApplyPreconditions {
+            expected_baseline: Some(&expected_baseline),
+        },
+    )
+    .await
+    .expect_err("stale participant baseline should fail");
+
+    let Error::Deploy(DeployError::DeployBaselineChanged { diff }) = error else {
+        panic!("expected deploy baseline changed");
+    };
+    assert_eq!(diff.expected, expected_baseline);
+    assert_eq!(diff.actual, actual_baseline);
+    assert!(
+        diff.changed_components()
+            .contains(&DeployBaselineComponent::Participants)
+    );
     assert_eq!(controller.max_open_seen(), 0);
     assert_eq!(controller.start_count(), 0);
 }
@@ -4667,7 +4929,7 @@ async fn apply_accepts_matching_service_source_baseline_and_commits_branch_linea
     let plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("branch plan");
-    let expected_fingerprint = plan.service_source_fingerprint();
+    let expected_baseline = plan.baseline();
     let participant_client = FakeParticipantClient::new(FakeController::default());
     let result = apply_with_deploy_id_and_preconditions(
         &store,
@@ -4681,7 +4943,7 @@ async fn apply_accepts_matching_service_source_baseline_and_commits_branch_linea
         Arc::new(NoopAcmeIssuerFactory::default()),
         &NoopParticipantProbe,
         DeployApplyPreconditions {
-            expected_service_source_fingerprint: Some(expected_fingerprint.as_str()),
+            expected_baseline: Some(&expected_baseline),
         },
     )
     .await
@@ -4751,7 +5013,7 @@ async fn apply_commits_branch_lineage_when_only_source_revision_changes() {
         panic!("expected one service");
     };
     assert_eq!(service.action, DeployChangeKind::Unchanged);
-    let expected_fingerprint = plan.service_source_fingerprint();
+    let expected_baseline = plan.baseline();
     let controller = FakeController::default();
     let participant_client = FakeParticipantClient::new(controller.clone());
 
@@ -4767,7 +5029,7 @@ async fn apply_commits_branch_lineage_when_only_source_revision_changes() {
         Arc::new(NoopAcmeIssuerFactory::default()),
         &NoopParticipantProbe,
         DeployApplyPreconditions {
-            expected_service_source_fingerprint: Some(expected_fingerprint.as_str()),
+            expected_baseline: Some(&expected_baseline),
         },
     )
     .await
@@ -4810,7 +5072,7 @@ async fn apply_preserves_checkpointed_branch_lineage_after_final_commit() {
     let plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("branch checkpoint plan");
-    let expected_fingerprint = plan.service_source_fingerprint();
+    let expected_baseline = plan.baseline();
     let participant_client = FakeParticipantClient::new(FakeController::default());
     let result = apply_with_deploy_id_and_preconditions(
         &store,
@@ -4824,7 +5086,7 @@ async fn apply_preserves_checkpointed_branch_lineage_after_final_commit() {
         Arc::new(NoopAcmeIssuerFactory::default()),
         &NoopParticipantProbe,
         DeployApplyPreconditions {
-            expected_service_source_fingerprint: Some(expected_fingerprint.as_str()),
+            expected_baseline: Some(&expected_baseline),
         },
     )
     .await
