@@ -21,6 +21,7 @@ use ployz_types::spec::DeployManifest;
 use probe::{probe_participants, warnings_from_reachability};
 use std::sync::Arc;
 
+pub use execute::DeployApplyPreconditions;
 pub use probe::{NoopParticipantProbe, ParticipantProbe, ProbeError, ProbeErrorKind};
 
 pub fn new_deploy_id() -> crate::model::DeployId {
@@ -87,7 +88,7 @@ pub async fn apply_with_deploy_id_and_certificate_coordination(
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
     prober: &dyn ParticipantProbe,
 ) -> Result<DeployApplyResult> {
-    execute::apply_with_deploy_id_and_certificate_coordination(
+    apply_with_deploy_id_and_preconditions(
         store,
         participant_client,
         local_machine_id,
@@ -98,6 +99,36 @@ pub async fn apply_with_deploy_id_and_certificate_coordination(
         challenge_readiness,
         issuer_factory,
         prober,
+        DeployApplyPreconditions::default(),
+    )
+    .await
+}
+
+pub async fn apply_with_deploy_id_and_preconditions(
+    store: &StoreDriver,
+    participant_client: &dyn DeployParticipantClient,
+    local_machine_id: &MachineId,
+    manifest: &DeployManifest,
+    deploy_id: crate::model::DeployId,
+    certificate_coordinator: Arc<dyn IssuanceCoordinator>,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
+    issuer_factory: Arc<dyn AcmeIssuerFactory>,
+    prober: &dyn ParticipantProbe,
+    preconditions: DeployApplyPreconditions<'_>,
+) -> Result<DeployApplyResult> {
+    execute::apply_with_deploy_id_and_preconditions(
+        store,
+        participant_client,
+        local_machine_id,
+        manifest,
+        deploy_id,
+        certificate_coordinator,
+        account_coordinator,
+        challenge_readiness,
+        issuer_factory,
+        prober,
+        preconditions,
     )
     .await
 }

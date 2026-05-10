@@ -19,7 +19,7 @@ use ployz_orchestrator::deploy::participant::{
     MoveVolumeRequest, MoveVolumeResult, StartCandidateRequest,
 };
 use ployz_orchestrator::deploy::{
-    apply_with_deploy_id_and_certificate_coordination, new_deploy_id, preview,
+    DeployApplyPreconditions, apply_with_deploy_id_and_preconditions, new_deploy_id, preview,
 };
 use ployz_runtime_backends::deploy::remote::DeployAgent;
 use ployz_store_api::{DeployStore, StoreDriver, StoreRuntimeControl};
@@ -202,8 +202,12 @@ impl DaemonState {
     pub async fn handle_deploy_apply(
         &self,
         manifest_json: &str,
-        _options: &DeployOptions,
+        options: &DeployOptions,
     ) -> DaemonResponse {
+        let preconditions = match deploy_apply_preconditions(options) {
+            Ok(preconditions) => preconditions,
+            Err(message) => return self.err("INVALID_DEPLOY_OPTIONS", message),
+        };
         let manifest = match decode_manifest(manifest_json) {
             Ok(manifest) => manifest,
             Err(response) => return *response,
@@ -219,7 +223,7 @@ impl DaemonState {
             Ok(runtime) => runtime,
             Err(response) => return response,
         };
-        self.apply_manifest_with_runtime(active, &manifest, runtime)
+        self.apply_manifest_with_runtime(active, &manifest, runtime, preconditions)
             .await
     }
 
@@ -272,6 +276,7 @@ impl DaemonState {
         active: &ActiveMesh,
         manifest: &DeployManifest,
         runtime: DeployApplyRuntime,
+        preconditions: DeployApplyPreconditions<'_>,
     ) -> DaemonResponse {
         let certificate_coordinator = Arc::new(
             crate::daemon::cert_coordination::NatsIssuanceCoordinator::new(
@@ -298,7 +303,7 @@ impl DaemonState {
         );
 
         let deploy_id = new_deploy_id();
-        let apply = apply_with_deploy_id_and_certificate_coordination(
+        let apply = apply_with_deploy_id_and_preconditions(
             &active.mesh.store,
             &participant_client,
             &self.identity.machine_id,
@@ -309,6 +314,7 @@ impl DaemonState {
             challenge_readiness,
             issuer_factory,
             &prober,
+            preconditions,
         );
         tokio::pin!(apply);
         let mut deploy_lock_renewer = tokio::spawn(renew_deploy_lock(
@@ -358,6 +364,7 @@ impl DaemonState {
     }
 
     fn deploy_error_response(&self, code: &str, error: PloyzError) -> DaemonResponse {
+        let code = deploy_error_code(code, &error);
         if let Some(payload) = deploy_failure_payload_for_error(&error) {
             self.err_with_payload(
                 code,
@@ -429,8 +436,13 @@ impl DaemonState {
                         return self.err(error.code(), error.to_string());
                     }
                 };
-                self.apply_manifest_with_runtime(active, &manifest, runtime)
-                    .await
+                self.apply_manifest_with_runtime(
+                    active,
+                    &manifest,
+                    runtime,
+                    DeployApplyPreconditions::default(),
+                )
+                .await
             }
         }
     }
@@ -1208,11 +1220,48 @@ async fn mark_running_deploy_phases_failed_after_lock_loss(
     Ok(())
 }
 
+fn deploy_error_code<'a>(default_code: &'a str, error: &PloyzError) -> &'a str {
+    match error {
+        PloyzError::Deploy(DeployError::ServiceSourceBaselineChanged { .. }) => {
+            "SERVICE_SOURCE_BASELINE_CHANGED"
+        }
+        PloyzError::Deploy(DeployError::DeployOptionInvalid { .. }) => "INVALID_DEPLOY_OPTIONS",
+        _ => default_code,
+    }
+}
+
+fn deploy_apply_preconditions(
+    options: &DeployOptions,
+) -> Result<DeployApplyPreconditions<'_>, &'static str> {
+    Ok(DeployApplyPreconditions {
+        expected_service_source_fingerprint: expected_service_source_fingerprint(options)?,
+    })
+}
+
+fn expected_service_source_fingerprint(
+    options: &DeployOptions,
+) -> Result<Option<&str>, &'static str> {
+    match options.expected_service_source_fingerprint.as_deref() {
+        Some("") => Err("expected_service_source_fingerprint must be omitted or non-empty"),
+        Some(fingerprint) => Ok(Some(fingerprint)),
+        None => Ok(None),
+    }
+}
+
 fn deploy_failure_payload_for_error(error: &PloyzError) -> Option<DeployFailurePayload> {
     match error {
         PloyzError::Deploy(DeployError::NoEligiblePlacementTargets) => Some(DeployFailurePayload {
             reason: DeployFailureReason::NoEligiblePlacementTargets,
+            expected_service_source_fingerprint: None,
+            actual_service_source_fingerprint: None,
         }),
+        PloyzError::Deploy(DeployError::ServiceSourceBaselineChanged { expected, actual }) => {
+            Some(DeployFailurePayload {
+                reason: DeployFailureReason::ServiceSourceBaselineChanged,
+                expected_service_source_fingerprint: Some(expected.clone()),
+                actual_service_source_fingerprint: Some(actual.clone()),
+            })
+        }
         _ => None,
     }
 }
@@ -1444,6 +1493,7 @@ mod tests {
     use super::*;
     use ployz_api::{DaemonRequest, VolumeZfsTransferInfo};
     use ployz_nats::{RpcFailureKind, RpcPolicy};
+    use ployz_runtime_api::Identity;
     use ployz_store_api::{DeployCommit, DeployStore};
     use ployz_types::model::{
         DeployId, DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord,
@@ -1456,7 +1506,32 @@ mod tests {
         RestartPolicy, RolloutStrategy, VolumeScope,
     };
     use std::collections::VecDeque;
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_daemon_state() -> DaemonState {
+        DaemonState::new_for_tests(
+            &unique_temp_dir("ployz-deploy-handler"),
+            Identity::generate(MachineId("founder".into()), [42; 32]),
+            "10.210.0.0/16".into(),
+            24,
+            4319,
+            "127.0.0.1:0".into(),
+            None,
+            1,
+        )
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_nanos();
+        path.push(format!("{prefix}-{nanos}"));
+        path
+    }
 
     fn test_service() -> ServiceSpec {
         test_service_with_mounts(
@@ -2376,6 +2451,121 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn deploy_failure_payload_preserves_service_source_baseline_details() {
+        let payload = deploy_failure_payload_for_error(&PloyzError::Deploy(
+            DeployError::ServiceSourceBaselineChanged {
+                expected: "old".into(),
+                actual: "new".into(),
+            },
+        ))
+        .expect("baseline failure payload");
+
+        assert_eq!(
+            payload.reason,
+            DeployFailureReason::ServiceSourceBaselineChanged
+        );
+        assert_eq!(
+            payload.expected_service_source_fingerprint.as_deref(),
+            Some("old")
+        );
+        assert_eq!(
+            payload.actual_service_source_fingerprint.as_deref(),
+            Some("new")
+        );
+    }
+
+    #[test]
+    fn deploy_error_response_wraps_service_source_baseline_payload() {
+        let response = test_daemon_state().deploy_error_response(
+            "DEPLOY_APPLY_FAILED",
+            PloyzError::Deploy(DeployError::ServiceSourceBaselineChanged {
+                expected: "old".into(),
+                actual: "new".into(),
+            }),
+        );
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "SERVICE_SOURCE_BASELINE_CHANGED");
+        assert!(response.message.contains("service source baseline changed"));
+        let Some(DaemonPayload::DeployFailure(payload)) = response.payload else {
+            panic!("expected deploy failure payload");
+        };
+        assert_eq!(
+            payload.reason,
+            DeployFailureReason::ServiceSourceBaselineChanged
+        );
+        assert_eq!(
+            payload.expected_service_source_fingerprint.as_deref(),
+            Some("old")
+        );
+        assert_eq!(
+            payload.actual_service_source_fingerprint.as_deref(),
+            Some("new")
+        );
+    }
+
+    #[test]
+    fn expected_service_source_fingerprint_rejects_empty_baseline() {
+        let no_baseline = DeployOptions::default();
+        assert_eq!(
+            expected_service_source_fingerprint(&no_baseline).expect("no baseline"),
+            None
+        );
+
+        let empty_baseline = DeployOptions {
+            expected_service_source_fingerprint: Some(String::new()),
+            ..DeployOptions::default()
+        };
+        assert!(expected_service_source_fingerprint(&empty_baseline).is_err());
+
+        let baseline = DeployOptions {
+            expected_service_source_fingerprint: Some("source-fingerprint".into()),
+            ..DeployOptions::default()
+        };
+        assert_eq!(
+            expected_service_source_fingerprint(&baseline).expect("baseline"),
+            Some("source-fingerprint")
+        );
+    }
+
+    #[test]
+    fn deploy_apply_preconditions_preserve_non_empty_service_source_baseline() {
+        let options = DeployOptions {
+            expected_service_source_fingerprint: Some("source-fingerprint".into()),
+            ..DeployOptions::default()
+        };
+
+        let preconditions = deploy_apply_preconditions(&options).expect("preconditions");
+
+        assert_eq!(
+            preconditions.expected_service_source_fingerprint,
+            Some("source-fingerprint")
+        );
+    }
+
+    #[tokio::test]
+    async fn deploy_apply_rejects_empty_service_source_baseline_option_before_mesh_setup() {
+        let response = test_daemon_state()
+            .handle_deploy_apply(
+                "{}",
+                &DeployOptions {
+                    expected_service_source_fingerprint: Some(String::new()),
+                    ..DeployOptions::default()
+                },
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "INVALID_DEPLOY_OPTIONS");
+        assert!(
+            response
+                .message
+                .contains("expected_service_source_fingerprint")
+        );
+        assert!(response.payload.is_none());
+    }
+
     #[tokio::test]
     async fn lock_loss_marks_applying_deploy_failed_with_warning() {
         let store = StoreDriver::memory();
@@ -2386,6 +2576,8 @@ mod tests {
             participants: Vec::new(),
             phases: Vec::new(),
             services: Vec::new(),
+            service_sources: Vec::new(),
+            service_source_fingerprint: String::new(),
             service_branch_sources: Vec::new(),
             volume_moves: Vec::new(),
             volume_clones: Vec::new(),
@@ -2448,6 +2640,8 @@ mod tests {
                     participants: Vec::new(),
                     phases: Vec::new(),
                     services: Vec::new(),
+                    service_sources: Vec::new(),
+                    service_source_fingerprint: String::new(),
                     service_branch_sources: Vec::new(),
                     volume_moves: Vec::new(),
                     volume_clones: Vec::new(),
@@ -2580,6 +2774,8 @@ mod tests {
                     participants: Vec::new(),
                     phases: Vec::new(),
                     services: Vec::new(),
+                    service_sources: Vec::new(),
+                    service_source_fingerprint: String::new(),
                     service_branch_sources: Vec::new(),
                     volume_moves: Vec::new(),
                     volume_clones: Vec::new(),
