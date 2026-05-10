@@ -394,7 +394,9 @@ impl<R: ShellRunner> ZfsDriver<R> {
         let stale_snapshot = self.dataset_property(dataset, "com.ployz:snapshot").await?;
         self.destroy_dataset_recursive(dataset).await?;
         if let Some(snapshot) = stale_snapshot {
-            self.destroy_snapshot(source_dataset, &snapshot).await?;
+            if snapshot != metadata.snapshot {
+                self.destroy_snapshot(source_dataset, &snapshot).await?;
+            }
         }
         Ok(true)
     }
@@ -1325,6 +1327,81 @@ mod tests {
                 .iter()
                 .any(|call| call.first().map(String::as_str) == Some("chmod"))
         );
+    }
+
+    #[tokio::test]
+    async fn clone_snapshot_keeps_requested_snapshot_when_replacing_retry_target() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        let mut target = spec();
+        target.dataset = "tank/ployz/pr-39/data".into();
+        target.mountpoint = "/tank/ployz/pr-39/data".into();
+        fake.push(0, "42\n", "");
+        fake.push(
+            0,
+            "tank/ployz/pr-39/data\t1073741824\t/tank/ployz/pr-39/data\n",
+            "",
+        );
+        fake.push(0, "volume_clone\n", "");
+        fake.push(0, "pr-39\n", "");
+        fake.push(0, "data\n", "");
+        fake.push(0, "default\n", "");
+        fake.push(0, "data\n", "");
+        fake.push(0, "branch\n", "");
+        fake.push(0, "", "");
+        push_overcommit_lookup(&fake, 1024_u64.pow(4), "tank/ployz\t0\n");
+        fake.push(1, "", "dataset does not exist");
+        fake.push(0, "", "");
+        fake.push(0, "", "");
+        fake.push(0, "", "");
+        fake.push(0, "", "");
+
+        let snapshot = driver
+            .clone_snapshot(
+                "tank/ployz/default/data",
+                "branch",
+                &target,
+                &clone_metadata(),
+            )
+            .await
+            .expect("retry clone target should be replaced");
+
+        assert_eq!(snapshot.name, "branch");
+        let calls = fake.calls();
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.as_slice() == ["zfs", "destroy", "-r", "tank/ployz/pr-39/data"])
+        );
+        assert!(!calls.iter().any(|call| call.as_slice()
+            == ["zfs", "destroy", "tank/ployz/default/data@branch"]));
+        assert!(calls.iter().any(|call| call.as_slice()
+            == [
+                "zfs",
+                "clone",
+                "-o",
+                "quota=1G",
+                "-o",
+                "mountpoint=/tank/ployz/pr-39/data",
+                "-o",
+                "com.ployz:role=volume_clone",
+                "-o",
+                "com.ployz:deploy_id=deploy-1",
+                "-o",
+                "com.ployz:namespace=pr-39",
+                "-o",
+                "com.ployz:volume=data",
+                "-o",
+                "com.ployz:source_namespace=default",
+                "-o",
+                "com.ployz:source_volume=data",
+                "-o",
+                "com.ployz:snapshot=branch",
+                "-o",
+                "com.ployz:snapshot_guid=42",
+                "tank/ployz/default/data@branch",
+                "tank/ployz/pr-39/data"
+            ]));
     }
 
     #[tokio::test]

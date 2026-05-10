@@ -354,7 +354,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
     let mut last_written_deploy_record = None;
     let mut durable_final_commit_record = None;
     let mut pending_phase_successes = Vec::new();
-    let mut executed_volume_clones = BTreeMap::new();
+    let mut executed_volume_clones: BTreeMap<String, ExecutedVolumeClone> = BTreeMap::new();
     let mut checkpointed_volumes = BTreeSet::new();
     let mut started_clone_volumes = BTreeSet::new();
     let result = async {
@@ -413,6 +413,15 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                 Err(error) => {
                     if error.phase_reached_running {
                         remove_phase_record(&mut unstarted_phase_records, &phase.phase_id);
+                    }
+                    for clone in executed_volume_clones.values() {
+                        if volume_has_started_or_attempted_attached_service(
+                            prepared.plan(),
+                            &clone.volume_name,
+                            &error.started_or_attempted_services,
+                        ) {
+                            started_clone_volumes.insert(clone.volume_name.clone());
+                        }
                     }
                     mark_pending_and_unstarted_phases_failed_best_effort(
                         store,
@@ -905,6 +914,7 @@ struct PhaseExecution {
 struct PhaseExecutionError {
     error: Error,
     phase_reached_running: bool,
+    started_or_attempted_services: BTreeSet<String>,
 }
 
 struct PhaseWorkError {
@@ -951,6 +961,7 @@ async fn execute_phase(
         return Err(PhaseExecutionError {
             error,
             phase_reached_running: false,
+            started_or_attempted_services: BTreeSet::new(),
         });
     }
 
@@ -988,6 +999,7 @@ async fn execute_phase(
             return Err(PhaseExecutionError {
                 error,
                 phase_reached_running: true,
+                started_or_attempted_services: BTreeSet::new(),
             });
         }
     };
@@ -1054,6 +1066,7 @@ async fn execute_phase(
                 &cleanup_branches,
             )
             .await;
+            let started_or_attempted_services = error.started_or_attempted_services;
             let error = error_with_clone_cleanup_failures(error.error, cleanup_errors);
             if let Err(update_error) =
                 mark_phase_failed(store, running, &error, now_unix_secs()).await
@@ -1068,6 +1081,7 @@ async fn execute_phase(
             Err(PhaseExecutionError {
                 error,
                 phase_reached_running: true,
+                started_or_attempted_services,
             })
         }
     }
