@@ -1,4 +1,5 @@
 use crate::deploy::{DeployOptions, MigrateServiceRequest};
+use crate::image::ImageStatusRequest;
 use crate::machine::{
     MachineAddOptions, MachineInstallOptions, MachineStorageAuthorityPeer,
     MachineStoragePromoteRequest, MachineTransitionGoal,
@@ -169,6 +170,17 @@ pub enum DaemonRequest {
     MigrateService {
         request: MigrateServiceRequest,
     },
+    ImageStatus {
+        request: ImageStatusRequest,
+    },
+    ImageOperationGet {
+        id: String,
+    },
+    ImageOperationList,
+    BuildOperationGet {
+        id: String,
+    },
+    BuildOperationList,
     DeployNodeInspectNamespace {
         namespace: String,
         deploy_id: String,
@@ -257,7 +269,12 @@ pub enum DaemonRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::build::BuildMachineRequest;
     use crate::deploy::MigrateServiceMode;
+    use crate::image::ImagePushRequest;
+    use ployz_types::model::{
+        BuildLocation, BuildMethod, ImageArtifact, ImageArtifactProvenance, ImageDigest, ImageRef,
+    };
 
     #[test]
     fn migrate_service_request_serializes_stable_wire_shape() {
@@ -312,5 +329,57 @@ mod tests {
                 .expect("serialize render manifest"),
             "\"render_manifest\""
         );
+    }
+
+    #[test]
+    fn image_push_request_round_trips_digest_artifact() {
+        let request = ImagePushRequest {
+            artifact: artifact(),
+            target_machine: MachineId("machine-a".into()),
+            source_image: Some("registry.example/api:sha".into()),
+        };
+
+        let json = serde_json::to_value(&request).expect("serialize image request");
+        let roundtrip: ImagePushRequest =
+            serde_json::from_value(json).expect("deserialize request");
+
+        assert_eq!(
+            roundtrip.artifact.digest().as_str(),
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(roundtrip.target_machine, MachineId("machine-a".into()));
+    }
+
+    #[test]
+    fn build_machine_request_serializes_method_as_snake_case() {
+        let request = BuildMachineRequest {
+            method: BuildMethod::Railpack,
+            context_path: ".".into(),
+            image_name: "api".into(),
+            machine_id: MachineId("builder-a".into()),
+            platform: None,
+            build_args: Default::default(),
+        };
+
+        let json = serde_json::to_value(&request).expect("serialize build request");
+
+        assert_eq!(json["method"], "railpack");
+    }
+
+    fn artifact() -> ImageArtifact {
+        ImageArtifact {
+            image: ImageRef {
+                repository: Some("registry.example/api".into()),
+                tag: Some("sha".into()),
+                digest: ImageDigest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            },
+            platform: None,
+            provenance: ImageArtifactProvenance::Build {
+                method: BuildMethod::Dockerfile,
+                location: BuildLocation::Local,
+                source_digest: None,
+            },
+            created_at: 1,
+        }
     }
 }

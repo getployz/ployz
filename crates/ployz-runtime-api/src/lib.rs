@@ -1,8 +1,13 @@
 mod identity;
+mod image;
 
 use async_trait::async_trait;
 
 pub use identity::{Identity, IdentityError};
+pub use image::{
+    ImageArchiveReader, ImageDiskPreflight, ImageReceivePreflightRequest, RuntimeImage,
+    RuntimeImageBackend, RuntimeImageError, RuntimeImageImportResult,
+};
 
 #[async_trait]
 pub trait RuntimeHandle: Send + Sync {

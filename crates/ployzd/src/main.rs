@@ -9,9 +9,9 @@ use clap::Parser;
 pub(crate) use cli::DebugTickTaskArg;
 pub(crate) use cli::{
     Cli, CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
-    DeployServiceArgs, InstallSourceArg, MachineAction, MachineInviteAction,
-    MachineOperationAction, MachineStorageAction, MeshAction, MigrateAction, MigrateServiceArgs,
-    RuntimeAction, RuntimeTargetArg, ServiceModeArg,
+    DeployServiceArgs, ImageAction, ImageOperationAction, InstallSourceArg, MachineAction,
+    MachineInviteAction, MachineOperationAction, MachineStorageAction, MeshAction, MigrateAction,
+    MigrateServiceArgs, RuntimeAction, RuntimeTargetArg, ServiceModeArg,
 };
 use cli_io::{cmd_rpc_stdio, cmd_runtime_stream, render_response, request_daemon};
 #[cfg(test)]
@@ -30,8 +30,8 @@ use ployzd::{BuiltInImages, HostPlatform, init_tracing, run_daemon, validate_run
 use request_builder::build_request;
 #[cfg(test)]
 use request_builder::{
-    build_debug_request, build_machine_request, build_migrate_service_request, build_service_spec,
-    upsert_service_in_manifest,
+    build_debug_request, build_image_request, build_machine_request, build_migrate_service_request,
+    build_service_spec, upsert_service_in_manifest,
 };
 use std::process;
 
@@ -108,6 +108,7 @@ async fn run() -> Result<i32> {
         | other @ Command::Runtime { .. }
         | other @ Command::Mesh { .. }
         | other @ Command::Machine { .. }
+        | other @ Command::Image { .. }
         | other @ Command::Volume { .. }
         | other @ Command::RpcStdio => {
             let platform = HostPlatform::detect();
@@ -500,6 +501,60 @@ mod tests {
         let request = build_machine_request(MachineAction::Rtt).expect("machine rtt request");
 
         assert!(matches!(request, DaemonRequest::MachineRtt));
+    }
+
+    #[test]
+    fn parse_image_status_command() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let cli = Cli::try_parse_from([
+            "ployzd",
+            "image",
+            "status",
+            "--digest",
+            &digest,
+            "--machine",
+            "machine-a",
+        ])
+        .expect("image status args should parse");
+
+        let Command::Image {
+            action: ImageAction::Status { digest, machine },
+        } = cli.command
+        else {
+            panic!("expected image status command");
+        };
+        let expected_digest = format!("sha256:{}", "a".repeat(64));
+        assert_eq!(digest.as_deref(), Some(expected_digest.as_str()));
+        assert_eq!(machine.as_deref(), Some("machine-a"));
+    }
+
+    #[test]
+    fn build_image_status_request_encodes_filters() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let request = build_image_request(ImageAction::Status {
+            digest: Some(digest.clone()),
+            machine: Some("machine-a".into()),
+        })
+        .expect("image status request");
+
+        let DaemonRequest::ImageStatus { request } = request else {
+            panic!("expected image status request");
+        };
+        assert_eq!(request.digest.expect("digest").as_str(), digest);
+        assert_eq!(request.machine_id.expect("machine").0, "machine-a");
+    }
+
+    #[test]
+    fn build_image_operation_get_request() {
+        let request = build_image_request(ImageAction::Operation {
+            action: ImageOperationAction::Get { id: "op-1".into() },
+        })
+        .expect("image operation request");
+
+        let DaemonRequest::ImageOperationGet { id } = request else {
+            panic!("expected image operation get request");
+        };
+        assert_eq!(id, "op-1");
     }
 
     #[test]

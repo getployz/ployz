@@ -9,7 +9,9 @@ pub mod spec;
 
 #[cfg(feature = "docker")]
 pub use engine::{ContainerEngine, EnsureAction, EnsureResult, WorkloadResourceSnapshot};
-pub use image_ref::{DockerImageRef, parse_docker_image_ref};
+pub use image_ref::{
+    DockerImageRef, digest_from_image_ref, parse_docker_image_ref, require_digest_from_image_ref,
+};
 #[cfg(feature = "docker")]
 pub use probe::{Probe, ProbeRunner};
 pub use spec::{

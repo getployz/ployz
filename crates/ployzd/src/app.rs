@@ -297,8 +297,12 @@ async fn resume_running_network(state: &Arc<RwLock<DaemonState>>) {
 
 async fn recover_interrupted_operations_on_startup(state: &Arc<RwLock<DaemonState>>) {
     let state_guard = state.read().await;
-    state_guard.recover_machine_operations_on_startup().await;
-    state_guard.recover_zfs_transfers_on_startup().await;
+    tokio::join!(
+        state_guard.recover_machine_operations_on_startup(),
+        state_guard.recover_image_operations_on_startup(),
+        state_guard.recover_build_operations_on_startup(),
+        state_guard.recover_zfs_transfers_on_startup(),
+    );
 }
 
 fn spawn_command_task(

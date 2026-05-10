@@ -1227,6 +1227,8 @@ fn deploy_phase_failure(error: &Error) -> DeployPhaseFailure {
 fn deploy_phase_failure_code(error: &Error) -> &'static str {
     match error {
         Error::Deploy(_) => "DEPLOY_ERROR",
+        Error::Image(_) => "IMAGE_ERROR",
+        Error::Build(_) => "BUILD_ERROR",
         Error::Runtime(_) => "RUNTIME_ERROR",
         Error::Storage(_) => "STORAGE_ERROR",
         Error::Store(_) => "STORE_ERROR",

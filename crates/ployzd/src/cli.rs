@@ -192,6 +192,10 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: MachineAction,
     },
+    Image {
+        #[command(subcommand)]
+        action: ImageAction,
+    },
     #[command(hide = true)]
     Volume {
         #[command(subcommand)]
@@ -481,6 +485,26 @@ pub(crate) enum MachineStorageAction {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum MachineOperationAction {
+    List,
+    Get { id: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ImageAction {
+    Status {
+        #[arg(long)]
+        digest: Option<String>,
+        #[arg(long)]
+        machine: Option<String>,
+    },
+    Operation {
+        #[command(subcommand)]
+        action: ImageOperationAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ImageOperationAction {
     List,
     Get { id: String },
 }

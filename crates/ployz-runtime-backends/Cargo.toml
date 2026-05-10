@@ -18,7 +18,7 @@ ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
 backon = { workspace = true }
 tokio = { workspace = true, features = ["process", "fs"] }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["codec", "io"] }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

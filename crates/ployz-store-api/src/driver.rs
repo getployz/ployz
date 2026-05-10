@@ -1,18 +1,18 @@
 use crate::memory::{MemoryService, MemoryStore};
 use crate::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
-    DeployStore, InstanceStatusStore, InviteStore, MachineMembershipStore, MachineSubscription,
-    PeerRttObservation, PeerRttStore, RoutingEventSubscription, RoutingStateStore,
-    StoreRuntimeControl, SyncProbe, SyncStatus,
+    DeployStore, ImageAvailabilityStore, InstanceStatusStore, InviteStore, MachineMembershipStore,
+    MachineSubscription, PeerRttObservation, PeerRttStore, RoutingEventSubscription,
+    RoutingStateStore, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
-    DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord, InstanceId, InstanceStatusRecord,
-    InviteRecord, MachineId, MachineMembership, RoutingState, ServiceBranchLineageRecord,
-    ServiceReleaseRecord, ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord,
-    VolumeRecord,
+    DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord, ImageAvailabilityRecord, ImageDigest,
+    InstanceId, InstanceStatusRecord, InviteRecord, MachineId, MachineMembership, RoutingState,
+    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
+    VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::sync::Arc;
@@ -23,6 +23,7 @@ pub struct StoreDriver {
     machines: Arc<dyn MachineMembershipStore>,
     invites: Arc<dyn InviteStore>,
     routing: Arc<dyn RoutingStateStore>,
+    images: Arc<dyn ImageAvailabilityStore>,
     deploys: Arc<dyn DeployStore>,
     instances: Arc<dyn InstanceStatusStore>,
     certificates: Arc<dyn CertificateStore>,
@@ -51,6 +52,7 @@ impl StoreDriver {
             store.clone(),
             store.clone(),
             store.clone(),
+            store.clone(),
             store,
         )
     }
@@ -61,6 +63,7 @@ impl StoreDriver {
         machines: Arc<dyn MachineMembershipStore>,
         invites: Arc<dyn InviteStore>,
         routing: Arc<dyn RoutingStateStore>,
+        images: Arc<dyn ImageAvailabilityStore>,
         deploys: Arc<dyn DeployStore>,
         instances: Arc<dyn InstanceStatusStore>,
         certificates: Arc<dyn CertificateStore>,
@@ -72,6 +75,7 @@ impl StoreDriver {
             machines,
             invites,
             routing,
+            images,
             deploys,
             instances,
             certificates,
@@ -161,6 +165,25 @@ impl RoutingStateStore for StoreDriver {
 
     async fn subscribe_routing_events(&self) -> Result<RoutingEventSubscription> {
         self.routing.subscribe_routing_events().await
+    }
+}
+
+#[async_trait]
+impl ImageAvailabilityStore for StoreDriver {
+    async fn upsert_image_availability(&self, record: &ImageAvailabilityRecord) -> Result<()> {
+        self.images.upsert_image_availability(record).await
+    }
+
+    async fn get_image_availability(
+        &self,
+        machine_id: &MachineId,
+        digest: &ImageDigest,
+    ) -> Result<Option<ImageAvailabilityRecord>> {
+        self.images.get_image_availability(machine_id, digest).await
+    }
+
+    async fn list_image_availability(&self) -> Result<Vec<ImageAvailabilityRecord>> {
+        self.images.list_image_availability().await
     }
 }
 

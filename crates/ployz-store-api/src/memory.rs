@@ -1,18 +1,19 @@
 use crate::deploy_commit_facts::DeployCommitFacts;
 use crate::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
-    DeployStore, InstanceStatusStore, InviteStore, MachineMembershipStore, RoutingEventEnvelope,
-    RoutingEventSubscription, RoutingStateStore, StoreRuntimeControl, SyncProbe, SyncStatus,
+    DeployStore, ImageAvailabilityStore, InstanceStatusStore, InviteStore, MachineMembershipStore,
+    RoutingEventEnvelope, RoutingEventSubscription, RoutingStateStore, StoreRuntimeControl,
+    SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::error::{Error, Result, SubscriptionStream};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     CertificateEvent, CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord,
-    DeployPhaseState, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineMembership, RoutingEvent, RoutingState, ServiceBranchLineageRecord,
-    ServiceReleaseRecord, ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord,
-    VolumeRecord,
+    DeployPhaseState, DeployRecord, ImageAvailabilityRecord, ImageDigest, InstanceId,
+    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership, RoutingEvent,
+    RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
+    VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::{BTreeMap, HashMap};
@@ -35,6 +36,7 @@ struct StoreInner {
     deploy_commit_facts: DeployCommitFacts,
     deploy_records: HashMap<DeployId, DeployRecord>,
     deploy_phase_records: HashMap<(Namespace, DeployId, DeployPhaseId), DeployPhaseRecord>,
+    image_availability: BTreeMap<(MachineId, ImageDigest), ImageAvailabilityRecord>,
     instance_status: HashMap<InstanceId, InstanceStatusRecord>,
     acme_accounts: HashMap<String, AcmeAccountRecord>,
     certificates: BTreeMap<String, CertificateRecord>,
@@ -70,6 +72,7 @@ impl MemoryStore {
                 deploy_commit_facts: DeployCommitFacts::new(),
                 deploy_records: HashMap::new(),
                 deploy_phase_records: HashMap::new(),
+                image_availability: BTreeMap::new(),
                 instance_status: HashMap::new(),
                 acme_accounts: HashMap::new(),
                 certificates: BTreeMap::new(),
@@ -311,6 +314,35 @@ impl MemoryStore {
         let state = Self::routing_state(&inner);
         let receiver = subscribe_routing_broadcast(inner.routing_events.subscribe());
         Ok((state, receiver))
+    }
+}
+
+#[async_trait]
+impl ImageAvailabilityStore for MemoryStore {
+    async fn upsert_image_availability(&self, record: &ImageAvailabilityRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner.image_availability.insert(
+            (record.machine_id.clone(), record.digest.clone()),
+            record.clone(),
+        );
+        Ok(())
+    }
+
+    async fn get_image_availability(
+        &self,
+        machine_id: &MachineId,
+        digest: &ImageDigest,
+    ) -> Result<Option<ImageAvailabilityRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner
+            .image_availability
+            .get(&(machine_id.clone(), digest.clone()))
+            .cloned())
+    }
+
+    async fn list_image_availability(&self) -> Result<Vec<ImageAvailabilityRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.image_availability.values().cloned().collect())
     }
 }
 
@@ -883,6 +915,7 @@ mod tests {
     use super::*;
     use ployz_types::model::{
         DeployPhaseCommitPolicy, DeployPhaseFailure, DeployPhaseRollbackPolicy, DeployPhaseState,
+        ImageArtifact, ImageArtifactProvenance, ImagePlatform, ImagePresence, ImageRef,
         ServiceBranchLineageRecord, ServiceRevisionRecord, VolumeBranchLineageRecord,
         VolumeMovementRecord,
     };
@@ -903,6 +936,94 @@ mod tests {
             created_at: 1,
             updated_at: 1,
             labels: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn image_availability_is_keyed_by_machine_and_digest() {
+        let store = MemoryStore::new();
+        let digest = ImageDigest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into());
+        let record_a = image_record("machine-a", digest.clone(), 1);
+        let record_b = image_record("machine-b", digest.clone(), 2);
+
+        store
+            .upsert_image_availability(&record_b)
+            .await
+            .expect("upsert image b");
+        store
+            .upsert_image_availability(&record_a)
+            .await
+            .expect("upsert image a");
+
+        assert_eq!(
+            store
+                .get_image_availability(&MachineId("machine-a".into()), &digest)
+                .await
+                .expect("get image"),
+            Some(record_a.clone())
+        );
+        assert_eq!(
+            store.list_image_availability().await.expect("list images"),
+            vec![record_a, record_b]
+        );
+    }
+
+    #[tokio::test]
+    async fn image_availability_upsert_replaces_same_key_only() {
+        let store = MemoryStore::new();
+        let digest = ImageDigest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into());
+        let first = image_record("machine-a", digest.clone(), 1);
+        let replacement = ImageAvailabilityRecord {
+            updated_at: 5,
+            ..first.clone()
+        };
+
+        store
+            .upsert_image_availability(&first)
+            .await
+            .expect("upsert first");
+        store
+            .upsert_image_availability(&replacement)
+            .await
+            .expect("upsert replacement");
+
+        assert_eq!(
+            store
+                .get_image_availability(&MachineId("machine-a".into()), &digest)
+                .await
+                .expect("get image"),
+            Some(replacement)
+        );
+    }
+
+    fn image_record(
+        machine: &str,
+        digest: ImageDigest,
+        updated_at: u64,
+    ) -> ImageAvailabilityRecord {
+        let artifact = ImageArtifact {
+            image: ImageRef {
+                repository: Some("registry.example/api".into()),
+                tag: Some("sha".into()),
+                digest: digest.clone(),
+            },
+            platform: Some(ImagePlatform {
+                os: "linux".into(),
+                architecture: "amd64".into(),
+                variant: None,
+            }),
+            provenance: ImageArtifactProvenance::External { source: None },
+            created_at: updated_at,
+        };
+        ImageAvailabilityRecord {
+            machine_id: MachineId(machine.into()),
+            digest,
+            presence: ImagePresence::Present {
+                artifact,
+                recorded_at: updated_at,
+                source_operation_id: None,
+            },
+            updated_at,
         }
     }
 
