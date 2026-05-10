@@ -1627,6 +1627,13 @@ async fn execute_volume_clones(
         .map(|volume| volume.declaration.name.clone())
         .collect::<Vec<_>>();
     if !clone_volume_names.is_empty() {
+        events.push(DeployEvent {
+            step: "preflight_clone_replacement".into(),
+            message: format!(
+                "preflighting clone replacement for volumes {} by draining uncommitted namespace instances",
+                clone_volume_names.join(", ")
+            ),
+        });
         let mut stopped_instance_events =
             stop_uncommitted_namespace_instances_before_volume_clones(
                 participant_client,

@@ -2165,6 +2165,26 @@ pub struct VolumeClonePlan {
     pub attached_services: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VolumeClonePreflightAction {
+    DrainAndRemoveBeforeCloneReplacement,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VolumeClonePreflightScope {
+    UncommittedNamespaceInstances,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeClonePreflightPlan {
+    pub phase_id: DeployPhaseId,
+    pub volumes: Vec<String>,
+    pub action: VolumeClonePreflightAction,
+    pub scope: VolumeClonePreflightScope,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployPreview {
     pub namespace: Namespace,
@@ -2178,6 +2198,8 @@ pub struct DeployPreview {
     pub volume_moves: Vec<VolumeMovePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volume_clones: Vec<VolumeClonePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volume_clone_preflights: Vec<VolumeClonePreflightPlan>,
     pub warnings: Vec<String>,
 }
 
@@ -2239,6 +2261,71 @@ mod tests {
         let result = serde_json::from_str::<ImageAvailabilityRecord>(json);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn deploy_preview_serializes_volume_clone_preflight_contract() {
+        let preview = DeployPreview {
+            namespace: Namespace("pr-39".into()),
+            manifest_hash: "manifest".into(),
+            participants: vec![MachineId("machine-a".into())],
+            phases: Vec::new(),
+            services: Vec::new(),
+            service_branch_sources: Vec::new(),
+            volume_moves: Vec::new(),
+            volume_clones: Vec::new(),
+            volume_clone_preflights: vec![VolumeClonePreflightPlan {
+                phase_id: DeployPhaseId("data".into()),
+                volumes: vec!["data".into(), "cache".into()],
+                action: VolumeClonePreflightAction::DrainAndRemoveBeforeCloneReplacement,
+                scope: VolumeClonePreflightScope::UncommittedNamespaceInstances,
+            }],
+            warnings: Vec::new(),
+        };
+
+        let json = serde_json::to_value(&preview).expect("serialize deploy preview");
+
+        assert_eq!(
+            json["volume_clone_preflights"][0]["phase_id"],
+            serde_json::json!("data")
+        );
+        assert_eq!(
+            json["volume_clone_preflights"][0]["volumes"],
+            serde_json::json!(["data", "cache"])
+        );
+        assert_eq!(
+            json["volume_clone_preflights"][0]["action"],
+            serde_json::json!("drain_and_remove_before_clone_replacement")
+        );
+        assert_eq!(
+            json["volume_clone_preflights"][0]["scope"],
+            serde_json::json!("uncommitted_namespace_instances")
+        );
+        let roundtrip: DeployPreview =
+            serde_json::from_value(json).expect("deserialize deploy preview");
+        assert_eq!(
+            roundtrip.volume_clone_preflights,
+            preview.volume_clone_preflights
+        );
+    }
+
+    #[test]
+    fn deploy_preview_defaults_missing_volume_clone_preflights() {
+        let json = r#"
+            {
+                "namespace": "pr-39",
+                "manifest_hash": "manifest",
+                "participants": [],
+                "phases": [],
+                "services": [],
+                "warnings": []
+            }
+        "#;
+
+        let preview: DeployPreview =
+            serde_json::from_str(json).expect("deserialize legacy deploy preview");
+
+        assert!(preview.volume_clone_preflights.is_empty());
     }
 
     #[test]
