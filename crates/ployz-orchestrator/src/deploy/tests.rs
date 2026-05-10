@@ -756,6 +756,52 @@ async fn resolve_plan_moves_draining_volume_only_to_storage_capable_target() {
 }
 
 #[tokio::test]
+async fn resolve_plan_moves_unattached_declared_volume_from_draining_machine() {
+    let store = StoreDriver::memory();
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = test_manifest(Vec::new());
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+
+    store
+        .upsert_self_machine(&test_machine("machine-a", MachineLifecycle::Draining))
+        .await
+        .expect("seed machine-a");
+    store
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-b");
+    seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
+
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve plan");
+
+    let [volume] = plan.volumes() else {
+        panic!("expected one planned volume");
+    };
+    assert_eq!(volume.machine_id, MachineId("machine-b".into()));
+    assert!(volume.attached_services.is_empty());
+    assert_eq!(
+        volume
+            .movement
+            .as_ref()
+            .map(|movement| (&movement.from_machine, &movement.to_machine)),
+        Some((
+            &MachineId("machine-a".into()),
+            &MachineId("machine-b".into())
+        ))
+    );
+    let preview = plan.to_preview(Vec::new());
+    let [volume_move] = preview.volume_moves.as_slice() else {
+        panic!("expected one preview volume move");
+    };
+    assert_eq!(volume_move.volume, "data");
+    assert!(volume_move.attached_services.is_empty());
+}
+
+#[tokio::test]
 async fn resolve_plan_moves_draining_volume_to_existing_service_volume_pin() {
     let store = StoreDriver::memory();
     let local_machine_id = MachineId("local".into());
