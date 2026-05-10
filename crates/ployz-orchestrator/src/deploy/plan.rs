@@ -357,6 +357,7 @@ pub(super) async fn resolve_plan(
                             &attached_services,
                             &service_volume_refs,
                             &volume_machine_map,
+                            &volume_move_intents,
                             &volume_map,
                             &machine_map,
                         );
@@ -1329,6 +1330,7 @@ fn preferred_existing_volume_pin(
     attached_services: &[String],
     service_volume_refs: &HashMap<String, Vec<String>>,
     planned_volume_machines: &HashMap<String, MachineId>,
+    volume_move_intents: &HashMap<String, VolumeMoveIntent>,
     current_volumes: &HashMap<String, VolumeRecord>,
     machine_map: &HashMap<MachineId, MachineMembership>,
 ) -> Option<MachineId> {
@@ -1344,6 +1346,14 @@ fn preferred_existing_volume_pin(
             let Some(machine_id) = planned_volume_machines
                 .get(service_volume)
                 .cloned()
+                .or_else(|| {
+                    pending_volume_move_target(
+                        service_volume,
+                        volume_move_intents,
+                        current_volumes,
+                        machine_map,
+                    )
+                })
                 .or_else(|| {
                     current_volumes
                         .get(service_volume)
@@ -1371,6 +1381,24 @@ fn preferred_existing_volume_pin(
         }
     }
     preferred
+}
+
+fn pending_volume_move_target(
+    volume_name: &str,
+    volume_move_intents: &HashMap<String, VolumeMoveIntent>,
+    current_volumes: &HashMap<String, VolumeRecord>,
+    machine_map: &HashMap<MachineId, MachineMembership>,
+) -> Option<MachineId> {
+    let intent = volume_move_intents.get(volume_name)?;
+    let record = current_volumes.get(volume_name)?;
+    if record.machine_id != intent.from_machine || intent.from_machine == intent.to_machine {
+        return None;
+    }
+    let machine = machine_map.get(&intent.to_machine)?;
+    if !machine.storage || !is_new_placement_candidate(&machine.placement_candidate()) {
+        return None;
+    }
+    Some(intent.to_machine.clone())
 }
 
 fn volume_move_target(
