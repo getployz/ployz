@@ -1779,6 +1779,7 @@ mod tests {
                 rollback_policy: DeployPhaseRollbackPolicy::Reversible,
                 advance_policy: ployz_types::model::DeployPhaseAdvancePolicy::Immediate,
                 started_at: 1,
+                commit_deploy_id: None,
             })
             .await
             .expect("seed running checkpoint phase");
@@ -1796,6 +1797,8 @@ mod tests {
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
+                volume_movements: Vec::new(),
+                phase_commits: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
                     service: service.name.clone(),
