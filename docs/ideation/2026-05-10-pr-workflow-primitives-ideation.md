@@ -399,6 +399,272 @@ and invitation mechanics.
 
 **Status:** Unexplored
 
+## Harder Futures From Further External Scan
+
+These ideas came from looking beyond standard preview URLs toward partial
+microservice environments, Kubernetes ephemeral environment products, request
+routing sandboxes, and ephemeral test-data platforms.
+
+Additional external signals:
+
+- Signadot's sandbox model emphasizes routing requests to changed services while
+  falling through to a baseline environment for everything else. Source:
+  [Signadot sandboxes](https://www.signadot.com/docs/concepts/sandboxes).
+- Okteto preview environments center on GitHub pull request automation for
+  Kubernetes-backed environments. Source:
+  [Okteto previews](https://www.okteto.com/docs/1.28/previews/).
+- Bunnyshell and Qovery frame ephemeral environments as full application
+  stacks with automatic PR lifecycle management. Sources:
+  [Bunnyshell ephemeral environments](https://documentation.bunnyshell.com/docs/quickstart-ephemeral-environments),
+  [Qovery preview environments](https://hub.qovery.com/docs/using-qovery/configuration/preview-environments/).
+- Garden focuses on dependency-aware development environments for services in
+  Kubernetes and cloud-native stacks. Source:
+  [Garden documentation](https://docs.garden.io/).
+- Tonic, Replibyte, and similar tools treat realistic anonymized data as its
+  own workflow, not a side effect of environment creation. Sources:
+  [Tonic Ephemeral](https://www.tonic.ai/ephemeral),
+  [Replibyte](https://github.com/Qovery/replibyte).
+
+### 11. Request-Routed Partial Branches
+
+**Description:** Create branch environments where only changed services are
+forked, and all other service calls fall through to a stable baseline namespace
+using explicit request routing. The branch plan would include a route context
+such as PR id, branch token, header, subdomain, or actor session. Services that
+understand the context route to PR-local dependencies; services without a
+branch-local dependency use the baseline.
+
+**Axis:** PR source composition
+
+**Basis:** `external:` Signadot's sandbox model is built around request routing
+to changed services with fallback to a baseline; `direct:` the Ployz roadmap
+already separates branch from portal and says portal must be explicit attach
+evidence; `reasoned:` full-stack cloning every service is too expensive for
+large microservice repos, but pure shared environments cannot test cross-service
+changes safely.
+
+**Rationale:** This is the highest-upside "go harder" direction. It gives
+frontend-only and one-service PRs near-instant environments while retaining a
+path to full isolated branches when needed. Ployz can make the fallback explicit
+as portal/shared source evidence instead of hiding it behind mesh routing.
+
+**Downsides:** Request context propagation is hard. Async workers, queues,
+scheduled jobs, webhooks, and background fanout can escape the branch unless the
+preview states exactly which paths are isolated and which are baseline-shared.
+
+**Confidence:** 87%
+
+**Complexity:** High
+
+**Status:** Unexplored
+
+### 12. PR Capsule As A Test Data Product
+
+**Description:** Treat the data slice inside a PR capsule as a first-class
+artifact with its own lifecycle: source snapshot, subset policy, anonymization
+policy, seed overlay, synthetic fixtures, refresh command, and destruction
+proof. The branch can use ZFS clone when local data exists, provider branches
+when external databases are used, or generated masked data when source policy
+blocks cloning.
+
+**Axis:** State and data safety
+
+**Basis:** `direct:` `docs/future/cloud.md` already separates snapshot clone,
+seed, empty, fresh, shared, and masking strategies; `external:` Tonic and
+Replibyte show that realistic anonymized data is a standalone developer
+workflow; `reasoned:` many PR environments fail because app services are easy
+to fork but useful, safe data is not.
+
+**Rationale:** This moves Ployz from "we can clone a database" to "we can give
+every PR the right data shape for review." That is a larger product wedge than
+raw environment creation.
+
+**Downsides:** Data synthesis and masking are policy-heavy. Core should model
+hooks, evidence, hashes, and failure states; cloud/operator policy should own
+the actual anonymization quality.
+
+**Confidence:** 90%
+
+**Complexity:** High
+
+**Status:** Unexplored
+
+### 13. Branch Refresh Command
+
+**Description:** Add an explicit command to refresh a PR capsule from a newer
+source checkpoint: clone or rebase volumes, rerun masking, preserve selected PR
+delta services, and produce a before/after evidence record. This is not a
+background sync. It is a user, GitHub, cloud, or agent-invoked operation.
+
+**Axis:** Automation lifecycle
+
+**Basis:** `direct:` Ployz avoids background reconciliation but supports
+explicit commands; `direct:` PR environments that live for days need fresh
+source truth; `reasoned:` stale preview data creates false test confidence, but
+automatic refresh can destroy important debug state.
+
+**Rationale:** Long-running PRs need a clean way to say "rerun this review
+against today's production-like baseline" without destroying the whole capsule
+or silently mutating it overnight.
+
+**Downsides:** Refresh can invalidate previous validation evidence. The capsule
+must mark old test results stale when source data or source service revisions
+change.
+
+**Confidence:** 84%
+
+**Complexity:** Medium
+
+**Status:** Unexplored
+
+### 14. Isolation Coverage Report
+
+**Description:** Every PR preview should include an isolation coverage report:
+which HTTP paths, async jobs, queues, cron tasks, webhooks, external services,
+volumes, secrets, and routes are isolated, portal-attached, read-only shared,
+mutable shared, omitted, or unknown. The report becomes part of the PR evidence
+and promotion gate.
+
+**Axis:** Evidence and agent interface
+
+**Basis:** `direct:` portal is explicitly dangerous if users confuse live attach
+with branch lineage; `external:` request-routed preview environments depend on
+clear routing and fallback behavior; `reasoned:` without an isolation report,
+reviewers cannot know whether they are testing the PR or a blend of PR and
+baseline behavior.
+
+**Rationale:** This is the review primitive that makes partial environments
+safe. It turns a subtle system property into something the PR author and agent
+can inspect.
+
+**Downsides:** Full coverage is hard to infer. The v1 should report what the
+branch plan can prove and mark unmodeled surfaces as unknown or unsupported.
+
+**Confidence:** 86%
+
+**Complexity:** Medium
+
+**Status:** Unexplored
+
+### 15. Evidence-Gated PR Automation
+
+**Description:** Let a PR capsule expose machine-readable gates: environment
+ready, route reachable, smoke tests passed, migration rehearsal passed, visual
+review passed, data policy approved, source freshness current, cleanup clean,
+rollback point available. GitHub checks, cloud UI, and agents read those gates
+instead of scraping logs or comments.
+
+**Axis:** Evidence and agent interface
+
+**Basis:** `direct:` `docs/routing-and-deploys.md` already defines deploy
+status, phase records, checkpoint commits, and failure-after-checkpoint
+semantics; `external:` GitHub deployments/statuses and visual-review tools like
+Chromatic show that PR review workflows are built around status artifacts;
+`reasoned:` an agent needs stable machine-readable gates to decide whether to
+merge, retry, inspect, or destroy.
+
+**Rationale:** This is where Ployz becomes agent-native in a practical way. The
+agent does not need privileged intuition; it reads the same operation evidence
+as a human and takes the next explicit command.
+
+**Downsides:** Gate names can become policy if core owns too much of them. Core
+should emit facts and primitive readiness; cloud/project settings should decide
+which gates are required for merge.
+
+**Confidence:** 88%
+
+**Complexity:** Medium
+
+**Status:** Unexplored
+
+### 16. Production Shadow Branch
+
+**Description:** For selected PRs, run the changed service against cloned or
+read-only production-derived dependencies using mirrored production traffic, but
+discard writes or route them to branch-local state. The branch never serves user
+responses. It produces compatibility, latency, error, and migration-risk
+evidence before merge.
+
+**Axis:** Promotion and merge semantics
+
+**Basis:** `reasoned:` preview environments test synthetic reviewer traffic,
+but many production bugs come from real traffic shape; `direct:` Ployz owns
+routes, deploy phases, and source policies; `external:` traffic shadowing and
+service-mesh preview patterns are common in mature microservice delivery
+systems.
+
+**Rationale:** This is the "crazy but plausible" path for high-confidence
+rollouts. It can turn a PR environment into a pre-production compatibility
+probe without exposing users to branch responses.
+
+**Downsides:** It is dangerous if writes, side effects, webhooks, jobs, or
+external API calls are not fenced. This should be a late primitive with strict
+side-effect policy, not an early PR environment feature.
+
+**Confidence:** 72%
+
+**Complexity:** Very High
+
+**Status:** Unexplored
+
+### 17. Disposable Agent Workbench
+
+**Description:** Give every coding agent task an optional PR capsule workbench:
+branch environment, realistic data mode, test commands, observability links,
+allowed destructive operations, and auto-destroy policy. The workbench exposes a
+small command API: refresh, deploy delta, run migration rehearsal, run tests,
+collect evidence, destroy.
+
+**Axis:** Automation lifecycle
+
+**Basis:** `direct:` `VISION.md` says the same primitives should be usable by
+agents; `direct:` `docs/future/cloud.md` already describes agent/CI integration
+around environment create/status/delete/deploy; `reasoned:` agents become more
+effective when destructive validation happens in a safe stateful sandbox rather
+than on the developer laptop or production-like shared staging.
+
+**Rationale:** This is a differentiated product story. Ployz is not just
+preview hosting; it is an operational substrate where agents can do real
+stateful work safely.
+
+**Downsides:** Agent permissions, cost limits, TTL, and data safety need to be
+strong before this is safe as a default.
+
+**Confidence:** 85%
+
+**Complexity:** High
+
+**Status:** Unexplored
+
+### 18. Review Replay
+
+**Description:** Preserve enough capsule evidence to replay a review later:
+source commit, source snapshots, generated images, branch plan, data policy,
+test artifacts, visual diffs, and promotion/cleanup results. A reviewer or
+agent can answer "what exactly did we approve?" after the branch has been
+destroyed.
+
+**Axis:** Evidence and agent interface
+
+**Basis:** `direct:` Ployz deploy commits and lineage records already preserve
+operation evidence while avoiding raw manifest storage; `external:` visual
+review platforms keep PR artifacts after the live preview disappears;
+`reasoned:` ephemeral environments disappear, but compliance/debugging often
+needs the approval evidence to survive.
+
+**Rationale:** This converts ephemeral environments from temporary URLs into
+durable review records. It also improves agent memory: future debugging can
+compare the approved capsule with what production adopted.
+
+**Downsides:** Artifact retention has cost and privacy implications. Raw logs,
+screenshots, and data-derived outputs need retention policy and redaction.
+
+**Confidence:** 80%
+
+**Complexity:** Medium
+
+**Status:** Unexplored
+
 ## Strong Workflow Futures
 
 ### Frontend-Only PR
