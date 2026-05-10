@@ -21,7 +21,7 @@ use crate::model::{
     InstancePhase, InstanceStatusRecord, MachineId, MachineMembership, VolumeBranchLineageRecord,
     VolumeMovementRecord, VolumeRecord,
 };
-use futures_util::stream::{self, StreamExt, TryStreamExt};
+use futures_util::stream::{self, FuturesUnordered, StreamExt, TryStreamExt};
 use ployz_store_api::{DeployCommit, DeployStore, InstanceStatusStore, StoreDriver};
 use ployz_types::spec::{VolumeCloneConsistency, VolumeCloneDataPolicy};
 use ployz_types::time::now_unix_secs;
@@ -52,6 +52,13 @@ struct MachineStartupResult {
     machine_id: MachineId,
     events: Vec<DeployEvent>,
     started: Vec<StartedSlot>,
+    started_or_attempted_services: BTreeSet<String>,
+}
+
+#[derive(Debug)]
+struct MachineStartupFailure {
+    error: Error,
+    partial: MachineStartupResult,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +72,13 @@ struct StartedSlot {
 pub(super) struct PhaseStartupResult {
     events: Vec<DeployEvent>,
     pub(super) started: HashMap<(String, String), InstanceStatusRecord>,
+    started_or_attempted_services: BTreeSet<String>,
+}
+
+#[derive(Debug)]
+struct PhaseStartupFailure {
+    error: Error,
+    partial: PhaseStartupResult,
 }
 
 #[derive(Debug)]
@@ -839,6 +853,40 @@ fn volume_has_started_attached_service(
         })
 }
 
+fn cleanup_eligible_unstarted_volume_clones(
+    plan: &ResolvedPlan,
+    branches: &BTreeMap<String, ExecutedVolumeClone>,
+    started_or_attempted_services: &BTreeSet<String>,
+) -> BTreeMap<String, ExecutedVolumeClone> {
+    branches
+        .iter()
+        .filter(|(volume_name, _branch)| {
+            !volume_has_started_or_attempted_attached_service(
+                plan,
+                volume_name,
+                started_or_attempted_services,
+            )
+        })
+        .map(|(volume_name, branch)| (volume_name.clone(), branch.clone()))
+        .collect()
+}
+
+fn volume_has_started_or_attempted_attached_service(
+    plan: &ResolvedPlan,
+    volume_name: &str,
+    started_or_attempted_services: &BTreeSet<String>,
+) -> bool {
+    plan.volumes()
+        .iter()
+        .find(|volume| volume.declaration.name == volume_name)
+        .is_some_and(|volume| {
+            volume
+                .attached_services
+                .iter()
+                .any(|service| started_or_attempted_services.contains(service))
+        })
+}
+
 fn is_post_commit_routing_publish_failure(error: &Error) -> bool {
     matches!(
         error,
@@ -857,6 +905,11 @@ struct PhaseExecution {
 struct PhaseExecutionError {
     error: Error,
     phase_reached_running: bool,
+}
+
+struct PhaseWorkError {
+    error: Error,
+    started_or_attempted_services: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -947,21 +1000,35 @@ async fn execute_phase(
             &phase.phase_id,
             Some(&included_phase_volumes),
         )
-        .await?;
+        .await
+        .map_err(|error| PhaseWorkError {
+            error,
+            started_or_attempted_services: BTreeSet::new(),
+        })?;
         events.extend(volume_moves.events);
 
         let phase_services = phase_services(phase);
-        let startup = run_phase_startup_for_services(
+        let startup = match run_phase_startup_for_services(
             store,
             participant_client,
             participants,
             prepared.plan(),
             Some(&phase_services),
         )
-        .await?;
+        .await
+        {
+            Ok(startup) => startup,
+            Err(failure) => {
+                events.extend(failure.partial.events);
+                return Err(PhaseWorkError {
+                    error: failure.error,
+                    started_or_attempted_services: failure.partial.started_or_attempted_services,
+                });
+            }
+        };
         events.extend(startup.events);
 
-        Ok::<_, Error>((startup.started, volume_moves.movements, events))
+        Ok::<_, PhaseWorkError>((startup.started, volume_moves.movements, events))
     }
     .await;
 
@@ -974,15 +1041,20 @@ async fn execute_phase(
             running_phase: running,
         }),
         Err(error) => {
+            let cleanup_branches = cleanup_eligible_unstarted_volume_clones(
+                prepared.plan(),
+                &volume_clones.branches,
+                &error.started_or_attempted_services,
+            );
             let cleanup_errors = cleanup_uncommitted_volume_clones(
                 participant_client,
                 participants,
                 prepared.plan().namespace(),
                 prepared.deploy_id(),
-                &volume_clones.branches,
+                &cleanup_branches,
             )
             .await;
-            let error = error_with_clone_cleanup_failures(error, cleanup_errors);
+            let error = error_with_clone_cleanup_failures(error.error, cleanup_errors);
             if let Err(update_error) =
                 mark_phase_failed(store, running, &error, now_unix_secs()).await
             {
@@ -1279,7 +1351,9 @@ pub(super) async fn run_phase_startup(
     participants: &ParticipantSet,
     plan: &ResolvedPlan,
 ) -> Result<PhaseStartupResult> {
-    run_phase_startup_for_services(store, participant_client, participants, plan, None).await
+    run_phase_startup_for_services(store, participant_client, participants, plan, None)
+        .await
+        .map_err(|failure| failure.error)
 }
 
 async fn run_phase_startup_for_services(
@@ -1288,7 +1362,7 @@ async fn run_phase_startup_for_services(
     participants: &ParticipantSet,
     plan: &ResolvedPlan,
     included_services: Option<&BTreeSet<String>>,
-) -> Result<PhaseStartupResult> {
+) -> std::result::Result<PhaseStartupResult, PhaseStartupFailure> {
     let mut phase_queues: BTreeMap<u32, BTreeMap<MachineId, Vec<StartTask>>> = BTreeMap::new();
     for service in plan.services() {
         if let Some(included_services) = included_services
@@ -1326,25 +1400,88 @@ async fn run_phase_startup_for_services(
 
     let mut result = PhaseStartupResult::default();
     for (_phase, machine_tasks) in phase_queues {
-        let machine_results: Vec<MachineStartupResult> = stream::iter(machine_tasks.into_iter())
-            .map(|(machine_id, tasks)| async move {
-                let machine = participants.get(&machine_id)?;
-                run_machine_start_queue(store, participant_client, participants, machine, tasks)
-                    .await
-            })
-            .buffer_unordered(PHASE_MACHINE_CONCURRENCY)
-            .try_collect()
-            .await?;
+        let mut pending_tasks = machine_tasks.into_iter();
+        let mut in_flight = FuturesUnordered::new();
+        let start_machine_queue = |machine_id: MachineId, tasks: Vec<StartTask>| async move {
+            let machine = match participants.get(&machine_id) {
+                Ok(machine) => machine,
+                Err(error) => {
+                    return Err(MachineStartupFailure {
+                        error,
+                        partial: MachineStartupResult {
+                            machine_id,
+                            events: Vec::new(),
+                            started: Vec::new(),
+                            started_or_attempted_services: BTreeSet::new(),
+                        },
+                    });
+                }
+            };
+            run_machine_start_queue(store, participant_client, participants, machine, tasks).await
+        };
 
-        let mut machine_results = machine_results;
-        machine_results.sort_by(|left, right| left.machine_id.0.cmp(&right.machine_id.0));
+        for _ in 0..PHASE_MACHINE_CONCURRENCY {
+            let Some((machine_id, tasks)) = pending_tasks.next() else {
+                break;
+            };
+            in_flight.push(start_machine_queue(machine_id, tasks));
+        }
+
+        let mut saw_failure = false;
+        let mut machine_results = Vec::new();
+        while let Some(machine_result) = in_flight.next().await {
+            if !saw_failure {
+                match &machine_result {
+                    Ok(_) => {
+                        if let Some((machine_id, tasks)) = pending_tasks.next() {
+                            in_flight.push(start_machine_queue(machine_id, tasks));
+                        }
+                    }
+                    Err(_failure) => {
+                        saw_failure = true;
+                    }
+                }
+            }
+            machine_results.push(machine_result);
+        }
+
+        machine_results.sort_by(|left, right| {
+            let left_id = match left {
+                Ok(result) => &result.machine_id,
+                Err(failure) => &failure.partial.machine_id,
+            };
+            let right_id = match right {
+                Ok(result) => &result.machine_id,
+                Err(failure) => &failure.partial.machine_id,
+            };
+            left_id.0.cmp(&right_id.0)
+        });
+        let mut first_error = None;
         for machine_result in machine_results {
+            let machine_result = match machine_result {
+                Ok(machine_result) => machine_result,
+                Err(failure) => {
+                    if first_error.is_none() {
+                        first_error = Some(failure.error);
+                    }
+                    failure.partial
+                }
+            };
             result.events.extend(machine_result.events);
+            result
+                .started_or_attempted_services
+                .extend(machine_result.started_or_attempted_services);
             for started in machine_result.started {
                 result
                     .started
                     .insert((started.service, started.slot_id.0.clone()), started.status);
             }
+        }
+        if let Some(error) = first_error {
+            return Err(PhaseStartupFailure {
+                error,
+                partial: result,
+            });
         }
     }
 
@@ -1725,16 +1862,28 @@ async fn run_machine_start_queue(
     participants: &ParticipantSet,
     machine: &MachineMembership,
     tasks: Vec<StartTask>,
-) -> Result<MachineStartupResult> {
-    let machine_id = tasks
-        .first()
-        .map(|task| task.machine_id.clone())
-        .ok_or(Error::Deploy(DeployError::EmptyMachineStartQueue))?;
+) -> std::result::Result<MachineStartupResult, MachineStartupFailure> {
+    let machine_id = match tasks.first() {
+        Some(task) => task.machine_id.clone(),
+        None => {
+            return Err(MachineStartupFailure {
+                error: Error::Deploy(DeployError::EmptyMachineStartQueue),
+                partial: MachineStartupResult {
+                    machine_id: machine.id.clone(),
+                    events: Vec::new(),
+                    started: Vec::new(),
+                    started_or_attempted_services: BTreeSet::new(),
+                },
+            });
+        }
+    };
     let mut events = Vec::new();
     let mut started = Vec::new();
+    let mut started_or_attempted_services = BTreeSet::new();
 
     for task in tasks {
-        let status = participant_client
+        started_or_attempted_services.insert(task.service.clone());
+        let status = match participant_client
             .start_candidate(
                 &machine.id,
                 &participants.namespace,
@@ -1747,8 +1896,38 @@ async fn run_machine_start_queue(
                     volumes_json: task.volumes_json.clone(),
                 },
             )
-            .await?;
-        store.record_instance_status(&status).await?;
+            .await
+        {
+            Ok(status) => status,
+            Err(error) => {
+                return Err(MachineStartupFailure {
+                    error,
+                    partial: MachineStartupResult {
+                        machine_id,
+                        events,
+                        started,
+                        started_or_attempted_services,
+                    },
+                });
+            }
+        };
+        let started_slot = StartedSlot {
+            service: task.service.clone(),
+            slot_id: task.slot_id.clone(),
+            status: status.clone(),
+        };
+        if let Err(error) = store.record_instance_status(&status).await {
+            started.push(started_slot);
+            return Err(MachineStartupFailure {
+                error,
+                partial: MachineStartupResult {
+                    machine_id,
+                    events,
+                    started,
+                    started_or_attempted_services,
+                },
+            });
+        }
         events.push(DeployEvent {
             step: "start_candidate".into(),
             message: format!(
@@ -1756,17 +1935,14 @@ async fn run_machine_start_queue(
                 task.service, task.slot_id, status.instance_id, task.machine_id
             ),
         });
-        started.push(StartedSlot {
-            service: task.service,
-            slot_id: task.slot_id,
-            status,
-        });
+        started.push(started_slot);
     }
 
     Ok(MachineStartupResult {
         machine_id,
         events,
         started,
+        started_or_attempted_services,
     })
 }
 
