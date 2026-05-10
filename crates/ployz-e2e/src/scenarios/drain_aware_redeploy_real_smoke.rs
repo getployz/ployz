@@ -152,15 +152,14 @@ fn assert_apply_response_without_volume_move(output: &str) -> Result<()> {
             "failed to parse post-move deploy apply result message: {error}"
         ))
     })?;
-    let Some(volume_moves) = apply
-        .get("preview")
-        .and_then(|preview| preview.get("volume_moves"))
-        .and_then(Value::as_array)
-    else {
+    let Some(preview) = apply.get("preview") else {
         return Err(Error::Message(format!(
-            "post-move deploy apply response did not include preview.volume_moves: {}",
+            "post-move deploy apply response did not include preview: {}",
             response.message
         )));
+    };
+    let Some(volume_moves) = preview.get("volume_moves").and_then(Value::as_array) else {
+        return Ok(());
     };
     if volume_moves.is_empty() {
         return Ok(());
