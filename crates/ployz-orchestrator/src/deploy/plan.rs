@@ -5,6 +5,7 @@ use crate::model::{
     DeployPhasePlan, DeployPhaseRollbackPolicy, DeployPhaseWork, DeployPreview, MachineId,
     MachineLifecycle, MachineMembership, ServiceBranchLineageRecord, ServiceBranchSourcePlan,
     ServicePlan, ServiceReleaseRecord, ServiceReleaseSlot, SlotId, SlotPlan, VolumeClonePlan,
+    VolumeClonePreflightAction, VolumeClonePreflightPlan, VolumeClonePreflightScope,
     VolumeMovePlan, VolumeRecord,
 };
 use ployz_store_api::{DeployStore, MachineMembershipStore, StoreDriver};
@@ -229,6 +230,31 @@ impl ResolvedPlan {
                         data_policy: clone_source.data_policy,
                         consistency: clone_source.consistency,
                         attached_services: volume.attached_services.clone(),
+                    })
+                })
+                .collect(),
+            volume_clone_preflights: self
+                .phases
+                .iter()
+                .filter_map(|phase| {
+                    let volumes = phase
+                        .work
+                        .iter()
+                        .filter_map(|work| match work {
+                            DeployPhaseWork::VolumeClone { volume, .. } => Some(volume.clone()),
+                            DeployPhaseWork::Service { .. }
+                            | DeployPhaseWork::Volume { .. }
+                            | DeployPhaseWork::VolumeMove { .. } => None,
+                        })
+                        .collect::<Vec<_>>();
+                    if volumes.is_empty() {
+                        return None;
+                    }
+                    Some(VolumeClonePreflightPlan {
+                        phase_id: phase.phase_id.clone(),
+                        volumes,
+                        action: VolumeClonePreflightAction::DrainAndRemoveBeforeCloneReplacement,
+                        scope: VolumeClonePreflightScope::UncommittedNamespaceInstances,
                     })
                 })
                 .collect(),
