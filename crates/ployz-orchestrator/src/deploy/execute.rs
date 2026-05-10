@@ -394,6 +394,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         let mut started = HashMap::new();
         let mut executed_volume_moves = BTreeMap::new();
         let mut checkpointed_services = BTreeSet::new();
+        let mut stopped_uncommitted_instance_ids = BTreeSet::new();
 
         for phase in &phases {
             let phase_execution_result = execute_phase(
@@ -403,6 +404,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                 &prepared,
                 phase,
                 started_at,
+                &mut stopped_uncommitted_instance_ids,
             )
             .await;
             let phase_execution = match phase_execution_result {
@@ -955,6 +957,7 @@ async fn execute_phase(
     prepared: &PreparedDeploy,
     phase: &DeployPhasePlan,
     started_at: u64,
+    stopped_uncommitted_instance_ids: &mut BTreeSet<String>,
 ) -> std::result::Result<PhaseExecution, PhaseExecutionError> {
     let running = deploy_phase_record(&prepared, &phase, DeployPhaseState::Running, started_at);
     if let Err(error) = store.upsert_deploy_phase(&running).await {
@@ -978,6 +981,7 @@ async fn execute_phase(
         prepared.plan(),
         &phase.phase_id,
         Some(&included_phase_volumes),
+        stopped_uncommitted_instance_ids,
     )
     .await
     {
@@ -1599,32 +1603,46 @@ async fn execute_volume_clones(
     plan: &ResolvedPlan,
     phase_id: &DeployPhaseId,
     included_volumes: Option<&BTreeSet<String>>,
+    stopped_uncommitted_instance_ids: &mut BTreeSet<String>,
 ) -> Result<VolumeCloneExecution> {
     let mut events = Vec::new();
     let mut branches = BTreeMap::new();
-    for volume in plan.volumes().iter().filter(|volume| {
-        volume.clone_source.is_some()
-            && matches!(volume_record_change(volume), VolumeChange::Create)
-    }) {
-        if let Some(included_volumes) = included_volumes
-            && !included_volumes.contains(&volume.declaration.name)
-        {
-            continue;
-        }
+    let clone_volumes = plan
+        .volumes()
+        .iter()
+        .filter(|volume| {
+            volume.clone_source.is_some()
+                && matches!(volume_record_change(volume), VolumeChange::Create)
+        })
+        .filter(|volume| {
+            included_volumes
+                .map(|included| included.contains(&volume.declaration.name))
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    let clone_volume_names = clone_volumes
+        .iter()
+        .map(|volume| volume.declaration.name.clone())
+        .collect::<Vec<_>>();
+    if !clone_volume_names.is_empty() {
+        let mut stopped_instance_events =
+            stop_uncommitted_namespace_instances_before_volume_clones(
+                participant_client,
+                participants,
+                plan,
+                &clone_volume_names,
+                stopped_uncommitted_instance_ids,
+            )
+            .await?;
+        events.append(&mut stopped_instance_events);
+    }
+
+    for volume in clone_volumes {
         let Some(clone_source) = &volume.clone_source else {
             continue;
         };
         participants.get(&clone_source.source_machine)?;
         participants.get(&volume.machine_id)?;
-
-        let mut stopped_writer_events = stop_uncommitted_namespace_instances_before_volume_clone(
-            participant_client,
-            participants,
-            plan,
-            volume,
-        )
-        .await?;
-        events.append(&mut stopped_writer_events);
 
         let snapshot = volume_clone_snapshot_name(
             &participants.deploy_id,
@@ -1872,12 +1890,14 @@ async fn stop_volume_writers(
     Ok(events)
 }
 
-async fn stop_uncommitted_namespace_instances_before_volume_clone(
+async fn stop_uncommitted_namespace_instances_before_volume_clones(
     participant_client: &dyn DeployParticipantClient,
     participants: &ParticipantSet,
     plan: &ResolvedPlan,
-    cloned_volume: &crate::deploy::plan::PlannedVolume,
+    cloned_volume_names: &[String],
+    stopped_uncommitted_instance_ids: &mut BTreeSet<String>,
 ) -> Result<Vec<DeployEvent>> {
+    let cloned_volumes = cloned_volume_names.join(", ");
     let committed_instance_ids = plan
         .services()
         .iter()
@@ -1889,6 +1909,7 @@ async fn stop_uncommitted_namespace_instances_before_volume_clone(
     for status in &participants.instances {
         if status.namespace == *plan.namespace()
             && !committed_instance_ids.contains(status.instance_id.0.as_str())
+            && !stopped_uncommitted_instance_ids.contains(status.instance_id.0.as_str())
             && !matches!(status.phase, InstancePhase::Failed | InstancePhase::Removed)
         {
             current_instances.insert(
@@ -1901,7 +1922,6 @@ async fn stop_uncommitted_namespace_instances_before_volume_clone(
             );
         }
     }
-
     let mut events = Vec::new();
     for (_instance_id_key, (instance_id, machine_id, service)) in current_instances {
         participants.get(&machine_id)?;
@@ -1913,11 +1933,12 @@ async fn stop_uncommitted_namespace_instances_before_volume_clone(
                 &instance_id,
             )
             .await?;
+        stopped_uncommitted_instance_ids.insert(instance_id.0.clone());
         events.push(DeployEvent {
-            step: "stop_volume_writer".into(),
+            step: "stop_uncommitted_instance".into(),
             message: format!(
-                "drained uncommitted instance {} for service {} before cloning volume {}",
-                instance_id, service, cloned_volume.declaration.name
+                "drained uncommitted instance {} for service {} before cloning volumes {}",
+                instance_id, service, cloned_volumes
             ),
         });
         participant_client
@@ -1928,11 +1949,12 @@ async fn stop_uncommitted_namespace_instances_before_volume_clone(
                 &instance_id,
             )
             .await?;
+        stopped_uncommitted_instance_ids.insert(instance_id.0.clone());
         events.push(DeployEvent {
-            step: "stop_volume_writer".into(),
+            step: "stop_uncommitted_instance".into(),
             message: format!(
-                "removed uncommitted instance {} for service {} before cloning volume {}",
-                instance_id, service, cloned_volume.declaration.name
+                "removed uncommitted instance {} for service {} before cloning volumes {}",
+                instance_id, service, cloned_volumes
             ),
         });
     }
