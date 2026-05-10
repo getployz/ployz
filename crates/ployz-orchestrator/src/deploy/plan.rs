@@ -351,7 +351,21 @@ pub(super) async fn resolve_plan(
                         &machine_map,
                     ) =>
                     {
-                        resolve_inferred_volume_move(record, &desired_machines, &machine_map)?
+                        let preferred_target = preferred_existing_volume_pin(
+                            &declaration.name,
+                            record,
+                            &attached_services,
+                            &service_volume_refs,
+                            &volume_machine_map,
+                            &volume_map,
+                            &machine_map,
+                        );
+                        resolve_inferred_volume_move(
+                            record,
+                            &desired_machines,
+                            &machine_map,
+                            preferred_target.as_ref(),
+                        )?
                     }
                     None => (record.machine_id.clone(), None),
                 }
@@ -1273,7 +1287,24 @@ fn resolve_inferred_volume_move(
     record: &VolumeRecord,
     desired_machines: &[MachineId],
     machine_map: &HashMap<MachineId, MachineMembership>,
+    preferred_target: Option<&MachineId>,
 ) -> Result<(MachineId, Option<PlannedVolumeMove>)> {
+    if let Some(target) = preferred_target
+        && desired_machines.contains(target)
+        && target != &record.machine_id
+        && machine_map
+            .get(target)
+            .is_some_and(|machine| machine.storage)
+    {
+        return Ok((
+            target.clone(),
+            Some(PlannedVolumeMove {
+                from_machine: record.machine_id.clone(),
+                to_machine: target.clone(),
+            }),
+        ));
+    }
+
     let Some(target) = desired_machines.iter().find(|machine_id| {
         **machine_id != record.machine_id
             && machine_map
@@ -1290,6 +1321,56 @@ fn resolve_inferred_volume_move(
             to_machine: target.clone(),
         }),
     ))
+}
+
+fn preferred_existing_volume_pin(
+    volume_name: &str,
+    record: &VolumeRecord,
+    attached_services: &[String],
+    service_volume_refs: &HashMap<String, Vec<String>>,
+    planned_volume_machines: &HashMap<String, MachineId>,
+    current_volumes: &HashMap<String, VolumeRecord>,
+    machine_map: &HashMap<MachineId, MachineMembership>,
+) -> Option<MachineId> {
+    let mut preferred = None;
+    for service in attached_services {
+        let Some(service_volumes) = service_volume_refs.get(service) else {
+            continue;
+        };
+        for service_volume in service_volumes {
+            if service_volume == volume_name {
+                continue;
+            }
+            let Some(machine_id) = planned_volume_machines
+                .get(service_volume)
+                .cloned()
+                .or_else(|| {
+                    current_volumes
+                        .get(service_volume)
+                        .map(|record| record.machine_id.clone())
+                })
+            else {
+                continue;
+            };
+            if machine_id == record.machine_id {
+                continue;
+            }
+            let Some(machine) = machine_map.get(&machine_id) else {
+                continue;
+            };
+            if !machine.storage || !is_new_placement_candidate(&machine.placement_candidate()) {
+                continue;
+            }
+            if preferred
+                .as_ref()
+                .is_some_and(|existing: &MachineId| existing != &machine_id)
+            {
+                return None;
+            }
+            preferred = Some(machine_id);
+        }
+    }
+    preferred
 }
 
 fn volume_move_target(
