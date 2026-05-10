@@ -42,11 +42,7 @@ impl DaemonState {
             | DaemonRequest::MeshPeerPrepareUpdate { .. }
             | DaemonRequest::MeshPeerExecuteUpdate { .. }
             | DaemonRequest::MachineRemove { .. }
-            | DaemonRequest::MeshPeerRemoveMachine { .. }
-            | DaemonRequest::DeployNodeCloneVolume { .. }
-            | DaemonRequest::DeployNodeCleanupUncommittedVolumeClone { .. } => {
-                RequestLane::Exclusive
-            }
+            | DaemonRequest::MeshPeerRemoveMachine { .. } => RequestLane::Exclusive,
             DaemonRequest::Ping
             | DaemonRequest::Status
             | DaemonRequest::Doctor
@@ -58,6 +54,8 @@ impl DaemonState {
             | DaemonRequest::DeployNodeStartCandidate { .. }
             | DaemonRequest::DeployNodeDrainInstance { .. }
             | DaemonRequest::DeployNodeRemoveInstance { .. }
+            | DaemonRequest::DeployNodeCloneVolume { .. }
+            | DaemonRequest::DeployNodeCleanupUncommittedVolumeClone { .. }
             | DaemonRequest::RuntimeSubscribe
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }
@@ -452,48 +450,6 @@ impl DaemonState {
                 )
                 .await
             }
-            DaemonRequest::DeployNodeCloneVolume {
-                namespace,
-                deploy_id,
-                volume,
-                source_namespace,
-                source_volume,
-                snapshot,
-                quota,
-                mode,
-                owner,
-            } => {
-                self.handle_deploy_node_clone_volume(
-                    &namespace,
-                    &deploy_id,
-                    &volume,
-                    &source_namespace,
-                    &source_volume,
-                    &snapshot,
-                    &quota,
-                    &mode,
-                    &owner,
-                )
-                .await
-            }
-            DaemonRequest::DeployNodeCleanupUncommittedVolumeClone {
-                namespace,
-                deploy_id,
-                volume,
-                source_namespace,
-                source_volume,
-                snapshot,
-            } => {
-                self.handle_deploy_node_cleanup_uncommitted_volume_clone(
-                    &namespace,
-                    &deploy_id,
-                    &volume,
-                    &source_namespace,
-                    &source_volume,
-                    &snapshot,
-                )
-                .await
-            }
             DaemonRequest::Ping
             | DaemonRequest::Status
             | DaemonRequest::Doctor
@@ -505,6 +461,8 @@ impl DaemonState {
             | DaemonRequest::DeployNodeStartCandidate { .. }
             | DaemonRequest::DeployNodeDrainInstance { .. }
             | DaemonRequest::DeployNodeRemoveInstance { .. }
+            | DaemonRequest::DeployNodeCloneVolume { .. }
+            | DaemonRequest::DeployNodeCleanupUncommittedVolumeClone { .. }
             | DaemonRequest::RuntimeSubscribe
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }
@@ -561,5 +519,32 @@ mod tests {
             version: "latest".into(),
         });
         assert_eq!(lane, RequestLane::Exclusive);
+    }
+
+    #[test]
+    fn deploy_volume_clone_node_rpcs_route_to_shared_lane() {
+        let clone_lane = DaemonState::request_lane(&DaemonRequest::DeployNodeCloneVolume {
+            namespace: "pr-39".into(),
+            deploy_id: "deploy-1".into(),
+            volume: "data".into(),
+            source_namespace: "prod".into(),
+            source_volume: "data".into(),
+            snapshot: "snap".into(),
+            quota: String::new(),
+            mode: String::new(),
+            owner: String::new(),
+        });
+        assert_eq!(clone_lane, RequestLane::Shared);
+
+        let cleanup_lane =
+            DaemonState::request_lane(&DaemonRequest::DeployNodeCleanupUncommittedVolumeClone {
+                namespace: "pr-39".into(),
+                deploy_id: "deploy-1".into(),
+                volume: "data".into(),
+                source_namespace: "prod".into(),
+                source_volume: "data".into(),
+                snapshot: "snap".into(),
+            });
+        assert_eq!(cleanup_lane, RequestLane::Shared);
     }
 }
