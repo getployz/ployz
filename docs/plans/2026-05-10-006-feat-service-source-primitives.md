@@ -107,6 +107,16 @@ Out of scope:
    revision revalidation or compare-and-swap; broader source leases can be a
    later phase primitive.
 
+7. Preview-to-apply drift checks require an explicit preview baseline.
+   Apply cannot infer what the user previously previewed from
+   `manifest_json` alone. The apply request must carry an expected preview
+   fingerprint or expected branch-source revision baseline emitted by preview;
+   otherwise apply can only compare plans resolved inside the same apply call
+   and will silently accept source drift that happened after the user's preview.
+   This slice should either add that baseline to `DeployOptions`/apply request
+   and enforce it before participant RPCs, or explicitly defer
+   preview-to-apply drift rejection.
+
 ## Implementation Units
 
 ### U1. Model resolved service source preview
@@ -153,6 +163,10 @@ Test scenarios:
 
 Files:
 
+- `crates/ployz-api/src/deploy.rs`
+- `crates/ployz-api/src/request.rs`
+- `crates/ployzd/src/request_builder.rs`
+- `crates/ployzd/src/daemon/handlers/deploy.rs`
 - `crates/ployz-orchestrator/src/deploy/plan.rs`
 - `crates/ployz-orchestrator/src/deploy/tests.rs`
 
@@ -167,8 +181,17 @@ Approach:
   source namespace/service and do not expose portal preview evidence.
 - Add source mode evidence to `DeployPreview` alongside existing
   `service_branch_sources`.
-- On apply, re-resolve branch source revisions before participant RPCs and reject
-  source drift with a structured error.
+- Emit a stable preview baseline for branch source evidence, either as a
+  preview fingerprint or as expected source revisions for each branch-derived
+  service.
+- Extend apply input, preferably through `DeployOptions`, so callers can send
+  the expected preview baseline back with `DeployApply`.
+- On apply with a baseline, re-resolve branch source revisions before
+  participant inspection/RPCs and reject drift from the expected preview
+  baseline with a structured error.
+- On apply without a baseline, do not claim preview-to-apply source drift
+  protection. At most, keep the existing same-apply plan stability check that
+  compares plans resolved during that apply call.
 
 Test scenarios:
 
@@ -176,8 +199,12 @@ Test scenarios:
 - A branch service preview shows source namespace/service/revision.
 - A service move intent remains rejected before preview and does not appear in
   the fresh source set.
-- Source release drift between preview and apply is rejected before participant
-  RPCs.
+- Preview emits a baseline/fingerprint that includes branch source revisions.
+- Apply with a matching expected preview baseline succeeds.
+- Apply with a stale expected preview baseline rejects branch source drift
+  before participant inspect/start RPCs.
+- Apply without an expected preview baseline does not run the
+  preview-to-apply-drift test path and does not document that guarantee.
 - Portal intent does not preview source namespace/service details.
 
 ### U3. Preserve commit evidence boundaries
