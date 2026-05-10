@@ -417,6 +417,8 @@ impl DaemonState {
     ) -> ployz_api::DaemonResponse {
         match self.take_active_for_destroy(network_id) {
             Ok(active) => {
+                self.revoke_image_sessions_for_teardown("mesh destroy")
+                    .await;
                 let data_dir = self.data_dir.clone();
                 let machine_id = self.identity.machine_id.clone();
                 let operation_id_for_log = operation_id.to_string();
@@ -462,6 +464,8 @@ impl DaemonState {
 
         match self.take_active_for_destroy(network_id) {
             Ok(active) => {
+                self.revoke_image_sessions_for_teardown("machine remove")
+                    .await;
                 let data_dir = self.data_dir.clone();
                 let local_machine_id = self.identity.machine_id.clone();
                 let operation_id_for_log = operation_id.to_string();
@@ -490,10 +494,15 @@ impl DaemonState {
 
     async fn destroy_local_mesh_runtime(&mut self, network_id: &NetworkId) -> Result<(), String> {
         let active = self.take_active_for_destroy(network_id)?;
-        if let Err(error) = self.image_registry.revoke_all_sessions().await {
-            warn!(%error, "image receive session cleanup failed during mesh destroy");
-        }
+        self.revoke_image_sessions_for_teardown("mesh destroy")
+            .await;
         Self::perform_mesh_teardown(self.data_dir.clone(), active).await
+    }
+
+    async fn revoke_image_sessions_for_teardown(&self, operation: &'static str) {
+        if let Err(error) = self.image_registry.revoke_all_sessions().await {
+            warn!(%error, operation, "image receive session cleanup failed during mesh teardown");
+        }
     }
 
     fn take_active_for_destroy(&mut self, network_id: &NetworkId) -> Result<ActiveMesh, String> {

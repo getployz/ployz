@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -42,6 +43,10 @@ const RANGE_HEADER: &str = "range";
 const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_MANIFEST_CONTENT_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 const SESSION_TTL_SECS: u64 = 60 * 60;
+#[cfg(not(test))]
+const LISTENER_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const LISTENER_SHUTDOWN_GRACE: Duration = Duration::from_millis(50);
 
 pub(crate) struct ImageRegistryListenerHandle {
     #[cfg(test)]
@@ -69,9 +74,24 @@ impl ImageRegistryListenerHandle {
 
     pub(crate) async fn shutdown(self) {
         self.cancel.cancel();
-        if let Err(error) = self.task.await {
-            if !error.is_cancelled() {
-                tracing::warn!(?error, "image registry listener join failed");
+        let mut task = self.task;
+        tokio::select! {
+            result = &mut task => {
+                if let Err(error) = result {
+                    if !error.is_cancelled() {
+                        tracing::warn!(?error, "image registry listener join failed");
+                    }
+                }
+            }
+            () = tokio::time::sleep(LISTENER_SHUTDOWN_GRACE) => {
+                task.abort();
+                if let Err(error) = task.await {
+                    if error.is_cancelled() {
+                        tracing::warn!("image registry listener aborted after graceful shutdown timeout");
+                    } else {
+                        tracing::warn!(?error, "image registry listener join failed after abort");
+                    }
+                }
             }
         }
     }
@@ -1525,6 +1545,19 @@ mod tests {
         let response = String::from_utf8(response).expect("utf8 response");
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
         assert!(response.contains("docker-distribution-api-version"));
+    }
+
+    #[tokio::test]
+    async fn listener_shutdown_aborts_after_grace_period() {
+        let handle = ImageRegistryListenerHandle {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            cancel: CancellationToken::new(),
+            task: tokio::spawn(std::future::pending()),
+        };
+
+        tokio::time::timeout(LISTENER_SHUTDOWN_GRACE * 3, handle.shutdown())
+            .await
+            .expect("shutdown should be bounded");
     }
 
     fn session_headers(session: ImageRegistrySession) -> HeaderMap {
