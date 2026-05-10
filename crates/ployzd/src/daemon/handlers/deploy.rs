@@ -1,20 +1,22 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::daemon::DaemonState;
+use crate::daemon::{ActiveMesh, DaemonState};
 use ployz_api::{
     DaemonPayload, DaemonResponse, DeployCandidateStartedPayload, DeployFailurePayload,
-    DeployFailureReason, DeployNamespaceSnapshotPayload, DeployOptions, VolumeZfsTransferPayload,
+    DeployFailureReason, DeployNamespaceSnapshotPayload, DeployOptions, MigrateServiceMode,
+    MigrateServiceRequest, VolumeZfsTransferPayload,
 };
 use ployz_cert_backends::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
-use ployz_nats::{NatsDeployLock, NatsLocks};
+use ployz_nats::{NatsDeployLock, NatsLocks, NatsStore};
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcFailure, RpcPolicy};
 use ployz_orchestrator::certificates::{AcmeAccountCoordinator, CertificateManagerConfig};
 use ployz_orchestrator::coordination::ReservationId;
 use ployz_orchestrator::deploy::participant::{
-    DeployParticipantClient, MoveVolumeRequest, MoveVolumeResult, StartCandidateRequest,
+    CleanupVolumeCloneRequest, CloneVolumeRequest, CloneVolumeResult, DeployParticipantClient,
+    MoveVolumeRequest, MoveVolumeResult, StartCandidateRequest,
 };
 use ployz_orchestrator::deploy::{
     apply_with_deploy_id_and_certificate_coordination, new_deploy_id, preview,
@@ -28,7 +30,10 @@ use ployz_types::model::{
     DeployId, DeployPhaseCommitPolicy, DeployPhaseFailure, DeployPhaseState, InstanceId,
     InstanceStatusRecord, MachineId, MachineMembership,
 };
-use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec, VolumeDeclaration};
+use ployz_types::spec::{
+    DeployIntent, DeployManifest, MountSource, Namespace, ServiceSpec, VolumeDeclaration,
+    VolumeIntent, VolumeIntentHint, VolumeScope,
+};
 
 const DEPLOY_LOCK_TTL: Duration = Duration::from_secs(30 * 60);
 const DEPLOY_LOCK_RENEW_INTERVAL: Duration = Duration::from_secs(10 * 60);
@@ -37,6 +42,73 @@ const DEPLOY_VOLUME_MOVE_START_RPC_TIMEOUT: Duration = Duration::from_secs(60);
 const DEPLOY_VOLUME_MOVE_POLL_RPC_TIMEOUT: Duration = Duration::from_secs(60);
 const DEPLOY_VOLUME_MOVE_RPC_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 const DEPLOY_VOLUME_MOVE_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const DEPLOY_VOLUME_CLONE_RPC_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+const DEPLOY_VOLUME_CLONE_CLEANUP_RPC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+#[derive(Debug, thiserror::Error)]
+enum MigrateRenderError {
+    #[error("invalid migrate request: {message}")]
+    InvalidRequest { message: String },
+    #[error("migrate target machine cannot be empty")]
+    EmptyTargetMachine,
+    #[error("service '{namespace}/{service}' is not deployed")]
+    ServiceMissing { namespace: String, service: String },
+    #[error("service '{namespace}/{service}' has no managed volume mounts")]
+    NoManagedVolumeMounts { namespace: String, service: String },
+    #[error(
+        "service '{namespace}/{service}' uses bind mount '{bind_source}' at '{target}', which migrate service cannot transfer"
+    )]
+    UnsupportedBindMount {
+        namespace: String,
+        service: String,
+        bind_source: String,
+        target: String,
+    },
+    #[error("service '{namespace}/{service}' mounts volume '{volume}' more than once")]
+    DuplicateManagedVolumeMount {
+        namespace: String,
+        service: String,
+        volume: String,
+    },
+    #[error("service '{namespace}/{service}' mounted volume '{volume}' has no committed record")]
+    MissingCommittedVolume {
+        namespace: String,
+        service: String,
+        volume: String,
+    },
+    #[error("volume '{volume}' is already on target machine '{machine}'")]
+    AlreadyOnTarget { volume: String, machine: String },
+    #[error("volume '{volume}' must have scope=single to migrate a service")]
+    UnsupportedVolumeScope { volume: String },
+    #[error("failed to export namespace '{namespace}' for migration: {message}")]
+    ExportFailed { namespace: String, message: String },
+    #[error("failed to encode migration manifest: {message}")]
+    ManifestEncodeFailed { message: String },
+}
+
+impl MigrateRenderError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidRequest { .. } => "MIGRATE_INVALID_REQUEST",
+            Self::ManifestEncodeFailed { .. } => "MIGRATE_MANIFEST_ENCODE_FAILED",
+            Self::ExportFailed { .. } => "MIGRATE_EXPORT_FAILED",
+            Self::EmptyTargetMachine
+            | Self::ServiceMissing { .. }
+            | Self::NoManagedVolumeMounts { .. }
+            | Self::UnsupportedBindMount { .. }
+            | Self::DuplicateManagedVolumeMount { .. }
+            | Self::MissingCommittedVolume { .. }
+            | Self::AlreadyOnTarget { .. }
+            | Self::UnsupportedVolumeScope { .. } => "MIGRATE_RENDER_FAILED",
+        }
+    }
+}
+
+struct DeployApplyRuntime {
+    nats_store: NatsStore,
+    nats_locks: NatsLocks,
+    deploy_lock: NatsDeployLock,
+}
 
 #[async_trait::async_trait]
 trait DeployMoveRpcClient: Clone + Send + Sync {
@@ -140,6 +212,22 @@ impl DaemonState {
             Ok(active) => active,
             Err(response) => return *response,
         };
+        let runtime = match self
+            .prepare_deploy_apply_runtime(active, &manifest.namespace)
+            .await
+        {
+            Ok(runtime) => runtime,
+            Err(response) => return response,
+        };
+        self.apply_manifest_with_runtime(active, &manifest, runtime)
+            .await
+    }
+
+    async fn prepare_deploy_apply_runtime(
+        &self,
+        active: &ActiveMesh,
+        namespace: &Namespace,
+    ) -> Result<DeployApplyRuntime, DaemonResponse> {
         let nats_client_url = if self.runtime_target == RuntimeTarget::Docker {
             crate::services::nats::local_client_url()
         } else {
@@ -151,18 +239,18 @@ impl DaemonState {
         let nats_store =
             match ployz_nats::NatsStore::connect_with_scope(&nats_client_url, nats_scope).await {
                 Ok(store) => store.with_asset_policy(active.config.storage_replicas),
-                Err(error) => return self.err("DEPLOY_APPLY_FAILED", error.to_string()),
+                Err(error) => return Err(self.err("DEPLOY_APPLY_FAILED", error.to_string())),
             };
         if let Err(error) = nats_store.start().await {
-            return self.err("DEPLOY_APPLY_FAILED", error.to_string());
+            return Err(self.err("DEPLOY_APPLY_FAILED", error.to_string()));
         }
         let nats_locks = match NatsLocks::new(&nats_store).await {
             Ok(locks) => locks,
-            Err(error) => return self.err("DEPLOY_APPLY_FAILED", error.to_string()),
+            Err(error) => return Err(self.err("DEPLOY_APPLY_FAILED", error.to_string())),
         };
         let deploy_lock = match NatsDeployLock::acquire(
             nats_locks.clone(),
-            &manifest.namespace,
+            namespace,
             &ReservationId::random().0,
             &self.identity.machine_id,
             DEPLOY_LOCK_TTL,
@@ -170,11 +258,24 @@ impl DaemonState {
         .await
         {
             Ok(lock) => lock,
-            Err(error) => return self.err("DEPLOY_LOCK_FAILED", error.to_string()),
+            Err(error) => return Err(self.err("DEPLOY_LOCK_FAILED", error.to_string())),
         };
+        Ok(DeployApplyRuntime {
+            nats_store,
+            nats_locks,
+            deploy_lock,
+        })
+    }
+
+    async fn apply_manifest_with_runtime(
+        &self,
+        active: &ActiveMesh,
+        manifest: &DeployManifest,
+        runtime: DeployApplyRuntime,
+    ) -> DaemonResponse {
         let certificate_coordinator = Arc::new(
             crate::daemon::cert_coordination::NatsIssuanceCoordinator::new(
-                nats_locks,
+                runtime.nats_locks,
                 self.identity.machine_id.clone(),
             ),
         );
@@ -188,10 +289,10 @@ impl DaemonState {
             CertificateManagerConfig::from_env(),
         ));
         let prober = crate::daemon::deploy_probe::NatsRpcProbe::new(
-            ployz_nats::NatsNodeRpcClient::for_store(&nats_store),
+            ployz_nats::NatsNodeRpcClient::for_store(&runtime.nats_store),
         );
         let participant_client = NatsDeployParticipantClient::new(
-            ployz_nats::NatsNodeRpcClient::for_store(&nats_store).with_policy(RpcPolicy {
+            ployz_nats::NatsNodeRpcClient::for_store(&runtime.nats_store).with_policy(RpcPolicy {
                 timeout: DEPLOY_PARTICIPANT_RPC_TIMEOUT,
             }),
         );
@@ -211,7 +312,7 @@ impl DaemonState {
         );
         tokio::pin!(apply);
         let mut deploy_lock_renewer = tokio::spawn(renew_deploy_lock(
-            deploy_lock.clone(),
+            runtime.deploy_lock.clone(),
             DEPLOY_LOCK_TTL,
             DEPLOY_LOCK_RENEW_INTERVAL,
         ));
@@ -233,7 +334,7 @@ impl DaemonState {
                         (&mut apply).await
                     }
                     DeployLockLossOutcome::MarkedFailed | DeployLockLossOutcome::NotApplying => {
-                        if let Err(error) = deploy_lock.release().await {
+                        if let Err(error) = runtime.deploy_lock.release().await {
                             tracing::warn!(%error, "failed to release NATS deploy lock after renewal failure");
                         }
                         return self.err("DEPLOY_LOCK_FAILED", message);
@@ -247,7 +348,7 @@ impl DaemonState {
         {
             tracing::warn!(%error, "deploy lock renewal task failed during shutdown");
         }
-        if let Err(error) = deploy_lock.release().await {
+        if let Err(error) = runtime.deploy_lock.release().await {
             tracing::warn!(%error, "failed to release NATS deploy lock");
         }
         match result {
@@ -279,6 +380,59 @@ impl DaemonState {
             Err(err) => return self.err("DEPLOY_EXPORT_FAILED", format!("{err}")),
         };
         self.ok_json_pretty(&manifest, "ENCODE_MANIFEST", "encode manifest")
+    }
+
+    pub async fn handle_migrate_service(&self, request: MigrateServiceRequest) -> DaemonResponse {
+        if let Err(error) = validate_migrate_service_request(&request) {
+            return self.err(error.code(), error.to_string());
+        }
+        let active = match self.require_active("NO_MESH", "no mesh is running") {
+            Ok(active) => active,
+            Err(response) => return *response,
+        };
+        match request.mode {
+            MigrateServiceMode::RenderManifest => {
+                let manifest =
+                    match render_migrate_service_manifest(&active.mesh.store, &request).await {
+                        Ok(manifest) => manifest,
+                        Err(error) => return self.err(error.code(), error.to_string()),
+                    };
+                self.ok_json_pretty(&manifest, "ENCODE_MANIFEST", "encode migration manifest")
+            }
+            MigrateServiceMode::Preview => {
+                let manifest =
+                    match render_migrate_service_manifest(&active.mesh.store, &request).await {
+                        Ok(manifest) => manifest,
+                        Err(error) => return self.err(error.code(), error.to_string()),
+                    };
+                let manifest_json = match encode_migrate_manifest_json(&manifest) {
+                    Ok(manifest_json) => manifest_json,
+                    Err(error) => return self.err(error.code(), error.to_string()),
+                };
+                self.handle_deploy_preview(&manifest_json, &DeployOptions::default())
+                    .await
+            }
+            MigrateServiceMode::Apply => {
+                let namespace = Namespace(request.namespace.clone());
+                let runtime = match self.prepare_deploy_apply_runtime(active, &namespace).await {
+                    Ok(runtime) => runtime,
+                    Err(response) => return response,
+                };
+                let manifest = match render_migrate_service_manifest(&active.mesh.store, &request)
+                    .await
+                {
+                    Ok(manifest) => manifest,
+                    Err(error) => {
+                        if let Err(release_error) = runtime.deploy_lock.release().await {
+                            tracing::warn!(%release_error, "failed to release NATS deploy lock after migrate render failure");
+                        }
+                        return self.err(error.code(), error.to_string());
+                    }
+                };
+                self.apply_manifest_with_runtime(active, &manifest, runtime)
+                    .await
+            }
+        }
     }
 
     pub async fn handle_deploy_node_inspect_namespace(
@@ -453,6 +607,10 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         true
     }
 
+    fn supports_volume_clones(&self) -> bool {
+        true
+    }
+
     async fn inspect_namespace(
         &self,
         machine: &MachineMembership,
@@ -542,6 +700,90 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             DEPLOY_VOLUME_MOVE_POLL_INTERVAL,
         )
         .await
+    }
+
+    async fn clone_volume(
+        &self,
+        machine_id: &MachineId,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+        request: CloneVolumeRequest,
+    ) -> ployz_types::Result<CloneVolumeResult> {
+        let response = self
+            .client
+            .clone()
+            .with_policy(RpcPolicy {
+                timeout: DEPLOY_VOLUME_CLONE_RPC_TIMEOUT,
+            })
+            .request(
+                NodeCommandSubject::deploy_clone_volume(machine_id),
+                &ployz_api::DaemonRequest::DeployNodeCloneVolume {
+                    namespace: namespace.0.clone(),
+                    deploy_id: deploy_id.0.clone(),
+                    volume: request.volume,
+                    source_namespace: request.source_namespace.0,
+                    source_volume: request.source_volume,
+                    snapshot: request.snapshot,
+                    quota: request.quota,
+                    mode: request.mode,
+                    owner: request.owner,
+                },
+            )
+            .await
+            .map_err(PloyzError::from)?;
+        if !response.ok {
+            return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
+                operation: "deploy_node_clone_volume",
+                code: response.code,
+                message: response.message,
+            }));
+        }
+        let Some(DaemonPayload::VolumeZfsClone(payload)) = response.payload else {
+            return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
+                payload: "volume zfs clone",
+            }));
+        };
+        Ok(CloneVolumeResult {
+            snapshot: payload.snapshot,
+            snapshot_guid: payload.guid,
+            target_dataset: payload.target_dataset,
+        })
+    }
+
+    async fn cleanup_volume_clone(
+        &self,
+        machine_id: &MachineId,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+        request: CleanupVolumeCloneRequest,
+    ) -> ployz_types::Result<()> {
+        let response = self
+            .client
+            .clone()
+            .with_policy(RpcPolicy {
+                timeout: DEPLOY_VOLUME_CLONE_CLEANUP_RPC_TIMEOUT,
+            })
+            .request(
+                NodeCommandSubject::deploy_clone_volume(machine_id),
+                &ployz_api::DaemonRequest::DeployNodeCleanupUncommittedVolumeClone {
+                    namespace: namespace.0.clone(),
+                    deploy_id: deploy_id.0.clone(),
+                    volume: request.volume,
+                    source_namespace: request.source_namespace.0,
+                    source_volume: request.source_volume,
+                    snapshot: request.snapshot,
+                },
+            )
+            .await
+            .map_err(PloyzError::from)?;
+        if response.ok {
+            return Ok(());
+        }
+        Err(PloyzError::Deploy(DeployError::RemoteNodeError {
+            operation: "deploy_node_cleanup_uncommitted_volume_clone",
+            code: response.code,
+            message: response.message,
+        }))
     }
 
     async fn drain_instance(
@@ -1056,6 +1298,147 @@ async fn export_manifest(
     })
 }
 
+fn validate_migrate_service_request(
+    request: &MigrateServiceRequest,
+) -> Result<(), MigrateRenderError> {
+    validate_migrate_segment("namespace", &request.namespace)?;
+    validate_migrate_segment("service", &request.service)?;
+    if request.target_machine.trim().is_empty() {
+        return Err(MigrateRenderError::InvalidRequest {
+            message: "target_machine cannot be empty".into(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_migrate_segment(name: &'static str, value: &str) -> Result<(), MigrateRenderError> {
+    if value.is_empty() || value.contains('/') {
+        return Err(MigrateRenderError::InvalidRequest {
+            message: format!("{name} must be a non-empty path segment"),
+        });
+    }
+    Ok(())
+}
+
+fn encode_migrate_manifest_json(manifest: &DeployManifest) -> Result<String, MigrateRenderError> {
+    serde_json::to_string_pretty(manifest).map_err(|error| {
+        MigrateRenderError::ManifestEncodeFailed {
+            message: error.to_string(),
+        }
+    })
+}
+
+async fn render_migrate_service_manifest(
+    store: &StoreDriver,
+    request: &MigrateServiceRequest,
+) -> Result<DeployManifest, MigrateRenderError> {
+    let target_machine = request.target_machine.trim();
+    if target_machine.is_empty() {
+        return Err(MigrateRenderError::EmptyTargetMachine);
+    }
+    let namespace = Namespace(request.namespace.clone());
+    let mut manifest = export_manifest(store, &namespace).await.map_err(|error| {
+        MigrateRenderError::ExportFailed {
+            namespace: request.namespace.clone(),
+            message: error.to_string(),
+        }
+    })?;
+    let Some(service) = manifest
+        .services
+        .iter()
+        .find(|candidate| candidate.name == request.service)
+    else {
+        return Err(MigrateRenderError::ServiceMissing {
+            namespace: request.namespace.clone(),
+            service: request.service.clone(),
+        });
+    };
+
+    let mut volume_names = BTreeSet::new();
+    for mount in &service.template.mounts {
+        match &mount.source {
+            MountSource::Volume(volume) => {
+                if !volume_names.insert(volume.clone()) {
+                    return Err(MigrateRenderError::DuplicateManagedVolumeMount {
+                        namespace: request.namespace.clone(),
+                        service: request.service.clone(),
+                        volume: volume.clone(),
+                    });
+                }
+            }
+            MountSource::Bind(source) => {
+                return Err(MigrateRenderError::UnsupportedBindMount {
+                    namespace: request.namespace.clone(),
+                    service: request.service.clone(),
+                    bind_source: source.clone(),
+                    target: mount.target.clone(),
+                });
+            }
+            MountSource::Tmpfs => {}
+        }
+    }
+    if volume_names.is_empty() {
+        return Err(MigrateRenderError::NoManagedVolumeMounts {
+            namespace: request.namespace.clone(),
+            service: request.service.clone(),
+        });
+    }
+
+    let mut move_hints = Vec::with_capacity(volume_names.len());
+    for volume in &volume_names {
+        let record = store
+            .get_volume(&namespace, volume)
+            .await
+            .map_err(|error| MigrateRenderError::ExportFailed {
+                namespace: request.namespace.clone(),
+                message: error.to_string(),
+            })?
+            .ok_or_else(|| MigrateRenderError::MissingCommittedVolume {
+                namespace: request.namespace.clone(),
+                service: request.service.clone(),
+                volume: volume.clone(),
+            })?;
+        if record.scope != VolumeScope::Single {
+            return Err(MigrateRenderError::UnsupportedVolumeScope {
+                volume: volume.clone(),
+            });
+        }
+        if record.machine_id.0 == target_machine {
+            return Err(MigrateRenderError::AlreadyOnTarget {
+                volume: volume.clone(),
+                machine: target_machine.to_string(),
+            });
+        }
+        move_hints.push(VolumeIntentHint {
+            volume: volume.clone(),
+            intent: VolumeIntent::Move {
+                from_machine: record.machine_id.0,
+                to_machine: target_machine.to_string(),
+            },
+        });
+    }
+
+    let moving_volume_names = move_hints
+        .iter()
+        .map(|hint| hint.volume.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut intent = manifest.intent.take().unwrap_or_else(|| DeployIntent {
+        services: Vec::new(),
+        volumes: Vec::new(),
+        phases: Vec::new(),
+    });
+    intent
+        .volumes
+        .retain(|hint| !moving_volume_names.contains(hint.volume.as_str()));
+    intent.volumes.extend(move_hints);
+    intent
+        .volumes
+        .sort_by(|left, right| left.volume.cmp(&right.volume));
+    manifest.intent = Some(intent);
+
+    Ok(manifest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1076,19 +1459,26 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     fn test_service() -> ServiceSpec {
+        test_service_with_mounts(
+            "db",
+            vec![Mount {
+                source: MountSource::Volume("data".into()),
+                target: "/var/lib/postgresql/data".into(),
+                readonly: false,
+            }],
+        )
+    }
+
+    fn test_service_with_mounts(name: &str, mounts: Vec<Mount>) -> ServiceSpec {
         ServiceSpec {
-            name: "db".into(),
+            name: name.into(),
             placement: Placement::Replicated { count: 1 },
             template: ContainerSpec {
                 image: "postgres:17".into(),
                 command: None,
                 entrypoint: None,
                 env: BTreeMap::new(),
-                mounts: vec![Mount {
-                    source: MountSource::Volume("data".into()),
-                    target: "/var/lib/postgresql/data".into(),
-                    readonly: false,
-                }],
+                mounts,
                 cap_add: Vec::new(),
                 cap_drop: Vec::new(),
                 privileged: false,
@@ -1108,6 +1498,86 @@ mod tests {
             labels: BTreeMap::new(),
             restart: RestartPolicy::UnlessStopped,
         }
+    }
+
+    fn test_volume_record(namespace: &Namespace, volume: &str, machine: &str) -> VolumeRecord {
+        test_volume_record_with_scope(namespace, volume, machine, VolumeScope::Single)
+    }
+
+    fn test_volume_record_with_scope(
+        namespace: &Namespace,
+        volume: &str,
+        machine: &str,
+        scope: VolumeScope,
+    ) -> VolumeRecord {
+        VolumeRecord {
+            namespace: namespace.clone(),
+            volume_name: volume.into(),
+            scope,
+            machine_id: MachineId(machine.into()),
+            quota: "10G".into(),
+            mode: "0750".into(),
+            owner: "999:999".into(),
+            attached_services: vec!["db".into()],
+            created_at: 1,
+            created_by_deploy_id: DeployId("deploy-1".into()),
+            last_modified_at: 1,
+            last_modified_by_deploy_id: DeployId("deploy-1".into()),
+        }
+    }
+
+    async fn seed_committed_service(
+        store: &StoreDriver,
+        namespace: &Namespace,
+        service: ServiceSpec,
+        volumes: Vec<VolumeRecord>,
+    ) {
+        let revision_hash = format!("rev-{}", service.name);
+        let deploy_id = DeployId("deploy-1".into());
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: vec![ServiceRevisionRecord {
+                    namespace: namespace.clone(),
+                    service: service.name.clone(),
+                    revision_hash: revision_hash.clone(),
+                    spec_json: serde_json::to_string(&service).expect("serialize service"),
+                    created_by: MachineId("local".into()),
+                    created_at: 1,
+                }],
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
+                volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
+                phase_commits: Vec::new(),
+                releases: vec![ServiceReleaseRecord {
+                    namespace: namespace.clone(),
+                    service: service.name,
+                    release: ServiceRelease {
+                        primary_revision_hash: revision_hash.clone(),
+                        referenced_revision_hashes: vec![revision_hash.clone()],
+                        routing: ServiceRoutingPolicy::Direct { revision_hash },
+                        slots: Vec::new(),
+                        updated_by_deploy_id: deploy_id.clone(),
+                        updated_at: 1,
+                    },
+                }],
+                volumes,
+                deploy: DeployRecord {
+                    deploy_id,
+                    namespace: namespace.clone(),
+                    coordinator_machine_id: MachineId("local".into()),
+                    manifest_hash: "manifest".into(),
+                    state: DeployState::Committed,
+                    started_at: 1,
+                    committed_at: Some(1),
+                    finished_at: Some(1),
+                    summary_json: "{}".into(),
+                },
+            })
+            .await
+            .expect("seed committed service");
     }
 
     #[test]
@@ -1135,6 +1605,356 @@ mod tests {
         assert_eq!(error.code, "INVALID_MANIFEST");
         assert!(error.message.starts_with("invalid deploy manifest:"));
         assert!(error.payload.is_none());
+    }
+
+    #[test]
+    fn validate_migrate_service_request_rejects_non_segment_namespace() {
+        let error = validate_migrate_service_request(&MigrateServiceRequest {
+            namespace: "prod/main".into(),
+            service: "db".into(),
+            target_machine: "machine-b".into(),
+            mode: MigrateServiceMode::Apply,
+        })
+        .expect_err("invalid namespace should fail");
+
+        assert_eq!(error.code(), "MIGRATE_INVALID_REQUEST");
+    }
+
+    #[test]
+    fn validate_migrate_service_request_rejects_non_segment_service() {
+        let error = validate_migrate_service_request(&MigrateServiceRequest {
+            namespace: "prod".into(),
+            service: "db/primary".into(),
+            target_machine: "machine-b".into(),
+            mode: MigrateServiceMode::Apply,
+        })
+        .expect_err("invalid service should fail");
+
+        assert_eq!(error.code(), "MIGRATE_INVALID_REQUEST");
+    }
+
+    #[tokio::test]
+    async fn render_migrate_service_manifest_adds_volume_move_hint() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        seed_committed_service(
+            &store,
+            &namespace,
+            test_service(),
+            vec![test_volume_record(&namespace, "data", "machine-a")],
+        )
+        .await;
+
+        let manifest = render_migrate_service_manifest(
+            &store,
+            &MigrateServiceRequest {
+                namespace: "prod".into(),
+                service: "db".into(),
+                target_machine: "machine-b".into(),
+                mode: MigrateServiceMode::RenderManifest,
+            },
+        )
+        .await
+        .expect("render migrate manifest");
+
+        let intent = manifest.intent.expect("intent");
+        let [hint] = intent.volumes.as_slice() else {
+            panic!("expected one volume move hint");
+        };
+        assert_eq!(hint.volume, "data");
+        assert_eq!(
+            hint.intent,
+            VolumeIntent::Move {
+                from_machine: "machine-a".into(),
+                to_machine: "machine-b".into(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn render_migrate_service_manifest_rejects_missing_service() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        seed_committed_service(
+            &store,
+            &namespace,
+            test_service(),
+            vec![test_volume_record(&namespace, "data", "machine-a")],
+        )
+        .await;
+
+        let error = render_migrate_service_manifest(
+            &store,
+            &MigrateServiceRequest {
+                namespace: "prod".into(),
+                service: "api".into(),
+                target_machine: "machine-b".into(),
+                mode: MigrateServiceMode::RenderManifest,
+            },
+        )
+        .await
+        .expect_err("missing service should fail");
+
+        assert!(matches!(error, MigrateRenderError::ServiceMissing { .. }));
+    }
+
+    #[tokio::test]
+    async fn render_migrate_service_manifest_rejects_service_without_managed_volumes() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        let service = test_service_with_mounts(
+            "db",
+            vec![Mount {
+                source: MountSource::Tmpfs,
+                target: "/var/lib/postgresql/data".into(),
+                readonly: false,
+            }],
+        );
+        seed_committed_service(&store, &namespace, service, Vec::new()).await;
+
+        let error = render_migrate_service_manifest(
+            &store,
+            &MigrateServiceRequest {
+                namespace: "prod".into(),
+                service: "db".into(),
+                target_machine: "machine-b".into(),
+                mode: MigrateServiceMode::RenderManifest,
+            },
+        )
+        .await
+        .expect_err("service without managed volumes should fail");
+
+        assert!(matches!(
+            error,
+            MigrateRenderError::NoManagedVolumeMounts { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn render_migrate_service_manifest_rejects_bind_mounts() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        let service = test_service_with_mounts(
+            "db",
+            vec![
+                Mount {
+                    source: MountSource::Volume("data".into()),
+                    target: "/data".into(),
+                    readonly: false,
+                },
+                Mount {
+                    source: MountSource::Bind("/srv/db".into()),
+                    target: "/host-data".into(),
+                    readonly: false,
+                },
+            ],
+        );
+        seed_committed_service(
+            &store,
+            &namespace,
+            service,
+            vec![test_volume_record(&namespace, "data", "machine-a")],
+        )
+        .await;
+
+        let error = render_migrate_service_manifest(
+            &store,
+            &MigrateServiceRequest {
+                namespace: "prod".into(),
+                service: "db".into(),
+                target_machine: "machine-b".into(),
+                mode: MigrateServiceMode::RenderManifest,
+            },
+        )
+        .await
+        .expect_err("bind mounts should fail migration rendering");
+
+        assert!(matches!(
+            error,
+            MigrateRenderError::UnsupportedBindMount { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn render_migrate_service_manifest_rejects_duplicate_managed_volume_mounts() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        let service = test_service_with_mounts(
+            "db",
+            vec![
+                Mount {
+                    source: MountSource::Volume("data".into()),
+                    target: "/data-a".into(),
+                    readonly: false,
+                },
+                Mount {
+                    source: MountSource::Volume("data".into()),
+                    target: "/data-b".into(),
+                    readonly: false,
+                },
+            ],
+        );
+        seed_committed_service(
+            &store,
+            &namespace,
+            service,
+            vec![test_volume_record(&namespace, "data", "machine-a")],
+        )
+        .await;
+
+        let error = render_migrate_service_manifest(
+            &store,
+            &MigrateServiceRequest {
+                namespace: "prod".into(),
+                service: "db".into(),
+                target_machine: "machine-b".into(),
+                mode: MigrateServiceMode::RenderManifest,
+            },
+        )
+        .await
+        .expect_err("duplicate managed mount should fail");
+
+        assert!(matches!(
+            error,
+            MigrateRenderError::DuplicateManagedVolumeMount { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn render_migrate_service_manifest_rejects_missing_committed_volume() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        seed_committed_service(&store, &namespace, test_service(), Vec::new()).await;
+
+        let error = render_migrate_service_manifest(
+            &store,
+            &MigrateServiceRequest {
+                namespace: "prod".into(),
+                service: "db".into(),
+                target_machine: "machine-b".into(),
+                mode: MigrateServiceMode::RenderManifest,
+            },
+        )
+        .await
+        .expect_err("missing committed volume should fail");
+
+        assert!(matches!(
+            error,
+            MigrateRenderError::MissingCommittedVolume { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn render_migrate_service_manifest_rejects_already_on_target() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        seed_committed_service(
+            &store,
+            &namespace,
+            test_service(),
+            vec![test_volume_record(&namespace, "data", "machine-b")],
+        )
+        .await;
+
+        let error = render_migrate_service_manifest(
+            &store,
+            &MigrateServiceRequest {
+                namespace: "prod".into(),
+                service: "db".into(),
+                target_machine: "machine-b".into(),
+                mode: MigrateServiceMode::RenderManifest,
+            },
+        )
+        .await
+        .expect_err("already-on-target volume should fail");
+
+        assert!(matches!(error, MigrateRenderError::AlreadyOnTarget { .. }));
+    }
+
+    #[tokio::test]
+    async fn render_migrate_service_manifest_rejects_shared_volume() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        seed_committed_service(
+            &store,
+            &namespace,
+            test_service(),
+            vec![test_volume_record_with_scope(
+                &namespace,
+                "data",
+                "machine-a",
+                VolumeScope::Shared,
+            )],
+        )
+        .await;
+
+        let error = render_migrate_service_manifest(
+            &store,
+            &MigrateServiceRequest {
+                namespace: "prod".into(),
+                service: "db".into(),
+                target_machine: "machine-b".into(),
+                mode: MigrateServiceMode::RenderManifest,
+            },
+        )
+        .await
+        .expect_err("shared volume should fail");
+
+        assert!(matches!(
+            error,
+            MigrateRenderError::UnsupportedVolumeScope { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn render_migrate_service_manifest_sorts_multi_volume_hints() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        let service = test_service_with_mounts(
+            "db",
+            vec![
+                Mount {
+                    source: MountSource::Volume("beta".into()),
+                    target: "/beta".into(),
+                    readonly: false,
+                },
+                Mount {
+                    source: MountSource::Volume("alpha".into()),
+                    target: "/alpha".into(),
+                    readonly: false,
+                },
+            ],
+        );
+        seed_committed_service(
+            &store,
+            &namespace,
+            service,
+            vec![
+                test_volume_record(&namespace, "beta", "machine-a"),
+                test_volume_record(&namespace, "alpha", "machine-a"),
+            ],
+        )
+        .await;
+
+        let manifest = render_migrate_service_manifest(
+            &store,
+            &MigrateServiceRequest {
+                namespace: "prod".into(),
+                service: "db".into(),
+                target_machine: "machine-b".into(),
+                mode: MigrateServiceMode::RenderManifest,
+            },
+        )
+        .await
+        .expect("render migrate manifest");
+
+        let intent = manifest.intent.expect("intent");
+        let volumes = intent
+            .volumes
+            .iter()
+            .map(|hint| hint.volume.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(volumes, vec!["alpha", "beta"]);
     }
 
     #[test]
@@ -1568,6 +2388,7 @@ mod tests {
             services: Vec::new(),
             service_branch_sources: Vec::new(),
             volume_moves: Vec::new(),
+            volume_clones: Vec::new(),
             warnings: Vec::new(),
         };
         store
@@ -1628,6 +2449,7 @@ mod tests {
                     services: Vec::new(),
                     service_branch_sources: Vec::new(),
                     volume_moves: Vec::new(),
+                    volume_clones: Vec::new(),
                     warnings: Vec::new(),
                 })
                 .expect("preview json"),
@@ -1758,6 +2580,7 @@ mod tests {
                     services: Vec::new(),
                     service_branch_sources: Vec::new(),
                     volume_moves: Vec::new(),
+                    volume_clones: Vec::new(),
                     warnings: Vec::new(),
                 })
                 .expect("preview json"),
@@ -1798,6 +2621,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
@@ -1867,6 +2691,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
@@ -1938,6 +2763,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
@@ -2006,6 +2832,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),

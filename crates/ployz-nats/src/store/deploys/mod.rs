@@ -4,11 +4,11 @@ use async_nats::jetstream::message::PublishMessage;
 use async_nats::jetstream::stream::DirectGetErrorKind;
 use async_trait::async_trait;
 use ployz_store_api::{DeployCommit, DeployCommitFacts, DeployStore};
-use ployz_types::error::{Error, Result, StoreRecordKind};
+use ployz_types::error::{Error, Result, StoreError, StoreRecordKind};
 use ployz_types::model::{
     DeployId, DeployPhaseId, DeployPhaseRecord, DeployPhaseState, DeployRecord, RoutingEvent,
-    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord, VolumeMovementRecord,
-    VolumeRecord,
+    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
+    VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 
@@ -63,6 +63,13 @@ impl DeployStore for NatsStore {
             .volume_movements(namespace))
     }
 
+    async fn list_volume_branches(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<VolumeBranchLineageRecord>> {
+        Ok(self.deploy_commit_facts().await?.volume_branches(namespace))
+    }
+
     async fn get_volume(
         &self,
         namespace: &Namespace,
@@ -92,6 +99,12 @@ impl DeployStore for NatsStore {
             &routing_events,
         )
         .await
+        .map_err(|error| {
+            Error::Store(StoreError::DeployCommitRoutingPublishFailed {
+                deploy_id: command.deploy.deploy_id.0.clone(),
+                message: error.to_string(),
+            })
+        })
     }
 
     async fn write_deploy_status(&self, deploy: &DeployRecord) -> Result<()> {
@@ -789,6 +802,7 @@ mod tests {
             removed_volumes: Vec::new(),
             branch_lineage: Vec::new(),
             volume_movements: Vec::new(),
+            volume_branches: Vec::new(),
             phase_commits: Vec::new(),
             releases,
             volumes: Vec::new(),

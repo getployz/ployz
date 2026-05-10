@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use ployz_types::model::{
     DeployId, DeployPhaseCommitRecord, DeployPhaseId, RoutingEvent, ServiceBranchLineageRecord,
-    ServiceReleaseRecord, ServiceRevisionRecord, VolumeMovementRecord, VolumeRecord,
+    ServiceReleaseRecord, ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord,
+    VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 
@@ -12,6 +13,7 @@ type RevisionKey = (Namespace, String, String);
 type ReleaseKey = (Namespace, String);
 type BranchLineageKey = (Namespace, String, String);
 type VolumeMovementKey = (Namespace, String, String);
+type VolumeBranchKey = (Namespace, String, String);
 type PhaseCommitKey = (Namespace, String, DeployPhaseId);
 type VolumeKey = (Namespace, String);
 
@@ -21,6 +23,7 @@ pub struct DeployCommitFacts {
     releases: BTreeMap<ReleaseKey, ServiceReleaseRecord>,
     branch_lineage: BTreeMap<BranchLineageKey, ServiceBranchLineageRecord>,
     volume_movements: BTreeMap<VolumeMovementKey, VolumeMovementRecord>,
+    volume_branches: BTreeMap<VolumeBranchKey, VolumeBranchLineageRecord>,
     phase_commits: BTreeMap<PhaseCommitKey, DeployPhaseCommitRecord>,
     volumes: BTreeMap<VolumeKey, VolumeRecord>,
 }
@@ -71,6 +74,17 @@ impl DeployCommitFacts {
             for key in removed_movements {
                 self.volume_movements.remove(&key);
             }
+            let removed_branches = self
+                .volume_branches
+                .keys()
+                .filter(|(namespace, branch_volume, _deploy_id)| {
+                    namespace == &commit.namespace && branch_volume == volume
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            for key in removed_branches {
+                self.volume_branches.remove(&key);
+            }
         }
         for release in &commit.releases {
             self.releases.insert(release_key(release), release.clone());
@@ -83,6 +97,10 @@ impl DeployCommitFacts {
         for movement in valid_volume_movements(commit) {
             self.volume_movements
                 .insert(volume_movement_key(movement), movement.clone());
+        }
+        for branch in valid_volume_branches(commit) {
+            self.volume_branches
+                .insert(volume_branch_key(branch), branch.clone());
         }
         for phase_commit in valid_phase_commits(commit) {
             self.phase_commits
@@ -154,6 +172,15 @@ impl DeployCommitFacts {
         self.volume_movements
             .values()
             .filter(|movement| &movement.namespace == namespace)
+            .cloned()
+            .collect()
+    }
+
+    #[must_use]
+    pub fn volume_branches(&self, namespace: &Namespace) -> Vec<VolumeBranchLineageRecord> {
+        self.volume_branches
+            .values()
+            .filter(|branch| &branch.namespace == namespace)
             .cloned()
             .collect()
     }
@@ -233,6 +260,14 @@ fn volume_movement_key(record: &VolumeMovementRecord) -> VolumeMovementKey {
     )
 }
 
+fn volume_branch_key(record: &VolumeBranchLineageRecord) -> VolumeBranchKey {
+    (
+        record.namespace.clone(),
+        record.volume_name.clone(),
+        record.deploy_id.0.clone(),
+    )
+}
+
 fn phase_commit_key(record: &DeployPhaseCommitRecord) -> PhaseCommitKey {
     (
         record.namespace.clone(),
@@ -258,6 +293,20 @@ fn valid_volume_movements(commit: &DeployCommit) -> impl Iterator<Item = &Volume
                 volume.namespace == movement.namespace
                     && volume.volume_name == movement.volume_name
                     && volume.machine_id == movement.final_machine
+            })
+    })
+}
+
+fn valid_volume_branches(
+    commit: &DeployCommit,
+) -> impl Iterator<Item = &VolumeBranchLineageRecord> {
+    commit.volume_branches.iter().filter(|branch| {
+        branch.namespace == commit.namespace
+            && branch.commit_deploy_id == commit.deploy.deploy_id
+            && commit.volumes.iter().any(|volume| {
+                volume.namespace == branch.namespace
+                    && volume.volume_name == branch.volume_name
+                    && volume.machine_id == branch.target_machine
             })
     })
 }
@@ -654,6 +703,7 @@ mod tests {
             removed_volumes: Vec::new(),
             branch_lineage: Vec::new(),
             volume_movements: Vec::new(),
+            volume_branches: Vec::new(),
             phase_commits: Vec::new(),
             releases,
             volumes,

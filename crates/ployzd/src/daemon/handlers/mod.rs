@@ -9,6 +9,7 @@ mod status;
 pub(crate) mod volume;
 
 use ployz_api::{DaemonRequest, DaemonResponse};
+use ployz_types::model::MachineId;
 use tokio::sync::oneshot;
 
 use super::DaemonState;
@@ -41,13 +42,18 @@ impl DaemonState {
             | DaemonRequest::MeshPeerPrepareUpdate { .. }
             | DaemonRequest::MeshPeerExecuteUpdate { .. }
             | DaemonRequest::MachineRemove { .. }
-            | DaemonRequest::MeshPeerRemoveMachine { .. } => RequestLane::Exclusive,
+            | DaemonRequest::MeshPeerRemoveMachine { .. }
+            | DaemonRequest::DeployNodeCloneVolume { .. }
+            | DaemonRequest::DeployNodeCleanupUncommittedVolumeClone { .. } => {
+                RequestLane::Exclusive
+            }
             DaemonRequest::Ping
             | DaemonRequest::Status
             | DaemonRequest::Doctor
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::MigrateService { .. }
             | DaemonRequest::DeployNodeInspectNamespace { .. }
             | DaemonRequest::DeployNodeStartCandidate { .. }
             | DaemonRequest::DeployNodeDrainInstance { .. }
@@ -82,6 +88,19 @@ impl DaemonState {
             | DaemonRequest::AcmeChallengeReady { .. }
             | DaemonRequest::AcmeHttp01Status { .. }
             | DaemonRequest::MeshSelfRecord => RequestLane::Shared,
+        }
+    }
+
+    #[must_use]
+    pub fn request_lane_for_state(&self, req: &DaemonRequest) -> RequestLane {
+        match req {
+            DaemonRequest::MachineDrain { target }
+            | DaemonRequest::MachineStandby { target, .. }
+                if MachineId(target.clone()) == self.identity.machine_id =>
+            {
+                RequestLane::Exclusive
+            }
+            _ => Self::request_lane(req),
         }
     }
 
@@ -125,6 +144,7 @@ impl DaemonState {
             DaemonRequest::DeployExport { namespace } => {
                 self.handle_deploy_export(&namespace).await
             }
+            DaemonRequest::MigrateService { request } => self.handle_migrate_service(request).await,
             DaemonRequest::DeployNodeInspectNamespace {
                 namespace,
                 deploy_id,
@@ -167,6 +187,48 @@ impl DaemonState {
             } => {
                 self.handle_deploy_node_remove_instance(&namespace, &deploy_id, &instance_id)
                     .await
+            }
+            DaemonRequest::DeployNodeCloneVolume {
+                namespace,
+                deploy_id,
+                volume,
+                source_namespace,
+                source_volume,
+                snapshot,
+                quota,
+                mode,
+                owner,
+            } => {
+                self.handle_deploy_node_clone_volume(
+                    &namespace,
+                    &deploy_id,
+                    &volume,
+                    &source_namespace,
+                    &source_volume,
+                    &snapshot,
+                    &quota,
+                    &mode,
+                    &owner,
+                )
+                .await
+            }
+            DaemonRequest::DeployNodeCleanupUncommittedVolumeClone {
+                namespace,
+                deploy_id,
+                volume,
+                source_namespace,
+                source_volume,
+                snapshot,
+            } => {
+                self.handle_deploy_node_cleanup_uncommitted_volume_clone(
+                    &namespace,
+                    &deploy_id,
+                    &volume,
+                    &source_namespace,
+                    &source_volume,
+                    &snapshot,
+                )
+                .await
             }
             DaemonRequest::VolumeZfsInspect {
                 namespace,
@@ -258,9 +320,11 @@ impl DaemonState {
             DaemonRequest::MachineActivate { target } => {
                 self.handle_machine_activate(&target).await
             }
-            DaemonRequest::MachineDrain { target } => self.handle_machine_drain(&target).await,
+            DaemonRequest::MachineDrain { target } => {
+                self.handle_remote_machine_drain(&target).await
+            }
             DaemonRequest::MachineStandby { target, force } => {
-                self.handle_machine_standby(&target, force).await
+                self.handle_remote_machine_standby(&target, force).await
             }
             DaemonRequest::MachineOperationList => self.handle_machine_operation_list().await,
             DaemonRequest::MachineOperationGet { id } => {
@@ -349,6 +413,10 @@ impl DaemonState {
             DaemonRequest::MachineRemove { id, force } => {
                 self.handle_machine_remove(&id, force).await
             }
+            DaemonRequest::MachineDrain { target } => self.handle_machine_drain(&target).await,
+            DaemonRequest::MachineStandby { target, force } => {
+                self.handle_machine_standby(&target, force).await
+            }
             DaemonRequest::MachineUpdate { ids, version } => {
                 self.handle_machine_update(&ids, &version, response_flushed)
                     .await
@@ -384,12 +452,55 @@ impl DaemonState {
                 )
                 .await
             }
+            DaemonRequest::DeployNodeCloneVolume {
+                namespace,
+                deploy_id,
+                volume,
+                source_namespace,
+                source_volume,
+                snapshot,
+                quota,
+                mode,
+                owner,
+            } => {
+                self.handle_deploy_node_clone_volume(
+                    &namespace,
+                    &deploy_id,
+                    &volume,
+                    &source_namespace,
+                    &source_volume,
+                    &snapshot,
+                    &quota,
+                    &mode,
+                    &owner,
+                )
+                .await
+            }
+            DaemonRequest::DeployNodeCleanupUncommittedVolumeClone {
+                namespace,
+                deploy_id,
+                volume,
+                source_namespace,
+                source_volume,
+                snapshot,
+            } => {
+                self.handle_deploy_node_cleanup_uncommitted_volume_clone(
+                    &namespace,
+                    &deploy_id,
+                    &volume,
+                    &source_namespace,
+                    &source_volume,
+                    &snapshot,
+                )
+                .await
+            }
             DaemonRequest::Ping
             | DaemonRequest::Status
             | DaemonRequest::Doctor
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::MigrateService { .. }
             | DaemonRequest::DeployNodeInspectNamespace { .. }
             | DaemonRequest::DeployNodeStartCandidate { .. }
             | DaemonRequest::DeployNodeDrainInstance { .. }
@@ -413,8 +524,6 @@ impl DaemonState {
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
             | DaemonRequest::MachineActivate { .. }
-            | DaemonRequest::MachineDrain { .. }
-            | DaemonRequest::MachineStandby { .. }
             | DaemonRequest::MachineOperationList
             | DaemonRequest::MachineOperationGet { .. }
             | DaemonRequest::MachineInviteCreate { .. }

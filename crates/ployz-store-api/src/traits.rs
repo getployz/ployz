@@ -6,7 +6,8 @@ use ployz_types::model::{
     CertificateEvent, CertificateRecord, DeployId, DeployPhaseCommitRecord, DeployPhaseId,
     DeployPhaseRecord, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
     MachineId, MachineMembership, RoutingEvent, RoutingState, ServiceBranchLineageRecord,
-    ServiceReleaseRecord, ServiceRevisionRecord, VolumeMovementRecord, VolumeRecord,
+    ServiceReleaseRecord, ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord,
+    VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use serde::{Deserialize, Serialize};
@@ -558,6 +559,8 @@ pub struct DeployCommit {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volume_movements: Vec<VolumeMovementRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volume_branches: Vec<VolumeBranchLineageRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub phase_commits: Vec<DeployPhaseCommitRecord>,
     pub releases: Vec<ServiceReleaseRecord>,
     pub volumes: Vec<VolumeRecord>,
@@ -627,6 +630,11 @@ pub trait DeployStore: Send + Sync {
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<VolumeMovementRecord>>;
+
+    async fn list_volume_branches(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<VolumeBranchLineageRecord>>;
 
     async fn get_volume(
         &self,
