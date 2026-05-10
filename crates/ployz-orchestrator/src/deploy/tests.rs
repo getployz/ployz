@@ -197,6 +197,40 @@ async fn resolve_plan_rejects_manifest_phase_named_deploy() {
     );
 }
 
+#[tokio::test]
+async fn resolve_plan_rejects_manual_phase_advance_policy() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = test_manifest(vec![test_service_spec(
+        "web",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: Vec::new(),
+        phases: vec![DeployPhaseIntent {
+            phase_id: "web".into(),
+            name: Some("Web".into()),
+            after: Vec::new(),
+            services: vec!["web".into()],
+            volumes: Vec::new(),
+            commit_policy: DeployPhaseCommitPolicy::Checkpoint,
+            rollback_policy: DeployPhaseRollbackPolicy::ForwardOnly,
+            advance_policy: DeployPhaseAdvancePolicy::Manual,
+        }],
+    });
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("manual phase advancement should be rejected before execution");
+
+    assert!(
+        error.to_string().contains("advance policy Manual"),
+        "expected manual advance policy error, got {error}"
+    );
+}
+
 #[test]
 fn replicated_one_reuses_existing_slot_machine() {
     let spec = test_service_spec("api", Placement::Replicated { count: 1 }, "nginx:latest");
