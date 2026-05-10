@@ -1213,6 +1213,7 @@ impl DaemonState {
         }
         let driver = self.local_zfs_driver().await?;
         let dataset = volume_dataset(driver.root_dataset(), namespace, volume);
+        let mut target_cleanup_error = None;
         if driver
             .dataset_exists(&dataset)
             .await
@@ -1233,7 +1234,7 @@ impl DaemonState {
                 .await
                 .map_err(|error| error.to_string())?;
             if !destroyed {
-                return Err(format!(
+                target_cleanup_error = Some(format!(
                     "refusing to clean up uncommitted clone '{}/{}': dataset '{}' exists without matching clone metadata",
                     namespace.0, volume, dataset
                 ));
@@ -1243,7 +1244,11 @@ impl DaemonState {
         driver
             .destroy_snapshot(&source_dataset, snapshot)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        if let Some(error) = target_cleanup_error {
+            return Err(error);
+        }
+        Ok(())
     }
 
     async fn snapshot_guid_local_volume_zfs(
