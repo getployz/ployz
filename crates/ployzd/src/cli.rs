@@ -497,6 +497,25 @@ pub(crate) enum ImageAction {
         #[arg(long)]
         machine: Option<String>,
     },
+    Push {
+        image: String,
+        #[arg(long = "to", required = true, num_args = 1.., value_name = "machine-id")]
+        targets: Vec<String>,
+        #[arg(long)]
+        platform: Option<String>,
+        #[arg(long)]
+        expected_digest: Option<String>,
+    },
+    Distribute {
+        #[arg(long)]
+        digest: String,
+        #[arg(long = "from")]
+        source: String,
+        #[arg(long = "to", required = true, num_args = 1.., value_name = "machine-id")]
+        targets: Vec<String>,
+        #[arg(long)]
+        platform: Option<String>,
+    },
     Inspect {
         #[arg(long)]
         digest: String,

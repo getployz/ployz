@@ -1,5 +1,6 @@
 use ployz_types::model::{
-    ImageArtifact, ImageAvailabilityRecord, ImageDigest, ImageOperationRecord, MachineId,
+    ImageArtifact, ImageAvailabilityRecord, ImageDigest, ImageOperationRecord, ImagePlatform,
+    MachineId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -22,10 +23,12 @@ pub struct ImageInspectRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImagePushRequest {
-    pub artifact: ImageArtifact,
-    pub target_machine: MachineId,
+    pub source_image: String,
+    pub target_machines: Vec<MachineId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_image: Option<String>,
+    pub platform: Option<ImagePlatform>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_digest: Option<ImageDigest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +36,8 @@ pub struct ImageDistributeRequest {
     pub digest: ImageDigest,
     pub source_machine: MachineId,
     pub target_machines: Vec<MachineId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<ImagePlatform>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,7 +54,8 @@ pub struct ImageInspectPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImagePushPayload {
     pub operation_id: String,
-    pub record: ImageAvailabilityRecord,
+    pub artifact: ImageArtifact,
+    pub targets: Vec<ImageTransferTargetResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -54,6 +54,8 @@ impl DaemonState {
             | DaemonRequest::MigrateService { .. }
             | DaemonRequest::ImageStatus { .. }
             | DaemonRequest::ImageInspect { .. }
+            | DaemonRequest::ImagePush { .. }
+            | DaemonRequest::ImageDistribute { .. }
             | DaemonRequest::ImageOperationGet { .. }
             | DaemonRequest::ImageOperationList
             | DaemonRequest::BuildOperationGet { .. }
@@ -153,6 +155,10 @@ impl DaemonState {
             DaemonRequest::MigrateService { request } => self.handle_migrate_service(request).await,
             DaemonRequest::ImageStatus { request } => self.handle_image_status(&request).await,
             DaemonRequest::ImageInspect { request } => self.handle_image_inspect(&request).await,
+            DaemonRequest::ImagePush { request } => self.handle_image_push(&request).await,
+            DaemonRequest::ImageDistribute { request } => {
+                self.handle_image_distribute(&request).await
+            }
             DaemonRequest::ImageOperationGet { id } => self.handle_image_operation_get(&id).await,
             DaemonRequest::ImageOperationList => self.handle_image_operation_list().await,
             DaemonRequest::BuildOperationGet { id } => self.handle_build_operation_get(&id).await,
@@ -473,6 +479,8 @@ impl DaemonState {
             | DaemonRequest::MigrateService { .. }
             | DaemonRequest::ImageStatus { .. }
             | DaemonRequest::ImageInspect { .. }
+            | DaemonRequest::ImagePush { .. }
+            | DaemonRequest::ImageDistribute { .. }
             | DaemonRequest::ImageOperationGet { .. }
             | DaemonRequest::ImageOperationList
             | DaemonRequest::BuildOperationGet { .. }
@@ -521,7 +529,8 @@ impl DaemonState {
 mod tests {
     use super::RequestLane;
     use crate::daemon::DaemonState;
-    use ployz_api::{DaemonRequest, DebugTickTask};
+    use ployz_api::{DaemonRequest, DebugTickTask, ImageDistributeRequest, ImagePushRequest};
+    use ployz_types::model::{ImageDigest, MachineId};
 
     #[test]
     fn debug_tick_routes_to_exclusive_lane() {
@@ -566,5 +575,32 @@ mod tests {
                 snapshot: "snap".into(),
             });
         assert_eq!(cleanup_lane, RequestLane::Shared);
+    }
+
+    #[test]
+    fn image_push_and_distribute_route_to_shared_lane() {
+        let push_lane = DaemonState::request_lane(&DaemonRequest::ImagePush {
+            request: ImagePushRequest {
+                source_image: "example/app:latest".into(),
+                target_machines: vec![MachineId("machine-a".into())],
+                platform: None,
+                expected_digest: None,
+            },
+        });
+        assert_eq!(push_lane, RequestLane::Shared);
+
+        let distribute_lane = DaemonState::request_lane(&DaemonRequest::ImageDistribute {
+            request: ImageDistributeRequest {
+                digest: digest(),
+                source_machine: MachineId("machine-a".into()),
+                target_machines: vec![MachineId("machine-b".into())],
+                platform: None,
+            },
+        });
+        assert_eq!(distribute_lane, RequestLane::Shared);
+    }
+
+    fn digest() -> ImageDigest {
+        ImageDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("valid digest")
     }
 }
