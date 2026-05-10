@@ -11,7 +11,8 @@ use ployz_types::model::{
     CertificateEvent, CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord,
     DeployPhaseState, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
     MachineId, MachineMembership, RoutingEvent, RoutingState, ServiceBranchLineageRecord,
-    ServiceReleaseRecord, ServiceRevisionRecord, VolumeMovementRecord, VolumeRecord,
+    ServiceReleaseRecord, ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord,
+    VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::{BTreeMap, HashMap};
@@ -428,6 +429,14 @@ impl DeployStore for MemoryStore {
     ) -> Result<Vec<VolumeMovementRecord>> {
         let inner = self.lock_inner();
         Ok(inner.deploy_commit_facts.volume_movements(namespace))
+    }
+
+    async fn list_volume_branches(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<VolumeBranchLineageRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.deploy_commit_facts.volume_branches(namespace))
     }
 
     async fn get_volume(
@@ -874,7 +883,8 @@ mod tests {
     use super::*;
     use ployz_types::model::{
         DeployPhaseCommitPolicy, DeployPhaseFailure, DeployPhaseRollbackPolicy, DeployPhaseState,
-        ServiceBranchLineageRecord, ServiceRevisionRecord, VolumeMovementRecord,
+        ServiceBranchLineageRecord, ServiceRevisionRecord, VolumeBranchLineageRecord,
+        VolumeMovementRecord,
     };
 
     fn test_machine(id: impl Into<String>) -> MachineMembership {
@@ -1048,6 +1058,7 @@ mod tests {
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
+                volume_branches: Vec::new(),
                 volume_movements: Vec::new(),
                 phase_commits: vec![ployz_types::model::DeployPhaseCommitRecord {
                     namespace: namespace.clone(),
@@ -1093,6 +1104,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![test_release(&namespace, "api", "rev-1", "deploy-1")],
                 volumes: Vec::new(),
@@ -1132,6 +1144,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: vec![lineage.clone()],
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: Vec::new(),
                 volumes: Vec::new(),
@@ -1163,6 +1176,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: vec![movement.clone()],
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: Vec::new(),
                 volumes: vec![volume],
@@ -1179,6 +1193,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn commit_deploy_records_volume_branches() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("pr-39".into());
+        let branch = test_volume_branch(&namespace, "pgdata", "deploy-branch");
+        let volume = test_volume(&namespace, "pgdata", &DeployId("deploy-branch".into()));
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: Vec::new(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
+                volume_movements: Vec::new(),
+                volume_branches: vec![branch.clone()],
+                phase_commits: Vec::new(),
+                releases: Vec::new(),
+                volumes: vec![volume],
+                deploy: test_deploy(&namespace, "deploy-branch"),
+            })
+            .await
+            .expect("commit deploy");
+
+        let records = store
+            .list_volume_branches(&namespace)
+            .await
+            .expect("list volume branches");
+        assert_eq!(records, vec![branch]);
+    }
+
+    #[tokio::test]
     async fn commit_deploy_replaces_touched_releases() {
         let store = MemoryStore::new();
         let namespace = Namespace("prod".into());
@@ -1191,6 +1236,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![
                     test_release(&namespace, "api", "rev-old", "deploy-old"),
@@ -1210,6 +1256,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![test_release(&namespace, "api", "rev-new", "deploy-new")],
                 volumes: Vec::new(),
@@ -1272,6 +1319,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![
                     test_release(&namespace, "worker", "rev-b", "deploy-1"),
@@ -1342,6 +1390,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![
                     test_release(&namespace, "worker", "rev-b", "deploy-1"),
@@ -1380,6 +1429,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![test_release(&namespace, "api", "rev-old", "deploy-old")],
                 volumes: Vec::new(),
@@ -1398,6 +1448,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![test_release(&namespace, "api", "rev-new", "deploy-new")],
                 volumes: Vec::new(),
@@ -1436,6 +1487,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![test_release(&namespace, "api", "rev-a", "deploy-new")],
                 volumes: Vec::new(),
@@ -1475,6 +1527,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![
                     test_release(&namespace, "api", "rev-old", "deploy-old"),
@@ -1495,6 +1548,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: Vec::new(),
                 volumes: Vec::new(),
@@ -1531,6 +1585,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: Vec::new(),
                 volumes: vec![test_volume(&prod, "data", &deploy_id)],
@@ -1546,6 +1601,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: Vec::new(),
                 volumes: vec![test_volume(&staging, "data", &deploy_id)],
@@ -1562,6 +1618,7 @@ mod tests {
                 removed_volumes: vec!["data".into()],
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: Vec::new(),
                 volumes: Vec::new(),
@@ -1600,6 +1657,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: Vec::new(),
                 volumes: vec![
@@ -1988,6 +2046,31 @@ mod tests {
         }
     }
 
+    fn test_volume_branch(
+        namespace: &Namespace,
+        volume_name: &str,
+        deploy_id: &str,
+    ) -> VolumeBranchLineageRecord {
+        let deploy_id = DeployId(deploy_id.into());
+        VolumeBranchLineageRecord {
+            namespace: namespace.clone(),
+            volume_name: volume_name.into(),
+            source_namespace: Namespace("prod".into()),
+            source_volume_name: volume_name.into(),
+            source_machine: MachineId("machine-a".into()),
+            target_machine: MachineId("machine-1".into()),
+            data_policy: ployz_types::spec::VolumeCloneDataPolicy::Raw,
+            consistency: ployz_types::spec::VolumeCloneConsistency::CrashConsistent,
+            deploy_id: deploy_id.clone(),
+            commit_deploy_id: deploy_id,
+            phase_id: None,
+            snapshot_name: "ployz-snapshot".into(),
+            snapshot_guid: 42,
+            target_dataset: "tank/ployz/pr-39/pgdata".into(),
+            created_at: 2,
+        }
+    }
+
     fn test_instance_status(namespace: &Namespace, instance_id: &str) -> InstanceStatusRecord {
         InstanceStatusRecord {
             instance_id: InstanceId(instance_id.into()),
@@ -2352,6 +2435,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: Vec::new(),
                 volumes: vec![volume],

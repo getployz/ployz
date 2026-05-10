@@ -27,6 +27,11 @@ impl NodeCommandSubject {
     }
 
     #[must_use]
+    pub fn deploy_clone_volume(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "deploy.clone_volume")
+    }
+
+    #[must_use]
     pub fn deploy_stop(machine_id: &MachineId) -> Self {
         Self::new(machine_id, "deploy.stop")
     }

@@ -4,6 +4,7 @@ mod drain_aware_redeploy_real_smoke;
 mod mesh_bootstrap_join_smoke;
 mod migrate_service_real_smoke;
 mod node_restart_adopts_data_plane;
+mod volume_clone_branch_real_smoke;
 mod wireguard_partition_reconnect;
 mod zfs_support;
 
@@ -20,5 +21,6 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         Scenario::DockerBridgeForwardSmoke => docker_bridge_forward_smoke::run(run),
         Scenario::DrainAwareRedeployRealSmoke => drain_aware_redeploy_real_smoke::run(run),
         Scenario::MigrateServiceRealSmoke => migrate_service_real_smoke::run(run),
+        Scenario::VolumeCloneBranchRealSmoke => volume_clone_branch_real_smoke::run(run),
     }
 }
