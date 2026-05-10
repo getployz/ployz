@@ -74,6 +74,7 @@ export type PublicKey = [
   number,
   number
 ];
+export type RegionRole = "home_data" | "compute" | "disabled" | "draining";
 export type StorageParticipation =
   | {
       kind: "candidate";
@@ -140,6 +141,7 @@ export interface MachineMembership {
   lifecycle?: MachineLifecycle & string;
   overlay_ip: OverlayIp;
   public_key: PublicKey;
+  region_role: RegionRole;
   storage: boolean;
   storage_participation: StorageParticipation;
   subnet?: string | null;
