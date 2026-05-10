@@ -347,7 +347,6 @@ pub(super) async fn resolve_plan(
                     None if should_move_volume_from_draining_source(
                         declaration,
                         record,
-                        &attached_services,
                         &machine_map,
                     ) =>
                     {
@@ -1274,11 +1273,9 @@ fn resolve_volume_move(
 fn should_move_volume_from_draining_source(
     declaration: &VolumeDeclaration,
     record: &VolumeRecord,
-    attached_services: &[String],
     machine_map: &HashMap<MachineId, MachineMembership>,
 ) -> bool {
     declaration.scope == VolumeScope::Single
-        && !attached_services.is_empty()
         && machine_map
             .get(&record.machine_id)
             .is_some_and(should_relocate_existing_work)
