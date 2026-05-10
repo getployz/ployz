@@ -57,7 +57,20 @@ pub(crate) fn deploy_volume_manifest(
     node_name: &str,
     value: &str,
 ) -> Result<()> {
-    let manifest = format!(
+    write_volume_manifest(run, node_name, value)?;
+    run.ssh_expect_ok_name(node_name, "ployzd deploy -f /tmp/ployz-volume-smoke.json")?;
+    Ok(())
+}
+
+pub(crate) fn write_volume_manifest(run: &ScenarioRun, node_name: &str, value: &str) -> Result<()> {
+    let manifest = volume_manifest(value);
+    let command = format!("cat >/tmp/ployz-volume-smoke.json <<'EOF'\n{manifest}\nEOF");
+    run.ssh_expect_ok_name(node_name, &command)?;
+    Ok(())
+}
+
+fn volume_manifest(value: &str) -> String {
+    format!(
         r#"{{
   "namespace": "default",
   "volumes": [
@@ -87,12 +100,7 @@ pub(crate) fn deploy_volume_manifest(
     }}
   ]
 }}"#
-    );
-    let command = format!(
-        "cat >/tmp/ployz-volume-smoke.json <<'EOF'\n{manifest}\nEOF\nployzd deploy -f /tmp/ployz-volume-smoke.json"
-    );
-    run.ssh_expect_ok_name(node_name, &command)?;
-    Ok(())
+    )
 }
 
 pub(crate) fn wait_for_volume_value(
