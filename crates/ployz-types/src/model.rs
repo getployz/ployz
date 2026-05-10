@@ -8,7 +8,9 @@ use std::fmt::{self, Write as _};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use strum::EnumString;
 
-use crate::spec::{Namespace, VolumeCloneConsistency, VolumeCloneDataPolicy, VolumeScope};
+use crate::spec::{
+    Namespace, VolumeCloneConsistency, VolumeCloneDataPolicy, VolumeScope, stable_hash_hex,
+};
 
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, JsonSchema,
@@ -2146,6 +2148,62 @@ pub struct ServiceBranchSourcePlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ServiceSourceMode {
+    Fresh,
+    Branch {
+        source_namespace: Namespace,
+        source_service: String,
+        source_revision_hash: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceSourcePlan {
+    pub service: String,
+    pub mode: ServiceSourceMode,
+}
+
+#[must_use]
+pub fn service_source_fingerprint(sources: &[ServiceSourcePlan]) -> String {
+    if sources.is_empty() {
+        return String::new();
+    }
+
+    let mut sources = sources.to_vec();
+    sources.sort_by(|left, right| left.service.cmp(&right.service));
+
+    let mut input = String::new();
+    for source in sources {
+        append_fingerprint_segment(&mut input, &source.service);
+        match source.mode {
+            ServiceSourceMode::Fresh => {
+                input.push_str("fresh:");
+            }
+            ServiceSourceMode::Branch {
+                source_namespace,
+                source_service,
+                source_revision_hash,
+            } => {
+                input.push_str("branch:");
+                append_fingerprint_segment(&mut input, source_namespace.as_ref());
+                append_fingerprint_segment(&mut input, &source_service);
+                append_fingerprint_segment(&mut input, &source_revision_hash);
+            }
+        }
+    }
+
+    stable_hash_hex(input.as_bytes())
+}
+
+fn append_fingerprint_segment(input: &mut String, value: &str) {
+    input.push_str(&value.len().to_string());
+    input.push(':');
+    input.push_str(value);
+    input.push(';');
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VolumeMovePlan {
     pub volume: String,
     pub from_machine: MachineId,
@@ -2192,6 +2250,10 @@ pub struct DeployPreview {
     pub participants: Vec<MachineId>,
     pub phases: Vec<DeployPhasePlan>,
     pub services: Vec<ServicePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_sources: Vec<ServiceSourcePlan>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub service_source_fingerprint: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub service_branch_sources: Vec<ServiceBranchSourcePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2271,6 +2333,8 @@ mod tests {
             participants: vec![MachineId("machine-a".into())],
             phases: Vec::new(),
             services: Vec::new(),
+            service_sources: Vec::new(),
+            service_source_fingerprint: String::new(),
             service_branch_sources: Vec::new(),
             volume_moves: Vec::new(),
             volume_clones: Vec::new(),
@@ -2326,6 +2390,134 @@ mod tests {
             serde_json::from_str(json).expect("deserialize legacy deploy preview");
 
         assert!(preview.volume_clone_preflights.is_empty());
+        assert!(preview.service_sources.is_empty());
+        assert!(preview.service_source_fingerprint.is_empty());
+    }
+
+    #[test]
+    fn deploy_preview_serializes_service_source_contract() {
+        let service_sources = vec![
+            ServiceSourcePlan {
+                service: "api".into(),
+                mode: ServiceSourceMode::Fresh,
+            },
+            ServiceSourcePlan {
+                service: "web".into(),
+                mode: ServiceSourceMode::Branch {
+                    source_namespace: Namespace("prod".into()),
+                    source_service: "web".into(),
+                    source_revision_hash: "source-rev".into(),
+                },
+            },
+        ];
+        let fingerprint = service_source_fingerprint(&service_sources);
+        let preview = DeployPreview {
+            namespace: Namespace("pr-39".into()),
+            manifest_hash: "manifest".into(),
+            participants: Vec::new(),
+            phases: Vec::new(),
+            services: Vec::new(),
+            service_sources,
+            service_source_fingerprint: fingerprint.clone(),
+            service_branch_sources: Vec::new(),
+            volume_moves: Vec::new(),
+            volume_clones: Vec::new(),
+            volume_clone_preflights: Vec::new(),
+            warnings: Vec::new(),
+        };
+
+        let json = serde_json::to_value(&preview).expect("serialize deploy preview");
+
+        assert_eq!(
+            json["service_sources"][0]["mode"]["kind"],
+            serde_json::json!("fresh")
+        );
+        assert_eq!(
+            json["service_sources"][1]["mode"]["kind"],
+            serde_json::json!("branch")
+        );
+        assert_eq!(
+            json["service_sources"][1]["mode"]["source_revision_hash"],
+            serde_json::json!("source-rev")
+        );
+        assert_eq!(
+            json["service_source_fingerprint"],
+            serde_json::json!(fingerprint)
+        );
+        let roundtrip: DeployPreview =
+            serde_json::from_value(json).expect("deserialize deploy preview");
+        assert_eq!(roundtrip.service_sources, preview.service_sources);
+        assert_eq!(roundtrip.service_source_fingerprint, fingerprint);
+    }
+
+    #[test]
+    fn service_source_fingerprint_is_order_independent_and_source_sensitive() {
+        let fresh = ServiceSourcePlan {
+            service: "api".into(),
+            mode: ServiceSourceMode::Fresh,
+        };
+        let branch = ServiceSourcePlan {
+            service: "web".into(),
+            mode: ServiceSourceMode::Branch {
+                source_namespace: Namespace("prod".into()),
+                source_service: "web".into(),
+                source_revision_hash: "rev-1".into(),
+            },
+        };
+
+        assert!(service_source_fingerprint(&[]).is_empty());
+
+        let fingerprint = service_source_fingerprint(&[fresh.clone(), branch.clone()]);
+
+        assert_eq!(
+            fingerprint,
+            service_source_fingerprint(&[branch.clone(), fresh.clone()])
+        );
+
+        let branch_with_other_namespace = ServiceSourcePlan {
+            service: "web".into(),
+            mode: ServiceSourceMode::Branch {
+                source_namespace: Namespace("staging".into()),
+                source_service: "web".into(),
+                source_revision_hash: "rev-1".into(),
+            },
+        };
+        assert_ne!(
+            fingerprint,
+            service_source_fingerprint(&[fresh.clone(), branch_with_other_namespace])
+        );
+
+        let branch_with_other_service = ServiceSourcePlan {
+            service: "web".into(),
+            mode: ServiceSourceMode::Branch {
+                source_namespace: Namespace("prod".into()),
+                source_service: "api".into(),
+                source_revision_hash: "rev-1".into(),
+            },
+        };
+        assert_ne!(
+            fingerprint,
+            service_source_fingerprint(&[fresh.clone(), branch_with_other_service])
+        );
+
+        let branch_with_other_revision = ServiceSourcePlan {
+            service: "web".into(),
+            mode: ServiceSourceMode::Branch {
+                source_namespace: Namespace("prod".into()),
+                source_service: "web".into(),
+                source_revision_hash: "rev-2".into(),
+            },
+        };
+        assert_ne!(
+            fingerprint,
+            service_source_fingerprint(&[fresh.clone(), branch_with_other_revision])
+        );
+
+        let web_fresh = ServiceSourcePlan {
+            service: "web".into(),
+            mode: ServiceSourceMode::Fresh,
+        };
+        assert_ne!(fingerprint, service_source_fingerprint(&[fresh, web_fresh]));
     }
 
     #[test]
