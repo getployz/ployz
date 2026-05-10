@@ -4,7 +4,9 @@ use crate::certificates::{
     NoopIssuanceCoordinator, spawn_certificate_finalization_with_coordination,
     start_pending_orders,
 };
-use crate::deploy::lifecycle::{CleanupPlan, PreparedDeploy, StartedCandidates};
+use crate::deploy::lifecycle::{
+    CleanupPlan, PreparedDeploy, build_committed_releases_for_services,
+};
 use crate::deploy::managed_domains;
 use crate::deploy::participant::{self, DeployParticipantClient};
 use crate::deploy::plan::{
@@ -13,12 +15,13 @@ use crate::deploy::plan::{
 use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_participants};
 use crate::error::{DeployError, Error, Result};
 use crate::model::{
-    DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPhaseFailure,
-    DeployPhasePlan, DeployPhaseRecord, DeployPhaseState, DeployPreview, DeployRecord, DeployState,
-    InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineMembership, VolumeRecord,
+    DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPhaseCommitPolicy,
+    DeployPhaseFailure, DeployPhaseId, DeployPhasePlan, DeployPhaseRecord, DeployPhaseState,
+    DeployPhaseWork, DeployPreview, DeployRecord, DeployState, InstanceId, InstancePhase,
+    InstanceStatusRecord, MachineId, MachineMembership, VolumeRecord,
 };
 use futures_util::stream::{self, StreamExt, TryStreamExt};
-use ployz_store_api::{DeployStore, InstanceStatusStore, StoreDriver};
+use ployz_store_api::{DeployCommit, DeployStore, InstanceStatusStore, StoreDriver};
 use ployz_types::time::now_unix_secs;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -331,7 +334,8 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
     .await?;
 
     let mut last_written_deploy_record = None;
-    let mut running_default_phase = None;
+    let mut durable_final_commit_record = None;
+    let mut pending_phase_successes = Vec::new();
     let result = async {
         let final_plan = resolve_plan(store, local_machine_id, manifest).await?;
         let final_fingerprint = final_plan.fingerprint();
@@ -349,45 +353,221 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             .await?;
         last_written_deploy_record = Some(prepared.applying_record().clone());
 
-        let phase_execution = execute_default_phase(
-            store,
-            participant_client,
-            &participants,
-            prepared,
-            started_at,
-        )
-        .await?;
-        events.extend(phase_execution.events);
-        running_default_phase = Some(phase_execution.running_phase.clone());
-        let started = phase_execution.started;
-        let committed_volumes = build_committed_volumes(
-            started.plan(),
-            started.started(),
-            started.deploy_id(),
-            started_at,
-        )?;
-        let removed_volumes_list = removed_volumes(store, started.plan()).await?;
+        let phases = prepared.preview().phases.clone();
+        let mut unstarted_phase_records = Vec::new();
+        for phase in &phases {
+            let pending_phase =
+                deploy_phase_record(&prepared, phase, DeployPhaseState::Pending, started_at);
+            if let Err(error) = store.upsert_deploy_phase(&pending_phase).await {
+                mark_phases_failed_best_effort(
+                    store,
+                    std::mem::take(&mut unstarted_phase_records),
+                    &error,
+                    prepared.deploy_id(),
+                )
+                .await;
+                return Err(error);
+            }
+            unstarted_phase_records.push(pending_phase);
+        }
+        let mut started = HashMap::new();
+        let mut checkpointed_services = BTreeSet::new();
+        let mut checkpointed_volumes = BTreeSet::new();
 
-        let commit_plan = started.into_commit_plan(removed_volumes_list, committed_volumes)?;
-        store.commit_deploy(commit_plan.commit()).await?;
-        let mut committed = commit_plan.into_committed();
-        last_written_deploy_record = Some(committed.deploy_record().clone());
-        store.write_deploy_status(committed.deploy_record()).await?;
-        record_default_phase_succeeded_after_commit(
+        for phase in &phases {
+            let phase_execution_result = execute_phase(
+                store,
+                participant_client,
+                &participants,
+                &prepared,
+                phase,
+                started_at,
+            )
+            .await;
+            let phase_execution = match phase_execution_result {
+                Ok(phase_execution) => {
+                    remove_phase_record(&mut unstarted_phase_records, &phase.phase_id);
+                    phase_execution
+                }
+                Err(error) => {
+                    if error.phase_reached_running {
+                        remove_phase_record(&mut unstarted_phase_records, &phase.phase_id);
+                    }
+                    mark_pending_and_unstarted_phases_failed_best_effort(
+                        store,
+                        &mut pending_phase_successes,
+                        &mut unstarted_phase_records,
+                        &error.error,
+                        prepared.deploy_id(),
+                    )
+                    .await;
+                    return Err(error.error);
+                }
+            };
+            events.extend(phase_execution.events);
+            started.extend(phase_execution.started);
+
+            match phase.commit_policy {
+                DeployPhaseCommitPolicy::Checkpoint => {
+                    let phase_services = phase_services(phase);
+                    let phase_volumes = phase_volumes(phase);
+                    let removed_services =
+                        removed_services_for_phase(prepared.plan(), &phase_services);
+                    let commit_result = build_phase_commit(
+                        &prepared,
+                        &started,
+                        &phase_services,
+                        &phase_volumes,
+                        removed_services,
+                        Vec::new(),
+                        DeployState::CheckpointCommitted,
+                        phase_commit_deploy_id(prepared.deploy_id(), &phase.phase_id),
+                        phase_commit_timestamp(&prepared, phase),
+                    );
+                    let commit = match commit_result {
+                        Ok(commit) => commit,
+                        Err(error) => {
+                            mark_phase_and_pending_phases_failed_best_effort(
+                                store,
+                                phase_execution.running_phase,
+                                &mut pending_phase_successes,
+                                &mut unstarted_phase_records,
+                                &error,
+                                prepared.deploy_id(),
+                            )
+                            .await;
+                            return Err(error);
+                        }
+                    };
+                    if let Err(error) = store.commit_deploy(&commit).await {
+                        mark_phase_and_pending_phases_failed_best_effort(
+                            store,
+                            phase_execution.running_phase,
+                            &mut pending_phase_successes,
+                            &mut unstarted_phase_records,
+                            &error,
+                            prepared.deploy_id(),
+                        )
+                        .await;
+                        return Err(error);
+                    }
+                    record_phase_succeeded_after_commit(
+                        store,
+                        prepared.deploy_id(),
+                        Some(phase_execution.running_phase),
+                    )
+                    .await;
+                    let status = checkpoint_deploy_record(&prepared)?;
+                    last_written_deploy_record = Some(status.clone());
+                    let status_result = store.write_deploy_status(&status).await;
+                    if let Err(error) = status_result {
+                        mark_pending_and_unstarted_phases_failed_best_effort(
+                            store,
+                            &mut pending_phase_successes,
+                            &mut unstarted_phase_records,
+                            &error,
+                            prepared.deploy_id(),
+                        )
+                        .await;
+                        return Err(error);
+                    }
+                    events.push(DeployEvent {
+                        step: "phase".into(),
+                        message: format!("checkpointed phase {} ({})", phase.phase_id, phase.name),
+                    });
+                    checkpointed_services.extend(phase_services);
+                    checkpointed_volumes.extend(phase_volumes);
+                }
+                DeployPhaseCommitPolicy::EndOfDeploy => {
+                    pending_phase_successes.push(phase_execution.running_phase);
+                }
+                DeployPhaseCommitPolicy::NoStoreCommit => {
+                    record_phase_succeeded_after_commit(
+                        store,
+                        prepared.deploy_id(),
+                        Some(phase_execution.running_phase),
+                    )
+                    .await;
+                    events.push(DeployEvent {
+                        step: "phase".into(),
+                        message: format!(
+                            "completed no-store phase {} ({})",
+                            phase.phase_id, phase.name
+                        ),
+                    });
+                }
+            }
+        }
+
+        let remaining_services =
+            remaining_changed_services(prepared.plan(), &checkpointed_services);
+        let remaining_volumes = remaining_changed_volumes(prepared.plan(), &checkpointed_volumes);
+        let removed_services =
+            removed_services_for_final_commit(prepared.plan(), &checkpointed_services);
+        let final_commit_result = async {
+            let removed_volumes_list = removed_volumes(store, prepared.plan()).await?;
+            build_phase_commit(
+                &prepared,
+                &started,
+                &remaining_services,
+                &remaining_volumes,
+                removed_services,
+                removed_volumes_list,
+                DeployState::Committed,
+                prepared.deploy_id().clone(),
+                now_unix_secs(),
+            )
+        }
+        .await;
+        let final_commit = match final_commit_result {
+            Ok(commit) => commit,
+            Err(error) => {
+                mark_pending_and_unstarted_phases_failed_best_effort(
+                    store,
+                    &mut pending_phase_successes,
+                    &mut unstarted_phase_records,
+                    &error,
+                    prepared.deploy_id(),
+                )
+                .await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = store.commit_deploy(&final_commit).await {
+            mark_pending_and_unstarted_phases_failed_best_effort(
+                store,
+                &mut pending_phase_successes,
+                &mut unstarted_phase_records,
+                &error,
+                prepared.deploy_id(),
+            )
+            .await;
+            return Err(error);
+        }
+        durable_final_commit_record = Some(final_commit.deploy.clone());
+        let committed_status_result = store.write_deploy_status(&final_commit.deploy).await;
+        record_phases_succeeded_after_commit(
             store,
             &deploy_id,
-            running_default_phase.take(),
+            std::mem::take(&mut pending_phase_successes),
         )
         .await;
+        if committed_status_result.is_ok() {
+            last_written_deploy_record = Some(final_commit.deploy.clone());
+        }
+        committed_status_result?;
         events.push(DeployEvent {
-            step: "phase".into(),
-            message: "succeeded phase deploy (Deploy)".into(),
+            step: "commit".into(),
+            message: format!(
+                "committed deploy {} for '{}'",
+                prepared.deploy_id(),
+                prepared.plan().namespace()
+            ),
         });
-        events.push(committed.commit_event());
 
         let managed_hostnames = managed_domains::ensure_certificate_intents(
             store,
-            committed.plan(),
+            prepared.plan(),
             issuer_factory.issuer_url(),
         )
         .await?;
@@ -403,11 +583,17 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         )
         .await;
         let mut managed_warnings =
-            managed_domains::warnings_for_plan(store, committed.plan()).await?;
+            managed_domains::warnings_for_plan(store, prepared.plan()).await?;
         managed_warnings.extend(acme_warnings);
-        committed.set_warnings(managed_warnings)?;
-        store.write_deploy_status(committed.deploy_record()).await?;
-        last_written_deploy_record = Some(committed.deploy_record().clone());
+        let mut final_deploy_record = final_commit.deploy.clone();
+        let mut final_preview = prepared.preview().clone();
+        final_preview.warnings = managed_warnings;
+        final_deploy_record.summary_json =
+            serde_json::to_string(&final_preview).map_err(|error| {
+                Error::operation("deploy_apply", format!("serialize preview: {error}"))
+            })?;
+        store.write_deploy_status(&final_deploy_record).await?;
+        last_written_deploy_record = Some(final_deploy_record.clone());
         spawn_certificate_finalization_with_coordination(
             store.clone(),
             issuer_factory.clone(),
@@ -416,7 +602,22 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             certificate_coordinator.clone(),
         );
 
-        let cleanup_plan = committed.cleanup_plan();
+        let all_releases = build_committed_releases_for_services(
+            prepared.plan(),
+            &started,
+            prepared.deploy_id(),
+            now_unix_secs(),
+            None,
+        )?;
+        let cleanup_plan = CleanupPlan::new(
+            prepared.plan().namespace().clone(),
+            prepared.plan().participants().clone(),
+            all_releases
+                .iter()
+                .flat_map(|release| release.release.slots.iter())
+                .map(|slot| slot.active_instance_id.0.clone())
+                .collect(),
+        );
         let cleanup =
             cleanup_stale_instances(store, participant_client, &participants, &cleanup_plan)
                 .await?;
@@ -425,7 +626,9 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         let final_state = if cleanup.errors.is_empty() {
             DeployState::Committed
         } else {
-            let cleanup_pending_record = committed.cleanup_pending_record(now_unix_secs())?;
+            let mut cleanup_pending_record = final_deploy_record.clone();
+            cleanup_pending_record.state = DeployState::CleanupPending;
+            cleanup_pending_record.finished_at = Some(now_unix_secs());
             store.write_deploy_status(&cleanup_pending_record).await?;
             for error in cleanup.errors {
                 events.push(DeployEvent {
@@ -437,57 +640,80 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         };
 
         Ok(DeployApplyResult {
-            deploy_id: committed.deploy_id().clone(),
-            preview: committed.preview().clone(),
+            deploy_id: prepared.deploy_id().clone(),
+            preview: final_preview,
             state: final_state,
             events,
         })
     }
     .await;
 
-    if let Err(error) = &result
-        && let Some(last_record) = last_written_deploy_record
-        && last_record.state == DeployState::Applying
-    {
-        let failed_record = failed_deploy_record(last_record, error);
-        if let Err(update_error) = store.write_deploy_status(&failed_record).await {
-            warn!(
-                ?update_error,
-                deploy_id = %deploy_id,
-                "failed to record terminal failed deploy state after apply error"
-            );
-        }
-        if let Some(running_phase) = running_default_phase
-            && let Err(update_error) =
-                mark_default_phase_failed(store, running_phase, error, now_unix_secs()).await
+    if let Err(error) = &result {
+        if let Some(committed_record) = durable_final_commit_record {
+            if !matches!(
+                last_written_deploy_record
+                    .as_ref()
+                    .map(|record| record.state),
+                Some(DeployState::Committed | DeployState::CleanupPending)
+            ) {
+                if let Err(update_error) = store.write_deploy_status(&committed_record).await {
+                    warn!(
+                        ?update_error,
+                        deploy_id = %deploy_id,
+                        "failed to record committed deploy state after durable commit"
+                    );
+                }
+            }
+        } else if let Some(last_record) = last_written_deploy_record
+            && matches!(
+                last_record.state,
+                DeployState::Applying | DeployState::CheckpointCommitted
+            )
         {
-            warn!(
-                ?update_error,
-                deploy_id = %deploy_id,
-                "failed to record terminal failed deploy phase after apply error"
-            );
+            let failed_record = if last_record.state == DeployState::CheckpointCommitted {
+                failed_after_checkpoint_deploy_record(last_record, error)
+            } else {
+                failed_deploy_record(last_record, error)
+            };
+            if let Err(update_error) = store.write_deploy_status(&failed_record).await {
+                warn!(
+                    ?update_error,
+                    deploy_id = %deploy_id,
+                    "failed to record terminal failed deploy state after apply error"
+                );
+            }
         }
     }
 
     result
 }
 
-struct DefaultPhaseExecution {
-    started: StartedCandidates,
+struct PhaseExecution {
+    started: HashMap<(String, String), InstanceStatusRecord>,
     events: Vec<DeployEvent>,
     running_phase: DeployPhaseRecord,
 }
 
-async fn execute_default_phase(
+struct PhaseExecutionError {
+    error: Error,
+    phase_reached_running: bool,
+}
+
+async fn execute_phase(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
     participants: &ParticipantSet,
-    prepared: PreparedDeploy,
+    prepared: &PreparedDeploy,
+    phase: &DeployPhasePlan,
     started_at: u64,
-) -> Result<DefaultPhaseExecution> {
-    let phase = default_deploy_phase(prepared.preview())?.clone();
+) -> std::result::Result<PhaseExecution, PhaseExecutionError> {
     let running = deploy_phase_record(&prepared, &phase, DeployPhaseState::Running, started_at);
-    store.upsert_deploy_phase(&running).await?;
+    if let Err(error) = store.upsert_deploy_phase(&running).await {
+        return Err(PhaseExecutionError {
+            error,
+            phase_reached_running: false,
+        });
+    }
 
     let execution = async {
         let mut events = Vec::new();
@@ -496,12 +722,24 @@ async fn execute_default_phase(
             message: format!("started phase {} ({})", phase.phase_id, phase.name),
         });
 
-        let volume_move_events =
-            execute_volume_moves(participant_client, participants, prepared.plan()).await?;
+        let volume_move_events = execute_volume_moves(
+            participant_client,
+            participants,
+            prepared.plan(),
+            Some(&phase_volumes(phase)),
+        )
+        .await?;
         events.extend(volume_move_events);
 
-        let startup =
-            run_phase_startup(store, participant_client, participants, prepared.plan()).await?;
+        let phase_services = phase_services(phase);
+        let startup = run_phase_startup_for_services(
+            store,
+            participant_client,
+            participants,
+            prepared.plan(),
+            Some(&phase_services),
+        )
+        .await?;
         events.extend(startup.events);
 
         Ok::<_, Error>((startup.started, events))
@@ -509,14 +747,14 @@ async fn execute_default_phase(
     .await;
 
     match execution {
-        Ok((started, events)) => Ok(DefaultPhaseExecution {
-            started: prepared.into_started(started),
+        Ok((started, events)) => Ok(PhaseExecution {
+            started,
             events,
             running_phase: running,
         }),
         Err(error) => {
             if let Err(update_error) =
-                mark_default_phase_failed(store, running, &error, now_unix_secs()).await
+                mark_phase_failed(store, running, &error, now_unix_secs()).await
             {
                 warn!(
                     ?update_error,
@@ -525,12 +763,15 @@ async fn execute_default_phase(
                     "failed to record terminal failed deploy phase after phase error"
                 );
             }
-            Err(error)
+            Err(PhaseExecutionError {
+                error,
+                phase_reached_running: true,
+            })
         }
     }
 }
 
-async fn mark_default_phase_succeeded(
+async fn mark_phase_succeeded(
     store: &StoreDriver,
     running_phase: Option<DeployPhaseRecord>,
 ) -> Result<()> {
@@ -543,12 +784,12 @@ async fn mark_default_phase_succeeded(
     store.upsert_deploy_phase(&phase).await
 }
 
-async fn record_default_phase_succeeded_after_commit(
+async fn record_phase_succeeded_after_commit(
     store: &StoreDriver,
     deploy_id: &DeployId,
     running_phase: Option<DeployPhaseRecord>,
 ) {
-    if let Err(update_error) = mark_default_phase_succeeded(store, running_phase).await {
+    if let Err(update_error) = mark_phase_succeeded(store, running_phase).await {
         warn!(
             ?update_error,
             deploy_id = %deploy_id,
@@ -557,7 +798,17 @@ async fn record_default_phase_succeeded_after_commit(
     }
 }
 
-async fn mark_default_phase_failed(
+async fn record_phases_succeeded_after_commit(
+    store: &StoreDriver,
+    deploy_id: &DeployId,
+    phases: Vec<DeployPhaseRecord>,
+) {
+    for phase in phases {
+        record_phase_succeeded_after_commit(store, deploy_id, Some(phase)).await;
+    }
+}
+
+async fn mark_phase_failed(
     store: &StoreDriver,
     mut phase: DeployPhaseRecord,
     error: &Error,
@@ -568,6 +819,72 @@ async fn mark_default_phase_failed(
         failure: deploy_phase_failure(error),
     };
     store.upsert_deploy_phase(&phase).await
+}
+
+async fn mark_phase_failed_best_effort(
+    store: &StoreDriver,
+    phase: DeployPhaseRecord,
+    error: &Error,
+    deploy_id: &DeployId,
+) {
+    if let Err(update_error) = mark_phase_failed(store, phase, error, now_unix_secs()).await {
+        warn!(
+            ?update_error,
+            deploy_id = %deploy_id,
+            "failed to record terminal failed deploy phase after phase error"
+        );
+    }
+}
+
+async fn mark_phase_and_pending_phases_failed_best_effort(
+    store: &StoreDriver,
+    phase: DeployPhaseRecord,
+    pending_phases: &mut Vec<DeployPhaseRecord>,
+    unstarted_phases: &mut Vec<DeployPhaseRecord>,
+    error: &Error,
+    deploy_id: &DeployId,
+) {
+    mark_phase_failed_best_effort(store, phase, error, deploy_id).await;
+    mark_pending_and_unstarted_phases_failed_best_effort(
+        store,
+        pending_phases,
+        unstarted_phases,
+        error,
+        deploy_id,
+    )
+    .await;
+}
+
+async fn mark_pending_and_unstarted_phases_failed_best_effort(
+    store: &StoreDriver,
+    pending_phases: &mut Vec<DeployPhaseRecord>,
+    unstarted_phases: &mut Vec<DeployPhaseRecord>,
+    error: &Error,
+    deploy_id: &DeployId,
+) {
+    mark_phases_failed_best_effort(store, std::mem::take(pending_phases), error, deploy_id).await;
+    mark_phases_failed_best_effort(store, std::mem::take(unstarted_phases), error, deploy_id).await;
+}
+
+async fn mark_phases_failed_best_effort(
+    store: &StoreDriver,
+    phases: Vec<DeployPhaseRecord>,
+    error: &Error,
+    deploy_id: &DeployId,
+) {
+    for phase in phases {
+        mark_phase_failed_best_effort(store, phase, error, deploy_id).await;
+    }
+}
+
+fn remove_phase_record(
+    phases: &mut Vec<DeployPhaseRecord>,
+    phase_id: &DeployPhaseId,
+) -> Option<DeployPhaseRecord> {
+    let index = phases
+        .iter()
+        .position(|phase| phase.phase_id == *phase_id)?;
+    Some(phases.remove(index))
 }
 
 fn deploy_phase_failure(error: &Error) -> DeployPhaseFailure {
@@ -596,19 +913,6 @@ fn deploy_phase_failure_code(error: &Error) -> &'static str {
     }
 }
 
-fn default_deploy_phase(preview: &DeployPreview) -> Result<&DeployPhasePlan> {
-    let [phase] = preview.phases.as_slice() else {
-        return Err(Error::operation(
-            "deploy_apply",
-            format!(
-                "expected exactly one default deploy phase, found {}",
-                preview.phases.len()
-            ),
-        ));
-    };
-    Ok(phase)
-}
-
 fn deploy_phase_record(
     prepared: &PreparedDeploy,
     phase: &DeployPhasePlan,
@@ -624,8 +928,38 @@ fn deploy_phase_record(
         state,
         commit_policy: phase.commit_policy,
         rollback_policy: phase.rollback_policy,
+        advance_policy: phase.advance_policy,
+        after: phase.after.clone(),
+        participants: phase.participants.clone(),
+        work: phase.work.clone(),
         started_at,
     }
+}
+
+fn checkpoint_deploy_record(prepared: &PreparedDeploy) -> Result<DeployRecord> {
+    let mut record = prepared.applying_record().clone();
+    record.state = DeployState::CheckpointCommitted;
+    record.committed_at = None;
+    record.finished_at = None;
+    record.summary_json = serde_json::to_string(prepared.preview())
+        .map_err(|error| Error::operation("deploy_apply", format!("serialize preview: {error}")))?;
+    Ok(record)
+}
+
+fn committed_deploy_record(
+    prepared: &PreparedDeploy,
+    state: DeployState,
+    deploy_record_id: DeployId,
+    committed_at: u64,
+) -> Result<DeployRecord> {
+    let mut record = prepared.applying_record().clone();
+    record.deploy_id = deploy_record_id;
+    record.state = state;
+    record.committed_at = Some(committed_at);
+    record.finished_at = Some(committed_at);
+    record.summary_json = serde_json::to_string(prepared.preview())
+        .map_err(|error| Error::operation("deploy_apply", format!("serialize preview: {error}")))?;
+    Ok(record)
 }
 
 fn failed_deploy_record(mut record: DeployRecord, error: &Error) -> DeployRecord {
@@ -638,6 +972,24 @@ fn failed_deploy_record(mut record: DeployRecord, error: &Error) -> DeployRecord
         }
     }
     record
+}
+
+fn failed_after_checkpoint_deploy_record(mut record: DeployRecord, error: &Error) -> DeployRecord {
+    record.state = DeployState::FailedAfterCheckpoint;
+    record.finished_at = Some(now_unix_secs());
+    if let Ok(mut preview) = serde_json::from_str::<DeployPreview>(&record.summary_json) {
+        preview
+            .warnings
+            .push(format!("deploy failed after checkpoint: {error}"));
+        if let Ok(summary_json) = serde_json::to_string(&preview) {
+            record.summary_json = summary_json;
+        }
+    }
+    record
+}
+
+fn phase_commit_timestamp(prepared: &PreparedDeploy, phase: &DeployPhasePlan) -> u64 {
+    prepared.applying_record().started_at + u64::from(phase.order) + 1
 }
 
 fn ensure_volume_move_execution_supported(
@@ -659,14 +1011,30 @@ fn ensure_volume_move_execution_supported(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) async fn run_phase_startup(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
     participants: &ParticipantSet,
     plan: &ResolvedPlan,
 ) -> Result<PhaseStartupResult> {
+    run_phase_startup_for_services(store, participant_client, participants, plan, None).await
+}
+
+async fn run_phase_startup_for_services(
+    store: &StoreDriver,
+    participant_client: &dyn DeployParticipantClient,
+    participants: &ParticipantSet,
+    plan: &ResolvedPlan,
+    included_services: Option<&BTreeSet<String>>,
+) -> Result<PhaseStartupResult> {
     let mut phase_queues: BTreeMap<u32, BTreeMap<MachineId, Vec<StartTask>>> = BTreeMap::new();
     for service in plan.services() {
+        if let Some(included_services) = included_services
+            && !included_services.contains(&service.service)
+        {
+            continue;
+        }
         let Some(phase) = service.phase() else {
             continue;
         };
@@ -739,6 +1107,7 @@ async fn execute_volume_moves(
     participant_client: &dyn DeployParticipantClient,
     participants: &ParticipantSet,
     plan: &ResolvedPlan,
+    included_volumes: Option<&BTreeSet<String>>,
 ) -> Result<Vec<DeployEvent>> {
     let mut events = Vec::new();
     for volume in plan
@@ -746,6 +1115,11 @@ async fn execute_volume_moves(
         .iter()
         .filter(|volume| matches!(volume_record_change(volume), VolumeChange::Move))
     {
+        if let Some(included_volumes) = included_volumes
+            && !included_volumes.contains(&volume.declaration.name)
+        {
+            continue;
+        }
         let Some(movement) = &volume.movement else {
             continue;
         };
@@ -947,11 +1321,146 @@ async fn removed_volumes(store: &StoreDriver, plan: &ResolvedPlan) -> Result<Vec
     Ok(removed)
 }
 
-fn build_committed_volumes(
+fn phase_services(phase: &DeployPhasePlan) -> BTreeSet<String> {
+    phase
+        .work
+        .iter()
+        .filter_map(|work| match work {
+            DeployPhaseWork::Service { service, .. } => Some(service.clone()),
+            DeployPhaseWork::Volume { .. } | DeployPhaseWork::VolumeMove { .. } => None,
+        })
+        .collect()
+}
+
+fn phase_volumes(phase: &DeployPhasePlan) -> BTreeSet<String> {
+    phase
+        .work
+        .iter()
+        .filter_map(|work| match work {
+            DeployPhaseWork::Volume { volume, .. } | DeployPhaseWork::VolumeMove { volume, .. } => {
+                Some(volume.clone())
+            }
+            DeployPhaseWork::Service { .. } => None,
+        })
+        .collect()
+}
+
+fn phase_commit_deploy_id(
+    deploy_id: &DeployId,
+    phase_id: &crate::model::DeployPhaseId,
+) -> DeployId {
+    DeployId(format!("{}:phase:{}", deploy_id.0, phase_id.0))
+}
+
+fn changed_services(
+    plan: &ResolvedPlan,
+) -> impl Iterator<Item = &crate::deploy::plan::PlannedService> {
+    plan.services()
+        .iter()
+        .filter(|service| service.action != DeployChangeKind::Unchanged)
+}
+
+fn remaining_changed_services(
+    plan: &ResolvedPlan,
+    checkpointed_services: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    changed_services(plan)
+        .filter(|service| !checkpointed_services.contains(&service.service))
+        .map(|service| service.service.clone())
+        .collect()
+}
+
+fn remaining_changed_volumes(
+    plan: &ResolvedPlan,
+    checkpointed_volumes: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    plan.volumes()
+        .iter()
+        .filter(|volume| !matches!(volume_record_change(volume), VolumeChange::Skip))
+        .filter(|volume| !checkpointed_volumes.contains(&volume.declaration.name))
+        .map(|volume| volume.declaration.name.clone())
+        .collect()
+}
+
+fn removed_services_for_phase(
+    plan: &ResolvedPlan,
+    phase_services: &BTreeSet<String>,
+) -> Vec<String> {
+    changed_services(plan)
+        .filter(|service| service.action == DeployChangeKind::Remove)
+        .filter(|service| phase_services.contains(&service.service))
+        .map(|service| service.service.clone())
+        .collect()
+}
+
+fn removed_services_for_final_commit(
+    plan: &ResolvedPlan,
+    checkpointed_services: &BTreeSet<String>,
+) -> Vec<String> {
+    changed_services(plan)
+        .filter(|service| service.action == DeployChangeKind::Remove)
+        .filter(|service| !checkpointed_services.contains(&service.service))
+        .map(|service| service.service.clone())
+        .collect()
+}
+
+fn build_phase_commit(
+    prepared: &PreparedDeploy,
+    started: &HashMap<(String, String), InstanceStatusRecord>,
+    included_services: &BTreeSet<String>,
+    included_volumes: &BTreeSet<String>,
+    removed_services: Vec<String>,
+    removed_volumes: Vec<String>,
+    deploy_state: DeployState,
+    deploy_record_id: DeployId,
+    committed_at: u64,
+) -> Result<DeployCommit> {
+    let revisions = prepared
+        .revisions()
+        .iter()
+        .filter(|revision| included_services.contains(&revision.service))
+        .cloned()
+        .collect::<Vec<_>>();
+    let releases = build_committed_releases_for_services(
+        prepared.plan(),
+        started,
+        prepared.deploy_id(),
+        committed_at,
+        Some(included_services),
+    )?;
+    let branch_lineage = prepared
+        .plan()
+        .service_branch_lineage_records(prepared.deploy_id(), committed_at)
+        .into_iter()
+        .filter(|record| included_services.contains(&record.service))
+        .collect::<Vec<_>>();
+    let volumes = build_committed_volumes_for_names(
+        prepared.plan(),
+        started,
+        prepared.deploy_id(),
+        committed_at,
+        Some(included_volumes),
+    )?;
+    let deploy = committed_deploy_record(prepared, deploy_state, deploy_record_id, committed_at)?;
+
+    Ok(DeployCommit {
+        namespace: prepared.plan().namespace().clone(),
+        revisions,
+        removed_services,
+        removed_volumes,
+        branch_lineage,
+        releases,
+        volumes,
+        deploy,
+    })
+}
+
+fn build_committed_volumes_for_names(
     plan: &ResolvedPlan,
     started: &HashMap<(String, String), InstanceStatusRecord>,
     deploy_id: &DeployId,
     now: u64,
+    included_volumes: Option<&BTreeSet<String>>,
 ) -> Result<Vec<VolumeRecord>> {
     let mut volumes = Vec::new();
     for planned in plan
@@ -959,6 +1468,11 @@ fn build_committed_volumes(
         .iter()
         .filter(|planned| !matches!(volume_record_change(planned), VolumeChange::Skip))
     {
+        if let Some(included_volumes) = included_volumes
+            && !included_volumes.contains(&planned.declaration.name)
+        {
+            continue;
+        }
         if !planned.attached_services.is_empty()
             && !planned.attached_services.iter().any(|service| {
                 started

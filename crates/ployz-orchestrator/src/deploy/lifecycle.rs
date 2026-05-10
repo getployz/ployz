@@ -1,13 +1,17 @@
 use crate::deploy::plan::ResolvedPlan;
 use crate::error::{DeployError, Error, Result};
 use crate::model::{
-    DeployChangeKind, DeployEvent, DeployId, DeployPreview, DeployRecord, DeployState,
-    DeployStateGoal, DeployStateTransition, DeployTransitionEvidence, InstanceStatusRecord,
+    DeployChangeKind, DeployId, DeployPreview, DeployRecord, DeployState, InstanceStatusRecord,
     MachineId, ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord, ServiceRoutingPolicy,
-    VolumeRecord,
 };
+#[cfg(test)]
+use crate::model::{
+    DeployStateGoal, DeployStateTransition, DeployTransitionEvidence, VolumeRecord,
+};
+#[cfg(test)]
 use ployz_store_api::DeployCommit;
 use ployz_types::spec::Namespace;
+#[cfg(test)]
 use ployz_types::time::now_unix_secs;
 use std::collections::{BTreeSet, HashMap};
 
@@ -20,30 +24,17 @@ pub(super) struct PreparedDeploy {
     revisions: Vec<ServiceRevisionRecord>,
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 pub(super) struct StartedCandidates {
     prepared: PreparedDeploy,
     started: HashMap<(String, String), InstanceStatusRecord>,
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 pub(super) struct CommitPlan {
-    deploy_id: DeployId,
-    plan: ResolvedPlan,
-    preview: DeployPreview,
-    participants: BTreeSet<MachineId>,
     commit: DeployCommit,
-}
-
-#[derive(Debug)]
-pub(super) struct CommittedDeploy {
-    deploy_id: DeployId,
-    namespace: Namespace,
-    plan: ResolvedPlan,
-    preview: DeployPreview,
-    participants: BTreeSet<MachineId>,
-    releases: Vec<ServiceReleaseRecord>,
-    deploy: DeployRecord,
 }
 
 #[derive(Debug)]
@@ -118,11 +109,11 @@ impl PreparedDeploy {
         &self.applying_record
     }
 
-    #[cfg(test)]
     pub(super) fn revisions(&self) -> &[ServiceRevisionRecord] {
         &self.revisions
     }
 
+    #[cfg(test)]
     pub(super) fn into_started(
         self,
         started: HashMap<(String, String), InstanceStatusRecord>,
@@ -134,19 +125,8 @@ impl PreparedDeploy {
     }
 }
 
+#[cfg(test)]
 impl StartedCandidates {
-    pub(super) fn started(&self) -> &HashMap<(String, String), InstanceStatusRecord> {
-        &self.started
-    }
-
-    pub(super) fn plan(&self) -> &ResolvedPlan {
-        &self.prepared.plan
-    }
-
-    pub(super) fn deploy_id(&self) -> &DeployId {
-        &self.prepared.deploy_id
-    }
-
     pub(super) fn into_commit_plan(
         self,
         removed_volumes: Vec<String>,
@@ -187,16 +167,9 @@ impl StartedCandidates {
                     message: error.message().to_string(),
                 })
             })?;
-        let namespace = plan.namespace().clone();
-        let participants = plan.participants().clone();
-
         Ok(CommitPlan {
-            deploy_id,
-            plan,
-            preview,
-            participants,
             commit: DeployCommit {
-                namespace,
+                namespace: plan.namespace().clone(),
                 revisions,
                 removed_services,
                 removed_volumes,
@@ -209,102 +182,26 @@ impl StartedCandidates {
     }
 }
 
+#[cfg(test)]
 impl CommitPlan {
     pub(super) fn commit(&self) -> &DeployCommit {
         &self.commit
     }
-
-    pub(super) fn into_committed(self) -> CommittedDeploy {
-        let Self {
-            deploy_id,
-            plan,
-            preview,
-            participants,
-            commit,
-        } = self;
-        CommittedDeploy {
-            deploy_id,
-            namespace: commit.namespace,
-            plan,
-            preview,
-            participants,
-            releases: commit.releases,
-            deploy: commit.deploy,
-        }
-    }
 }
 
-impl CommittedDeploy {
-    pub(super) fn commit_event(&self) -> DeployEvent {
-        DeployEvent {
-            step: "commit".into(),
-            message: format!(
-                "committed deploy {} for '{}'",
-                self.deploy_id, self.namespace
-            ),
-        }
-    }
-
-    pub(super) fn cleanup_plan(&self) -> CleanupPlan {
-        let active_instance_ids = self
-            .releases
-            .iter()
-            .flat_map(|release| release.release.slots.iter())
-            .map(|slot| slot.active_instance_id.0.clone())
-            .collect::<BTreeSet<_>>();
-        CleanupPlan {
-            namespace: self.namespace.clone(),
-            participants: self.participants.clone(),
+impl CleanupPlan {
+    pub(super) fn new(
+        namespace: Namespace,
+        participants: BTreeSet<MachineId>,
+        active_instance_ids: BTreeSet<String>,
+    ) -> Self {
+        Self {
+            namespace,
+            participants,
             active_instance_ids,
         }
     }
 
-    pub(super) fn cleanup_pending_record(&self, finished_at: u64) -> Result<DeployRecord> {
-        let mut deploy = self.deploy.clone();
-        deploy
-            .apply_state_transition(DeployStateTransition {
-                goal: DeployStateGoal::MarkCleanupPending,
-                evidence: DeployTransitionEvidence::DeployExecutor {
-                    coordinator_machine_id: deploy.coordinator_machine_id.clone(),
-                },
-                at_unix_secs: finished_at,
-            })
-            .map_err(|error| {
-                Error::Deploy(DeployError::StateTransitionRejected {
-                    transition: "mark cleanup pending",
-                    code: error.code(),
-                    message: error.message().to_string(),
-                })
-            })?;
-        Ok(deploy)
-    }
-
-    pub(super) fn deploy_id(&self) -> &DeployId {
-        &self.deploy_id
-    }
-
-    pub(super) fn preview(&self) -> &DeployPreview {
-        &self.preview
-    }
-
-    pub(super) fn plan(&self) -> &ResolvedPlan {
-        &self.plan
-    }
-
-    pub(super) fn deploy_record(&self) -> &DeployRecord {
-        &self.deploy
-    }
-
-    pub(super) fn set_warnings(&mut self, warnings: Vec<String>) -> Result<()> {
-        self.preview.warnings = warnings;
-        self.deploy.summary_json = serde_json::to_string(&self.preview).map_err(|error| {
-            Error::operation("deploy_apply", format!("serialize preview: {error}"))
-        })?;
-        Ok(())
-    }
-}
-
-impl CleanupPlan {
     pub(super) fn namespace(&self) -> &Namespace {
         &self.namespace
     }
@@ -318,14 +215,30 @@ impl CleanupPlan {
     }
 }
 
+#[cfg(test)]
 fn build_committed_releases(
     plan: &ResolvedPlan,
     started: &HashMap<(String, String), InstanceStatusRecord>,
     deploy_id: &DeployId,
     updated_at: u64,
 ) -> Result<Vec<ServiceReleaseRecord>> {
+    build_committed_releases_for_services(plan, started, deploy_id, updated_at, None)
+}
+
+pub(super) fn build_committed_releases_for_services(
+    plan: &ResolvedPlan,
+    started: &HashMap<(String, String), InstanceStatusRecord>,
+    deploy_id: &DeployId,
+    updated_at: u64,
+    included_services: Option<&BTreeSet<String>>,
+) -> Result<Vec<ServiceReleaseRecord>> {
     let mut releases = Vec::new();
     for service in plan.services() {
+        if let Some(included_services) = included_services
+            && !included_services.contains(&service.service)
+        {
+            continue;
+        }
         let Some(revision_hash) = service.next_revision_hash() else {
             continue;
         };

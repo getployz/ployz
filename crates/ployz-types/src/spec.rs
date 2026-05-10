@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+use crate::model::{DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseRollbackPolicy};
+
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
 )]
@@ -126,6 +128,8 @@ pub struct DeployIntent {
     pub services: Vec<ServiceIntentHint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volumes: Vec<VolumeIntentHint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<DeployPhaseIntent>,
 }
 
 impl DeployIntent {
@@ -163,8 +167,46 @@ impl DeployIntent {
             }
         }
 
-        if self.services.is_empty() && self.volumes.is_empty() {
-            return Err("deploy intent must include at least one service or volume hint".into());
+        let mut seen_phases = BTreeSet::new();
+        let mut phased_services = BTreeSet::new();
+        let mut phased_volumes = BTreeSet::new();
+        for phase in &self.phases {
+            phase.validate(&service_names, &volume_names)?;
+            if !seen_phases.insert(phase.phase_id.as_str()) {
+                return Err(format!(
+                    "deploy intent contains duplicate phase '{}'",
+                    phase.phase_id
+                ));
+            }
+            for after in &phase.after {
+                if after == &phase.phase_id {
+                    return Err(format!(
+                        "deploy phase '{}' cannot depend on itself",
+                        phase.phase_id
+                    ));
+                }
+            }
+            for service in &phase.services {
+                if !phased_services.insert(service.as_str()) {
+                    return Err(format!(
+                        "deploy intent assigns service '{service}' to multiple phases"
+                    ));
+                }
+            }
+            for volume in &phase.volumes {
+                if !phased_volumes.insert(volume.as_str()) {
+                    return Err(format!(
+                        "deploy intent assigns volume '{volume}' to multiple phases"
+                    ));
+                }
+            }
+        }
+        validate_phase_dependencies(&self.phases)?;
+
+        if self.services.is_empty() && self.volumes.is_empty() && self.phases.is_empty() {
+            return Err(
+                "deploy intent must include at least one service, volume, or phase hint".into(),
+            );
         }
 
         Ok(())
@@ -204,8 +246,192 @@ impl DeployIntent {
             }
         }
 
+        for phase in &self.phases {
+            if phase.advance_policy != DeployPhaseAdvancePolicy::Immediate {
+                return Err(format!(
+                    "deploy phase '{}' advance policy {:?} is not supported by deploy planning yet",
+                    phase.phase_id, phase.advance_policy
+                ));
+            }
+        }
+
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeployPhaseIntent {
+    pub phase_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub after: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<String>,
+    #[serde(default = "default_phase_commit_policy")]
+    pub commit_policy: DeployPhaseCommitPolicy,
+    #[serde(default = "default_phase_rollback_policy")]
+    pub rollback_policy: DeployPhaseRollbackPolicy,
+    #[serde(default = "default_phase_advance_policy")]
+    pub advance_policy: DeployPhaseAdvancePolicy,
+}
+
+impl DeployPhaseIntent {
+    fn validate(
+        &self,
+        service_names: &BTreeSet<&str>,
+        volume_names: &BTreeSet<&str>,
+    ) -> Result<(), String> {
+        if !valid_storage_segment(&self.phase_id) {
+            return Err(format!(
+                "deploy phase id '{}' must be 1-63 chars of [a-z0-9_-], starting with a letter or digit",
+                self.phase_id
+            ));
+        }
+        if self.services.is_empty()
+            && self.volumes.is_empty()
+            && self.commit_policy != DeployPhaseCommitPolicy::NoStoreCommit
+        {
+            return Err(format!(
+                "deploy phase '{}' must reference at least one service or volume",
+                self.phase_id
+            ));
+        }
+        if self.commit_policy == DeployPhaseCommitPolicy::NoStoreCommit
+            && (!self.services.is_empty() || !self.volumes.is_empty())
+        {
+            return Err(format!(
+                "deploy phase '{}' with no-store commit policy cannot reference services or volumes",
+                self.phase_id
+            ));
+        }
+        let mut seen_services = BTreeSet::new();
+        for service in &self.services {
+            if service.trim().is_empty() {
+                return Err(format!(
+                    "deploy phase '{}' cannot reference an empty service",
+                    self.phase_id
+                ));
+            }
+            if !service_names.contains(service.as_str()) {
+                return Err(format!(
+                    "deploy phase '{}' references unknown service '{}'",
+                    self.phase_id, service
+                ));
+            }
+            if !seen_services.insert(service.as_str()) {
+                return Err(format!(
+                    "deploy phase '{}' references service '{}' more than once",
+                    self.phase_id, service
+                ));
+            }
+        }
+        let mut seen_volumes = BTreeSet::new();
+        for volume in &self.volumes {
+            if volume.trim().is_empty() {
+                return Err(format!(
+                    "deploy phase '{}' cannot reference an empty volume",
+                    self.phase_id
+                ));
+            }
+            if !volume_names.contains(volume.as_str()) {
+                return Err(format!(
+                    "deploy phase '{}' references unknown volume '{}'",
+                    self.phase_id, volume
+                ));
+            }
+            if !seen_volumes.insert(volume.as_str()) {
+                return Err(format!(
+                    "deploy phase '{}' references volume '{}' more than once",
+                    self.phase_id, volume
+                ));
+            }
+        }
+        if matches!(self.commit_policy, DeployPhaseCommitPolicy::Checkpoint)
+            && self.rollback_policy == DeployPhaseRollbackPolicy::Reversible
+        {
+            return Err(format!(
+                "deploy phase '{}' with checkpoint commit policy must use a non-reversible rollback policy",
+                self.phase_id
+            ));
+        }
+        if matches!(self.commit_policy, DeployPhaseCommitPolicy::NoStoreCommit)
+            && self.rollback_policy == DeployPhaseRollbackPolicy::Reversible
+        {
+            return Err(format!(
+                "deploy phase '{}' with no-store commit policy must use a non-reversible rollback policy",
+                self.phase_id
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn default_phase_commit_policy() -> DeployPhaseCommitPolicy {
+    DeployPhaseCommitPolicy::EndOfDeploy
+}
+
+fn default_phase_rollback_policy() -> DeployPhaseRollbackPolicy {
+    DeployPhaseRollbackPolicy::Reversible
+}
+
+fn default_phase_advance_policy() -> DeployPhaseAdvancePolicy {
+    DeployPhaseAdvancePolicy::Immediate
+}
+
+fn validate_phase_dependencies(phases: &[DeployPhaseIntent]) -> Result<(), String> {
+    let phase_ids = phases
+        .iter()
+        .map(|phase| phase.phase_id.as_str())
+        .collect::<BTreeSet<_>>();
+    for phase in phases {
+        for after in &phase.after {
+            if !phase_ids.contains(after.as_str()) {
+                return Err(format!(
+                    "deploy phase '{}' depends on unknown phase '{}'",
+                    phase.phase_id, after
+                ));
+            }
+        }
+    }
+
+    for phase in phases {
+        let mut visiting = BTreeSet::new();
+        let mut visited = BTreeSet::new();
+        visit_phase_dependency(phase.phase_id.as_str(), phases, &mut visiting, &mut visited)?;
+    }
+    Ok(())
+}
+
+fn visit_phase_dependency<'a>(
+    phase_id: &'a str,
+    phases: &'a [DeployPhaseIntent],
+    visiting: &mut BTreeSet<&'a str>,
+    visited: &mut BTreeSet<&'a str>,
+) -> Result<(), String> {
+    if visited.contains(phase_id) {
+        return Ok(());
+    }
+    if !visiting.insert(phase_id) {
+        return Err(format!(
+            "deploy phase dependencies contain a cycle involving '{phase_id}'"
+        ));
+    }
+    let Some(phase) = phases
+        .iter()
+        .find(|candidate| candidate.phase_id == phase_id)
+    else {
+        return Ok(());
+    };
+    for after in &phase.after {
+        visit_phase_dependency(after, phases, visiting, visited)?;
+    }
+    visiting.remove(phase_id);
+    visited.insert(phase_id);
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1090,6 +1316,7 @@ mod tests {
                         to_machine: "machine-b".into(),
                     },
                 }],
+                phases: Vec::new(),
             }),
             volumes: vec![VolumeDeclaration {
                 name: "data".into(),
@@ -1124,6 +1351,7 @@ mod tests {
                     },
                 }],
                 volumes: Vec::new(),
+                phases: Vec::new(),
             }),
             volumes: vec![VolumeDeclaration {
                 name: "data".into(),
@@ -1153,6 +1381,7 @@ mod tests {
                     },
                 }],
                 volumes: Vec::new(),
+                phases: Vec::new(),
             }),
             volumes: vec![VolumeDeclaration {
                 name: "data".into(),
@@ -1181,6 +1410,7 @@ mod tests {
                     to_machine: "machine-b".into(),
                 },
             }],
+            phases: Vec::new(),
         });
 
         manifest
@@ -1201,6 +1431,7 @@ mod tests {
                     },
                 }],
                 volumes: Vec::new(),
+                phases: Vec::new(),
             }),
             volumes: vec![VolumeDeclaration {
                 name: "data".into(),
@@ -1273,6 +1504,7 @@ mod tests {
                         to_machine: "machine-b".into(),
                     },
                 }],
+                phases: Vec::new(),
             }),
             volumes: vec![VolumeDeclaration {
                 name: "data".into(),
@@ -1289,6 +1521,155 @@ mod tests {
             .expect_err("unknown service should fail before unsupported mode");
 
         assert!(error.contains("unknown service"), "got: {error}");
+    }
+
+    #[test]
+    fn deploy_intent_accepts_ordered_checkpoint_and_no_store_phases() {
+        let manifest = DeployManifest {
+            namespace: Namespace::default_ns(),
+            intent: Some(DeployIntent {
+                services: Vec::new(),
+                volumes: Vec::new(),
+                phases: vec![
+                    DeployPhaseIntent {
+                        phase_id: "schema".into(),
+                        name: Some("Schema".into()),
+                        after: Vec::new(),
+                        services: vec!["api".into()],
+                        volumes: Vec::new(),
+                        commit_policy: DeployPhaseCommitPolicy::Checkpoint,
+                        rollback_policy: DeployPhaseRollbackPolicy::ForwardOnly,
+                        advance_policy: DeployPhaseAdvancePolicy::Immediate,
+                    },
+                    DeployPhaseIntent {
+                        phase_id: "observe".into(),
+                        name: None,
+                        after: vec!["schema".into()],
+                        services: Vec::new(),
+                        volumes: Vec::new(),
+                        commit_policy: DeployPhaseCommitPolicy::NoStoreCommit,
+                        rollback_policy: DeployPhaseRollbackPolicy::External,
+                        advance_policy: DeployPhaseAdvancePolicy::Immediate,
+                    },
+                ],
+            }),
+            volumes: vec![VolumeDeclaration {
+                name: "data".into(),
+                scope: VolumeScope::Single,
+                quota: "10G".into(),
+                mode: "0750".into(),
+                owner: "999:999".into(),
+            }],
+            services: vec![sample_spec()],
+        };
+
+        manifest
+            .validate()
+            .expect("checkpoint and empty no-store phases should validate");
+    }
+
+    #[test]
+    fn deploy_intent_rejects_reversible_checkpoint_and_cycles() {
+        let mut manifest = DeployManifest {
+            namespace: Namespace::default_ns(),
+            intent: Some(DeployIntent {
+                services: Vec::new(),
+                volumes: Vec::new(),
+                phases: vec![DeployPhaseIntent {
+                    phase_id: "schema".into(),
+                    name: None,
+                    after: Vec::new(),
+                    services: vec!["api".into()],
+                    volumes: Vec::new(),
+                    commit_policy: DeployPhaseCommitPolicy::Checkpoint,
+                    rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                    advance_policy: DeployPhaseAdvancePolicy::Immediate,
+                }],
+            }),
+            volumes: vec![VolumeDeclaration {
+                name: "data".into(),
+                scope: VolumeScope::Single,
+                quota: "10G".into(),
+                mode: "0750".into(),
+                owner: "999:999".into(),
+            }],
+            services: vec![sample_spec()],
+        };
+
+        let error = manifest
+            .validate()
+            .expect_err("reversible checkpoint should fail");
+        assert!(
+            error.contains("non-reversible rollback policy"),
+            "got: {error}"
+        );
+
+        manifest.intent = Some(DeployIntent {
+            services: Vec::new(),
+            volumes: Vec::new(),
+            phases: vec![
+                DeployPhaseIntent {
+                    phase_id: "a".into(),
+                    name: None,
+                    after: vec!["b".into()],
+                    services: vec!["api".into()],
+                    volumes: Vec::new(),
+                    commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                    rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                    advance_policy: DeployPhaseAdvancePolicy::Immediate,
+                },
+                DeployPhaseIntent {
+                    phase_id: "b".into(),
+                    name: None,
+                    after: vec!["a".into()],
+                    services: Vec::new(),
+                    volumes: Vec::new(),
+                    commit_policy: DeployPhaseCommitPolicy::NoStoreCommit,
+                    rollback_policy: DeployPhaseRollbackPolicy::External,
+                    advance_policy: DeployPhaseAdvancePolicy::Immediate,
+                },
+            ],
+        });
+
+        let error = manifest.validate().expect_err("phase cycle should fail");
+        assert!(error.contains("cycle"), "got: {error}");
+    }
+
+    #[test]
+    fn deploy_intent_rejects_no_store_phase_with_resource_work() {
+        let manifest = DeployManifest {
+            namespace: Namespace::default_ns(),
+            intent: Some(DeployIntent {
+                services: Vec::new(),
+                volumes: Vec::new(),
+                phases: vec![DeployPhaseIntent {
+                    phase_id: "observe".into(),
+                    name: None,
+                    after: Vec::new(),
+                    services: vec!["api".into()],
+                    volumes: Vec::new(),
+                    commit_policy: DeployPhaseCommitPolicy::NoStoreCommit,
+                    rollback_policy: DeployPhaseRollbackPolicy::External,
+                    advance_policy: DeployPhaseAdvancePolicy::Immediate,
+                }],
+            }),
+            volumes: vec![VolumeDeclaration {
+                name: "data".into(),
+                scope: VolumeScope::Single,
+                quota: "10G".into(),
+                mode: "0750".into(),
+                owner: "999:999".into(),
+            }],
+            services: vec![sample_spec()],
+        };
+
+        let error = manifest
+            .validate()
+            .expect_err("no-store phase with resource work should fail");
+        assert!(
+            error.contains("cannot reference services or volumes"),
+            "got: {error}"
+        );
     }
 
     #[test]
