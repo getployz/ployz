@@ -157,6 +157,10 @@ pub enum DeployError {
     ParticipantSetChanged,
     #[error("resolved execution plan changed after lock acquisition; retry deploy")]
     ExecutionPlanChanged,
+    #[error("invalid deploy option '{field}': {message}")]
+    DeployOptionInvalid { field: String, message: String },
+    #[error("service source baseline changed: expected fingerprint '{expected}', got '{actual}'")]
+    ServiceSourceBaselineChanged { expected: String, actual: String },
     #[error(
         "hostname '{hostname}' is declared by both {first_namespace}/{first_service} and {second_namespace}/{second_service}"
     )]
