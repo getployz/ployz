@@ -7,10 +7,12 @@ mod setup;
 pub mod ssh;
 mod subnet_coordination;
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::built_in_images::BuiltInImages;
+use crate::daemon::handlers::image::registry::ImageRegistry;
 use crate::ipc::listener::IncomingCommand;
 use crate::mesh_state::bootstrap::BootstrapPeerSeedTask;
 use crate::mesh_state::network::NetworkConfig;
@@ -39,6 +41,8 @@ pub struct ActiveMesh {
     pub mesh: Mesh,
     pub nats_control: Box<dyn RuntimeHandle>,
     pub zfs_transfer: Box<dyn RuntimeHandle>,
+    pub image_receiver: Box<dyn RuntimeHandle>,
+    pub image_receiver_bind_addr: Option<SocketAddr>,
     pub gateway: Box<dyn RuntimeHandle>,
     pub dns: Box<dyn RuntimeHandle>,
     pub certificate_renewal: Option<CertificateRenewalTask>,
@@ -103,6 +107,7 @@ pub struct DaemonState {
     pub configured_topology: Option<MachineTopology>,
     pub dns_metrics_listen_addr: Option<String>,
     pub gateway_metrics_listen_addr: Option<String>,
+    pub image_registry: ImageRegistry,
     pub active: Option<ActiveMesh>,
     pub subnet_coord: Arc<dyn SubnetReservationCoordinator>,
     pub command_tx: Option<mpsc::Sender<IncomingCommand>>,
@@ -219,6 +224,7 @@ impl DaemonState {
             configured_topology,
             dns_metrics_listen_addr,
             gateway_metrics_listen_addr,
+            image_registry: ImageRegistry::new(data_dir.join("image-registry")),
             active: None,
             subnet_coord: Arc::new(MemorySubnetCoordinator::new()),
             command_tx: None,

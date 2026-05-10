@@ -162,6 +162,11 @@ impl NodeCommandSubject {
     }
 
     #[must_use]
+    pub fn image_receive_session(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "image.receive_session")
+    }
+
+    #[must_use]
     pub(crate) fn subject_in(&self, scope: &NatsScope) -> String {
         match self.plane {
             NodeCommandPlane::Authority => {
@@ -431,6 +436,17 @@ mod tests {
         assert_eq!(
             NodeCommandSubject::volume_zfs_transfer_get(&machine_id).subject_in(&scope),
             "ployz.v1.local.auth-default.rpc.node.machine%2Ea.volume.zfs.transfer_get"
+        );
+    }
+
+    #[test]
+    fn image_receive_session_subject_remains_authority_scoped() {
+        let machine_id = MachineId("machine.a".into());
+        let scope = NatsScope::local_default();
+
+        assert_eq!(
+            NodeCommandSubject::image_receive_session(&machine_id).subject_in(&scope),
+            "ployz.v1.local.auth-default.rpc.node.machine%2Ea.image.receive_session"
         );
     }
 
