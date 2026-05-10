@@ -4,10 +4,10 @@ use ployz_types::error::Error;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     CertificateEvent, CertificateRecord, DeployId, DeployPhaseCommitRecord, DeployPhaseId,
-    DeployPhaseRecord, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineMembership, RoutingEvent, RoutingState, ServiceBranchLineageRecord,
-    ServiceReleaseRecord, ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord,
-    VolumeRecord,
+    DeployPhaseRecord, DeployRecord, ImageAvailabilityRecord, ImageDigest, InstanceId,
+    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership, RoutingEvent,
+    RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
+    VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use serde::{Deserialize, Serialize};
@@ -605,6 +605,19 @@ pub trait RoutingStateStore: Send + Sync {
     async fn load_routing_state(&self) -> Result<RoutingState>;
 
     async fn subscribe_routing_events(&self) -> Result<RoutingEventSubscription>;
+}
+
+#[async_trait]
+pub trait ImageAvailabilityStore: Send + Sync {
+    async fn upsert_image_availability(&self, record: &ImageAvailabilityRecord) -> Result<()>;
+
+    async fn get_image_availability(
+        &self,
+        machine_id: &MachineId,
+        digest: &ImageDigest,
+    ) -> Result<Option<ImageAvailabilityRecord>>;
+
+    async fn list_image_availability(&self) -> Result<Vec<ImageAvailabilityRecord>>;
 }
 
 #[async_trait]

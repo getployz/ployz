@@ -1,6 +1,8 @@
+mod build;
 mod debug;
 mod deploy;
 mod doctor;
+mod image;
 mod invite;
 pub(crate) mod machine;
 mod mesh;
@@ -54,6 +56,11 @@ impl DaemonState {
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
             | DaemonRequest::MigrateService { .. }
+            | DaemonRequest::ImageStatus { .. }
+            | DaemonRequest::ImageOperationGet { .. }
+            | DaemonRequest::ImageOperationList
+            | DaemonRequest::BuildOperationGet { .. }
+            | DaemonRequest::BuildOperationList
             | DaemonRequest::DeployNodeInspectNamespace { .. }
             | DaemonRequest::DeployNodeStartCandidate { .. }
             | DaemonRequest::DeployNodeDrainInstance { .. }
@@ -145,6 +152,11 @@ impl DaemonState {
                 self.handle_deploy_export(&namespace).await
             }
             DaemonRequest::MigrateService { request } => self.handle_migrate_service(request).await,
+            DaemonRequest::ImageStatus { request } => self.handle_image_status(&request).await,
+            DaemonRequest::ImageOperationGet { id } => self.handle_image_operation_get(&id).await,
+            DaemonRequest::ImageOperationList => self.handle_image_operation_list().await,
+            DaemonRequest::BuildOperationGet { id } => self.handle_build_operation_get(&id).await,
+            DaemonRequest::BuildOperationList => self.handle_build_operation_list().await,
             DaemonRequest::DeployNodeInspectNamespace {
                 namespace,
                 deploy_id,
@@ -501,6 +513,11 @@ impl DaemonState {
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
             | DaemonRequest::MigrateService { .. }
+            | DaemonRequest::ImageStatus { .. }
+            | DaemonRequest::ImageOperationGet { .. }
+            | DaemonRequest::ImageOperationList
+            | DaemonRequest::BuildOperationGet { .. }
+            | DaemonRequest::BuildOperationList
             | DaemonRequest::DeployNodeInspectNamespace { .. }
             | DaemonRequest::DeployNodeStartCandidate { .. }
             | DaemonRequest::DeployNodeDrainInstance { .. }
