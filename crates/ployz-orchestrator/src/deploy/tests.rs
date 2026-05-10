@@ -2167,6 +2167,199 @@ async fn apply_drains_live_uncommitted_volume_clone_writers_before_retrying_clon
 }
 
 #[tokio::test]
+async fn apply_drains_removed_uncommitted_volume_clone_candidates_before_retrying_clone() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    seed_volume(&store, &source_namespace, "data", "machine-a").await;
+
+    let mut db = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    db.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    let web = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let mut manifest = test_manifest(vec![db, web]);
+    manifest.namespace = Namespace("pr-39".into());
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Clone {
+                source_namespace,
+                source_volume: "data".into(),
+                data_policy: VolumeCloneDataPolicy::Raw,
+                consistency: VolumeCloneConsistency::CrashConsistent,
+            },
+        }],
+        phases: vec![DeployPhaseIntent {
+            phase_id: "app".into(),
+            name: Some("App".into()),
+            after: Vec::new(),
+            services: vec!["db".into(), "web".into()],
+            volumes: Vec::new(),
+            commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+            rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+            advance_policy: DeployPhaseAdvancePolicy::Immediate,
+        }],
+    });
+
+    let first_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("clone plan");
+    let first_controller = FakeController {
+        fail_start_service: Some("web".into()),
+        ..FakeController::default()
+    };
+    let first_factory = FakeParticipantClient::new(first_controller.clone());
+    apply_with_initial_plan(
+        &store,
+        &first_factory,
+        &local_machine_id,
+        &manifest,
+        first_plan,
+    )
+    .await
+    .expect_err("first deploy leaves started uncommitted clone candidate");
+    assert_eq!(first_controller.clone_cleanup_count(), 0);
+
+    let mut retry_manifest = manifest.clone();
+    retry_manifest
+        .services
+        .retain(|service| service.name.as_str() == "web");
+    let Some(intent) = retry_manifest.intent.as_mut() else {
+        panic!("expected clone intent");
+    };
+    intent.phases.clear();
+
+    let retry_plan = resolve_plan(&store, &local_machine_id, &retry_manifest)
+        .await
+        .expect("retry clone plan");
+    let retry_controller = FakeController::default();
+    retry_controller
+        .set_inspect_instances(vec![test_instance_status(
+            &retry_manifest.namespace,
+            "db",
+            "slot-0001",
+            "machine-a",
+            "inst-db-old",
+            "fake-revision",
+        )])
+        .await;
+    let retry_factory = FakeParticipantClient::new(retry_controller.clone());
+
+    apply_with_initial_plan(
+        &store,
+        &retry_factory,
+        &local_machine_id,
+        &retry_manifest,
+        retry_plan,
+    )
+    .await
+    .expect("retry should drain removed stale candidate before cloning");
+
+    assert_eq!(retry_controller.clone_count(), 1);
+    let log = retry_controller.operation_log().await;
+    let drain = log
+        .iter()
+        .position(|entry| entry == "drain:inst-db-old")
+        .expect("removed stale candidate should be drained before clone");
+    let remove = log
+        .iter()
+        .position(|entry| entry == "remove:inst-db-old")
+        .expect("removed stale candidate should be removed before clone");
+    let clone = log
+        .iter()
+        .position(|entry| entry.starts_with("clone:data:machine-a:prod/data"))
+        .expect("clone should run after stale candidate is removed");
+    assert!(
+        drain < remove && remove < clone,
+        "expected removed stale candidate cleanup before clone retry: {log:?}"
+    );
+}
+
+#[tokio::test]
+async fn apply_does_not_drain_committed_service_before_creating_new_clone() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    seed_volume(&store, &source_namespace, "data", "machine-a").await;
+
+    let mut db = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    db.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    let mut manifest = test_manifest(vec![db]);
+    manifest.namespace = Namespace("pr-39".into());
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Clone {
+                source_namespace,
+                source_volume: "data".into(),
+                data_policy: VolumeCloneDataPolicy::Raw,
+                consistency: VolumeCloneConsistency::CrashConsistent,
+            },
+        }],
+        phases: Vec::new(),
+    });
+    let [spec] = manifest.services.as_slice() else {
+        panic!("expected one service");
+    };
+    let revision_hash = spec.revision_hash().expect("revision hash");
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "db",
+            &revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-a",
+                "inst-db-committed",
+                &revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("clone plan");
+    let controller = FakeController {
+        fail_clone_volume: Some("data".into()),
+        ..FakeController::default()
+    };
+    controller
+        .set_inspect_instances(vec![test_instance_status(
+            &manifest.namespace,
+            "db",
+            "slot-0001",
+            "machine-a",
+            "inst-db-committed",
+            &revision_hash,
+        )])
+        .await;
+    let factory = FakeParticipantClient::new(controller.clone());
+
+    apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+        .await
+        .expect_err("clone failure should fail deploy");
+
+    assert_eq!(controller.clone_count(), 1);
+    assert_eq!(controller.drain_count(), 0);
+    assert_eq!(controller.remove_count(), 0);
+}
+
+#[tokio::test]
 async fn apply_surfaces_uncommitted_volume_clone_cleanup_failures() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
     let local_machine_id = MachineId("local".into());
