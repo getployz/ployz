@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::time::Duration;
 
 use ployz_api::{
     DaemonPayload, DaemonRequest, ImageDistributePayload, ImageDistributeRequest, ImagePushRequest,
     ImageReceiveSessionPayload, ImageReceiveSessionRequest, ImageReceivedImportPayload,
     ImageReceivedImportRequest, ImageTransferTargetResult, ImageTransferTargetStatus,
 };
-use ployz_nats::NodeCommandSubject;
+use ployz_nats::{NodeCommandSubject, RpcPolicy};
 use ployz_runtime_api::{ImageArchiveReader, RuntimeImageBackend};
 use ployz_store_api::{ImageAvailabilityStore, MachineMembershipStore};
 use ployz_types::model::{
@@ -26,6 +27,8 @@ use crate::daemon::handlers::image::registry::{
     REGISTRY_OPERATION_HEADER, REGISTRY_SESSION_HEADER, REGISTRY_SOURCE_MACHINE_HEADER,
     validate_repository,
 };
+
+const IMAGE_RECEIVED_IMPORT_RPC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 impl DaemonState {
     pub(crate) async fn handle_image_push(
@@ -599,6 +602,9 @@ impl DaemonState {
                 .await
                 .map_err(|error| format!("connect node rpc for image import: {error}"))?;
             client
+                .with_policy(RpcPolicy {
+                    timeout: IMAGE_RECEIVED_IMPORT_RPC_TIMEOUT,
+                })
                 .request(
                     NodeCommandSubject::image_received_import(target_machine),
                     &DaemonRequest::ImageReceivedImport { request },
