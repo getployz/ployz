@@ -24,7 +24,7 @@ use crate::model::{
     MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
     ServiceBranchLineageRecord, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
     ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, VolumeBranchLineageRecord,
-    VolumeMovementRecord, VolumeRecord,
+    VolumeClonePreflightAction, VolumeClonePreflightScope, VolumeMovementRecord, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -168,6 +168,7 @@ async fn resolve_plan_preview_includes_default_phase_for_basic_manifest() {
         [DeployPhaseWork::Service { service, action }]
             if service == "api" && *action == DeployChangeKind::Create
     ));
+    assert!(preview.volume_clone_preflights.is_empty());
 }
 
 #[tokio::test]
@@ -1656,6 +1657,19 @@ async fn preview_plans_volume_clone_on_source_machine() {
             DeployPhaseWork::Service { service, .. },
         ] if volume == "data" && service == "db"
     ));
+    let [preflight] = preview.volume_clone_preflights.as_slice() else {
+        panic!("expected one volume clone preflight");
+    };
+    assert_eq!(&preflight.phase_id, &phase.phase_id);
+    assert_eq!(preflight.volumes, vec!["data".to_string()]);
+    assert_eq!(
+        preflight.action,
+        VolumeClonePreflightAction::DrainAndRemoveBeforeCloneReplacement
+    );
+    assert_eq!(
+        preflight.scope,
+        VolumeClonePreflightScope::UncommittedNamespaceInstances
+    );
 }
 
 #[tokio::test]
@@ -1691,6 +1705,26 @@ async fn apply_executes_volume_clone_before_startup_and_commits_lineage() {
             .expect("clone deploy");
 
     assert_eq!(result.state, DeployState::Committed);
+    let preflight_event = result
+        .events
+        .iter()
+        .position(|event| event.step == "preflight_clone_replacement")
+        .expect("clone replacement preflight event");
+    assert!(
+        result.events[preflight_event].message.contains("data"),
+        "expected clone preflight to name cloned volume: {:?}",
+        result.events[preflight_event]
+    );
+    let clone_event = result
+        .events
+        .iter()
+        .position(|event| event.step == "clone_volume")
+        .expect("clone event");
+    assert!(
+        preflight_event < clone_event,
+        "expected clone replacement preflight before clone event: {:?}",
+        result.events
+    );
     assert_eq!(controller.clone_count(), 1);
     assert_eq!(controller.start_count(), 1);
     let clone_requests = controller.clone_requests().await;
@@ -2134,7 +2168,7 @@ async fn apply_drains_live_uncommitted_volume_clone_writers_before_retrying_clon
         .await;
     let retry_factory = FakeParticipantClient::new(retry_controller.clone());
 
-    apply_with_initial_plan(
+    let retry_result = apply_with_initial_plan(
         &store,
         &retry_factory,
         &local_machine_id,
@@ -2145,6 +2179,33 @@ async fn apply_drains_live_uncommitted_volume_clone_writers_before_retrying_clon
     .expect("retry should drain old writer before cloning");
 
     assert_eq!(retry_controller.clone_count(), 1);
+    let preflight_event = retry_result
+        .events
+        .iter()
+        .position(|event| event.step == "preflight_clone_replacement")
+        .expect("clone replacement preflight event");
+    assert!(
+        retry_result.events[preflight_event]
+            .message
+            .contains("data"),
+        "expected clone preflight to name cloned volume: {:?}",
+        retry_result.events[preflight_event]
+    );
+    let stop_event = retry_result
+        .events
+        .iter()
+        .position(|event| event.step == "stop_uncommitted_instance")
+        .expect("uncommitted instance stop event");
+    let clone_event = retry_result
+        .events
+        .iter()
+        .position(|event| event.step == "clone_volume")
+        .expect("clone event");
+    assert!(
+        preflight_event < stop_event && stop_event < clone_event,
+        "expected clone replacement preflight before stale candidate stop and clone: {:?}",
+        retry_result.events
+    );
     assert!(retry_controller.drain_count() >= 1);
     assert!(retry_controller.remove_count() >= 1);
     let log = retry_controller.operation_log().await;
@@ -2288,7 +2349,7 @@ async fn apply_drains_removed_uncommitted_volume_clone_candidates_before_retryin
         .await;
     let retry_factory = FakeParticipantClient::new(retry_controller.clone());
 
-    apply_with_initial_plan(
+    let retry_result = apply_with_initial_plan(
         &store,
         &retry_factory,
         &local_machine_id,
@@ -2299,6 +2360,30 @@ async fn apply_drains_removed_uncommitted_volume_clone_candidates_before_retryin
     .expect("retry should drain removed stale candidate before cloning");
 
     assert_eq!(retry_controller.clone_count(), 2);
+    let preflight_messages = retry_result
+        .events
+        .iter()
+        .filter(|event| event.step == "preflight_clone_replacement")
+        .map(|event| event.message.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        preflight_messages.len(),
+        2,
+        "expected one clone replacement preflight per clone phase: {:?}",
+        retry_result.events
+    );
+    assert!(
+        preflight_messages
+            .iter()
+            .any(|message| message.contains("data")),
+        "expected a clone preflight event to name data: {preflight_messages:?}"
+    );
+    assert!(
+        preflight_messages
+            .iter()
+            .any(|message| message.contains("cache")),
+        "expected a clone preflight event to name cache: {preflight_messages:?}"
+    );
     let log = retry_controller.operation_log().await;
     assert_eq!(
         log.iter()

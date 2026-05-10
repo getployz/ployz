@@ -2389,6 +2389,7 @@ mod tests {
             service_branch_sources: Vec::new(),
             volume_moves: Vec::new(),
             volume_clones: Vec::new(),
+            volume_clone_preflights: Vec::new(),
             warnings: Vec::new(),
         };
         store
@@ -2450,6 +2451,7 @@ mod tests {
                     service_branch_sources: Vec::new(),
                     volume_moves: Vec::new(),
                     volume_clones: Vec::new(),
+                    volume_clone_preflights: Vec::new(),
                     warnings: Vec::new(),
                 })
                 .expect("preview json"),
@@ -2581,6 +2583,7 @@ mod tests {
                     service_branch_sources: Vec::new(),
                     volume_moves: Vec::new(),
                     volume_clones: Vec::new(),
+                    volume_clone_preflights: Vec::new(),
                     warnings: Vec::new(),
                 })
                 .expect("preview json"),
