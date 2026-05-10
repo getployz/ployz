@@ -10,6 +10,7 @@ use ployz_types::model::{AuthorityNodePosture, MachineId, NetworkId};
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Duration;
 
 #[derive(Clone)]
 pub(super) struct MachineAddContext {
@@ -22,6 +23,29 @@ pub(super) struct MachineAddContext {
     pub nats_rpc: Option<NatsNodeRpcClient>,
     pub ssh_options: SshOptions,
     pub install: MachineInstallOptions,
+    pub remote_ready_wait_policy: Option<RemoteReadyWaitPolicy>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct RemoteReadyWaitPolicy {
+    pub ready_timeout: Duration,
+    pub ready_poll_interval: Duration,
+    pub ready_rpc_timeout: Duration,
+}
+
+impl RemoteReadyWaitPolicy {
+    #[must_use]
+    pub(crate) const fn new(
+        ready_timeout: Duration,
+        ready_poll_interval: Duration,
+        ready_rpc_timeout: Duration,
+    ) -> Self {
+        Self {
+            ready_timeout,
+            ready_poll_interval,
+            ready_rpc_timeout,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
