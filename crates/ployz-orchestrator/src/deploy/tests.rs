@@ -867,6 +867,227 @@ async fn resolve_plan_moves_draining_volume_to_existing_service_volume_pin() {
 }
 
 #[tokio::test]
+async fn resolve_plan_moves_draining_volume_to_pending_sibling_move_target() {
+    let store = StoreDriver::memory();
+    let local_machine_id = MachineId("local".into());
+    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("wal".into()),
+        target: "/var/lib/postgresql/wal".into(),
+        readonly: false,
+    });
+    let mut manifest = test_manifest(vec![service]);
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    manifest
+        .volumes
+        .push(test_volume("wal", VolumeScope::Single));
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "wal".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-d".into(),
+                to_machine: "machine-c".into(),
+            },
+        }],
+        phases: Vec::new(),
+    });
+    let [spec] = manifest.services.as_slice() else {
+        panic!("expected one manifest service");
+    };
+    let revision_hash = spec.revision_hash().expect("revision hash");
+
+    store
+        .upsert_self_machine(&test_machine("machine-a", MachineLifecycle::Draining))
+        .await
+        .expect("seed machine-a");
+    store
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-b");
+    store
+        .upsert_self_machine(&test_machine("machine-c", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-c");
+    store
+        .upsert_self_machine(&test_machine("machine-d", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-d");
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "wal",
+        "machine-d",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "db",
+            &revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-a",
+                "inst-1",
+                &revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve plan");
+
+    let data = plan
+        .volumes()
+        .iter()
+        .find(|volume| volume.declaration.name == "data")
+        .expect("data volume");
+    assert_eq!(data.machine_id, MachineId("machine-c".into()));
+    assert_eq!(
+        data.movement
+            .as_ref()
+            .map(|movement| (&movement.from_machine, &movement.to_machine)),
+        Some((
+            &MachineId("machine-a".into()),
+            &MachineId("machine-c".into())
+        ))
+    );
+    let wal = plan
+        .volumes()
+        .iter()
+        .find(|volume| volume.declaration.name == "wal")
+        .expect("wal volume");
+    assert_eq!(wal.machine_id, MachineId("machine-c".into()));
+    assert_eq!(
+        wal.movement
+            .as_ref()
+            .map(|movement| (&movement.from_machine, &movement.to_machine)),
+        Some((
+            &MachineId("machine-d".into()),
+            &MachineId("machine-c".into())
+        ))
+    );
+    let [service_plan] = plan.services() else {
+        panic!("expected one service plan");
+    };
+    let [slot_plan] = service_plan.slots.as_slice() else {
+        panic!("expected one slot plan");
+    };
+    assert_eq!(slot_plan.machine_id, MachineId("machine-c".into()));
+}
+
+#[tokio::test]
+async fn resolve_plan_preserves_invalid_pending_sibling_move_error() {
+    let store = StoreDriver::memory();
+    let local_machine_id = MachineId("local".into());
+    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("wal".into()),
+        target: "/var/lib/postgresql/wal".into(),
+        readonly: false,
+    });
+    let mut manifest = test_manifest(vec![service]);
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    manifest
+        .volumes
+        .push(test_volume("wal", VolumeScope::Single));
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "wal".into(),
+            intent: VolumeIntent::Move {
+                from_machine: "machine-x".into(),
+                to_machine: "machine-c".into(),
+            },
+        }],
+        phases: Vec::new(),
+    });
+
+    store
+        .upsert_self_machine(&test_machine("machine-a", MachineLifecycle::Draining))
+        .await
+        .expect("seed machine-a");
+    store
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-b");
+    store
+        .upsert_self_machine(&test_machine("machine-c", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-c");
+    store
+        .upsert_self_machine(&test_machine("machine-d", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-d");
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "wal",
+        "machine-d",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("invalid explicit sibling move should still fail");
+
+    assert!(matches!(
+        error,
+        Error::Deploy(DeployError::VolumeMoveSourceMismatch {
+            volume,
+            expected_machine,
+            actual_machine,
+        }) if volume == "wal" && expected_machine == "machine-x" && actual_machine == "machine-d"
+    ));
+}
+
+#[tokio::test]
 async fn resolve_plan_moves_existing_volume_and_attached_service_to_target_machine() {
     let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
     let local_machine_id = MachineId("local".into());
