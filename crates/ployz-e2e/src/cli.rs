@@ -66,18 +66,20 @@ pub(crate) enum Scenario {
     WireguardPartitionReconnect,
     DeployHttpAcmeGatewaySmoke,
     DockerBridgeForwardSmoke,
+    ImagePushExistingImage,
     DrainAwareRedeployRealSmoke,
     MigrateServiceRealSmoke,
     VolumeCloneBranchRealSmoke,
 }
 
 impl Scenario {
-    const DEFAULT: [Self; 5] = [
+    const DEFAULT: [Self; 6] = [
         Self::MeshBootstrapJoinSmoke,
         Self::NodeRestartAdoptsDataPlane,
         Self::WireguardPartitionReconnect,
         Self::DeployHttpAcmeGatewaySmoke,
         Self::DockerBridgeForwardSmoke,
+        Self::ImagePushExistingImage,
     ];
 
     #[must_use]
@@ -103,7 +105,8 @@ impl Scenario {
             | Self::NodeRestartAdoptsDataPlane
             | Self::WireguardPartitionReconnect
             | Self::DeployHttpAcmeGatewaySmoke
-            | Self::DockerBridgeForwardSmoke => ZfsMode::Off,
+            | Self::DockerBridgeForwardSmoke
+            | Self::ImagePushExistingImage => ZfsMode::Off,
         }
     }
 
@@ -120,6 +123,7 @@ impl Scenario {
             | Self::NodeRestartAdoptsDataPlane
             | Self::WireguardPartitionReconnect
             | Self::DeployHttpAcmeGatewaySmoke
+            | Self::ImagePushExistingImage
             | Self::DockerBridgeForwardSmoke
             | Self::DrainAwareRedeployRealSmoke
             | Self::MigrateServiceRealSmoke
@@ -131,6 +135,7 @@ impl Scenario {
     pub(crate) fn node_names(self) -> &'static [&'static str] {
         match self {
             Self::DockerBridgeForwardSmoke => &["founder"],
+            Self::ImagePushExistingImage => &["founder", "peer"],
             Self::VolumeCloneBranchRealSmoke => &["founder"],
             Self::MeshBootstrapJoinSmoke
             | Self::NodeRestartAdoptsDataPlane
@@ -149,6 +154,7 @@ impl Scenario {
             Self::WireguardPartitionReconnect => "wireguard_partition_reconnect",
             Self::DeployHttpAcmeGatewaySmoke => "deploy_http_acme_gateway_smoke",
             Self::DockerBridgeForwardSmoke => "docker_bridge_forward_smoke",
+            Self::ImagePushExistingImage => "image_push_existing_image",
             Self::DrainAwareRedeployRealSmoke => "drain_aware_redeploy_real_smoke",
             Self::MigrateServiceRealSmoke => "migrate_service_real_smoke",
             Self::VolumeCloneBranchRealSmoke => "volume_clone_branch_real_smoke",
@@ -163,6 +169,7 @@ impl Scenario {
             Self::MeshBootstrapJoinSmoke
             | Self::NodeRestartAdoptsDataPlane
             | Self::WireguardPartitionReconnect
+            | Self::ImagePushExistingImage
             | Self::DeployHttpAcmeGatewaySmoke
             | Self::DrainAwareRedeployRealSmoke
             | Self::MigrateServiceRealSmoke => "host",
@@ -186,6 +193,7 @@ mod tests {
                 Scenario::WireguardPartitionReconnect,
                 Scenario::DeployHttpAcmeGatewaySmoke,
                 Scenario::DockerBridgeForwardSmoke,
+                Scenario::ImagePushExistingImage,
                 Scenario::MigrateServiceRealSmoke,
                 Scenario::DrainAwareRedeployRealSmoke,
             ]
