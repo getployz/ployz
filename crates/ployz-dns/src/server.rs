@@ -384,7 +384,7 @@ mod tests {
             instances: HashMap::new(),
         };
         let listen_addrs = vec![dns_addr];
-        crate::metrics::set_store_sync_healthy("routing", false);
+        crate::metrics::set_store_sync_healthy("server-test-routing", false);
 
         let server = tokio::spawn(async move {
             run_dns_server(&listen_addrs, SharedDnsSnapshot::new(snapshot), shutdown_rx).await
@@ -404,11 +404,13 @@ mod tests {
             metrics
                 .contains("ployz_dns_query_duration_seconds_count{qtype=\"A\",rcode=\"NXDOMAIN\"}")
         );
-        assert!(metrics.contains("ployz_dns_store_sync_healthy{stream=\"routing\"} 0"));
+        assert!(metrics.contains("ployz_dns_store_sync_healthy{stream=\"server-test-routing\"} 0"));
+        assert!(metrics.contains(
+            "ployz_dns_store_sync_state_since_unix_seconds{stream=\"server-test-routing\"}"
+        ));
         assert!(
-            metrics.contains("ployz_dns_store_sync_state_since_unix_seconds{stream=\"routing\"}")
+            metrics.contains("ployz_dns_store_sync_failures_total{stream=\"server-test-routing\"}")
         );
-        assert!(metrics.contains("ployz_dns_store_sync_failures_total{stream=\"routing\"}"));
 
         server.abort();
         let _ = server.await;

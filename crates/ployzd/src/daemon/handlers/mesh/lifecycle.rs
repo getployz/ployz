@@ -199,7 +199,17 @@ impl DaemonState {
         if let Err(error) = active.dns.shutdown().await {
             warn!(?error, "dns stop failed during mesh stop");
         }
-        if let Err(error) = active.gateway.shutdown().await {
+        let gateway_error = active.gateway.shutdown().await.err();
+        if let Err(error) = active.image_receiver.shutdown().await {
+            warn!(?error, "image receiver stop failed during mesh stop");
+        }
+        if let Err(error) = self.image_registry.revoke_all_sessions().await {
+            warn!(%error, "image receive session cleanup failed during mesh stop");
+        }
+        if let Err(error) = active.zfs_transfer.shutdown().await {
+            warn!(?error, "zfs transfer listener stop failed during mesh stop");
+        }
+        if let Some(error) = gateway_error {
             return self.err(
                 "NETWORK_STOP_FAILED",
                 format!("gateway stop failed: {error}"),
@@ -480,6 +490,9 @@ impl DaemonState {
 
     async fn destroy_local_mesh_runtime(&mut self, network_id: &NetworkId) -> Result<(), String> {
         let active = self.take_active_for_destroy(network_id)?;
+        if let Err(error) = self.image_registry.revoke_all_sessions().await {
+            warn!(%error, "image receive session cleanup failed during mesh destroy");
+        }
         Self::perform_mesh_teardown(self.data_dir.clone(), active).await
     }
 
@@ -522,6 +535,8 @@ impl DaemonState {
             config,
             mut mesh,
             nats_control,
+            zfs_transfer,
+            image_receiver,
             gateway,
             dns,
             mut certificate_renewal,
@@ -544,7 +559,17 @@ impl DaemonState {
             if let Err(error) = dns.shutdown().await {
                 warn!(?error, "dns stop failed during mesh destroy");
             }
-            if let Err(error) = gateway.shutdown().await {
+            let gateway_error = gateway.shutdown().await.err();
+            if let Err(error) = image_receiver.shutdown().await {
+                warn!(?error, "image receiver stop failed during mesh destroy");
+            }
+            if let Err(error) = zfs_transfer.shutdown().await {
+                warn!(
+                    ?error,
+                    "zfs transfer listener stop failed during mesh destroy"
+                );
+            }
+            if let Some(error) = gateway_error {
                 return Err(format!("gateway stop failed: {error}"));
             }
 
