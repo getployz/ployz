@@ -611,6 +611,150 @@ mod tests {
     }
 
     #[test]
+    fn parse_image_push_command() {
+        let expected_digest = format!("sha256:{}", "a".repeat(64));
+        let cli = Cli::try_parse_from([
+            "ployzd",
+            "image",
+            "push",
+            "example/app:latest",
+            "--to",
+            "machine-a",
+            "machine-b",
+            "--platform",
+            "linux/amd64",
+            "--expected-digest",
+            &expected_digest,
+        ])
+        .expect("image push args should parse");
+
+        let Command::Image {
+            action:
+                ImageAction::Push {
+                    image,
+                    targets,
+                    platform,
+                    expected_digest: digest,
+                },
+        } = cli.command
+        else {
+            panic!("expected image push command");
+        };
+        assert_eq!(image, "example/app:latest");
+        assert_eq!(targets, vec!["machine-a", "machine-b"]);
+        assert_eq!(platform.as_deref(), Some("linux/amd64"));
+        assert_eq!(digest.as_deref(), Some(expected_digest.as_str()));
+    }
+
+    #[test]
+    fn build_image_push_request_encodes_targets_platform_and_expected_digest() {
+        let expected_digest = format!("sha256:{}", "a".repeat(64));
+        let request = build_image_request(ImageAction::Push {
+            image: "example/app:latest".into(),
+            targets: vec!["machine-a".into(), "machine-b".into()],
+            platform: Some("linux/amd64".into()),
+            expected_digest: Some(expected_digest.clone()),
+        })
+        .expect("image push request");
+
+        let DaemonRequest::ImagePush { request } = request else {
+            panic!("expected image push request");
+        };
+        assert_eq!(request.source_image, "example/app:latest");
+        assert_eq!(
+            request.target_machines,
+            vec![
+                ployz_types::model::MachineId("machine-a".into()),
+                ployz_types::model::MachineId("machine-b".into())
+            ]
+        );
+        let platform = request.platform.expect("platform");
+        assert_eq!(platform.os, "linux");
+        assert_eq!(platform.architecture, "amd64");
+        assert_eq!(
+            request.expected_digest.expect("expected digest").as_str(),
+            expected_digest
+        );
+    }
+
+    #[test]
+    fn build_image_push_request_rejects_empty_platform_variant() {
+        for platform in ["linux/amd64/", "/amd64", "linux/", "linux/amd64/v8/extra"] {
+            let error = build_image_request(ImageAction::Push {
+                image: "example/app:latest".into(),
+                targets: vec!["machine-a".into()],
+                platform: Some(platform.into()),
+                expected_digest: None,
+            })
+            .expect_err("invalid platform");
+
+            assert!(matches!(error, CliError::Usage(_)));
+        }
+    }
+
+    #[test]
+    fn parse_image_distribute_command() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let cli = Cli::try_parse_from([
+            "ployzd",
+            "image",
+            "distribute",
+            "--digest",
+            &digest,
+            "--from",
+            "machine-a",
+            "--to",
+            "machine-b",
+            "--platform",
+            "linux/arm64/v8",
+        ])
+        .expect("image distribute args should parse");
+
+        let Command::Image {
+            action:
+                ImageAction::Distribute {
+                    digest: parsed_digest,
+                    source,
+                    targets,
+                    platform,
+                },
+        } = cli.command
+        else {
+            panic!("expected image distribute command");
+        };
+        assert_eq!(parsed_digest, digest);
+        assert_eq!(source, "machine-a");
+        assert_eq!(targets, vec!["machine-b"]);
+        assert_eq!(platform.as_deref(), Some("linux/arm64/v8"));
+    }
+
+    #[test]
+    fn build_image_distribute_request_encodes_digest_source_and_targets() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let request = build_image_request(ImageAction::Distribute {
+            digest: digest.clone(),
+            source: "machine-a".into(),
+            targets: vec!["machine-b".into()],
+            platform: Some("linux/arm64/v8".into()),
+        })
+        .expect("image distribute request");
+
+        let DaemonRequest::ImageDistribute { request } = request else {
+            panic!("expected image distribute request");
+        };
+        assert_eq!(request.digest.as_str(), digest);
+        assert_eq!(request.source_machine.0, "machine-a");
+        assert_eq!(
+            request.target_machines,
+            vec![ployz_types::model::MachineId("machine-b".into())]
+        );
+        let platform = request.platform.expect("platform");
+        assert_eq!(platform.os, "linux");
+        assert_eq!(platform.architecture, "arm64");
+        assert_eq!(platform.variant.as_deref(), Some("v8"));
+    }
+
+    #[test]
     fn build_image_operation_get_request() {
         let request = build_image_request(ImageAction::Operation {
             action: ImageOperationAction::Get { id: "op-1".into() },
