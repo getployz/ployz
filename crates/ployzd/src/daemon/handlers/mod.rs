@@ -57,6 +57,7 @@ impl DaemonState {
             | DaemonRequest::ImagePush { .. }
             | DaemonRequest::ImageDistribute { .. }
             | DaemonRequest::ImageReceiveSession { .. }
+            | DaemonRequest::ImageReceivedImport { .. }
             | DaemonRequest::ImageOperationGet { .. }
             | DaemonRequest::ImageOperationList
             | DaemonRequest::BuildOperationGet { .. }
@@ -162,6 +163,9 @@ impl DaemonState {
             }
             DaemonRequest::ImageReceiveSession { request } => {
                 self.handle_image_receive_session(&request).await
+            }
+            DaemonRequest::ImageReceivedImport { request } => {
+                self.handle_image_received_import(&request).await
             }
             DaemonRequest::ImageOperationGet { id } => self.handle_image_operation_get(&id).await,
             DaemonRequest::ImageOperationList => self.handle_image_operation_list().await,
@@ -486,6 +490,7 @@ impl DaemonState {
             | DaemonRequest::ImagePush { .. }
             | DaemonRequest::ImageDistribute { .. }
             | DaemonRequest::ImageReceiveSession { .. }
+            | DaemonRequest::ImageReceivedImport { .. }
             | DaemonRequest::ImageOperationGet { .. }
             | DaemonRequest::ImageOperationList
             | DaemonRequest::BuildOperationGet { .. }
@@ -536,7 +541,7 @@ mod tests {
     use crate::daemon::DaemonState;
     use ployz_api::{
         DaemonRequest, DebugTickTask, ImageDistributeRequest, ImagePushRequest,
-        ImageReceiveSessionRequest,
+        ImageReceiveSessionRequest, ImageReceivedImportRequest,
     };
     use ployz_types::model::{ImageDigest, MachineId};
 
@@ -615,6 +620,19 @@ mod tests {
             },
         });
         assert_eq!(receive_session_lane, RequestLane::Shared);
+
+        let received_import_lane = DaemonState::request_lane(&DaemonRequest::ImageReceivedImport {
+            request: ImageReceivedImportRequest {
+                operation_id: "image-distribute-1".into(),
+                source_machine: MachineId("machine-a".into()),
+                repository: "ployz/image-distribute-1".into(),
+                reference: "image-distribute-1".into(),
+                expected_digest: digest(),
+                platform: None,
+                repo_tags: vec!["example/app:latest".into()],
+            },
+        });
+        assert_eq!(received_import_lane, RequestLane::Shared);
     }
 
     fn digest() -> ImageDigest {
