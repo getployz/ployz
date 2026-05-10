@@ -171,6 +171,13 @@ pub(crate) struct ManifestStored {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct ReceivedManifest {
+    pub(crate) body: Bytes,
+    pub(crate) digest: String,
+    pub(crate) media_type: String,
+}
+
+#[derive(Debug, Clone)]
 struct UploadState {
     repository: String,
     operation_id: String,
@@ -290,6 +297,44 @@ impl ImageRegistry {
             self.revoke_session(&token).await?;
         }
         Ok(())
+    }
+
+    pub(crate) fn blob_path_for_digest(
+        &self,
+        digest: &str,
+    ) -> Result<Option<PathBuf>, ImageRegistryError> {
+        let digest = validate_sha256_digest(digest)?;
+        let path = self.blob_path(&digest)?;
+        match std::fs::metadata(&path) {
+            Ok(_) => Ok(Some(path)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(ImageRegistryError::io("stat registry blob", error)),
+        }
+    }
+
+    pub(crate) async fn received_manifest(
+        &self,
+        repository: &str,
+        reference: &str,
+    ) -> Result<Option<ReceivedManifest>, ImageRegistryError> {
+        validate_repository(repository)?;
+        validate_reference(reference)?;
+        let path = self.manifest_path(repository, reference)?;
+        let body = match fs::read(&path).await {
+            Ok(body) => Bytes::from(body),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(ImageRegistryError::io("read registry manifest", error)),
+        };
+        let media_type = self
+            .read_manifest_media_type(repository, reference)
+            .await?
+            .unwrap_or_else(|| DEFAULT_MANIFEST_CONTENT_TYPE.into());
+        let digest = sha256_digest(&body);
+        Ok(Some(ReceivedManifest {
+            body,
+            digest,
+            media_type,
+        }))
     }
 
     async fn cleanup_expired_sessions(&self) {
@@ -518,27 +563,19 @@ impl ImageRegistry {
     ) -> Result<Option<Response>, ImageRegistryError> {
         validate_repository(repository)?;
         validate_reference(reference)?;
-        let path = self.manifest_path(repository, reference)?;
-        let body = match fs::read(&path).await {
-            Ok(body) => body,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(ImageRegistryError::io("read registry manifest", error)),
+        let Some(manifest) = self.received_manifest(repository, reference).await? else {
+            return Ok(None);
         };
-        let media_type = self
-            .read_manifest_media_type(repository, reference)
-            .await?
-            .unwrap_or_else(|| DEFAULT_MANIFEST_CONTENT_TYPE.into());
-        let digest = sha256_digest(&body);
         let mut headers = base_headers();
         insert_header(
             &mut headers,
             CONTENT_LENGTH.as_str(),
-            &body.len().to_string(),
+            &manifest.body.len().to_string(),
         )?;
-        insert_header(&mut headers, CONTENT_DIGEST_HEADER, &digest)?;
-        insert_header(&mut headers, CONTENT_TYPE.as_str(), &media_type)?;
+        insert_header(&mut headers, CONTENT_DIGEST_HEADER, &manifest.digest)?;
+        insert_header(&mut headers, CONTENT_TYPE.as_str(), &manifest.media_type)?;
         Ok(Some(
-            (StatusCode::OK, headers, Body::from(body)).into_response(),
+            (StatusCode::OK, headers, Body::from(manifest.body)).into_response(),
         ))
     }
 
