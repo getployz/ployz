@@ -212,6 +212,13 @@ failure surfaces.
 Deploy and routing semantics are described in `docs/routing-and-deploys.md`.
 The baseline rule is that traffic only sees committed, routable facts.
 
+The longer deploy primitive direction is described in
+`docs/architecture/deploy-primitives-roadmap.md`. In that model, deploy is the
+compiler for explicit operations such as branching, portal references,
+migration, promotion, and machine drain: high-level commands produce typed,
+phase-aware deploy plans with visible preflights, commit boundaries, rollback
+policy, and durable evidence.
+
 Deploys should move through visible phases: plan, apply, commit, cleanup, or
 fail. New instances can be started before commit, but routing flips only after
 the durable commit point. Cleanup failures become explicit recoverable status;
