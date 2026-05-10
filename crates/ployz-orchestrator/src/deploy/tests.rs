@@ -1825,6 +1825,55 @@ async fn apply_cleans_uncommitted_volume_clone_when_startup_fails() {
     let local_machine_id = MachineId("local".into());
     let source_namespace = Namespace("prod".into());
     seed_volume(&store, &source_namespace, "data", "machine-a").await;
+    let web = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let mut manifest = test_manifest(vec![web]);
+    manifest.namespace = Namespace("pr-39".into());
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Clone {
+                source_namespace,
+                source_volume: "data".into(),
+                data_policy: VolumeCloneDataPolicy::Raw,
+                consistency: VolumeCloneConsistency::CrashConsistent,
+            },
+        }],
+        phases: Vec::new(),
+    });
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("clone plan");
+    let controller = FakeController {
+        fail_start_service: Some("web".into()),
+        ..FakeController::default()
+    };
+    let factory = FakeParticipantClient::new(controller.clone());
+
+    apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+        .await
+        .expect_err("startup failure should fail deploy");
+
+    assert_eq!(controller.clone_count(), 1);
+    assert_eq!(controller.clone_cleanup_count(), 1);
+    assert!(
+        store
+            .get_volume(&manifest.namespace, "data")
+            .await
+            .expect("get volume")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn apply_keeps_volume_clone_when_attached_service_start_returns_error() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    seed_volume(&store, &source_namespace, "data", "machine-a").await;
     let mut manifest = volume_manifest();
     manifest.namespace = Namespace("pr-39".into());
     manifest.intent = Some(DeployIntent {
@@ -1844,23 +1893,21 @@ async fn apply_cleans_uncommitted_volume_clone_when_startup_fails() {
         .await
         .expect("clone plan");
     let controller = FakeController {
-        fail_start_service: Some("db".into()),
+        fail_start_after_create_service: Some("db".into()),
         ..FakeController::default()
     };
     let factory = FakeParticipantClient::new(controller.clone());
 
     apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
         .await
-        .expect_err("startup failure should fail deploy");
+        .expect_err("attached service startup failure should fail deploy");
 
     assert_eq!(controller.clone_count(), 1);
-    assert_eq!(controller.clone_cleanup_count(), 1);
+    assert_eq!(controller.clone_cleanup_count(), 0);
+    let log = controller.operation_log().await;
     assert!(
-        store
-            .get_volume(&manifest.namespace, "data")
-            .await
-            .expect("get volume")
-            .is_none()
+        log.iter().any(|entry| entry.starts_with("start:db:")),
+        "expected db start attempt before deploy failed: {log:?}"
     );
 }
 
@@ -1940,13 +1987,88 @@ async fn apply_keeps_started_uncheckpointed_volume_clone_when_later_phase_fails(
 }
 
 #[tokio::test]
+async fn apply_keeps_started_volume_clone_when_same_phase_later_service_fails() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    seed_volume(&store, &source_namespace, "data", "machine-a").await;
+
+    let mut db = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    db.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    let web = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let mut manifest = test_manifest(vec![db, web]);
+    manifest.namespace = Namespace("pr-39".into());
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Clone {
+                source_namespace,
+                source_volume: "data".into(),
+                data_policy: VolumeCloneDataPolicy::Raw,
+                consistency: VolumeCloneConsistency::CrashConsistent,
+            },
+        }],
+        phases: vec![DeployPhaseIntent {
+            phase_id: "app".into(),
+            name: Some("App".into()),
+            after: Vec::new(),
+            services: vec!["db".into(), "web".into()],
+            volumes: Vec::new(),
+            commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+            rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+            advance_policy: DeployPhaseAdvancePolicy::Immediate,
+        }],
+    });
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("clone plan");
+    let controller = FakeController {
+        fail_start_service: Some("web".into()),
+        ..FakeController::default()
+    };
+    let factory = FakeParticipantClient::new(controller.clone());
+
+    apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+        .await
+        .expect_err("same phase startup failure should fail deploy");
+
+    assert_eq!(controller.clone_count(), 1);
+    assert_eq!(controller.clone_cleanup_count(), 0);
+    let log = controller.operation_log().await;
+    let db_start = log
+        .iter()
+        .position(|entry| entry.starts_with("start:db:"))
+        .expect("expected db to start before web failed");
+    let web_start = log
+        .iter()
+        .position(|entry| entry.starts_with("start:web:"))
+        .expect("expected web start attempt to fail deploy");
+    assert!(
+        db_start < web_start,
+        "expected db start to precede failing web start: {log:?}"
+    );
+}
+
+#[tokio::test]
 async fn apply_surfaces_uncommitted_volume_clone_cleanup_failures() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
     let local_machine_id = MachineId("local".into());
     let source_namespace = Namespace("prod".into());
     seed_volume(&store, &source_namespace, "data", "machine-a").await;
-    let mut manifest = volume_manifest();
+    let web = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let mut manifest = test_manifest(vec![web]);
     manifest.namespace = Namespace("pr-39".into());
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
         volumes: vec![VolumeIntentHint {
@@ -1964,7 +2086,7 @@ async fn apply_surfaces_uncommitted_volume_clone_cleanup_failures() {
         .await
         .expect("clone plan");
     let controller = FakeController {
-        fail_start_service: Some("db".into()),
+        fail_start_service: Some("web".into()),
         fail_cleanup_clone_volume: Some("data".into()),
         ..FakeController::default()
     };
@@ -3943,6 +4065,40 @@ async fn phase_startup_uses_one_worker_per_machine_but_parallel_across_machines(
 }
 
 #[tokio::test]
+async fn phase_startup_stops_scheduling_machine_queues_after_failure() {
+    let machine_names = (0..65)
+        .map(|index| format!("machine-{index:02}"))
+        .collect::<Vec<_>>();
+    let machine_refs = machine_names.iter().map(String::as_str).collect::<Vec<_>>();
+    let store = seeded_store_with_machines(&machine_refs).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Global,
+        "nginx:1.27",
+    )]);
+    let controller = FakeController {
+        fail_start_service: Some("api".into()),
+        ..Default::default()
+    };
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve plan");
+    let factory = FakeParticipantClient::new(controller.clone());
+    let deploy_id = DeployId("deploy-phase".into());
+    let (participants, _events) =
+        ParticipantSet::inspect(&factory, &plan, &local_machine_id, &deploy_id)
+            .await
+            .expect("inspect participants");
+
+    run_phase_startup(&store, &factory, &participants, &plan)
+        .await
+        .expect_err("startup failure should fail phase");
+
+    assert_eq!(controller.start_count(), 64);
+}
+
+#[tokio::test]
 async fn run_phase_startup_waits_for_previous_phase_before_next_phase() {
     let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
     let local_machine_id = MachineId("local".into());
@@ -5410,6 +5566,7 @@ struct FakeController {
     start_delay: Duration,
     fail_open_machine: Option<String>,
     fail_start_service: Option<String>,
+    fail_start_after_create_service: Option<String>,
     fail_remove_instance: Option<String>,
     fail_move_volume: Option<String>,
     fail_clone_volume: Option<String>,
@@ -5536,6 +5693,10 @@ impl FakeController {
 
     fn should_fail_start(&self, service: &str) -> bool {
         self.fail_start_service.as_deref() == Some(service)
+    }
+
+    fn should_fail_start_after_create(&self, service: &str) -> bool {
+        self.fail_start_after_create_service.as_deref() == Some(service)
     }
 
     async fn on_start_end(&self, machine_id: &MachineId) {
@@ -5678,6 +5839,13 @@ impl DeployParticipantClient for FakeParticipantClient {
             ));
         }
         sleep(self.controller.start_delay).await;
+        if self.controller.should_fail_start_after_create(&req.service) {
+            self.controller.on_start_end(machine_id).await;
+            return Err(ployz_types::error::Error::operation(
+                "fake_start_after_create",
+                format!("injected post-create start failure for '{}'", req.service),
+            ));
+        }
         self.controller.on_start_end(machine_id).await;
         Ok(InstanceStatusRecord {
             instance_id: req.instance_id.clone(),
