@@ -273,7 +273,7 @@ fn replicated_one_reuses_existing_slot_machine() {
 }
 
 #[test]
-fn replicated_slot_stays_on_draining_machine_instead_of_replacing_lifecycle_truth() {
+fn replicated_slot_relocates_from_draining_machine_during_deploy() {
     let spec = test_service_spec("api", Placement::Replicated { count: 2 }, "nginx:latest");
     let machines = vec![MachineId("machine-a".into())];
     let current_slots = [ServiceReleaseSlot {
@@ -307,7 +307,7 @@ fn replicated_slot_stays_on_draining_machine_instead_of_replacing_lifecycle_trut
 
     assert_eq!(desired.len(), 2);
     assert_eq!(desired[0].slot_id, SlotId("slot-0001".into()));
-    assert_eq!(desired[0].machine_id, MachineId("machine-b".into()));
+    assert_eq!(desired[0].machine_id, MachineId("machine-a".into()));
     assert_eq!(desired[1].slot_id, SlotId("slot-0002".into()));
     assert_eq!(desired[1].machine_id, MachineId("machine-a".into()));
 }
@@ -594,6 +594,165 @@ async fn resolve_plan_keeps_existing_volume_on_region_draining_machine() {
         panic!("expected one slot plan");
     };
     assert_eq!(slot_plan.machine_id, MachineId("region-draining".into()));
+}
+
+#[tokio::test]
+async fn resolve_plan_moves_volume_backed_service_from_draining_machine() {
+    let store = StoreDriver::memory();
+    let local_machine_id = MachineId("local".into());
+    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    let mut manifest = test_manifest(vec![service]);
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    let [spec] = manifest.services.as_slice() else {
+        panic!("expected one manifest service");
+    };
+    let revision_hash = spec.revision_hash().expect("revision hash");
+
+    store
+        .upsert_self_machine(&test_machine("machine-a", MachineLifecycle::Draining))
+        .await
+        .expect("seed machine-a");
+    store
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-b");
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "db",
+            &revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-a",
+                "inst-1",
+                &revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve plan");
+
+    let [volume] = plan.volumes() else {
+        panic!("expected one planned volume");
+    };
+    assert_eq!(volume.machine_id, MachineId("machine-b".into()));
+    assert_eq!(
+        volume
+            .movement
+            .as_ref()
+            .map(|movement| (&movement.from_machine, &movement.to_machine)),
+        Some((
+            &MachineId("machine-a".into()),
+            &MachineId("machine-b".into())
+        ))
+    );
+
+    let [service_plan] = plan.services() else {
+        panic!("expected one service plan");
+    };
+    let [slot_plan] = service_plan.slots.as_slice() else {
+        panic!("expected one slot plan");
+    };
+    assert_eq!(service_plan.action, DeployChangeKind::Replace);
+    assert_eq!(slot_plan.action, DeployChangeKind::Replace);
+    assert_eq!(slot_plan.machine_id, MachineId("machine-b".into()));
+}
+
+#[tokio::test]
+async fn resolve_plan_moves_draining_volume_only_to_storage_capable_target() {
+    let store = StoreDriver::memory();
+    let local_machine_id = MachineId("local".into());
+    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    let mut manifest = test_manifest(vec![service]);
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    let [spec] = manifest.services.as_slice() else {
+        panic!("expected one manifest service");
+    };
+    let revision_hash = spec.revision_hash().expect("revision hash");
+
+    store
+        .upsert_self_machine(&test_machine("machine-a", MachineLifecycle::Draining))
+        .await
+        .expect("seed machine-a");
+    let mut compute_only = test_machine("machine-b", MachineLifecycle::Active);
+    compute_only.storage = false;
+    store
+        .upsert_self_machine(&compute_only)
+        .await
+        .expect("seed machine-b");
+    store
+        .upsert_self_machine(&test_machine("machine-c", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-c");
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "db",
+            &revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-a",
+                "inst-1",
+                &revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve plan");
+
+    let [volume] = plan.volumes() else {
+        panic!("expected one planned volume");
+    };
+    assert_eq!(volume.machine_id, MachineId("machine-c".into()));
+    let [service_plan] = plan.services() else {
+        panic!("expected one service plan");
+    };
+    let [slot_plan] = service_plan.slots.as_slice() else {
+        panic!("expected one slot plan");
+    };
+    assert_eq!(slot_plan.machine_id, MachineId("machine-c".into()));
 }
 
 #[tokio::test]
@@ -1239,6 +1398,78 @@ async fn apply_executes_volume_move_before_startup_and_commits_target_owner() {
     assert!(drain_index < remove_index);
     assert!(remove_index < move_index);
     assert!(move_index < start_index);
+}
+
+#[tokio::test]
+async fn apply_executes_inferred_draining_volume_move_before_startup() {
+    let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
+    store
+        .upsert_self_machine(&test_machine("machine-a", MachineLifecycle::Draining))
+        .await
+        .expect("mark machine-a draining");
+    let local_machine_id = MachineId("local".into());
+    let manifest = volume_manifest();
+    seed_volume_with_attached_services(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "1G",
+        "0750",
+        "999:999",
+        vec!["db".into()],
+    )
+    .await;
+    let [spec] = manifest.services.as_slice() else {
+        panic!("expected one service");
+    };
+    let revision_hash = spec.revision_hash().expect("revision hash");
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "db",
+            &revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-a",
+                "inst-1",
+                &revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+    backend.reset_counts();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("inferred move plan");
+    let controller = FakeController::default();
+    let factory = FakeParticipantClient::new(controller.clone());
+
+    let result =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect("inferred move deploy");
+
+    assert_eq!(result.state, DeployState::Committed);
+    assert_eq!(backend.commit_count(), 1);
+    assert_eq!(controller.drain_count(), 1);
+    assert_eq!(controller.remove_count(), 1);
+    assert_eq!(controller.move_count(), 1);
+    assert_eq!(controller.start_count(), 1);
+    let move_requests = controller.move_requests().await;
+    let [move_request] = move_requests.as_slice() else {
+        panic!("expected one move request");
+    };
+    assert_eq!(move_request.from_machine, MachineId("machine-a".into()));
+    assert_eq!(move_request.to_machine, MachineId("machine-b".into()));
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected moved volume record");
+    };
+    assert_eq!(record.machine_id, MachineId("machine-b".into()));
 }
 
 #[tokio::test]

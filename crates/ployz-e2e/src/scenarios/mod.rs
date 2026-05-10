@@ -1,5 +1,6 @@
 mod deploy_http_acme_gateway_smoke;
 mod docker_bridge_forward_smoke;
+mod drain_aware_redeploy_real_smoke;
 mod mesh_bootstrap_join_smoke;
 mod migrate_service_real_smoke;
 mod node_restart_adopts_data_plane;
@@ -17,6 +18,7 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         Scenario::WireguardPartitionReconnect => wireguard_partition_reconnect::run(run),
         Scenario::DeployHttpAcmeGatewaySmoke => deploy_http_acme_gateway_smoke::run(run),
         Scenario::DockerBridgeForwardSmoke => docker_bridge_forward_smoke::run(run),
+        Scenario::DrainAwareRedeployRealSmoke => drain_aware_redeploy_real_smoke::run(run),
         Scenario::MigrateServiceRealSmoke => migrate_service_real_smoke::run(run),
     }
 }

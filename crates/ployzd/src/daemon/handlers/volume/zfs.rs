@@ -628,7 +628,10 @@ impl DaemonState {
                 ),
             );
         }
-        let source = match self.find_active_machine(&record.machine_id.0).await {
+        let source = match self
+            .find_volume_move_source_machine(&record.machine_id.0)
+            .await
+        {
             Ok(record) => record,
             Err(error) => return self.err("VOLUME_ZFS_SEND_FAILED", error),
         };
@@ -1157,6 +1160,26 @@ impl DaemonState {
         if record.lifecycle != MachineLifecycle::Active {
             return Err(format!(
                 "machine '{}' is {}, expected active",
+                record.id, record.lifecycle
+            ));
+        }
+        Ok(record)
+    }
+
+    async fn find_volume_move_source_machine(
+        &self,
+        machine: &str,
+    ) -> Result<MachineMembership, String> {
+        let record = self
+            .find_machine(machine)
+            .await
+            .ok_or_else(|| format!("machine '{machine}' not found"))?;
+        if !matches!(
+            record.lifecycle,
+            MachineLifecycle::Active | MachineLifecycle::Draining
+        ) {
+            return Err(format!(
+                "machine '{}' is {}, expected active or draining",
                 record.id, record.lifecycle
             ));
         }

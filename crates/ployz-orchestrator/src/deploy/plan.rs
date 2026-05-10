@@ -3,8 +3,9 @@ use crate::machine_policy::{can_keep_existing_slot, is_new_placement_candidate};
 use crate::model::{
     DeployChangeKind, DeployId, DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseId,
     DeployPhasePlan, DeployPhaseRollbackPolicy, DeployPhaseWork, DeployPreview, MachineId,
-    MachineMembership, ServiceBranchLineageRecord, ServiceBranchSourcePlan, ServicePlan,
-    ServiceReleaseRecord, ServiceReleaseSlot, SlotId, SlotPlan, VolumeMovePlan, VolumeRecord,
+    MachineLifecycle, MachineMembership, ServiceBranchLineageRecord, ServiceBranchSourcePlan,
+    ServicePlan, ServiceReleaseRecord, ServiceReleaseSlot, SlotId, SlotPlan, VolumeMovePlan,
+    VolumeRecord,
 };
 use ployz_store_api::{DeployStore, MachineMembershipStore, StoreDriver};
 use ployz_types::spec::{
@@ -343,6 +344,15 @@ pub(super) async fn resolve_plan(
                 }
                 match volume_move_intent {
                     Some(intent) => resolve_volume_move(declaration, record, intent, &machine_map)?,
+                    None if should_move_volume_from_draining_source(
+                        declaration,
+                        record,
+                        &attached_services,
+                        &machine_map,
+                    ) =>
+                    {
+                        resolve_inferred_volume_move(record, &desired_machines, &machine_map)?
+                    }
                     None => (record.machine_id.clone(), None),
                 }
             }
@@ -1008,11 +1018,12 @@ pub(super) fn desired_slots(
                             return false;
                         }
                         machine_map.get(&slot.machine_id).is_some_and(|record| {
-                            let candidate = record.placement_candidate();
-                            is_new_placement_candidate(&candidate)
-                                || (can_keep_existing_slot(&candidate)
-                                    && slot.revision_hash == next_revision_hash
-                                    && !service_has_volume_changes)
+                            can_retain_existing_slot_for_deploy(
+                                record,
+                                slot,
+                                next_revision_hash,
+                                service_has_volume_changes,
+                            )
                         })
                     })
                     .map(|slot| slot.machine_id.clone());
@@ -1039,6 +1050,24 @@ pub(super) fn desired_slots(
         }
     }
     Ok(desired)
+}
+
+fn can_retain_existing_slot_for_deploy(
+    machine: &MachineMembership,
+    slot: &ServiceReleaseSlot,
+    next_revision_hash: &str,
+    service_has_volume_changes: bool,
+) -> bool {
+    let candidate = machine.placement_candidate();
+    is_new_placement_candidate(&candidate)
+        || (can_keep_existing_slot(&candidate)
+            && !should_relocate_existing_work(machine)
+            && slot.revision_hash == next_revision_hash
+            && !service_has_volume_changes)
+}
+
+fn should_relocate_existing_work(machine: &MachineMembership) -> bool {
+    machine.lifecycle == MachineLifecycle::Draining
 }
 
 fn new_slot_machine(
@@ -1223,6 +1252,42 @@ fn resolve_volume_move(
         Some(PlannedVolumeMove {
             from_machine: record.machine_id.clone(),
             to_machine: target,
+        }),
+    ))
+}
+
+fn should_move_volume_from_draining_source(
+    declaration: &VolumeDeclaration,
+    record: &VolumeRecord,
+    attached_services: &[String],
+    machine_map: &HashMap<MachineId, MachineMembership>,
+) -> bool {
+    declaration.scope == VolumeScope::Single
+        && !attached_services.is_empty()
+        && machine_map
+            .get(&record.machine_id)
+            .is_some_and(should_relocate_existing_work)
+}
+
+fn resolve_inferred_volume_move(
+    record: &VolumeRecord,
+    desired_machines: &[MachineId],
+    machine_map: &HashMap<MachineId, MachineMembership>,
+) -> Result<(MachineId, Option<PlannedVolumeMove>)> {
+    let Some(target) = desired_machines.iter().find(|machine_id| {
+        **machine_id != record.machine_id
+            && machine_map
+                .get(*machine_id)
+                .is_some_and(|machine| machine.storage)
+    }) else {
+        return Err(Error::Deploy(DeployError::NoEligiblePlacementTargets));
+    };
+
+    Ok((
+        target.clone(),
+        Some(PlannedVolumeMove {
+            from_machine: record.machine_id.clone(),
+            to_machine: target.clone(),
         }),
     ))
 }
