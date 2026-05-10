@@ -1865,6 +1865,81 @@ async fn apply_cleans_uncommitted_volume_clone_when_startup_fails() {
 }
 
 #[tokio::test]
+async fn apply_keeps_started_uncheckpointed_volume_clone_when_later_phase_fails() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    seed_volume(&store, &source_namespace, "data", "machine-a").await;
+
+    let mut db = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    db.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    let web = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let mut manifest = test_manifest(vec![db, web]);
+    manifest.namespace = Namespace("pr-39".into());
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Clone {
+                source_namespace,
+                source_volume: "data".into(),
+                data_policy: VolumeCloneDataPolicy::Raw,
+                consistency: VolumeCloneConsistency::CrashConsistent,
+            },
+        }],
+        phases: vec![
+            DeployPhaseIntent {
+                phase_id: "db".into(),
+                name: Some("Database".into()),
+                after: Vec::new(),
+                services: vec!["db".into()],
+                volumes: Vec::new(),
+                commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                advance_policy: DeployPhaseAdvancePolicy::Immediate,
+            },
+            DeployPhaseIntent {
+                phase_id: "web".into(),
+                name: Some("Web".into()),
+                after: vec!["db".into()],
+                services: vec!["web".into()],
+                volumes: Vec::new(),
+                commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                advance_policy: DeployPhaseAdvancePolicy::Immediate,
+            },
+        ],
+    });
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("clone plan");
+    let controller = FakeController {
+        fail_start_service: Some("web".into()),
+        ..FakeController::default()
+    };
+    let factory = FakeParticipantClient::new(controller.clone());
+
+    apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+        .await
+        .expect_err("later phase startup failure should fail deploy");
+
+    assert_eq!(controller.clone_count(), 1);
+    assert_eq!(controller.clone_cleanup_count(), 0);
+    let log = controller.operation_log().await;
+    assert!(
+        log.iter().any(|entry| entry.starts_with("start:db:")),
+        "expected db to start before later phase failed: {log:?}"
+    );
+}
+
+#[tokio::test]
 async fn apply_surfaces_uncommitted_volume_clone_cleanup_failures() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
     let local_machine_id = MachineId("local".into());
