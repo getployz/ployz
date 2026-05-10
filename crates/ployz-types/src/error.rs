@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::model::DeployBaselineDiff;
+use crate::model::{DeployBaselineDiff, PreparedDeployState};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -163,6 +163,23 @@ pub enum DeployError {
     DeployOptionInvalid { field: String, message: String },
     #[error("{diff}")]
     DeployBaselineChanged { diff: DeployBaselineDiff },
+    #[error("prepared deploy '{prepared_deploy_id}' was not found")]
+    PreparedDeployMissing { prepared_deploy_id: String },
+    #[error("prepared deploy '{prepared_deploy_id}' is {state}")]
+    PreparedDeployNotApplicable {
+        prepared_deploy_id: String,
+        state: PreparedDeployState,
+    },
+    #[error("prepared deploy '{prepared_deploy_id}' expired at {expires_at}")]
+    PreparedDeployExpired {
+        prepared_deploy_id: String,
+        expires_at: u64,
+    },
+    #[error("prepared deploy '{prepared_deploy_id}' is invalid: {message}")]
+    PreparedDeployInvalid {
+        prepared_deploy_id: String,
+        message: String,
+    },
     #[error(
         "hostname '{hostname}' is declared by both {first_namespace}/{first_service} and {second_namespace}/{second_service}"
     )]
@@ -393,6 +410,7 @@ pub enum StoreRecordKind {
     AcmeChallengeReadiness,
     Certificate,
     DeployPhase,
+    PreparedDeploy,
     DeployStatus,
     ImageAvailability,
     Instance,
@@ -408,6 +426,7 @@ impl std::fmt::Display for StoreRecordKind {
             Self::AcmeChallengeReadiness => "ACME readiness",
             Self::Certificate => "certificate",
             Self::DeployPhase => "deploy phase",
+            Self::PreparedDeploy => "prepared deploy",
             Self::DeployStatus => "deploy status",
             Self::ImageAvailability => "image availability",
             Self::Instance => "instance",

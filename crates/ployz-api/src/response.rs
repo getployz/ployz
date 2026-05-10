@@ -2,6 +2,7 @@ use crate::acme::AcmeHttp01StatusPayload;
 use crate::build::{BuildOperationListPayload, BuildOperationPayload};
 use crate::deploy::{
     DeployCandidateStartedPayload, DeployFailurePayload, DeployNamespaceSnapshotPayload,
+    DeployPreparePayload,
 };
 use crate::doctor::DoctorPayload;
 use crate::image::{
@@ -42,6 +43,7 @@ pub enum DaemonPayload {
     MachineOperation(MachineOperationPayload),
     AcmeHttp01Status(AcmeHttp01StatusPayload),
     DeployNamespaceSnapshot(DeployNamespaceSnapshotPayload),
+    DeployPrepare(DeployPreparePayload),
     DeployCandidateStarted(DeployCandidateStartedPayload),
     DeployFailure(DeployFailurePayload),
     ImageStatus(ImageStatusPayload),

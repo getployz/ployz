@@ -24,9 +24,9 @@ use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
     DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord, ImageAvailabilityRecord, ImageDigest,
     InstanceId, InstanceStatusRecord, InviteRecord, MachineId, MachineMembership, OverlayIp,
-    RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
-    StorageParticipation, StorageReplicaPolicy, VolumeBranchLineageRecord, VolumeMovementRecord,
-    VolumeRecord,
+    PreparedDeployRecord, RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord,
+    ServiceRevisionRecord, StorageParticipation, StorageReplicaPolicy, VolumeBranchLineageRecord,
+    VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -475,6 +475,56 @@ where
 
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
         DeployStore::get_deploy(self.store().await?.as_ref(), deploy_id).await
+    }
+
+    async fn write_prepared_deploy(&self, prepared: &PreparedDeployRecord) -> Result<()> {
+        DeployStore::write_prepared_deploy(self.store().await?.as_ref(), prepared).await
+    }
+
+    async fn get_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+    ) -> Result<Option<PreparedDeployRecord>> {
+        DeployStore::get_prepared_deploy(self.store().await?.as_ref(), prepared_deploy_id).await
+    }
+
+    async fn mark_prepared_deploy_applied(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord> {
+        DeployStore::mark_prepared_deploy_applied(
+            self.store().await?.as_ref(),
+            prepared_deploy_id,
+            updated_at,
+        )
+        .await
+    }
+
+    async fn expire_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord> {
+        DeployStore::expire_prepared_deploy(
+            self.store().await?.as_ref(),
+            prepared_deploy_id,
+            updated_at,
+        )
+        .await
+    }
+
+    async fn supersede_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord> {
+        DeployStore::supersede_prepared_deploy(
+            self.store().await?.as_ref(),
+            prepared_deploy_id,
+            updated_at,
+        )
+        .await
     }
 
     async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> Result<()> {

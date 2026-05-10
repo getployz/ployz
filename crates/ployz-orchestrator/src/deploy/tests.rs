@@ -1,12 +1,12 @@
 use super::execute::{
-    DeployApplyPreconditions, ParticipantSet, apply_with_certificate_coordination,
-    apply_with_deploy_id_and_preconditions, apply_with_initial_plan, ensure_plan_stable,
-    run_phase_startup,
+    DeployApplyPreconditions, ParticipantSet, apply_prepared_with_certificate_coordination,
+    apply_with_certificate_coordination, apply_with_deploy_id_and_preconditions,
+    apply_with_initial_plan, ensure_plan_stable, run_phase_startup,
 };
 use super::lifecycle::PreparedDeploy;
 use super::plan::{deployable_machines, desired_slots, resolve_plan};
-use super::preview;
 use super::probe::{NoopParticipantProbe, ParticipantProbe, ProbeError, ProbeErrorKind};
+use super::{prepare, preview};
 use crate::certificates::{
     LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, NoopAcmeIssuerFactory,
     NoopIssuanceCoordinator,
@@ -23,11 +23,11 @@ use crate::model::{
     DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord, DeployPhaseRollbackPolicy,
     DeployPhaseState, DeployPhaseWork, DeployPreviewBaseline, DeployPreviewBaselineComponents,
     DeployRecord, DeployState, DrainState, InstanceId, InstancePhase, InstanceStatusRecord,
-    MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
-    ServiceBranchLineageRecord, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
-    ServiceRevisionRecord, ServiceRoutingPolicy, ServiceSourceMode, SlotId,
-    VolumeBranchLineageRecord, VolumeClonePreflightAction, VolumeClonePreflightScope,
-    VolumeMovementRecord, VolumeRecord,
+    MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp,
+    PreparedDeployRecord, PreparedDeployState, PublicKey, ServiceBranchLineageRecord,
+    ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord,
+    ServiceRoutingPolicy, ServiceSourceMode, SlotId, VolumeBranchLineageRecord,
+    VolumeClonePreflightAction, VolumeClonePreflightScope, VolumeMovementRecord, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -4963,6 +4963,551 @@ async fn apply_accepts_matching_service_source_baseline_and_commits_branch_linea
 }
 
 #[tokio::test]
+async fn prepare_stores_preview_evidence_and_apply_prepared_marks_applied() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "web",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    let prepared = prepare(
+        &store,
+        &local_machine_id,
+        &manifest,
+        &NoopParticipantProbe,
+        DeployId("prepare-apply".into()),
+        60,
+    )
+    .await
+    .expect("prepare deploy");
+
+    assert_eq!(prepared.state, PreparedDeployState::Prepared);
+    assert_eq!(
+        prepared.preview,
+        preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
+            .await
+            .expect("preview")
+    );
+    assert_eq!(prepared.namespace, manifest.namespace);
+    assert_eq!(prepared.preview.baseline, Some(prepared.baseline.clone()));
+    assert!(prepared.baseline.is_canonical());
+    assert_eq!(
+        store
+            .get_prepared_deploy(&prepared.prepared_deploy_id)
+            .await
+            .expect("get prepared")
+            .expect("prepared exists"),
+        prepared
+    );
+
+    let participant_client = FakeParticipantClient::new(FakeController::default());
+    let result = apply_prepared_with_certificate_coordination(
+        &store,
+        &participant_client,
+        &local_machine_id,
+        prepared.prepared_deploy_id.clone(),
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+    .expect("apply prepared");
+
+    assert_eq!(result.deploy_id, prepared.prepared_deploy_id);
+    assert_eq!(result.state, DeployState::Committed);
+    assert_eq!(
+        store
+            .get_prepared_deploy(&prepared.prepared_deploy_id)
+            .await
+            .expect("get applied prepared")
+            .expect("prepared still exists")
+            .state,
+        PreparedDeployState::Applied
+    );
+}
+
+#[tokio::test]
+async fn apply_prepared_rejects_terminal_record_states_before_participant_inspect() {
+    for state in [
+        PreparedDeployState::Applied,
+        PreparedDeployState::Expired,
+        PreparedDeployState::Superseded,
+    ] {
+        let store = seeded_store_with_machines(&["machine-a"]).await;
+        let local_machine_id = MachineId("local".into());
+        let manifest = test_manifest(vec![test_service_spec(
+            "web",
+            Placement::Replicated { count: 1 },
+            "nginx:1.27",
+        )]);
+        let mut prepared = prepare(
+            &store,
+            &local_machine_id,
+            &manifest,
+            &NoopParticipantProbe,
+            DeployId(format!("prepare-{state}")),
+            60,
+        )
+        .await
+        .expect("prepare deploy");
+        prepared.state = state;
+        store
+            .write_prepared_deploy(&prepared)
+            .await
+            .expect("seed terminal prepared state");
+
+        let controller = FakeController::default();
+        let participant_client = FakeParticipantClient::new(controller.clone());
+        let error = apply_prepared_with_certificate_coordination(
+            &store,
+            &participant_client,
+            &local_machine_id,
+            prepared.prepared_deploy_id.clone(),
+            Arc::new(NoopIssuanceCoordinator),
+            Arc::new(NoopAcmeAccountCoordinator),
+            Arc::new(LocalHttp01ChallengeReadiness),
+            Arc::new(NoopAcmeIssuerFactory::default()),
+            &NoopParticipantProbe,
+        )
+        .await
+        .expect_err("terminal prepared deploy should fail");
+
+        assert!(matches!(
+            error,
+            Error::Deploy(DeployError::PreparedDeployNotApplicable {
+                state: actual,
+                ..
+            }) if actual == state
+        ));
+        assert_eq!(controller.max_open_seen(), 0);
+        assert_eq!(controller.start_count(), 0);
+        assert_eq!(
+            store
+                .get_prepared_deploy(&prepared.prepared_deploy_id)
+                .await
+                .expect("get prepared")
+                .expect("prepared exists")
+                .state,
+            state
+        );
+    }
+}
+
+#[tokio::test]
+async fn apply_prepared_rejects_expired_record_before_participant_inspect() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "web",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    let prepared = prepare(
+        &store,
+        &local_machine_id,
+        &manifest,
+        &NoopParticipantProbe,
+        DeployId("prepare-expired".into()),
+        0,
+    )
+    .await
+    .expect("prepare expired deploy");
+
+    let controller = FakeController::default();
+    let participant_client = FakeParticipantClient::new(controller.clone());
+    let error = apply_prepared_with_certificate_coordination(
+        &store,
+        &participant_client,
+        &local_machine_id,
+        prepared.prepared_deploy_id.clone(),
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+    .expect_err("expired prepared deploy should fail");
+
+    assert!(matches!(
+        error,
+        Error::Deploy(DeployError::PreparedDeployExpired { .. })
+    ));
+    assert_eq!(controller.max_open_seen(), 0);
+    assert_eq!(controller.start_count(), 0);
+    assert_eq!(
+        store
+            .get_prepared_deploy(&prepared.prepared_deploy_id)
+            .await
+            .expect("get expired prepared")
+            .expect("prepared exists")
+            .state,
+        PreparedDeployState::Expired
+    );
+}
+
+#[tokio::test]
+async fn apply_prepared_marks_expired_before_checking_stale_baseline() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "agent",
+        Placement::Global,
+        "busybox:1.0",
+    )]);
+    let prepared = prepare(
+        &store,
+        &local_machine_id,
+        &manifest,
+        &NoopParticipantProbe,
+        DeployId("prepare-expired-stale".into()),
+        0,
+    )
+    .await
+    .expect("prepare expired deploy");
+    store
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Active))
+        .await
+        .expect("seed second participant");
+
+    let controller = FakeController::default();
+    let participant_client = FakeParticipantClient::new(controller.clone());
+    let error = apply_prepared_with_certificate_coordination(
+        &store,
+        &participant_client,
+        &local_machine_id,
+        prepared.prepared_deploy_id.clone(),
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+    .expect_err("expired stale prepared deploy should fail");
+
+    assert!(matches!(
+        error,
+        Error::Deploy(DeployError::PreparedDeployExpired { .. })
+    ));
+    assert_eq!(controller.max_open_seen(), 0);
+    assert_eq!(controller.start_count(), 0);
+    assert_eq!(
+        store
+            .get_prepared_deploy(&prepared.prepared_deploy_id)
+            .await
+            .expect("get expired prepared")
+            .expect("prepared exists")
+            .state,
+        PreparedDeployState::Expired
+    );
+}
+
+#[tokio::test]
+async fn apply_prepared_rejects_stale_baseline_before_participant_inspect() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "agent",
+        Placement::Global,
+        "busybox:1.0",
+    )]);
+    let prepared = prepare(
+        &store,
+        &local_machine_id,
+        &manifest,
+        &NoopParticipantProbe,
+        DeployId("prepare-stale".into()),
+        60,
+    )
+    .await
+    .expect("prepare deploy");
+    store
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Active))
+        .await
+        .expect("seed second participant");
+
+    let controller = FakeController::default();
+    let participant_client = FakeParticipantClient::new(controller.clone());
+    let error = apply_prepared_with_certificate_coordination(
+        &store,
+        &participant_client,
+        &local_machine_id,
+        prepared.prepared_deploy_id.clone(),
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+    .expect_err("stale prepared baseline should fail");
+
+    let Error::Deploy(DeployError::DeployBaselineChanged { diff }) = error else {
+        panic!("expected deploy baseline changed");
+    };
+    assert!(
+        diff.changed_components()
+            .contains(&DeployBaselineComponent::Participants)
+    );
+    assert_eq!(controller.max_open_seen(), 0);
+    assert_eq!(controller.start_count(), 0);
+    assert_eq!(
+        store
+            .get_prepared_deploy(&prepared.prepared_deploy_id)
+            .await
+            .expect("get stale prepared")
+            .expect("prepared exists")
+            .state,
+        PreparedDeployState::Superseded
+    );
+}
+
+#[tokio::test]
+async fn apply_prepared_rejects_mismatched_manifest_namespace_before_participant_inspect() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = test_manifest(vec![test_service_spec(
+        "web",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    let mut prepared = prepare(
+        &store,
+        &local_machine_id,
+        &manifest,
+        &NoopParticipantProbe,
+        DeployId("prepare-mismatched-namespace".into()),
+        60,
+    )
+    .await
+    .expect("prepare deploy");
+    manifest.namespace = Namespace("other".into());
+    prepared.manifest_json = serde_json::to_string(&manifest).expect("serialize manifest");
+    store
+        .write_prepared_deploy(&prepared)
+        .await
+        .expect("write malformed prepared deploy");
+
+    let controller = FakeController::default();
+    let participant_client = FakeParticipantClient::new(controller.clone());
+    let error = apply_prepared_with_certificate_coordination(
+        &store,
+        &participant_client,
+        &local_machine_id,
+        prepared.prepared_deploy_id.clone(),
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+    .expect_err("mismatched prepared manifest should fail");
+
+    assert!(matches!(
+        error,
+        Error::Deploy(DeployError::PreparedDeployInvalid { .. })
+    ));
+    assert_eq!(controller.max_open_seen(), 0);
+    assert_eq!(controller.start_count(), 0);
+}
+
+#[tokio::test]
+async fn apply_prepared_replays_existing_terminal_committed_deploy_before_expiry() {
+    for state in [DeployState::Committed, DeployState::CleanupPending] {
+        let store = seeded_store_with_machines(&["machine-a"]).await;
+        let local_machine_id = MachineId("local".into());
+        let manifest = test_manifest(vec![test_service_spec(
+            "web",
+            Placement::Replicated { count: 1 },
+            "nginx:1.27",
+        )]);
+        let prepared = prepare(
+            &store,
+            &local_machine_id,
+            &manifest,
+            &NoopParticipantProbe,
+            DeployId(format!("prepare-replay-{state}")),
+            0,
+        )
+        .await
+        .expect("prepare deploy");
+        store
+            .write_deploy_status(&prepared_deploy_status(&prepared, state))
+            .await
+            .expect("seed terminal deploy status");
+
+        let controller = FakeController::default();
+        let participant_client = FakeParticipantClient::new(controller.clone());
+        let result = apply_prepared_with_certificate_coordination(
+            &store,
+            &participant_client,
+            &local_machine_id,
+            prepared.prepared_deploy_id.clone(),
+            Arc::new(NoopIssuanceCoordinator),
+            Arc::new(NoopAcmeAccountCoordinator),
+            Arc::new(LocalHttp01ChallengeReadiness),
+            Arc::new(NoopAcmeIssuerFactory::default()),
+            &NoopParticipantProbe,
+        )
+        .await
+        .expect("replay committed prepared deploy");
+
+        assert_eq!(result.state, state);
+        assert_eq!(controller.max_open_seen(), 0);
+        assert_eq!(controller.start_count(), 0);
+        assert_eq!(
+            store
+                .get_prepared_deploy(&prepared.prepared_deploy_id)
+                .await
+                .expect("get prepared")
+                .expect("prepared exists")
+                .state,
+            PreparedDeployState::Applied
+        );
+    }
+}
+
+#[tokio::test]
+async fn apply_prepared_supersedes_existing_checkpoint_terminal_deploy() {
+    for state in [
+        DeployState::CheckpointCommitted,
+        DeployState::FailedAfterCheckpoint,
+    ] {
+        let store = seeded_store_with_machines(&["machine-a"]).await;
+        let local_machine_id = MachineId("local".into());
+        let manifest = test_manifest(vec![test_service_spec(
+            "web",
+            Placement::Replicated { count: 1 },
+            "nginx:1.27",
+        )]);
+        let prepared = prepare(
+            &store,
+            &local_machine_id,
+            &manifest,
+            &NoopParticipantProbe,
+            DeployId(format!("prepare-checkpoint-{state}")),
+            60,
+        )
+        .await
+        .expect("prepare deploy");
+        store
+            .write_deploy_status(&prepared_deploy_status(&prepared, state))
+            .await
+            .expect("seed checkpoint deploy status");
+
+        let controller = FakeController::default();
+        let participant_client = FakeParticipantClient::new(controller.clone());
+        let error = apply_prepared_with_certificate_coordination(
+            &store,
+            &participant_client,
+            &local_machine_id,
+            prepared.prepared_deploy_id.clone(),
+            Arc::new(NoopIssuanceCoordinator),
+            Arc::new(NoopAcmeAccountCoordinator),
+            Arc::new(LocalHttp01ChallengeReadiness),
+            Arc::new(NoopAcmeIssuerFactory::default()),
+            &NoopParticipantProbe,
+        )
+        .await
+        .expect_err("checkpoint terminal prepared deploy should fail");
+
+        assert!(matches!(
+            error,
+            Error::Deploy(DeployError::PreparedDeployNotApplicable {
+                state: PreparedDeployState::Superseded,
+                ..
+            })
+        ));
+        assert_eq!(controller.max_open_seen(), 0);
+        assert_eq!(controller.start_count(), 0);
+        assert_eq!(
+            store
+                .get_prepared_deploy(&prepared.prepared_deploy_id)
+                .await
+                .expect("get prepared")
+                .expect("prepared exists")
+                .state,
+            PreparedDeployState::Superseded
+        );
+    }
+}
+
+#[tokio::test]
+async fn apply_prepared_marks_applied_after_post_commit_status_error() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "web",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    let prepared = prepare(
+        &store,
+        &local_machine_id,
+        &manifest,
+        &NoopParticipantProbe,
+        DeployId("prepare-post-commit-error".into()),
+        60,
+    )
+    .await
+    .expect("prepare deploy");
+    backend.reset_counts();
+    backend.fail_committed_status_writes_after_first(true);
+
+    let participant_client = FakeParticipantClient::new(FakeController::default());
+    let error = apply_prepared_with_certificate_coordination(
+        &store,
+        &participant_client,
+        &local_machine_id,
+        prepared.prepared_deploy_id.clone(),
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+    .expect_err("post-commit status failure should preserve original error");
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected committed status failure")
+    );
+    assert_eq!(
+        store
+            .get_prepared_deploy(&prepared.prepared_deploy_id)
+            .await
+            .expect("get prepared")
+            .expect("prepared exists")
+            .state,
+        PreparedDeployState::Applied
+    );
+}
+
+fn prepared_deploy_status(
+    prepared: &PreparedDeployRecord,
+    state: DeployState,
+) -> crate::model::DeployRecord {
+    crate::model::DeployRecord {
+        deploy_id: prepared.prepared_deploy_id.clone(),
+        namespace: prepared.namespace.clone(),
+        coordinator_machine_id: prepared.coordinator_machine_id.clone(),
+        manifest_hash: prepared.manifest_hash.clone(),
+        state,
+        started_at: prepared.created_at,
+        committed_at: Some(prepared.updated_at),
+        finished_at: Some(prepared.updated_at),
+        summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+    }
+}
+
+#[tokio::test]
 async fn apply_commits_branch_lineage_when_only_source_revision_changes() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
     let local_machine_id = MachineId("local".into());
@@ -8148,6 +8693,47 @@ impl DeployStore for CountingBackend {
         deploy_id: &DeployId,
     ) -> PloyzResult<Option<crate::model::DeployRecord>> {
         self.store.get_deploy(deploy_id).await
+    }
+
+    async fn write_prepared_deploy(&self, prepared: &PreparedDeployRecord) -> PloyzResult<()> {
+        self.store.write_prepared_deploy(prepared).await
+    }
+
+    async fn get_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+    ) -> PloyzResult<Option<PreparedDeployRecord>> {
+        self.store.get_prepared_deploy(prepared_deploy_id).await
+    }
+
+    async fn mark_prepared_deploy_applied(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> PloyzResult<PreparedDeployRecord> {
+        self.store
+            .mark_prepared_deploy_applied(prepared_deploy_id, updated_at)
+            .await
+    }
+
+    async fn expire_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> PloyzResult<PreparedDeployRecord> {
+        self.store
+            .expire_prepared_deploy(prepared_deploy_id, updated_at)
+            .await
+    }
+
+    async fn supersede_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> PloyzResult<PreparedDeployRecord> {
+        self.store
+            .supersede_prepared_deploy(prepared_deploy_id, updated_at)
+            .await
     }
 
     async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> PloyzResult<()> {

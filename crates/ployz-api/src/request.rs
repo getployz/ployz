@@ -1,4 +1,4 @@
-use crate::deploy::{DeployOptions, MigrateServiceRequest};
+use crate::deploy::{DeployApplyPreparedRequest, DeployOptions, MigrateServiceRequest};
 use crate::image::{
     ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageStatusRequest,
 };
@@ -162,9 +162,15 @@ pub enum DaemonRequest {
         manifest_json: String,
         options: DeployOptions,
     },
+    DeployPrepare {
+        manifest_json: String,
+    },
     DeployApply {
         manifest_json: String,
         options: DeployOptions,
+    },
+    DeployApplyPrepared {
+        request: DeployApplyPreparedRequest,
     },
     DeployExport {
         namespace: String,
@@ -320,6 +326,52 @@ mod tests {
                     ..
                 }
             }
+        ));
+    }
+
+    #[test]
+    fn deploy_prepare_and_apply_prepared_requests_roundtrip() {
+        let prepare = DaemonRequest::DeployPrepare {
+            manifest_json: "{}".into(),
+        };
+        let apply = DaemonRequest::DeployApplyPrepared {
+            request: DeployApplyPreparedRequest {
+                prepared_deploy_id: ployz_types::model::DeployId("prepare-1".into()),
+            },
+        };
+
+        let prepare_json = serde_json::to_value(&prepare).expect("serialize prepare");
+        let apply_json = serde_json::to_value(&apply).expect("serialize apply prepared");
+
+        assert_eq!(
+            prepare_json,
+            serde_json::json!({
+                "DeployPrepare": {
+                    "manifest_json": "{}"
+                }
+            })
+        );
+        assert_eq!(
+            apply_json,
+            serde_json::json!({
+                "DeployApplyPrepared": {
+                    "request": {
+                        "prepared_deploy_id": "prepare-1"
+                    }
+                }
+            })
+        );
+        let prepare_roundtrip: DaemonRequest =
+            serde_json::from_value(prepare_json).expect("deserialize prepare");
+        let apply_roundtrip: DaemonRequest =
+            serde_json::from_value(apply_json).expect("deserialize apply prepared");
+        assert!(matches!(
+            prepare_roundtrip,
+            DaemonRequest::DeployPrepare { .. }
+        ));
+        assert!(matches!(
+            apply_roundtrip,
+            DaemonRequest::DeployApplyPrepared { .. }
         ));
     }
 

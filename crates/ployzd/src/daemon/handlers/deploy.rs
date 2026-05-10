@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::daemon::{ActiveMesh, DaemonState};
 use ployz_api::{
-    DaemonPayload, DaemonResponse, DeployCandidateStartedPayload, DeployFailurePayload,
-    DeployFailureReason, DeployNamespaceSnapshotPayload, DeployOptions, MigrateServiceMode,
-    MigrateServiceRequest, VolumeZfsTransferPayload,
+    DaemonPayload, DaemonResponse, DeployApplyPreparedRequest, DeployCandidateStartedPayload,
+    DeployFailurePayload, DeployFailureReason, DeployNamespaceSnapshotPayload, DeployOptions,
+    DeployPreparePayload, MigrateServiceMode, MigrateServiceRequest, VolumeZfsTransferPayload,
 };
 use ployz_cert_backends::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
@@ -19,7 +20,9 @@ use ployz_orchestrator::deploy::participant::{
     MoveVolumeRequest, MoveVolumeResult, StartCandidateRequest,
 };
 use ployz_orchestrator::deploy::{
-    DeployApplyPreconditions, apply_with_deploy_id_and_preconditions, new_deploy_id, preview,
+    DeployApplyPreconditions, apply_prepared_with_certificate_coordination,
+    apply_with_deploy_id_and_preconditions, new_deploy_id, prepare, preview,
+    validated_prepared_manifest,
 };
 use ployz_runtime_backends::deploy::remote::DeployAgent;
 use ployz_store_api::{DeployStore, StoreDriver, StoreRuntimeControl};
@@ -28,7 +31,7 @@ use ployz_types::error::DeployError;
 use ployz_types::model::SlotId;
 use ployz_types::model::{
     DeployId, DeployPhaseCommitPolicy, DeployPhaseFailure, DeployPhaseState, InstanceId,
-    InstanceStatusRecord, MachineId, MachineMembership,
+    InstanceStatusRecord, MachineId, MachineMembership, PreparedDeployState,
 };
 use ployz_types::spec::{
     DeployIntent, DeployManifest, MountSource, Namespace, ServiceSpec, VolumeDeclaration,
@@ -44,6 +47,7 @@ const DEPLOY_VOLUME_MOVE_RPC_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 6
 const DEPLOY_VOLUME_MOVE_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const DEPLOY_VOLUME_CLONE_RPC_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 const DEPLOY_VOLUME_CLONE_CLEANUP_RPC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const DEPLOY_PREPARE_TTL_SECS: u64 = 24 * 60 * 60;
 
 #[derive(Debug, thiserror::Error)]
 enum MigrateRenderError {
@@ -199,6 +203,56 @@ impl DaemonState {
         }
     }
 
+    pub async fn handle_deploy_prepare(&self, manifest_json: &str) -> DaemonResponse {
+        let manifest = match decode_manifest(manifest_json) {
+            Ok(manifest) => manifest,
+            Err(response) => return *response,
+        };
+        let active = match self.require_active("NO_MESH", "no mesh is running") {
+            Ok(active) => active,
+            Err(response) => return *response,
+        };
+
+        let nats_client_url = if self.runtime_target == RuntimeTarget::Docker {
+            crate::services::nats::local_client_url()
+        } else {
+            crate::services::nats::overlay_client_url(active.config.overlay_ip)
+        };
+        let nats_scope = ployz_nats::NatsScope::local_for_storage_participation(
+            &active.config.storage_participation,
+        );
+        let nats_store =
+            match ployz_nats::NatsStore::connect_with_scope(&nats_client_url, nats_scope).await {
+                Ok(store) => store.with_asset_policy(active.config.storage_replicas),
+                Err(error) => return self.err("DEPLOY_PREPARE_FAILED", error.to_string()),
+            };
+        if let Err(error) = nats_store.start().await {
+            return self.err("DEPLOY_PREPARE_FAILED", error.to_string());
+        }
+        let prober = crate::daemon::deploy_probe::NatsRpcProbe::new(
+            ployz_nats::NatsNodeRpcClient::for_store(&nats_store),
+        );
+
+        match prepare(
+            &active.mesh.store,
+            &self.identity.machine_id,
+            &manifest,
+            &prober,
+            new_deploy_id(),
+            DEPLOY_PREPARE_TTL_SECS,
+        )
+        .await
+        {
+            Ok(prepared) => self.ok_with_payload(
+                "prepared deploy",
+                Some(DaemonPayload::DeployPrepare(DeployPreparePayload {
+                    prepared,
+                })),
+            ),
+            Err(err) => self.deploy_error_response("DEPLOY_PREPARE_FAILED", err),
+        }
+    }
+
     pub async fn handle_deploy_apply(
         &self,
         manifest_json: &str,
@@ -217,7 +271,7 @@ impl DaemonState {
             Err(response) => return *response,
         };
         let runtime = match self
-            .prepare_deploy_apply_runtime(active, &manifest.namespace)
+            .prepare_deploy_apply_runtime(active, &manifest.namespace, "DEPLOY_APPLY_FAILED")
             .await
         {
             Ok(runtime) => runtime,
@@ -227,10 +281,55 @@ impl DaemonState {
             .await
     }
 
+    pub async fn handle_deploy_apply_prepared(
+        &self,
+        request: &DeployApplyPreparedRequest,
+    ) -> DaemonResponse {
+        let active = match self.require_active("NO_MESH", "no mesh is running") {
+            Ok(active) => active,
+            Err(response) => return *response,
+        };
+        let prepared = match active
+            .mesh
+            .store
+            .get_prepared_deploy(&request.prepared_deploy_id)
+            .await
+        {
+            Ok(Some(prepared)) => prepared,
+            Ok(None) => {
+                return self.deploy_error_response(
+                    "DEPLOY_APPLY_PREPARED_FAILED",
+                    PloyzError::Deploy(DeployError::PreparedDeployMissing {
+                        prepared_deploy_id: request.prepared_deploy_id.0.clone(),
+                    }),
+                );
+            }
+            Err(error) => return self.deploy_error_response("DEPLOY_APPLY_PREPARED_FAILED", error),
+        };
+        let manifest = match validated_prepared_manifest(&prepared) {
+            Ok(manifest) => manifest,
+            Err(error) => return self.deploy_error_response("DEPLOY_APPLY_PREPARED_FAILED", error),
+        };
+        let runtime = match self
+            .prepare_deploy_apply_runtime(
+                active,
+                &manifest.namespace,
+                "DEPLOY_APPLY_PREPARED_FAILED",
+            )
+            .await
+        {
+            Ok(runtime) => runtime,
+            Err(response) => return response,
+        };
+        self.apply_prepared_with_runtime(active, &request.prepared_deploy_id, runtime)
+            .await
+    }
+
     async fn prepare_deploy_apply_runtime(
         &self,
         active: &ActiveMesh,
         namespace: &Namespace,
+        setup_failure_code: &'static str,
     ) -> Result<DeployApplyRuntime, DaemonResponse> {
         let nats_client_url = if self.runtime_target == RuntimeTarget::Docker {
             crate::services::nats::local_client_url()
@@ -243,14 +342,14 @@ impl DaemonState {
         let nats_store =
             match ployz_nats::NatsStore::connect_with_scope(&nats_client_url, nats_scope).await {
                 Ok(store) => store.with_asset_policy(active.config.storage_replicas),
-                Err(error) => return Err(self.err("DEPLOY_APPLY_FAILED", error.to_string())),
+                Err(error) => return Err(self.err(setup_failure_code, error.to_string())),
             };
         if let Err(error) = nats_store.start().await {
-            return Err(self.err("DEPLOY_APPLY_FAILED", error.to_string()));
+            return Err(self.err(setup_failure_code, error.to_string()));
         }
         let nats_locks = match NatsLocks::new(&nats_store).await {
             Ok(locks) => locks,
-            Err(error) => return Err(self.err("DEPLOY_APPLY_FAILED", error.to_string())),
+            Err(error) => return Err(self.err(setup_failure_code, error.to_string())),
         };
         let deploy_lock = match NatsDeployLock::acquire(
             nats_locks.clone(),
@@ -280,7 +379,7 @@ impl DaemonState {
     ) -> DaemonResponse {
         let certificate_coordinator = Arc::new(
             crate::daemon::cert_coordination::NatsIssuanceCoordinator::new(
-                runtime.nats_locks,
+                runtime.nats_locks.clone(),
                 self.identity.machine_id.clone(),
             ),
         );
@@ -316,6 +415,85 @@ impl DaemonState {
             &prober,
             preconditions,
         );
+        self.run_locked_deploy_apply(
+            active,
+            deploy_id,
+            runtime,
+            apply,
+            "apply",
+            "DEPLOY_APPLY_FAILED",
+            "ENCODE_DEPLOY",
+        )
+        .await
+    }
+
+    async fn apply_prepared_with_runtime(
+        &self,
+        active: &ActiveMesh,
+        prepared_deploy_id: &DeployId,
+        runtime: DeployApplyRuntime,
+    ) -> DaemonResponse {
+        let certificate_coordinator = Arc::new(
+            crate::daemon::cert_coordination::NatsIssuanceCoordinator::new(
+                runtime.nats_locks.clone(),
+                self.identity.machine_id.clone(),
+            ),
+        );
+        let account_coordinator: Arc<dyn AcmeAccountCoordinator> = certificate_coordinator.clone();
+        let challenge_readiness = Arc::new(
+            crate::daemon::cert_coordination::NatsChallengeReadiness::new(
+                active.mesh.store.clone(),
+            ),
+        );
+        let issuer_factory = Arc::new(InstantAcmeIssuerFactory::new(
+            CertificateManagerConfig::from_env(),
+        ));
+        let prober = crate::daemon::deploy_probe::NatsRpcProbe::new(
+            ployz_nats::NatsNodeRpcClient::for_store(&runtime.nats_store),
+        );
+        let participant_client = NatsDeployParticipantClient::new(
+            ployz_nats::NatsNodeRpcClient::for_store(&runtime.nats_store).with_policy(RpcPolicy {
+                timeout: DEPLOY_PARTICIPANT_RPC_TIMEOUT,
+            }),
+        );
+
+        let deploy_id = prepared_deploy_id.clone();
+        let apply = apply_prepared_with_certificate_coordination(
+            &active.mesh.store,
+            &participant_client,
+            &self.identity.machine_id,
+            deploy_id.clone(),
+            certificate_coordinator,
+            account_coordinator,
+            challenge_readiness,
+            issuer_factory,
+            &prober,
+        );
+        self.run_locked_deploy_apply(
+            active,
+            deploy_id,
+            runtime,
+            apply,
+            "apply-prepared",
+            "DEPLOY_APPLY_PREPARED_FAILED",
+            "ENCODE_DEPLOY_RESULT",
+        )
+        .await
+    }
+
+    async fn run_locked_deploy_apply<F>(
+        &self,
+        active: &ActiveMesh,
+        deploy_id: DeployId,
+        runtime: DeployApplyRuntime,
+        apply: F,
+        operation: &'static str,
+        error_code: &'static str,
+        encode_code: &'static str,
+    ) -> DaemonResponse
+    where
+        F: Future<Output = ployz_types::Result<ployz_types::model::DeployApplyResult>>,
+    {
         tokio::pin!(apply);
         let mut deploy_lock_renewer = tokio::spawn(renew_deploy_lock(
             runtime.deploy_lock.clone(),
@@ -326,7 +504,7 @@ impl DaemonState {
             result = &mut apply => result,
             renewal = &mut deploy_lock_renewer => {
                 let message = match renewal {
-                    Ok(Ok(())) => "deploy lock renewal task exited before apply completed".to_string(),
+                    Ok(Ok(())) => format!("deploy lock renewal task exited before {operation} completed"),
                     Ok(Err(error)) => error.to_string(),
                     Err(error) => format!("deploy lock renewal task failed: {error}"),
                 };
@@ -335,7 +513,8 @@ impl DaemonState {
                         tracing::warn!(
                             %deploy_id,
                             %message,
-                            "deploy lock was lost after commit point; waiting for apply to finish"
+                            %operation,
+                            "deploy lock was lost after commit point; waiting for operation to finish"
                         );
                         (&mut apply).await
                     }
@@ -358,8 +537,8 @@ impl DaemonState {
             tracing::warn!(%error, "failed to release NATS deploy lock");
         }
         match result {
-            Ok(result) => self.ok_json_pretty(&result, "ENCODE_DEPLOY", "encode deploy result"),
-            Err(err) => self.deploy_error_response("DEPLOY_APPLY_FAILED", err),
+            Ok(result) => self.ok_json_pretty(&result, encode_code, "encode deploy result"),
+            Err(err) => self.deploy_error_response(error_code, err),
         }
     }
 
@@ -421,7 +600,10 @@ impl DaemonState {
             }
             MigrateServiceMode::Apply => {
                 let namespace = Namespace(request.namespace.clone());
-                let runtime = match self.prepare_deploy_apply_runtime(active, &namespace).await {
+                let runtime = match self
+                    .prepare_deploy_apply_runtime(active, &namespace, "DEPLOY_APPLY_FAILED")
+                    .await
+                {
                     Ok(runtime) => runtime,
                     Err(response) => return response,
                 };
@@ -1224,6 +1406,12 @@ fn deploy_error_code<'a>(default_code: &'a str, error: &PloyzError) -> &'a str {
     match error {
         PloyzError::Deploy(DeployError::DeployBaselineChanged { .. }) => "DEPLOY_BASELINE_CHANGED",
         PloyzError::Deploy(DeployError::DeployOptionInvalid { .. }) => "INVALID_DEPLOY_OPTIONS",
+        PloyzError::Deploy(DeployError::PreparedDeployMissing { .. }) => "PREPARED_DEPLOY_MISSING",
+        PloyzError::Deploy(DeployError::PreparedDeployNotApplicable { .. }) => {
+            "PREPARED_DEPLOY_NOT_APPLICABLE"
+        }
+        PloyzError::Deploy(DeployError::PreparedDeployExpired { .. }) => "PREPARED_DEPLOY_EXPIRED",
+        PloyzError::Deploy(DeployError::PreparedDeployInvalid { .. }) => "PREPARED_DEPLOY_INVALID",
         _ => default_code,
     }
 }
@@ -1258,6 +1446,9 @@ fn deploy_failure_payload_for_error(error: &PloyzError) -> Option<DeployFailureP
             expected_baseline: None,
             actual_baseline: None,
             baseline_changed_components: Vec::new(),
+            prepared_deploy_id: None,
+            prepared_deploy_state: None,
+            prepared_deploy_expires_at: None,
         }),
         PloyzError::Deploy(DeployError::DeployBaselineChanged { diff }) => {
             Some(DeployFailurePayload {
@@ -1265,8 +1456,57 @@ fn deploy_failure_payload_for_error(error: &PloyzError) -> Option<DeployFailureP
                 expected_baseline: Some(diff.expected.clone()),
                 actual_baseline: Some(diff.actual.clone()),
                 baseline_changed_components: diff.changed_components(),
+                prepared_deploy_id: None,
+                prepared_deploy_state: None,
+                prepared_deploy_expires_at: None,
             })
         }
+        PloyzError::Deploy(DeployError::PreparedDeployMissing { prepared_deploy_id }) => {
+            Some(DeployFailurePayload {
+                reason: DeployFailureReason::PreparedDeployMissing,
+                expected_baseline: None,
+                actual_baseline: None,
+                baseline_changed_components: Vec::new(),
+                prepared_deploy_id: Some(DeployId(prepared_deploy_id.clone())),
+                prepared_deploy_state: None,
+                prepared_deploy_expires_at: None,
+            })
+        }
+        PloyzError::Deploy(DeployError::PreparedDeployNotApplicable {
+            prepared_deploy_id,
+            state,
+        }) => Some(DeployFailurePayload {
+            reason: DeployFailureReason::PreparedDeployNotApplicable,
+            expected_baseline: None,
+            actual_baseline: None,
+            baseline_changed_components: Vec::new(),
+            prepared_deploy_id: Some(DeployId(prepared_deploy_id.clone())),
+            prepared_deploy_state: Some(*state),
+            prepared_deploy_expires_at: None,
+        }),
+        PloyzError::Deploy(DeployError::PreparedDeployExpired {
+            prepared_deploy_id,
+            expires_at,
+        }) => Some(DeployFailurePayload {
+            reason: DeployFailureReason::PreparedDeployExpired,
+            expected_baseline: None,
+            actual_baseline: None,
+            baseline_changed_components: Vec::new(),
+            prepared_deploy_id: Some(DeployId(prepared_deploy_id.clone())),
+            prepared_deploy_state: Some(PreparedDeployState::Expired),
+            prepared_deploy_expires_at: Some(*expires_at),
+        }),
+        PloyzError::Deploy(DeployError::PreparedDeployInvalid {
+            prepared_deploy_id, ..
+        }) => Some(DeployFailurePayload {
+            reason: DeployFailureReason::PreparedDeployInvalid,
+            expected_baseline: None,
+            actual_baseline: None,
+            baseline_changed_components: Vec::new(),
+            prepared_deploy_id: Some(DeployId(prepared_deploy_id.clone())),
+            prepared_deploy_state: None,
+            prepared_deploy_expires_at: None,
+        }),
         _ => None,
     }
 }
@@ -2517,6 +2757,84 @@ mod tests {
     }
 
     #[test]
+    fn deploy_error_response_wraps_prepared_deploy_payloads() {
+        let missing = test_daemon_state().deploy_error_response(
+            "DEPLOY_APPLY_PREPARED_FAILED",
+            PloyzError::Deploy(DeployError::PreparedDeployMissing {
+                prepared_deploy_id: "prepare-missing".into(),
+            }),
+        );
+        assert_eq!(missing.code, "PREPARED_DEPLOY_MISSING");
+        let Some(DaemonPayload::DeployFailure(payload)) = missing.payload else {
+            panic!("expected missing payload");
+        };
+        assert_eq!(payload.reason, DeployFailureReason::PreparedDeployMissing);
+        assert_eq!(
+            payload.prepared_deploy_id,
+            Some(DeployId("prepare-missing".into()))
+        );
+
+        let not_applicable = test_daemon_state().deploy_error_response(
+            "DEPLOY_APPLY_PREPARED_FAILED",
+            PloyzError::Deploy(DeployError::PreparedDeployNotApplicable {
+                prepared_deploy_id: "prepare-applied".into(),
+                state: PreparedDeployState::Applied,
+            }),
+        );
+        assert_eq!(not_applicable.code, "PREPARED_DEPLOY_NOT_APPLICABLE");
+        let Some(DaemonPayload::DeployFailure(payload)) = not_applicable.payload else {
+            panic!("expected not-applicable payload");
+        };
+        assert_eq!(
+            payload.reason,
+            DeployFailureReason::PreparedDeployNotApplicable
+        );
+        assert_eq!(
+            payload.prepared_deploy_state,
+            Some(PreparedDeployState::Applied)
+        );
+
+        let expired = test_daemon_state().deploy_error_response(
+            "DEPLOY_APPLY_PREPARED_FAILED",
+            PloyzError::Deploy(DeployError::PreparedDeployExpired {
+                prepared_deploy_id: "prepare-expired".into(),
+                expires_at: 42,
+            }),
+        );
+        assert_eq!(expired.code, "PREPARED_DEPLOY_EXPIRED");
+        let Some(DaemonPayload::DeployFailure(payload)) = expired.payload else {
+            panic!("expected expired payload");
+        };
+        assert_eq!(payload.reason, DeployFailureReason::PreparedDeployExpired);
+        assert_eq!(
+            payload.prepared_deploy_id,
+            Some(DeployId("prepare-expired".into()))
+        );
+        assert_eq!(
+            payload.prepared_deploy_state,
+            Some(PreparedDeployState::Expired)
+        );
+        assert_eq!(payload.prepared_deploy_expires_at, Some(42));
+
+        let invalid = test_daemon_state().deploy_error_response(
+            "DEPLOY_APPLY_PREPARED_FAILED",
+            PloyzError::Deploy(DeployError::PreparedDeployInvalid {
+                prepared_deploy_id: "prepare-invalid".into(),
+                message: "bad manifest".into(),
+            }),
+        );
+        assert_eq!(invalid.code, "PREPARED_DEPLOY_INVALID");
+        let Some(DaemonPayload::DeployFailure(payload)) = invalid.payload else {
+            panic!("expected invalid payload");
+        };
+        assert_eq!(payload.reason, DeployFailureReason::PreparedDeployInvalid);
+        assert_eq!(
+            payload.prepared_deploy_id,
+            Some(DeployId("prepare-invalid".into()))
+        );
+    }
+
+    #[test]
     fn expected_baseline_rejects_empty_baseline() {
         let no_baseline = DeployOptions::default();
         assert_eq!(expected_baseline(&no_baseline).expect("no baseline"), None);
@@ -2582,6 +2900,45 @@ mod tests {
         assert_eq!(response.code, "INVALID_DEPLOY_OPTIONS");
         assert!(response.message.contains("expected_baseline"));
         assert!(response.payload.is_none());
+    }
+
+    #[tokio::test]
+    async fn deploy_prepare_and_apply_prepared_require_active_mesh() {
+        let state = test_daemon_state();
+        let manifest_json = serde_json::to_string(&DeployManifest {
+            namespace: Namespace("prod".into()),
+            intent: None,
+            volumes: Vec::new(),
+            services: Vec::new(),
+        })
+        .expect("serialize manifest");
+        let prepare = state.handle_deploy_prepare(&manifest_json).await;
+        let apply = state
+            .handle_deploy_apply_prepared(&DeployApplyPreparedRequest {
+                prepared_deploy_id: DeployId("prepare-1".into()),
+            })
+            .await;
+        let prepare_via_shared = state
+            .handle_shared(DaemonRequest::DeployPrepare {
+                manifest_json: manifest_json.clone(),
+            })
+            .await;
+        let apply_via_shared = state
+            .handle_shared(DaemonRequest::DeployApplyPrepared {
+                request: DeployApplyPreparedRequest {
+                    prepared_deploy_id: DeployId("prepare-2".into()),
+                },
+            })
+            .await;
+
+        assert!(!prepare.ok);
+        assert_eq!(prepare.code, "NO_MESH");
+        assert!(!apply.ok);
+        assert_eq!(apply.code, "NO_MESH");
+        assert!(!prepare_via_shared.ok);
+        assert_eq!(prepare_via_shared.code, "NO_MESH");
+        assert!(!apply_via_shared.ok);
+        assert_eq!(apply_via_shared.code, "NO_MESH");
     }
 
     #[tokio::test]
