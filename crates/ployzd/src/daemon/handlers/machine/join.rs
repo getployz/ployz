@@ -1,6 +1,6 @@
 mod bootstrap;
 mod coordination;
-mod remote;
+pub(in crate::daemon::handlers::machine) mod remote;
 pub(super) mod rollback;
 mod target;
 
@@ -147,6 +147,16 @@ impl DaemonState {
                         nats_rpc,
                         ssh_options,
                         install: options.install.clone().unwrap_or_default(),
+                        remote_ready_wait_policy: {
+                            #[cfg(test)]
+                            {
+                                self.machine_add_remote_ready_wait_policy
+                            }
+                            #[cfg(not(test))]
+                            {
+                                None
+                            }
+                        },
                     },
                 )
             }

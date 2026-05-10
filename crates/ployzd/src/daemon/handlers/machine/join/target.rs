@@ -467,7 +467,12 @@ async fn wait_for_joiner_ready(
     if let Some(client) = &context.nats_rpc {
         return wait_for_nats_ready(client, machine).await;
     }
-    wait_for_remote_ready(target, &context.ssh_options).await
+    wait_for_remote_ready(
+        target,
+        &context.ssh_options,
+        context.remote_ready_wait_policy,
+    )
+    .await
 }
 
 async fn activate_joiner_lifecycle(

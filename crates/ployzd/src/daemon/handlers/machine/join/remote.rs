@@ -10,12 +10,22 @@ use tokio::time::{Duration, Instant, sleep, timeout};
 
 use crate::daemon::ssh::{SshOptions, ssh_stdio_transport};
 
+use super::super::types::RemoteReadyWaitPolicy;
+
 const REMOTE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const NATS_READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const REMOTE_READY_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 const MACHINE_STATE_SYNC_TIMEOUT: Duration = Duration::from_secs(20);
 const REMOTE_RPC_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployzctl\" rpc-stdio";
+
+fn production_remote_ready_wait_policy() -> RemoteReadyWaitPolicy {
+    RemoteReadyWaitPolicy::new(
+        REMOTE_READY_TIMEOUT,
+        REMOTE_READY_POLL_INTERVAL,
+        REMOTE_READY_RPC_TIMEOUT,
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ExpectedSubnetState {
@@ -66,14 +76,16 @@ pub(super) async fn remote_daemon_identity(
 pub(super) async fn wait_for_remote_ready(
     target: &str,
     ssh_options: &SshOptions,
+    wait_policy: Option<RemoteReadyWaitPolicy>,
 ) -> Result<(), String> {
-    let deadline = Instant::now() + REMOTE_READY_TIMEOUT;
+    let policy = wait_policy.unwrap_or_else(production_remote_ready_wait_policy);
+    let deadline = Instant::now() + policy.ready_timeout;
     let mut attempt: u32 = 0;
 
     loop {
         attempt += 1;
         let last_error = match timeout(
-            REMOTE_READY_RPC_TIMEOUT,
+            policy.ready_rpc_timeout,
             remote_rpc(
                 target,
                 DaemonRequest::MeshReady { json: false },
@@ -103,7 +115,7 @@ pub(super) async fn wait_for_remote_ready(
             Err(_) => {
                 let err = format!(
                     "rpc readiness probe exceeded {:?}",
-                    REMOTE_READY_RPC_TIMEOUT
+                    policy.ready_rpc_timeout
                 );
                 tracing::debug!(%target, attempt, error = %err, "remote readiness rpc timed out");
                 err
@@ -113,11 +125,11 @@ pub(super) async fn wait_for_remote_ready(
         if Instant::now() >= deadline {
             return Err(format!(
                 "timed out waiting for remote mesh readiness after {:?}: {last_error}",
-                REMOTE_READY_TIMEOUT,
+                policy.ready_timeout,
             ));
         }
 
-        sleep(REMOTE_READY_POLL_INTERVAL).await;
+        sleep(policy.ready_poll_interval).await;
     }
 }
 
