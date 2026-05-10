@@ -5,7 +5,8 @@ use crate::deploy::{
 };
 use crate::doctor::DoctorPayload;
 use crate::image::{
-    ImageInspectPayload, ImageOperationListPayload, ImageOperationPayload, ImageStatusPayload,
+    ImageDistributePayload, ImageInspectPayload, ImageOperationListPayload, ImageOperationPayload,
+    ImagePushPayload, ImageStatusPayload,
 };
 use crate::machine::{
     MachineAddPayload, MachineInviteListPayload, MachineListPayload, MachineOperationListPayload,
@@ -45,6 +46,8 @@ pub enum DaemonPayload {
     DeployFailure(DeployFailurePayload),
     ImageStatus(ImageStatusPayload),
     ImageInspect(ImageInspectPayload),
+    ImagePush(ImagePushPayload),
+    ImageDistribute(ImageDistributePayload),
     ImageOperation(ImageOperationPayload),
     ImageOperationList(ImageOperationListPayload),
     BuildOperation(BuildOperationPayload),
