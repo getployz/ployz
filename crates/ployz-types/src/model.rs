@@ -21,9 +21,7 @@ impl AsRef<str> for MachineId {
     }
 }
 
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Display, JsonSchema)]
 pub struct ImageDigest(pub String);
 
 impl ImageDigest {
@@ -42,6 +40,39 @@ impl ImageDigest {
 impl AsRef<str> for ImageDigest {
     fn as_ref(&self) -> &str {
         self.as_str()
+    }
+}
+
+impl<'de> Deserialize<'de> for ImageDigest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(ImageDigestVisitor)
+    }
+}
+
+struct ImageDigestVisitor;
+
+impl Visitor<'_> for ImageDigestVisitor {
+    type Value = ImageDigest;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a valid image digest string")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        ImageDigest::try_new(value).map_err(E::custom)
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        ImageDigest::try_new(value).map_err(E::custom)
     }
 }
 
@@ -2183,6 +2214,31 @@ mod tests {
         assert!(ImageDigest::try_new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").is_ok());
         assert!(ImageDigest::try_new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").is_err());
         assert!(ImageDigest::try_new("sha256:not-hex").is_err());
+    }
+
+    #[test]
+    fn image_digest_json_deserialization_rejects_invalid_values() {
+        let result = serde_json::from_str::<ImageDigest>(r#""sha256:not-hex""#);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn image_availability_record_json_deserialization_rejects_invalid_digest() {
+        let json = r#"
+            {
+                "machine_id": "machine-a",
+                "digest": "sha256:not-hex",
+                "presence": {
+                    "state": "absent",
+                    "observed_at": 12
+                },
+                "updated_at": 12
+            }
+        "#;
+        let result = serde_json::from_str::<ImageAvailabilityRecord>(json);
+
+        assert!(result.is_err());
     }
 
     #[test]
