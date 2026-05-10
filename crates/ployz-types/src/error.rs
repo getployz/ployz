@@ -7,6 +7,10 @@ pub enum Error {
     #[error(transparent)]
     Deploy(#[from] DeployError),
     #[error(transparent)]
+    Image(#[from] ImageError),
+    #[error(transparent)]
+    Build(#[from] BuildError),
+    #[error(transparent)]
     Runtime(#[from] RuntimeError),
     #[error(transparent)]
     Storage(#[from] StorageError),
@@ -38,6 +42,39 @@ pub enum Error {
         operation: &'static str,
         message: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ImageError {
+    #[error("invalid image digest '{digest}': {message}")]
+    InvalidDigest { digest: String, message: String },
+    #[error("image digest '{digest}' is missing on machine '{machine_id}'")]
+    AvailabilityMissing { digest: String, machine_id: String },
+    #[error("image digest mismatch: expected '{expected}', got '{actual}'")]
+    DigestMismatch { expected: String, actual: String },
+    #[error("image transfer '{operation_id}' failed: {message}")]
+    TransferFailed {
+        operation_id: String,
+        message: String,
+    },
+    #[error("machine '{machine_id}' has insufficient disk for image '{digest}'")]
+    InsufficientDisk { machine_id: String, digest: String },
+    #[error("image target machine '{machine_id}' is unreachable")]
+    TargetUnreachable { machine_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum BuildError {
+    #[error("unsupported build method '{method}'")]
+    UnsupportedMethod { method: String },
+    #[error("build '{operation_id}' failed during {stage}: {message}")]
+    Failed {
+        operation_id: String,
+        stage: String,
+        message: String,
+    },
+    #[error("build produced no image digest")]
+    MissingDigest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -351,6 +388,7 @@ pub enum StoreRecordKind {
     Certificate,
     DeployPhase,
     DeployStatus,
+    ImageAvailability,
     Instance,
     Invite,
     Machine,
@@ -365,6 +403,7 @@ impl std::fmt::Display for StoreRecordKind {
             Self::Certificate => "certificate",
             Self::DeployPhase => "deploy phase",
             Self::DeployStatus => "deploy status",
+            Self::ImageAvailability => "image availability",
             Self::Instance => "instance",
             Self::Invite => "invite",
             Self::Machine => "machine",

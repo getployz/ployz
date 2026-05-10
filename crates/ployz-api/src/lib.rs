@@ -1,6 +1,8 @@
 mod acme;
+mod build;
 mod deploy;
 mod doctor;
+mod image;
 mod machine;
 mod mesh;
 mod request;
@@ -10,8 +12,10 @@ mod status;
 mod volume;
 
 pub use acme::*;
+pub use build::*;
 pub use deploy::*;
 pub use doctor::*;
+pub use image::*;
 pub use machine::*;
 pub use mesh::*;
 pub use request::*;

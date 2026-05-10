@@ -8,8 +8,9 @@ pub use driver::StoreDriver;
 pub use traits::{
     AcmeChallengeSubscription, AcmeChallengeSubscriptionUpdate, CertificateStore,
     CertificateSubscription, CertificateSubscriptionUpdate, DeployCommit, DeployStore,
-    InstanceStatusStore, InviteStore, MachineMembershipStore, MachineSubscription,
-    MachineSubscriptionUpdate, PeerRttObservation, PeerRttStore, RoutingEventEnvelope,
-    RoutingEventSubscription, RoutingEventSubscriptionUpdate, RoutingStateStore,
-    StoreRuntimeControl, SyncProbe, SyncStatus, apply_routing_event, apply_routing_events,
+    ImageAvailabilityStore, InstanceStatusStore, InviteStore, MachineMembershipStore,
+    MachineSubscription, MachineSubscriptionUpdate, PeerRttObservation, PeerRttStore,
+    RoutingEventEnvelope, RoutingEventSubscription, RoutingEventSubscriptionUpdate,
+    RoutingStateStore, StoreRuntimeControl, SyncProbe, SyncStatus, apply_routing_event,
+    apply_routing_events,
 };
