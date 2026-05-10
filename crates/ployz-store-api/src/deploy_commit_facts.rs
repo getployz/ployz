@@ -249,6 +249,11 @@ fn valid_volume_movements(commit: &DeployCommit) -> impl Iterator<Item = &Volume
     commit.volume_movements.iter().filter(|movement| {
         movement.namespace == commit.namespace
             && movement.commit_deploy_id == commit.deploy.deploy_id
+            && evidence_deploy_id_matches_commit(
+                &movement.deploy_id,
+                movement.phase_id.as_ref(),
+                &commit.deploy.deploy_id,
+            )
             && commit.volumes.iter().any(|volume| {
                 volume.namespace == movement.namespace
                     && volume.volume_name == movement.volume_name
@@ -261,10 +266,26 @@ fn valid_phase_commits(commit: &DeployCommit) -> impl Iterator<Item = &DeployPha
     commit.phase_commits.iter().filter(|record| {
         record.namespace == commit.namespace
             && record.commit_deploy_id == commit.deploy.deploy_id
-            && (record.deploy_id == commit.deploy.deploy_id
-                || phase_commit_deploy_id(&record.deploy_id, &record.phase_id)
-                    == commit.deploy.deploy_id)
+            && evidence_deploy_id_matches_commit(
+                &record.deploy_id,
+                Some(&record.phase_id),
+                &commit.deploy.deploy_id,
+            )
     })
+}
+
+fn evidence_deploy_id_matches_commit(
+    deploy_id: &DeployId,
+    phase_id: Option<&DeployPhaseId>,
+    commit_deploy_id: &DeployId,
+) -> bool {
+    if deploy_id == commit_deploy_id {
+        return true;
+    }
+    match phase_id {
+        Some(phase_id) => phase_commit_deploy_id(deploy_id, phase_id) == *commit_deploy_id,
+        None => false,
+    }
 }
 
 fn phase_commit_deploy_id(deploy_id: &DeployId, phase_id: &DeployPhaseId) -> DeployId {
@@ -442,6 +463,48 @@ mod tests {
             facts.volume_movements(&namespace),
             vec![volume_movement(&namespace, "pgdata", "deploy-prod")]
         );
+    }
+
+    #[test]
+    fn deploy_commit_facts_records_checkpoint_volume_movement_linkage() {
+        let namespace = Namespace(String::from("prod"));
+        let mut facts = DeployCommitFacts::new();
+        let mut command = commit(
+            &namespace,
+            Vec::new(),
+            Vec::new(),
+            vec![moved_volume(&namespace, "pgdata", "deploy-prod:phase:db")],
+        );
+        command.deploy.deploy_id = DeployId("deploy-prod:phase:db".into());
+        let mut movement = volume_movement(&namespace, "pgdata", "deploy-prod");
+        movement.commit_deploy_id = DeployId("deploy-prod:phase:db".into());
+        movement.phase_id = Some(DeployPhaseId("db".into()));
+        command.volume_movements = vec![movement.clone()];
+
+        facts.apply_commit_events(&command);
+
+        assert_eq!(facts.volume_movements(&namespace), vec![movement]);
+    }
+
+    #[test]
+    fn deploy_commit_facts_ignores_volume_movement_for_unrelated_deploy() {
+        let namespace = Namespace(String::from("prod"));
+        let mut facts = DeployCommitFacts::new();
+        let mut command = commit(
+            &namespace,
+            Vec::new(),
+            Vec::new(),
+            vec![moved_volume(&namespace, "pgdata", "deploy-prod:phase:db")],
+        );
+        command.deploy.deploy_id = DeployId("deploy-prod:phase:db".into());
+        let mut movement = volume_movement(&namespace, "pgdata", "other-deploy");
+        movement.commit_deploy_id = DeployId("deploy-prod:phase:db".into());
+        movement.phase_id = Some(DeployPhaseId("db".into()));
+        command.volume_movements = vec![movement];
+
+        facts.apply_commit_events(&command);
+
+        assert!(facts.volume_movements(&namespace).is_empty());
     }
 
     #[test]
