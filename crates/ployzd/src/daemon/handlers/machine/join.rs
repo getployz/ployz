@@ -381,7 +381,24 @@ impl DaemonState {
         ))
     }
 
-    pub(crate) async fn handle_machine_drain(&self, target: &str) -> DaemonResponse {
+    pub(crate) async fn handle_machine_drain(&mut self, target: &str) -> DaemonResponse {
+        let machine_id = MachineId(target.to_string());
+        if machine_id == self.identity.machine_id {
+            return self
+                .handle_machine_transition_self(MachineTransitionGoal::Drain, None, false)
+                .await;
+        }
+        self.handle_remote_machine_drain(target).await
+    }
+
+    pub(crate) async fn handle_remote_machine_drain(&self, target: &str) -> DaemonResponse {
+        let machine_id = MachineId(target.to_string());
+        if machine_id == self.identity.machine_id {
+            return self.err(
+                "LOCAL_DRAIN_REQUIRES_EXCLUSIVE_LANE",
+                "local machine drain must run on the exclusive lane",
+            );
+        }
         let active = match self.active.as_ref() {
             Some(active) => active,
             None => {
@@ -391,7 +408,6 @@ impl DaemonState {
                 );
             }
         };
-        let machine_id = MachineId(target.to_string());
         let Some(record) =
             (match super::list::find_machine_record(&active.mesh.store, &machine_id).await {
                 Ok(record) => record,
@@ -464,7 +480,32 @@ impl DaemonState {
         }
     }
 
-    pub(crate) async fn handle_machine_standby(&self, target: &str, force: bool) -> DaemonResponse {
+    pub(crate) async fn handle_machine_standby(
+        &mut self,
+        target: &str,
+        force: bool,
+    ) -> DaemonResponse {
+        let machine_id = MachineId(target.to_string());
+        if machine_id == self.identity.machine_id {
+            return self
+                .handle_machine_transition_self(MachineTransitionGoal::Standby, None, force)
+                .await;
+        }
+        self.handle_remote_machine_standby(target, force).await
+    }
+
+    pub(crate) async fn handle_remote_machine_standby(
+        &self,
+        target: &str,
+        force: bool,
+    ) -> DaemonResponse {
+        let machine_id = MachineId(target.to_string());
+        if machine_id == self.identity.machine_id {
+            return self.err(
+                "LOCAL_STANDBY_REQUIRES_EXCLUSIVE_LANE",
+                "local machine standby must run on the exclusive lane",
+            );
+        }
         let active = match self.active.as_ref() {
             Some(active) => active,
             None => {
@@ -474,7 +515,6 @@ impl DaemonState {
                 );
             }
         };
-        let machine_id = MachineId(target.to_string());
         let Some(record) =
             (match super::list::find_machine_record(&active.mesh.store, &machine_id).await {
                 Ok(record) => record,
