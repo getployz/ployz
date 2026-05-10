@@ -52,6 +52,15 @@ enum MigrateRenderError {
     ServiceMissing { namespace: String, service: String },
     #[error("service '{namespace}/{service}' has no managed volume mounts")]
     NoManagedVolumeMounts { namespace: String, service: String },
+    #[error(
+        "service '{namespace}/{service}' uses bind mount '{bind_source}' at '{target}', which migrate service cannot transfer"
+    )]
+    UnsupportedBindMount {
+        namespace: String,
+        service: String,
+        bind_source: String,
+        target: String,
+    },
     #[error("service '{namespace}/{service}' mounts volume '{volume}' more than once")]
     DuplicateManagedVolumeMount {
         namespace: String,
@@ -83,6 +92,7 @@ impl MigrateRenderError {
             Self::EmptyTargetMachine
             | Self::ServiceMissing { .. }
             | Self::NoManagedVolumeMounts { .. }
+            | Self::UnsupportedBindMount { .. }
             | Self::DuplicateManagedVolumeMount { .. }
             | Self::MissingCommittedVolume { .. }
             | Self::AlreadyOnTarget { .. }
@@ -1255,15 +1265,25 @@ async fn render_migrate_service_manifest(
 
     let mut volume_names = BTreeSet::new();
     for mount in &service.template.mounts {
-        let MountSource::Volume(volume) = &mount.source else {
-            continue;
-        };
-        if !volume_names.insert(volume.clone()) {
-            return Err(MigrateRenderError::DuplicateManagedVolumeMount {
-                namespace: request.namespace.clone(),
-                service: request.service.clone(),
-                volume: volume.clone(),
-            });
+        match &mount.source {
+            MountSource::Volume(volume) => {
+                if !volume_names.insert(volume.clone()) {
+                    return Err(MigrateRenderError::DuplicateManagedVolumeMount {
+                        namespace: request.namespace.clone(),
+                        service: request.service.clone(),
+                        volume: volume.clone(),
+                    });
+                }
+            }
+            MountSource::Bind(source) => {
+                return Err(MigrateRenderError::UnsupportedBindMount {
+                    namespace: request.namespace.clone(),
+                    service: request.service.clone(),
+                    bind_source: source.clone(),
+                    target: mount.target.clone(),
+                });
+            }
+            MountSource::Tmpfs => {}
         }
     }
     if volume_names.is_empty() {
@@ -1593,7 +1613,7 @@ mod tests {
         let service = test_service_with_mounts(
             "db",
             vec![Mount {
-                source: MountSource::Bind("/srv/db".into()),
+                source: MountSource::Tmpfs,
                 target: "/var/lib/postgresql/data".into(),
                 readonly: false,
             }],
@@ -1615,6 +1635,51 @@ mod tests {
         assert!(matches!(
             error,
             MigrateRenderError::NoManagedVolumeMounts { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn render_migrate_service_manifest_rejects_bind_mounts() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        let service = test_service_with_mounts(
+            "db",
+            vec![
+                Mount {
+                    source: MountSource::Volume("data".into()),
+                    target: "/data".into(),
+                    readonly: false,
+                },
+                Mount {
+                    source: MountSource::Bind("/srv/db".into()),
+                    target: "/host-data".into(),
+                    readonly: false,
+                },
+            ],
+        );
+        seed_committed_service(
+            &store,
+            &namespace,
+            service,
+            vec![test_volume_record(&namespace, "data", "machine-a")],
+        )
+        .await;
+
+        let error = render_migrate_service_manifest(
+            &store,
+            &MigrateServiceRequest {
+                namespace: "prod".into(),
+                service: "db".into(),
+                target_machine: "machine-b".into(),
+                mode: MigrateServiceMode::RenderManifest,
+            },
+        )
+        .await
+        .expect_err("bind mounts should fail migration rendering");
+
+        assert!(matches!(
+            error,
+            MigrateRenderError::UnsupportedBindMount { .. }
         ));
     }
 
