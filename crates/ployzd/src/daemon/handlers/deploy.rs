@@ -2580,6 +2580,7 @@ mod tests {
                     services: Vec::new(),
                     service_branch_sources: Vec::new(),
                     volume_moves: Vec::new(),
+                    volume_clones: Vec::new(),
                     warnings: Vec::new(),
                 })
                 .expect("preview json"),
@@ -2620,6 +2621,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
