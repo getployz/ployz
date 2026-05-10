@@ -1080,27 +1080,30 @@ async fn resolve_push_source_image(
         let image = backend
             .verify_image_digest(source_image, expected_digest)
             .await?;
-        return Ok((expected_digest.clone(), image));
+        let digest = push_runtime_image_identity(source_image, &image)?;
+        return Ok((digest, image));
     }
     let Some(image) = backend.inspect_image(source_image).await? else {
         return Err(RuntimeImageError::NotFound {
             reference: source_image.into(),
         });
     };
-    let digest = if let Some(id) = image.id.as_deref() {
-        ployz_types::model::ImageDigest::try_new(id).map_err(|_| {
-            RuntimeImageError::MissingDigest {
-                reference: source_image.into(),
-            }
-        })?
-    } else if let Some(digest) = image.repo_digests.first() {
-        digest.clone()
-    } else {
+    let digest = push_runtime_image_identity(source_image, &image)?;
+    Ok((digest, image))
+}
+
+fn push_runtime_image_identity(
+    source_image: &str,
+    image: &RuntimeImage,
+) -> Result<ployz_types::model::ImageDigest, RuntimeImageError> {
+    let Some(id) = image.id.as_deref() else {
         return Err(RuntimeImageError::MissingDigest {
             reference: source_image.into(),
         });
     };
-    Ok((digest, image))
+    ployz_types::model::ImageDigest::try_new(id).map_err(|_| RuntimeImageError::MissingDigest {
+        reference: source_image.into(),
+    })
 }
 
 fn receiver_endpoint(bind_addr: SocketAddr, repository: &str) -> String {
@@ -1376,6 +1379,84 @@ mod tests {
             .expect("list operations");
         assert_eq!(operations[0].digest.as_ref(), Some(&digest));
         listener.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn image_push_expected_repo_digest_uses_image_id_for_import_identity() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let listener = crate::daemon::handlers::image::registry::serve(
+            "127.0.0.1:0".parse().expect("bind addr"),
+            state.image_registry.clone(),
+        )
+        .await
+        .expect("serve registry");
+        state
+            .active
+            .as_mut()
+            .expect("active mesh")
+            .image_receiver_bind_addr = Some(listener.bind_addr());
+        let repo_digest = digest('a');
+        let image_id = digest('b');
+        let backend = FakeImageBackend::new(repo_digest.clone(), docker_archive_bytes())
+            .with_image_id(image_id.clone());
+
+        let response = state
+            .handle_image_push_with_backend(
+                &ImagePushRequest {
+                    source_image: "example/app:latest".into(),
+                    target_machines: vec![MachineId("founder".into())],
+                    platform: None,
+                    expected_digest: Some(repo_digest.clone()),
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(response.ok, "{response:?}");
+        let Some(DaemonPayload::ImagePush(payload)) = response.payload else {
+            panic!("expected push payload");
+        };
+        assert_eq!(payload.artifact.digest(), &image_id);
+        assert_no_availability(&state, &repo_digest).await;
+        let stored = state
+            .active
+            .as_ref()
+            .expect("active mesh")
+            .mesh
+            .store
+            .get_image_availability(&MachineId("founder".into()), &image_id)
+            .await
+            .expect("get availability")
+            .expect("image id availability");
+        assert!(matches!(stored.presence, ImagePresence::Present { .. }));
+        listener.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn image_push_expected_repo_digest_without_image_id_fails_before_transfer() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let digest = digest('a');
+        let backend =
+            FakeImageBackend::new(digest.clone(), docker_archive_bytes()).without_image_id();
+
+        let response = state
+            .handle_image_push_with_backend(
+                &ImagePushRequest {
+                    source_image: "example/app:latest".into(),
+                    target_machines: vec![MachineId("founder".into())],
+                    platform: None,
+                    expected_digest: Some(digest.clone()),
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        assert!(!*backend.imported.lock().expect("imported lock"));
+        assert_no_availability(&state, &digest).await;
     }
 
     #[tokio::test]
@@ -2051,6 +2132,11 @@ mod tests {
 
         fn without_image_id(mut self) -> Self {
             self.image_id = None;
+            self
+        }
+
+        fn with_image_id(mut self, digest: ImageDigest) -> Self {
+            self.image_id = Some(digest.as_str().into());
             self
         }
     }
