@@ -24,7 +24,7 @@ use ployz_types::model::{
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 
 #[cfg(unix)]
@@ -291,6 +291,11 @@ async fn machine_add_activates_joiner_lifecycle() {
 async fn machine_add_requires_sync_connected_for_running_joiner() {
     let _guard = test_ssh_env_lock().lock().await;
     let (mut state, store, network) = make_state(true).await;
+    state.machine_add_remote_ready_wait_policy = Some(super::types::RemoteReadyWaitPolicy::new(
+        Duration::from_millis(50),
+        Duration::from_millis(1),
+        Duration::from_millis(20),
+    ));
 
     let mut reserved = state
         .reserve_machine_subnet(&MachineId("join-target".into()))
@@ -1501,7 +1506,12 @@ async fn local_activate_restores_subnet_before_active_finalization() {
 
 #[tokio::test]
 async fn interrupted_machine_add_is_marked_interrupted_on_startup() {
+    let _guard = test_ssh_env_lock().lock().await;
     let (state, _, _) = make_state(false).await;
+    let ssh_dir = unique_temp_dir("ployz-fake-ssh-recovery");
+    std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
+    let fake_ssh = write_fake_ssh(&ssh_dir);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
     let store = state.machine_operation_store();
     let mut operation = store
         .begin(
@@ -1536,6 +1546,94 @@ async fn interrupted_machine_add_is_marked_interrupted_on_startup() {
             .expect("last error")
             .contains("daemon restarted")
     );
+    assert!(
+        recovered
+            .last_error
+            .as_deref()
+            .expect("last error")
+            .contains("remote cleanup attempted for 'join-target'")
+    );
+}
+
+#[tokio::test]
+async fn interrupted_joined_machine_add_keeps_remote_cleanup_eligible_on_startup() {
+    let (state, _, _) = make_state(false).await;
+    let store = state.machine_operation_store();
+    let mut operation = store
+        .begin(
+            MachineOperationKind::Add,
+            Some("alpha".into()),
+            vec!["join-target".into()],
+            "joined",
+            MachineOperationArtifacts {
+                machine_id: Some(MachineId("joiner-1".into())),
+                invite_id: Some("invite-1".into()),
+                allocated_subnet: Some("10.210.2.0/24".into()),
+                uses_operation_identity: true,
+                ..MachineOperationArtifacts::default()
+            },
+        )
+        .expect("begin operation");
+    store
+        .update_status(&mut operation, MachineOperationStatus::Running, None)
+        .expect("keep running");
+
+    state.recover_machine_operations_on_startup().await;
+
+    let recovered = state
+        .machine_operation_store()
+        .load(&operation.id)
+        .expect("load operation")
+        .expect("operation exists");
+    assert_eq!(recovered.status, MachineOperationStatus::Interrupted);
+    assert!(
+        recovered
+            .last_error
+            .as_deref()
+            .expect("last error")
+            .contains("operation-scoped ssh identity is unavailable")
+    );
+}
+
+#[tokio::test]
+async fn interrupted_machine_add_attempts_remote_cleanup_without_active_mesh_on_startup() {
+    let _guard = test_ssh_env_lock().lock().await;
+    let (mut state, _, _) = make_state(false).await;
+    state.active = None;
+    let ssh_dir = unique_temp_dir("ployz-fake-ssh-recovery-no-active");
+    std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
+    let fake_ssh = write_fake_ssh(&ssh_dir);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+    let store = state.machine_operation_store();
+    let mut operation = store
+        .begin(
+            MachineOperationKind::Add,
+            Some("alpha".into()),
+            vec!["join-target".into()],
+            "bootstrap-published",
+            MachineOperationArtifacts {
+                machine_id: Some(MachineId("joiner-1".into())),
+                invite_id: Some("invite-1".into()),
+                allocated_subnet: Some("10.210.2.0/24".into()),
+                ..MachineOperationArtifacts::default()
+            },
+        )
+        .expect("begin operation");
+    store
+        .update_status(&mut operation, MachineOperationStatus::Running, None)
+        .expect("keep running");
+
+    state.recover_machine_operations_on_startup().await;
+
+    let recovered = state
+        .machine_operation_store()
+        .load(&operation.id)
+        .expect("load operation")
+        .expect("operation exists");
+    assert_eq!(recovered.status, MachineOperationStatus::Interrupted);
+    let last_error = recovered.last_error.as_deref().expect("last error");
+    assert!(last_error.contains("bootstrap membership cleanup skipped: no running network"));
+    assert!(last_error.contains("remote cleanup attempted for 'join-target'"));
 }
 
 #[tokio::test]
