@@ -44,12 +44,31 @@ export type Namespace = string;
  * This interface was referenced by `DeployManifest`'s JSON-Schema
  * via the `definition` "VolumeIntent".
  */
-export type VolumeIntent = {
-  move: {
-    from_machine: string;
-    to_machine: string;
-  };
-};
+export type VolumeIntent =
+  | {
+      move: {
+        from_machine: string;
+        to_machine: string;
+      };
+    }
+  | {
+      clone: {
+        consistency: VolumeCloneConsistency;
+        data_policy: VolumeCloneDataPolicy;
+        source_namespace: Namespace;
+        source_volume: string;
+      };
+    };
+/**
+ * This interface was referenced by `DeployManifest`'s JSON-Schema
+ * via the `definition` "VolumeCloneConsistency".
+ */
+export type VolumeCloneConsistency = "crash_consistent";
+/**
+ * This interface was referenced by `DeployManifest`'s JSON-Schema
+ * via the `definition` "VolumeCloneDataPolicy".
+ */
+export type VolumeCloneDataPolicy = "raw";
 /**
  * This interface was referenced by `DeployManifest`'s JSON-Schema
  * via the `definition` "NetworkMode".

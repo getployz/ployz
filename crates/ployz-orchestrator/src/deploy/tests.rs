@@ -11,7 +11,8 @@ use crate::certificates::{
     NoopIssuanceCoordinator,
 };
 use crate::deploy::participant::{
-    DeployParticipantClient, MoveVolumeRequest, MoveVolumeResult, StartCandidateRequest,
+    CloneVolumeRequest, CloneVolumeResult, DeployParticipantClient, MoveVolumeRequest,
+    MoveVolumeResult, StartCandidateRequest,
 };
 use crate::error::{DeployError, Error, Result};
 use crate::model::RegionRole;
@@ -22,7 +23,8 @@ use crate::model::{
     DeployState, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
     MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
     ServiceBranchLineageRecord, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
-    ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, VolumeMovementRecord, VolumeRecord,
+    ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, VolumeBranchLineageRecord,
+    VolumeMovementRecord, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -36,7 +38,8 @@ use ployz_types::spec::{
     ContainerSpec, DeployIntent, DeployManifest, DeployPhaseIntent, HttpRoute, Mount, MountSource,
     Namespace, NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy,
     RolloutStrategy, RouteSpec, ServiceIntent, ServiceIntentHint, ServicePort, ServiceSpec,
-    VolumeDeclaration, VolumeIntent, VolumeIntentHint, VolumeScope,
+    VolumeCloneConsistency, VolumeCloneDataPolicy, VolumeDeclaration, VolumeIntent,
+    VolumeIntentHint, VolumeScope,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv6Addr;
@@ -65,6 +68,7 @@ impl TestStoreSeed for StoreDriver {
             removed_volumes: Vec::new(),
             branch_lineage: Vec::new(),
             volume_movements: Vec::new(),
+            volume_branches: Vec::new(),
             phase_commits: Vec::new(),
             releases: vec![record.clone()],
             volumes: Vec::new(),
@@ -1604,6 +1608,367 @@ async fn apply_commits_volume_records_and_sends_volume_payload_to_startup() {
     assert_eq!(record.created_by_deploy_id, first_created_by);
     assert_eq!(record.last_modified_by_deploy_id, first.deploy_id);
     assert_ne!(record.last_modified_by_deploy_id, second.deploy_id);
+}
+
+#[tokio::test]
+async fn preview_plans_volume_clone_on_source_machine() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    seed_volume(&store, &source_namespace, "data", "machine-b").await;
+    let mut manifest = volume_manifest();
+    manifest.namespace = Namespace("pr-39".into());
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Clone {
+                source_namespace: source_namespace.clone(),
+                source_volume: "data".into(),
+                data_policy: VolumeCloneDataPolicy::Raw,
+                consistency: VolumeCloneConsistency::CrashConsistent,
+            },
+        }],
+        phases: Vec::new(),
+    });
+
+    let preview = preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
+        .await
+        .expect("clone preview");
+
+    let [clone] = preview.volume_clones.as_slice() else {
+        panic!("expected one volume clone");
+    };
+    assert_eq!(clone.volume, "data");
+    assert_eq!(clone.source_namespace, source_namespace);
+    assert_eq!(clone.source_volume, "data");
+    assert_eq!(clone.source_machine, MachineId("machine-b".into()));
+    assert_eq!(clone.target_machine, MachineId("machine-b".into()));
+    assert_eq!(clone.data_policy, VolumeCloneDataPolicy::Raw);
+    assert_eq!(clone.consistency, VolumeCloneConsistency::CrashConsistent);
+    let [phase] = preview.phases.as_slice() else {
+        panic!("expected synthetic deploy phase");
+    };
+    assert!(matches!(
+        phase.work.as_slice(),
+        [
+            DeployPhaseWork::VolumeClone { volume, .. },
+            DeployPhaseWork::Service { service, .. },
+        ] if volume == "data" && service == "db"
+    ));
+}
+
+#[tokio::test]
+async fn apply_executes_volume_clone_before_startup_and_commits_lineage() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    seed_volume(&store, &source_namespace, "data", "machine-b").await;
+    let mut manifest = volume_manifest();
+    manifest.namespace = Namespace("pr-39".into());
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Clone {
+                source_namespace: source_namespace.clone(),
+                source_volume: "data".into(),
+                data_policy: VolumeCloneDataPolicy::Raw,
+                consistency: VolumeCloneConsistency::CrashConsistent,
+            },
+        }],
+        phases: Vec::new(),
+    });
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("clone plan");
+    let controller = FakeController::default();
+    let factory = FakeParticipantClient::new(controller.clone());
+
+    let result =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect("clone deploy");
+
+    assert_eq!(result.state, DeployState::Committed);
+    assert_eq!(controller.clone_count(), 1);
+    assert_eq!(controller.start_count(), 1);
+    let clone_requests = controller.clone_requests().await;
+    let [clone_request] = clone_requests.as_slice() else {
+        panic!("expected clone request");
+    };
+    assert_eq!(clone_request.volume, "data");
+    assert_eq!(clone_request.source_namespace, source_namespace);
+    assert_eq!(clone_request.source_volume, "data");
+    assert_eq!(clone_request.quota, "1G");
+    let log = controller.operation_log().await;
+    let clone_index = log
+        .iter()
+        .position(|entry| entry.starts_with("clone:data:machine-b:prod/data"))
+        .expect("clone operation logged");
+    let start_index = log
+        .iter()
+        .position(|entry| entry.starts_with("start:db:"))
+        .expect("start operation logged");
+    assert!(clone_index < start_index);
+
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list target volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected cloned volume record");
+    };
+    assert_eq!(record.machine_id, MachineId("machine-b".into()));
+    assert_eq!(record.created_by_deploy_id, result.deploy_id);
+
+    let lineage = store
+        .list_volume_branches(&manifest.namespace)
+        .await
+        .expect("list volume branches");
+    let [branch] = lineage.as_slice() else {
+        panic!("expected volume branch lineage");
+    };
+    assert_eq!(branch.volume_name, "data");
+    assert_eq!(branch.source_namespace, source_namespace);
+    assert_eq!(branch.source_volume_name, "data");
+    assert_eq!(branch.source_machine, MachineId("machine-b".into()));
+    assert_eq!(branch.target_machine, MachineId("machine-b".into()));
+    assert_eq!(branch.data_policy, VolumeCloneDataPolicy::Raw);
+    assert_eq!(branch.consistency, VolumeCloneConsistency::CrashConsistent);
+    assert_eq!(branch.snapshot_guid, 84);
+    assert_eq!(branch.deploy_id, result.deploy_id);
+    assert_eq!(branch.commit_deploy_id, result.deploy_id);
+    assert_eq!(branch.phase_id, Some(DeployPhaseId("deploy".into())));
+
+    let reapply_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("lineage-matched clone reapply plan");
+    apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, reapply_plan)
+        .await
+        .expect("lineage-matched clone reapply");
+    assert_eq!(controller.clone_count(), 1);
+
+    store
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Draining))
+        .await
+        .expect("mark clone source machine draining");
+    let move_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("clone lineage survives inferred move plan");
+    apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, move_plan)
+        .await
+        .expect("move cloned volume");
+    assert_eq!(controller.clone_count(), 1);
+    assert_eq!(controller.move_count(), 1);
+    let moved_records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list moved clone volume");
+    let [moved_record] = moved_records.as_slice() else {
+        panic!("expected moved clone volume record");
+    };
+    assert_eq!(moved_record.machine_id, MachineId("machine-a".into()));
+
+    let moved_reapply_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("clone lineage reapply after move");
+    apply_with_initial_plan(
+        &store,
+        &factory,
+        &local_machine_id,
+        &manifest,
+        moved_reapply_plan,
+    )
+    .await
+    .expect("clone reapply after move");
+    assert_eq!(controller.clone_count(), 1);
+}
+
+#[tokio::test]
+async fn preview_rejects_volume_clone_when_target_exists() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    seed_volume(&store, &source_namespace, "data", "machine-a").await;
+    let mut manifest = volume_manifest();
+    seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Clone {
+                source_namespace,
+                source_volume: "data".into(),
+                data_policy: VolumeCloneDataPolicy::Raw,
+                consistency: VolumeCloneConsistency::CrashConsistent,
+            },
+        }],
+        phases: Vec::new(),
+    });
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("target clone collision should fail");
+
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::VolumeCloneTargetExists {
+            volume: "data".into()
+        })
+    );
+}
+
+#[tokio::test]
+async fn apply_cleans_uncommitted_volume_clone_when_startup_fails() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    seed_volume(&store, &source_namespace, "data", "machine-a").await;
+    let mut manifest = volume_manifest();
+    manifest.namespace = Namespace("pr-39".into());
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Clone {
+                source_namespace,
+                source_volume: "data".into(),
+                data_policy: VolumeCloneDataPolicy::Raw,
+                consistency: VolumeCloneConsistency::CrashConsistent,
+            },
+        }],
+        phases: Vec::new(),
+    });
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("clone plan");
+    let controller = FakeController {
+        fail_start_service: Some("db".into()),
+        ..FakeController::default()
+    };
+    let factory = FakeParticipantClient::new(controller.clone());
+
+    apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+        .await
+        .expect_err("startup failure should fail deploy");
+
+    assert_eq!(controller.clone_count(), 1);
+    assert_eq!(controller.clone_cleanup_count(), 1);
+    assert!(
+        store
+            .get_volume(&manifest.namespace, "data")
+            .await
+            .expect("get volume")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn apply_surfaces_uncommitted_volume_clone_cleanup_failures() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    seed_volume(&store, &source_namespace, "data", "machine-a").await;
+    let mut manifest = volume_manifest();
+    manifest.namespace = Namespace("pr-39".into());
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Clone {
+                source_namespace,
+                source_volume: "data".into(),
+                data_policy: VolumeCloneDataPolicy::Raw,
+                consistency: VolumeCloneConsistency::CrashConsistent,
+            },
+        }],
+        phases: Vec::new(),
+    });
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("clone plan");
+    let controller = FakeController {
+        fail_start_service: Some("db".into()),
+        fail_cleanup_clone_volume: Some("data".into()),
+        ..FakeController::default()
+    };
+    let factory = FakeParticipantClient::new(controller.clone());
+
+    let error =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect_err("startup failure should fail deploy");
+
+    assert_eq!(controller.clone_count(), 1);
+    assert_eq!(controller.clone_cleanup_count(), 1);
+    assert!(
+        error
+            .to_string()
+            .contains("uncommitted volume clone cleanup failed"),
+        "got: {error}"
+    );
+}
+
+#[tokio::test]
+async fn apply_cleans_successful_volume_clones_when_later_clone_fails() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    seed_volume(&store, &source_namespace, "data", "machine-a").await;
+    seed_volume(&store, &source_namespace, "cache", "machine-a").await;
+    let mut manifest = volume_manifest();
+    manifest.namespace = Namespace("pr-39".into());
+    manifest
+        .volumes
+        .push(test_volume("cache", VolumeScope::Single));
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![
+            VolumeIntentHint {
+                volume: "data".into(),
+                intent: VolumeIntent::Clone {
+                    source_namespace: source_namespace.clone(),
+                    source_volume: "data".into(),
+                    data_policy: VolumeCloneDataPolicy::Raw,
+                    consistency: VolumeCloneConsistency::CrashConsistent,
+                },
+            },
+            VolumeIntentHint {
+                volume: "cache".into(),
+                intent: VolumeIntent::Clone {
+                    source_namespace,
+                    source_volume: "cache".into(),
+                    data_policy: VolumeCloneDataPolicy::Raw,
+                    consistency: VolumeCloneConsistency::CrashConsistent,
+                },
+            },
+        ],
+        phases: Vec::new(),
+    });
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("clone plan");
+    let controller = FakeController {
+        fail_clone_volume: Some("cache".into()),
+        ..FakeController::default()
+    };
+    let factory = FakeParticipantClient::new(controller.clone());
+
+    apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+        .await
+        .expect_err("second clone failure should fail deploy");
+
+    assert_eq!(controller.clone_count(), 2);
+    assert_eq!(controller.clone_cleanup_count(), 2);
+    assert_eq!(controller.start_count(), 0);
+    assert!(
+        store
+            .list_volume_branches(&manifest.namespace)
+            .await
+            .expect("list branches")
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -3285,6 +3650,7 @@ async fn resolve_plan_rejects_undecodable_branch_source_revision() {
             removed_volumes: Vec::new(),
             branch_lineage: Vec::new(),
             volume_movements: Vec::new(),
+            volume_branches: Vec::new(),
             phase_commits: Vec::new(),
             releases: vec![test_release(
                 &source_namespace,
@@ -4971,9 +5337,13 @@ struct FakeController {
     fail_start_service: Option<String>,
     fail_remove_instance: Option<String>,
     fail_move_volume: Option<String>,
+    fail_clone_volume: Option<String>,
+    fail_cleanup_clone_volume: Option<String>,
     open_active: Arc<AtomicUsize>,
     max_open: Arc<AtomicUsize>,
     move_count: Arc<AtomicUsize>,
+    clone_count: Arc<AtomicUsize>,
+    clone_cleanup_count: Arc<AtomicUsize>,
     start_count: Arc<AtomicUsize>,
     start_active: Arc<AtomicUsize>,
     max_global_start: Arc<AtomicUsize>,
@@ -4985,6 +5355,8 @@ struct FakeController {
     operation_log_entries: Arc<Mutex<Vec<String>>>,
     start_requests: Arc<Mutex<Vec<StartCandidateRequest>>>,
     move_requests: Arc<Mutex<Vec<MoveVolumeRequest>>>,
+    clone_requests: Arc<Mutex<Vec<CloneVolumeRequest>>>,
+    clone_cleanup_requests: Arc<Mutex<Vec<String>>>,
     inspect_instances: Arc<Mutex<Vec<InstanceStatusRecord>>>,
 }
 
@@ -4999,6 +5371,14 @@ impl FakeController {
 
     fn move_count(&self) -> usize {
         self.move_count.load(Ordering::SeqCst)
+    }
+
+    fn clone_count(&self) -> usize {
+        self.clone_count.load(Ordering::SeqCst)
+    }
+
+    fn clone_cleanup_count(&self) -> usize {
+        self.clone_cleanup_count.load(Ordering::SeqCst)
     }
 
     fn max_global_start_seen(&self) -> usize {
@@ -5036,6 +5416,10 @@ impl FakeController {
 
     async fn move_requests(&self) -> Vec<MoveVolumeRequest> {
         self.move_requests.lock().await.clone()
+    }
+
+    async fn clone_requests(&self) -> Vec<CloneVolumeRequest> {
+        self.clone_requests.lock().await.clone()
     }
 
     async fn set_inspect_instances(&self, instances: Vec<InstanceStatusRecord>) {
@@ -5120,6 +5504,35 @@ impl FakeController {
     fn should_fail_move(&self, volume: &str) -> bool {
         self.fail_move_volume.as_deref() == Some(volume)
     }
+
+    async fn on_clone_volume(&self, machine_id: &MachineId, request: &CloneVolumeRequest) {
+        self.clone_count.fetch_add(1, Ordering::SeqCst);
+        self.clone_requests.lock().await.push(request.clone());
+        self.operation_log_entries.lock().await.push(format!(
+            "clone:{}:{}:{}/{}",
+            request.volume, machine_id, request.source_namespace, request.source_volume
+        ));
+    }
+
+    fn should_fail_clone(&self, volume: &str) -> bool {
+        self.fail_clone_volume.as_deref() == Some(volume)
+    }
+
+    fn should_fail_cleanup_clone(&self, volume: &str) -> bool {
+        self.fail_cleanup_clone_volume.as_deref() == Some(volume)
+    }
+
+    async fn on_cleanup_uncommitted_volume_clone(&self, volume: &str) {
+        self.clone_cleanup_count.fetch_add(1, Ordering::SeqCst);
+        self.clone_cleanup_requests
+            .lock()
+            .await
+            .push(volume.to_string());
+        self.operation_log_entries
+            .lock()
+            .await
+            .push(format!("cleanup_clone:{volume}"));
+    }
 }
 
 struct FakeParticipantClient {
@@ -5135,6 +5548,10 @@ impl FakeParticipantClient {
 #[async_trait::async_trait]
 impl DeployParticipantClient for FakeParticipantClient {
     fn supports_volume_moves(&self) -> bool {
+        true
+    }
+
+    fn supports_volume_clones(&self) -> bool {
         true
     }
 
@@ -5226,6 +5643,46 @@ impl DeployParticipantClient for FakeParticipantClient {
             snapshot_guid: 42,
             bytes_transferred: 4096,
         })
+    }
+
+    async fn clone_volume(
+        &self,
+        machine_id: &MachineId,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
+        request: CloneVolumeRequest,
+    ) -> Result<CloneVolumeResult> {
+        self.controller.on_clone_volume(machine_id, &request).await;
+        if self.controller.should_fail_clone(&request.volume) {
+            return Err(ployz_types::error::Error::operation(
+                "fake_clone_volume",
+                format!("injected clone failure for '{}'", request.volume),
+            ));
+        }
+        Ok(CloneVolumeResult {
+            snapshot: request.snapshot,
+            snapshot_guid: 84,
+            target_dataset: format!("tank/ployz/{}", request.volume),
+        })
+    }
+
+    async fn cleanup_volume_clone(
+        &self,
+        _machine_id: &MachineId,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
+        volume: &str,
+    ) -> Result<()> {
+        self.controller
+            .on_cleanup_uncommitted_volume_clone(volume)
+            .await;
+        if self.controller.should_fail_cleanup_clone(volume) {
+            return Err(ployz_types::error::Error::operation(
+                "fake_cleanup_volume_clone",
+                format!("injected cleanup failure for '{volume}'"),
+            ));
+        }
+        Ok(())
     }
 
     async fn drain_instance(
@@ -5740,6 +6197,7 @@ async fn seed_volume_with_scope_and_attached_services(
             removed_volumes: Vec::new(),
             branch_lineage: Vec::new(),
             volume_movements: Vec::new(),
+            volume_branches: Vec::new(),
             phase_commits: Vec::new(),
             releases: Vec::new(),
             volumes: vec![volume],
@@ -5821,6 +6279,7 @@ async fn seed_committed_http_release(
             removed_volumes: Vec::new(),
             branch_lineage: Vec::new(),
             volume_movements: Vec::new(),
+            volume_branches: Vec::new(),
             phase_commits: Vec::new(),
             releases: vec![test_release(
                 &namespace,
@@ -5858,6 +6317,7 @@ async fn seed_committed_service_release(
             removed_volumes: Vec::new(),
             branch_lineage: Vec::new(),
             volume_movements: Vec::new(),
+            volume_branches: Vec::new(),
             phase_commits: Vec::new(),
             releases: vec![test_release(
                 namespace,
@@ -6234,6 +6694,13 @@ impl DeployStore for CountingBackend {
         namespace: &Namespace,
     ) -> PloyzResult<Vec<VolumeMovementRecord>> {
         self.store.list_volume_movements(namespace).await
+    }
+
+    async fn list_volume_branches(
+        &self,
+        namespace: &Namespace,
+    ) -> PloyzResult<Vec<VolumeBranchLineageRecord>> {
+        self.store.list_volume_branches(namespace).await
     }
 
     async fn get_volume(

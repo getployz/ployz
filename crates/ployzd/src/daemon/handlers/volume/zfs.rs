@@ -2,12 +2,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ployz_api::{
-    DaemonPayload, DaemonResponse, VolumeZfsInspectPayload, VolumeZfsPeerSendPayload,
-    VolumeZfsSnapshotInfo, VolumeZfsSnapshotPayload, VolumeZfsTransferInfo,
-    VolumeZfsTransferListPayload, VolumeZfsTransferPayload,
+    DaemonPayload, DaemonResponse, VolumeZfsClonePayload, VolumeZfsInspectPayload,
+    VolumeZfsPeerSendPayload, VolumeZfsSnapshotInfo, VolumeZfsSnapshotPayload,
+    VolumeZfsTransferInfo, VolumeZfsTransferListPayload, VolumeZfsTransferPayload,
 };
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
-use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
+use ployz_runtime_backends::storage::{CloneMetadata, DatasetSpec, TokioShellRunner, ZfsDriver};
 use ployz_store_api::{DeployStore, MachineMembershipStore};
 use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership, VolumeRecord};
 use ployz_types::spec::{Namespace, VolumeScope};
@@ -606,6 +606,59 @@ impl DaemonState {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn handle_deploy_node_clone_volume(
+        &self,
+        namespace: &str,
+        deploy_id: &str,
+        volume: &str,
+        source_namespace: &str,
+        source_volume: &str,
+        snapshot: &str,
+        quota: &str,
+        mode: &str,
+        owner: &str,
+    ) -> DaemonResponse {
+        let namespace = Namespace(namespace.to_string());
+        let source_namespace = Namespace(source_namespace.to_string());
+        match self
+            .clone_local_volume_zfs(
+                &namespace,
+                deploy_id,
+                volume,
+                &source_namespace,
+                source_volume,
+                snapshot,
+                quota,
+                mode,
+                owner,
+            )
+            .await
+        {
+            Ok(payload) => self.ok_with_payload(
+                serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "ok".into()),
+                Some(DaemonPayload::VolumeZfsClone(payload)),
+            ),
+            Err(error) => self.err("VOLUME_ZFS_CLONE_FAILED", error),
+        }
+    }
+
+    pub(crate) async fn handle_deploy_node_cleanup_uncommitted_volume_clone(
+        &self,
+        namespace: &str,
+        deploy_id: &str,
+        volume: &str,
+    ) -> DaemonResponse {
+        let namespace = Namespace(namespace.to_string());
+        match self
+            .cleanup_uncommitted_local_volume_clone_zfs(&namespace, deploy_id, volume)
+            .await
+        {
+            Ok(()) => self.ok("uncommitted volume clone cleaned up"),
+            Err(error) => self.err("VOLUME_ZFS_CLONE_CLEANUP_FAILED", error),
+        }
+    }
+
     pub(crate) async fn handle_volume_zfs_send(
         &self,
         namespace: &str,
@@ -1032,6 +1085,136 @@ impl DaemonState {
         }
         self.snapshot_local_volume_zfs(namespace, volume, snapshot)
             .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn clone_local_volume_zfs(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &str,
+        volume: &str,
+        source_namespace: &Namespace,
+        source_volume: &str,
+        snapshot: &str,
+        quota: &str,
+        mode: &str,
+        owner: &str,
+    ) -> Result<VolumeZfsClonePayload, String> {
+        let source_record = self.volume_record(source_namespace, source_volume).await?;
+        if source_record.scope != VolumeScope::Single {
+            return Err(format!(
+                "volume '{}/{}' has scope {:?}, expected single",
+                source_namespace.0, source_volume, source_record.scope
+            ));
+        }
+        if source_record.machine_id != self.identity.machine_id {
+            return Err(format!(
+                "volume '{}/{}' is pinned to machine '{}', not local machine '{}'",
+                source_namespace.0,
+                source_volume,
+                source_record.machine_id,
+                self.identity.machine_id
+            ));
+        }
+        let active = self
+            .active
+            .as_ref()
+            .ok_or_else(|| "no mesh is running".to_string())?;
+        if active
+            .mesh
+            .store
+            .get_volume(namespace, volume)
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return Err(format!(
+                "volume '{}/{}' already has a committed record",
+                namespace.0, volume
+            ));
+        }
+
+        let driver = self.local_zfs_driver().await?;
+        let source_dataset = volume_dataset(driver.root_dataset(), source_namespace, source_volume);
+        let target_dataset = volume_dataset(driver.root_dataset(), namespace, volume);
+        let target = DatasetSpec {
+            dataset: target_dataset.clone(),
+            mountpoint: driver.root_mountpoint().join(&namespace.0).join(volume),
+            quota: quota.to_string(),
+            mode: mode.to_string(),
+            owner: owner.to_string(),
+        };
+        let snapshot_info = driver
+            .create_snapshot(&source_dataset, snapshot)
+            .await
+            .map_err(|error| error.to_string())?;
+        let clone_info = driver
+            .clone_snapshot(
+                &source_dataset,
+                &snapshot_info.name,
+                &target,
+                &CloneMetadata {
+                    deploy_id: deploy_id.to_string(),
+                    namespace: namespace.0.clone(),
+                    volume: volume.to_string(),
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(VolumeZfsClonePayload {
+            namespace: namespace.0.clone(),
+            volume: volume.to_string(),
+            source_namespace: source_namespace.0.clone(),
+            source_volume: source_volume.to_string(),
+            machine_id: self.identity.machine_id.clone(),
+            source_dataset,
+            target_dataset,
+            snapshot: clone_info.name,
+            guid: clone_info.guid,
+        })
+    }
+
+    async fn cleanup_uncommitted_local_volume_clone_zfs(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &str,
+        volume: &str,
+    ) -> Result<(), String> {
+        let active = self
+            .active
+            .as_ref()
+            .ok_or_else(|| "no mesh is running".to_string())?;
+        if active
+            .mesh
+            .store
+            .get_volume(namespace, volume)
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let driver = self.local_zfs_driver().await?;
+        let dataset = volume_dataset(driver.root_dataset(), namespace, volume);
+        if !driver
+            .dataset_exists(&dataset)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            return Ok(());
+        }
+        driver
+            .destroy_marked_volume_clone(
+                &dataset,
+                &CloneMetadata {
+                    deploy_id: deploy_id.to_string(),
+                    namespace: namespace.0.clone(),
+                    volume: volume.to_string(),
+                },
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     async fn snapshot_guid_local_volume_zfs(
