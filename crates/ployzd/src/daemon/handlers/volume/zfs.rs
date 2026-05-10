@@ -648,10 +648,21 @@ impl DaemonState {
         namespace: &str,
         deploy_id: &str,
         volume: &str,
+        source_namespace: &str,
+        source_volume: &str,
+        snapshot: &str,
     ) -> DaemonResponse {
         let namespace = Namespace(namespace.to_string());
+        let source_namespace = Namespace(source_namespace.to_string());
         match self
-            .cleanup_uncommitted_local_volume_clone_zfs(&namespace, deploy_id, volume)
+            .cleanup_uncommitted_local_volume_clone_zfs(
+                &namespace,
+                deploy_id,
+                volume,
+                &source_namespace,
+                source_volume,
+                snapshot,
+            )
             .await
         {
             Ok(()) => self.ok("uncommitted volume clone cleaned up"),
@@ -1157,6 +1168,9 @@ impl DaemonState {
                     deploy_id: deploy_id.to_string(),
                     namespace: namespace.0.clone(),
                     volume: volume.to_string(),
+                    source_namespace: source_namespace.0.clone(),
+                    source_volume: source_volume.to_string(),
+                    snapshot: snapshot.to_string(),
                 },
             )
             .await
@@ -1179,6 +1193,9 @@ impl DaemonState {
         namespace: &Namespace,
         deploy_id: &str,
         volume: &str,
+        source_namespace: &Namespace,
+        source_volume: &str,
+        snapshot: &str,
     ) -> Result<(), String> {
         let active = self
             .active
@@ -1196,24 +1213,36 @@ impl DaemonState {
         }
         let driver = self.local_zfs_driver().await?;
         let dataset = volume_dataset(driver.root_dataset(), namespace, volume);
-        if !driver
+        if driver
             .dataset_exists(&dataset)
             .await
             .map_err(|error| error.to_string())?
         {
-            return Ok(());
+            let destroyed = driver
+                .destroy_marked_volume_clone(
+                    &dataset,
+                    &CloneMetadata {
+                        deploy_id: deploy_id.to_string(),
+                        namespace: namespace.0.clone(),
+                        volume: volume.to_string(),
+                        source_namespace: source_namespace.0.clone(),
+                        source_volume: source_volume.to_string(),
+                        snapshot: snapshot.to_string(),
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            if !destroyed {
+                return Err(format!(
+                    "refusing to clean up uncommitted clone '{}/{}': dataset '{}' exists without matching clone metadata",
+                    namespace.0, volume, dataset
+                ));
+            }
         }
+        let source_dataset = volume_dataset(driver.root_dataset(), source_namespace, source_volume);
         driver
-            .destroy_marked_volume_clone(
-                &dataset,
-                &CloneMetadata {
-                    deploy_id: deploy_id.to_string(),
-                    namespace: namespace.0.clone(),
-                    volume: volume.to_string(),
-                },
-            )
+            .destroy_snapshot(&source_dataset, snapshot)
             .await
-            .map(|_| ())
             .map_err(|error| error.to_string())
     }
 

@@ -593,7 +593,11 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                     Some(final_commit.deploy.deploy_id.clone()),
                 )
                 .await;
-                if store.write_deploy_status(&final_commit.deploy).await.is_ok() {
+                if store
+                    .write_deploy_status(&final_commit.deploy)
+                    .await
+                    .is_ok()
+                {
                     last_written_deploy_record = Some(final_commit.deploy.clone());
                 }
                 return Err(error);
@@ -783,7 +787,12 @@ async fn cleanup_uncommitted_volume_clones_after_failure(
                 &clone.target_machine,
                 &participants.namespace,
                 deploy_id,
-                &clone.volume_name,
+                participant::CleanupVolumeCloneRequest {
+                    volume: clone.volume_name.clone(),
+                    source_namespace: clone.source_namespace.clone(),
+                    source_volume: clone.source_volume.clone(),
+                    snapshot: clone.snapshot_name.clone(),
+                },
             )
             .await
         {
@@ -1544,7 +1553,12 @@ async fn cleanup_uncommitted_volume_clones(
                 &branch.target_machine,
                 namespace,
                 deploy_id,
-                &branch.volume_name,
+                participant::CleanupVolumeCloneRequest {
+                    volume: branch.volume_name.clone(),
+                    source_namespace: branch.source_namespace.clone(),
+                    source_volume: branch.source_volume.clone(),
+                    snapshot: branch.snapshot_name.clone(),
+                },
             )
             .await
         {

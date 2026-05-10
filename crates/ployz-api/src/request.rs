@@ -207,6 +207,9 @@ pub enum DaemonRequest {
         namespace: String,
         deploy_id: String,
         volume: String,
+        source_namespace: String,
+        source_volume: String,
+        snapshot: String,
     },
     RuntimeSubscribe,
     VolumeZfsInspect {

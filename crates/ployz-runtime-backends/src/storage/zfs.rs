@@ -22,6 +22,9 @@ pub struct CloneMetadata {
     pub deploy_id: String,
     pub namespace: String,
     pub volume: String,
+    pub source_namespace: String,
+    pub source_volume: String,
+    pub snapshot: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,6 +294,9 @@ impl<R: ShellRunner> ZfsDriver<R> {
         let deploy_id = format!("com.ployz:deploy_id={}", metadata.deploy_id);
         let namespace = format!("com.ployz:namespace={}", metadata.namespace);
         let volume = format!("com.ployz:volume={}", metadata.volume);
+        let source_namespace = format!("com.ployz:source_namespace={}", metadata.source_namespace);
+        let source_volume = format!("com.ployz:source_volume={}", metadata.source_volume);
+        let snapshot = format!("com.ployz:snapshot={}", metadata.snapshot);
         let snapshot_guid = format!("com.ployz:snapshot_guid={}", snapshot_info.guid);
         let mut clone_args = Vec::from(["clone".to_string()]);
         for option in [
@@ -300,6 +306,9 @@ impl<R: ShellRunner> ZfsDriver<R> {
             &deploy_id,
             &namespace,
             &volume,
+            &source_namespace,
+            &source_volume,
+            &snapshot,
             &snapshot_guid,
         ] {
             clone_args.push("-o".to_string());
@@ -340,6 +349,12 @@ impl<R: ShellRunner> ZfsDriver<R> {
             ("com.ployz:deploy_id", metadata.deploy_id.as_str()),
             ("com.ployz:namespace", metadata.namespace.as_str()),
             ("com.ployz:volume", metadata.volume.as_str()),
+            (
+                "com.ployz:source_namespace",
+                metadata.source_namespace.as_str(),
+            ),
+            ("com.ployz:source_volume", metadata.source_volume.as_str()),
+            ("com.ployz:snapshot", metadata.snapshot.as_str()),
         ] {
             let actual = self.dataset_property(dataset, property).await?;
             if actual.as_deref() != Some(expected) {
@@ -878,6 +893,9 @@ mod tests {
             deploy_id: "deploy-1".into(),
             namespace: "pr-39".into(),
             volume: "data".into(),
+            source_namespace: "default".into(),
+            source_volume: "data".into(),
+            snapshot: "branch".into(),
         }
     }
 
@@ -1204,6 +1222,12 @@ mod tests {
                 "-o",
                 "com.ployz:volume=data",
                 "-o",
+                "com.ployz:source_namespace=default",
+                "-o",
+                "com.ployz:source_volume=data",
+                "-o",
+                "com.ployz:snapshot=branch",
+                "-o",
                 "com.ployz:snapshot_guid=42",
                 "tank/ployz/default/data@branch",
                 "tank/ployz/pr-39/data"
@@ -1303,6 +1327,12 @@ mod tests {
                 "com.ployz:namespace=pr-39",
                 "-o",
                 "com.ployz:volume=data",
+                "-o",
+                "com.ployz:source_namespace=default",
+                "-o",
+                "com.ployz:source_volume=data",
+                "-o",
+                "com.ployz:snapshot=branch",
                 "-o",
                 "com.ployz:snapshot_guid=42",
                 "tank/ployz/default/data@branch",

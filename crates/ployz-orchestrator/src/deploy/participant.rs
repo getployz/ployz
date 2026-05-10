@@ -61,7 +61,7 @@ pub trait DeployParticipantClient: Send + Sync {
         _machine_id: &MachineId,
         _namespace: &Namespace,
         _deploy_id: &DeployId,
-        _volume: &str,
+        _request: CleanupVolumeCloneRequest,
     ) -> Result<()> {
         Ok(())
     }
@@ -123,4 +123,12 @@ pub struct CloneVolumeResult {
     pub snapshot: String,
     pub snapshot_guid: u64,
     pub target_dataset: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CleanupVolumeCloneRequest {
+    pub volume: String,
+    pub source_namespace: Namespace,
+    pub source_volume: String,
+    pub snapshot: String,
 }
