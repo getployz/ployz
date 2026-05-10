@@ -8,7 +8,7 @@ use std::fmt::{self, Write as _};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use strum::EnumString;
 
-use crate::spec::{Namespace, VolumeScope};
+use crate::spec::{Namespace, VolumeCloneConsistency, VolumeCloneDataPolicy, VolumeScope};
 
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, JsonSchema,
@@ -1039,6 +1039,52 @@ pub struct ServiceBranchLineageRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct VolumeMovementRecord {
+    pub namespace: Namespace,
+    pub volume_name: String,
+    pub from_machine: MachineId,
+    pub to_machine: MachineId,
+    pub final_machine: MachineId,
+    pub deploy_id: DeployId,
+    pub commit_deploy_id: DeployId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_id: Option<DeployPhaseId>,
+    pub snapshot_name: String,
+    pub snapshot_guid: u64,
+    pub bytes_transferred: u64,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct VolumeBranchLineageRecord {
+    pub namespace: Namespace,
+    pub volume_name: String,
+    pub source_namespace: Namespace,
+    pub source_volume_name: String,
+    pub source_machine: MachineId,
+    pub target_machine: MachineId,
+    pub data_policy: VolumeCloneDataPolicy,
+    pub consistency: VolumeCloneConsistency,
+    pub deploy_id: DeployId,
+    pub commit_deploy_id: DeployId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_id: Option<DeployPhaseId>,
+    pub snapshot_name: String,
+    pub snapshot_guid: u64,
+    pub target_dataset: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DeployPhaseCommitRecord {
+    pub namespace: Namespace,
+    pub deploy_id: DeployId,
+    pub phase_id: DeployPhaseId,
+    pub commit_deploy_id: DeployId,
+    pub committed_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RoutingState {
     pub machines: Vec<MachineMembership>,
     pub revisions: Vec<ServiceRevisionRecord>,
@@ -1750,6 +1796,16 @@ pub enum DeployPhaseWork {
         to_machine: MachineId,
         attached_services: Vec<String>,
     },
+    VolumeClone {
+        volume: String,
+        source_namespace: Namespace,
+        source_volume: String,
+        source_machine: MachineId,
+        target_machine: MachineId,
+        data_policy: VolumeCloneDataPolicy,
+        consistency: VolumeCloneConsistency,
+        attached_services: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1791,6 +1847,8 @@ pub struct DeployPhaseRecord {
     pub namespace: Namespace,
     pub deploy_id: DeployId,
     pub phase_id: DeployPhaseId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_deploy_id: Option<DeployId>,
     pub name: String,
     pub order: u32,
     pub after: Vec<DeployPhaseId>,
@@ -1840,6 +1898,18 @@ pub struct VolumeMovePlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeClonePlan {
+    pub volume: String,
+    pub source_namespace: Namespace,
+    pub source_volume: String,
+    pub source_machine: MachineId,
+    pub target_machine: MachineId,
+    pub data_policy: VolumeCloneDataPolicy,
+    pub consistency: VolumeCloneConsistency,
+    pub attached_services: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployPreview {
     pub namespace: Namespace,
     pub manifest_hash: String,
@@ -1850,6 +1920,8 @@ pub struct DeployPreview {
     pub service_branch_sources: Vec<ServiceBranchSourcePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volume_moves: Vec<VolumeMovePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volume_clones: Vec<VolumeClonePlan>,
     pub warnings: Vec<String>,
 }
 
