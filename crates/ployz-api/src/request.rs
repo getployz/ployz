@@ -1,5 +1,7 @@
 use crate::deploy::{DeployOptions, MigrateServiceRequest};
-use crate::image::{ImageInspectRequest, ImageStatusRequest};
+use crate::image::{
+    ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageStatusRequest,
+};
 use crate::machine::{
     MachineAddOptions, MachineInstallOptions, MachineStorageAuthorityPeer,
     MachineStoragePromoteRequest, MachineTransitionGoal,
@@ -176,6 +178,12 @@ pub enum DaemonRequest {
     ImageInspect {
         request: ImageInspectRequest,
     },
+    ImagePush {
+        request: ImagePushRequest,
+    },
+    ImageDistribute {
+        request: ImageDistributeRequest,
+    },
     ImageOperationGet {
         id: String,
     },
@@ -274,10 +282,8 @@ mod tests {
     use super::*;
     use crate::build::BuildMachineRequest;
     use crate::deploy::MigrateServiceMode;
-    use crate::image::{ImageInspectRequest, ImagePushRequest};
-    use ployz_types::model::{
-        BuildLocation, BuildMethod, ImageArtifact, ImageArtifactProvenance, ImageDigest, ImageRef,
-    };
+    use crate::image::{ImageDistributeRequest, ImageInspectRequest, ImagePushRequest};
+    use ployz_types::model::{BuildMethod, ImageDigest};
 
     #[test]
     fn migrate_service_request_serializes_stable_wire_shape() {
@@ -335,22 +341,89 @@ mod tests {
     }
 
     #[test]
-    fn image_push_request_round_trips_digest_artifact() {
-        let request = ImagePushRequest {
-            artifact: artifact(),
-            target_machine: MachineId("machine-a".into()),
-            source_image: Some("registry.example/api:sha".into()),
+    fn image_push_request_round_trips_source_targets_and_expected_digest() {
+        let request = DaemonRequest::ImagePush {
+            request: ImagePushRequest {
+                source_image: "registry.example/api:sha".into(),
+                target_machines: vec![MachineId("machine-a".into()), MachineId("machine-b".into())],
+                platform: None,
+                expected_digest: Some(digest()),
+            },
         };
 
         let json = serde_json::to_value(&request).expect("serialize image request");
-        let roundtrip: ImagePushRequest =
-            serde_json::from_value(json).expect("deserialize request");
-
         assert_eq!(
-            roundtrip.artifact.digest().as_str(),
+            json,
+            serde_json::json!({
+                "ImagePush": {
+                    "request": {
+                        "source_image": "registry.example/api:sha",
+                        "target_machines": ["machine-a", "machine-b"],
+                        "expected_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }
+                }
+            })
+        );
+        let roundtrip: DaemonRequest = serde_json::from_value(json).expect("deserialize request");
+
+        let DaemonRequest::ImagePush { request } = roundtrip else {
+            panic!("expected image push request");
+        };
+        assert_eq!(request.source_image, "registry.example/api:sha");
+        assert_eq!(
+            request.target_machines,
+            vec![MachineId("machine-a".into()), MachineId("machine-b".into())]
+        );
+        assert_eq!(
+            request.expected_digest.expect("expected digest").as_str(),
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         );
-        assert_eq!(roundtrip.target_machine, MachineId("machine-a".into()));
+    }
+
+    #[test]
+    fn image_distribute_request_round_trips_digest_source_and_targets() {
+        let request = DaemonRequest::ImageDistribute {
+            request: ImageDistributeRequest {
+                digest: digest(),
+                source_machine: MachineId("machine-a".into()),
+                target_machines: vec![MachineId("machine-b".into())],
+                platform: Some(ployz_types::model::ImagePlatform {
+                    os: "linux".into(),
+                    architecture: "amd64".into(),
+                    variant: None,
+                }),
+            },
+        };
+
+        let json = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "ImageDistribute": {
+                    "request": {
+                        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "source_machine": "machine-a",
+                        "target_machines": ["machine-b"],
+                        "platform": {
+                            "os": "linux",
+                            "architecture": "amd64"
+                        }
+                    }
+                }
+            })
+        );
+        let roundtrip: DaemonRequest = serde_json::from_value(json).expect("deserialize request");
+
+        let DaemonRequest::ImageDistribute { request } = roundtrip else {
+            panic!("expected image distribute request");
+        };
+        assert_eq!(
+            request.digest.as_str(),
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(request.source_machine, MachineId("machine-a".into()));
+        assert_eq!(request.target_machines, vec![MachineId("machine-b".into())]);
+        assert_eq!(request.platform.expect("platform").architecture, "amd64");
     }
 
     #[test]
@@ -397,23 +470,6 @@ mod tests {
         let json = serde_json::to_value(&request).expect("serialize build request");
 
         assert_eq!(json["method"], "railpack");
-    }
-
-    fn artifact() -> ImageArtifact {
-        ImageArtifact {
-            image: ImageRef {
-                repository: Some("registry.example/api".into()),
-                tag: Some("sha".into()),
-                digest: ImageDigest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
-            },
-            platform: None,
-            provenance: ImageArtifactProvenance::Build {
-                method: BuildMethod::Dockerfile,
-                location: BuildLocation::Local,
-                source_digest: None,
-            },
-            created_at: 1,
-        }
     }
 
     fn digest() -> ImageDigest {

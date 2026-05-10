@@ -7,12 +7,12 @@ use crate::{
     MigrateServiceArgs, Result, RuntimeTargetArg, ServiceModeArg,
 };
 use ployz_api::{
-    DaemonRequest, DeployOptions, ImageInspectRequest, ImageStatusRequest,
-    InstallSource as MachineInstallSource, MachineAddOptions, MachineInstallOptions,
-    MachineStoragePromoteRequest, MigrateServiceMode, MigrateServiceRequest,
+    DaemonRequest, DeployOptions, ImageDistributeRequest, ImageInspectRequest, ImagePushRequest,
+    ImageStatusRequest, InstallSource as MachineInstallSource, MachineAddOptions,
+    MachineInstallOptions, MachineStoragePromoteRequest, MigrateServiceMode, MigrateServiceRequest,
 };
 use ployz_sdk::Transport;
-use ployz_types::model::{ImageDigest, MachineId, StorageReplicaPolicy};
+use ployz_types::model::{ImageDigest, ImagePlatform, MachineId, StorageReplicaPolicy};
 use ployz_types::spec::{
     ContainerSpec, DeployManifest, Mount, MountSource, Namespace, NetworkMode, Placement,
     PortProtocol, PublishedPort, PullPolicy, Resources, RestartPolicy, RolloutStrategy,
@@ -61,6 +61,41 @@ pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> 
                 },
             })
         }
+        ImageAction::Push {
+            image,
+            targets,
+            platform,
+            expected_digest,
+        } => {
+            let expected_digest = expected_digest
+                .map(ImageDigest::try_new)
+                .transpose()
+                .map_err(CliError::Usage)?;
+            Ok(DaemonRequest::ImagePush {
+                request: ImagePushRequest {
+                    source_image: image,
+                    target_machines: targets.into_iter().map(MachineId).collect(),
+                    platform: platform.map(parse_image_platform).transpose()?,
+                    expected_digest,
+                },
+            })
+        }
+        ImageAction::Distribute {
+            digest,
+            source,
+            targets,
+            platform,
+        } => {
+            let digest = ImageDigest::try_new(digest).map_err(CliError::Usage)?;
+            Ok(DaemonRequest::ImageDistribute {
+                request: ImageDistributeRequest {
+                    digest,
+                    source_machine: MachineId(source),
+                    target_machines: targets.into_iter().map(MachineId).collect(),
+                    platform: platform.map(parse_image_platform).transpose()?,
+                },
+            })
+        }
         ImageAction::Inspect {
             digest,
             reference,
@@ -80,6 +115,31 @@ pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> 
             ImageOperationAction::Get { id } => Ok(DaemonRequest::ImageOperationGet { id }),
         },
     }
+}
+
+fn parse_image_platform(value: String) -> Result<ImagePlatform> {
+    let parts = value.split('/').collect::<Vec<_>>();
+    let (os, architecture, variant) = match parts.as_slice() {
+        [os, architecture] => (*os, *architecture, None),
+        [os, architecture, variant] if !variant.is_empty() => {
+            (*os, *architecture, Some((*variant).to_string()))
+        }
+        _ => {
+            return Err(CliError::Usage(format!(
+                "image platform must use os/arch or os/arch/variant, got '{value}'"
+            )));
+        }
+    };
+    if os.is_empty() || architecture.is_empty() {
+        return Err(CliError::Usage(format!(
+            "image platform must include os and architecture, got '{value}'"
+        )));
+    }
+    Ok(ImagePlatform {
+        os: os.to_string(),
+        architecture: architecture.to_string(),
+        variant,
+    })
 }
 
 fn build_volume_request(action: VolumeAction) -> Result<DaemonRequest> {
