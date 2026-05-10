@@ -36,8 +36,11 @@ fn mesh_ready_payload(value: MeshReadyStatus, self_record: &MachineMembership) -
 mod tests {
     use super::*;
     use crate::daemon::ActiveMesh;
+    use crate::daemon::handlers::image::registry;
     use crate::mesh_state::invite::issue_invite_token;
     use crate::mesh_state::network::NetworkConfig;
+    use axum::body::Body;
+    use axum::http::{HeaderValue, Method, Request, StatusCode};
     use ployz_api::{MachineTransitionGoal, MeshBootstrapRequest};
     use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_orchestrator::{Mesh, WireguardDriver};
@@ -50,6 +53,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::net::TcpListener;
+    use tower::ServiceExt as _;
 
     #[tokio::test]
     async fn mesh_join_is_unsupported_without_machine_add() {
@@ -104,6 +109,61 @@ mod tests {
 
         assert!(state.active.is_none(), "cleanup should clear active mesh");
         assert!(!network.is_up(), "cleanup should tear down the runtime");
+    }
+
+    #[tokio::test]
+    async fn started_mesh_cleanup_stops_image_receiver_and_revokes_sessions() {
+        let (mut state, _, network) = make_active_state().await;
+        let image_receiver = registry::serve(
+            "127.0.0.1:0".parse().expect("bind addr"),
+            state.image_registry.clone(),
+        )
+        .await
+        .expect("start image receiver");
+        let bind_addr = image_receiver.bind_addr();
+        let session = state
+            .image_registry
+            .register_session("image-push-1", MachineId("founder".into()), "apps/web")
+            .await;
+        let active = state.active.as_mut().expect("active mesh");
+        active.image_receiver = Box::new(image_receiver);
+        active.image_receiver_bind_addr = Some(bind_addr);
+
+        state.stop_started_mesh_after_transition_failure().await;
+
+        assert!(state.active.is_none(), "cleanup should clear active mesh");
+        assert!(!network.is_up(), "cleanup should tear down the runtime");
+        let rebound = TcpListener::bind(bind_addr)
+            .await
+            .expect("image receiver listener should be stopped");
+        drop(rebound);
+
+        let response = state
+            .image_registry
+            .clone()
+            .router()
+            .oneshot(
+                Request::builder()
+                    .method(Method::HEAD)
+                    .uri("/v2/apps/web/blobs/sha256:abc")
+                    .header(
+                        registry::REGISTRY_SESSION_HEADER,
+                        HeaderValue::from_str(&session.token).expect("session token"),
+                    )
+                    .header(
+                        registry::REGISTRY_OPERATION_HEADER,
+                        HeaderValue::from_str(&session.operation_id).expect("operation id"),
+                    )
+                    .header(
+                        registry::REGISTRY_SOURCE_MACHINE_HEADER,
+                        HeaderValue::from_str(&session.source_machine.0).expect("source machine"),
+                    )
+                    .body(Body::empty())
+                    .expect("registry request"),
+            )
+            .await
+            .expect("registry response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

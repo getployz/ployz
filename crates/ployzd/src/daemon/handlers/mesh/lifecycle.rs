@@ -706,6 +706,21 @@ impl DaemonState {
         if let Err(error) = active.gateway.shutdown().await {
             warn!(?error, "failed to stop gateway after transition error");
         }
+        if let Err(error) = active.image_receiver.shutdown().await {
+            warn!(
+                ?error,
+                "failed to stop image receiver after transition error"
+            );
+        }
+        if let Err(error) = self.image_registry.revoke_all_sessions().await {
+            warn!(%error, "image receive session cleanup failed after transition error");
+        }
+        if let Err(error) = active.zfs_transfer.shutdown().await {
+            warn!(
+                ?error,
+                "failed to stop zfs transfer listener after transition error"
+            );
+        }
     }
 }
 

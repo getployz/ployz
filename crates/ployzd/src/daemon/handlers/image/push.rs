@@ -81,7 +81,15 @@ impl DaemonState {
                 ),
             );
         }
-
+        if bind_addr.ip().is_loopback() && request.source_machine != self.identity.machine_id {
+            return self.err(
+                "IMAGE_RECEIVER_SOURCE_NOT_LOCAL",
+                format!(
+                    "image receiver is bound to loopback; source machine '{}' must match local machine '{}'",
+                    request.source_machine, self.identity.machine_id
+                ),
+            );
+        }
         let session = self
             .image_registry
             .register_session(
@@ -202,14 +210,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn image_receive_session_returns_endpoint_token_and_headers() {
+    async fn image_receive_session_returns_endpoint_token_and_headers_for_local_source() {
         let mut state = make_state();
         install_active_mesh(&mut state).await;
 
         let response = state
             .handle_image_receive_session(&ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("machine-a".into()),
+                source_machine: MachineId("founder".into()),
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
@@ -235,7 +243,7 @@ mod tests {
                 .headers
                 .get(REGISTRY_SOURCE_MACHINE_HEADER)
                 .map(String::as_str),
-            Some("machine-a")
+            Some("founder")
         );
         assert_eq!(
             payload
@@ -265,13 +273,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn image_receive_session_rejects_remote_source_for_loopback_receiver() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+
+        let response = state
+            .handle_image_receive_session(&ImageReceiveSessionRequest {
+                operation_id: "image-push-1".into(),
+                source_machine: MachineId("machine-a".into()),
+                repository: Some("ployz/image-push-1".into()),
+            })
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_RECEIVER_SOURCE_NOT_LOCAL");
+    }
+
+    #[tokio::test]
     async fn image_receive_session_token_authorizes_registry_upload() {
         let mut state = make_state();
         install_active_mesh(&mut state).await;
         let response = state
             .handle_image_receive_session(&ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("machine-a".into()),
+                source_machine: MachineId("founder".into()),
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
@@ -312,7 +337,7 @@ mod tests {
         let response = state
             .handle_image_receive_session(&ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("machine-a".into()),
+                source_machine: MachineId("founder".into()),
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
@@ -370,6 +395,16 @@ mod tests {
         );
         config.lifecycle = NetworkLifecycle::Running;
         let store = StoreDriver::memory();
+        store
+            .upsert_self_machine(&MachineMembership::seed(
+                MachineId("founder".into()),
+                PublicKey([31; 32]),
+                OverlayIp("fd00::31".parse().expect("valid overlay")),
+                None,
+                Vec::new(),
+            ))
+            .await
+            .expect("insert local machine");
         store
             .upsert_self_machine(&MachineMembership::seed(
                 MachineId("machine-a".into()),
