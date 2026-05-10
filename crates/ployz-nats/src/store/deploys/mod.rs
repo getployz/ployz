@@ -4,10 +4,11 @@ use async_nats::jetstream::message::PublishMessage;
 use async_nats::jetstream::stream::DirectGetErrorKind;
 use async_trait::async_trait;
 use ployz_store_api::{DeployCommit, DeployCommitFacts, DeployStore};
-use ployz_types::error::{Error, Result, StoreRecordKind};
+use ployz_types::error::{Error, Result, StoreError, StoreRecordKind};
 use ployz_types::model::{
-    DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord, RoutingEvent,
-    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
+    DeployId, DeployPhaseId, DeployPhaseRecord, DeployPhaseState, DeployRecord, RoutingEvent,
+    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
+    VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 
@@ -52,6 +53,23 @@ impl DeployStore for NatsStore {
             .service_branch_lineage(namespace))
     }
 
+    async fn list_volume_movements(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<VolumeMovementRecord>> {
+        Ok(self
+            .deploy_commit_facts()
+            .await?
+            .volume_movements(namespace))
+    }
+
+    async fn list_volume_branches(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<VolumeBranchLineageRecord>> {
+        Ok(self.deploy_commit_facts().await?.volume_branches(namespace))
+    }
+
     async fn get_volume(
         &self,
         namespace: &Namespace,
@@ -81,6 +99,12 @@ impl DeployStore for NatsStore {
             &routing_events,
         )
         .await
+        .map_err(|error| {
+            Error::Store(StoreError::DeployCommitRoutingPublishFailed {
+                deploy_id: command.deploy.deploy_id.0.clone(),
+                message: error.to_string(),
+            })
+        })
     }
 
     async fn write_deploy_status(&self, deploy: &DeployRecord) -> Result<()> {
@@ -116,14 +140,23 @@ impl DeployStore for NatsStore {
         deploy_id: &DeployId,
         phase_id: &DeployPhaseId,
     ) -> Result<Option<DeployPhaseRecord>> {
-        read_deploy_phase(
+        let mut phase = read_deploy_phase(
             self.jetstream(),
             self.assets().deploy_phases_bucket.as_str(),
             namespace,
             deploy_id,
             phase_id,
         )
-        .await
+        .await?;
+        if let Some(phase) = phase.as_mut() {
+            apply_phase_commit_fact(
+                phase,
+                self.deploy_commit_facts()
+                    .await?
+                    .phase_commit(namespace, deploy_id, phase_id),
+            );
+        }
+        Ok(phase)
     }
 
     async fn list_deploy_phases(
@@ -131,13 +164,21 @@ impl DeployStore for NatsStore {
         namespace: &Namespace,
         deploy_id: &DeployId,
     ) -> Result<Vec<DeployPhaseRecord>> {
-        list_deploy_phases(
+        let mut phases = list_deploy_phases(
             self.jetstream(),
             self.assets().deploy_phases_bucket.as_str(),
             namespace,
             deploy_id,
         )
-        .await
+        .await?;
+        let facts = self.deploy_commit_facts().await?;
+        for phase in &mut phases {
+            apply_phase_commit_fact(
+                phase,
+                facts.phase_commit(namespace, deploy_id, &phase.phase_id),
+            );
+        }
+        Ok(phases)
     }
 }
 
@@ -463,6 +504,19 @@ fn sort_deploy_phases(phases: &mut [DeployPhaseRecord]) {
     });
 }
 
+fn apply_phase_commit_fact(
+    phase: &mut DeployPhaseRecord,
+    commit: Option<&ployz_types::model::DeployPhaseCommitRecord>,
+) {
+    let Some(commit) = commit else {
+        return;
+    };
+    phase.commit_deploy_id = Some(commit.commit_deploy_id.clone());
+    phase.state = DeployPhaseState::Succeeded {
+        completed_at: commit.committed_at,
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -644,6 +698,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn phase_commit_fact_overrides_failed_phase_state() {
+        let namespace = Namespace(String::from("prod"));
+        let deploy_id = DeployId(String::from("deploy-a"));
+        let phase_id = DeployPhaseId(String::from("db"));
+        let commit = ployz_types::model::DeployPhaseCommitRecord {
+            namespace: namespace.clone(),
+            deploy_id: deploy_id.clone(),
+            phase_id: phase_id.clone(),
+            commit_deploy_id: DeployId(String::from("deploy-a-db-commit")),
+            committed_at: 42,
+        };
+        let mut phase = deploy_phase("prod", "deploy-a", "db", 0);
+        phase.state = DeployPhaseState::Failed {
+            completed_at: 40,
+            failure: ployz_types::model::DeployPhaseFailure {
+                code: String::from("COMMIT_PUBLISH_FAILED"),
+                message: String::from("routing publish failed after durable commit"),
+            },
+        };
+
+        apply_phase_commit_fact(&mut phase, Some(&commit));
+
+        assert_eq!(
+            phase.commit_deploy_id,
+            Some(DeployId(String::from("deploy-a-db-commit")))
+        );
+        assert_eq!(
+            phase.state,
+            DeployPhaseState::Succeeded { completed_at: 42 }
+        );
+    }
+
     fn revision(hash: &str, spec_json: &str) -> ServiceRevisionRecord {
         ServiceRevisionRecord {
             namespace: Namespace(String::from("prod")),
@@ -687,6 +774,7 @@ mod tests {
             namespace: Namespace(namespace.into()),
             deploy_id: DeployId(deploy_id.into()),
             phase_id: DeployPhaseId(phase_id.into()),
+            commit_deploy_id: None,
             name: phase_id.into(),
             order,
             after: Vec::new(),
@@ -713,6 +801,9 @@ mod tests {
             removed_services,
             removed_volumes: Vec::new(),
             branch_lineage: Vec::new(),
+            volume_movements: Vec::new(),
+            volume_branches: Vec::new(),
+            phase_commits: Vec::new(),
             releases,
             volumes: Vec::new(),
             deploy: DeployRecord {

@@ -175,6 +175,10 @@ pub(crate) enum Command {
         action: DebugAction,
     },
     Deploy(Box<DeployCommand>),
+    Migrate {
+        #[command(subcommand)]
+        action: MigrateAction,
+    },
     Runtime {
         #[command(subcommand)]
         action: RuntimeAction,
@@ -222,6 +226,21 @@ pub(crate) struct DeployCommand {
 pub(crate) enum DeployAction {
     Preview(DeployManifestArgs),
     Service(DeployServiceArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum MigrateAction {
+    Apply(MigrateServiceArgs),
+    Preview(MigrateServiceArgs),
+    RenderManifest(MigrateServiceArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct MigrateServiceArgs {
+    pub(crate) service_ref: String,
+
+    #[arg(long)]
+    pub(crate) to: String,
 }
 
 #[derive(Debug, Subcommand)]
