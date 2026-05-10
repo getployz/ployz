@@ -799,6 +799,13 @@ async fn cleanup_uncommitted_volume_clones_after_failure(
     cleanup_errors
 }
 
+fn is_post_commit_routing_publish_failure(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Store(StoreError::DeployCommitRoutingPublishFailed { .. })
+    )
+}
+
 struct PhaseExecution {
     started: HashMap<(String, String), InstanceStatusRecord>,
     volume_movements: BTreeMap<String, ExecutedVolumeMove>,
