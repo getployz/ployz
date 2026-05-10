@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,7 +25,8 @@ use ployz_types::Error as PloyzError;
 use ployz_types::error::DeployError;
 use ployz_types::model::SlotId;
 use ployz_types::model::{
-    DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineMembership,
+    DeployId, DeployPhaseCommitPolicy, DeployPhaseFailure, DeployPhaseState, InstanceId,
+    InstanceStatusRecord, MachineId, MachineMembership,
 };
 use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec, VolumeDeclaration};
 
@@ -820,14 +821,19 @@ async fn mark_deploy_failed_after_lock_loss(
         Ok(Some(mut deploy)) => {
             match deploy.state {
                 ployz_types::model::DeployState::Committed
-                | ployz_types::model::DeployState::CleanupPending => {
+                | ployz_types::model::DeployState::CleanupPending
+                | ployz_types::model::DeployState::CheckpointCommitted => {
                     return DeployLockLossOutcome::PastCommit;
                 }
                 ployz_types::model::DeployState::Applying => {}
                 ployz_types::model::DeployState::Planning
+                | ployz_types::model::DeployState::FailedAfterCheckpoint
                 | ployz_types::model::DeployState::Failed => {
                     return DeployLockLossOutcome::NotApplying;
                 }
+            }
+            if deploy_has_checkpoint_commit_point(store, &deploy.namespace, deploy_id).await {
+                return DeployLockLossOutcome::PastCommit;
             }
             deploy.state = ployz_types::model::DeployState::Failed;
             deploy.finished_at = Some(ployz_types::time::now_unix_secs());
@@ -853,7 +859,111 @@ async fn mark_deploy_failed_after_lock_loss(
         tracing::warn!(%error, %deploy_id, "failed to mark deploy failed after lock loss");
         return DeployLockLossOutcome::NotApplying;
     }
+    if let Err(error) = mark_running_deploy_phases_failed_after_lock_loss(
+        store,
+        &deploy.namespace,
+        deploy_id,
+        message,
+    )
+    .await
+    {
+        tracing::warn!(
+            %error,
+            %deploy_id,
+            "failed to mark running deploy phases failed after lock loss"
+        );
+    }
     DeployLockLossOutcome::MarkedFailed
+}
+
+async fn deploy_has_checkpoint_commit_point(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    deploy_id: &DeployId,
+) -> bool {
+    let phases = match store.list_deploy_phases(namespace, deploy_id).await {
+        Ok(phases) => phases,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                %deploy_id,
+                "failed to inspect deploy phases while classifying lock loss"
+            );
+            return false;
+        }
+    };
+    let checkpoint_phase_ids = phases
+        .iter()
+        .filter(|phase| phase.commit_policy == DeployPhaseCommitPolicy::Checkpoint)
+        .map(|phase| DeployId(format!("{}:phase:{}", deploy_id.0, phase.phase_id.0)))
+        .collect::<HashSet<_>>();
+    if checkpoint_phase_ids.is_empty() {
+        return false;
+    }
+    if phases.iter().any(|phase| {
+        phase.commit_policy == DeployPhaseCommitPolicy::Checkpoint
+            && matches!(phase.state, DeployPhaseState::Succeeded { .. })
+    }) {
+        return true;
+    }
+    match store.list_deploy_releases(namespace).await {
+        Ok(releases) => {
+            if releases
+                .iter()
+                .any(|release| checkpoint_phase_ids.contains(&release.release.updated_by_deploy_id))
+            {
+                return true;
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                %deploy_id,
+                "failed to inspect deploy releases while classifying lock loss"
+            );
+        }
+    }
+    match store.list_volumes(namespace).await {
+        Ok(volumes) => volumes.iter().any(|volume| {
+            checkpoint_phase_ids.contains(&volume.created_by_deploy_id)
+                || checkpoint_phase_ids.contains(&volume.last_modified_by_deploy_id)
+        }),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                %deploy_id,
+                "failed to inspect deploy volumes while classifying lock loss"
+            );
+            false
+        }
+    }
+}
+
+async fn mark_running_deploy_phases_failed_after_lock_loss(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    deploy_id: &DeployId,
+    message: &str,
+) -> ployz_types::Result<()> {
+    let phases = store.list_deploy_phases(namespace, deploy_id).await?;
+    let completed_at = ployz_types::time::now_unix_secs();
+    for mut phase in phases {
+        if !matches!(
+            phase.state,
+            DeployPhaseState::Pending | DeployPhaseState::Running
+        ) {
+            continue;
+        }
+        phase.state = DeployPhaseState::Failed {
+            completed_at,
+            failure: DeployPhaseFailure {
+                code: "DEPLOY_LOCK_LOST".into(),
+                message: format!("deploy lock lost during apply: {message}"),
+            },
+        };
+        store.upsert_deploy_phase(&phase).await?;
+    }
+    Ok(())
 }
 
 fn deploy_failure_payload_for_error(error: &PloyzError) -> Option<DeployFailurePayload> {
@@ -953,8 +1063,10 @@ mod tests {
     use ployz_nats::{RpcFailureKind, RpcPolicy};
     use ployz_store_api::{DeployCommit, DeployStore};
     use ployz_types::model::{
-        DeployId, DeployPreview, DeployRecord, DeployState, MachineId, ServiceRelease,
-        ServiceReleaseRecord, ServiceRevisionRecord, ServiceRoutingPolicy, VolumeRecord,
+        DeployId, DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord,
+        DeployPhaseRollbackPolicy, DeployPreview, DeployRecord, DeployState, MachineId,
+        ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord, ServiceRoutingPolicy,
+        VolumeRecord,
     };
     use ployz_types::spec::{
         ContainerSpec, Mount, MountSource, NetworkMode, Placement, PullPolicy, Resources,
@@ -1494,6 +1606,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lock_loss_marks_running_deploy_phases_failed() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        let deploy_id = DeployId("deploy-lock-loss-phase".into());
+        store
+            .write_deploy_status(&DeployRecord {
+                deploy_id: deploy_id.clone(),
+                namespace: namespace.clone(),
+                coordinator_machine_id: MachineId("local".into()),
+                manifest_hash: "manifest".into(),
+                state: DeployState::Applying,
+                started_at: 1,
+                committed_at: None,
+                finished_at: None,
+                summary_json: serde_json::to_string(&DeployPreview {
+                    namespace: namespace.clone(),
+                    manifest_hash: "manifest".into(),
+                    participants: Vec::new(),
+                    phases: Vec::new(),
+                    services: Vec::new(),
+                    service_branch_sources: Vec::new(),
+                    volume_moves: Vec::new(),
+                    warnings: Vec::new(),
+                })
+                .expect("preview json"),
+            })
+            .await
+            .expect("seed applying deploy");
+        store
+            .upsert_deploy_phase(&DeployPhaseRecord {
+                namespace: namespace.clone(),
+                deploy_id: deploy_id.clone(),
+                phase_id: DeployPhaseId("deploy".into()),
+                name: "Deploy".into(),
+                order: 0,
+                after: Vec::new(),
+                participants: Vec::new(),
+                work: Vec::new(),
+                state: DeployPhaseState::Running,
+                commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                advance_policy: ployz_types::model::DeployPhaseAdvancePolicy::Immediate,
+                started_at: 1,
+            })
+            .await
+            .expect("seed running phase");
+
+        let outcome = mark_deploy_failed_after_lock_loss(&store, &deploy_id, "renew failed").await;
+
+        assert_eq!(outcome, DeployLockLossOutcome::MarkedFailed);
+        let phases = store
+            .list_deploy_phases(&namespace, &deploy_id)
+            .await
+            .expect("list phases");
+        let [phase] = phases.as_slice() else {
+            panic!("expected one phase, got {phases:?}");
+        };
+        let DeployPhaseState::Failed { failure, .. } = &phase.state else {
+            panic!("expected failed phase, got {:?}", phase.state);
+        };
+        assert_eq!(failure.code, "DEPLOY_LOCK_LOST");
+        assert!(failure.message.contains("renew failed"));
+    }
+
+    #[tokio::test]
     async fn lock_loss_after_commit_does_not_mark_deploy_failed() {
         let store = StoreDriver::memory();
         let deploy_id = DeployId("deploy-lock-loss-committed".into());
@@ -1521,6 +1698,146 @@ mod tests {
             .expect("get deploy")
             .expect("deploy");
         assert_eq!(record.state, DeployState::Committed);
+    }
+
+    #[tokio::test]
+    async fn lock_loss_after_checkpoint_status_waits_for_apply() {
+        let store = StoreDriver::memory();
+        let deploy_id = DeployId("deploy-lock-loss-checkpoint-status".into());
+        store
+            .write_deploy_status(&DeployRecord {
+                deploy_id: deploy_id.clone(),
+                namespace: Namespace("prod".into()),
+                coordinator_machine_id: MachineId("local".into()),
+                manifest_hash: "manifest".into(),
+                state: DeployState::CheckpointCommitted,
+                started_at: 1,
+                committed_at: Some(2),
+                finished_at: None,
+                summary_json: "{}".into(),
+            })
+            .await
+            .expect("seed checkpoint committed deploy");
+
+        let outcome = mark_deploy_failed_after_lock_loss(&store, &deploy_id, "renew failed").await;
+
+        assert_eq!(outcome, DeployLockLossOutcome::PastCommit);
+        let record = store
+            .get_deploy(&deploy_id)
+            .await
+            .expect("get deploy")
+            .expect("deploy");
+        assert_eq!(record.state, DeployState::CheckpointCommitted);
+    }
+
+    #[tokio::test]
+    async fn lock_loss_after_durable_checkpoint_commit_evidence_waits_for_apply() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        let deploy_id = DeployId("deploy-lock-loss-checkpoint-evidence".into());
+        let phase_id = DeployPhaseId("db".into());
+        let phase_commit_id = DeployId(format!("{}:phase:{}", deploy_id.0, phase_id.0));
+        let service = test_service();
+        let revision_hash = "rev-db".to_string();
+        store
+            .write_deploy_status(&DeployRecord {
+                deploy_id: deploy_id.clone(),
+                namespace: namespace.clone(),
+                coordinator_machine_id: MachineId("local".into()),
+                manifest_hash: "manifest".into(),
+                state: DeployState::Applying,
+                started_at: 1,
+                committed_at: None,
+                finished_at: None,
+                summary_json: serde_json::to_string(&DeployPreview {
+                    namespace: namespace.clone(),
+                    manifest_hash: "manifest".into(),
+                    participants: Vec::new(),
+                    phases: Vec::new(),
+                    services: Vec::new(),
+                    service_branch_sources: Vec::new(),
+                    volume_moves: Vec::new(),
+                    warnings: Vec::new(),
+                })
+                .expect("preview json"),
+            })
+            .await
+            .expect("seed applying deploy");
+        store
+            .upsert_deploy_phase(&DeployPhaseRecord {
+                namespace: namespace.clone(),
+                deploy_id: deploy_id.clone(),
+                phase_id: phase_id.clone(),
+                name: "db".into(),
+                order: 0,
+                after: Vec::new(),
+                participants: Vec::new(),
+                work: Vec::new(),
+                state: DeployPhaseState::Running,
+                commit_policy: DeployPhaseCommitPolicy::Checkpoint,
+                rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                advance_policy: ployz_types::model::DeployPhaseAdvancePolicy::Immediate,
+                started_at: 1,
+            })
+            .await
+            .expect("seed running checkpoint phase");
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: vec![ServiceRevisionRecord {
+                    namespace: namespace.clone(),
+                    service: service.name.clone(),
+                    revision_hash: revision_hash.clone(),
+                    spec_json: serde_json::to_string(&service).expect("serialize service"),
+                    created_by: MachineId("local".into()),
+                    created_at: 1,
+                }],
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
+                releases: vec![ServiceReleaseRecord {
+                    namespace: namespace.clone(),
+                    service: service.name.clone(),
+                    release: ServiceRelease {
+                        primary_revision_hash: revision_hash.clone(),
+                        referenced_revision_hashes: vec![revision_hash.clone()],
+                        routing: ServiceRoutingPolicy::Direct { revision_hash },
+                        slots: Vec::new(),
+                        updated_by_deploy_id: phase_commit_id.clone(),
+                        updated_at: 2,
+                    },
+                }],
+                volumes: Vec::new(),
+                deploy: DeployRecord {
+                    deploy_id: phase_commit_id,
+                    namespace: namespace.clone(),
+                    coordinator_machine_id: MachineId("local".into()),
+                    manifest_hash: "manifest".into(),
+                    state: DeployState::CheckpointCommitted,
+                    started_at: 1,
+                    committed_at: Some(2),
+                    finished_at: None,
+                    summary_json: "{}".into(),
+                },
+            })
+            .await
+            .expect("seed durable checkpoint commit evidence");
+
+        let outcome = mark_deploy_failed_after_lock_loss(&store, &deploy_id, "renew failed").await;
+
+        assert_eq!(outcome, DeployLockLossOutcome::PastCommit);
+        let record = store
+            .get_deploy(&deploy_id)
+            .await
+            .expect("get deploy")
+            .expect("deploy");
+        assert_eq!(record.state, DeployState::Applying);
+        let phase = store
+            .get_deploy_phase(&namespace, &deploy_id, &phase_id)
+            .await
+            .expect("get phase")
+            .expect("phase");
+        assert!(matches!(phase.state, DeployPhaseState::Running));
     }
 
     #[tokio::test]
