@@ -4,7 +4,9 @@ use crate::deploy::{
     DeployCandidateStartedPayload, DeployFailurePayload, DeployNamespaceSnapshotPayload,
 };
 use crate::doctor::DoctorPayload;
-use crate::image::{ImageOperationListPayload, ImageOperationPayload, ImageStatusPayload};
+use crate::image::{
+    ImageInspectPayload, ImageOperationListPayload, ImageOperationPayload, ImageStatusPayload,
+};
 use crate::machine::{
     MachineAddPayload, MachineInviteListPayload, MachineListPayload, MachineOperationListPayload,
     MachineOperationPayload, MachineRemovePayload, MachineRttPayload,
@@ -42,6 +44,7 @@ pub enum DaemonPayload {
     DeployCandidateStarted(DeployCandidateStartedPayload),
     DeployFailure(DeployFailurePayload),
     ImageStatus(ImageStatusPayload),
+    ImageInspect(ImageInspectPayload),
     ImageOperation(ImageOperationPayload),
     ImageOperationList(ImageOperationListPayload),
     BuildOperation(BuildOperationPayload),

@@ -545,6 +545,72 @@ mod tests {
     }
 
     #[test]
+    fn parse_image_inspect_command() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let cli = Cli::try_parse_from([
+            "ployzd",
+            "image",
+            "inspect",
+            "--digest",
+            &digest,
+            "--reference",
+            "example/app:latest",
+            "--machine",
+            "machine-a",
+        ])
+        .expect("image inspect args should parse");
+
+        let Command::Image {
+            action:
+                ImageAction::Inspect {
+                    digest,
+                    reference,
+                    machine,
+                },
+        } = cli.command
+        else {
+            panic!("expected image inspect command");
+        };
+        let expected_digest = format!("sha256:{}", "a".repeat(64));
+        assert_eq!(digest, expected_digest);
+        assert_eq!(reference.as_deref(), Some("example/app:latest"));
+        assert_eq!(machine.as_deref(), Some("machine-a"));
+    }
+
+    #[test]
+    fn build_image_inspect_request_encodes_reference_and_machine() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let request = build_image_request(ImageAction::Inspect {
+            digest: digest.clone(),
+            reference: Some("example/app:latest".into()),
+            machine: Some("machine-a".into()),
+        })
+        .expect("image inspect request");
+
+        let DaemonRequest::ImageInspect { request } = request else {
+            panic!("expected image inspect request");
+        };
+        assert_eq!(request.digest.as_str(), digest);
+        assert_eq!(request.reference.as_deref(), Some("example/app:latest"));
+        assert_eq!(
+            request.machines,
+            vec![ployz_types::model::MachineId("machine-a".into())]
+        );
+    }
+
+    #[test]
+    fn build_image_inspect_request_rejects_invalid_digest() {
+        let error = build_image_request(ImageAction::Inspect {
+            digest: "not-a-digest".into(),
+            reference: None,
+            machine: None,
+        })
+        .expect_err("invalid digest should fail");
+
+        assert!(matches!(error, CliError::Usage(_)));
+    }
+
+    #[test]
     fn build_image_operation_get_request() {
         let request = build_image_request(ImageAction::Operation {
             action: ImageOperationAction::Get { id: "op-1".into() },
