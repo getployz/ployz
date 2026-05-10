@@ -552,14 +552,9 @@ fn apply_phase_commit_fact(
         return;
     };
     phase.commit_deploy_id = Some(commit.commit_deploy_id.clone());
-    if matches!(
-        phase.state,
-        DeployPhaseState::Pending | DeployPhaseState::Running
-    ) {
-        phase.state = DeployPhaseState::Succeeded {
-            completed_at: commit.committed_at,
-        };
-    }
+    phase.state = DeployPhaseState::Succeeded {
+        completed_at: commit.committed_at,
+    };
 }
 
 #[async_trait]
@@ -1024,6 +1019,59 @@ mod tests {
                 .expect("list deploy phases"),
             vec![phase]
         );
+    }
+
+    #[tokio::test]
+    async fn deploy_phase_commit_fact_overrides_failed_phase_state() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let deploy_id = DeployId("deploy-1".into());
+        let phase_id = DeployPhaseId("db".into());
+        let mut phase = test_deploy_phase(&namespace, &deploy_id, "db", 0);
+        phase.state = DeployPhaseState::Failed {
+            completed_at: 20,
+            failure: DeployPhaseFailure {
+                code: "COMMIT_PUBLISH_FAILED".into(),
+                message: "routing publish failed after durable commit".into(),
+            },
+        };
+        store
+            .upsert_deploy_phase(&phase)
+            .await
+            .expect("write failed phase");
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: Vec::new(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
+                volume_movements: Vec::new(),
+                phase_commits: vec![ployz_types::model::DeployPhaseCommitRecord {
+                    namespace: namespace.clone(),
+                    deploy_id: deploy_id.clone(),
+                    phase_id: phase_id.clone(),
+                    commit_deploy_id: DeployId("deploy-1-db-commit".into()),
+                    committed_at: 30,
+                }],
+                releases: Vec::new(),
+                volumes: Vec::new(),
+                deploy: test_deploy(&namespace, "deploy-1-db-commit"),
+            })
+            .await
+            .expect("commit phase fact");
+
+        let read = store
+            .get_deploy_phase(&namespace, &deploy_id, &phase_id)
+            .await
+            .expect("read phase")
+            .expect("phase exists");
+        assert_eq!(
+            read.commit_deploy_id,
+            Some(DeployId("deploy-1-db-commit".into()))
+        );
+        assert_eq!(read.state, DeployPhaseState::Succeeded { completed_at: 30 });
     }
 
     #[tokio::test]

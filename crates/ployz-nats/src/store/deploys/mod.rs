@@ -499,14 +499,9 @@ fn apply_phase_commit_fact(
         return;
     };
     phase.commit_deploy_id = Some(commit.commit_deploy_id.clone());
-    if matches!(
-        phase.state,
-        DeployPhaseState::Pending | DeployPhaseState::Running
-    ) {
-        phase.state = DeployPhaseState::Succeeded {
-            completed_at: commit.committed_at,
-        };
-    }
+    phase.state = DeployPhaseState::Succeeded {
+        completed_at: commit.committed_at,
+    };
 }
 
 #[cfg(test)]
@@ -687,6 +682,39 @@ mod tests {
                 ("deploy-a", 1, "web"),
                 ("deploy-b", 0, "deploy")
             ]
+        );
+    }
+
+    #[test]
+    fn phase_commit_fact_overrides_failed_phase_state() {
+        let namespace = Namespace(String::from("prod"));
+        let deploy_id = DeployId(String::from("deploy-a"));
+        let phase_id = DeployPhaseId(String::from("db"));
+        let commit = ployz_types::model::DeployPhaseCommitRecord {
+            namespace: namespace.clone(),
+            deploy_id: deploy_id.clone(),
+            phase_id: phase_id.clone(),
+            commit_deploy_id: DeployId(String::from("deploy-a-db-commit")),
+            committed_at: 42,
+        };
+        let mut phase = deploy_phase("prod", "deploy-a", "db", 0);
+        phase.state = DeployPhaseState::Failed {
+            completed_at: 40,
+            failure: ployz_types::model::DeployPhaseFailure {
+                code: String::from("COMMIT_PUBLISH_FAILED"),
+                message: String::from("routing publish failed after durable commit"),
+            },
+        };
+
+        apply_phase_commit_fact(&mut phase, Some(&commit));
+
+        assert_eq!(
+            phase.commit_deploy_id,
+            Some(DeployId(String::from("deploy-a-db-commit")))
+        );
+        assert_eq!(
+            phase.state,
+            DeployPhaseState::Succeeded { completed_at: 42 }
         );
     }
 
