@@ -17,6 +17,13 @@ impl DaemonState {
         &self,
         request: &ImageInspectRequest,
     ) -> ployz_api::DaemonResponse {
+        let Some(_) = self.active.as_ref() else {
+            return self.err("NO_ACTIVE_MESH", "image inspect requires a running mesh");
+        };
+        if let Err(error) = inspect_target_machine(&self.identity.machine_id, request) {
+            return self.err(error.code, error.message);
+        }
+
         self.handle_image_inspect_with_backend(request, self.runtime_image_backend().await)
             .await
     }
