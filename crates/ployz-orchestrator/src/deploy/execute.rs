@@ -342,6 +342,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
     let mut pending_phase_successes = Vec::new();
     let mut executed_volume_clones = BTreeMap::new();
     let mut checkpointed_volumes = BTreeSet::new();
+    let mut started_clone_volumes = BTreeSet::new();
     let result = async {
         let final_plan = resolve_plan(store, local_machine_id, manifest).await?;
         let final_fingerprint = final_plan.fingerprint();
@@ -414,6 +415,15 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             started.extend(phase_execution.started);
             executed_volume_moves.extend(phase_execution.volume_movements);
             executed_volume_clones.extend(phase_execution.volume_branches);
+            for clone in executed_volume_clones.values() {
+                if volume_has_started_attached_service(
+                    prepared.plan(),
+                    &clone.volume_name,
+                    &started,
+                ) {
+                    started_clone_volumes.insert(clone.volume_name.clone());
+                }
+            }
 
             match phase.commit_policy {
                 DeployPhaseCommitPolicy::Checkpoint => {
@@ -725,6 +735,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                 &deploy_id,
                 &executed_volume_clones,
                 &checkpointed_volumes,
+                &started_clone_volumes,
             )
             .await;
             error_with_clone_cleanup_failures(error.clone(), cleanup_errors)
@@ -776,10 +787,13 @@ async fn cleanup_uncommitted_volume_clones_after_failure(
     deploy_id: &DeployId,
     executed_volume_clones: &BTreeMap<String, ExecutedVolumeClone>,
     checkpointed_volumes: &BTreeSet<String>,
+    started_clone_volumes: &BTreeSet<String>,
 ) -> Vec<String> {
     let mut cleanup_errors = Vec::new();
     for clone in executed_volume_clones.values() {
-        if checkpointed_volumes.contains(&clone.volume_name) {
+        if checkpointed_volumes.contains(&clone.volume_name)
+            || started_clone_volumes.contains(&clone.volume_name)
+        {
             continue;
         }
         if let Err(error) = participant_client
@@ -806,6 +820,23 @@ async fn cleanup_uncommitted_volume_clones_after_failure(
         }
     }
     cleanup_errors
+}
+
+fn volume_has_started_attached_service(
+    plan: &ResolvedPlan,
+    volume_name: &str,
+    started: &HashMap<(String, String), InstanceStatusRecord>,
+) -> bool {
+    plan.volumes()
+        .iter()
+        .find(|volume| volume.declaration.name == volume_name)
+        .is_some_and(|volume| {
+            volume.attached_services.iter().any(|service| {
+                started
+                    .keys()
+                    .any(|(started_service, _)| started_service == service)
+            })
+        })
 }
 
 fn is_post_commit_routing_publish_failure(error: &Error) -> bool {
