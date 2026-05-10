@@ -2172,6 +2172,7 @@ async fn apply_drains_removed_uncommitted_volume_clone_candidates_before_retryin
     let local_machine_id = MachineId("local".into());
     let source_namespace = Namespace("prod".into());
     seed_volume(&store, &source_namespace, "data", "machine-a").await;
+    seed_volume(&store, &source_namespace, "cache", "machine-a").await;
 
     let mut db = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
     db.template.mounts.push(Mount {
@@ -2185,17 +2186,31 @@ async fn apply_drains_removed_uncommitted_volume_clone_candidates_before_retryin
     manifest
         .volumes
         .push(test_volume("data", VolumeScope::Single));
+    manifest
+        .volumes
+        .push(test_volume("cache", VolumeScope::Single));
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
-        volumes: vec![VolumeIntentHint {
-            volume: "data".into(),
-            intent: VolumeIntent::Clone {
-                source_namespace,
-                source_volume: "data".into(),
-                data_policy: VolumeCloneDataPolicy::Raw,
-                consistency: VolumeCloneConsistency::CrashConsistent,
+        volumes: vec![
+            VolumeIntentHint {
+                volume: "data".into(),
+                intent: VolumeIntent::Clone {
+                    source_namespace: source_namespace.clone(),
+                    source_volume: "data".into(),
+                    data_policy: VolumeCloneDataPolicy::Raw,
+                    consistency: VolumeCloneConsistency::CrashConsistent,
+                },
             },
-        }],
+            VolumeIntentHint {
+                volume: "cache".into(),
+                intent: VolumeIntent::Clone {
+                    source_namespace,
+                    source_volume: "cache".into(),
+                    data_policy: VolumeCloneDataPolicy::Raw,
+                    consistency: VolumeCloneConsistency::CrashConsistent,
+                },
+            },
+        ],
         phases: vec![DeployPhaseIntent {
             phase_id: "app".into(),
             name: Some("App".into()),
@@ -2234,7 +2249,28 @@ async fn apply_drains_removed_uncommitted_volume_clone_candidates_before_retryin
     let Some(intent) = retry_manifest.intent.as_mut() else {
         panic!("expected clone intent");
     };
-    intent.phases.clear();
+    intent.phases = vec![
+        DeployPhaseIntent {
+            phase_id: "data".into(),
+            name: Some("Data".into()),
+            after: Vec::new(),
+            services: Vec::new(),
+            volumes: vec!["data".into()],
+            commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+            rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+            advance_policy: DeployPhaseAdvancePolicy::Immediate,
+        },
+        DeployPhaseIntent {
+            phase_id: "cache".into(),
+            name: Some("Cache".into()),
+            after: vec!["data".into()],
+            services: vec!["web".into()],
+            volumes: vec!["cache".into()],
+            commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+            rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+            advance_policy: DeployPhaseAdvancePolicy::Immediate,
+        },
+    ];
 
     let retry_plan = resolve_plan(&store, &local_machine_id, &retry_manifest)
         .await
@@ -2262,8 +2298,22 @@ async fn apply_drains_removed_uncommitted_volume_clone_candidates_before_retryin
     .await
     .expect("retry should drain removed stale candidate before cloning");
 
-    assert_eq!(retry_controller.clone_count(), 1);
+    assert_eq!(retry_controller.clone_count(), 2);
     let log = retry_controller.operation_log().await;
+    assert_eq!(
+        log.iter()
+            .filter(|entry| entry.as_str() == "drain:inst-db-old")
+            .count(),
+        1,
+        "stale candidate should only be drained once: {log:?}"
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|entry| entry.as_str() == "remove:inst-db-old")
+            .count(),
+        1,
+        "stale candidate should only be removed once: {log:?}"
+    );
     let drain = log
         .iter()
         .position(|entry| entry == "drain:inst-db-old")
@@ -2272,12 +2322,16 @@ async fn apply_drains_removed_uncommitted_volume_clone_candidates_before_retryin
         .iter()
         .position(|entry| entry == "remove:inst-db-old")
         .expect("removed stale candidate should be removed before clone");
-    let clone = log
+    let data_clone = log
         .iter()
         .position(|entry| entry.starts_with("clone:data:machine-a:prod/data"))
-        .expect("clone should run after stale candidate is removed");
+        .expect("data clone should run after stale candidate is removed");
+    let cache_clone = log
+        .iter()
+        .position(|entry| entry.starts_with("clone:cache:machine-a:prod/cache"))
+        .expect("cache clone should run after stale candidate is removed");
     assert!(
-        drain < remove && remove < clone,
+        drain < remove && remove < data_clone && remove < cache_clone,
         "expected removed stale candidate cleanup before clone retry: {log:?}"
     );
 }
