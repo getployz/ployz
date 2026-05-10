@@ -271,14 +271,19 @@ impl<R: ShellRunner> ZfsDriver<R> {
             guid: self.snapshot_guid(source_dataset, snapshot).await?,
         };
         if self.dataset_exists(&target.dataset).await? {
-            let origin = self.dataset_origin(&target.dataset).await?;
-            return Err(Error::operation(
-                "zfs clone",
-                format!(
-                    "target dataset '{}' already exists with origin {:?}; uncommitted clone targets are not adopted",
-                    target.dataset, origin
-                ),
-            ));
+            if !self
+                .destroy_stale_volume_clone_target(&target.dataset, source_dataset, metadata)
+                .await?
+            {
+                let origin = self.dataset_origin(&target.dataset).await?;
+                return Err(Error::operation(
+                    "zfs clone",
+                    format!(
+                        "target dataset '{}' already exists with origin {:?}; uncommitted clone targets are not adopted",
+                        target.dataset, origin
+                    ),
+                ));
+            }
         }
 
         let requested_bytes =
@@ -362,6 +367,35 @@ impl<R: ShellRunner> ZfsDriver<R> {
             }
         }
         self.destroy_dataset_recursive(dataset).await?;
+        Ok(true)
+    }
+
+    async fn destroy_stale_volume_clone_target(
+        &self,
+        dataset: &str,
+        source_dataset: &str,
+        metadata: &CloneMetadata,
+    ) -> Result<bool> {
+        for (property, expected) in [
+            ("com.ployz:role", "volume_clone"),
+            ("com.ployz:namespace", metadata.namespace.as_str()),
+            ("com.ployz:volume", metadata.volume.as_str()),
+            (
+                "com.ployz:source_namespace",
+                metadata.source_namespace.as_str(),
+            ),
+            ("com.ployz:source_volume", metadata.source_volume.as_str()),
+        ] {
+            let actual = self.dataset_property(dataset, property).await?;
+            if actual.as_deref() != Some(expected) {
+                return Ok(false);
+            }
+        }
+        let stale_snapshot = self.dataset_property(dataset, "com.ployz:snapshot").await?;
+        self.destroy_dataset_recursive(dataset).await?;
+        if let Some(snapshot) = stale_snapshot {
+            self.destroy_snapshot(source_dataset, &snapshot).await?;
+        }
         Ok(true)
     }
 
@@ -1238,7 +1272,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clone_snapshot_rejects_existing_matching_clone_target() {
+    async fn clone_snapshot_recovers_stale_matching_clone_target() {
         let fake = FakeShellRunner::default();
         let driver = driver(&fake).await;
         let mut target = spec();
@@ -1250,8 +1284,22 @@ mod tests {
             "tank/ployz/pr-39/data\t1073741824\t/tank/ployz/pr-39/data\n",
             "",
         );
-        fake.push(0, "tank/ployz/default/data@branch\n", "");
-        let error = driver
+        fake.push(0, "volume_clone\n", "");
+        fake.push(0, "pr-39\n", "");
+        fake.push(0, "data\n", "");
+        fake.push(0, "default\n", "");
+        fake.push(0, "data\n", "");
+        fake.push(0, "stale-branch\n", "");
+        fake.push(0, "", "");
+        fake.push(0, "", "");
+        push_overcommit_lookup(&fake, 1024_u64.pow(4), "tank/ployz\t0\n");
+        fake.push(1, "", "dataset does not exist");
+        fake.push(0, "", "");
+        fake.push(0, "", "");
+        fake.push(0, "", "");
+        fake.push(0, "", "");
+
+        let snapshot = driver
             .clone_snapshot(
                 "tank/ployz/default/data",
                 "branch",
@@ -1259,23 +1307,23 @@ mod tests {
                 &clone_metadata(),
             )
             .await
-            .expect_err("existing clone target should not be adopted");
+            .expect("stale clone target should be replaced");
 
-        assert!(error.to_string().contains("already exists"), "got: {error}");
-
+        assert_eq!(snapshot.name, "branch");
         let calls = fake.calls();
-        assert_eq!(calls.len(), 4);
-        assert_eq!(
-            calls[3],
-            [
-                "zfs",
-                "get",
-                "-Hp",
-                "-o",
-                "value",
-                "origin",
-                "tank/ployz/pr-39/data"
-            ]
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.as_slice() == ["zfs", "destroy", "-r", "tank/ployz/pr-39/data"])
+        );
+        assert!(
+            calls.iter().any(|call| call.as_slice()
+                == ["zfs", "destroy", "tank/ployz/default/data@stale-branch"])
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.first().map(String::as_str) == Some("chmod"))
         );
     }
 
@@ -1386,6 +1434,7 @@ mod tests {
             "tank/ployz/pr-39/data\t1073741824\t/tank/ployz/pr-39/data\n",
             "",
         );
+        fake.push(0, "-\n", "");
         fake.push(0, "tank/ployz/default/data@other\n", "");
 
         let error = driver
