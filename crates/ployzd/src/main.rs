@@ -10,8 +10,8 @@ pub(crate) use cli::DebugTickTaskArg;
 pub(crate) use cli::{
     Cli, CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
     DeployServiceArgs, InstallSourceArg, MachineAction, MachineInviteAction,
-    MachineOperationAction, MachineStorageAction, MeshAction, RuntimeAction, RuntimeTargetArg,
-    ServiceModeArg,
+    MachineOperationAction, MachineStorageAction, MeshAction, MigrateAction, MigrateServiceArgs,
+    RuntimeAction, RuntimeTargetArg, ServiceModeArg,
 };
 use cli_io::{cmd_rpc_stdio, cmd_runtime_stream, render_response, request_daemon};
 #[cfg(test)]
@@ -19,7 +19,7 @@ use ployz_api::DaemonRequest;
 #[cfg(test)]
 use ployz_api::{
     DebugTickTask as ProtocolDebugTickTask, InstallRuntimeTarget as ApiInstallRuntimeTarget,
-    InstallServiceMode as ApiInstallServiceMode,
+    InstallServiceMode as ApiInstallServiceMode, MigrateServiceMode,
 };
 use ployz_config::{RuntimeTarget, ServiceMode, load_client_config, load_daemon_config};
 use ployz_sdk::UnixSocketTransport;
@@ -30,7 +30,8 @@ use ployzd::{BuiltInImages, HostPlatform, init_tracing, run_daemon, validate_run
 use request_builder::build_request;
 #[cfg(test)]
 use request_builder::{
-    build_debug_request, build_machine_request, build_service_spec, upsert_service_in_manifest,
+    build_debug_request, build_machine_request, build_migrate_service_request, build_service_spec,
+    upsert_service_in_manifest,
 };
 use std::process;
 
@@ -103,6 +104,7 @@ async fn run() -> Result<i32> {
         | other @ Command::Doctor
         | other @ Command::Debug { .. }
         | other @ Command::Deploy(_)
+        | other @ Command::Migrate { .. }
         | other @ Command::Runtime { .. }
         | other @ Command::Mesh { .. }
         | other @ Command::Machine { .. }
@@ -199,6 +201,87 @@ mod tests {
         assert_eq!(args.name, "api");
         assert_eq!(args.namespace, "prod");
         assert_eq!(args.image, "nginx:latest");
+    }
+
+    #[test]
+    fn parse_migrate_service_apply_command() {
+        let cli =
+            Cli::try_parse_from(["ployzd", "migrate", "apply", "prod/db", "--to", "machine-b"])
+                .expect("migrate service args should parse");
+
+        let Command::Migrate {
+            action: MigrateAction::Apply(args),
+        } = cli.command
+        else {
+            panic!("expected migrate command");
+        };
+        assert_eq!(args.service_ref, "prod/db");
+        assert_eq!(args.to, "machine-b");
+    }
+
+    #[test]
+    fn parse_migrate_service_render_manifest_command() {
+        let cli = Cli::try_parse_from([
+            "ployzd",
+            "migrate",
+            "render-manifest",
+            "prod/db",
+            "--to",
+            "machine-b",
+        ])
+        .expect("migrate render args should parse");
+
+        let Command::Migrate {
+            action: MigrateAction::RenderManifest(args),
+        } = cli.command
+        else {
+            panic!("expected migrate command");
+        };
+        assert_eq!(args.service_ref, "prod/db");
+    }
+
+    #[test]
+    fn parse_migrate_service_requires_explicit_action() {
+        assert!(
+            Cli::try_parse_from(["ployzd", "migrate", "prod/db", "--to", "machine-b"]).is_err()
+        );
+    }
+
+    #[test]
+    fn build_migrate_service_request_encodes_mode() {
+        let request = build_migrate_service_request(
+            MigrateServiceArgs {
+                service_ref: "prod/db".into(),
+                to: "machine-b".into(),
+            },
+            MigrateServiceMode::Preview,
+        )
+        .expect("migrate request");
+
+        let DaemonRequest::MigrateService { request } = request else {
+            panic!("expected migrate service request");
+        };
+        assert_eq!(request.namespace, "prod");
+        assert_eq!(request.service, "db");
+        assert_eq!(request.target_machine, "machine-b");
+        assert_eq!(request.mode, MigrateServiceMode::Preview);
+    }
+
+    #[test]
+    fn build_migrate_service_request_requires_namespace_service() {
+        let error = build_migrate_service_request(
+            MigrateServiceArgs {
+                service_ref: "db".into(),
+                to: "machine-b".into(),
+            },
+            MigrateServiceMode::Apply,
+        )
+        .expect_err("invalid service ref should fail");
+
+        let CliError::Usage(message) = error else {
+            panic!("expected usage error");
+        };
+        assert!(message.contains("expected namespace/service"));
     }
 
     #[test]

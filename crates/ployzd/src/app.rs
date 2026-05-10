@@ -376,7 +376,10 @@ fn spawn_command_task(
             return;
         }
 
-        let lane = DaemonState::request_lane(&command.request);
+        let lane = {
+            let state_guard = state.read().await;
+            state_guard.request_lane_for_state(&command.request)
+        };
         let started_at = std::time::Instant::now();
         let response_flushed = command.response_flushed.take();
         let response = tokio::select! {
