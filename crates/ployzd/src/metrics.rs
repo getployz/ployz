@@ -124,6 +124,8 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::ImageInspect { .. } => "image_inspect",
         ployz_api::DaemonRequest::ImagePush { .. } => "image_push",
         ployz_api::DaemonRequest::ImageDistribute { .. } => "image_distribute",
+        ployz_api::DaemonRequest::ImageReceiveSession { .. } => "image_receive_session",
+        ployz_api::DaemonRequest::ImageReceivedImport { .. } => "image_received_import",
         ployz_api::DaemonRequest::ImageOperationGet { .. } => "image_operation_get",
         ployz_api::DaemonRequest::ImageOperationList => "image_operation_list",
         ployz_api::DaemonRequest::BuildOperationGet { .. } => "build_operation_get",

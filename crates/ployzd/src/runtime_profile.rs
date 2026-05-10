@@ -199,6 +199,24 @@ impl RuntimeProfile {
         }
     }
 
+    #[must_use]
+    pub(crate) fn image_receiver_bind_addr(
+        &self,
+        zfs_transfer_port: u16,
+        overlay_ip: OverlayIp,
+    ) -> Option<SocketAddr> {
+        let image_receiver_port = zfs_transfer_port.checked_add(1)?;
+        match self.zfs_transfer_binding {
+            ZfsTransferBinding::Loopback => {
+                Some(SocketAddr::from(([127, 0, 0, 1], image_receiver_port)))
+            }
+            ZfsTransferBinding::Overlay => Some(SocketAddr::new(
+                IpAddr::V6(overlay_ip.0),
+                image_receiver_port,
+            )),
+        }
+    }
+
     pub(crate) async fn start_gateway(
         &self,
         config: GatewayConfig,
