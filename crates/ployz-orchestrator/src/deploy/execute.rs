@@ -1541,7 +1541,7 @@ async fn execute_volume_moves(
         participants.get(&movement.to_machine)?;
 
         let mut stopped_writer_events =
-            stop_volume_writers(participant_client, participants, plan, volume).await?;
+            stop_volume_writers(participant_client, participants, plan, volume, "moving").await?;
         events.append(&mut stopped_writer_events);
 
         let snapshot = volume_move_snapshot_name(plan.manifest_hash(), &volume.declaration.name);
@@ -1616,6 +1616,10 @@ async fn execute_volume_clones(
         };
         participants.get(&clone_source.source_machine)?;
         participants.get(&volume.machine_id)?;
+
+        let mut stopped_writer_events =
+            stop_volume_writers(participant_client, participants, plan, volume, "cloning").await?;
+        events.append(&mut stopped_writer_events);
 
         let snapshot = volume_clone_snapshot_name(
             &participants.deploy_id,
@@ -1785,6 +1789,7 @@ async fn stop_volume_writers(
     participants: &ParticipantSet,
     plan: &ResolvedPlan,
     moving_volume: &crate::deploy::plan::PlannedVolume,
+    operation: &str,
 ) -> Result<Vec<DeployEvent>> {
     let mut current_instances = BTreeMap::new();
     let writer_services = moving_volume
@@ -1839,8 +1844,8 @@ async fn stop_volume_writers(
         events.push(DeployEvent {
             step: "stop_volume_writer".into(),
             message: format!(
-                "drained writer instance {} for service {} before moving volume {}",
-                instance_id, service, moving_volume.declaration.name
+                "drained writer instance {} for service {} before {} volume {}",
+                instance_id, service, operation, moving_volume.declaration.name
             ),
         });
         participant_client
@@ -1854,8 +1859,8 @@ async fn stop_volume_writers(
         events.push(DeployEvent {
             step: "stop_volume_writer".into(),
             message: format!(
-                "removed writer instance {} for service {} before moving volume {}",
-                instance_id, service, moving_volume.declaration.name
+                "removed writer instance {} for service {} before {} volume {}",
+                instance_id, service, operation, moving_volume.declaration.name
             ),
         });
     }
