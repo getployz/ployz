@@ -72,51 +72,56 @@ async fn build_nats_subnet_coordinator(
     Ok(std::sync::Arc::new(NatsSubnetCoordinator::new(locks)))
 }
 
-async fn restart_image_receiver_listener_for_runtime_restart(
-    image_receiver: &mut Box<dyn RuntimeHandle>,
-    current_bind_addr: &mut Option<SocketAddr>,
+async fn prepare_image_receiver_listener_for_runtime_restart(
+    current_bind_addr: Option<SocketAddr>,
     new_bind_addr: Option<SocketAddr>,
     image_registry: registry::ImageRegistry,
-) -> Result<(), String> {
-    if *current_bind_addr == new_bind_addr {
-        return Ok(());
+) -> Result<Option<Box<dyn RuntimeHandle>>, String> {
+    if current_bind_addr == new_bind_addr {
+        return Ok(None);
     }
-
-    let previous_bind_addr = *current_bind_addr;
-    let previous = std::mem::replace(image_receiver, Box::new(NoopRuntimeHandle));
-    if let Err(error) = previous.shutdown().await {
-        tracing::warn!(?error, "runtime restart: image receiver stop failed");
-    }
-    *current_bind_addr = None;
 
     let new_receiver: Box<dyn RuntimeHandle> = if let Some(bind_addr) = new_bind_addr {
-        match registry::serve(bind_addr, image_registry.clone()).await {
+        match registry::serve(bind_addr, image_registry).await {
             Ok(handle) => Box::new(handle),
-            Err(error) => {
-                if let Some(previous_bind_addr) = previous_bind_addr {
-                    match registry::serve(previous_bind_addr, image_registry).await {
-                        Ok(restored) => {
-                            *image_receiver = Box::new(restored);
-                            *current_bind_addr = Some(previous_bind_addr);
-                        }
-                        Err(restore_error) => {
-                            tracing::warn!(
-                                %restore_error,
-                                "runtime restart: image receiver rollback failed"
-                            );
-                        }
-                    }
-                }
-                return Err(format!("image receiver start failed: {error}"));
-            }
+            Err(error) => return Err(format!("image receiver start failed: {error}")),
         }
     } else {
         Box::new(NoopRuntimeHandle)
     };
 
-    *image_receiver = new_receiver;
+    Ok(Some(new_receiver))
+}
+
+async fn commit_prepared_image_receiver_listener(
+    image_receiver: &mut Box<dyn RuntimeHandle>,
+    current_bind_addr: &mut Option<SocketAddr>,
+    new_bind_addr: Option<SocketAddr>,
+    prepared_receiver: Option<Box<dyn RuntimeHandle>>,
+) {
+    let Some(prepared_receiver) = prepared_receiver else {
+        return;
+    };
+
+    let previous = std::mem::replace(image_receiver, prepared_receiver);
+    if let Err(error) = previous.shutdown().await {
+        tracing::warn!(?error, "runtime restart: image receiver stop failed");
+    }
     *current_bind_addr = new_bind_addr;
-    Ok(())
+}
+
+async fn rollback_prepared_image_receiver_listener(
+    prepared_receiver: Option<Box<dyn RuntimeHandle>>,
+) {
+    let Some(prepared_receiver) = prepared_receiver else {
+        return;
+    };
+    if let Err(error) = prepared_receiver.shutdown().await {
+        tracing::warn!(
+            ?error,
+            "runtime restart: prepared image receiver rollback failed"
+        );
+    }
 }
 
 async fn start_nats_certificate_renewal_worker(
@@ -837,28 +842,30 @@ impl DaemonState {
             return Err("no running network".into());
         };
 
-        if let Err(error) = restart_image_receiver_listener_for_runtime_restart(
-            &mut active.image_receiver,
-            &mut active.image_receiver_bind_addr,
+        let prepared_image_receiver = match prepare_image_receiver_listener_for_runtime_restart(
+            active.image_receiver_bind_addr,
             new_image_receiver_bind_addr,
             image_registry.clone(),
         )
         .await
         {
-            if let Err(shutdown_error) = new_dns.shutdown().await {
-                tracing::warn!(
-                    ?shutdown_error,
-                    "runtime rollback failed after image receiver start error"
-                );
+            Ok(prepared_image_receiver) => prepared_image_receiver,
+            Err(error) => {
+                if let Err(shutdown_error) = new_dns.shutdown().await {
+                    tracing::warn!(
+                        ?shutdown_error,
+                        "runtime rollback failed after image receiver start error"
+                    );
+                }
+                if let Err(shutdown_error) = new_gateway.shutdown().await {
+                    tracing::warn!(
+                        ?shutdown_error,
+                        "runtime rollback failed after image receiver start error"
+                    );
+                }
+                return Err(error);
             }
-            if let Err(shutdown_error) = new_gateway.shutdown().await {
-                tracing::warn!(
-                    ?shutdown_error,
-                    "runtime rollback failed after image receiver start error"
-                );
-            }
-            return Err(error);
-        }
+        };
 
         if let Err(error) = image_registry.revoke_all_sessions().await {
             tracing::warn!(%error, "runtime restart: image receive session cleanup failed");
@@ -882,28 +889,25 @@ impl DaemonState {
             })
             .await;
 
-        match mode {
-            RuntimeRestartMode::NetworkAndStore => {
-                active
-                    .mesh
-                    .restart_runtime_for_config_change(
-                        components.network,
-                        components.store,
-                        components.container_network,
-                    )
-                    .await
-                    .map_err(|error| format!("mesh runtime restart failed: {error}"))?;
-            }
-            RuntimeRestartMode::NetworkOnly => {
-                active
-                    .mesh
-                    .restart_runtime_for_subnet_change(
-                        components.network,
-                        components.container_network,
-                    )
-                    .await
-                    .map_err(|error| format!("mesh runtime restart failed: {error}"))?;
-            }
+        let restart_result = match mode {
+            RuntimeRestartMode::NetworkAndStore => active
+                .mesh
+                .restart_runtime_for_config_change(
+                    components.network,
+                    components.store,
+                    components.container_network,
+                )
+                .await
+                .map_err(|error| format!("mesh runtime restart failed: {error}")),
+            RuntimeRestartMode::NetworkOnly => active
+                .mesh
+                .restart_runtime_for_subnet_change(components.network, components.container_network)
+                .await
+                .map_err(|error| format!("mesh runtime restart failed: {error}")),
+        };
+        if let Err(error) = restart_result {
+            rollback_prepared_image_receiver_listener(prepared_image_receiver).await;
+            return Err(error);
         }
 
         let _ = active
@@ -913,6 +917,13 @@ impl DaemonState {
                 record.subnet = net_config.subnet;
             })
             .await;
+        commit_prepared_image_receiver_listener(
+            &mut active.image_receiver,
+            &mut active.image_receiver_bind_addr,
+            new_image_receiver_bind_addr,
+            prepared_image_receiver,
+        )
+        .await;
         active.config = net_config;
         active.gateway = new_gateway;
         active.dns = new_dns;
@@ -1199,38 +1210,78 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn image_receiver_restart_failure_restores_previous_listener() {
+    async fn image_receiver_prepare_failure_keeps_previous_listener() {
         let registry = registry::ImageRegistry::new(unique_temp_dir("ployz-image-registry"));
         let previous = registry::serve(SocketAddr::from(([127, 0, 0, 1], 0)), registry.clone())
             .await
             .expect("previous image receiver should bind");
         let previous_bind_addr = previous.bind_addr();
-        let mut image_receiver: Box<dyn RuntimeHandle> = Box::new(previous);
-        let mut current_bind_addr = Some(previous_bind_addr);
+        let image_receiver: Box<dyn RuntimeHandle> = Box::new(previous);
         let occupied = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
             .await
             .expect("occupy replacement receiver port");
         let occupied_addr = occupied.local_addr().expect("occupied local addr");
 
-        let error = restart_image_receiver_listener_for_runtime_restart(
-            &mut image_receiver,
-            &mut current_bind_addr,
+        let error = match prepare_image_receiver_listener_for_runtime_restart(
+            Some(previous_bind_addr),
             Some(occupied_addr),
             registry,
         )
         .await
-        .expect_err("occupied replacement port should fail");
+        {
+            Ok(_) => panic!("occupied replacement port should fail"),
+            Err(error) => error,
+        };
 
         assert!(error.contains("image receiver start failed"));
-        assert_eq!(current_bind_addr, Some(previous_bind_addr));
         TcpListener::bind(previous_bind_addr)
             .await
-            .expect_err("previous listener should be restored");
+            .expect_err("previous listener should remain active");
 
         image_receiver
             .shutdown()
             .await
-            .expect("shutdown restored listener");
+            .expect("shutdown previous listener");
+    }
+
+    #[tokio::test]
+    async fn prepared_image_receiver_is_rolled_back_without_swapping_active_listener() {
+        let registry = registry::ImageRegistry::new(unique_temp_dir("ployz-image-registry"));
+        let previous = registry::serve(SocketAddr::from(([127, 0, 0, 1], 0)), registry.clone())
+            .await
+            .expect("previous image receiver should bind");
+        let previous_bind_addr = previous.bind_addr();
+        let image_receiver: Box<dyn RuntimeHandle> = Box::new(previous);
+        let replacement_addr = free_local_addr().await;
+
+        let prepared = prepare_image_receiver_listener_for_runtime_restart(
+            Some(previous_bind_addr),
+            Some(replacement_addr),
+            registry,
+        )
+        .await
+        .expect("replacement image receiver should bind");
+
+        TcpListener::bind(previous_bind_addr)
+            .await
+            .expect_err("previous listener should remain active before commit");
+        TcpListener::bind(replacement_addr)
+            .await
+            .expect_err("prepared listener should be active before rollback");
+
+        rollback_prepared_image_receiver_listener(prepared).await;
+
+        TcpListener::bind(replacement_addr)
+            .await
+            .expect("prepared listener should be released by rollback");
+        TcpListener::bind(previous_bind_addr)
+            .await
+            .expect_err("previous listener should remain active after rollback");
+
+        image_receiver
+            .shutdown()
+            .await
+            .expect("shutdown previous listener");
     }
 
     fn make_state(
@@ -1293,6 +1344,13 @@ mod tests {
 
         active.stop_bootstrap_peer_seed().await;
         active.mesh.destroy().await.expect("destroy mesh");
+    }
+
+    async fn free_local_addr() -> SocketAddr {
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("bind free local addr");
+        listener.local_addr().expect("read local addr")
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {
