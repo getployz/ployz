@@ -1617,8 +1617,13 @@ async fn execute_volume_clones(
         participants.get(&clone_source.source_machine)?;
         participants.get(&volume.machine_id)?;
 
-        let mut stopped_writer_events =
-            stop_volume_writers(participant_client, participants, plan, volume, "cloning").await?;
+        let mut stopped_writer_events = stop_uncommitted_namespace_instances_before_volume_clone(
+            participant_client,
+            participants,
+            plan,
+            volume,
+        )
+        .await?;
         events.append(&mut stopped_writer_events);
 
         let snapshot = volume_clone_snapshot_name(
@@ -1861,6 +1866,73 @@ async fn stop_volume_writers(
             message: format!(
                 "removed writer instance {} for service {} before {} volume {}",
                 instance_id, service, operation, moving_volume.declaration.name
+            ),
+        });
+    }
+    Ok(events)
+}
+
+async fn stop_uncommitted_namespace_instances_before_volume_clone(
+    participant_client: &dyn DeployParticipantClient,
+    participants: &ParticipantSet,
+    plan: &ResolvedPlan,
+    cloned_volume: &crate::deploy::plan::PlannedVolume,
+) -> Result<Vec<DeployEvent>> {
+    let committed_instance_ids = plan
+        .services()
+        .iter()
+        .flat_map(|service| service.slots.iter())
+        .filter_map(|slot| slot.current.as_ref())
+        .map(|slot| slot.active_instance_id.0.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut current_instances = BTreeMap::new();
+    for status in &participants.instances {
+        if status.namespace == *plan.namespace()
+            && !committed_instance_ids.contains(status.instance_id.0.as_str())
+            && !matches!(status.phase, InstancePhase::Failed | InstancePhase::Removed)
+        {
+            current_instances.insert(
+                status.instance_id.0.clone(),
+                (
+                    status.instance_id.clone(),
+                    status.machine_id.clone(),
+                    status.service.clone(),
+                ),
+            );
+        }
+    }
+
+    let mut events = Vec::new();
+    for (_instance_id_key, (instance_id, machine_id, service)) in current_instances {
+        participants.get(&machine_id)?;
+        participant_client
+            .drain_instance(
+                &machine_id,
+                plan.namespace(),
+                &participants.deploy_id,
+                &instance_id,
+            )
+            .await?;
+        events.push(DeployEvent {
+            step: "stop_volume_writer".into(),
+            message: format!(
+                "drained uncommitted instance {} for service {} before cloning volume {}",
+                instance_id, service, cloned_volume.declaration.name
+            ),
+        });
+        participant_client
+            .remove_instance(
+                &machine_id,
+                plan.namespace(),
+                &participants.deploy_id,
+                &instance_id,
+            )
+            .await?;
+        events.push(DeployEvent {
+            step: "stop_volume_writer".into(),
+            message: format!(
+                "removed uncommitted instance {} for service {} before cloning volume {}",
+                instance_id, service, cloned_volume.declaration.name
             ),
         });
     }
