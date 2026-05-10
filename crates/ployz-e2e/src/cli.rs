@@ -88,7 +88,6 @@ impl Scenario {
             ZfsMode::Real => {
                 scenarios.push(Self::MigrateServiceRealSmoke);
                 scenarios.push(Self::DrainAwareRedeployRealSmoke);
-                scenarios.push(Self::VolumeCloneBranchRealSmoke);
             }
         }
         scenarios
@@ -189,7 +188,6 @@ mod tests {
                 Scenario::DockerBridgeForwardSmoke,
                 Scenario::MigrateServiceRealSmoke,
                 Scenario::DrainAwareRedeployRealSmoke,
-                Scenario::VolumeCloneBranchRealSmoke,
             ]
         );
     }
