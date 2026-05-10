@@ -2,10 +2,11 @@ use crate::error::{DeployError, Error, Result};
 use crate::machine_policy::{can_keep_existing_slot, is_new_placement_candidate};
 use crate::model::{
     DeployChangeKind, DeployId, DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseId,
-    DeployPhasePlan, DeployPhaseRollbackPolicy, DeployPhaseWork, DeployPreview, MachineId,
-    MachineLifecycle, MachineMembership, ServiceBranchLineageRecord, ServiceBranchSourcePlan,
-    ServicePlan, ServiceReleaseRecord, ServiceReleaseSlot, ServiceSourceMode, ServiceSourcePlan,
-    SlotId, SlotPlan, VolumeClonePlan, VolumeClonePreflightAction, VolumeClonePreflightPlan,
+    DeployPhasePlan, DeployPhaseRollbackPolicy, DeployPhaseWork, DeployPreview,
+    DeployPreviewBaseline, DeployPreviewBaselineComponents, MachineId, MachineLifecycle,
+    MachineMembership, ServiceBranchLineageRecord, ServiceBranchSourcePlan, ServicePlan,
+    ServiceReleaseRecord, ServiceReleaseSlot, ServiceSourceMode, ServiceSourcePlan, SlotId,
+    SlotPlan, VolumeClonePlan, VolumeClonePreflightAction, VolumeClonePreflightPlan,
     VolumeClonePreflightScope, VolumeMovePlan, VolumeRecord, service_source_fingerprint,
 };
 use ployz_store_api::{DeployStore, MachineMembershipStore, StoreDriver};
@@ -14,6 +15,7 @@ use ployz_types::spec::{
     ServiceSpec, VolumeCloneConsistency, VolumeCloneDataPolicy, VolumeDeclaration, VolumeIntent,
     VolumeScope, parse_quota_bytes, stable_hash_hex,
 };
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,86 +173,186 @@ impl ResolvedPlan {
             .collect()
     }
 
+    #[cfg(test)]
     pub(super) fn service_source_fingerprint(&self) -> String {
         service_source_fingerprint(&self.service_sources())
     }
 
+    pub(super) fn baseline(&self) -> DeployPreviewBaseline {
+        let parts = self.preview_parts();
+        self.baseline_from_parts(&parts)
+    }
+
+    fn baseline_from_parts(&self, parts: &ResolvedPreviewParts) -> DeployPreviewBaseline {
+        DeployPreviewBaseline::new(DeployPreviewBaselineComponents {
+            manifest: self.manifest_hash.clone(),
+            participants: stable_hash_json(&self.participants.iter().cloned().collect::<Vec<_>>()),
+            phases: stable_hash_json(&self.phases),
+            services: stable_hash_json(&parts.services),
+            service_sources: service_source_fingerprint(&parts.service_sources),
+            volumes: stable_hash_json(&self.volume_baseline_inputs()),
+            volume_moves: stable_hash_json(&parts.volume_moves),
+            volume_clones: stable_hash_json(&parts.volume_clones),
+        })
+    }
+
+    fn preview_parts(&self) -> ResolvedPreviewParts {
+        ResolvedPreviewParts {
+            service_sources: self.service_sources(),
+            services: self.service_plans(),
+            volume_moves: self.volume_moves(),
+            volume_clones: self.volume_clones(),
+        }
+    }
+
+    fn volume_baseline_inputs(&self) -> Vec<VolumeBaselineInput> {
+        self.volumes
+            .iter()
+            .map(|volume| {
+                let PlannedVolume {
+                    declaration,
+                    machine_id,
+                    attached_services,
+                    current_writer_slots,
+                    current,
+                    movement,
+                    clone_source,
+                } = volume;
+                VolumeBaselineInput {
+                    declaration: declaration.clone(),
+                    machine_id: machine_id.clone(),
+                    attached_services: attached_services.clone(),
+                    current_writer_slots: current_writer_slots
+                        .iter()
+                        .map(|writer| {
+                            let PlannedVolumeWriter { service, slot } = writer;
+                            VolumeWriterBaselineInput {
+                                service: service.clone(),
+                                slot: slot.clone(),
+                            }
+                        })
+                        .collect(),
+                    current: current.clone(),
+                    movement: movement.as_ref().map(|movement| {
+                        let PlannedVolumeMove {
+                            from_machine,
+                            to_machine,
+                        } = movement;
+                        VolumeMoveBaselineInput {
+                            from_machine: from_machine.clone(),
+                            to_machine: to_machine.clone(),
+                        }
+                    }),
+                    clone_source: clone_source.as_ref().map(|clone_source| {
+                        let PlannedVolumeClone {
+                            source_namespace,
+                            source_volume,
+                            source_machine,
+                            data_policy,
+                            consistency,
+                            source_record,
+                        } = clone_source;
+                        VolumeCloneBaselineInput {
+                            source_namespace: source_namespace.clone(),
+                            source_volume: source_volume.clone(),
+                            source_machine: source_machine.clone(),
+                            data_policy: *data_policy,
+                            consistency: *consistency,
+                            source_record: source_record.clone(),
+                        }
+                    }),
+                }
+            })
+            .collect()
+    }
+
+    fn service_plans(&self) -> Vec<ServicePlan> {
+        self.services
+            .iter()
+            .map(|service| ServicePlan {
+                service: service.service.clone(),
+                current_revision_hash: service.current_revision_hash.clone(),
+                next_revision_hash: service.next_revision_hash.clone(),
+                slots: service
+                    .slots
+                    .iter()
+                    .map(|slot| SlotPlan {
+                        slot_id: slot.slot_id.clone(),
+                        machine_id: slot.machine_id.clone(),
+                        current_instance_id: slot
+                            .current
+                            .as_ref()
+                            .map(|current| current.active_instance_id.clone()),
+                        next_instance_id: None,
+                        current_revision_hash: slot
+                            .current
+                            .as_ref()
+                            .map(|current| current.revision_hash.clone()),
+                        next_revision_hash: match slot.action {
+                            DeployChangeKind::Remove => None,
+                            DeployChangeKind::Create
+                            | DeployChangeKind::Replace
+                            | DeployChangeKind::Unchanged => service.next_revision_hash.clone(),
+                        },
+                        action: slot.action,
+                    })
+                    .collect(),
+                action: service.action,
+            })
+            .collect()
+    }
+
+    fn volume_moves(&self) -> Vec<VolumeMovePlan> {
+        self.volumes
+            .iter()
+            .filter_map(|volume| {
+                let movement = volume.movement.as_ref()?;
+                Some(VolumeMovePlan {
+                    volume: volume.declaration.name.clone(),
+                    from_machine: movement.from_machine.clone(),
+                    to_machine: movement.to_machine.clone(),
+                    attached_services: volume.attached_services.clone(),
+                })
+            })
+            .collect()
+    }
+
+    fn volume_clones(&self) -> Vec<VolumeClonePlan> {
+        self.volumes
+            .iter()
+            .filter_map(|volume| {
+                let clone_source = volume.clone_source.as_ref()?;
+                Some(VolumeClonePlan {
+                    volume: volume.declaration.name.clone(),
+                    source_namespace: clone_source.source_namespace.clone(),
+                    source_volume: clone_source.source_volume.clone(),
+                    source_machine: clone_source.source_machine.clone(),
+                    target_machine: volume.machine_id.clone(),
+                    data_policy: clone_source.data_policy,
+                    consistency: clone_source.consistency,
+                    attached_services: volume.attached_services.clone(),
+                })
+            })
+            .collect()
+    }
+
     pub(super) fn to_preview(&self, warnings: Vec<String>) -> DeployPreview {
-        let service_sources = self.service_sources();
-        let service_source_fingerprint = service_source_fingerprint(&service_sources);
-        let service_branch_sources = service_branch_sources_from_sources(&service_sources);
+        let parts = self.preview_parts();
+        let baseline = self.baseline_from_parts(&parts);
+        let service_source_fingerprint = baseline.components.service_sources.clone();
+        let service_branch_sources = service_branch_sources_from_sources(&parts.service_sources);
         DeployPreview {
             namespace: self.namespace.clone(),
             manifest_hash: self.manifest_hash.clone(),
+            baseline: Some(baseline),
             participants: self.participants.iter().cloned().collect(),
             phases: self.phases.clone(),
-            services: self
-                .services
-                .iter()
-                .map(|service| ServicePlan {
-                    service: service.service.clone(),
-                    current_revision_hash: service.current_revision_hash.clone(),
-                    next_revision_hash: service.next_revision_hash.clone(),
-                    slots: service
-                        .slots
-                        .iter()
-                        .map(|slot| SlotPlan {
-                            slot_id: slot.slot_id.clone(),
-                            machine_id: slot.machine_id.clone(),
-                            current_instance_id: slot
-                                .current
-                                .as_ref()
-                                .map(|current| current.active_instance_id.clone()),
-                            next_instance_id: None,
-                            current_revision_hash: slot
-                                .current
-                                .as_ref()
-                                .map(|current| current.revision_hash.clone()),
-                            next_revision_hash: match slot.action {
-                                DeployChangeKind::Remove => None,
-                                DeployChangeKind::Create
-                                | DeployChangeKind::Replace
-                                | DeployChangeKind::Unchanged => service.next_revision_hash.clone(),
-                            },
-                            action: slot.action,
-                        })
-                        .collect(),
-                    action: service.action,
-                })
-                .collect(),
-            service_sources,
+            services: parts.services,
+            service_sources: parts.service_sources,
             service_source_fingerprint,
             service_branch_sources,
-            volume_moves: self
-                .volumes
-                .iter()
-                .filter_map(|volume| {
-                    let movement = volume.movement.as_ref()?;
-                    Some(VolumeMovePlan {
-                        volume: volume.declaration.name.clone(),
-                        from_machine: movement.from_machine.clone(),
-                        to_machine: movement.to_machine.clone(),
-                        attached_services: volume.attached_services.clone(),
-                    })
-                })
-                .collect(),
-            volume_clones: self
-                .volumes
-                .iter()
-                .filter_map(|volume| {
-                    let clone_source = volume.clone_source.as_ref()?;
-                    Some(VolumeClonePlan {
-                        volume: volume.declaration.name.clone(),
-                        source_namespace: clone_source.source_namespace.clone(),
-                        source_volume: clone_source.source_volume.clone(),
-                        source_machine: clone_source.source_machine.clone(),
-                        target_machine: volume.machine_id.clone(),
-                        data_policy: clone_source.data_policy,
-                        consistency: clone_source.consistency,
-                        attached_services: volume.attached_services.clone(),
-                    })
-                })
-                .collect(),
+            volume_moves: parts.volume_moves,
+            volume_clones: parts.volume_clones,
             volume_clone_preflights: self
                 .phases
                 .iter()
@@ -324,6 +426,51 @@ fn service_branch_sources_from_sources(
             }),
         })
         .collect()
+}
+
+struct ResolvedPreviewParts {
+    service_sources: Vec<ServiceSourcePlan>,
+    services: Vec<ServicePlan>,
+    volume_moves: Vec<VolumeMovePlan>,
+    volume_clones: Vec<VolumeClonePlan>,
+}
+
+#[derive(Serialize)]
+struct VolumeBaselineInput {
+    declaration: VolumeDeclaration,
+    machine_id: MachineId,
+    attached_services: Vec<String>,
+    current_writer_slots: Vec<VolumeWriterBaselineInput>,
+    current: Option<VolumeRecord>,
+    movement: Option<VolumeMoveBaselineInput>,
+    clone_source: Option<VolumeCloneBaselineInput>,
+}
+
+#[derive(Serialize)]
+struct VolumeWriterBaselineInput {
+    service: String,
+    slot: ServiceReleaseSlot,
+}
+
+#[derive(Serialize)]
+struct VolumeMoveBaselineInput {
+    from_machine: MachineId,
+    to_machine: MachineId,
+}
+
+#[derive(Serialize)]
+struct VolumeCloneBaselineInput {
+    source_namespace: Namespace,
+    source_volume: String,
+    source_machine: MachineId,
+    data_policy: VolumeCloneDataPolicy,
+    consistency: VolumeCloneConsistency,
+    source_record: VolumeRecord,
+}
+
+fn stable_hash_json<T: Serialize>(value: &T) -> String {
+    let json = serde_json::to_vec(value).expect("deploy baseline input should serialize");
+    stable_hash_hex(&json)
 }
 
 impl PlannedService {
