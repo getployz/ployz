@@ -42,7 +42,11 @@ impl DaemonState {
             | DaemonRequest::MeshPeerPrepareUpdate { .. }
             | DaemonRequest::MeshPeerExecuteUpdate { .. }
             | DaemonRequest::MachineRemove { .. }
-            | DaemonRequest::MeshPeerRemoveMachine { .. } => RequestLane::Exclusive,
+            | DaemonRequest::MeshPeerRemoveMachine { .. }
+            | DaemonRequest::DeployNodeCloneVolume { .. }
+            | DaemonRequest::DeployNodeCleanupUncommittedVolumeClone { .. } => {
+                RequestLane::Exclusive
+            }
             DaemonRequest::Ping
             | DaemonRequest::Status
             | DaemonRequest::Doctor
@@ -54,8 +58,6 @@ impl DaemonState {
             | DaemonRequest::DeployNodeStartCandidate { .. }
             | DaemonRequest::DeployNodeDrainInstance { .. }
             | DaemonRequest::DeployNodeRemoveInstance { .. }
-            | DaemonRequest::DeployNodeCloneVolume { .. }
-            | DaemonRequest::DeployNodeCleanupUncommittedVolumeClone { .. }
             | DaemonRequest::RuntimeSubscribe
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }
@@ -214,9 +216,17 @@ impl DaemonState {
                 namespace,
                 deploy_id,
                 volume,
+                source_namespace,
+                source_volume,
+                snapshot,
             } => {
                 self.handle_deploy_node_cleanup_uncommitted_volume_clone(
-                    &namespace, &deploy_id, &volume,
+                    &namespace,
+                    &deploy_id,
+                    &volume,
+                    &source_namespace,
+                    &source_volume,
+                    &snapshot,
                 )
                 .await
             }
@@ -442,6 +452,48 @@ impl DaemonState {
                 )
                 .await
             }
+            DaemonRequest::DeployNodeCloneVolume {
+                namespace,
+                deploy_id,
+                volume,
+                source_namespace,
+                source_volume,
+                snapshot,
+                quota,
+                mode,
+                owner,
+            } => {
+                self.handle_deploy_node_clone_volume(
+                    &namespace,
+                    &deploy_id,
+                    &volume,
+                    &source_namespace,
+                    &source_volume,
+                    &snapshot,
+                    &quota,
+                    &mode,
+                    &owner,
+                )
+                .await
+            }
+            DaemonRequest::DeployNodeCleanupUncommittedVolumeClone {
+                namespace,
+                deploy_id,
+                volume,
+                source_namespace,
+                source_volume,
+                snapshot,
+            } => {
+                self.handle_deploy_node_cleanup_uncommitted_volume_clone(
+                    &namespace,
+                    &deploy_id,
+                    &volume,
+                    &source_namespace,
+                    &source_volume,
+                    &snapshot,
+                )
+                .await
+            }
             DaemonRequest::Ping
             | DaemonRequest::Status
             | DaemonRequest::Doctor
@@ -453,8 +505,6 @@ impl DaemonState {
             | DaemonRequest::DeployNodeStartCandidate { .. }
             | DaemonRequest::DeployNodeDrainInstance { .. }
             | DaemonRequest::DeployNodeRemoveInstance { .. }
-            | DaemonRequest::DeployNodeCloneVolume { .. }
-            | DaemonRequest::DeployNodeCleanupUncommittedVolumeClone { .. }
             | DaemonRequest::RuntimeSubscribe
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }

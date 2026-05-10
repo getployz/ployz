@@ -15,8 +15,8 @@ use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcFailure, RpcPolicy};
 use ployz_orchestrator::certificates::{AcmeAccountCoordinator, CertificateManagerConfig};
 use ployz_orchestrator::coordination::ReservationId;
 use ployz_orchestrator::deploy::participant::{
-    CloneVolumeRequest, CloneVolumeResult, DeployParticipantClient, MoveVolumeRequest,
-    MoveVolumeResult, StartCandidateRequest,
+    CleanupVolumeCloneRequest, CloneVolumeRequest, CloneVolumeResult, DeployParticipantClient,
+    MoveVolumeRequest, MoveVolumeResult, StartCandidateRequest,
 };
 use ployz_orchestrator::deploy::{
     apply_with_deploy_id_and_certificate_coordination, new_deploy_id, preview,
@@ -755,7 +755,7 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         machine_id: &MachineId,
         namespace: &Namespace,
         deploy_id: &DeployId,
-        volume: &str,
+        request: CleanupVolumeCloneRequest,
     ) -> ployz_types::Result<()> {
         let response = self
             .client
@@ -768,7 +768,10 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
                 &ployz_api::DaemonRequest::DeployNodeCleanupUncommittedVolumeClone {
                     namespace: namespace.0.clone(),
                     deploy_id: deploy_id.0.clone(),
-                    volume: volume.to_string(),
+                    volume: request.volume,
+                    source_namespace: request.source_namespace.0,
+                    source_volume: request.source_volume,
+                    snapshot: request.snapshot,
                 },
             )
             .await

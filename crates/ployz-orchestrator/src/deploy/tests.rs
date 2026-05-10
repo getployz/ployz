@@ -11,8 +11,8 @@ use crate::certificates::{
     NoopIssuanceCoordinator,
 };
 use crate::deploy::participant::{
-    CloneVolumeRequest, CloneVolumeResult, DeployParticipantClient, MoveVolumeRequest,
-    MoveVolumeResult, StartCandidateRequest,
+    CleanupVolumeCloneRequest, CloneVolumeRequest, CloneVolumeResult, DeployParticipantClient,
+    MoveVolumeRequest, MoveVolumeResult, StartCandidateRequest,
 };
 use crate::error::{DeployError, Error, Result};
 use crate::model::RegionRole;
@@ -5671,8 +5671,9 @@ impl DeployParticipantClient for FakeParticipantClient {
         _machine_id: &MachineId,
         _namespace: &Namespace,
         _deploy_id: &DeployId,
-        volume: &str,
+        request: CleanupVolumeCloneRequest,
     ) -> Result<()> {
+        let volume = request.volume.as_str();
         self.controller
             .on_cleanup_uncommitted_volume_clone(volume)
             .await;
