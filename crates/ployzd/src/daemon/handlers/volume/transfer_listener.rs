@@ -909,6 +909,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: Vec::new(),
                 volumes: vec![record],

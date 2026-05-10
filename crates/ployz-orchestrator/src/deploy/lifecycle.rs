@@ -175,6 +175,7 @@ impl StartedCandidates {
                 removed_volumes,
                 branch_lineage,
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases,
                 volumes,
