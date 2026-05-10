@@ -1040,6 +1040,7 @@ mod tests {
             .await
             .expect("write failed phase");
 
+        let commit_deploy_id = DeployId("deploy-1:phase:db".into());
         store
             .commit_deploy(&DeployCommit {
                 namespace: namespace.clone(),
@@ -1052,12 +1053,12 @@ mod tests {
                     namespace: namespace.clone(),
                     deploy_id: deploy_id.clone(),
                     phase_id: phase_id.clone(),
-                    commit_deploy_id: DeployId("deploy-1-db-commit".into()),
+                    commit_deploy_id: commit_deploy_id.clone(),
                     committed_at: 30,
                 }],
                 releases: Vec::new(),
                 volumes: Vec::new(),
-                deploy: test_deploy(&namespace, "deploy-1-db-commit"),
+                deploy: test_deploy(&namespace, &commit_deploy_id.0),
             })
             .await
             .expect("commit phase fact");
@@ -1067,10 +1068,7 @@ mod tests {
             .await
             .expect("read phase")
             .expect("phase exists");
-        assert_eq!(
-            read.commit_deploy_id,
-            Some(DeployId("deploy-1-db-commit".into()))
-        );
+        assert_eq!(read.commit_deploy_id, Some(commit_deploy_id));
         assert_eq!(read.state, DeployPhaseState::Succeeded { completed_at: 30 });
     }
 
