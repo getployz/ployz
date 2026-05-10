@@ -4,13 +4,14 @@ use crate::model::{
     DeployChangeKind, DeployId, DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseId,
     DeployPhasePlan, DeployPhaseRollbackPolicy, DeployPhaseWork, DeployPreview, MachineId,
     MachineLifecycle, MachineMembership, ServiceBranchLineageRecord, ServiceBranchSourcePlan,
-    ServicePlan, ServiceReleaseRecord, ServiceReleaseSlot, SlotId, SlotPlan, VolumeMovePlan,
-    VolumeRecord,
+    ServicePlan, ServiceReleaseRecord, ServiceReleaseSlot, SlotId, SlotPlan, VolumeClonePlan,
+    VolumeMovePlan, VolumeRecord,
 };
 use ployz_store_api::{DeployStore, MachineMembershipStore, StoreDriver};
 use ployz_types::spec::{
     DeployManifest, DeployPhaseIntent, MountSource, Namespace, Placement, ServiceIntent,
-    ServiceSpec, VolumeDeclaration, VolumeIntent, VolumeScope, parse_quota_bytes, stable_hash_hex,
+    ServiceSpec, VolumeCloneConsistency, VolumeCloneDataPolicy, VolumeDeclaration, VolumeIntent,
+    VolumeScope, parse_quota_bytes, stable_hash_hex,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -62,6 +63,7 @@ pub(super) struct PlannedVolume {
     pub(super) current_writer_slots: Vec<PlannedVolumeWriter>,
     pub(super) current: Option<VolumeRecord>,
     pub(super) movement: Option<PlannedVolumeMove>,
+    pub(super) clone_source: Option<PlannedVolumeClone>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +76,16 @@ pub(super) struct PlannedVolumeWriter {
 pub(super) struct PlannedVolumeMove {
     pub(super) from_machine: MachineId,
     pub(super) to_machine: MachineId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PlannedVolumeClone {
+    pub(super) source_namespace: Namespace,
+    pub(super) source_volume: String,
+    pub(super) source_machine: MachineId,
+    pub(super) data_policy: VolumeCloneDataPolicy,
+    pub(super) consistency: VolumeCloneConsistency,
+    pub(super) source_record: VolumeRecord,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,6 +215,23 @@ impl ResolvedPlan {
                     })
                 })
                 .collect(),
+            volume_clones: self
+                .volumes
+                .iter()
+                .filter_map(|volume| {
+                    let clone_source = volume.clone_source.as_ref()?;
+                    Some(VolumeClonePlan {
+                        volume: volume.declaration.name.clone(),
+                        source_namespace: clone_source.source_namespace.clone(),
+                        source_volume: clone_source.source_volume.clone(),
+                        source_machine: clone_source.source_machine.clone(),
+                        target_machine: volume.machine_id.clone(),
+                        data_policy: clone_source.data_policy,
+                        consistency: clone_source.consistency,
+                        attached_services: volume.attached_services.clone(),
+                    })
+                })
+                .collect(),
             warnings,
         }
     }
@@ -257,6 +286,7 @@ pub(super) async fn resolve_plan(
 
     let current_releases = store.list_deploy_releases(&manifest.namespace).await?;
     let current_volumes = store.list_volumes(&manifest.namespace).await?;
+    let current_volume_branches = store.list_volume_branches(&manifest.namespace).await?;
     let machines = store.list_machines().await?;
     let machine_map: HashMap<MachineId, MachineMembership> = machines
         .iter()
@@ -292,6 +322,7 @@ pub(super) async fn resolve_plan(
     let mut volume_machine_map = HashMap::new();
     let branch_intents = branch_intents(manifest);
     let volume_move_intents = volume_move_intents(manifest);
+    let volume_clone_intents = volume_clone_intents(manifest);
     let phase_intents = ordered_phase_intents(manifest)?;
     let mut service_phase_owners = phase_service_owners(&phase_intents);
     let mut volume_phase_owners = phase_volume_owners(&phase_intents);
@@ -327,9 +358,23 @@ pub(super) async fn resolve_plan(
                 .then_with(|| left.slot.slot_id.0.cmp(&right.slot.slot_id.0))
         });
         let volume_move_intent = volume_move_intents.get(&declaration.name);
-        let (machine_id, movement) = match volume_map.get(&declaration.name) {
+        let volume_clone_intent = volume_clone_intents.get(&declaration.name);
+        let (machine_id, movement, clone_source) = match volume_map.get(&declaration.name) {
             Some(record) => {
                 validate_existing_volume(declaration, record)?;
+                if let Some(intent) = volume_clone_intent
+                    && !current_volume_branches.iter().any(|branch| {
+                        branch.volume_name == declaration.name
+                            && branch.source_namespace == intent.source_namespace
+                            && branch.source_volume_name == intent.source_volume
+                            && branch.data_policy == intent.data_policy
+                            && branch.consistency == intent.consistency
+                    })
+                {
+                    return Err(Error::Deploy(DeployError::VolumeCloneTargetExists {
+                        volume: declaration.name.clone(),
+                    }));
+                }
                 if !machine_can_keep_existing_work(
                     &record.machine_id,
                     &machine_map,
@@ -343,7 +388,11 @@ pub(super) async fn resolve_plan(
                     ));
                 }
                 match volume_move_intent {
-                    Some(intent) => resolve_volume_move(declaration, record, intent, &machine_map)?,
+                    Some(intent) => {
+                        let (machine_id, movement) =
+                            resolve_volume_move(declaration, record, intent, &machine_map)?;
+                        (machine_id, movement, None)
+                    }
                     None if should_move_volume_from_draining_source(
                         declaration,
                         record,
@@ -360,14 +409,15 @@ pub(super) async fn resolve_plan(
                             &volume_map,
                             &machine_map,
                         );
-                        resolve_inferred_volume_move(
+                        let (machine_id, movement) = resolve_inferred_volume_move(
                             record,
                             &desired_machines,
                             &machine_map,
                             preferred_target.as_ref(),
-                        )?
+                        )?;
+                        (machine_id, movement, None)
                     }
-                    None => (record.machine_id.clone(), None),
+                    None => (record.machine_id.clone(), None, None),
                 }
             }
             None => {
@@ -376,21 +426,41 @@ pub(super) async fn resolve_plan(
                         volume: declaration.name.clone(),
                     }));
                 }
-                (
-                    new_volume_machine(
-                        &attached_services,
-                        &current_slots_by_service,
+                if let Some(intent) = volume_clone_intent {
+                    let clone_source = resolve_volume_clone(
+                        store,
+                        &manifest.namespace,
+                        declaration,
+                        intent,
                         &machine_map,
-                        &desired_machines,
-                        local_machine_id,
-                    )?,
-                    None,
-                )
+                    )
+                    .await?;
+                    (
+                        clone_source.source_machine.clone(),
+                        None,
+                        Some(clone_source),
+                    )
+                } else {
+                    (
+                        new_volume_machine(
+                            &attached_services,
+                            &current_slots_by_service,
+                            &machine_map,
+                            &desired_machines,
+                            local_machine_id,
+                        )?,
+                        None,
+                        None,
+                    )
+                }
             }
         };
         if let Some(movement) = &movement {
             participants.insert(movement.from_machine.clone());
             participants.insert(movement.to_machine.clone());
+        }
+        if let Some(clone_source) = &clone_source {
+            participants.insert(clone_source.source_machine.clone());
         }
         volume_machine_map.insert(declaration.name.clone(), machine_id.clone());
         planned_volumes.push(PlannedVolume {
@@ -400,6 +470,7 @@ pub(super) async fn resolve_plan(
             current_writer_slots,
             current: volume_map.get(&declaration.name).cloned(),
             movement,
+            clone_source,
         });
     }
     let services_with_volume_changes = planned_volumes
@@ -603,6 +674,14 @@ struct VolumeMoveIntent {
     to_machine: MachineId,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VolumeCloneIntent {
+    source_namespace: Namespace,
+    source_volume: String,
+    data_policy: VolumeCloneDataPolicy,
+    consistency: VolumeCloneConsistency,
+}
+
 const SYNTHETIC_DEPLOY_PHASE_ID: &str = "deploy";
 
 fn ordered_phase_intents(manifest: &DeployManifest) -> Result<Vec<DeployPhaseIntent>> {
@@ -769,6 +848,28 @@ fn build_phase_plans(
                         });
                 }
             }
+            VolumeChange::Create if volume.clone_source.is_some() => {
+                let Some(clone_source) = &volume.clone_source else {
+                    continue;
+                };
+                phase_participants
+                    .entry(phase_id.clone())
+                    .or_default()
+                    .insert(clone_source.source_machine.clone());
+                phase_work
+                    .entry(phase_id)
+                    .or_default()
+                    .push(DeployPhaseWork::VolumeClone {
+                        volume: volume.declaration.name.clone(),
+                        source_namespace: clone_source.source_namespace.clone(),
+                        source_volume: clone_source.source_volume.clone(),
+                        source_machine: clone_source.source_machine.clone(),
+                        target_machine: volume.machine_id.clone(),
+                        data_policy: clone_source.data_policy,
+                        consistency: clone_source.consistency,
+                        attached_services: volume.attached_services.clone(),
+                    });
+            }
             VolumeChange::Create | VolumeChange::Update => {
                 phase_participants
                     .entry(phase_id.clone())
@@ -922,6 +1023,46 @@ fn volume_move_intents(manifest: &DeployManifest) -> HashMap<String, VolumeMoveI
                     },
                 );
             }
+            VolumeIntent::Clone {
+                source_namespace: _,
+                source_volume: _,
+                data_policy: _,
+                consistency: _,
+            } => {}
+        }
+    }
+
+    intents
+}
+
+fn volume_clone_intents(manifest: &DeployManifest) -> HashMap<String, VolumeCloneIntent> {
+    let mut intents = HashMap::new();
+    let Some(deploy_intent) = &manifest.intent else {
+        return intents;
+    };
+
+    for hint in &deploy_intent.volumes {
+        match &hint.intent {
+            VolumeIntent::Clone {
+                source_namespace,
+                source_volume,
+                data_policy,
+                consistency,
+            } => {
+                intents.insert(
+                    hint.volume.clone(),
+                    VolumeCloneIntent {
+                        source_namespace: source_namespace.clone(),
+                        source_volume: source_volume.clone(),
+                        data_policy: *data_policy,
+                        consistency: *consistency,
+                    },
+                );
+            }
+            VolumeIntent::Move {
+                from_machine: _,
+                to_machine: _,
+            } => {}
         }
     }
 
@@ -979,6 +1120,71 @@ async fn resolve_branch_source(
         source_namespace: intent.source_namespace.clone(),
         source_service: intent.source_service.clone(),
         source_revision_hash: source_revision.revision_hash.clone(),
+    })
+}
+
+async fn resolve_volume_clone(
+    store: &StoreDriver,
+    target_namespace: &Namespace,
+    declaration: &VolumeDeclaration,
+    intent: &VolumeCloneIntent,
+    machine_map: &HashMap<MachineId, MachineMembership>,
+) -> Result<PlannedVolumeClone> {
+    if &intent.source_namespace == target_namespace && intent.source_volume == declaration.name {
+        return Err(Error::Deploy(DeployError::VolumeCloneSourceIsTarget {
+            volume: declaration.name.clone(),
+        }));
+    }
+
+    let Some(source_record) = store
+        .get_volume(&intent.source_namespace, &intent.source_volume)
+        .await?
+    else {
+        return Err(Error::Deploy(DeployError::VolumeCloneSourceMissing {
+            volume: declaration.name.clone(),
+            source_namespace: intent.source_namespace.0.clone(),
+            source_volume: intent.source_volume.clone(),
+        }));
+    };
+
+    if declaration.scope != VolumeScope::Single || source_record.scope != VolumeScope::Single {
+        return Err(Error::Deploy(DeployError::VolumeCloneRequiresSingleScope {
+            volume: declaration.name.clone(),
+        }));
+    }
+
+    let Some(source_machine) = machine_map.get(&source_record.machine_id) else {
+        return Err(Error::Deploy(
+            DeployError::VolumeCloneSourceMachineMissing {
+                volume: declaration.name.clone(),
+                machine_id: source_record.machine_id.0.clone(),
+            },
+        ));
+    };
+    if !is_new_placement_candidate(&source_machine.placement_candidate()) {
+        return Err(Error::Deploy(
+            DeployError::VolumeCloneSourceMachineIneligible {
+                volume: declaration.name.clone(),
+                machine_id: source_record.machine_id.0.clone(),
+            },
+        ));
+    }
+    if !source_machine.storage {
+        return Err(Error::Deploy(
+            DeployError::VolumeCloneSourceMachineNotStorageCapable {
+                volume: declaration.name.clone(),
+                machine_id: source_record.machine_id.0.clone(),
+            },
+        ));
+    }
+
+    Ok(PlannedVolumeClone {
+        source_namespace: intent.source_namespace.clone(),
+        source_volume: intent.source_volume.clone(),
+        source_machine: source_record.machine_id.clone(),
+        data_policy: intent.data_policy,
+        consistency: intent.consistency,
+        source_record,
     })
 }
 

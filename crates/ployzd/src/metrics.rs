@@ -126,6 +126,10 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::DeployNodeStartCandidate { .. } => "deploy_node_start_candidate",
         ployz_api::DaemonRequest::DeployNodeDrainInstance { .. } => "deploy_node_drain_instance",
         ployz_api::DaemonRequest::DeployNodeRemoveInstance { .. } => "deploy_node_remove_instance",
+        ployz_api::DaemonRequest::DeployNodeCloneVolume { .. } => "deploy_node_clone_volume",
+        ployz_api::DaemonRequest::DeployNodeCleanupUncommittedVolumeClone { .. } => {
+            "deploy_node_cleanup_uncommitted_volume_clone"
+        }
         ployz_api::DaemonRequest::RuntimeSubscribe => "runtime_subscribe",
         ployz_api::DaemonRequest::VolumeZfsInspect { .. } => "volume_zfs_inspect",
         ployz_api::DaemonRequest::VolumeZfsSnapshot { .. } => "volume_zfs_snapshot",
