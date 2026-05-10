@@ -5027,6 +5027,27 @@ async fn prepare_stores_preview_evidence_and_apply_prepared_marks_applied() {
             .state,
         PreparedDeployState::Applied
     );
+
+    let retry_controller = FakeController::default();
+    let retry_client = FakeParticipantClient::new(retry_controller.clone());
+    let retry = apply_prepared_with_certificate_coordination(
+        &store,
+        &retry_client,
+        &local_machine_id,
+        prepared.prepared_deploy_id.clone(),
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+    .expect("retry applied prepared deploy should replay");
+
+    assert_eq!(retry.deploy_id, prepared.prepared_deploy_id);
+    assert_eq!(retry.state, DeployState::Committed);
+    assert_eq!(retry_controller.max_open_seen(), 0);
+    assert_eq!(retry_controller.start_count(), 0);
 }
 
 #[tokio::test]
