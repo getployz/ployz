@@ -404,21 +404,53 @@ impl DaemonState {
             return self.ok(format!("machine '{}' already draining", machine_id));
         }
         let nats_client = match self.nats_node_rpc_client().await {
-            Ok(client) => client,
+            Ok(client) => client.with_policy(RpcPolicy {
+                timeout: MACHINE_TRANSITION_RPC_TIMEOUT,
+            }),
             Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
         };
-        if let Err(err) = nats_rpc_expect_ok(
-            &nats_client,
-            NodeCommandSubject::machine_transition_self(&record.id),
-            DaemonRequest::MachineTransitionSelf {
-                goal: MachineTransitionGoal::Drain,
-                assigned_subnet: None,
-                force: false,
-            },
-        )
-        .await
-        {
-            return self.err("REMOTE_DRAIN_FAILED", err);
+        let transition = nats_client
+            .request(
+                NodeCommandSubject::machine_transition_self(&record.id),
+                &DaemonRequest::MachineTransitionSelf {
+                    goal: MachineTransitionGoal::Drain,
+                    assigned_subnet: None,
+                    force: false,
+                },
+            )
+            .await;
+        match transition {
+            Ok(response) if response.ok => {}
+            Ok(response) => {
+                return self.err("REMOTE_DRAIN_FAILED", remote_response_error(&response));
+            }
+            Err(err) => {
+                let record_wait = wait_for_machine_record(
+                    &active.mesh.store,
+                    &machine_id,
+                    ExpectedMachineRecord::new(
+                        MachineLifecycle::Draining,
+                        ExpectedSubnetState::Present,
+                    ),
+                )
+                .await;
+                match record_wait {
+                    Ok(()) => {
+                        tracing::warn!(
+                            machine = %machine_id,
+                            error = %err,
+                            "machine drain NATS reply failed after observed machine record reached expected value"
+                        );
+                        return self.ok(format!("machine '{}' draining", machine_id));
+                    }
+                    Err(record_err) => {
+                        return self.err(
+                            "REMOTE_DRAIN_FAILED",
+                            format!("{err}; observed machine record did not confirm draining: {record_err}"),
+                        );
+                    }
+                }
+            }
         }
         match wait_for_machine_record(
             &active.mesh.store,

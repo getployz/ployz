@@ -476,6 +476,54 @@ async fn machine_remove_force_deletes_membership_record() {
 }
 
 #[tokio::test]
+async fn local_drain_preserves_subnet_and_marks_draining() {
+    let (mut state, store, _) = make_state(true).await;
+    {
+        let active = state.active.as_mut().expect("active mesh");
+        let Some(mut record) = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.lifecycle = MachineLifecycle::Active;
+                record.subnet = Some("10.210.0.0/24".parse().expect("valid subnet"));
+            })
+            .await
+        else {
+            panic!("self record missing");
+        };
+        record.lifecycle = MachineLifecycle::Active;
+        record.subnet = Some("10.210.0.0/24".parse().expect("valid subnet"));
+        active
+            .mesh
+            .store
+            .upsert_self_machine(&record)
+            .await
+            .expect("persist active self");
+    }
+
+    let response = state
+        .transition_local_machine(MachineTransitionGoal::Drain, None, false)
+        .await;
+    assert!(response.is_ok(), "{response:?}");
+
+    let local = store
+        .list_machines()
+        .await
+        .expect("list machines")
+        .into_iter()
+        .find(|machine| machine.id == state.identity.machine_id)
+        .expect("local machine present");
+    assert_eq!(local.lifecycle, MachineLifecycle::Draining);
+    assert_eq!(
+        local.subnet,
+        Some("10.210.0.0/24".parse().expect("valid subnet"))
+    );
+    assert_eq!(
+        state.active.as_ref().expect("active mesh").config.subnet,
+        Some("10.210.0.0/24".parse().expect("valid subnet"))
+    );
+}
+
+#[tokio::test]
 async fn local_standby_clears_subnet_and_marks_standby() {
     let (mut state, store, _) = make_state(true).await;
     let response = state
