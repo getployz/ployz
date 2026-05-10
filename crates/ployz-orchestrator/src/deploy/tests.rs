@@ -3673,6 +3673,193 @@ async fn apply_failure_after_end_of_deploy_phase_fails_prior_pending_phases() {
 }
 
 #[tokio::test]
+async fn apply_failure_marks_unstarted_later_phases_failed() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = test_manifest(vec![
+        test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17"),
+        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+        test_service_spec("worker", Placement::Replicated { count: 1 }, "busybox:1.36"),
+    ]);
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: Vec::new(),
+        phases: vec![
+            DeployPhaseIntent {
+                phase_id: "db".into(),
+                name: Some("Database".into()),
+                after: Vec::new(),
+                services: vec!["db".into()],
+                volumes: Vec::new(),
+                commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                advance_policy: DeployPhaseAdvancePolicy::Immediate,
+            },
+            DeployPhaseIntent {
+                phase_id: "web".into(),
+                name: Some("Web".into()),
+                after: vec!["db".into()],
+                services: vec!["web".into()],
+                volumes: Vec::new(),
+                commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                advance_policy: DeployPhaseAdvancePolicy::Immediate,
+            },
+            DeployPhaseIntent {
+                phase_id: "worker".into(),
+                name: Some("Worker".into()),
+                after: vec!["web".into()],
+                services: vec!["worker".into()],
+                volumes: Vec::new(),
+                commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                rollback_policy: DeployPhaseRollbackPolicy::Reversible,
+                advance_policy: DeployPhaseAdvancePolicy::Immediate,
+            },
+        ],
+    });
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let factory = FakeParticipantClient::new(FakeController {
+        fail_start_service: Some("db".into()),
+        ..Default::default()
+    });
+
+    let error =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect_err("db startup should abort deploy");
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected start failure for 'db'")
+    );
+    assert_eq!(backend.commit_count(), 0);
+    let last_update = backend
+        .last_deploy_status_write()
+        .await
+        .expect("failed deploy record should be written");
+    assert_eq!(last_update.state, DeployState::Failed);
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "db",
+        "failed",
+        Some("injected start failure for 'db'"),
+    )
+    .await;
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "web",
+        "failed",
+        Some("injected start failure for 'db'"),
+    )
+    .await;
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "worker",
+        "failed",
+        Some("injected start failure for 'db'"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_running_phase_record_failure_marks_current_and_unstarted_phases_failed() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = end_of_deploy_db_web_manifest();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    backend.fail_running_phase_upsert(true);
+    let factory = FakeParticipantClient::new(FakeController::default());
+
+    let error =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect_err("running phase record failure should abort deploy");
+
+    assert!(error.to_string().contains("injected running phase failure"));
+    assert_eq!(backend.commit_count(), 0);
+    let last_update = backend
+        .last_deploy_status_write()
+        .await
+        .expect("failed deploy record should be written");
+    assert_eq!(last_update.state, DeployState::Failed);
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "db",
+        "failed",
+        Some("injected running phase failure"),
+    )
+    .await;
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "web",
+        "failed",
+        Some("injected running phase failure"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_pending_phase_seed_failure_marks_already_written_phases_failed() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = end_of_deploy_db_web_manifest();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    backend.fail_pending_phase_upsert_on(2);
+    let factory = FakeParticipantClient::new(FakeController::default());
+
+    let error =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect_err("pending phase seed failure should abort deploy");
+
+    assert!(error.to_string().contains("injected pending phase failure"));
+    assert_eq!(backend.commit_count(), 0);
+    let last_update = backend
+        .last_deploy_status_write()
+        .await
+        .expect("failed deploy record should be written");
+    assert_eq!(last_update.state, DeployState::Failed);
+    assert_phase_record_state(
+        &store,
+        &manifest.namespace,
+        &last_update.deploy_id,
+        "db",
+        "failed",
+        Some("injected pending phase failure"),
+    )
+    .await;
+    assert!(
+        store
+            .get_deploy_phase(
+                &manifest.namespace,
+                &last_update.deploy_id,
+                &DeployPhaseId("web".into())
+            )
+            .await
+            .expect("get web phase")
+            .is_none(),
+        "phase whose initial pending write failed should not have a phase record"
+    );
+}
+
+#[tokio::test]
 async fn apply_checkpoint_commit_failure_fails_prior_end_of_deploy_phase() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
     let local_machine_id = MachineId("local".into());
@@ -5097,6 +5284,9 @@ struct CountingBackend {
     fail_committed_status_writes: AtomicBool,
     fail_committed_status_writes_after_first: AtomicBool,
     fail_succeeded_phase_upsert: AtomicBool,
+    fail_running_phase_upsert: AtomicBool,
+    pending_phase_upserts: AtomicUsize,
+    fail_pending_phase_upsert_on: AtomicUsize,
     deploy_status_records: Mutex<Vec<DeployRecord>>,
 }
 
@@ -5112,6 +5302,9 @@ impl CountingBackend {
             fail_committed_status_writes: AtomicBool::new(false),
             fail_committed_status_writes_after_first: AtomicBool::new(false),
             fail_succeeded_phase_upsert: AtomicBool::new(false),
+            fail_running_phase_upsert: AtomicBool::new(false),
+            pending_phase_upserts: AtomicUsize::new(0),
+            fail_pending_phase_upsert_on: AtomicUsize::new(0),
             deploy_status_records: Mutex::new(Vec::new()),
         }
     }
@@ -5147,6 +5340,16 @@ impl CountingBackend {
     fn fail_succeeded_phase_upsert(&self, fail: bool) {
         self.fail_succeeded_phase_upsert
             .store(fail, Ordering::SeqCst);
+    }
+
+    fn fail_running_phase_upsert(&self, fail: bool) {
+        self.fail_running_phase_upsert.store(fail, Ordering::SeqCst);
+    }
+
+    fn fail_pending_phase_upsert_on(&self, call: usize) {
+        self.pending_phase_upserts.store(0, Ordering::SeqCst);
+        self.fail_pending_phase_upsert_on
+            .store(call, Ordering::SeqCst);
     }
 
     async fn last_deploy_status_write(&self) -> Option<DeployRecord> {
@@ -5370,6 +5573,23 @@ impl DeployStore for CountingBackend {
     }
 
     async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> PloyzResult<()> {
+        if matches!(phase.state, DeployPhaseState::Pending) {
+            let call = self.pending_phase_upserts.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == self.fail_pending_phase_upsert_on.load(Ordering::SeqCst) {
+                return Err(Error::operation(
+                    "counting_upsert_deploy_phase",
+                    "injected pending phase failure",
+                ));
+            }
+        }
+        if matches!(phase.state, DeployPhaseState::Running)
+            && self.fail_running_phase_upsert.load(Ordering::SeqCst)
+        {
+            return Err(Error::operation(
+                "counting_upsert_deploy_phase",
+                "injected running phase failure",
+            ));
+        }
         if matches!(phase.state, DeployPhaseState::Succeeded { .. })
             && self.fail_succeeded_phase_upsert.load(Ordering::SeqCst)
         {
