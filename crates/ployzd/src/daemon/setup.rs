@@ -35,6 +35,7 @@ use std::time::Duration;
 use crate::daemon::subnet_coordination::NatsSubnetCoordinator;
 
 use super::{ActiveMesh, DaemonState, RuntimeRestartMode};
+use crate::daemon::handlers::image::registry;
 use crate::daemon::handlers::volume::transfer_listener;
 use crate::ipc::nats_listener;
 use crate::runtime_profile::MeshBuildRequest;
@@ -69,6 +70,58 @@ async fn build_nats_subnet_coordinator(
         .await
         .map_err(|error| StartMeshError::MeshUp(format!("nats locks bucket: {error}")))?;
     Ok(std::sync::Arc::new(NatsSubnetCoordinator::new(locks)))
+}
+
+async fn prepare_image_receiver_listener_for_runtime_restart(
+    current_bind_addr: Option<SocketAddr>,
+    new_bind_addr: Option<SocketAddr>,
+    image_registry: registry::ImageRegistry,
+) -> Result<Option<Box<dyn RuntimeHandle>>, String> {
+    if current_bind_addr == new_bind_addr {
+        return Ok(None);
+    }
+
+    let new_receiver: Box<dyn RuntimeHandle> = if let Some(bind_addr) = new_bind_addr {
+        match registry::serve(bind_addr, image_registry).await {
+            Ok(handle) => Box::new(handle),
+            Err(error) => return Err(format!("image receiver start failed: {error}")),
+        }
+    } else {
+        Box::new(NoopRuntimeHandle)
+    };
+
+    Ok(Some(new_receiver))
+}
+
+async fn commit_prepared_image_receiver_listener(
+    image_receiver: &mut Box<dyn RuntimeHandle>,
+    current_bind_addr: &mut Option<SocketAddr>,
+    new_bind_addr: Option<SocketAddr>,
+    prepared_receiver: Option<Box<dyn RuntimeHandle>>,
+) {
+    let Some(prepared_receiver) = prepared_receiver else {
+        return;
+    };
+
+    let previous = std::mem::replace(image_receiver, prepared_receiver);
+    if let Err(error) = previous.shutdown().await {
+        tracing::warn!(?error, "runtime restart: image receiver stop failed");
+    }
+    *current_bind_addr = new_bind_addr;
+}
+
+async fn rollback_prepared_image_receiver_listener(
+    prepared_receiver: Option<Box<dyn RuntimeHandle>>,
+) {
+    let Some(prepared_receiver) = prepared_receiver else {
+        return;
+    };
+    if let Err(error) = prepared_receiver.shutdown().await {
+        tracing::warn!(
+            ?error,
+            "runtime restart: prepared image receiver rollback failed"
+        );
+    }
 }
 
 async fn start_nats_certificate_renewal_worker(
@@ -235,6 +288,8 @@ pub enum StartMeshError {
     MeshUp(String),
     #[error("control plane listener start failed on {bind}: {error}")]
     ControlPlaneListener { bind: SocketAddr, error: String },
+    #[error("image receiver port would overflow zfs transfer port {zfs_transfer_port}")]
+    ImageReceiverPort { zfs_transfer_port: u16 },
     #[error("gateway start failed: {0}")]
     Gateway(String),
     #[error("dns start failed: {0}")]
@@ -247,6 +302,7 @@ struct StartPlan {
     bootstrap_addrs: Vec<String>,
     gateway_ports: Vec<u16>,
     zfs_transfer_bind_addr: SocketAddr,
+    image_receiver_bind_addr: SocketAddr,
     gateway_config: Option<GatewayConfig>,
     dns_config: Option<DnsConfig>,
 }
@@ -256,6 +312,7 @@ struct MeshStartAttempt {
     mesh: Option<Mesh>,
     nats_control: Box<dyn RuntimeHandle>,
     zfs_transfer: Box<dyn RuntimeHandle>,
+    image_receiver: Box<dyn RuntimeHandle>,
     gateway: Box<dyn RuntimeHandle>,
     dns: Box<dyn RuntimeHandle>,
 }
@@ -267,6 +324,7 @@ impl MeshStartAttempt {
             mesh: None,
             nats_control: Box::new(NoopRuntimeHandle),
             zfs_transfer: Box::new(NoopRuntimeHandle),
+            image_receiver: Box::new(NoopRuntimeHandle),
             gateway: Box::new(NoopRuntimeHandle),
             dns: Box::new(NoopRuntimeHandle),
         }
@@ -449,8 +507,35 @@ impl MeshStartAttempt {
         Ok(())
     }
 
+    async fn start_image_receiver_control(
+        &mut self,
+        state: &DaemonState,
+        plan: &StartPlan,
+    ) -> Result<(), StartMeshError> {
+        if state.runtime_is_memory_test() {
+            self.image_receiver = Box::new(registry::ImageRegistryListenerHandle::noop());
+            return Ok(());
+        }
+        let Some(_mesh) = self.mesh.as_ref() else {
+            self.image_receiver = Box::new(registry::ImageRegistryListenerHandle::noop());
+            return Ok(());
+        };
+        let handle = registry::serve(plan.image_receiver_bind_addr, state.image_registry.clone())
+            .await
+            .map_err(|error| StartMeshError::ControlPlaneListener {
+                bind: plan.image_receiver_bind_addr,
+                error,
+            })?;
+        self.image_receiver = Box::new(handle);
+        Ok(())
+    }
+
     /// Commit: publish the active mesh into daemon state.
-    async fn publish_active(&mut self, state: &mut DaemonState) -> Result<(), StartMeshError> {
+    async fn publish_active(
+        &mut self,
+        state: &mut DaemonState,
+        plan: &StartPlan,
+    ) -> Result<(), StartMeshError> {
         let spawn_renewal_ticker = !state.runtime_is_memory_test();
         let Some(mesh_ref) = self.mesh.as_ref() else {
             return Err(StartMeshError::MeshUp(
@@ -530,17 +615,26 @@ impl MeshStartAttempt {
         };
         let nats_control = std::mem::replace(&mut self.nats_control, Box::new(NoopRuntimeHandle));
         let zfs_transfer = std::mem::replace(&mut self.zfs_transfer, Box::new(NoopRuntimeHandle));
+        let image_receiver =
+            std::mem::replace(&mut self.image_receiver, Box::new(NoopRuntimeHandle));
         let gateway = std::mem::replace(&mut self.gateway, Box::new(NoopRuntimeHandle));
         let dns = std::mem::replace(&mut self.dns, Box::new(NoopRuntimeHandle));
         if let Some(subnet_coord) = subnet_coord {
             state.subnet_coord = subnet_coord;
         }
+        let image_receiver_bind_addr = if state.runtime_is_memory_test() {
+            None
+        } else {
+            Some(plan.image_receiver_bind_addr)
+        };
         state.active = Some(ActiveMesh {
             config: self.config.clone(),
             retained_subnet: crate::daemon::RetainedSubnet::from_running_config(self.config.subnet),
             mesh,
             nats_control,
             zfs_transfer,
+            image_receiver,
+            image_receiver_bind_addr,
             gateway,
             dns,
             certificate_renewal,
@@ -564,6 +658,9 @@ impl MeshStartAttempt {
         let _ = nats_control.shutdown().await;
         let zfs_transfer = std::mem::replace(&mut self.zfs_transfer, Box::new(NoopRuntimeHandle));
         let _ = zfs_transfer.shutdown().await;
+        let image_receiver =
+            std::mem::replace(&mut self.image_receiver, Box::new(NoopRuntimeHandle));
+        let _ = image_receiver.shutdown().await;
 
         if let Some(mut mesh) = self.mesh.take()
             && let Err(error) = mesh.detach().await
@@ -614,12 +711,17 @@ impl DaemonState {
             return Err(error);
         }
 
+        if let Err(error) = attempt.start_image_receiver_control(self, &plan).await {
+            attempt.rollback_startup().await;
+            return Err(error);
+        }
+
         if let Err(error) = attempt.start_edge_runtimes(self, &plan).await {
             attempt.rollback_startup().await;
             return Err(error);
         }
 
-        if let Err(error) = attempt.publish_active(self).await {
+        if let Err(error) = attempt.publish_active(self, &plan).await {
             attempt.rollback_startup().await;
             return Err(error);
         }
@@ -657,6 +759,20 @@ impl DaemonState {
             nats_config::ROUTE_PORT,
         );
         let dns_bridge_listen_addr = self.dns_bridge_listen_addr();
+        let image_registry = self.image_registry.clone();
+        let new_image_receiver_bind_addr = if self.runtime_is_memory_test() {
+            None
+        } else {
+            Some(
+                self.image_receiver_bind_addr(self.zfs_transfer_port, net_config.overlay_ip)
+                    .ok_or_else(|| {
+                        format!(
+                            "image receiver port would overflow zfs transfer port {}",
+                            self.zfs_transfer_port
+                        )
+                    })?,
+            )
+        };
 
         if self.active.is_none() {
             return Err("no running network".into());
@@ -726,6 +842,35 @@ impl DaemonState {
             return Err("no running network".into());
         };
 
+        let prepared_image_receiver = match prepare_image_receiver_listener_for_runtime_restart(
+            active.image_receiver_bind_addr,
+            new_image_receiver_bind_addr,
+            image_registry.clone(),
+        )
+        .await
+        {
+            Ok(prepared_image_receiver) => prepared_image_receiver,
+            Err(error) => {
+                if let Err(shutdown_error) = new_dns.shutdown().await {
+                    tracing::warn!(
+                        ?shutdown_error,
+                        "runtime rollback failed after image receiver start error"
+                    );
+                }
+                if let Err(shutdown_error) = new_gateway.shutdown().await {
+                    tracing::warn!(
+                        ?shutdown_error,
+                        "runtime rollback failed after image receiver start error"
+                    );
+                }
+                return Err(error);
+            }
+        };
+
+        if let Err(error) = image_registry.revoke_all_sessions().await {
+            tracing::warn!(%error, "runtime restart: image receive session cleanup failed");
+        }
+
         let dns = std::mem::replace(&mut active.dns, Box::new(NoopRuntimeHandle));
         if let Err(error) = dns.shutdown().await {
             tracing::warn!(?error, "runtime restart: dns stop failed");
@@ -744,28 +889,25 @@ impl DaemonState {
             })
             .await;
 
-        match mode {
-            RuntimeRestartMode::NetworkAndStore => {
-                active
-                    .mesh
-                    .restart_runtime_for_config_change(
-                        components.network,
-                        components.store,
-                        components.container_network,
-                    )
-                    .await
-                    .map_err(|error| format!("mesh runtime restart failed: {error}"))?;
-            }
-            RuntimeRestartMode::NetworkOnly => {
-                active
-                    .mesh
-                    .restart_runtime_for_subnet_change(
-                        components.network,
-                        components.container_network,
-                    )
-                    .await
-                    .map_err(|error| format!("mesh runtime restart failed: {error}"))?;
-            }
+        let restart_result = match mode {
+            RuntimeRestartMode::NetworkAndStore => active
+                .mesh
+                .restart_runtime_for_config_change(
+                    components.network,
+                    components.store,
+                    components.container_network,
+                )
+                .await
+                .map_err(|error| format!("mesh runtime restart failed: {error}")),
+            RuntimeRestartMode::NetworkOnly => active
+                .mesh
+                .restart_runtime_for_subnet_change(components.network, components.container_network)
+                .await
+                .map_err(|error| format!("mesh runtime restart failed: {error}")),
+        };
+        if let Err(error) = restart_result {
+            rollback_prepared_image_receiver_listener(prepared_image_receiver).await;
+            return Err(error);
         }
 
         let _ = active
@@ -775,6 +917,13 @@ impl DaemonState {
                 record.subnet = net_config.subnet;
             })
             .await;
+        commit_prepared_image_receiver_listener(
+            &mut active.image_receiver,
+            &mut active.image_receiver_bind_addr,
+            new_image_receiver_bind_addr,
+            prepared_image_receiver,
+        )
+        .await;
         active.config = net_config;
         active.gateway = new_gateway;
         active.dns = new_dns;
@@ -794,6 +943,13 @@ impl DaemonState {
         let gateway_ports = self.gateway_ports()?;
         let zfs_transfer_bind_addr =
             self.zfs_transfer_bind_addr(self.zfs_transfer_port, net_config.overlay_ip);
+        let Some(image_receiver_bind_addr) =
+            self.image_receiver_bind_addr(self.zfs_transfer_port, net_config.overlay_ip)
+        else {
+            return Err(StartMeshError::ImageReceiverPort {
+                zfs_transfer_port: self.zfs_transfer_port,
+            });
+        };
         let gateway_config = net_config.subnet.map(|_| {
             GatewayConfig::for_network(
                 &self.data_dir,
@@ -824,6 +980,7 @@ impl DaemonState {
             bootstrap_addrs,
             gateway_ports,
             zfs_transfer_bind_addr,
+            image_receiver_bind_addr,
             gateway_config,
             dns_config,
         })
@@ -873,6 +1030,7 @@ mod tests {
     use ployz_config::{RuntimeTarget, ServiceMode};
     use ployz_runtime_api::Identity;
     use ployz_types::model::{MachineId, NetworkName, OverlayIp, PublicKey};
+    use tokio::net::TcpListener;
 
     #[test]
     fn plan_mesh_start_uses_localhost_for_docker_zfs_transfer() {
@@ -888,6 +1046,19 @@ mod tests {
     }
 
     #[test]
+    fn plan_mesh_start_uses_next_localhost_port_for_docker_image_receiver() {
+        let state = make_state(RuntimeTarget::Docker, ServiceMode::User, "0.0.0.0:80");
+        let config = make_network_config(&state, "alpha");
+
+        let plan = state.plan_mesh_start(&config).expect("plan should succeed");
+
+        assert_eq!(
+            plan.image_receiver_bind_addr,
+            SocketAddr::from(([127, 0, 0, 1], state.zfs_transfer_port + 1))
+        );
+    }
+
+    #[test]
     fn plan_mesh_start_uses_overlay_ip_for_host_zfs_transfer() {
         let state = make_state(RuntimeTarget::Host, ServiceMode::User, "0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
@@ -898,6 +1069,33 @@ mod tests {
             plan.zfs_transfer_bind_addr.ip(),
             SocketAddr::new(IpAddr::V6(config.overlay_ip.0), state.zfs_transfer_port).ip()
         );
+    }
+
+    #[test]
+    fn plan_mesh_start_uses_next_overlay_port_for_host_image_receiver() {
+        let state = make_state(RuntimeTarget::Host, ServiceMode::User, "0.0.0.0:80");
+        let config = make_network_config(&state, "alpha");
+
+        let plan = state.plan_mesh_start(&config).expect("plan should succeed");
+
+        assert_eq!(
+            plan.image_receiver_bind_addr,
+            SocketAddr::new(IpAddr::V6(config.overlay_ip.0), state.zfs_transfer_port + 1)
+        );
+    }
+
+    #[test]
+    fn plan_mesh_start_rejects_image_receiver_port_overflow() {
+        let mut state = make_state(RuntimeTarget::Host, ServiceMode::User, "0.0.0.0:80");
+        state.zfs_transfer_port = u16::MAX;
+        let config = make_network_config(&state, "alpha");
+
+        let error = match state.plan_mesh_start(&config) {
+            Ok(_) => panic!("plan should fail"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, StartMeshError::ImageReceiverPort { .. }));
     }
 
     #[test]
@@ -971,7 +1169,8 @@ mod tests {
             .expect("mesh start should succeed");
 
         assert_eq!(summary.network_name, "alpha");
-        assert!(state.active.is_some());
+        let active = state.active.as_ref().expect("active mesh");
+        assert_eq!(active.image_receiver_bind_addr, None);
 
         teardown_active_mesh(&mut state).await;
     }
@@ -994,7 +1193,7 @@ mod tests {
                 .expect("embedded built-in images manifest should parse"),
         );
 
-        let error = match attempt.publish_active(&mut state).await {
+        let error = match attempt.publish_active(&mut state, &plan).await {
             Ok(_) => panic!("publish_active should fail without local NATS"),
             Err(error) => error,
         };
@@ -1008,6 +1207,81 @@ mod tests {
 
         attempt.rollback_startup().await;
         assert!(attempt.mesh.is_none());
+    }
+
+    #[tokio::test]
+    async fn image_receiver_prepare_failure_keeps_previous_listener() {
+        let registry = registry::ImageRegistry::new(unique_temp_dir("ployz-image-registry"));
+        let previous = registry::serve(SocketAddr::from(([127, 0, 0, 1], 0)), registry.clone())
+            .await
+            .expect("previous image receiver should bind");
+        let previous_bind_addr = previous.bind_addr();
+        let image_receiver: Box<dyn RuntimeHandle> = Box::new(previous);
+        let occupied = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("occupy replacement receiver port");
+        let occupied_addr = occupied.local_addr().expect("occupied local addr");
+
+        let error = match prepare_image_receiver_listener_for_runtime_restart(
+            Some(previous_bind_addr),
+            Some(occupied_addr),
+            registry,
+        )
+        .await
+        {
+            Ok(_) => panic!("occupied replacement port should fail"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("image receiver start failed"));
+        TcpListener::bind(previous_bind_addr)
+            .await
+            .expect_err("previous listener should remain active");
+
+        image_receiver
+            .shutdown()
+            .await
+            .expect("shutdown previous listener");
+    }
+
+    #[tokio::test]
+    async fn prepared_image_receiver_is_rolled_back_without_swapping_active_listener() {
+        let registry = registry::ImageRegistry::new(unique_temp_dir("ployz-image-registry"));
+        let previous = registry::serve(SocketAddr::from(([127, 0, 0, 1], 0)), registry.clone())
+            .await
+            .expect("previous image receiver should bind");
+        let previous_bind_addr = previous.bind_addr();
+        let image_receiver: Box<dyn RuntimeHandle> = Box::new(previous);
+        let replacement_addr = free_local_addr().await;
+
+        let prepared = prepare_image_receiver_listener_for_runtime_restart(
+            Some(previous_bind_addr),
+            Some(replacement_addr),
+            registry,
+        )
+        .await
+        .expect("replacement image receiver should bind");
+
+        TcpListener::bind(previous_bind_addr)
+            .await
+            .expect_err("previous listener should remain active before commit");
+        TcpListener::bind(replacement_addr)
+            .await
+            .expect_err("prepared listener should be active before rollback");
+
+        rollback_prepared_image_receiver_listener(prepared).await;
+
+        TcpListener::bind(replacement_addr)
+            .await
+            .expect("prepared listener should be released by rollback");
+        TcpListener::bind(previous_bind_addr)
+            .await
+            .expect_err("previous listener should remain active after rollback");
+
+        image_receiver
+            .shutdown()
+            .await
+            .expect("shutdown previous listener");
     }
 
     fn make_state(
@@ -1070,6 +1344,13 @@ mod tests {
 
         active.stop_bootstrap_peer_seed().await;
         active.mesh.destroy().await.expect("destroy mesh");
+    }
+
+    async fn free_local_addr() -> SocketAddr {
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("bind free local addr");
+        listener.local_addr().expect("read local addr")
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {
