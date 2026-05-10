@@ -1058,6 +1058,7 @@ mod tests {
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
+                volume_branches: Vec::new(),
                 volume_movements: Vec::new(),
                 phase_commits: vec![ployz_types::model::DeployPhaseCommitRecord {
                     namespace: namespace.clone(),
