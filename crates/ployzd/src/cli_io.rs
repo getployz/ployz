@@ -178,6 +178,7 @@ fn render_plain_success(response: &DaemonResponse) -> String {
         Some(DaemonPayload::MachineStoragePromotion(payload)) => {
             render_plain_machine_storage_promotion(payload)
         }
+        Some(DaemonPayload::ImagePush(payload)) => render_plain_image_push(payload),
         _ => response.message.clone(),
     }
 }
@@ -332,6 +333,27 @@ fn render_plain_machine_storage_promotion(payload: &MachineStoragePromotionPaylo
             "failed machine={} message={}",
             failure.machine_id, failure.message
         ));
+    }
+    lines.join("\n")
+}
+
+fn render_plain_image_push(payload: &ployz_api::ImagePushPayload) -> String {
+    let mut lines = vec![format!(
+        "operation={} digest={}",
+        payload.operation_id,
+        payload.artifact.digest().as_str()
+    )];
+    for target in &payload.targets {
+        let status = match target.status {
+            ployz_api::ImageTransferTargetStatus::Present => "present",
+            ployz_api::ImageTransferTargetStatus::SkippedPresent => "skipped_present",
+            ployz_api::ImageTransferTargetStatus::Failed => "failed",
+        };
+        let mut line = format!("target machine={} status={status}", target.machine_id);
+        if let Some(error) = target.error.as_deref() {
+            line.push_str(&format!(" error={error}"));
+        }
+        lines.push(line);
     }
     lines.join("\n")
 }
@@ -668,6 +690,54 @@ mod tests {
         assert_eq!(
             render_plain_success(&response),
             "operation=storage-promote-1 replicas=r3\npromoted machine=m2\npromoted machine=m3\nfailed machine=m4 message=not active"
+        );
+    }
+
+    #[test]
+    fn plain_image_push_renders_artifact_and_targets() {
+        let digest = ployz_types::model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
+            .expect("valid digest");
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("pushed"),
+            payload: Some(DaemonPayload::ImagePush(ployz_api::ImagePushPayload {
+                operation_id: "image-push-1".into(),
+                artifact: ployz_types::model::ImageArtifact {
+                    image: ployz_types::model::ImageRef {
+                        repository: Some("example/app".into()),
+                        tag: Some("latest".into()),
+                        digest: digest.clone(),
+                    },
+                    platform: None,
+                    provenance: ployz_types::model::ImageArtifactProvenance::External {
+                        source: Some("test".into()),
+                    },
+                    created_at: 1,
+                },
+                targets: vec![
+                    ployz_api::ImageTransferTargetResult {
+                        machine_id: ployz_types::model::MachineId("peer".into()),
+                        status: ployz_api::ImageTransferTargetStatus::Present,
+                        record: None,
+                        error: None,
+                    },
+                    ployz_api::ImageTransferTargetResult {
+                        machine_id: ployz_types::model::MachineId("other".into()),
+                        status: ployz_api::ImageTransferTargetStatus::Failed,
+                        record: None,
+                        error: Some("no responders".into()),
+                    },
+                ],
+            })),
+        };
+
+        assert_eq!(
+            render_plain_success(&response),
+            format!(
+                "operation=image-push-1 digest={}\ntarget machine=peer status=present\ntarget machine=other status=failed error=no responders",
+                digest.as_str()
+            )
         );
     }
 
