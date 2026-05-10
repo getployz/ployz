@@ -53,6 +53,7 @@ impl DaemonState {
             | DaemonRequest::DeployExport { .. }
             | DaemonRequest::MigrateService { .. }
             | DaemonRequest::ImageStatus { .. }
+            | DaemonRequest::ImageInspect { .. }
             | DaemonRequest::ImageOperationGet { .. }
             | DaemonRequest::ImageOperationList
             | DaemonRequest::BuildOperationGet { .. }
@@ -151,6 +152,7 @@ impl DaemonState {
             }
             DaemonRequest::MigrateService { request } => self.handle_migrate_service(request).await,
             DaemonRequest::ImageStatus { request } => self.handle_image_status(&request).await,
+            DaemonRequest::ImageInspect { request } => self.handle_image_inspect(&request).await,
             DaemonRequest::ImageOperationGet { id } => self.handle_image_operation_get(&id).await,
             DaemonRequest::ImageOperationList => self.handle_image_operation_list().await,
             DaemonRequest::BuildOperationGet { id } => self.handle_build_operation_get(&id).await,
@@ -470,6 +472,7 @@ impl DaemonState {
             | DaemonRequest::DeployExport { .. }
             | DaemonRequest::MigrateService { .. }
             | DaemonRequest::ImageStatus { .. }
+            | DaemonRequest::ImageInspect { .. }
             | DaemonRequest::ImageOperationGet { .. }
             | DaemonRequest::ImageOperationList
             | DaemonRequest::BuildOperationGet { .. }

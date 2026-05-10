@@ -1,5 +1,5 @@
 use crate::deploy::{DeployOptions, MigrateServiceRequest};
-use crate::image::ImageStatusRequest;
+use crate::image::{ImageInspectRequest, ImageStatusRequest};
 use crate::machine::{
     MachineAddOptions, MachineInstallOptions, MachineStorageAuthorityPeer,
     MachineStoragePromoteRequest, MachineTransitionGoal,
@@ -173,6 +173,9 @@ pub enum DaemonRequest {
     ImageStatus {
         request: ImageStatusRequest,
     },
+    ImageInspect {
+        request: ImageInspectRequest,
+    },
     ImageOperationGet {
         id: String,
     },
@@ -271,7 +274,7 @@ mod tests {
     use super::*;
     use crate::build::BuildMachineRequest;
     use crate::deploy::MigrateServiceMode;
-    use crate::image::ImagePushRequest;
+    use crate::image::{ImageInspectRequest, ImagePushRequest};
     use ployz_types::model::{
         BuildLocation, BuildMethod, ImageArtifact, ImageArtifactProvenance, ImageDigest, ImageRef,
     };
@@ -351,6 +354,36 @@ mod tests {
     }
 
     #[test]
+    fn image_inspect_request_round_trips_reference_and_machine() {
+        let request = DaemonRequest::ImageInspect {
+            request: ImageInspectRequest {
+                digest: digest(),
+                reference: Some(
+                    "registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                ),
+                machines: vec![MachineId("machine-a".into())],
+            },
+        };
+
+        let json = serde_json::to_value(&request).expect("serialize image inspect request");
+        let roundtrip: DaemonRequest =
+            serde_json::from_value(json).expect("deserialize image inspect request");
+
+        let DaemonRequest::ImageInspect { request } = roundtrip else {
+            panic!("expected image inspect request");
+        };
+        assert_eq!(
+            request.digest.as_str(),
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            request.reference.as_deref(),
+            Some("registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(request.machines, vec![MachineId("machine-a".into())]);
+    }
+
+    #[test]
     fn build_machine_request_serializes_method_as_snake_case() {
         let request = BuildMachineRequest {
             method: BuildMethod::Railpack,
@@ -381,5 +414,9 @@ mod tests {
             },
             created_at: 1,
         }
+    }
+
+    fn digest() -> ImageDigest {
+        ImageDigest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into())
     }
 }
