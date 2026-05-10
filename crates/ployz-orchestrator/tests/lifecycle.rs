@@ -496,7 +496,7 @@ async fn manual_endpoint_maintenance_tick_rotates_down_peer_endpoint() {
     wg.set_device_peers(vec![ployz_orchestrator::mesh::DevicePeer {
         public_key: peer.public_key.clone(),
         endpoint: Some("198.51.100.10:51820".into()),
-        last_handshake: None,
+        last_handshake: Some(tokio::time::Instant::now()),
     }]);
 
     let mut mesh = make_mesh("m1", wg.clone(), svc, store);
