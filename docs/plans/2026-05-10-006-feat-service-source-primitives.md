@@ -29,7 +29,6 @@ deploy preview surface does not yet express the core branch vocabulary:
 
 - fresh service,
 - branched service.
-- moved service, when a service preserves identity but changes placement.
 
 Without explicit service source modes, cloud and CLI workflows will be tempted
 to encode branching behavior outside core. That would violate the core/cloud
@@ -61,6 +60,9 @@ Out of scope:
   execution.
 - Portal volume semantics.
 - Production promotion.
+- Service move planning, preview, execution, or placement migration. Existing
+  `ServiceIntent::Move` validation remains rejected until a dedicated service
+  move primitive exists.
 - Cloud UI implementation.
 - Cloud consumption of the new preview field before generated preview schemas
   exist. If this repo still lacks preview schema generation, document that gap
@@ -85,13 +87,14 @@ Out of scope:
    The existing manifest signal for a fresh service is absence of any
    source-preserving service intent, not just absence of branch lineage.
    `ServiceIntent::Branch` resolves to branch source evidence, and
-   `ServiceIntent::Move` must resolve to relocation evidence because it
-   preserves service identity while changing placement. Do not add a public
-   `ServiceIntent::Fresh` variant in this slice. The resolved preview can still
-   show `fresh` so clients have a complete service-source table. The preview
-   should make the derivation auditable, for example `fresh` with
-   `origin = no_source_intent`, rather than implying the user explicitly
-   supplied a fresh mode.
+   `ServiceIntent::Move` is a source-preserving intent that must not be
+   classified as fresh. Because deploy planning currently rejects service moves,
+   this slice should keep move unsupported rather than introducing partial move
+   preview semantics. Do not add a public `ServiceIntent::Fresh` variant in this
+   slice. The resolved preview can still show `fresh` so clients have a complete
+   service-source table. The preview should make the derivation auditable, for
+   example `fresh` with `origin = no_source_intent`, rather than implying the
+   user explicitly supplied a fresh mode.
 
 5. Branch source preview should not replace commit lineage yet.
    Existing `service_branch_sources` commit/preview behavior remains valid.
@@ -127,12 +130,13 @@ Approach:
   second input syntax.
 - Do not relax `ServiceIntent::Portal` planning support. Portal should continue
   to fail structural/planning validation before source lookup.
+- Do not relax `ServiceIntent::Move` planning support. Move should continue to
+  fail planning validation before source-mode preview until service migration is
+  designed as its own primitive.
 - Add preview model fields that identify the resolved source mode:
   - `fresh` for services with no source lineage, including an explicit derived
     origin such as `no_source_intent`,
   - `branch` with source namespace, source service, and source revision hash.
-  - `move` with preserved service identity and target placement, distinct from
-    fresh creation.
 - Add serde tests pinning snake_case wire values.
 
 Test scenarios:
@@ -140,6 +144,7 @@ Test scenarios:
 - Fresh service preview serializes as derived `fresh` mode without manifest
   source intent.
 - Branch service intent validates with non-empty source namespace/service.
+- Move service intent remains rejected before preview source-mode derivation.
 - Portal service intent remains rejected before preview source lookup.
 - Invalid empty source names are rejected structurally.
 - Generated manifest schema/types remain in sync if `ServiceIntent` changes.
@@ -156,8 +161,8 @@ Approach:
 - Resolve branch mode against committed source service release truth.
 - Resolve fresh mode only for services without branch source lineage and without
   a source-preserving service intent such as `ServiceIntent::Move`.
-- Resolve move mode from `ServiceIntent::Move` as relocation evidence, not as
-  fresh/no-source evidence.
+- Keep service move rejection in the existing validation path; do not resolve
+  move as fresh/no-source evidence and do not expose partial move preview.
 - Keep portal rejection in the existing validation path; do not resolve portal
   source namespace/service and do not expose portal preview evidence.
 - Add source mode evidence to `DeployPreview` alongside existing
@@ -169,8 +174,8 @@ Test scenarios:
 
 - A fresh service preview shows fresh mode and no lineage.
 - A branch service preview shows source namespace/service/revision.
-- A moved service preview shows relocation evidence and does not appear in the
-  fresh source set.
+- A service move intent remains rejected before preview and does not appear in
+  the fresh source set.
 - Source release drift between preview and apply is rejected before participant
   RPCs.
 - Portal intent does not preview source namespace/service details.
