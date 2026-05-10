@@ -25,6 +25,19 @@ pub struct VolumeZfsSnapshotPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsClonePayload {
+    pub namespace: String,
+    pub volume: String,
+    pub source_namespace: String,
+    pub source_volume: String,
+    pub machine_id: MachineId,
+    pub source_dataset: String,
+    pub target_dataset: String,
+    pub snapshot: String,
+    pub guid: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VolumeZfsSnapshotInfo {
     pub name: String,
     pub guid: u64,

@@ -3,12 +3,12 @@ use crate::cli_io::{read_optional_text_file, read_stdin_string, read_text_source
 use crate::{
     CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
     DeployServiceArgs, InstallSourceArg, MachineAction, MachineInviteAction,
-    MachineOperationAction, MachineStorageAction, MeshAction, Result, RuntimeTargetArg,
-    ServiceModeArg,
+    MachineOperationAction, MachineStorageAction, MeshAction, MigrateAction, MigrateServiceArgs,
+    Result, RuntimeTargetArg, ServiceModeArg,
 };
 use ployz_api::{
     DaemonRequest, DeployOptions, InstallSource as MachineInstallSource, MachineAddOptions,
-    MachineInstallOptions, MachineStoragePromoteRequest,
+    MachineInstallOptions, MachineStoragePromoteRequest, MigrateServiceMode, MigrateServiceRequest,
 };
 use ployz_sdk::Transport;
 use ployz_types::model::StorageReplicaPolicy;
@@ -29,6 +29,7 @@ pub(crate) async fn build_request<T: Transport>(
         Command::Doctor => Ok(DaemonRequest::Doctor),
         Command::Debug { action } => build_debug_request(action),
         Command::Deploy(command) => build_deploy_request(*command, transport, socket).await,
+        Command::Migrate { action } => build_migrate_request(action),
         Command::Runtime { .. } => Err(CliError::Usage(
             "internal error: runtime stream is handled directly".into(),
         )),
@@ -117,6 +118,52 @@ pub(crate) fn build_debug_request(action: DebugAction) -> Result<DaemonRequest> 
             repeat,
         }),
     }
+}
+
+pub(crate) fn build_migrate_request(action: MigrateAction) -> Result<DaemonRequest> {
+    match action {
+        MigrateAction::Apply(args) => {
+            build_migrate_service_request(args, MigrateServiceMode::Apply)
+        }
+        MigrateAction::Preview(args) => {
+            build_migrate_service_request(args, MigrateServiceMode::Preview)
+        }
+        MigrateAction::RenderManifest(args) => {
+            build_migrate_service_request(args, MigrateServiceMode::RenderManifest)
+        }
+    }
+}
+
+pub(crate) fn build_migrate_service_request(
+    args: MigrateServiceArgs,
+    mode: MigrateServiceMode,
+) -> Result<DaemonRequest> {
+    let (namespace, service) = parse_namespace_service(&args.service_ref)?;
+    if args.to.trim().is_empty() {
+        return Err(CliError::Usage("migrate --to cannot be empty".into()));
+    }
+    Ok(DaemonRequest::MigrateService {
+        request: MigrateServiceRequest {
+            namespace,
+            service,
+            target_machine: args.to,
+            mode,
+        },
+    })
+}
+
+fn parse_namespace_service(value: &str) -> Result<(String, String)> {
+    let Some((namespace, service)) = value.split_once('/') else {
+        return Err(CliError::Usage(format!(
+            "expected namespace/service, got '{value}'"
+        )));
+    };
+    if namespace.is_empty() || service.is_empty() || service.contains('/') {
+        return Err(CliError::Usage(format!(
+            "expected namespace/service, got '{value}'"
+        )));
+    }
+    Ok((namespace.to_string(), service.to_string()))
 }
 
 async fn build_deploy_request<T: Transport>(

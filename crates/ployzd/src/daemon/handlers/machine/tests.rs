@@ -2,12 +2,13 @@ use super::join::release_reserved_subnet;
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
 use crate::daemon::ActiveMesh;
 use crate::daemon::DaemonState;
+use crate::daemon::handlers::RequestLane;
 use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock};
 use crate::mesh_state::bootstrap::{bootstrap_peers_path, load_bootstrap_peer_records};
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
 use ployz_api::{
-    DaemonPayload, DaemonResponse, MachineAddOptions, MachineStorageAuthorityPeer,
+    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineStorageAuthorityPeer,
     MachineStoragePromoteRequest, MachineTransitionGoal, MeshSelfRecordPayload, StatusPayload,
 };
 use ployz_orchestrator::Mesh;
@@ -473,6 +474,105 @@ async fn machine_remove_force_deletes_membership_record() {
 
     let machines = store.list_machines().await.expect("list machines");
     assert!(!machines.into_iter().any(|machine| machine.id.0 == "peer-1"));
+}
+
+#[tokio::test]
+async fn machine_drain_and_standby_route_to_exclusive_lane() {
+    let (state, _, _) = make_state(true).await;
+    assert_eq!(
+        DaemonState::request_lane(&DaemonRequest::MachineDrain {
+            target: "peer".into()
+        }),
+        RequestLane::Shared
+    );
+    assert_eq!(
+        state.request_lane_for_state(&DaemonRequest::MachineDrain {
+            target: "founder".into()
+        }),
+        RequestLane::Exclusive
+    );
+    assert_eq!(
+        DaemonState::request_lane(&DaemonRequest::MachineStandby {
+            target: "peer".into(),
+            force: false,
+        }),
+        RequestLane::Shared
+    );
+    assert_eq!(
+        state.request_lane_for_state(&DaemonRequest::MachineStandby {
+            target: "founder".into(),
+            force: false,
+        }),
+        RequestLane::Exclusive
+    );
+}
+
+#[tokio::test]
+async fn local_drain_preserves_subnet_and_marks_draining() {
+    let (mut state, store, _) = make_state(true).await;
+    mark_local_machine_active(&mut state).await;
+
+    let response = state
+        .transition_local_machine(MachineTransitionGoal::Drain, None, false)
+        .await;
+    assert!(response.is_ok(), "{response:?}");
+
+    let local = store
+        .list_machines()
+        .await
+        .expect("list machines")
+        .into_iter()
+        .find(|machine| machine.id == state.identity.machine_id)
+        .expect("local machine present");
+    assert_eq!(local.lifecycle, MachineLifecycle::Draining);
+    assert_eq!(
+        local.subnet,
+        Some("10.210.0.0/24".parse().expect("valid subnet"))
+    );
+    assert_eq!(
+        state.active.as_ref().expect("active mesh").config.subnet,
+        Some("10.210.0.0/24".parse().expect("valid subnet"))
+    );
+}
+
+#[tokio::test]
+async fn machine_drain_local_target_uses_local_transition() {
+    let (mut state, store, _) = make_state(true).await;
+    mark_local_machine_active(&mut state).await;
+
+    let response = state.handle_machine_drain("founder").await;
+    assert!(response.ok, "{}", response.message);
+
+    let local = store
+        .list_machines()
+        .await
+        .expect("list machines")
+        .into_iter()
+        .find(|machine| machine.id == state.identity.machine_id)
+        .expect("local machine present");
+    assert_eq!(local.lifecycle, MachineLifecycle::Draining);
+}
+
+async fn mark_local_machine_active(state: &mut DaemonState) {
+    let active = state.active.as_mut().expect("active mesh");
+    let Some(mut record) = active
+        .mesh
+        .update_authoritative_self_record(|record| {
+            record.lifecycle = MachineLifecycle::Active;
+            record.subnet = Some("10.210.0.0/24".parse().expect("valid subnet"));
+        })
+        .await
+    else {
+        panic!("self record missing");
+    };
+    record.lifecycle = MachineLifecycle::Active;
+    record.subnet = Some("10.210.0.0/24".parse().expect("valid subnet"));
+    active
+        .mesh
+        .store
+        .upsert_self_machine(&record)
+        .await
+        .expect("persist active self");
 }
 
 #[tokio::test]

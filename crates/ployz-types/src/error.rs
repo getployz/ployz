@@ -86,6 +86,26 @@ pub enum DeployError {
     VolumeMoveTargetNotStorageCapable { volume: String, machine_id: String },
     #[error("volume '{volume}' move execution is not supported yet")]
     VolumeMoveExecutionUnsupported { volume: String },
+    #[error("volume '{volume}' clone source {source_namespace}/{source_volume} is missing")]
+    VolumeCloneSourceMissing {
+        volume: String,
+        source_namespace: String,
+        source_volume: String,
+    },
+    #[error("volume '{volume}' clone target already has a committed volume")]
+    VolumeCloneTargetExists { volume: String },
+    #[error("volume '{volume}' clone cannot reference the target volume itself")]
+    VolumeCloneSourceIsTarget { volume: String },
+    #[error("volume '{volume}' clone requires source and target scope=single")]
+    VolumeCloneRequiresSingleScope { volume: String },
+    #[error("volume '{volume}' clone source machine '{machine_id}' is missing")]
+    VolumeCloneSourceMachineMissing { volume: String, machine_id: String },
+    #[error("volume '{volume}' clone source machine '{machine_id}' is not deployable")]
+    VolumeCloneSourceMachineIneligible { volume: String, machine_id: String },
+    #[error("volume '{volume}' clone source machine '{machine_id}' is not storage-capable")]
+    VolumeCloneSourceMachineNotStorageCapable { volume: String, machine_id: String },
+    #[error("volume '{volume}' clone execution is not supported yet")]
+    VolumeCloneExecutionUnsupported { volume: String },
     #[error("participant '{machine_id}' is missing from machine inventory")]
     ParticipantMissing { machine_id: String },
     #[error(
@@ -248,6 +268,8 @@ pub enum StoreError {
         key: String,
         payload_key: String,
     },
+    #[error("deploy '{deploy_id}' commit persisted but routing publication failed: {message}")]
+    DeployCommitRoutingPublishFailed { deploy_id: String, message: String },
     #[error("NATS watch '{watch}' failed: {message}")]
     WatchFailed {
         watch: &'static str,
