@@ -5,7 +5,6 @@ use std::time::Duration;
 
 pub(crate) const VOLUME_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
 pub(crate) const VOLUME_TARGET: &str = "/var/lib/postgresql/data";
-const VOLUME_DATASET: &str = "default/data";
 
 #[derive(Debug)]
 pub(crate) struct ZfsContext {
@@ -16,11 +15,15 @@ pub(crate) struct ZfsContext {
 
 impl ZfsContext {
     pub(crate) fn volume_source(&self) -> String {
-        format!("{}/{}", self.root_mountpoint, VOLUME_DATASET)
+        self.volume_source_for("default", "data")
     }
 
-    pub(crate) fn volume_dataset(&self) -> String {
-        format!("{}/{}", self.root, VOLUME_DATASET)
+    pub(crate) fn volume_source_for(&self, namespace: &str, volume: &str) -> String {
+        format!("{}/{namespace}/{volume}", self.root_mountpoint)
+    }
+
+    pub(crate) fn volume_dataset_for(&self, namespace: &str, volume: &str) -> String {
+        format!("{}/{namespace}/{volume}", self.root)
     }
 }
 
@@ -57,7 +60,20 @@ pub(crate) fn deploy_volume_manifest(
     node_name: &str,
     value: &str,
 ) -> Result<()> {
-    let manifest = format!(
+    write_volume_manifest(run, node_name, value)?;
+    run.ssh_expect_ok_name(node_name, "ployzd deploy -f /tmp/ployz-volume-smoke.json")?;
+    Ok(())
+}
+
+pub(crate) fn write_volume_manifest(run: &ScenarioRun, node_name: &str, value: &str) -> Result<()> {
+    let manifest = volume_manifest(value);
+    let command = format!("cat >/tmp/ployz-volume-smoke.json <<'EOF'\n{manifest}\nEOF");
+    run.ssh_expect_ok_name(node_name, &command)?;
+    Ok(())
+}
+
+fn volume_manifest(value: &str) -> String {
+    format!(
         r#"{{
   "namespace": "default",
   "volumes": [
@@ -87,12 +103,7 @@ pub(crate) fn deploy_volume_manifest(
     }}
   ]
 }}"#
-    );
-    let command = format!(
-        "cat >/tmp/ployz-volume-smoke.json <<'EOF'\n{manifest}\nEOF\nployzd deploy -f /tmp/ployz-volume-smoke.json"
-    );
-    run.ssh_expect_ok_name(node_name, &command)?;
-    Ok(())
+    )
 }
 
 pub(crate) fn wait_for_volume_value(
@@ -111,6 +122,22 @@ pub(crate) fn wait_for_volume_value(
             "managed volume on {node_name} did not contain value '{value}': {error}"
         ))
     })
+}
+
+pub(crate) fn wait_for_volume_value_in_namespace(
+    run: &ScenarioRun,
+    node_name: &str,
+    zfs: &ZfsContext,
+    namespace: &str,
+    volume: &str,
+    value: &str,
+) -> Result<()> {
+    wait_for_volume_value(
+        run,
+        node_name,
+        &zfs.volume_source_for(namespace, volume),
+        value,
+    )
 }
 
 pub(crate) fn wait_for_container_bind(
@@ -135,6 +162,30 @@ pub(crate) fn wait_for_container_bind(
     })
 }
 
+pub(crate) fn wait_for_container_bind_in_namespace(
+    run: &ScenarioRun,
+    node_name: &str,
+    namespace: &str,
+    service: &str,
+    volume_source: &str,
+) -> Result<()> {
+    let command = format!(
+        "container_id=$(docker ps -q --filter label=dev.ployz.namespace={namespace} --filter label=dev.ployz.service={service} | head -n1); \
+         test -n \"$container_id\"; \
+         docker inspect --format '{{{{range .Mounts}}}}{{{{println .Source \"->\" .Destination}}}}{{{{end}}}}' \"$container_id\" | \
+         grep -Fx '{volume_source} -> {VOLUME_TARGET}'"
+    );
+    wait_until(VOLUME_WAIT_TIMEOUT, || {
+        let output = run.ssh_run_name(node_name, &command)?;
+        Ok(output.status.success())
+    })
+    .map_err(|error| {
+        Error::Message(format!(
+            "{service} container in namespace {namespace} on {node_name} did not have managed volume bind {volume_source}:{VOLUME_TARGET}: {error}"
+        ))
+    })
+}
+
 pub(crate) fn wait_for_no_service_container(run: &ScenarioRun, node_name: &str) -> Result<()> {
     let command = "test -z \"$(docker ps -q --filter label=dev.ployz.namespace=default --filter label=dev.ployz.service=db)\"";
     wait_until(VOLUME_WAIT_TIMEOUT, || {
@@ -153,8 +204,18 @@ pub(crate) fn assert_real_zfs_dataset(
     node_name: &str,
     zfs: &ZfsContext,
 ) -> Result<()> {
-    let dataset = zfs.volume_dataset();
-    let source = zfs.volume_source();
+    assert_real_zfs_dataset_in_namespace(run, node_name, zfs, "default", "data")
+}
+
+pub(crate) fn assert_real_zfs_dataset_in_namespace(
+    run: &ScenarioRun,
+    node_name: &str,
+    zfs: &ZfsContext,
+    namespace: &str,
+    volume: &str,
+) -> Result<()> {
+    let dataset = zfs.volume_dataset_for(namespace, volume);
+    let source = zfs.volume_source_for(namespace, volume);
     let command = format!(
         "test \"$(zfs list -H -o mountpoint {dataset})\" = '{source}'; \
          quota=$(zfs get -H -o value quota {dataset}); \

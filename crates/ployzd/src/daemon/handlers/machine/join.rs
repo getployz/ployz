@@ -381,7 +381,24 @@ impl DaemonState {
         ))
     }
 
-    pub(crate) async fn handle_machine_drain(&self, target: &str) -> DaemonResponse {
+    pub(crate) async fn handle_machine_drain(&mut self, target: &str) -> DaemonResponse {
+        let machine_id = MachineId(target.to_string());
+        if machine_id == self.identity.machine_id {
+            return self
+                .handle_machine_transition_self(MachineTransitionGoal::Drain, None, false)
+                .await;
+        }
+        self.handle_remote_machine_drain(target).await
+    }
+
+    pub(crate) async fn handle_remote_machine_drain(&self, target: &str) -> DaemonResponse {
+        let machine_id = MachineId(target.to_string());
+        if machine_id == self.identity.machine_id {
+            return self.err(
+                "LOCAL_DRAIN_REQUIRES_EXCLUSIVE_LANE",
+                "local machine drain must run on the exclusive lane",
+            );
+        }
         let active = match self.active.as_ref() {
             Some(active) => active,
             None => {
@@ -391,7 +408,6 @@ impl DaemonState {
                 );
             }
         };
-        let machine_id = MachineId(target.to_string());
         let Some(record) =
             (match super::list::find_machine_record(&active.mesh.store, &machine_id).await {
                 Ok(record) => record,
@@ -404,21 +420,53 @@ impl DaemonState {
             return self.ok(format!("machine '{}' already draining", machine_id));
         }
         let nats_client = match self.nats_node_rpc_client().await {
-            Ok(client) => client,
+            Ok(client) => client.with_policy(RpcPolicy {
+                timeout: MACHINE_TRANSITION_RPC_TIMEOUT,
+            }),
             Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
         };
-        if let Err(err) = nats_rpc_expect_ok(
-            &nats_client,
-            NodeCommandSubject::machine_transition_self(&record.id),
-            DaemonRequest::MachineTransitionSelf {
-                goal: MachineTransitionGoal::Drain,
-                assigned_subnet: None,
-                force: false,
-            },
-        )
-        .await
-        {
-            return self.err("REMOTE_DRAIN_FAILED", err);
+        let transition = nats_client
+            .request(
+                NodeCommandSubject::machine_transition_self(&record.id),
+                &DaemonRequest::MachineTransitionSelf {
+                    goal: MachineTransitionGoal::Drain,
+                    assigned_subnet: None,
+                    force: false,
+                },
+            )
+            .await;
+        match transition {
+            Ok(response) if response.ok => {}
+            Ok(response) => {
+                return self.err("REMOTE_DRAIN_FAILED", remote_response_error(&response));
+            }
+            Err(err) => {
+                let record_wait = wait_for_machine_record(
+                    &active.mesh.store,
+                    &machine_id,
+                    ExpectedMachineRecord::new(
+                        MachineLifecycle::Draining,
+                        ExpectedSubnetState::Present,
+                    ),
+                )
+                .await;
+                match record_wait {
+                    Ok(()) => {
+                        tracing::warn!(
+                            machine = %machine_id,
+                            error = %err,
+                            "machine drain NATS reply failed after observed machine record reached expected value"
+                        );
+                        return self.ok(format!("machine '{}' draining", machine_id));
+                    }
+                    Err(record_err) => {
+                        return self.err(
+                            "REMOTE_DRAIN_FAILED",
+                            format!("{err}; observed machine record did not confirm draining: {record_err}"),
+                        );
+                    }
+                }
+            }
         }
         match wait_for_machine_record(
             &active.mesh.store,
@@ -432,7 +480,32 @@ impl DaemonState {
         }
     }
 
-    pub(crate) async fn handle_machine_standby(&self, target: &str, force: bool) -> DaemonResponse {
+    pub(crate) async fn handle_machine_standby(
+        &mut self,
+        target: &str,
+        force: bool,
+    ) -> DaemonResponse {
+        let machine_id = MachineId(target.to_string());
+        if machine_id == self.identity.machine_id {
+            return self
+                .handle_machine_transition_self(MachineTransitionGoal::Standby, None, force)
+                .await;
+        }
+        self.handle_remote_machine_standby(target, force).await
+    }
+
+    pub(crate) async fn handle_remote_machine_standby(
+        &self,
+        target: &str,
+        force: bool,
+    ) -> DaemonResponse {
+        let machine_id = MachineId(target.to_string());
+        if machine_id == self.identity.machine_id {
+            return self.err(
+                "LOCAL_STANDBY_REQUIRES_EXCLUSIVE_LANE",
+                "local machine standby must run on the exclusive lane",
+            );
+        }
         let active = match self.active.as_ref() {
             Some(active) => active,
             None => {
@@ -442,7 +515,6 @@ impl DaemonState {
                 );
             }
         };
-        let machine_id = MachineId(target.to_string());
         let Some(record) =
             (match super::list::find_machine_record(&active.mesh.store, &machine_id).await {
                 Ok(record) => record,

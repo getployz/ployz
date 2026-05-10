@@ -12,8 +12,8 @@ use crate::mesh::{MeshListPayload, MeshReadyPayload, MeshSelfRecordPayload, Mesh
 use crate::runtime::RuntimeStatePayload;
 use crate::status::StatusPayload;
 use crate::volume::{
-    VolumeZfsInspectPayload, VolumeZfsPeerSendPayload, VolumeZfsSnapshotPayload,
-    VolumeZfsTransferListPayload, VolumeZfsTransferPayload,
+    VolumeZfsClonePayload, VolumeZfsInspectPayload, VolumeZfsPeerSendPayload,
+    VolumeZfsSnapshotPayload, VolumeZfsTransferListPayload, VolumeZfsTransferPayload,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +41,7 @@ pub enum DaemonPayload {
     DeployFailure(DeployFailurePayload),
     VolumeZfsInspect(VolumeZfsInspectPayload),
     VolumeZfsSnapshot(VolumeZfsSnapshotPayload),
+    VolumeZfsClone(VolumeZfsClonePayload),
     VolumeZfsPeerSend(VolumeZfsPeerSendPayload),
     VolumeZfsTransfer(VolumeZfsTransferPayload),
     VolumeZfsTransferList(VolumeZfsTransferListPayload),

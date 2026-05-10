@@ -780,6 +780,18 @@
         }
       }
     },
+    "VolumeCloneConsistency": {
+      "type": "string",
+      "enum": [
+        "crash_consistent"
+      ]
+    },
+    "VolumeCloneDataPolicy": {
+      "type": "string",
+      "enum": [
+        "raw"
+      ]
+    },
     "VolumeDeclaration": {
       "type": "object",
       "required": [
@@ -826,6 +838,39 @@
                   "type": "string"
                 },
                 "to_machine": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "clone"
+          ],
+          "properties": {
+            "clone": {
+              "type": "object",
+              "required": [
+                "consistency",
+                "data_policy",
+                "source_namespace",
+                "source_volume"
+              ],
+              "properties": {
+                "consistency": {
+                  "$ref": "#/definitions/VolumeCloneConsistency"
+                },
+                "data_policy": {
+                  "$ref": "#/definitions/VolumeCloneDataPolicy"
+                },
+                "source_namespace": {
+                  "$ref": "#/definitions/Namespace"
+                },
+                "source_volume": {
                   "type": "string"
                 }
               },

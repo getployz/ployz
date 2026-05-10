@@ -158,7 +158,7 @@ impl DeployIntent {
 
         let mut seen_volumes = BTreeSet::new();
         for hint in &self.volumes {
-            hint.validate(&volume_names)?;
+            hint.validate(&manifest.namespace, &volume_names)?;
             if !seen_volumes.insert(hint.volume.as_str()) {
                 return Err(format!(
                     "deploy intent contains duplicate volume hint '{}'",
@@ -242,6 +242,12 @@ impl DeployIntent {
                 VolumeIntent::Move {
                     from_machine: _,
                     to_machine: _,
+                }
+                | VolumeIntent::Clone {
+                    source_namespace: _,
+                    source_volume: _,
+                    data_policy: _,
+                    consistency: _,
                 } => {}
             }
         }
@@ -496,7 +502,11 @@ pub struct VolumeIntentHint {
 }
 
 impl VolumeIntentHint {
-    fn validate(&self, volume_names: &BTreeSet<&str>) -> Result<(), String> {
+    fn validate(
+        &self,
+        target_namespace: &Namespace,
+        volume_names: &BTreeSet<&str>,
+    ) -> Result<(), String> {
         if self.volume.trim().is_empty() {
             return Err("deploy intent volume hint cannot have an empty volume".into());
         }
@@ -506,7 +516,7 @@ impl VolumeIntentHint {
                 self.volume
             ));
         }
-        self.intent.validate(&self.volume)
+        self.intent.validate(target_namespace, &self.volume)
     }
 }
 
@@ -517,10 +527,28 @@ pub enum VolumeIntent {
         from_machine: String,
         to_machine: String,
     },
+    Clone {
+        source_namespace: Namespace,
+        source_volume: String,
+        data_policy: VolumeCloneDataPolicy,
+        consistency: VolumeCloneConsistency,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VolumeCloneDataPolicy {
+    Raw,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VolumeCloneConsistency {
+    CrashConsistent,
 }
 
 impl VolumeIntent {
-    fn validate(&self, volume: &str) -> Result<(), String> {
+    fn validate(&self, target_namespace: &Namespace, volume: &str) -> Result<(), String> {
         match self {
             Self::Move {
                 from_machine,
@@ -535,6 +563,26 @@ impl VolumeIntent {
                     return Err(format!(
                         "deploy intent move for volume '{volume}' cannot have an empty to_machine"
                     ));
+                }
+                Ok(())
+            }
+            Self::Clone {
+                source_namespace,
+                source_volume,
+                data_policy,
+                consistency,
+            } => {
+                validate_volume_source("clone", volume, source_namespace, source_volume)?;
+                if source_namespace == target_namespace && source_volume == volume {
+                    return Err(format!(
+                        "deploy intent clone for volume '{volume}' cannot reference the target volume itself"
+                    ));
+                }
+                match data_policy {
+                    VolumeCloneDataPolicy::Raw => {}
+                }
+                match consistency {
+                    VolumeCloneConsistency::CrashConsistent => {}
                 }
                 Ok(())
             }
@@ -566,6 +614,26 @@ fn validate_machine_hint(intent: &str, service: &str, machine: &str) -> Result<(
     if machine.trim().is_empty() {
         return Err(format!(
             "deploy intent {intent} for service '{service}' cannot have an empty to_machine"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_volume_source(
+    intent: &str,
+    volume: &str,
+    source_namespace: &Namespace,
+    source_volume: &str,
+) -> Result<(), String> {
+    if !valid_namespace_name(&source_namespace.0) {
+        return Err(format!(
+            "deploy intent {intent} for volume '{volume}' has invalid source namespace '{}'",
+            source_namespace
+        ));
+    }
+    if !valid_volume_name(source_volume) {
+        return Err(format!(
+            "deploy intent {intent} for volume '{volume}' has invalid source_volume '{source_volume}'"
         ));
     }
     Ok(())
