@@ -16,9 +16,9 @@ use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_partici
 use crate::error::{DeployError, Error, Result};
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPhaseCommitPolicy,
-    DeployPhaseFailure, DeployPhasePlan, DeployPhaseRecord, DeployPhaseState, DeployPhaseWork,
-    DeployPreview, DeployRecord, DeployState, InstanceId, InstancePhase, InstanceStatusRecord,
-    MachineId, MachineMembership, VolumeRecord,
+    DeployPhaseFailure, DeployPhaseId, DeployPhasePlan, DeployPhaseRecord, DeployPhaseState,
+    DeployPhaseWork, DeployPreview, DeployRecord, DeployState, InstanceId, InstancePhase,
+    InstanceStatusRecord, MachineId, MachineMembership, VolumeRecord,
 };
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use ployz_store_api::{DeployCommit, DeployStore, InstanceStatusStore, StoreDriver};
@@ -354,15 +354,21 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         last_written_deploy_record = Some(prepared.applying_record().clone());
 
         let phases = prepared.preview().phases.clone();
+        let mut unstarted_phase_records = Vec::new();
         for phase in &phases {
-            store
-                .upsert_deploy_phase(&deploy_phase_record(
-                    &prepared,
-                    phase,
-                    DeployPhaseState::Pending,
-                    started_at,
-                ))
-                .await?;
+            let pending_phase =
+                deploy_phase_record(&prepared, phase, DeployPhaseState::Pending, started_at);
+            if let Err(error) = store.upsert_deploy_phase(&pending_phase).await {
+                mark_phases_failed_best_effort(
+                    store,
+                    std::mem::take(&mut unstarted_phase_records),
+                    &error,
+                    prepared.deploy_id(),
+                )
+                .await;
+                return Err(error);
+            }
+            unstarted_phase_records.push(pending_phase);
         }
         let mut started = HashMap::new();
         let mut checkpointed_services = BTreeSet::new();
@@ -379,16 +385,23 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             )
             .await;
             let phase_execution = match phase_execution_result {
-                Ok(phase_execution) => phase_execution,
+                Ok(phase_execution) => {
+                    remove_phase_record(&mut unstarted_phase_records, &phase.phase_id);
+                    phase_execution
+                }
                 Err(error) => {
-                    mark_phases_failed_best_effort(
+                    if error.phase_reached_running {
+                        remove_phase_record(&mut unstarted_phase_records, &phase.phase_id);
+                    }
+                    mark_pending_and_unstarted_phases_failed_best_effort(
                         store,
-                        std::mem::take(&mut pending_phase_successes),
-                        &error,
+                        &mut pending_phase_successes,
+                        &mut unstarted_phase_records,
+                        &error.error,
                         prepared.deploy_id(),
                     )
                     .await;
-                    return Err(error);
+                    return Err(error.error);
                 }
             };
             events.extend(phase_execution.events);
@@ -418,6 +431,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                                 store,
                                 phase_execution.running_phase,
                                 &mut pending_phase_successes,
+                                &mut unstarted_phase_records,
                                 &error,
                                 prepared.deploy_id(),
                             )
@@ -430,6 +444,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                             store,
                             phase_execution.running_phase,
                             &mut pending_phase_successes,
+                            &mut unstarted_phase_records,
                             &error,
                             prepared.deploy_id(),
                         )
@@ -446,9 +461,10 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                     last_written_deploy_record = Some(status.clone());
                     let status_result = store.write_deploy_status(&status).await;
                     if let Err(error) = status_result {
-                        mark_phases_failed_best_effort(
+                        mark_pending_and_unstarted_phases_failed_best_effort(
                             store,
-                            std::mem::take(&mut pending_phase_successes),
+                            &mut pending_phase_successes,
+                            &mut unstarted_phase_records,
                             &error,
                             prepared.deploy_id(),
                         )
@@ -506,9 +522,10 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         let final_commit = match final_commit_result {
             Ok(commit) => commit,
             Err(error) => {
-                mark_phases_failed_best_effort(
+                mark_pending_and_unstarted_phases_failed_best_effort(
                     store,
-                    std::mem::take(&mut pending_phase_successes),
+                    &mut pending_phase_successes,
+                    &mut unstarted_phase_records,
                     &error,
                     prepared.deploy_id(),
                 )
@@ -517,9 +534,10 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             }
         };
         if let Err(error) = store.commit_deploy(&final_commit).await {
-            mark_phases_failed_best_effort(
+            mark_pending_and_unstarted_phases_failed_best_effort(
                 store,
-                std::mem::take(&mut pending_phase_successes),
+                &mut pending_phase_successes,
+                &mut unstarted_phase_records,
                 &error,
                 prepared.deploy_id(),
             )
@@ -676,6 +694,11 @@ struct PhaseExecution {
     running_phase: DeployPhaseRecord,
 }
 
+struct PhaseExecutionError {
+    error: Error,
+    phase_reached_running: bool,
+}
+
 async fn execute_phase(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
@@ -683,9 +706,14 @@ async fn execute_phase(
     prepared: &PreparedDeploy,
     phase: &DeployPhasePlan,
     started_at: u64,
-) -> Result<PhaseExecution> {
+) -> std::result::Result<PhaseExecution, PhaseExecutionError> {
     let running = deploy_phase_record(&prepared, &phase, DeployPhaseState::Running, started_at);
-    store.upsert_deploy_phase(&running).await?;
+    if let Err(error) = store.upsert_deploy_phase(&running).await {
+        return Err(PhaseExecutionError {
+            error,
+            phase_reached_running: false,
+        });
+    }
 
     let execution = async {
         let mut events = Vec::new();
@@ -735,7 +763,10 @@ async fn execute_phase(
                     "failed to record terminal failed deploy phase after phase error"
                 );
             }
-            Err(error)
+            Err(PhaseExecutionError {
+                error,
+                phase_reached_running: true,
+            })
         }
     }
 }
@@ -809,11 +840,30 @@ async fn mark_phase_and_pending_phases_failed_best_effort(
     store: &StoreDriver,
     phase: DeployPhaseRecord,
     pending_phases: &mut Vec<DeployPhaseRecord>,
+    unstarted_phases: &mut Vec<DeployPhaseRecord>,
     error: &Error,
     deploy_id: &DeployId,
 ) {
     mark_phase_failed_best_effort(store, phase, error, deploy_id).await;
+    mark_pending_and_unstarted_phases_failed_best_effort(
+        store,
+        pending_phases,
+        unstarted_phases,
+        error,
+        deploy_id,
+    )
+    .await;
+}
+
+async fn mark_pending_and_unstarted_phases_failed_best_effort(
+    store: &StoreDriver,
+    pending_phases: &mut Vec<DeployPhaseRecord>,
+    unstarted_phases: &mut Vec<DeployPhaseRecord>,
+    error: &Error,
+    deploy_id: &DeployId,
+) {
     mark_phases_failed_best_effort(store, std::mem::take(pending_phases), error, deploy_id).await;
+    mark_phases_failed_best_effort(store, std::mem::take(unstarted_phases), error, deploy_id).await;
 }
 
 async fn mark_phases_failed_best_effort(
@@ -825,6 +875,16 @@ async fn mark_phases_failed_best_effort(
     for phase in phases {
         mark_phase_failed_best_effort(store, phase, error, deploy_id).await;
     }
+}
+
+fn remove_phase_record(
+    phases: &mut Vec<DeployPhaseRecord>,
+    phase_id: &DeployPhaseId,
+) -> Option<DeployPhaseRecord> {
+    let index = phases
+        .iter()
+        .position(|phase| phase.phase_id == *phase_id)?;
+    Some(phases.remove(index))
 }
 
 fn deploy_phase_failure(error: &Error) -> DeployPhaseFailure {
