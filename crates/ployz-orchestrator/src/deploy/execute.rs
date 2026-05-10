@@ -901,7 +901,10 @@ async fn execute_phase(
                     "failed to record terminal failed deploy phase after phase error"
                 );
             }
-            return Err(error);
+            return Err(PhaseExecutionError {
+                error,
+                phase_reached_running: true,
+            });
         }
     };
 
