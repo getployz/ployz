@@ -14,6 +14,8 @@ pub struct ImageStatusRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageInspectRequest {
     pub digest: ImageDigest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub machines: Vec<MachineId>,
 }
@@ -40,6 +42,7 @@ pub struct ImageStatusPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageInspectPayload {
+    pub operation_id: String,
     pub records: Vec<ImageAvailabilityRecord>,
 }
 

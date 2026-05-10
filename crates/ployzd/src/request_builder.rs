@@ -7,9 +7,9 @@ use crate::{
     MigrateServiceArgs, Result, RuntimeTargetArg, ServiceModeArg,
 };
 use ployz_api::{
-    DaemonRequest, DeployOptions, ImageStatusRequest, InstallSource as MachineInstallSource,
-    MachineAddOptions, MachineInstallOptions, MachineStoragePromoteRequest, MigrateServiceMode,
-    MigrateServiceRequest,
+    DaemonRequest, DeployOptions, ImageInspectRequest, ImageStatusRequest,
+    InstallSource as MachineInstallSource, MachineAddOptions, MachineInstallOptions,
+    MachineStoragePromoteRequest, MigrateServiceMode, MigrateServiceRequest,
 };
 use ployz_sdk::Transport;
 use ployz_types::model::{ImageDigest, MachineId, StorageReplicaPolicy};
@@ -58,6 +58,20 @@ pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> 
                 request: ImageStatusRequest {
                     digest,
                     machine_id: machine.map(MachineId),
+                },
+            })
+        }
+        ImageAction::Inspect {
+            digest,
+            reference,
+            machine,
+        } => {
+            let digest = ImageDigest::try_new(digest).map_err(CliError::Usage)?;
+            Ok(DaemonRequest::ImageInspect {
+                request: ImageInspectRequest {
+                    digest,
+                    reference,
+                    machines: machine.map(MachineId).into_iter().collect(),
                 },
             })
         }

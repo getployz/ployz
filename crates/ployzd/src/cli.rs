@@ -497,6 +497,14 @@ pub(crate) enum ImageAction {
         #[arg(long)]
         machine: Option<String>,
     },
+    Inspect {
+        #[arg(long)]
+        digest: String,
+        #[arg(long)]
+        reference: Option<String>,
+        #[arg(long)]
+        machine: Option<String>,
+    },
     Operation {
         #[command(subcommand)]
         action: ImageOperationAction,
