@@ -385,6 +385,12 @@ pub(super) async fn apply_prepared_with_certificate_coordination(
     if let Some(result) = existing_terminal_prepared_apply_result(store, &prepared).await? {
         return Ok(result);
     }
+    if prepared.state != PreparedDeployState::Prepared {
+        return Err(Error::Deploy(DeployError::PreparedDeployNotApplicable {
+            prepared_deploy_id: prepared.prepared_deploy_id.0,
+            state: prepared.state,
+        }));
+    }
     ensure_prepared_not_expired(store, &prepared).await?;
     let result = apply_with_deploy_id_and_preconditions_for_prepared(
         store,
@@ -423,12 +429,6 @@ async fn load_applicable_prepared_deploy(
             prepared_deploy_id: prepared_deploy_id.0.clone(),
         }));
     };
-    if prepared.state != PreparedDeployState::Prepared {
-        return Err(Error::Deploy(DeployError::PreparedDeployNotApplicable {
-            prepared_deploy_id: prepared.prepared_deploy_id.0,
-            state: prepared.state,
-        }));
-    }
     Ok(prepared)
 }
 
@@ -461,16 +461,18 @@ async fn existing_terminal_prepared_apply_result(
                 step: "prepared_deploy".into(),
                 message: "prepared deploy already has a terminal committed deploy record".into(),
             }];
-            if let Err(error) = store
-                .mark_prepared_deploy_applied(&prepared.prepared_deploy_id, now_unix_secs())
-                .await
-            {
-                events.push(DeployEvent {
-                    step: "prepared_deploy".into(),
-                    message: format!(
-                        "prepared deploy replayed committed deploy but could not mark state applied: {error}"
-                    ),
-                });
+            if prepared.state == PreparedDeployState::Prepared {
+                if let Err(error) = store
+                    .mark_prepared_deploy_applied(&prepared.prepared_deploy_id, now_unix_secs())
+                    .await
+                {
+                    events.push(DeployEvent {
+                        step: "prepared_deploy".into(),
+                        message: format!(
+                            "prepared deploy replayed committed deploy but could not mark state applied: {error}"
+                        ),
+                    });
+                }
             }
             let preview: DeployPreview =
                 serde_json::from_str(&record.summary_json).map_err(|error| {
