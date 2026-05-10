@@ -175,7 +175,7 @@ mod tests {
     use super::{Scenario, ZfsMode};
 
     #[test]
-    fn real_ci_order_adds_real_storage_scenarios() {
+    fn real_ci_order_adds_default_real_storage_scenarios() {
         let scenarios = Scenario::default_order(ZfsMode::Real);
 
         assert_eq!(
