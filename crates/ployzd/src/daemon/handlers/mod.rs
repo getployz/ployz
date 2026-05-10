@@ -54,6 +54,8 @@ impl DaemonState {
             | DaemonRequest::DeployNodeStartCandidate { .. }
             | DaemonRequest::DeployNodeDrainInstance { .. }
             | DaemonRequest::DeployNodeRemoveInstance { .. }
+            | DaemonRequest::DeployNodeCloneVolume { .. }
+            | DaemonRequest::DeployNodeCleanupUncommittedVolumeClone { .. }
             | DaemonRequest::RuntimeSubscribe
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }
@@ -183,6 +185,40 @@ impl DaemonState {
             } => {
                 self.handle_deploy_node_remove_instance(&namespace, &deploy_id, &instance_id)
                     .await
+            }
+            DaemonRequest::DeployNodeCloneVolume {
+                namespace,
+                deploy_id,
+                volume,
+                source_namespace,
+                source_volume,
+                snapshot,
+                quota,
+                mode,
+                owner,
+            } => {
+                self.handle_deploy_node_clone_volume(
+                    &namespace,
+                    &deploy_id,
+                    &volume,
+                    &source_namespace,
+                    &source_volume,
+                    &snapshot,
+                    &quota,
+                    &mode,
+                    &owner,
+                )
+                .await
+            }
+            DaemonRequest::DeployNodeCleanupUncommittedVolumeClone {
+                namespace,
+                deploy_id,
+                volume,
+            } => {
+                self.handle_deploy_node_cleanup_uncommitted_volume_clone(
+                    &namespace, &deploy_id, &volume,
+                )
+                .await
             }
             DaemonRequest::VolumeZfsInspect {
                 namespace,
@@ -417,6 +453,8 @@ impl DaemonState {
             | DaemonRequest::DeployNodeStartCandidate { .. }
             | DaemonRequest::DeployNodeDrainInstance { .. }
             | DaemonRequest::DeployNodeRemoveInstance { .. }
+            | DaemonRequest::DeployNodeCloneVolume { .. }
+            | DaemonRequest::DeployNodeCleanupUncommittedVolumeClone { .. }
             | DaemonRequest::RuntimeSubscribe
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }

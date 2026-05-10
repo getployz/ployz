@@ -10,6 +10,10 @@ pub trait DeployParticipantClient: Send + Sync {
         false
     }
 
+    fn supports_volume_clones(&self) -> bool {
+        false
+    }
+
     async fn inspect_namespace(
         &self,
         machine: &MachineMembership,
@@ -36,6 +40,30 @@ pub trait DeployParticipantClient: Send + Sync {
         Err(Error::Deploy(DeployError::VolumeMoveExecutionUnsupported {
             volume: request.volume,
         }))
+    }
+
+    async fn clone_volume(
+        &self,
+        _machine_id: &MachineId,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
+        request: CloneVolumeRequest,
+    ) -> Result<CloneVolumeResult> {
+        Err(Error::Deploy(
+            DeployError::VolumeCloneExecutionUnsupported {
+                volume: request.volume,
+            },
+        ))
+    }
+
+    async fn cleanup_volume_clone(
+        &self,
+        _machine_id: &MachineId,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
+        _volume: &str,
+    ) -> Result<()> {
+        Ok(())
     }
 
     async fn drain_instance(
@@ -77,4 +105,22 @@ pub struct MoveVolumeResult {
     pub snapshot: String,
     pub snapshot_guid: u64,
     pub bytes_transferred: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CloneVolumeRequest {
+    pub volume: String,
+    pub source_namespace: Namespace,
+    pub source_volume: String,
+    pub snapshot: String,
+    pub quota: String,
+    pub mode: String,
+    pub owner: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CloneVolumeResult {
+    pub snapshot: String,
+    pub snapshot_guid: u64,
+    pub target_dataset: String,
 }

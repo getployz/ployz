@@ -13,16 +13,17 @@ use crate::deploy::plan::{
     PlanFingerprint, ResolvedPlan, VolumeChange, resolve_plan, volume_record_change,
 };
 use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_participants};
-use crate::error::{DeployError, Error, Result};
+use crate::error::{DeployError, Error, Result, StoreError};
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPhaseCommitPolicy,
     DeployPhaseCommitRecord, DeployPhaseFailure, DeployPhaseId, DeployPhasePlan, DeployPhaseRecord,
     DeployPhaseState, DeployPhaseWork, DeployPreview, DeployRecord, DeployState, InstanceId,
-    InstancePhase, InstanceStatusRecord, MachineId, MachineMembership, VolumeMovementRecord,
-    VolumeRecord,
+    InstancePhase, InstanceStatusRecord, MachineId, MachineMembership, VolumeBranchLineageRecord,
+    VolumeMovementRecord, VolumeRecord,
 };
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use ployz_store_api::{DeployCommit, DeployStore, InstanceStatusStore, StoreDriver};
+use ployz_types::spec::{VolumeCloneConsistency, VolumeCloneDataPolicy};
 use ployz_types::time::now_unix_secs;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -276,6 +277,7 @@ pub(super) async fn apply_with_deploy_id_and_certificate_coordination(
 ) -> Result<DeployApplyResult> {
     let initial_plan = resolve_plan(store, local_machine_id, manifest).await?;
     ensure_volume_move_execution_supported(participant_client, &initial_plan)?;
+    ensure_volume_clone_execution_supported(participant_client, &initial_plan)?;
     let reachability = probe_participants(
         prober,
         initial_plan.participants(),
@@ -325,6 +327,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
     let started_at = now_unix_secs();
     let initial_fingerprint = initial_plan.fingerprint();
     ensure_volume_move_execution_supported(participant_client, &initial_plan)?;
+    ensure_volume_clone_execution_supported(participant_client, &initial_plan)?;
 
     let (participants, mut events) = ParticipantSet::inspect(
         participant_client,
@@ -337,6 +340,8 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
     let mut last_written_deploy_record = None;
     let mut durable_final_commit_record = None;
     let mut pending_phase_successes = Vec::new();
+    let mut executed_volume_clones = BTreeMap::new();
+    let mut checkpointed_volumes = BTreeSet::new();
     let result = async {
         let final_plan = resolve_plan(store, local_machine_id, manifest).await?;
         let final_fingerprint = final_plan.fingerprint();
@@ -374,7 +379,6 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         let mut started = HashMap::new();
         let mut executed_volume_moves = BTreeMap::new();
         let mut checkpointed_services = BTreeSet::new();
-        let mut checkpointed_volumes = BTreeSet::new();
 
         for phase in &phases {
             let phase_execution_result = execute_phase(
@@ -409,6 +413,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             events.extend(phase_execution.events);
             started.extend(phase_execution.started);
             executed_volume_moves.extend(phase_execution.volume_movements);
+            executed_volume_clones.extend(phase_execution.volume_branches);
 
             match phase.commit_policy {
                 DeployPhaseCommitPolicy::Checkpoint => {
@@ -423,6 +428,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                         &prepared,
                         &started,
                         &executed_volume_moves,
+                        &executed_volume_clones,
                         &phase_services,
                         &phase_volumes,
                         removed_services,
@@ -453,6 +459,21 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                         }
                     };
                     if let Err(error) = store.commit_deploy(&commit).await {
+                        if is_post_commit_routing_publish_failure(&error) {
+                            checkpointed_services.extend(phase_services);
+                            checkpointed_volumes.extend(phase_volumes);
+                            record_phase_succeeded_after_commit(
+                                store,
+                                prepared.deploy_id(),
+                                Some(phase_execution.running_phase),
+                                Some(phase_commit_id),
+                            )
+                            .await;
+                            let status = checkpoint_deploy_record(&prepared)?;
+                            last_written_deploy_record = Some(status.clone());
+                            let _ = store.write_deploy_status(&status).await;
+                            return Err(error);
+                        }
                         mark_phase_and_pending_phases_failed_best_effort(
                             store,
                             phase_execution.running_phase,
@@ -464,6 +485,8 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                         .await;
                         return Err(error);
                     }
+                    checkpointed_services.extend(phase_services);
+                    checkpointed_volumes.extend(phase_volumes);
                     record_phase_succeeded_after_commit(
                         store,
                         prepared.deploy_id(),
@@ -489,8 +512,6 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                         step: "phase".into(),
                         message: format!("checkpointed phase {} ({})", phase.phase_id, phase.name),
                     });
-                    checkpointed_services.extend(phase_services);
-                    checkpointed_volumes.extend(phase_volumes);
                 }
                 DeployPhaseCommitPolicy::EndOfDeploy => {
                     pending_phase_successes.push(phase_execution.running_phase);
@@ -526,6 +547,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                 &prepared,
                 &started,
                 &executed_volume_moves,
+                &executed_volume_clones,
                 &remaining_services,
                 &remaining_volumes,
                 removed_services,
@@ -562,6 +584,20 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             }
         };
         if let Err(error) = store.commit_deploy(&final_commit).await {
+            if is_post_commit_routing_publish_failure(&error) {
+                durable_final_commit_record = Some(final_commit.deploy.clone());
+                record_phases_succeeded_after_commit(
+                    store,
+                    &deploy_id,
+                    std::mem::take(&mut pending_phase_successes),
+                    Some(final_commit.deploy.deploy_id.clone()),
+                )
+                .await;
+                if store.write_deploy_status(&final_commit.deploy).await.is_ok() {
+                    last_written_deploy_record = Some(final_commit.deploy.clone());
+                }
+                return Err(error);
+            }
             mark_pending_and_unstarted_phases_failed_best_effort(
                 store,
                 &mut pending_phase_successes,
@@ -678,6 +714,19 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
     .await;
 
     if let Err(error) = &result {
+        let status_error = if durable_final_commit_record.is_none() {
+            let cleanup_errors = cleanup_uncommitted_volume_clones_after_failure(
+                participant_client,
+                &participants,
+                &deploy_id,
+                &executed_volume_clones,
+                &checkpointed_volumes,
+            )
+            .await;
+            error_with_clone_cleanup_failures(error.clone(), cleanup_errors)
+        } else {
+            error.clone()
+        };
         if let Some(committed_record) = durable_final_commit_record {
             if !matches!(
                 last_written_deploy_record
@@ -700,9 +749,9 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             )
         {
             let failed_record = if last_record.state == DeployState::CheckpointCommitted {
-                failed_after_checkpoint_deploy_record(last_record, error)
+                failed_after_checkpoint_deploy_record(last_record, &status_error)
             } else {
-                failed_deploy_record(last_record, error)
+                failed_deploy_record(last_record, &status_error)
             };
             if let Err(update_error) = store.write_deploy_status(&failed_record).await {
                 warn!(
@@ -717,9 +766,43 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
     result
 }
 
+async fn cleanup_uncommitted_volume_clones_after_failure(
+    participant_client: &dyn DeployParticipantClient,
+    participants: &ParticipantSet,
+    deploy_id: &DeployId,
+    executed_volume_clones: &BTreeMap<String, ExecutedVolumeClone>,
+    checkpointed_volumes: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut cleanup_errors = Vec::new();
+    for clone in executed_volume_clones.values() {
+        if checkpointed_volumes.contains(&clone.volume_name) {
+            continue;
+        }
+        if let Err(error) = participant_client
+            .cleanup_volume_clone(
+                &clone.target_machine,
+                &participants.namespace,
+                deploy_id,
+                &clone.volume_name,
+            )
+            .await
+        {
+            warn!(
+                ?error,
+                deploy_id = %deploy_id,
+                volume = %clone.volume_name,
+                "failed to clean up uncommitted volume clone after deploy failure"
+            );
+            cleanup_errors.push(format!("{}: {error}", clone.volume_name));
+        }
+    }
+    cleanup_errors
+}
+
 struct PhaseExecution {
     started: HashMap<(String, String), InstanceStatusRecord>,
     volume_movements: BTreeMap<String, ExecutedVolumeMove>,
+    volume_branches: BTreeMap<String, ExecutedVolumeClone>,
     events: Vec<DeployEvent>,
     running_phase: DeployPhaseRecord,
 }
@@ -740,6 +823,21 @@ struct ExecutedVolumeMove {
     bytes_transferred: u64,
 }
 
+#[derive(Debug, Clone)]
+struct ExecutedVolumeClone {
+    volume_name: String,
+    source_namespace: ployz_types::spec::Namespace,
+    source_volume: String,
+    source_machine: MachineId,
+    target_machine: MachineId,
+    data_policy: VolumeCloneDataPolicy,
+    consistency: VolumeCloneConsistency,
+    phase_id: DeployPhaseId,
+    snapshot_name: String,
+    snapshot_guid: u64,
+    target_dataset: String,
+}
+
 async fn execute_phase(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
@@ -756,19 +854,48 @@ async fn execute_phase(
         });
     }
 
-    let execution = async {
-        let mut events = Vec::new();
-        events.push(DeployEvent {
-            step: "phase".into(),
-            message: format!("started phase {} ({})", phase.phase_id, phase.name),
-        });
+    let mut events = Vec::new();
+    events.push(DeployEvent {
+        step: "phase".into(),
+        message: format!("started phase {} ({})", phase.phase_id, phase.name),
+    });
 
+    let included_phase_volumes = phase_volumes(phase);
+    let volume_clones = match execute_volume_clones(
+        participant_client,
+        participants,
+        prepared.plan(),
+        &phase.phase_id,
+        Some(&included_phase_volumes),
+    )
+    .await
+    {
+        Ok(volume_clones) => {
+            events.extend(volume_clones.events.clone());
+            volume_clones
+        }
+        Err(error) => {
+            if let Err(update_error) =
+                mark_phase_failed(store, running, &error, now_unix_secs()).await
+            {
+                warn!(
+                    ?update_error,
+                    deploy_id = %prepared.deploy_id(),
+                    phase_id = %phase.phase_id,
+                    "failed to record terminal failed deploy phase after phase error"
+                );
+            }
+            return Err(error);
+        }
+    };
+
+    let execution = async {
         let volume_moves = execute_volume_moves(
             participant_client,
             participants,
             prepared.plan(),
             &phase.phase_id,
-            Some(&phase_volumes(phase)),
+            Some(&included_phase_volumes),
         )
         .await?;
         events.extend(volume_moves.events);
@@ -792,10 +919,20 @@ async fn execute_phase(
         Ok((started, volume_movements, events)) => Ok(PhaseExecution {
             started,
             volume_movements,
+            volume_branches: volume_clones.branches,
             events,
             running_phase: running,
         }),
         Err(error) => {
+            let cleanup_errors = cleanup_uncommitted_volume_clones(
+                participant_client,
+                participants,
+                prepared.plan().namespace(),
+                prepared.deploy_id(),
+                &volume_clones.branches,
+            )
+            .await;
+            let error = error_with_clone_cleanup_failures(error, cleanup_errors);
             if let Err(update_error) =
                 mark_phase_failed(store, running, &error, now_unix_secs()).await
             {
@@ -1065,6 +1202,26 @@ fn ensure_volume_move_execution_supported(
     Ok(())
 }
 
+fn ensure_volume_clone_execution_supported(
+    participant_client: &dyn DeployParticipantClient,
+    plan: &ResolvedPlan,
+) -> Result<()> {
+    if participant_client.supports_volume_clones() {
+        return Ok(());
+    }
+    if let Some(volume) = plan.volumes().iter().find(|volume| {
+        volume.clone_source.is_some()
+            && matches!(volume_record_change(volume), VolumeChange::Create)
+    }) {
+        return Err(Error::Deploy(
+            DeployError::VolumeCloneExecutionUnsupported {
+                volume: volume.declaration.name.clone(),
+            },
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(super) async fn run_phase_startup(
     store: &StoreDriver,
@@ -1204,7 +1361,7 @@ async fn execute_volume_moves(
                     volume: volume.declaration.name.clone(),
                     from_machine: movement.from_machine.clone(),
                     to_machine: movement.to_machine.clone(),
-                    snapshot,
+                    snapshot: snapshot.clone(),
                 },
             )
             .await?;
@@ -1235,9 +1392,186 @@ async fn execute_volume_moves(
     Ok(VolumeMoveExecution { events, movements })
 }
 
+async fn execute_volume_clones(
+    participant_client: &dyn DeployParticipantClient,
+    participants: &ParticipantSet,
+    plan: &ResolvedPlan,
+    phase_id: &DeployPhaseId,
+    included_volumes: Option<&BTreeSet<String>>,
+) -> Result<VolumeCloneExecution> {
+    let mut events = Vec::new();
+    let mut branches = BTreeMap::new();
+    for volume in plan.volumes().iter().filter(|volume| {
+        volume.clone_source.is_some()
+            && matches!(volume_record_change(volume), VolumeChange::Create)
+    }) {
+        if let Some(included_volumes) = included_volumes
+            && !included_volumes.contains(&volume.declaration.name)
+        {
+            continue;
+        }
+        let Some(clone_source) = &volume.clone_source else {
+            continue;
+        };
+        participants.get(&clone_source.source_machine)?;
+        participants.get(&volume.machine_id)?;
+
+        let snapshot = volume_clone_snapshot_name(
+            &participants.deploy_id,
+            plan.manifest_hash(),
+            &volume.declaration.name,
+        );
+        events.push(DeployEvent {
+            step: "clone_volume".into(),
+            message: format!(
+                "cloning volume {} from {}/{} on {} using snapshot {} ({:?}, {:?})",
+                volume.declaration.name,
+                clone_source.source_namespace,
+                clone_source.source_volume,
+                clone_source.source_machine,
+                snapshot,
+                clone_source.data_policy,
+                clone_source.consistency
+            ),
+        });
+
+        let result = match participant_client
+            .clone_volume(
+                &clone_source.source_machine,
+                plan.namespace(),
+                &participants.deploy_id,
+                participant::CloneVolumeRequest {
+                    volume: volume.declaration.name.clone(),
+                    source_namespace: clone_source.source_namespace.clone(),
+                    source_volume: clone_source.source_volume.clone(),
+                    snapshot: snapshot.clone(),
+                    quota: volume.declaration.quota.clone(),
+                    mode: volume.declaration.mode.clone(),
+                    owner: volume.declaration.owner.clone(),
+                },
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                let mut cleanup_branches = branches.clone();
+                cleanup_branches.insert(
+                    volume.declaration.name.clone(),
+                    ExecutedVolumeClone {
+                        volume_name: volume.declaration.name.clone(),
+                        source_namespace: clone_source.source_namespace.clone(),
+                        source_volume: clone_source.source_volume.clone(),
+                        source_machine: clone_source.source_machine.clone(),
+                        target_machine: volume.machine_id.clone(),
+                        data_policy: clone_source.data_policy,
+                        consistency: clone_source.consistency,
+                        phase_id: phase_id.clone(),
+                        snapshot_name: snapshot.clone(),
+                        snapshot_guid: 0,
+                        target_dataset: String::new(),
+                    },
+                );
+                let cleanup_errors = cleanup_uncommitted_volume_clones(
+                    participant_client,
+                    participants,
+                    plan.namespace(),
+                    &participants.deploy_id,
+                    &cleanup_branches,
+                )
+                .await;
+                return Err(error_with_clone_cleanup_failures(error, cleanup_errors));
+            }
+        };
+        events.push(DeployEvent {
+            step: "clone_volume".into(),
+            message: format!(
+                "cloned volume {} from {}/{} with snapshot {} guid {}",
+                volume.declaration.name,
+                clone_source.source_namespace,
+                clone_source.source_volume,
+                result.snapshot,
+                result.snapshot_guid
+            ),
+        });
+        branches.insert(
+            volume.declaration.name.clone(),
+            ExecutedVolumeClone {
+                volume_name: volume.declaration.name.clone(),
+                source_namespace: clone_source.source_namespace.clone(),
+                source_volume: clone_source.source_volume.clone(),
+                source_machine: clone_source.source_machine.clone(),
+                target_machine: volume.machine_id.clone(),
+                data_policy: clone_source.data_policy,
+                consistency: clone_source.consistency,
+                phase_id: phase_id.clone(),
+                snapshot_name: result.snapshot,
+                snapshot_guid: result.snapshot_guid,
+                target_dataset: result.target_dataset,
+            },
+        );
+    }
+    Ok(VolumeCloneExecution { events, branches })
+}
+
 struct VolumeMoveExecution {
     events: Vec<DeployEvent>,
     movements: BTreeMap<String, ExecutedVolumeMove>,
+}
+
+struct VolumeCloneExecution {
+    events: Vec<DeployEvent>,
+    branches: BTreeMap<String, ExecutedVolumeClone>,
+}
+
+async fn cleanup_uncommitted_volume_clones(
+    participant_client: &dyn DeployParticipantClient,
+    participants: &ParticipantSet,
+    namespace: &ployz_types::spec::Namespace,
+    deploy_id: &DeployId,
+    branches: &BTreeMap<String, ExecutedVolumeClone>,
+) -> Vec<String> {
+    let mut cleanup_errors = Vec::new();
+    for branch in branches.values() {
+        if let Err(error) = participant_client
+            .cleanup_volume_clone(
+                &branch.target_machine,
+                namespace,
+                deploy_id,
+                &branch.volume_name,
+            )
+            .await
+        {
+            warn!(
+                ?error,
+                deploy_id = %deploy_id,
+                volume = %branch.volume_name,
+                machine_id = %branch.target_machine,
+                "failed to clean up uncommitted cloned volume after phase failure"
+            );
+            cleanup_errors.push(format!("{}: {error}", branch.volume_name));
+        } else if participants.get(&branch.target_machine).is_err() {
+            warn!(
+                deploy_id = %deploy_id,
+                volume = %branch.volume_name,
+                machine_id = %branch.target_machine,
+                "cleaned up cloned volume on machine outside participant set"
+            );
+        }
+    }
+    cleanup_errors
+}
+
+fn error_with_clone_cleanup_failures(error: Error, cleanup_errors: Vec<String>) -> Error {
+    if cleanup_errors.is_empty() {
+        return error;
+    }
+    Error::operation(
+        "deploy_apply",
+        format!(
+            "{error}; uncommitted volume clone cleanup failed: {}",
+            cleanup_errors.join("; ")
+        ),
+    )
 }
 
 async fn stop_volume_writers(
@@ -1326,6 +1660,10 @@ fn volume_move_snapshot_name(manifest_hash: &str, volume: &str) -> String {
     format!("ployz-move-{manifest_hash}-{volume}")
 }
 
+fn volume_clone_snapshot_name(deploy_id: &DeployId, manifest_hash: &str, volume: &str) -> String {
+    format!("ployz-clone-{}-{manifest_hash}-{volume}", deploy_id.0)
+}
+
 async fn run_machine_start_queue(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
@@ -1400,7 +1738,9 @@ fn phase_services(phase: &DeployPhasePlan) -> BTreeSet<String> {
         .iter()
         .filter_map(|work| match work {
             DeployPhaseWork::Service { service, .. } => Some(service.clone()),
-            DeployPhaseWork::Volume { .. } | DeployPhaseWork::VolumeMove { .. } => None,
+            DeployPhaseWork::Volume { .. }
+            | DeployPhaseWork::VolumeMove { .. }
+            | DeployPhaseWork::VolumeClone { .. } => None,
         })
         .collect()
 }
@@ -1410,9 +1750,9 @@ fn phase_volumes(phase: &DeployPhasePlan) -> BTreeSet<String> {
         .work
         .iter()
         .filter_map(|work| match work {
-            DeployPhaseWork::Volume { volume, .. } | DeployPhaseWork::VolumeMove { volume, .. } => {
-                Some(volume.clone())
-            }
+            DeployPhaseWork::Volume { volume, .. }
+            | DeployPhaseWork::VolumeMove { volume, .. }
+            | DeployPhaseWork::VolumeClone { volume, .. } => Some(volume.clone()),
             DeployPhaseWork::Service { .. } => None,
         })
         .collect()
@@ -1481,6 +1821,7 @@ fn build_phase_commit(
     prepared: &PreparedDeploy,
     started: &HashMap<(String, String), InstanceStatusRecord>,
     executed_volume_moves: &BTreeMap<String, ExecutedVolumeMove>,
+    executed_volume_clones: &BTreeMap<String, ExecutedVolumeClone>,
     included_services: &BTreeSet<String>,
     included_volumes: &BTreeSet<String>,
     removed_services: Vec<String>,
@@ -1516,6 +1857,13 @@ fn build_phase_commit(
         &deploy_record_id,
         committed_at,
     );
+    let volume_branches = build_volume_branch_records(
+        prepared,
+        executed_volume_clones,
+        included_volumes,
+        &deploy_record_id,
+        committed_at,
+    );
     let volumes = build_committed_volumes_for_names(
         prepared.plan(),
         started,
@@ -1532,6 +1880,7 @@ fn build_phase_commit(
         removed_volumes,
         branch_lineage,
         volume_movements,
+        volume_branches,
         phase_commits,
         releases,
         volumes,
@@ -1576,6 +1925,36 @@ fn build_volume_movement_records(
             snapshot_name: movement.snapshot_name.clone(),
             snapshot_guid: movement.snapshot_guid,
             bytes_transferred: movement.bytes_transferred,
+            created_at: committed_at,
+        })
+        .collect()
+}
+
+fn build_volume_branch_records(
+    prepared: &PreparedDeploy,
+    executed_volume_clones: &BTreeMap<String, ExecutedVolumeClone>,
+    included_volumes: &BTreeSet<String>,
+    commit_deploy_id: &DeployId,
+    committed_at: u64,
+) -> Vec<VolumeBranchLineageRecord> {
+    executed_volume_clones
+        .values()
+        .filter(|branch| included_volumes.contains(&branch.volume_name))
+        .map(|branch| VolumeBranchLineageRecord {
+            namespace: prepared.plan().namespace().clone(),
+            volume_name: branch.volume_name.clone(),
+            source_namespace: branch.source_namespace.clone(),
+            source_volume_name: branch.source_volume.clone(),
+            source_machine: branch.source_machine.clone(),
+            target_machine: branch.target_machine.clone(),
+            data_policy: branch.data_policy,
+            consistency: branch.consistency,
+            deploy_id: prepared.deploy_id().clone(),
+            commit_deploy_id: commit_deploy_id.clone(),
+            phase_id: Some(branch.phase_id.clone()),
+            snapshot_name: branch.snapshot_name.clone(),
+            snapshot_guid: branch.snapshot_guid,
+            target_dataset: branch.target_dataset.clone(),
             created_at: committed_at,
         })
         .collect()

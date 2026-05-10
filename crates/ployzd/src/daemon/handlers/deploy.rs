@@ -15,7 +15,8 @@ use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcFailure, RpcPolicy};
 use ployz_orchestrator::certificates::{AcmeAccountCoordinator, CertificateManagerConfig};
 use ployz_orchestrator::coordination::ReservationId;
 use ployz_orchestrator::deploy::participant::{
-    DeployParticipantClient, MoveVolumeRequest, MoveVolumeResult, StartCandidateRequest,
+    CloneVolumeRequest, CloneVolumeResult, DeployParticipantClient, MoveVolumeRequest,
+    MoveVolumeResult, StartCandidateRequest,
 };
 use ployz_orchestrator::deploy::{
     apply_with_deploy_id_and_certificate_coordination, new_deploy_id, preview,
@@ -41,6 +42,8 @@ const DEPLOY_VOLUME_MOVE_START_RPC_TIMEOUT: Duration = Duration::from_secs(60);
 const DEPLOY_VOLUME_MOVE_POLL_RPC_TIMEOUT: Duration = Duration::from_secs(60);
 const DEPLOY_VOLUME_MOVE_RPC_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 const DEPLOY_VOLUME_MOVE_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const DEPLOY_VOLUME_CLONE_RPC_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+const DEPLOY_VOLUME_CLONE_CLEANUP_RPC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, thiserror::Error)]
 enum MigrateRenderError {
@@ -604,6 +607,10 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         true
     }
 
+    fn supports_volume_clones(&self) -> bool {
+        true
+    }
+
     async fn inspect_namespace(
         &self,
         machine: &MachineMembership,
@@ -693,6 +700,87 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             DEPLOY_VOLUME_MOVE_POLL_INTERVAL,
         )
         .await
+    }
+
+    async fn clone_volume(
+        &self,
+        machine_id: &MachineId,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+        request: CloneVolumeRequest,
+    ) -> ployz_types::Result<CloneVolumeResult> {
+        let response = self
+            .client
+            .clone()
+            .with_policy(RpcPolicy {
+                timeout: DEPLOY_VOLUME_CLONE_RPC_TIMEOUT,
+            })
+            .request(
+                NodeCommandSubject::deploy_clone_volume(machine_id),
+                &ployz_api::DaemonRequest::DeployNodeCloneVolume {
+                    namespace: namespace.0.clone(),
+                    deploy_id: deploy_id.0.clone(),
+                    volume: request.volume,
+                    source_namespace: request.source_namespace.0,
+                    source_volume: request.source_volume,
+                    snapshot: request.snapshot,
+                    quota: request.quota,
+                    mode: request.mode,
+                    owner: request.owner,
+                },
+            )
+            .await
+            .map_err(PloyzError::from)?;
+        if !response.ok {
+            return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
+                operation: "deploy_node_clone_volume",
+                code: response.code,
+                message: response.message,
+            }));
+        }
+        let Some(DaemonPayload::VolumeZfsClone(payload)) = response.payload else {
+            return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
+                payload: "volume zfs clone",
+            }));
+        };
+        Ok(CloneVolumeResult {
+            snapshot: payload.snapshot,
+            snapshot_guid: payload.guid,
+            target_dataset: payload.target_dataset,
+        })
+    }
+
+    async fn cleanup_volume_clone(
+        &self,
+        machine_id: &MachineId,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+        volume: &str,
+    ) -> ployz_types::Result<()> {
+        let response = self
+            .client
+            .clone()
+            .with_policy(RpcPolicy {
+                timeout: DEPLOY_VOLUME_CLONE_CLEANUP_RPC_TIMEOUT,
+            })
+            .request(
+                NodeCommandSubject::deploy_clone_volume(machine_id),
+                &ployz_api::DaemonRequest::DeployNodeCleanupUncommittedVolumeClone {
+                    namespace: namespace.0.clone(),
+                    deploy_id: deploy_id.0.clone(),
+                    volume: volume.to_string(),
+                },
+            )
+            .await
+            .map_err(PloyzError::from)?;
+        if response.ok {
+            return Ok(());
+        }
+        Err(PloyzError::Deploy(DeployError::RemoteNodeError {
+            operation: "deploy_node_cleanup_uncommitted_volume_clone",
+            code: response.code,
+            message: response.message,
+        }))
     }
 
     async fn drain_instance(
@@ -1458,6 +1546,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
@@ -2296,6 +2385,7 @@ mod tests {
             services: Vec::new(),
             service_branch_sources: Vec::new(),
             volume_moves: Vec::new(),
+            volume_clones: Vec::new(),
             warnings: Vec::new(),
         };
         store
@@ -2356,6 +2446,7 @@ mod tests {
                     services: Vec::new(),
                     service_branch_sources: Vec::new(),
                     volume_moves: Vec::new(),
+                    volume_clones: Vec::new(),
                     warnings: Vec::new(),
                 })
                 .expect("preview json"),
@@ -2595,6 +2686,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
@@ -2666,6 +2758,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
@@ -2734,6 +2827,7 @@ mod tests {
                 removed_volumes: Vec::new(),
                 branch_lineage: Vec::new(),
                 volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
                 phase_commits: Vec::new(),
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),

@@ -68,6 +68,7 @@ pub(crate) enum Scenario {
     DockerBridgeForwardSmoke,
     DrainAwareRedeployRealSmoke,
     MigrateServiceRealSmoke,
+    VolumeCloneBranchRealSmoke,
 }
 
 impl Scenario {
@@ -87,6 +88,7 @@ impl Scenario {
             ZfsMode::Real => {
                 scenarios.push(Self::MigrateServiceRealSmoke);
                 scenarios.push(Self::DrainAwareRedeployRealSmoke);
+                scenarios.push(Self::VolumeCloneBranchRealSmoke);
             }
         }
         scenarios
@@ -95,7 +97,9 @@ impl Scenario {
     #[must_use]
     pub(crate) fn ci_zfs_mode(self) -> ZfsMode {
         match self {
-            Self::DrainAwareRedeployRealSmoke | Self::MigrateServiceRealSmoke => ZfsMode::Real,
+            Self::DrainAwareRedeployRealSmoke
+            | Self::MigrateServiceRealSmoke
+            | Self::VolumeCloneBranchRealSmoke => ZfsMode::Real,
             Self::MeshBootstrapJoinSmoke
             | Self::NodeRestartAdoptsDataPlane
             | Self::WireguardPartitionReconnect
@@ -106,7 +110,9 @@ impl Scenario {
 
     pub(crate) fn validate_zfs_mode(self, zfs_mode: ZfsMode) -> Result<(), String> {
         match self {
-            Self::DrainAwareRedeployRealSmoke | Self::MigrateServiceRealSmoke
+            Self::DrainAwareRedeployRealSmoke
+            | Self::MigrateServiceRealSmoke
+            | Self::VolumeCloneBranchRealSmoke
                 if zfs_mode != ZfsMode::Real =>
             {
                 Err(format!("{} requires --zfs real", self.as_str()))
@@ -117,7 +123,8 @@ impl Scenario {
             | Self::DeployHttpAcmeGatewaySmoke
             | Self::DockerBridgeForwardSmoke
             | Self::DrainAwareRedeployRealSmoke
-            | Self::MigrateServiceRealSmoke => Ok(()),
+            | Self::MigrateServiceRealSmoke
+            | Self::VolumeCloneBranchRealSmoke => Ok(()),
         }
     }
 
@@ -125,6 +132,7 @@ impl Scenario {
     pub(crate) fn node_names(self) -> &'static [&'static str] {
         match self {
             Self::DockerBridgeForwardSmoke => &["founder"],
+            Self::VolumeCloneBranchRealSmoke => &["founder"],
             Self::MeshBootstrapJoinSmoke
             | Self::NodeRestartAdoptsDataPlane
             | Self::WireguardPartitionReconnect
@@ -144,6 +152,7 @@ impl Scenario {
             Self::DockerBridgeForwardSmoke => "docker_bridge_forward_smoke",
             Self::DrainAwareRedeployRealSmoke => "drain_aware_redeploy_real_smoke",
             Self::MigrateServiceRealSmoke => "migrate_service_real_smoke",
+            Self::VolumeCloneBranchRealSmoke => "volume_clone_branch_real_smoke",
         }
     }
 
@@ -151,6 +160,7 @@ impl Scenario {
     pub(crate) fn runtime(self) -> &'static str {
         match self {
             Self::DockerBridgeForwardSmoke => "docker",
+            Self::VolumeCloneBranchRealSmoke => "host",
             Self::MeshBootstrapJoinSmoke
             | Self::NodeRestartAdoptsDataPlane
             | Self::WireguardPartitionReconnect
@@ -179,6 +189,7 @@ mod tests {
                 Scenario::DockerBridgeForwardSmoke,
                 Scenario::MigrateServiceRealSmoke,
                 Scenario::DrainAwareRedeployRealSmoke,
+                Scenario::VolumeCloneBranchRealSmoke,
             ]
         );
     }
