@@ -84,9 +84,11 @@ node-RPC helper clients. Otherwise an R3/R5 authority can be silently
 reconciled back to single-replica streams by an auxiliary client.
 
 The same invariant applies to placement, but keep it scoped: machines in active
-`home_data` and `compute` regions may receive new work; draining regions may
-keep unchanged existing slots; replacement work must move to an eligible target
-or fail with a structured placement reason.
+`home_data` and `compute` regions may receive new work. Draining regions may
+retain unchanged slots for passive/status views, but invoked deploy planning
+treats `Draining` as relocation pressure when an eligible target exists;
+replacement work must move to an eligible target or fail with a structured
+placement reason.
 
 ## Why This Matters
 
@@ -129,9 +131,11 @@ intent that an operator never recorded.
 - Setup, deploy, and node-RPC helper clients apply
   `with_asset_policy(config.storage_replicas)` before starting NATS stores, so
   auxiliary clients preserve the selected R1/R3/R5 policy.
-- Deploy planning applies the same principle at the placement boundary: keeping
-  unchanged draining-region work is allowed, but replacement placement must use
-  an eligible machine or return `NoEligiblePlacementTargets`.
+- Deploy planning applies the same principle at the placement boundary:
+  passive/status views may keep unchanged draining-region work, but invoked
+  deploy planning treats `Draining` as relocation pressure when an eligible
+  target exists; replacement placement must use an eligible machine or return
+  `NoEligiblePlacementTargets`.
 
 ## Related
 
@@ -144,6 +148,9 @@ intent that an operator never recorded.
 - `docs/plans/2026-05-08-004-feat-compute-only-region-placement-plan.md`
   describes the placement slice that reused the same authority-roadmap
   invariants for compute and draining regions.
+- `docs/solutions/integration-issues/drain-aware-deploy-self-target-drain-nats-timeout-2026-05-10.md`
+  covers the follow-up drain-aware deploy behavior for volume-backed services,
+  ZFS movement from draining sources, and self-target drain request routing.
 - `docs/solutions/architecture-patterns/authority-status-separates-truth-from-observation-2026-05-08.md`
   covers the adjacent status-surface rule: separate durable truth from live
   observation.

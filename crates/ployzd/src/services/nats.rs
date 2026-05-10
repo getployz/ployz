@@ -25,7 +25,7 @@ use ployz_types::model::{
     DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord, InstanceId, InstanceStatusRecord,
     InviteRecord, MachineId, MachineMembership, OverlayIp, RoutingState,
     ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord, StorageParticipation,
-    StorageReplicaPolicy, VolumeMovementRecord, VolumeRecord,
+    StorageReplicaPolicy, VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -418,6 +418,13 @@ where
         namespace: &Namespace,
     ) -> Result<Vec<VolumeMovementRecord>> {
         DeployStore::list_volume_movements(self.store().await?.as_ref(), namespace).await
+    }
+
+    async fn list_volume_branches(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<VolumeBranchLineageRecord>> {
+        DeployStore::list_volume_branches(self.store().await?.as_ref(), namespace).await
     }
 
     async fn get_volume(
