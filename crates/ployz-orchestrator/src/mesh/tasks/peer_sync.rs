@@ -79,7 +79,7 @@ mod tests {
 
     fn test_record(id: &str, key: PublicKey, endpoints: Vec<&str>) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             public_key: key,
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
@@ -88,8 +88,7 @@ mod tests {
             bridge_ip: None,
             endpoints: endpoints.into_iter().map(String::from).collect(),
             lifecycle: MachineLifecycle::Standby,
-            storage: true,
-            storage_participation: crate::model::StorageParticipation::default_authority(),
+            storage_role: crate::model::StorageParticipation::default_authority().into(),
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),
@@ -98,7 +97,7 @@ mod tests {
 
     fn test_observation(id: &str, key: PublicKey, endpoints: Vec<&str>) -> MachineObservation {
         MachineObservation::seed(
-            MachineId(id.into()),
+            MachineId::new(id),
             key,
             OverlayIp(Ipv6Addr::LOCALHOST),
             None,
@@ -110,7 +109,7 @@ mod tests {
     async fn initial_sync_keeps_bootstrap_peer_until_store_catches_up() {
         let network = Arc::new(MemoryWireGuard::new());
         let driver = WireguardDriver::memory_with(network.clone());
-        let local_machine_id = MachineId("joiner".into());
+        let local_machine_id = MachineId::new("joiner");
         let snapshot = vec![test_record("joiner", PublicKey([1; 32]), vec!["self:1"])];
         let bootstrap_peers = vec![test_observation(
             "founder",
@@ -142,14 +141,14 @@ mod tests {
         let [peer] = peers.as_slice() else {
             panic!("expected one peer");
         };
-        assert_eq!(peer.id().0, "founder");
+        assert_eq!(peer.id().as_str(), "founder");
     }
 
     #[tokio::test]
     async fn exits_when_machine_subscription_closes() {
         let network = Arc::new(MemoryWireGuard::new());
         let driver = WireguardDriver::memory_with(network);
-        let local_machine_id = MachineId("self".into());
+        let local_machine_id = MachineId::new("self");
         let (event_tx, event_rx) = mpsc::channel(4);
         let cancel = CancellationToken::new();
 
@@ -175,7 +174,7 @@ mod tests {
     async fn exits_when_machine_subscription_reports_failure() {
         let network = Arc::new(MemoryWireGuard::new());
         let driver = WireguardDriver::memory_with(network);
-        let local_machine_id = MachineId("self".into());
+        let local_machine_id = MachineId::new("self");
         let (event_tx, event_rx) = mpsc::channel(4);
         let cancel = CancellationToken::new();
 

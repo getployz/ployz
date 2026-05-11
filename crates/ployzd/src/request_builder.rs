@@ -98,7 +98,7 @@ pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> 
             Ok(DaemonRequest::ImageStatus {
                 request: ImageStatusRequest {
                     digest,
-                    machine_id: machine.map(MachineId),
+                    machine_id: machine.map(MachineId::new),
                 },
             })
         }
@@ -115,7 +115,7 @@ pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> 
             Ok(DaemonRequest::ImagePush {
                 request: ImagePushRequest {
                     source_image: image,
-                    target_machines: targets.into_iter().map(MachineId).collect(),
+                    target_machines: targets.into_iter().map(MachineId::new).collect(),
                     platform: platform.map(parse_image_platform).transpose()?,
                     expected_digest,
                 },
@@ -131,8 +131,8 @@ pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> 
             Ok(DaemonRequest::ImageDistribute {
                 request: ImageDistributeRequest {
                     digest,
-                    source_machine: MachineId(source),
-                    target_machines: targets.into_iter().map(MachineId).collect(),
+                    source_machine: MachineId::new(source),
+                    target_machines: targets.into_iter().map(MachineId::new).collect(),
                     platform: platform.map(parse_image_platform).transpose()?,
                 },
             })
@@ -147,7 +147,7 @@ pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> 
                 request: ImageInspectRequest {
                     digest,
                     reference,
-                    machines: machine.map(MachineId).into_iter().collect(),
+                    machines: machine.map(MachineId::new).into_iter().collect(),
                 },
             })
         }
@@ -323,7 +323,7 @@ fn build_branch_apply_prepared_request(args: BranchApplyPreparedArgs) -> Result<
     }
     Ok(DaemonRequest::BranchApplyPrepared {
         request: BranchApplyPreparedRequest {
-            prepared_deploy_id: DeployId(args.prepared_deploy_id),
+            prepared_deploy_id: DeployId::new(args.prepared_deploy_id),
         },
     })
 }
@@ -450,7 +450,7 @@ async fn build_deploy_service_request<T: Transport>(
     transport: &T,
     socket: &str,
 ) -> Result<DaemonRequest> {
-    if !args.volume.is_empty() && args.namespace != Namespace::system().0 {
+    if !args.volume.is_empty() && args.namespace != Namespace::system().as_str() {
         return Err(CliError::Usage(
             "deploy service -v creates a host bind mount and is only supported in the system namespace; declare managed volumes in a manifest for user workloads"
                 .into(),
@@ -814,7 +814,7 @@ pub(crate) fn build_service_spec(
 
     ServiceSpec {
         name: service_name,
-        placement: Placement::Replicated { count: 1 },
+        placement: Placement::replicated(1),
         template: ContainerSpec {
             image: image.to_string(),
             command: if command.is_empty() {

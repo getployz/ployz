@@ -92,7 +92,7 @@ impl DaemonState {
                     consumed_by: invite
                         .consumed_by
                         .as_ref()
-                        .map(|machine_id| machine_id.0.clone()),
+                        .map(|machine_id| machine_id.as_str().to_string()),
                 })
                 .collect(),
         };
@@ -241,7 +241,7 @@ mod tests {
         let active = test_invite("invite-active", now + 600);
         let expired = test_invite("invite-expired", now.saturating_sub(1));
         let mut consumed = test_invite("invite-consumed", now + 600);
-        consumed.consumed_by = Some(MachineId("machine-consumer".into()));
+        consumed.consumed_by = Some(MachineId::new("machine-consumer"));
         consumed.consumed_at = Some(now);
         let mut revoked = test_invite("invite-revoked", now + 600);
         revoked.revoked_at = Some(now);
@@ -276,7 +276,7 @@ mod tests {
     }
 
     fn make_active_state() -> (DaemonState, Arc<MemoryStore>) {
-        let identity = Identity::generate(MachineId("founder".into()), [19; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [19; 32]);
         let machine_id = identity.machine_id.clone();
         let config = NetworkConfig::new(
             ployz_types::model::NetworkName("alpha".into()),
@@ -322,8 +322,8 @@ mod tests {
     fn test_invite(invite_id: &str, expires_at: u64) -> InviteRecord {
         InviteRecord {
             invite_id: invite_id.into(),
-            network_id: NetworkId("network-a".into()),
-            issuer_machine_id: MachineId("founder".into()),
+            network_id: NetworkId::new("network-a"),
+            issuer_machine_id: MachineId::new("founder"),
             issuer_verify_key: "verify".into(),
             expires_at,
             consumed_by: None,

@@ -229,7 +229,7 @@ mod tests {
     fn deploy_prepare_and_apply_prepared_payloads_roundtrip() {
         let baseline = test_baseline("sources");
         let preview = DeployPreview {
-            namespace: Namespace("prod".into()),
+            namespace: Namespace::new("prod"),
             manifest_hash: "manifest".into(),
             baseline: Some(baseline.clone()),
             participants: Vec::new(),
@@ -245,13 +245,13 @@ mod tests {
             warnings: Vec::new(),
         };
         let prepared = PreparedDeployRecord {
-            prepared_deploy_id: DeployId("prepare-1".into()),
-            namespace: Namespace("prod".into()),
+            prepared_deploy_id: DeployId::new("prepare-1"),
+            namespace: Namespace::new("prod"),
             manifest_hash: "manifest".into(),
             manifest_json: "{}".into(),
             preview,
             baseline,
-            coordinator_machine_id: ployz_types::model::MachineId("machine-a".into()),
+            coordinator_machine_id: ployz_types::model::MachineId::new("machine-a"),
             state: PreparedDeployState::Prepared,
             created_at: 1,
             expires_at: 2,
@@ -282,7 +282,7 @@ mod tests {
         assert_eq!(payload_roundtrip.prepared, prepared);
         assert_eq!(
             request_roundtrip.prepared_deploy_id,
-            DeployId("prepare-1".into())
+            DeployId::new("prepare-1")
         );
     }
 

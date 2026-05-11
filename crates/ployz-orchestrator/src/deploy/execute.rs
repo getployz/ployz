@@ -37,7 +37,7 @@ const PARTICIPANT_INSPECT_CONCURRENCY: usize = 64;
 const PHASE_MACHINE_CONCURRENCY: usize = 64;
 
 pub(super) fn new_deploy_id() -> DeployId {
-    DeployId(Uuid::new_v4().to_string())
+    DeployId::new(Uuid::new_v4().to_string())
 }
 
 enum PreparedApplyReplay {
@@ -143,7 +143,7 @@ impl ParticipantSet {
                 async move {
                     let Some(machine) = machine else {
                         return Err(Error::Deploy(DeployError::ParticipantMissing {
-                            machine_id: participant.0,
+                            machine_id: participant.as_str().to_string(),
                         }));
                     };
                     let instances = participant_client
@@ -160,14 +160,14 @@ impl ParticipantSet {
             .await?;
 
         let mut inspected = inspected;
-        inspected.sort_by(|left, right| left.participant.0.cmp(&right.participant.0));
+        inspected.sort_by(|left, right| left.participant.as_str().cmp(right.participant.as_str()));
 
         let machines = participant_ids
             .iter()
             .map(|machine_id| {
                 let machine = machine_map.get(machine_id).cloned().ok_or_else(|| {
                     Error::Deploy(DeployError::ParticipantMissing {
-                        machine_id: machine_id.0.clone(),
+                        machine_id: machine_id.as_str().to_string(),
                     })
                 })?;
                 Ok((machine_id.clone(), machine))
@@ -186,7 +186,7 @@ impl ParticipantSet {
             });
             instances.extend(inspected.instances);
         }
-        instances.sort_by(|left, right| left.instance_id.0.cmp(&right.instance_id.0));
+        instances.sort_by(|left, right| left.instance_id.as_str().cmp(right.instance_id.as_str()));
 
         Ok((
             Self {
@@ -202,7 +202,7 @@ impl ParticipantSet {
     fn get(&self, machine_id: &MachineId) -> Result<&MachineMembership> {
         self.machines.get(machine_id).ok_or_else(|| {
             Error::Deploy(DeployError::ParticipantMissing {
-                machine_id: machine_id.0.clone(),
+                machine_id: machine_id.as_str().to_string(),
             })
         })
     }
@@ -371,7 +371,7 @@ async fn apply_with_deploy_id_and_preconditions_for_prepared(
         let machine_ids = reachability
             .unreachable
             .iter()
-            .map(|machine_id| machine_id.0.clone())
+            .map(|machine_id| machine_id.as_str().to_string())
             .collect::<Vec<_>>();
         return Err(Error::Deploy(DeployError::ParticipantsUnreachable {
             unreachable_count: machine_ids.len(),
@@ -432,7 +432,7 @@ pub(super) async fn apply_prepared_with_certificate_coordination(
     }
     if prepared.state != PreparedDeployState::Prepared {
         return Err(Error::Deploy(DeployError::PreparedDeployNotApplicable {
-            prepared_deploy_id: prepared.prepared_deploy_id.0,
+            prepared_deploy_id: prepared.prepared_deploy_id.as_str().to_string(),
             state: prepared.state,
         }));
     }
@@ -471,7 +471,7 @@ async fn load_applicable_prepared_deploy(
 ) -> Result<PreparedDeployRecord> {
     let Some(prepared) = store.get_prepared_deploy(prepared_deploy_id).await? else {
         return Err(Error::Deploy(DeployError::PreparedDeployMissing {
-            prepared_deploy_id: prepared_deploy_id.0.clone(),
+            prepared_deploy_id: prepared_deploy_id.as_str().to_string(),
         }));
     };
     Ok(prepared)
@@ -488,7 +488,7 @@ async fn ensure_prepared_not_expired(
         .expire_prepared_deploy(&prepared.prepared_deploy_id, now_unix_secs())
         .await?;
     Err(Error::Deploy(DeployError::PreparedDeployExpired {
-        prepared_deploy_id: prepared.prepared_deploy_id.0.clone(),
+        prepared_deploy_id: prepared.prepared_deploy_id.as_str().to_string(),
         expires_at: prepared.expires_at,
     }))
 }
@@ -586,7 +586,7 @@ async fn prepared_apply_result_from_terminal_record(
                 .supersede_prepared_deploy(&prepared.prepared_deploy_id, now_unix_secs())
                 .await?;
             Err(Error::Deploy(DeployError::PreparedDeployNotApplicable {
-                prepared_deploy_id: prepared.prepared_deploy_id.0.clone(),
+                prepared_deploy_id: prepared.prepared_deploy_id.as_str().to_string(),
                 state: PreparedDeployState::Superseded,
             }))
         }
@@ -782,7 +782,7 @@ async fn resume_prepared_apply_after_durable_commit(
         Ok(releases) => releases
             .iter()
             .flat_map(|release| release.release.slots.iter())
-            .map(|slot| slot.active_instance_id.0.clone())
+            .map(|slot| slot.active_instance_id.as_str().to_string())
             .collect(),
         Err(error) => {
             return recovered_commit_result_with_post_commit_warning(
@@ -1390,7 +1390,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             all_releases
                 .iter()
                 .flat_map(|release| release.release.slots.iter())
-                .map(|slot| slot.active_instance_id.0.clone())
+                .map(|slot| slot.active_instance_id.as_str().to_string())
                 .collect(),
         );
         let cleanup =
@@ -2103,7 +2103,7 @@ async fn run_phase_startup_for_services(
                     service: service.service.clone(),
                     slot_id: slot.slot_id.clone(),
                     machine_id: slot.machine_id.clone(),
-                    instance_id: InstanceId(Uuid::new_v4().to_string()),
+                    instance_id: InstanceId::new(Uuid::new_v4().to_string()),
                     spec_json: spec_json.to_string(),
                     volumes_json: plan.volumes_json().to_string(),
                 });
@@ -2166,7 +2166,7 @@ async fn run_phase_startup_for_services(
                 Ok(result) => &result.machine_id,
                 Err(failure) => &failure.partial.machine_id,
             };
-            left_id.0.cmp(&right_id.0)
+            left_id.as_str().cmp(&right_id.as_str())
         });
         let mut first_error = None;
         for machine_result in machine_results {
@@ -2184,9 +2184,10 @@ async fn run_phase_startup_for_services(
                 .started_or_attempted_services
                 .extend(machine_result.started_or_attempted_services);
             for started in machine_result.started {
-                result
-                    .started
-                    .insert((started.service, started.slot_id.0.clone()), started.status);
+                result.started.insert(
+                    (started.service, started.slot_id.as_str().to_string()),
+                    started.status,
+                );
             }
         }
         if let Some(error) = first_error {
@@ -2578,7 +2579,7 @@ async fn stop_volume_writers(
             && !matches!(status.phase, InstancePhase::Failed | InstancePhase::Removed)
         {
             current_instances.insert(
-                status.instance_id.0.clone(),
+                status.instance_id.as_str().to_string(),
                 (
                     status.instance_id.clone(),
                     status.machine_id.clone(),
@@ -2589,7 +2590,7 @@ async fn stop_volume_writers(
     }
     for writer in &moving_volume.current_writer_slots {
         current_instances.insert(
-            writer.slot.active_instance_id.0.clone(),
+            writer.slot.active_instance_id.as_str().to_string(),
             (
                 writer.slot.active_instance_id.clone(),
                 writer.slot.machine_id.clone(),
@@ -2648,17 +2649,17 @@ async fn stop_uncommitted_namespace_instances_before_volume_clones(
         .iter()
         .flat_map(|service| service.slots.iter())
         .filter_map(|slot| slot.current.as_ref())
-        .map(|slot| slot.active_instance_id.0.as_str())
+        .map(|slot| slot.active_instance_id.as_str())
         .collect::<BTreeSet<_>>();
     let mut current_instances = BTreeMap::new();
     for status in &participants.instances {
         if status.namespace == *plan.namespace()
-            && !committed_instance_ids.contains(status.instance_id.0.as_str())
-            && !stopped_uncommitted_instance_ids.contains(status.instance_id.0.as_str())
+            && !committed_instance_ids.contains(status.instance_id.as_str())
+            && !stopped_uncommitted_instance_ids.contains(status.instance_id.as_str())
             && !matches!(status.phase, InstancePhase::Failed | InstancePhase::Removed)
         {
             current_instances.insert(
-                status.instance_id.0.clone(),
+                status.instance_id.as_str().to_string(),
                 (
                     status.instance_id.clone(),
                     status.machine_id.clone(),
@@ -2678,7 +2679,7 @@ async fn stop_uncommitted_namespace_instances_before_volume_clones(
                 &instance_id,
             )
             .await?;
-        stopped_uncommitted_instance_ids.insert(instance_id.0.clone());
+        stopped_uncommitted_instance_ids.insert(instance_id.as_str().to_string());
         events.push(DeployEvent {
             step: "stop_uncommitted_instance".into(),
             message: format!(
@@ -2694,7 +2695,7 @@ async fn stop_uncommitted_namespace_instances_before_volume_clones(
                 &instance_id,
             )
             .await?;
-        stopped_uncommitted_instance_ids.insert(instance_id.0.clone());
+        stopped_uncommitted_instance_ids.insert(instance_id.as_str().to_string());
         events.push(DeployEvent {
             step: "stop_uncommitted_instance".into(),
             message: format!(
@@ -2711,7 +2712,10 @@ fn volume_move_snapshot_name(manifest_hash: &str, volume: &str) -> String {
 }
 
 fn volume_clone_snapshot_name(deploy_id: &DeployId, manifest_hash: &str, volume: &str) -> String {
-    format!("ployz-clone-{}-{manifest_hash}-{volume}", deploy_id.0)
+    format!(
+        "ployz-clone-{}-{manifest_hash}-{volume}",
+        deploy_id.as_str()
+    )
 }
 
 async fn run_machine_start_queue(
@@ -2851,7 +2855,11 @@ fn phase_commit_deploy_id(
     deploy_id: &DeployId,
     phase_id: &crate::model::DeployPhaseId,
 ) -> DeployId {
-    DeployId(format!("{}:phase:{}", deploy_id.0, phase_id.0))
+    DeployId::new(format!(
+        "{}:phase:{}",
+        deploy_id.as_str(),
+        phase_id.as_str()
+    ))
 }
 
 fn changed_services(
@@ -3129,15 +3137,18 @@ async fn cleanup_stale_instances(
     let participant_ids = plan
         .participants()
         .iter()
-        .map(|machine_id| machine_id.0.clone())
+        .map(|machine_id| machine_id.as_str().to_string())
         .collect::<BTreeSet<_>>();
 
     let mut stale_by_machine: BTreeMap<MachineId, Vec<InstanceStatusRecord>> = BTreeMap::new();
     for status in store.list_instance_status(plan.namespace()).await? {
-        if plan.active_instance_ids().contains(&status.instance_id.0) {
+        if plan
+            .active_instance_ids()
+            .contains(status.instance_id.as_str())
+        {
             continue;
         }
-        if !participant_ids.contains(&status.machine_id.0) {
+        if !participant_ids.contains(status.machine_id.as_str()) {
             continue;
         }
         stale_by_machine

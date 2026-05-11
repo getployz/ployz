@@ -154,10 +154,10 @@ impl MachineAddReport {
             MachineAddTargetResult::AwaitingSelfPublication { target, joiner_id } => {
                 self.awaiting_payload.push(MachineAwaitingSelfPublication {
                     target: target.clone(),
-                    joiner_id: joiner_id.0.clone(),
+                    joiner_id: joiner_id.as_str().to_string(),
                 });
                 self.awaiting_self_publication
-                    .push(format!("{target} -> {}", joiner_id.0));
+                    .push(format!("{target} -> {}", joiner_id.as_str()));
             }
             MachineAddTargetResult::Failed { target, failure } => {
                 let line = format!("{target}: {}", failure.reason());

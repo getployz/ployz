@@ -26,14 +26,14 @@ impl MachineMembershipStore for NatsStore {
         let kv = machines_bucket(self).await?;
         kv_json::put_json(
             &kv,
-            record.id.0.as_str(),
+            record.id.as_str(),
             record,
             "nats_machine_encode",
             "nats_machine_put",
         )
         .await?;
         self.publish_routing_events(
-            format!("machine:{}", record.id.0),
+            format!("machine:{}", record.id.as_str()),
             "machine.upsert",
             &[RoutingEvent::MachineUpsert(record.clone())],
         )
@@ -42,9 +42,9 @@ impl MachineMembershipStore for NatsStore {
 
     async fn delete_machine(&self, id: &MachineId) -> Result<()> {
         let kv = machines_bucket(self).await?;
-        kv_json::delete(&kv, id.0.as_str(), "nats_machine_delete").await?;
+        kv_json::delete(&kv, id.as_str(), "nats_machine_delete").await?;
         self.publish_routing_events(
-            format!("machine:delete:{}", id.0),
+            format!("machine:delete:{}", id.as_str()),
             "machine.delete",
             &[RoutingEvent::MachineRemoved { id: id.clone() }],
         )
@@ -66,7 +66,7 @@ impl MachineMembershipStore for NatsStore {
             &kv,
             snapshot,
             observed_revision,
-            |record: &MachineMembership| record.id.0.clone(),
+            |record: &MachineMembership| record.id.as_str().to_string(),
             decode_machine,
             MachineEvent::Upsert,
             |machine| MachineEvent::Removed { id: machine.id },
@@ -101,22 +101,22 @@ fn machine_snapshot(
 
 fn decode_machine(key: &str, bytes: &[u8]) -> Result<MachineMembership> {
     let record: MachineMembership = kv_json::decode_json("nats_machine_decode", bytes)?;
-    if record.id.0 != key {
+    if record.id.as_str() != key {
         return Err(Error::store_key_mismatch(
             StoreRecordKind::Machine,
             key,
-            record.id.0,
+            record.id.as_str(),
         ));
     }
     Ok(record)
 }
 
 fn validate_machine_key(key: &str, record: MachineMembership) -> Result<MachineMembership> {
-    if record.id.0 != key {
+    if record.id.as_str() != key {
         return Err(Error::store_key_mismatch(
             StoreRecordKind::Machine,
             key,
-            record.id.0,
+            record.id.as_str(),
         ));
     }
     Ok(record)
@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(
             snapshot
                 .iter()
-                .map(|machine| machine.id.0.as_str())
+                .map(|machine| machine.id.as_str())
                 .collect::<Vec<_>>(),
             ["machine-a", "machine-b"]
         );
@@ -196,7 +196,7 @@ mod tests {
 
     fn test_machine(id: &str) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.to_string()),
+            id: MachineId::new(id.to_string()),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay")),
             topology: MachineTopology::local(),
@@ -205,8 +205,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
-            storage: true,
-            storage_participation: StorageParticipation::default_authority(),
+            storage_role: StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: Default::default(),

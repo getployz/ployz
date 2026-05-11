@@ -82,8 +82,8 @@ pub(crate) fn deploy_commit_in(
     format!(
         "{}.cp.deploy.commit.{}.{}",
         scope.authority_prefix(),
-        subject_token(&namespace.0),
-        subject_token(&deploy_id.0)
+        subject_token(&namespace.as_str()),
+        subject_token(&deploy_id.as_str())
     )
 }
 
@@ -108,7 +108,7 @@ pub(crate) fn routing_event_filter_in(scope: &NatsScope) -> String {
 
 #[must_use]
 pub fn deploy_lock(namespace: &Namespace) -> String {
-    format!("cp.lock.deploy.{}", kv_key_token(&namespace.0))
+    format!("cp.lock.deploy.{}", kv_key_token(&namespace.as_str()))
 }
 
 #[must_use]
@@ -166,7 +166,7 @@ pub(crate) fn substrate_node_command_in(
     format!(
         "{}.rpc.node.{}.{}",
         scope.substrate_prefix(),
-        subject_token(&machine_id.0),
+        subject_token(&machine_id.as_str()),
         command
     )
 }
@@ -180,7 +180,7 @@ pub(crate) fn authority_node_command_in(
     format!(
         "{}.rpc.node.{}.{}",
         scope.authority_prefix(),
-        subject_token(&machine_id.0),
+        subject_token(&machine_id.as_str()),
         command
     )
 }
@@ -190,13 +190,13 @@ pub(crate) fn node_command_listener_in(scope: &NatsScope, machine_id: &MachineId
     format!(
         "ployz.v1.{}.*.rpc.node.{}.>",
         subject_token(scope.installation.as_str()),
-        subject_token(&machine_id.0)
+        subject_token(&machine_id.as_str())
     )
 }
 
 #[must_use]
 pub(crate) fn node_command_queue_group(machine_id: &MachineId) -> String {
-    format!("ployzd-node-{}", subject_token(&machine_id.0))
+    format!("ployzd-node-{}", subject_token(&machine_id.as_str()))
 }
 
 pub(crate) fn subject_token(value: &str) -> String {
@@ -233,9 +233,9 @@ mod tests {
     #[test]
     fn scoped_subjects_follow_future_hierarchy() {
         let scope = NatsScope::local_default();
-        let namespace = Namespace("prod".into());
-        let deploy_id = DeployId("deploy-1".into());
-        let machine_id = MachineId("node-1".into());
+        let namespace = Namespace::new("prod");
+        let deploy_id = DeployId::new("deploy-1");
+        let machine_id = MachineId::new("node-1");
 
         assert_eq!(
             deploy_commit_in(&scope, &namespace, &deploy_id),

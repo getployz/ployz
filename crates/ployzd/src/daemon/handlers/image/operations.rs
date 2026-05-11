@@ -407,7 +407,7 @@ mod tests {
 
     fn make_state() -> DaemonState {
         let data_dir = unique_temp_dir("ployz-image-op-state");
-        let identity = Identity::generate(MachineId("founder".into()), [31; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [31; 32]);
         DaemonState::new_for_tests(
             &data_dir,
             identity,
@@ -446,7 +446,7 @@ mod tests {
             "streaming",
             Some(digest()),
             None,
-            vec![MachineId("machine-a".into())],
+            vec![MachineId::new("machine-a")],
         );
         assert!(result.is_err());
         assert!(store.load("../../etc/passwd").is_err());
@@ -461,8 +461,8 @@ mod tests {
                 ImageOperationKind::Distribute,
                 "streaming",
                 Some(digest()),
-                Some(MachineId("source".into())),
-                vec![MachineId("target-a".into())],
+                Some(MachineId::new("source")),
+                vec![MachineId::new("target-a")],
             )
             .expect("begin operation");
 
@@ -470,7 +470,7 @@ mod tests {
             .update_target(
                 &mut record,
                 ImageOperationTargetOutcome {
-                    machine_id: MachineId("target-a".into()),
+                    machine_id: MachineId::new("target-a"),
                     status: OperationStatus::Failed,
                     bytes_transferred: Some(128),
                     last_error: Some("disk full".into()),
@@ -498,7 +498,7 @@ mod tests {
                 "streaming",
                 Some(digest()),
                 None,
-                vec![MachineId("target-a".into())],
+                vec![MachineId::new("target-a")],
             )
             .expect("begin operation");
 
@@ -584,7 +584,7 @@ mod tests {
                 "streaming",
                 Some(digest()),
                 None,
-                vec![MachineId("target-a".into())],
+                vec![MachineId::new("target-a")],
             )
             .expect("begin operation");
 

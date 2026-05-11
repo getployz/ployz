@@ -99,7 +99,7 @@ mod tests {
         region_role: RegionRole,
     ) -> PlacementCandidate {
         PlacementCandidate {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             lifecycle,
             region_role,
             labels: BTreeMap::new(),
@@ -170,7 +170,7 @@ mod tests {
         assert!(!can_keep_existing_slot(&standby));
 
         assert_eq!(
-            diagnostic_role(&draining, &MachineId("self".into())),
+            diagnostic_role(&draining, &MachineId::new("self")),
             Some(DiagnosticRole::Blocking)
         );
     }
@@ -184,8 +184,8 @@ mod tests {
             machine("disabled", MachineLifecycle::Standby),
         ];
 
-        let peers = coordination_peers(&machines, &MachineId("self".into()));
-        let ids: Vec<_> = peers.iter().map(|machine| machine.id.0.as_str()).collect();
+        let peers = coordination_peers(&machines, &MachineId::new("self"));
+        let ids: Vec<_> = peers.iter().map(|machine| machine.id.as_str()).collect();
         assert_eq!(ids, vec!["enabled", "draining"]);
     }
 
@@ -194,21 +194,21 @@ mod tests {
         assert_eq!(
             diagnostic_role(
                 &machine("enabled", MachineLifecycle::Active),
-                &MachineId("self".into())
+                &MachineId::new("self")
             ),
             Some(DiagnosticRole::Blocking)
         );
         assert_eq!(
             diagnostic_role(
                 &machine("disabled", MachineLifecycle::Standby),
-                &MachineId("self".into())
+                &MachineId::new("self")
             ),
             Some(DiagnosticRole::Informational)
         );
         assert_eq!(
             diagnostic_role(
                 &machine("self", MachineLifecycle::Active),
-                &MachineId("self".into())
+                &MachineId::new("self")
             ),
             None
         );

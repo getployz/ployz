@@ -1,10 +1,11 @@
 use ipnet::Ipv4Net;
-use ployz_api::{DaemonRequest, MachineTransitionGoal, MeshBootstrapRequest};
+use ployz_api::{DaemonRequest, MachineSelfTransition, MeshBootstrapRequest};
 use ployz_nats::NodeCommandSubject;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_store_api::MachineMembershipStore;
 use ployz_types::model::{
-    MachineLifecycle, MachineMembership, RegionRole, StorageParticipation, management_ip_from_key,
+    MachineLifecycle, MachineMembership, MachineStorageRole, RegionRole, StorageParticipation,
+    management_ip_from_key,
 };
 
 use super::super::operations::{
@@ -79,8 +80,7 @@ pub(super) async fn run_machine_add_target(
         Some(subnet_claim.subnet),
         bootstrap_wireguard_endpoints(&target),
     );
-    bootstrap_record.storage = true;
-    bootstrap_record.storage_participation = StorageParticipation::Candidate;
+    bootstrap_record.storage_role = MachineStorageRole::Candidate;
     bootstrap_record.region_role = RegionRole::Compute;
     bootstrap_record.created_at = ployz_types::time::now_unix_secs();
     bootstrap_record.updated_at = bootstrap_record.created_at;
@@ -481,9 +481,7 @@ async fn activate_joiner_lifecycle(
     assigned_subnet: Ipv4Net,
 ) -> Result<(), String> {
     let request = DaemonRequest::MachineTransitionSelf {
-        goal: MachineTransitionGoal::Activate,
-        assigned_subnet: Some(assigned_subnet),
-        force: false,
+        transition: MachineSelfTransition::Activate { assigned_subnet },
     };
     if let Some(client) = &context.nats_rpc {
         return nats_rpc_expect_ok(
@@ -559,7 +557,7 @@ fn validate_joined_machine_subnet(
 }
 
 fn validate_joined_machine_authority_posture(record: &MachineMembership) -> Result<(), String> {
-    match &record.storage_participation {
+    match &record.storage_participation() {
         StorageParticipation::Candidate => Ok(()),
         StorageParticipation::Authority { authority_id } => Err(format!(
             "remote machine '{}' reported authority storage for '{}' during machine add; use explicit storage promotion",

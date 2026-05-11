@@ -122,7 +122,7 @@ mod tests {
                 event_rx,
                 Arc::new(NoopDataplane),
                 1,
-                MachineId("self".into()),
+                MachineId::new("self"),
                 CancellationToken::new(),
             ),
         )
@@ -148,7 +148,7 @@ mod tests {
                 event_rx,
                 Arc::new(NoopDataplane),
                 1,
-                MachineId("self".into()),
+                MachineId::new("self"),
                 CancellationToken::new(),
             ),
         )

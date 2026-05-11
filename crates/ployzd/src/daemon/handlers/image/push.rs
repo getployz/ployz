@@ -758,7 +758,7 @@ impl DaemonState {
         );
         headers.insert(
             REGISTRY_SOURCE_MACHINE_HEADER.to_string(),
-            session.source_machine.0.clone(),
+            session.source_machine.as_str().to_string(),
         );
         headers.insert(REGISTRY_SESSION_HEADER.to_string(), session.token.clone());
         let payload = ImageReceiveSessionPayload {
@@ -1780,7 +1780,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: Some(digest.clone()),
                 },
@@ -1806,7 +1806,7 @@ mod tests {
             .expect("active mesh")
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &digest)
+            .get_image_availability(&MachineId::new("founder"), &digest)
             .await
             .expect("get availability")
             .expect("availability");
@@ -1840,7 +1840,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: Some(expected.clone()),
                 },
@@ -1884,7 +1884,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: Some(digest.clone()),
                 },
@@ -1921,7 +1921,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: None,
                 },
@@ -1966,7 +1966,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: Some(repo_digest.clone()),
                 },
@@ -1986,7 +1986,7 @@ mod tests {
             .expect("active mesh")
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &image_id)
+            .get_image_availability(&MachineId::new("founder"), &image_id)
             .await
             .expect("get availability")
             .expect("image id availability");
@@ -2006,7 +2006,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: Some(digest.clone()),
                 },
@@ -2033,7 +2033,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: None,
                 },
@@ -2067,7 +2067,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: Some(digest.clone()),
                 },
@@ -2109,10 +2109,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![
-                        MachineId("founder".into()),
-                        MachineId("machine-a".into()),
-                    ],
+                    target_machines: vec![MachineId::new("founder"), MachineId::new("machine-a")],
                     platform: None,
                     expected_digest: Some(digest.clone()),
                 },
@@ -2126,12 +2123,12 @@ mod tests {
             panic!("expected push payload");
         };
         assert_eq!(payload.targets.len(), 2);
-        assert_eq!(payload.targets[0].machine_id, MachineId("founder".into()));
+        assert_eq!(payload.targets[0].machine_id, MachineId::new("founder"));
         assert_eq!(
             payload.targets[0].status,
             ImageTransferTargetStatus::Present
         );
-        assert_eq!(payload.targets[1].machine_id, MachineId("machine-a".into()));
+        assert_eq!(payload.targets[1].machine_id, MachineId::new("machine-a"));
         assert_eq!(payload.targets[1].status, ImageTransferTargetStatus::Failed);
         let failure = payload.targets[1].failure.as_ref().expect("target failure");
         assert_eq!(failure.code, "IMAGE_DISTRIBUTE_RECEIVE_SESSION_FAILED");
@@ -2142,7 +2139,7 @@ mod tests {
             .expect("active mesh")
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &digest)
+            .get_image_availability(&MachineId::new("founder"), &digest)
             .await
             .expect("get availability")
             .expect("first target availability");
@@ -2159,13 +2156,13 @@ mod tests {
         assert!(
             push.targets
                 .iter()
-                .any(|target| target.machine_id == MachineId("founder".into())
+                .any(|target| target.machine_id == MachineId::new("founder")
                     && target.status == OperationStatus::Succeeded)
         );
         assert!(
             push.targets
                 .iter()
-                .any(|target| target.machine_id == MachineId("machine-a".into())
+                .any(|target| target.machine_id == MachineId::new("machine-a")
                     && target.status == OperationStatus::Failed)
         );
         listener.shutdown().await;
@@ -2178,8 +2175,8 @@ mod tests {
             .handle_image_distribute(&ImageDistributeRequest {
                 digest: ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
                     .expect("valid digest"),
-                source_machine: MachineId("machine-a".into()),
-                target_machines: vec![MachineId("machine-b".into())],
+                source_machine: MachineId::new("machine-a"),
+                target_machines: vec![MachineId::new("machine-b")],
                 platform: None,
             })
             .await;
@@ -2192,8 +2189,8 @@ mod tests {
         assert_eq!(
             payload.failure,
             ImageDistributeValidationFailure::SourceNotLocal {
-                source_machine: MachineId("machine-a".into()),
-                local_machine: MachineId("founder".into()),
+                source_machine: MachineId::new("machine-a"),
+                local_machine: MachineId::new("founder"),
             }
         );
         assert!(
@@ -2211,7 +2208,7 @@ mod tests {
         let response = state
             .handle_image_distribute(&ImageDistributeRequest {
                 digest: digest('a'),
-                source_machine: MachineId("founder".into()),
+                source_machine: MachineId::new("founder"),
                 target_machines: Vec::new(),
                 platform: None,
             })
@@ -2239,8 +2236,8 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![MachineId("founder".into())],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                 },
                 &backend,
@@ -2266,7 +2263,7 @@ mod tests {
             .expect("active mesh")
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &payload.digest)
+            .get_image_availability(&MachineId::new("founder"), &payload.digest)
             .await
             .expect("get availability")
             .expect("availability");
@@ -2303,7 +2300,7 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
+                    source_machine: MachineId::new("founder"),
                     target_machines: Vec::new(),
                     platform: None,
                 },
@@ -2325,8 +2322,8 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest,
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![MachineId("founder".into()), MachineId("founder".into())],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder"), MachineId::new("founder")],
                     platform: None,
                 },
                 &backend,
@@ -2341,7 +2338,7 @@ mod tests {
         assert_eq!(
             payload.failure,
             ImageDistributeValidationFailure::DuplicateTarget {
-                duplicate_target: MachineId("founder".into())
+                duplicate_target: MachineId::new("founder")
             }
         );
         assert!(
@@ -2379,11 +2376,8 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![
-                        MachineId("founder".into()),
-                        MachineId("machine-a".into()),
-                    ],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder"), MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
@@ -2426,11 +2420,8 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![
-                        MachineId("founder".into()),
-                        MachineId("machine-a".into()),
-                    ],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder"), MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
@@ -2443,12 +2434,12 @@ mod tests {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 2);
-        assert_eq!(payload.targets[0].machine_id, MachineId("founder".into()));
+        assert_eq!(payload.targets[0].machine_id, MachineId::new("founder"));
         assert_eq!(
             payload.targets[0].status,
             ImageTransferTargetStatus::Present
         );
-        assert_eq!(payload.targets[1].machine_id, MachineId("machine-a".into()));
+        assert_eq!(payload.targets[1].machine_id, MachineId::new("machine-a"));
         assert_eq!(payload.targets[1].status, ImageTransferTargetStatus::Failed);
         assert_eq!(
             payload.targets[1]
@@ -2465,7 +2456,7 @@ mod tests {
             .expect("active mesh")
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &digest)
+            .get_image_availability(&MachineId::new("founder"), &digest)
             .await
             .expect("get availability")
             .expect("founder availability");
@@ -2490,11 +2481,8 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![
-                        MachineId("machine-a".into()),
-                        MachineId("founder".into()),
-                    ],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("machine-a"), MachineId::new("founder")],
                     platform: None,
                 },
                 &backend,
@@ -2507,9 +2495,9 @@ mod tests {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 2);
-        assert_eq!(payload.targets[0].machine_id, MachineId("machine-a".into()));
+        assert_eq!(payload.targets[0].machine_id, MachineId::new("machine-a"));
         assert_eq!(payload.targets[0].status, ImageTransferTargetStatus::Failed);
-        assert_eq!(payload.targets[1].machine_id, MachineId("founder".into()));
+        assert_eq!(payload.targets[1].machine_id, MachineId::new("founder"));
         assert_eq!(
             payload.targets[1].status,
             ImageTransferTargetStatus::Present
@@ -2520,7 +2508,7 @@ mod tests {
             .expect("active mesh")
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &digest)
+            .get_image_availability(&MachineId::new("founder"), &digest)
             .await
             .expect("get availability")
             .expect("founder availability");
@@ -2538,11 +2526,8 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest,
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![
-                        MachineId("machine-a".into()),
-                        MachineId("machine-b".into()),
-                    ],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("machine-a"), MachineId::new("machine-b")],
                     platform: None,
                 },
                 &backend,
@@ -2560,7 +2545,7 @@ mod tests {
                 .iter()
                 .map(|target| target.machine_id.clone())
                 .collect::<Vec<_>>(),
-            vec![MachineId("machine-a".into()), MachineId("machine-b".into())]
+            vec![MachineId::new("machine-a"), MachineId::new("machine-b")]
         );
         assert!(
             payload
@@ -2605,11 +2590,8 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![
-                        MachineId("founder".into()),
-                        MachineId("machine-a".into()),
-                    ],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder"), MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
@@ -2646,11 +2628,8 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![
-                        MachineId("founder".into()),
-                        MachineId("machine-a".into()),
-                    ],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder"), MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
@@ -2673,7 +2652,7 @@ mod tests {
             .expect("active mesh")
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &digest)
+            .get_image_availability(&MachineId::new("founder"), &digest)
             .await
             .expect("get availability")
             .expect("founder availability");
@@ -2697,8 +2676,8 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![MachineId("machine-a".into())],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
@@ -2738,11 +2717,8 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: expected.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![
-                        MachineId("founder".into()),
-                        MachineId("machine-a".into()),
-                    ],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder"), MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
@@ -2792,8 +2768,8 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest,
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![MachineId("machine-a".into())],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
@@ -2822,8 +2798,8 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![MachineId("machine-a".into())],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
@@ -2858,8 +2834,8 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![MachineId("founder".into())],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                 },
                 &backend,
@@ -2877,7 +2853,7 @@ mod tests {
         );
         assert_eq!(backend.export_count(), 0);
         let stored = store
-            .get_image_availability(&MachineId("founder".into()), &digest)
+            .get_image_availability(&MachineId::new("founder"), &digest)
             .await
             .expect("get availability")
             .expect("availability");
@@ -2895,7 +2871,7 @@ mod tests {
             .handle_image_received_import_with_backend(
                 &ImageReceivedImportRequest {
                     operation_id: "op-1".into(),
-                    source_machine: MachineId("founder".into()),
+                    source_machine: MachineId::new("founder"),
                     repository: "ployz/op-1".into(),
                     reference: "op-1".into(),
                     expected_digest: digest.clone(),
@@ -2915,7 +2891,7 @@ mod tests {
                 .expect("active mesh")
                 .mesh
                 .store
-                .get_image_availability(&MachineId("founder".into()), &digest)
+                .get_image_availability(&MachineId::new("founder"), &digest)
                 .await
                 .expect("get availability")
                 .is_none()
@@ -2933,7 +2909,7 @@ mod tests {
             .handle_image_received_import_with_backend(
                 &ImageReceivedImportRequest {
                     operation_id: "../outside".into(),
-                    source_machine: MachineId("founder".into()),
+                    source_machine: MachineId::new("founder"),
                     repository: "ployz/op-1".into(),
                     reference: "op-1".into(),
                     expected_digest: digest,
@@ -2955,7 +2931,7 @@ mod tests {
         let response = state
             .handle_image_receive_session(&ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("machine-a".into()),
+                source_machine: MachineId::new("machine-a"),
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
@@ -2972,7 +2948,7 @@ mod tests {
         let response = state
             .handle_image_receive_session(&ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("founder".into()),
+                source_machine: MachineId::new("founder"),
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
@@ -2981,7 +2957,7 @@ mod tests {
         let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload else {
             panic!("expected image receive session payload");
         };
-        assert_eq!(payload.target_machine, MachineId("founder".into()));
+        assert_eq!(payload.target_machine, MachineId::new("founder"));
         assert_eq!(
             payload.endpoint,
             "http://127.0.0.1:4320/v2/ployz/image-push-1"
@@ -3018,7 +2994,7 @@ mod tests {
         let response = state
             .handle_image_receive_session(&ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("unknown".into()),
+                source_machine: MachineId::new("unknown"),
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
@@ -3035,7 +3011,7 @@ mod tests {
         let response = state
             .handle_image_receive_session(&ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("machine-a".into()),
+                source_machine: MachineId::new("machine-a"),
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
@@ -3051,7 +3027,7 @@ mod tests {
         let response = state
             .handle_image_receive_session(&ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("founder".into()),
+                source_machine: MachineId::new("founder"),
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
@@ -3092,7 +3068,7 @@ mod tests {
         let response = state
             .handle_image_receive_session(&ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("founder".into()),
+                source_machine: MachineId::new("founder"),
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
@@ -3247,7 +3223,7 @@ mod tests {
     fn make_state() -> DaemonState {
         let data_dir =
             std::env::temp_dir().join(format!("ployz-image-push-handler-{}", uuid::Uuid::new_v4()));
-        let identity = Identity::generate(MachineId("founder".into()), [31; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [31; 32]);
         DaemonState::new_for_tests(
             &data_dir,
             identity,
@@ -3261,7 +3237,7 @@ mod tests {
     }
 
     async fn install_active_mesh(state: &mut DaemonState) {
-        let identity = Identity::generate(MachineId("founder".into()), [31; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [31; 32]);
         let mut config = NetworkConfig::new(
             NetworkName("alpha".into()),
             &identity.public_key,
@@ -3272,7 +3248,7 @@ mod tests {
         let store = StoreDriver::memory();
         store
             .upsert_self_machine(&MachineMembership::seed(
-                MachineId("founder".into()),
+                MachineId::new("founder"),
                 PublicKey([31; 32]),
                 OverlayIp("fd00::31".parse().expect("valid overlay")),
                 None,
@@ -3282,7 +3258,7 @@ mod tests {
             .expect("insert local machine");
         store
             .upsert_self_machine(&MachineMembership::seed(
-                MachineId("machine-a".into()),
+                MachineId::new("machine-a"),
                 PublicKey([12; 32]),
                 OverlayIp("fd00::12".parse().expect("valid overlay")),
                 None,
@@ -3339,7 +3315,7 @@ mod tests {
                 .expect("active mesh")
                 .mesh
                 .store
-                .get_image_availability(&MachineId(machine_id.into()), digest)
+                .get_image_availability(&MachineId::new(machine_id), digest)
                 .await
                 .expect("get availability")
                 .is_none()
@@ -3353,7 +3329,7 @@ mod tests {
         let now = now_unix_secs();
         let reference = digest.as_str().to_string();
         ImageAvailabilityRecord {
-            machine_id: MachineId(machine_id.into()),
+            machine_id: MachineId::new(machine_id),
             digest: digest.clone(),
             presence: ImagePresence::Present {
                 artifact: ImageArtifact {

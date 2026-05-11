@@ -255,17 +255,17 @@ pub(super) fn build_committed_releases_for_services(
                     let Some(current) = &slot.current else {
                         return Err(Error::Deploy(DeployError::MissingCurrentSlot {
                             service: service.service.clone(),
-                            slot: slot.slot_id.0.clone(),
+                            slot: slot.slot_id.as_str().to_string(),
                         }));
                     };
                     current.active_instance_id.clone()
                 }
                 DeployChangeKind::Create | DeployChangeKind::Replace => {
-                    let key = (service.service.clone(), slot.slot_id.0.clone());
+                    let key = (service.service.clone(), slot.slot_id.as_str().to_string());
                     let Some(status) = started.get(&key) else {
                         return Err(Error::Deploy(DeployError::MissingStartedInstance {
                             service: service.service.clone(),
-                            slot: slot.slot_id.0.clone(),
+                            slot: slot.slot_id.as_str().to_string(),
                         }));
                     };
                     status.instance_id.clone()

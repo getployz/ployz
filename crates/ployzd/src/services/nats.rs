@@ -1077,7 +1077,7 @@ mod tests {
             &["[fd00::10]:6222".into()],
             "alpha",
             &StorageParticipation::Authority {
-                authority_id: AuthorityId("auth-sin".into()),
+                authority_id: AuthorityId::new("auth-sin"),
             },
         )
         .expect("config should write");

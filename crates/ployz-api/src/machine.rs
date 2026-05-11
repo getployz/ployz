@@ -200,6 +200,25 @@ pub enum MachineTransitionGoal {
     Standby,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "goal")]
+pub enum MachineSelfTransition {
+    Activate { assigned_subnet: ipnet::Ipv4Net },
+    Drain,
+    Standby { force: bool },
+}
+
+impl MachineSelfTransition {
+    #[must_use]
+    pub fn goal(self) -> MachineTransitionGoal {
+        match self {
+            Self::Activate { .. } => MachineTransitionGoal::Activate,
+            Self::Drain => MachineTransitionGoal::Drain,
+            Self::Standby { .. } => MachineTransitionGoal::Standby,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineInviteListPayload {
     pub invites: Vec<MachineInviteInfo>,

@@ -156,7 +156,7 @@ pub(super) async fn export_manifest_with_evidence(
         };
         let spec: ServiceSpec = serde_json::from_str(spec_json).map_err(|err| {
             PloyzError::Deploy(DeployError::CommittedServiceSpecDecode {
-                namespace: namespace.0.clone(),
+                namespace: namespace.as_str().to_string(),
                 service: release.service.clone(),
                 message: err.to_string(),
             })
@@ -253,8 +253,8 @@ pub(super) async fn render_branch_namespace_manifest(
     request: &BranchNamespaceRequest,
 ) -> Result<DeployManifest, BranchRenderError> {
     validate_branch_namespace_request(request)?;
-    let source_namespace = Namespace(request.source_namespace.clone());
-    let target_namespace = Namespace(request.target_namespace.clone());
+    let source_namespace = Namespace::new(request.source_namespace.clone());
+    let target_namespace = Namespace::new(request.target_namespace.clone());
     let exported = export_manifest_with_evidence(store, &source_namespace)
         .await
         .map_err(|error| BranchRenderError::ExportFailed {
@@ -418,7 +418,7 @@ pub(super) async fn render_migrate_service_manifest(
     if target_machine.is_empty() {
         return Err(MigrateRenderError::EmptyTargetMachine);
     }
-    let namespace = Namespace(request.namespace.clone());
+    let namespace = Namespace::new(request.namespace.clone());
     let mut manifest = export_manifest(store, &namespace).await.map_err(|error| {
         MigrateRenderError::ExportFailed {
             namespace: request.namespace.clone(),
@@ -485,7 +485,7 @@ pub(super) async fn render_migrate_service_manifest(
                 volume: volume.clone(),
             });
         }
-        if record.machine_id.0 == target_machine {
+        if record.machine_id.as_str() == target_machine {
             return Err(MigrateRenderError::AlreadyOnTarget {
                 volume: volume.clone(),
                 machine: target_machine.to_string(),
@@ -494,7 +494,7 @@ pub(super) async fn render_migrate_service_manifest(
         move_hints.push(VolumeIntentHint {
             volume: volume.clone(),
             intent: VolumeIntent::Move {
-                from_machine: record.machine_id.0,
+                from_machine: record.machine_id.as_str().to_string(),
                 to_machine: target_machine.to_string(),
             },
         });

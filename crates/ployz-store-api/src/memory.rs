@@ -139,7 +139,7 @@ impl MemoryStore {
         };
         if record.state != PreparedDeployState::Prepared {
             return Err(Error::Deploy(DeployError::PreparedDeployNotApplicable {
-                prepared_deploy_id: prepared_deploy_id.0.clone(),
+                prepared_deploy_id: prepared_deploy_id.as_str().to_string(),
                 state: record.state,
             }));
         }
@@ -844,16 +844,16 @@ impl DeployStore for MemoryStore {
 fn sort_deploy_phases(phases: &mut [DeployPhaseRecord]) {
     phases.sort_by(|left, right| {
         (
-            left.namespace.0.as_str(),
-            left.deploy_id.0.as_str(),
+            left.namespace.as_str(),
+            left.deploy_id.as_str(),
             left.order,
-            left.phase_id.0.as_str(),
+            left.phase_id.as_str(),
         )
             .cmp(&(
-                right.namespace.0.as_str(),
-                right.deploy_id.0.as_str(),
+                right.namespace.as_str(),
+                right.deploy_id.as_str(),
                 right.order,
-                right.phase_id.0.as_str(),
+                right.phase_id.as_str(),
             ))
     });
 }
@@ -933,8 +933,8 @@ impl MemoryStore {
 
 fn sort_instance_status(instances: &mut [InstanceStatusRecord]) {
     instances.sort_by(|left, right| {
-        (left.namespace.clone(), left.instance_id.0.as_str())
-            .cmp(&(right.namespace.clone(), right.instance_id.0.as_str()))
+        (left.namespace.clone(), left.instance_id.as_str())
+            .cmp(&(right.namespace.clone(), right.instance_id.as_str()))
     });
 }
 
@@ -1201,7 +1201,7 @@ mod tests {
 
     fn test_machine(id: impl Into<String>) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             public_key: ployz_types::model::PublicKey([0; 32]),
             overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
             topology: ployz_types::model::MachineTopology::local(),
@@ -1210,8 +1210,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: ployz_types::model::MachineLifecycle::Active,
-            storage: true,
-            storage_participation: ployz_types::model::StorageParticipation::default_authority(),
+            storage_role: ployz_types::model::StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: std::collections::BTreeMap::new(),
@@ -1236,7 +1235,7 @@ mod tests {
 
         assert_eq!(
             store
-                .get_image_availability(&MachineId("machine-a".into()), &digest)
+                .get_image_availability(&MachineId::new("machine-a"), &digest)
                 .await
                 .expect("get image"),
             Some(record_a.clone())
@@ -1268,7 +1267,7 @@ mod tests {
 
         assert_eq!(
             store
-                .get_image_availability(&MachineId("machine-a".into()), &digest)
+                .get_image_availability(&MachineId::new("machine-a"), &digest)
                 .await
                 .expect("get image"),
             Some(replacement)
@@ -1295,7 +1294,7 @@ mod tests {
             created_at: updated_at,
         };
         ImageAvailabilityRecord {
-            machine_id: MachineId(machine.into()),
+            machine_id: MachineId::new(machine),
             digest,
             presence: ImagePresence::Present {
                 artifact,
@@ -1311,8 +1310,8 @@ mod tests {
         let store = MemoryStore::new();
         let invite = InviteRecord {
             invite_id: "inv-1".into(),
-            network_id: ployz_types::model::NetworkId("net-1".into()),
-            issuer_machine_id: MachineId("issuer".into()),
+            network_id: ployz_types::model::NetworkId::new("net-1"),
+            issuer_machine_id: MachineId::new("issuer"),
             issuer_verify_key: "verify".into(),
             expires_at: 10_000,
             consumed_by: None,
@@ -1323,12 +1322,12 @@ mod tests {
 
         store.create_invite(&invite).await.expect("create invite");
         store
-            .redeem_invite("inv-1", &MachineId("joiner".into()), 100)
+            .redeem_invite("inv-1", &MachineId::new("joiner"), 100)
             .await
             .expect("consume invite once");
 
         let second = store
-            .redeem_invite("inv-1", &MachineId("other".into()), 101)
+            .redeem_invite("inv-1", &MachineId::new("other"), 101)
             .await;
         assert!(matches!(
             second,
@@ -1341,8 +1340,8 @@ mod tests {
         let store = MemoryStore::new();
         let invite = InviteRecord {
             invite_id: "inv-2".into(),
-            network_id: ployz_types::model::NetworkId("net-1".into()),
-            issuer_machine_id: MachineId("issuer".into()),
+            network_id: ployz_types::model::NetworkId::new("net-1"),
+            issuer_machine_id: MachineId::new("issuer"),
             issuer_verify_key: "verify".into(),
             expires_at: 50,
             consumed_by: None,
@@ -1354,7 +1353,7 @@ mod tests {
         store.create_invite(&invite).await.expect("create invite");
 
         let expired = store
-            .redeem_invite("inv-2", &MachineId("joiner".into()), 51)
+            .redeem_invite("inv-2", &MachineId::new("joiner"), 51)
             .await;
         assert!(matches!(
             expired,
@@ -1365,8 +1364,8 @@ mod tests {
     #[tokio::test]
     async fn deploy_phase_records_roundtrip_and_list_in_contract_order() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
-        let deploy_id = DeployId("deploy-1".into());
+        let namespace = Namespace::new("prod");
+        let deploy_id = DeployId::new("deploy-1");
         let later = test_deploy_phase(&namespace, &deploy_id, "web", 1);
         let earlier = test_deploy_phase(&namespace, &deploy_id, "db", 0);
 
@@ -1384,7 +1383,7 @@ mod tests {
                 .get_deploy_phase(
                     &namespace,
                     &deploy_id,
-                    &ployz_types::model::DeployPhaseId("db".into())
+                    &ployz_types::model::DeployPhaseId::new("db")
                 )
                 .await
                 .expect("read deploy phase"),
@@ -1402,8 +1401,8 @@ mod tests {
     #[tokio::test]
     async fn deploy_phase_upsert_replaces_state_for_same_identity() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
-        let deploy_id = DeployId("deploy-1".into());
+        let namespace = Namespace::new("prod");
+        let deploy_id = DeployId::new("deploy-1");
         let mut phase = test_deploy_phase(&namespace, &deploy_id, "deploy", 0);
         store
             .upsert_deploy_phase(&phase)
@@ -1434,9 +1433,9 @@ mod tests {
     #[tokio::test]
     async fn deploy_phase_commit_fact_overrides_failed_phase_state() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
-        let deploy_id = DeployId("deploy-1".into());
-        let phase_id = DeployPhaseId("db".into());
+        let namespace = Namespace::new("prod");
+        let deploy_id = DeployId::new("deploy-1");
+        let phase_id = DeployPhaseId::new("db");
         let mut phase = test_deploy_phase(&namespace, &deploy_id, "db", 0);
         phase.state = DeployPhaseState::Failed {
             completed_at: 20,
@@ -1450,7 +1449,7 @@ mod tests {
             .await
             .expect("write failed phase");
 
-        let commit_deploy_id = DeployId("deploy-1:phase:db".into());
+        let commit_deploy_id = DeployId::new("deploy-1:phase:db");
         store
             .commit_deploy(&DeployCommit {
                 namespace: namespace.clone(),
@@ -1469,7 +1468,7 @@ mod tests {
                 }],
                 releases: Vec::new(),
                 volumes: Vec::new(),
-                deploy: test_deploy(&namespace, &commit_deploy_id.0),
+                deploy: test_deploy(&namespace, commit_deploy_id.as_str()),
             })
             .await
             .expect("commit phase fact");
@@ -1486,13 +1485,13 @@ mod tests {
     #[tokio::test]
     async fn commit_deploy_records_inlined_revisions() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let revision = ServiceRevisionRecord {
             namespace: namespace.clone(),
             service: "api".into(),
             revision_hash: "rev-1".into(),
             spec_json: "{}".into(),
-            created_by: MachineId("machine-1".into()),
+            created_by: MachineId::new("machine-1"),
             created_at: 1,
         };
 
@@ -1524,15 +1523,15 @@ mod tests {
     #[tokio::test]
     async fn commit_deploy_records_service_branch_lineage() {
         let store = MemoryStore::new();
-        let namespace = Namespace("pr-39".into());
+        let namespace = Namespace::new("pr-39");
         let lineage = ServiceBranchLineageRecord {
             namespace: namespace.clone(),
             service: "web".into(),
             revision_hash: "rev-target".into(),
-            source_namespace: Namespace("prod".into()),
+            source_namespace: Namespace::new("prod"),
             source_service: "web".into(),
             source_revision_hash: "rev-source".into(),
-            deploy_id: DeployId("deploy-branch".into()),
+            deploy_id: DeployId::new("deploy-branch"),
             created_at: 2,
         };
 
@@ -1563,10 +1562,10 @@ mod tests {
     #[tokio::test]
     async fn commit_deploy_records_volume_movements() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let movement = test_volume_movement(&namespace, "pgdata", "deploy-move");
-        let mut volume = test_volume(&namespace, "pgdata", &DeployId("deploy-move".into()));
-        volume.machine_id = MachineId("machine-b".into());
+        let mut volume = test_volume(&namespace, "pgdata", &DeployId::new("deploy-move"));
+        volume.machine_id = MachineId::new("machine-b");
 
         store
             .commit_deploy(&DeployCommit {
@@ -1595,9 +1594,9 @@ mod tests {
     #[tokio::test]
     async fn commit_deploy_records_volume_branches() {
         let store = MemoryStore::new();
-        let namespace = Namespace("pr-39".into());
+        let namespace = Namespace::new("pr-39");
         let branch = test_volume_branch(&namespace, "pgdata", "deploy-branch");
-        let volume = test_volume(&namespace, "pgdata", &DeployId("deploy-branch".into()));
+        let volume = test_volume(&namespace, "pgdata", &DeployId::new("deploy-branch"));
 
         store
             .commit_deploy(&DeployCommit {
@@ -1626,7 +1625,7 @@ mod tests {
     #[tokio::test]
     async fn commit_deploy_replaces_touched_releases() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let untouched = test_release(&namespace, "worker", "rev-old", "deploy-old");
         store
             .commit_deploy(&DeployCommit {
@@ -1677,7 +1676,7 @@ mod tests {
     #[tokio::test]
     async fn deploy_status_is_written_explicitly() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let deploy = test_deploy(&namespace, "deploy-new");
 
         assert!(
@@ -1705,7 +1704,7 @@ mod tests {
     #[tokio::test]
     async fn deploy_commit_is_recoverable_without_status_record() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let deploy = test_deploy(&namespace, "deploy-new");
 
         store
@@ -1745,7 +1744,7 @@ mod tests {
     #[tokio::test]
     async fn prepared_deploy_records_are_written_and_transitioned_explicitly() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let prepared = test_prepared_deploy(&namespace, "prepare-1");
 
         store
@@ -1778,7 +1777,7 @@ mod tests {
         );
         assert!(
             store
-                .expire_prepared_deploy(&DeployId("missing".into()), 21)
+                .expire_prepared_deploy(&DeployId::new("missing"), 21)
                 .await
                 .is_err()
         );
@@ -2005,7 +2004,7 @@ mod tests {
     #[tokio::test]
     async fn deploy_reads_return_contract_identity_order() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
 
         store
             .commit_deploy(&DeployCommit {
@@ -2071,7 +2070,7 @@ mod tests {
         assert_eq!(
             instances
                 .iter()
-                .map(|instance| instance.instance_id.0.as_str())
+                .map(|instance| instance.instance_id.as_str())
                 .collect::<Vec<_>>(),
             ["instance-a", "instance-b"]
         );
@@ -2080,7 +2079,7 @@ mod tests {
     #[tokio::test]
     async fn list_deploy_releases_returns_contract_identity_order() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
 
         store
             .commit_deploy(&DeployCommit {
@@ -2119,7 +2118,7 @@ mod tests {
     #[tokio::test]
     async fn redeploying_existing_service_emits_release_upsert() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
 
         store
             .commit_deploy(&DeployCommit {
@@ -2173,7 +2172,7 @@ mod tests {
     #[tokio::test]
     async fn multi_event_deploy_broadcast_uses_one_event_id_per_fact() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let (_state, mut envelopes) = store
             .subscribe_routing_events_internal()
             .await
@@ -2216,7 +2215,7 @@ mod tests {
     #[tokio::test]
     async fn commit_deploy_removed_service_emits_release_removed() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let removed = test_release(&namespace, "worker", "rev-old", "deploy-old");
 
         store
@@ -2273,9 +2272,9 @@ mod tests {
     #[tokio::test]
     async fn commit_deploy_removed_volumes_are_scoped_to_namespace() {
         let store = MemoryStore::new();
-        let prod = Namespace("prod".into());
-        let staging = Namespace("staging".into());
-        let deploy_id = DeployId("deploy-1".into());
+        let prod = Namespace::new("prod");
+        let staging = Namespace::new("staging");
+        let deploy_id = DeployId::new("deploy-1");
 
         store
             .commit_deploy(&DeployCommit {
@@ -2346,8 +2345,8 @@ mod tests {
     #[tokio::test]
     async fn list_volumes_returns_contract_identity_order() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
-        let deploy_id = DeployId("deploy-1".into());
+        let namespace = Namespace::new("prod");
+        let deploy_id = DeployId::new("deploy-1");
 
         store
             .commit_deploy(&DeployCommit {
@@ -2383,7 +2382,7 @@ mod tests {
     #[tokio::test]
     async fn instance_status_writes_update_routing_snapshot_and_emit_events() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let status = test_instance_status(&namespace, "inst-1");
         let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
 
@@ -2421,7 +2420,7 @@ mod tests {
     #[tokio::test]
     async fn instance_status_list_returns_contract_identity_order() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         store
             .record_instance_status(&test_instance_status(&namespace, "instance-b"))
             .await
@@ -2439,7 +2438,7 @@ mod tests {
         assert_eq!(
             records
                 .iter()
-                .map(|record| record.instance_id.0.as_str())
+                .map(|record| record.instance_id.as_str())
                 .collect::<Vec<_>>(),
             ["instance-a", "instance-b"]
         );
@@ -2452,7 +2451,7 @@ mod tests {
             .upsert_acme_challenge_readiness(&AcmeChallengeReadinessRecord {
                 hostname: "example.com".into(),
                 token: "old-token".into(),
-                machine_id: MachineId("machine-a".into()),
+                machine_id: MachineId::new("machine-a"),
                 observed_at: 1,
             })
             .await
@@ -2461,7 +2460,7 @@ mod tests {
             .upsert_acme_challenge_readiness(&AcmeChallengeReadinessRecord {
                 hostname: "example.com".into(),
                 token: "new-token".into(),
-                machine_id: MachineId("machine-a".into()),
+                machine_id: MachineId::new("machine-a"),
                 observed_at: 2,
             })
             .await
@@ -2474,7 +2473,7 @@ mod tests {
 
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].token, "new-token");
-        assert_eq!(records[0].machine_id, MachineId("machine-a".into()));
+        assert_eq!(records[0].machine_id, MachineId::new("machine-a"));
     }
 
     #[tokio::test]
@@ -2501,7 +2500,7 @@ mod tests {
                 .upsert_acme_challenge_readiness(&AcmeChallengeReadinessRecord {
                     hostname: "example.com".into(),
                     token: "token".into(),
-                    machine_id: MachineId(machine_id.into()),
+                    machine_id: MachineId::new(machine_id),
                     observed_at: 1,
                 })
                 .await
@@ -2555,7 +2554,7 @@ mod tests {
         assert_eq!(
             readiness
                 .iter()
-                .map(|record| record.machine_id.0.as_str())
+                .map(|record| record.machine_id.as_str())
                 .collect::<Vec<_>>(),
             ["machine-a", "machine-b"]
         );
@@ -2668,7 +2667,7 @@ mod tests {
                     revision_hash: revision_hash.into(),
                 },
                 slots: Vec::new(),
-                updated_by_deploy_id: DeployId(deploy_id.into()),
+                updated_by_deploy_id: DeployId::new(deploy_id),
                 updated_at: 1,
             },
         }
@@ -2683,7 +2682,7 @@ mod tests {
         DeployPhaseRecord {
             namespace: namespace.clone(),
             deploy_id: deploy_id.clone(),
-            phase_id: ployz_types::model::DeployPhaseId(phase_id.into()),
+            phase_id: ployz_types::model::DeployPhaseId::new(phase_id),
             commit_deploy_id: None,
             name: phase_id.into(),
             order,
@@ -2708,16 +2707,16 @@ mod tests {
             service: service.into(),
             revision_hash: revision_hash.into(),
             spec_json: "{}".into(),
-            created_by: MachineId("machine-1".into()),
+            created_by: MachineId::new("machine-1"),
             created_at: 1,
         }
     }
 
     fn test_deploy(namespace: &Namespace, deploy_id: &str) -> DeployRecord {
         DeployRecord {
-            deploy_id: DeployId(deploy_id.into()),
+            deploy_id: DeployId::new(deploy_id),
             namespace: namespace.clone(),
-            coordinator_machine_id: MachineId("machine-1".into()),
+            coordinator_machine_id: MachineId::new("machine-1"),
             manifest_hash: "manifest".into(),
             state: ployz_types::model::DeployState::Committed,
             started_at: 1,
@@ -2742,7 +2741,7 @@ mod tests {
             volume_clones: "clones".into(),
         });
         PreparedDeployRecord {
-            prepared_deploy_id: DeployId(prepared_deploy_id.into()),
+            prepared_deploy_id: DeployId::new(prepared_deploy_id),
             namespace: namespace.clone(),
             manifest_hash: "manifest".into(),
             manifest_json: "{}".into(),
@@ -2763,7 +2762,7 @@ mod tests {
                 warnings: Vec::new(),
             },
             baseline,
-            coordinator_machine_id: MachineId("machine-1".into()),
+            coordinator_machine_id: MachineId::new("machine-1"),
             state: PreparedDeployState::Prepared,
             created_at: 1,
             expires_at: 100,
@@ -2802,13 +2801,13 @@ mod tests {
         volume_name: &str,
         deploy_id: &str,
     ) -> VolumeMovementRecord {
-        let deploy_id = DeployId(deploy_id.into());
+        let deploy_id = DeployId::new(deploy_id);
         VolumeMovementRecord {
             namespace: namespace.clone(),
             volume_name: volume_name.into(),
-            from_machine: MachineId("machine-a".into()),
-            to_machine: MachineId("machine-b".into()),
-            final_machine: MachineId("machine-b".into()),
+            from_machine: MachineId::new("machine-a"),
+            to_machine: MachineId::new("machine-b"),
+            final_machine: MachineId::new("machine-b"),
             deploy_id: deploy_id.clone(),
             commit_deploy_id: deploy_id,
             phase_id: None,
@@ -2824,14 +2823,14 @@ mod tests {
         volume_name: &str,
         deploy_id: &str,
     ) -> VolumeBranchLineageRecord {
-        let deploy_id = DeployId(deploy_id.into());
+        let deploy_id = DeployId::new(deploy_id);
         VolumeBranchLineageRecord {
             namespace: namespace.clone(),
             volume_name: volume_name.into(),
-            source_namespace: Namespace("prod".into()),
+            source_namespace: Namespace::new("prod"),
             source_volume_name: volume_name.into(),
-            source_machine: MachineId("machine-a".into()),
-            target_machine: MachineId("machine-1".into()),
+            source_machine: MachineId::new("machine-a"),
+            target_machine: MachineId::new("machine-1"),
             data_policy: ployz_types::spec::VolumeCloneDataPolicy::Raw,
             consistency: ployz_types::spec::VolumeCloneConsistency::CrashConsistent,
             deploy_id: deploy_id.clone(),
@@ -2846,13 +2845,13 @@ mod tests {
 
     fn test_instance_status(namespace: &Namespace, instance_id: &str) -> InstanceStatusRecord {
         InstanceStatusRecord {
-            instance_id: InstanceId(instance_id.into()),
+            instance_id: InstanceId::new(instance_id),
             namespace: namespace.clone(),
             service: "api".into(),
-            slot_id: ployz_types::model::SlotId("slot-1".into()),
-            machine_id: MachineId("machine-1".into()),
+            slot_id: ployz_types::model::SlotId::new("slot-1"),
+            machine_id: MachineId::new("machine-1"),
             revision_hash: "rev-1".into(),
-            deploy_id: DeployId("deploy-1".into()),
+            deploy_id: DeployId::new("deploy-1"),
             docker_container_id: "container-1".into(),
             overlay_ip: None,
             backend_ports: std::collections::BTreeMap::new(),
@@ -2870,7 +2869,7 @@ mod tests {
             namespace: namespace.clone(),
             volume_name: volume_name.into(),
             scope: ployz_types::spec::VolumeScope::Single,
-            machine_id: MachineId("machine-1".into()),
+            machine_id: MachineId::new("machine-1"),
             quota: "1G".into(),
             mode: "0750".into(),
             owner: "999:999".into(),
@@ -2908,7 +2907,7 @@ mod tests {
     async fn load_routing_state_includes_machines() {
         let store = MemoryStore::new();
         let machine = MachineMembership {
-            id: MachineId("machine-1".into()),
+            id: MachineId::new("machine-1"),
             public_key: ployz_types::model::PublicKey([0; 32]),
             overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
             region_role: ployz_types::model::RegionRole::HomeData,
@@ -2918,8 +2917,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: ployz_types::model::MachineLifecycle::Active,
-            storage: true,
-            storage_participation: ployz_types::model::StorageParticipation::default_authority(),
+            storage_role: ployz_types::model::StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: std::collections::BTreeMap::new(),
@@ -2951,7 +2949,7 @@ mod tests {
         assert_eq!(
             listed
                 .iter()
-                .map(|machine| machine.id.0.as_str())
+                .map(|machine| machine.id.as_str())
                 .collect::<Vec<_>>(),
             ["machine-a", "machine-b"]
         );
@@ -2961,7 +2959,7 @@ mod tests {
             routing
                 .machines
                 .iter()
-                .map(|machine| machine.id.0.as_str())
+                .map(|machine| machine.id.as_str())
                 .collect::<Vec<_>>(),
             ["machine-a", "machine-b"]
         );
@@ -2973,7 +2971,7 @@ mod tests {
         assert_eq!(
             snapshot
                 .iter()
-                .map(|machine| machine.id.0.as_str())
+                .map(|machine| machine.id.as_str())
                 .collect::<Vec<_>>(),
             ["machine-a", "machine-b"]
         );
@@ -2984,7 +2982,7 @@ mod tests {
         let store = MemoryStore::new();
         let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
         let machine = MachineMembership {
-            id: MachineId("machine-1".into()),
+            id: MachineId::new("machine-1"),
             public_key: ployz_types::model::PublicKey([0; 32]),
             overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
             topology: ployz_types::model::MachineTopology::local(),
@@ -2993,8 +2991,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: ployz_types::model::MachineLifecycle::Active,
-            storage: true,
-            storage_participation: ployz_types::model::StorageParticipation::default_authority(),
+            storage_role: ployz_types::model::StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: std::collections::BTreeMap::new(),
@@ -3108,7 +3105,7 @@ mod tests {
         let (sender, receiver) = broadcast::channel(2);
         let mut event_rx = subscribe_routing_broadcast(receiver);
         let event = RoutingEvent::ReleaseRemoved {
-            namespace: Namespace("prod".into()),
+            namespace: Namespace::new("prod"),
             service: "api".into(),
         };
 
@@ -3168,13 +3165,13 @@ mod tests {
     #[tokio::test]
     async fn wipe_data_clears_volume_records() {
         let store = MemoryStore::new();
-        let namespace = Namespace("prod".into());
-        let deploy_id = DeployId("dep-1".into());
+        let namespace = Namespace::new("prod");
+        let deploy_id = DeployId::new("dep-1");
         let volume = VolumeRecord {
             namespace: namespace.clone(),
             volume_name: "data".into(),
             scope: ployz_types::spec::VolumeScope::Single,
-            machine_id: MachineId("machine-1".into()),
+            machine_id: MachineId::new("machine-1"),
             quota: "1G".into(),
             mode: "0750".into(),
             owner: "999:999".into(),
@@ -3187,7 +3184,7 @@ mod tests {
         let deploy = DeployRecord {
             deploy_id,
             namespace: namespace.clone(),
-            coordinator_machine_id: MachineId("local".into()),
+            coordinator_machine_id: MachineId::new("local"),
             manifest_hash: "hash".into(),
             state: ployz_types::model::DeployState::Committed,
             started_at: 1,
@@ -3227,7 +3224,7 @@ mod tests {
         store
             .upsert_deploy_phase(&test_deploy_phase(
                 &namespace,
-                &DeployId("dep-1".into()),
+                &DeployId::new("dep-1"),
                 "deploy",
                 0,
             ))
@@ -3245,21 +3242,21 @@ mod tests {
         );
         assert!(
             store
-                .list_deploy_phases(&namespace, &DeployId("dep-1".into()))
+                .list_deploy_phases(&namespace, &DeployId::new("dep-1"))
                 .await
                 .expect("list phases after wipe")
                 .is_empty()
         );
         assert!(
             store
-                .get_deploy_commit(&namespace, &DeployId("dep-1".into()))
+                .get_deploy_commit(&namespace, &DeployId::new("dep-1"))
                 .await
                 .expect("get deploy commit after wipe")
                 .is_none()
         );
         assert!(
             store
-                .get_deploy(&DeployId("dep-1".into()))
+                .get_deploy(&DeployId::new("dep-1"))
                 .await
                 .expect("get deploy status after wipe")
                 .is_none()

@@ -15,7 +15,7 @@ pub(crate) use cli::{
     RuntimeAction, RuntimeTargetArg, ServiceModeArg,
 };
 #[cfg(test)]
-use cli::{
+pub(crate) use cli::{
     BranchResourceModeArg, BranchStatusArgs, BuildAction, BuildMethodArg, BuildOperationAction,
 };
 use cli_io::{cmd_rpc_stdio, cmd_runtime_stream, render_response, request_daemon};
@@ -449,7 +449,7 @@ mod tests {
         };
         assert_eq!(
             request.prepared_deploy_id,
-            ployz_types::model::DeployId("prepare-1".into())
+            ployz_types::model::DeployId::new("prepare-1")
         );
     }
 
@@ -537,7 +537,7 @@ mod tests {
     #[test]
     fn upsert_service_replaces_existing_service_and_sorts() {
         let mut manifest = DeployManifest {
-            namespace: ployz_types::spec::Namespace("prod".into()),
+            namespace: ployz_types::spec::Namespace::new("prod"),
             intent: None,
             volumes: Vec::new(),
             services: vec![
@@ -790,7 +790,7 @@ mod tests {
             panic!("expected image status request");
         };
         assert_eq!(request.digest.expect("digest").as_str(), digest);
-        assert_eq!(request.machine_id.expect("machine").0, "machine-a");
+        assert_eq!(request.machine_id.expect("machine").as_str(), "machine-a");
     }
 
     #[test]
@@ -843,7 +843,7 @@ mod tests {
         assert_eq!(request.reference.as_deref(), Some("example/app:latest"));
         assert_eq!(
             request.machines,
-            vec![ployz_types::model::MachineId("machine-a".into())]
+            vec![ployz_types::model::MachineId::new("machine-a")]
         );
     }
 
@@ -913,8 +913,8 @@ mod tests {
         assert_eq!(
             request.target_machines,
             vec![
-                ployz_types::model::MachineId("machine-a".into()),
-                ployz_types::model::MachineId("machine-b".into())
+                ployz_types::model::MachineId::new("machine-a"),
+                ployz_types::model::MachineId::new("machine-b")
             ]
         );
         let platform = request.platform.expect("platform");
@@ -994,12 +994,12 @@ mod tests {
             panic!("expected image distribute request");
         };
         assert_eq!(request.digest.as_str(), digest);
-        assert_eq!(request.source_machine.0, "machine-a");
+        assert_eq!(request.source_machine.as_str(), "machine-a");
         assert_eq!(
             request.target_machines,
             vec![
-                ployz_types::model::MachineId("machine-b".into()),
-                ployz_types::model::MachineId("machine-c".into())
+                ployz_types::model::MachineId::new("machine-b"),
+                ployz_types::model::MachineId::new("machine-c")
             ]
         );
         let platform = request.platform.expect("platform");

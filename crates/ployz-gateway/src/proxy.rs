@@ -248,7 +248,7 @@ impl ProxyHttp for GatewayApp {
                 ctx.selected_addr
                     .and_then(|addr| state.backend_lookup.get(&addr))
             })
-            .map(|bv| bv.instance_id.0.as_str())
+            .map(|bv| bv.instance_id.as_str())
             .unwrap_or("-");
 
         info!(

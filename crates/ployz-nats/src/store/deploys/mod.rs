@@ -96,14 +96,14 @@ impl DeployStore for NatsStore {
             }
         };
         self.publish_routing_events(
-            format!("deploy:{}", command.deploy.deploy_id.0),
+            format!("deploy:{}", command.deploy.deploy_id.as_str()),
             "deploy.commit",
             &routing_events,
         )
         .await
         .map_err(|error| {
             Error::Store(StoreError::DeployCommitRoutingPublishFailed {
-                deploy_id: command.deploy.deploy_id.0.clone(),
+                deploy_id: command.deploy.deploy_id.as_str().to_string(),
                 message: error.to_string(),
             })
         })
@@ -398,7 +398,10 @@ async fn publish_commit_in(
         .payload(payload.into())
         .expected_stream(stream.as_str())
         .expected_last_subject_sequence(0)
-        .message_id(format!("deploy-commit:{}", commit.deploy.deploy_id.0));
+        .message_id(format!(
+            "deploy-commit:{}",
+            commit.deploy.deploy_id.as_str()
+        ));
     let ack = js
         .send_publish(subject.clone(), publish)
         .await
@@ -544,7 +547,7 @@ async fn write_deploy_status_entry(
     let bucket = kv_json::get_bucket(js, bucket_name, "nats_deploy_status_bucket").await?;
     kv_json::put_json(
         &bucket,
-        &deploy.deploy_id.0,
+        &deploy.deploy_id.as_str(),
         deploy,
         "nats_deploy_status_encode",
         "nats_deploy_status_put",
@@ -559,22 +562,25 @@ async fn read_deploy_status(
 ) -> Result<Option<DeployRecord>> {
     let bucket = kv_json::get_bucket(js, bucket_name, "nats_deploy_status_bucket").await?;
     let Some(bytes) = bucket
-        .get(deploy_id.0.as_str())
+        .get(deploy_id.as_str())
         .await
         .map_err(|error| Error::operation("nats_deploy_status_get", format!("{error:?}")))?
     else {
         return Ok(None);
     };
-    Ok(Some(decode_deploy_status(&deploy_id.0, bytes.as_ref())?))
+    Ok(Some(decode_deploy_status(
+        &deploy_id.as_str(),
+        bytes.as_ref(),
+    )?))
 }
 
 fn decode_deploy_status(key: &str, bytes: &[u8]) -> Result<DeployRecord> {
     let record: DeployRecord = kv_json::decode_json("nats_deploy_status_decode", bytes)?;
-    if record.deploy_id.0 != key {
+    if record.deploy_id.as_str() != key {
         return Err(Error::store_key_mismatch(
             StoreRecordKind::DeployStatus,
             key,
-            record.deploy_id.0,
+            record.deploy_id.as_str(),
         ));
     }
     Ok(record)
@@ -588,7 +594,7 @@ async fn write_prepared_deploy_entry(
     let bucket = kv_json::get_bucket(js, bucket_name, "nats_prepared_deploys_bucket").await?;
     kv_json::put_json(
         &bucket,
-        &prepared.prepared_deploy_id.0,
+        &prepared.prepared_deploy_id.as_str(),
         prepared,
         "nats_prepared_deploy_encode",
         "nats_prepared_deploy_put",
@@ -603,14 +609,14 @@ async fn read_prepared_deploy(
 ) -> Result<Option<PreparedDeployRecord>> {
     let bucket = kv_json::get_bucket(js, bucket_name, "nats_prepared_deploys_bucket").await?;
     let Some(bytes) = bucket
-        .get(prepared_deploy_id.0.as_str())
+        .get(prepared_deploy_id.as_str())
         .await
         .map_err(|error| Error::operation("nats_prepared_deploy_get", format!("{error:?}")))?
     else {
         return Ok(None);
     };
     Ok(Some(decode_prepared_deploy(
-        &prepared_deploy_id.0,
+        &prepared_deploy_id.as_str(),
         bytes.as_ref(),
     )?))
 }
@@ -624,7 +630,7 @@ async fn transition_prepared_deploy_entry(
 ) -> Result<PreparedDeployRecord> {
     let bucket = kv_json::get_bucket(js, bucket_name, "nats_prepared_deploys_bucket").await?;
     let Some(entry) = bucket
-        .entry(prepared_deploy_id.0.as_str())
+        .entry(prepared_deploy_id.as_str())
         .await
         .map_err(|error| Error::operation("nats_prepared_deploy_get", format!("{error:?}")))?
     else {
@@ -639,10 +645,10 @@ async fn transition_prepared_deploy_entry(
             format!("prepared deploy '{prepared_deploy_id}' not found"),
         ));
     }
-    let mut record = decode_prepared_deploy(&prepared_deploy_id.0, entry.value.as_ref())?;
+    let mut record = decode_prepared_deploy(&prepared_deploy_id.as_str(), entry.value.as_ref())?;
     if record.state != PreparedDeployState::Prepared {
         return Err(Error::Deploy(DeployError::PreparedDeployNotApplicable {
-            prepared_deploy_id: prepared_deploy_id.0.clone(),
+            prepared_deploy_id: prepared_deploy_id.as_str().to_string(),
             state: record.state,
         }));
     }
@@ -651,11 +657,7 @@ async fn transition_prepared_deploy_entry(
     let payload = serde_json::to_vec(&record)
         .map_err(|error| Error::operation("nats_prepared_deploy_encode", error.to_string()))?;
     bucket
-        .update(
-            prepared_deploy_id.0.as_str(),
-            payload.into(),
-            entry.revision,
-        )
+        .update(prepared_deploy_id.as_str(), payload.into(), entry.revision)
         .await
         .map_err(|error| Error::operation("nats_prepared_deploy_update", format!("{error:?}")))?;
     Ok(record)
@@ -663,11 +665,11 @@ async fn transition_prepared_deploy_entry(
 
 fn decode_prepared_deploy(key: &str, bytes: &[u8]) -> Result<PreparedDeployRecord> {
     let record: PreparedDeployRecord = kv_json::decode_json("nats_prepared_deploy_decode", bytes)?;
-    if record.prepared_deploy_id.0 != key {
+    if record.prepared_deploy_id.as_str() != key {
         return Err(Error::store_key_mismatch(
             StoreRecordKind::PreparedDeploy,
             key,
-            record.prepared_deploy_id.0,
+            record.prepared_deploy_id.as_str(),
         ));
     }
     Ok(record)
@@ -1037,33 +1039,33 @@ fn deploy_phase_key(
 ) -> String {
     format!(
         "{}.{}.{}",
-        subjects::subject_token(namespace.0.as_str()),
-        subjects::subject_token(deploy_id.0.as_str()),
-        subjects::subject_token(phase_id.0.as_str())
+        subjects::subject_token(namespace.as_str()),
+        subjects::subject_token(deploy_id.as_str()),
+        subjects::subject_token(phase_id.as_str())
     )
 }
 
 fn deploy_phase_prefix(namespace: &Namespace, deploy_id: &DeployId) -> String {
     format!(
         "{}.{}.",
-        subjects::subject_token(namespace.0.as_str()),
-        subjects::subject_token(deploy_id.0.as_str())
+        subjects::subject_token(namespace.as_str()),
+        subjects::subject_token(deploy_id.as_str())
     )
 }
 
 fn sort_deploy_phases(phases: &mut [DeployPhaseRecord]) {
     phases.sort_by(|left, right| {
         (
-            left.namespace.0.as_str(),
-            left.deploy_id.0.as_str(),
+            left.namespace.as_str(),
+            left.deploy_id.as_str(),
             left.order,
-            left.phase_id.0.as_str(),
+            left.phase_id.as_str(),
         )
             .cmp(&(
-                right.namespace.0.as_str(),
-                right.deploy_id.0.as_str(),
+                right.namespace.as_str(),
+                right.deploy_id.as_str(),
                 right.order,
-                right.phase_id.0.as_str(),
+                right.phase_id.as_str(),
             ))
     });
 }
@@ -1095,7 +1097,7 @@ mod tests {
 
     #[test]
     fn duplicate_commit_repair_republishes_current_truth_for_touched_keys() {
-        let namespace = Namespace(String::from("prod"));
+        let namespace = Namespace::new(String::from("prod"));
         let old_release = release(&namespace, "web", "rev-old", "deploy-old");
         let revision = revision("rev-new", "{}");
         let new_release = release(&namespace, "api", "rev-new", "deploy-new");
@@ -1129,7 +1131,7 @@ mod tests {
 
     #[test]
     fn duplicate_commit_repair_skips_release_superseded_by_later_commit() {
-        let namespace = Namespace(String::from("prod"));
+        let namespace = Namespace::new(String::from("prod"));
         let command_release = release(&namespace, "api", "rev-a", "deploy-a");
         let later_release = release(&namespace, "api", "rev-b", "deploy-b");
         let command = deploy_commit(
@@ -1164,7 +1166,7 @@ mod tests {
 
     #[test]
     fn deploy_status_decode_rejects_key_payload_mismatch() {
-        let namespace = Namespace(String::from("prod"));
+        let namespace = Namespace::new(String::from("prod"));
         let record = deploy_commit(
             &namespace,
             "payload-deploy",
@@ -1190,7 +1192,7 @@ mod tests {
 
     #[test]
     fn deploy_status_decode_accepts_matching_key() {
-        let namespace = Namespace(String::from("prod"));
+        let namespace = Namespace::new(String::from("prod"));
         let record =
             deploy_commit(&namespace, "deploy-a", Vec::new(), Vec::new(), Vec::new()).deploy;
         let bytes = serde_json::to_vec(&record).expect("encode deploy status");
@@ -1202,7 +1204,7 @@ mod tests {
 
     #[test]
     fn prepared_deploy_decode_rejects_key_payload_mismatch() {
-        let namespace = Namespace(String::from("prod"));
+        let namespace = Namespace::new(String::from("prod"));
         let record = prepared_deploy(&namespace, "payload-prepare");
         let bytes = serde_json::to_vec(&record).expect("encode prepared deploy");
 
@@ -1221,7 +1223,7 @@ mod tests {
 
     #[test]
     fn prepared_deploy_decode_accepts_matching_key() {
-        let namespace = Namespace(String::from("prod"));
+        let namespace = Namespace::new(String::from("prod"));
         let record = prepared_deploy(&namespace, "prepare-a");
         let bytes = serde_json::to_vec(&record).expect("encode prepared deploy");
 
@@ -1280,9 +1282,9 @@ mod tests {
             phases
                 .iter()
                 .map(|phase| (
-                    phase.deploy_id.0.as_str(),
+                    phase.deploy_id.as_str(),
                     phase.order,
-                    phase.phase_id.0.as_str()
+                    phase.phase_id.as_str()
                 ))
                 .collect::<Vec<_>>(),
             vec![
@@ -1295,14 +1297,14 @@ mod tests {
 
     #[test]
     fn phase_commit_fact_overrides_failed_phase_state() {
-        let namespace = Namespace(String::from("prod"));
-        let deploy_id = DeployId(String::from("deploy-a"));
-        let phase_id = DeployPhaseId(String::from("db"));
+        let namespace = Namespace::new(String::from("prod"));
+        let deploy_id = DeployId::new(String::from("deploy-a"));
+        let phase_id = DeployPhaseId::new(String::from("db"));
         let commit = ployz_types::model::DeployPhaseCommitRecord {
             namespace: namespace.clone(),
             deploy_id: deploy_id.clone(),
             phase_id: phase_id.clone(),
-            commit_deploy_id: DeployId(String::from("deploy-a-db-commit")),
+            commit_deploy_id: DeployId::new(String::from("deploy-a-db-commit")),
             committed_at: 42,
         };
         let mut phase = deploy_phase("prod", "deploy-a", "db", 0);
@@ -1318,7 +1320,7 @@ mod tests {
 
         assert_eq!(
             phase.commit_deploy_id,
-            Some(DeployId(String::from("deploy-a-db-commit")))
+            Some(DeployId::new(String::from("deploy-a-db-commit")))
         );
         assert_eq!(
             phase.state,
@@ -1351,11 +1353,11 @@ mod tests {
 
     fn revision(hash: &str, spec_json: &str) -> ServiceRevisionRecord {
         ServiceRevisionRecord {
-            namespace: Namespace(String::from("prod")),
+            namespace: Namespace::new(String::from("prod")),
             service: String::from("web"),
             revision_hash: hash.into(),
             spec_json: spec_json.into(),
-            created_by: MachineId(String::from("founder")),
+            created_by: MachineId::new(String::from("founder")),
             created_at: 10,
         }
     }
@@ -1376,7 +1378,7 @@ mod tests {
                     revision_hash: revision_hash.into(),
                 },
                 slots: Vec::new(),
-                updated_by_deploy_id: DeployId(deploy_id.into()),
+                updated_by_deploy_id: DeployId::new(deploy_id),
                 updated_at: 1,
             },
         }
@@ -1389,9 +1391,9 @@ mod tests {
         order: u32,
     ) -> DeployPhaseRecord {
         DeployPhaseRecord {
-            namespace: Namespace(namespace.into()),
-            deploy_id: DeployId(deploy_id.into()),
-            phase_id: DeployPhaseId(phase_id.into()),
+            namespace: Namespace::new(namespace),
+            deploy_id: DeployId::new(deploy_id),
+            phase_id: DeployPhaseId::new(phase_id),
             commit_deploy_id: None,
             name: phase_id.into(),
             order,
@@ -1425,9 +1427,9 @@ mod tests {
             releases,
             volumes: Vec::new(),
             deploy: DeployRecord {
-                deploy_id: DeployId(deploy_id.into()),
+                deploy_id: DeployId::new(deploy_id),
                 namespace: namespace.clone(),
-                coordinator_machine_id: MachineId(String::from("founder")),
+                coordinator_machine_id: MachineId::new(String::from("founder")),
                 manifest_hash: String::from("manifest"),
                 state: DeployState::Committed,
                 started_at: 1,
@@ -1450,7 +1452,7 @@ mod tests {
             volume_clones: "clones".into(),
         });
         PreparedDeployRecord {
-            prepared_deploy_id: DeployId(prepared_deploy_id.into()),
+            prepared_deploy_id: DeployId::new(prepared_deploy_id),
             namespace: namespace.clone(),
             manifest_hash: "manifest".into(),
             manifest_json: "{}".into(),
@@ -1471,7 +1473,7 @@ mod tests {
                 warnings: Vec::new(),
             },
             baseline,
-            coordinator_machine_id: MachineId("founder".into()),
+            coordinator_machine_id: MachineId::new("founder"),
             state: PreparedDeployState::Prepared,
             created_at: 1,
             expires_at: 100,

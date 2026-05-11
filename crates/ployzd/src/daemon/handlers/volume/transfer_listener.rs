@@ -103,21 +103,21 @@ impl ZfsTransferValidationError {
         {
             match reason {
                 VolumeAuthorizationRejection::OwnedByOtherMachine { owner } => tracing::warn!(
-                    namespace = %namespace.0,
+                    namespace = %namespace.as_str(),
                     volume,
                     source = %source_machine_id,
                     owner = %owner,
                     "zfs transfer rejected: source is not the volume owner",
                 ),
                 VolumeAuthorizationRejection::VolumeNotFound => tracing::warn!(
-                    namespace = %namespace.0,
+                    namespace = %namespace.as_str(),
                     volume,
                     source = %source_machine_id,
                     "zfs transfer rejected: volume not found",
                 ),
                 VolumeAuthorizationRejection::LookupFailed { message } => tracing::warn!(
                     error = %message,
-                    namespace = %namespace.0,
+                    namespace = %namespace.as_str(),
                     volume,
                     "zfs transfer authorization lookup failed",
                 ),
@@ -255,7 +255,7 @@ async fn handle_transfer(
         .map_err(|error| error.to_string())?;
     tracing::info!(
         %remote_addr,
-        source_machine_id = %source.0,
+        source_machine_id = %source.as_str(),
         namespace = %open.namespace,
         volume = %open.volume,
         snapshot = %open.snapshot,
@@ -380,7 +380,7 @@ async fn validate_volume_ownership(
     namespace: &str,
     volume: &str,
 ) -> Result<(), ZfsTransferValidationError> {
-    let namespace = Namespace(namespace.to_string());
+    let namespace = Namespace::new(namespace.to_string());
     match store.get_volume(&namespace, volume).await {
         Ok(Some(record)) if record.machine_id == *source => Ok(()),
         Ok(Some(record)) => Err(ZfsTransferValidationError::VolumeNotAuthorized {
@@ -670,7 +670,7 @@ mod tests {
             volume: "data".into(),
             snapshot: snapshot.into(),
             expected_guid,
-            source_machine_id: Some(MachineId("source".into())),
+            source_machine_id: Some(MachineId::new("source")),
             from_snapshot: None,
             from_snapshot_guid: None,
         }
@@ -848,7 +848,7 @@ mod tests {
 
     fn machine(id: &str, overlay: Ipv6Addr) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(overlay),
             topology: MachineTopology::local(),
@@ -857,8 +857,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
-            storage: true,
-            storage_participation: StorageParticipation::default_authority(),
+            storage_role: StorageParticipation::default_authority().into(),
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -874,13 +873,13 @@ mod tests {
     }
 
     async fn insert_volume(store: &StoreDriver, namespace: &str, volume: &str, owner: &str) {
-        let namespace = Namespace(namespace.to_string());
-        let deploy_id = DeployId(format!("deploy-{volume}"));
+        let namespace = Namespace::new(namespace.to_string());
+        let deploy_id = DeployId::new(format!("deploy-{volume}"));
         let record = VolumeRecord {
             namespace: namespace.clone(),
             volume_name: volume.to_string(),
             scope: VolumeScope::Single,
-            machine_id: MachineId(owner.to_string()),
+            machine_id: MachineId::new(owner.to_string()),
             quota: "1G".into(),
             mode: "rw".into(),
             owner: "0:0".into(),
@@ -893,7 +892,7 @@ mod tests {
         let deploy = DeployRecord {
             deploy_id: deploy_id.clone(),
             namespace: namespace.clone(),
-            coordinator_machine_id: MachineId(owner.to_string()),
+            coordinator_machine_id: MachineId::new(owner.to_string()),
             manifest_hash: "test".into(),
             state: DeployState::Committed,
             started_at: 0,
@@ -924,7 +923,7 @@ mod tests {
         let overlay = "fd00::1".parse::<Ipv6Addr>().unwrap();
         let store = store_with(vec![machine("source", overlay)]).await;
         let remote = SocketAddr::new(IpAddr::V6(overlay), 4319);
-        validate_source_overlay(&store, &MachineId("source".into()), remote)
+        validate_source_overlay(&store, &MachineId::new("source"), remote)
             .await
             .expect("matching ip accepted");
     }
@@ -935,7 +934,7 @@ mod tests {
         let attacker = "fd00::2".parse::<Ipv6Addr>().unwrap();
         let store = store_with(vec![machine("source", claimed)]).await;
         let remote = SocketAddr::new(IpAddr::V6(attacker), 4319);
-        let err = validate_source_overlay(&store, &MachineId("source".into()), remote)
+        let err = validate_source_overlay(&store, &MachineId::new("source"), remote)
             .await
             .expect_err("mismatched ip rejected");
         assert!(matches!(
@@ -949,7 +948,7 @@ mod tests {
         let overlay = "fd00::1".parse::<Ipv6Addr>().unwrap();
         let store = store_with(vec![machine("known", overlay)]).await;
         let remote = SocketAddr::new(IpAddr::V6(overlay), 4319);
-        let err = validate_source_overlay(&store, &MachineId("ghost".into()), remote)
+        let err = validate_source_overlay(&store, &MachineId::new("ghost"), remote)
             .await
             .expect_err("unknown machine rejected");
         assert!(matches!(
@@ -1024,7 +1023,7 @@ mod tests {
     async fn validate_volume_ownership_rejects_unknown_volume() {
         let store = StoreDriver::memory();
         let err =
-            validate_volume_ownership(&store, &MachineId("source".into()), "default", "missing")
+            validate_volume_ownership(&store, &MachineId::new("source"), "default", "missing")
                 .await
                 .expect_err("unknown volume rejected");
         let rendered = err.to_string();

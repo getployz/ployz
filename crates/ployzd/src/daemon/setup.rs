@@ -349,7 +349,7 @@ impl MeshStartAttempt {
                 subnet: self.config.subnet,
                 exposed_tcp_ports: &exposed_tcp_ports,
                 bootstrap: &plan.bootstrap_addrs,
-                network_id: &self.config.id.0,
+                network_id: &self.config.id.as_str(),
                 storage_participation: &self.config.storage_participation,
                 storage_replicas: self.config.storage_replicas,
             })
@@ -787,7 +787,7 @@ impl DaemonState {
                 subnet: net_config.subnet,
                 exposed_tcp_ports: &exposed_tcp_ports,
                 bootstrap: &bootstrap_addrs,
-                network_id: &net_config.id.0,
+                network_id: &net_config.id.as_str(),
                 storage_participation: &net_config.storage_participation,
                 storage_replicas: net_config.storage_replicas,
             })
@@ -798,7 +798,7 @@ impl DaemonState {
             let gateway_config = GatewayConfig::for_network(
                 &self.data_dir,
                 &net_config.name.0,
-                self.identity.machine_id.0.clone(),
+                self.identity.machine_id.as_str().to_string(),
                 self.gateway_listen_addr.clone(),
                 self.gateway_https_listen_addr.clone(),
                 None,
@@ -816,7 +816,7 @@ impl DaemonState {
             let dns_config = DnsConfig::for_network(
                 &self.data_dir,
                 &net_config.name.0,
-                self.identity.machine_id.0.clone(),
+                self.identity.machine_id.as_str().to_string(),
                 net_config.overlay_ip,
                 dns_bridge_listen_addr,
                 self.dns_metrics_listen_addr.clone(),
@@ -954,7 +954,7 @@ impl DaemonState {
             GatewayConfig::for_network(
                 &self.data_dir,
                 &net_config.name.0,
-                self.identity.machine_id.0.clone(),
+                self.identity.machine_id.as_str().to_string(),
                 self.gateway_listen_addr.clone(),
                 self.gateway_https_listen_addr.clone(),
                 None,
@@ -967,7 +967,7 @@ impl DaemonState {
             DnsConfig::for_network(
                 &self.data_dir,
                 &net_config.name.0,
-                self.identity.machine_id.0.clone(),
+                self.identity.machine_id.as_str().to_string(),
                 net_config.overlay_ip,
                 self.dns_bridge_listen_addr(),
                 self.dns_metrics_listen_addr.clone(),
@@ -1139,7 +1139,7 @@ mod tests {
         let data_path = ployz_nats::config::Paths::new(&network_dir).data;
         fs::create_dir_all(&data_path).expect("create store data path");
         let peer = BootstrapPeerRecord {
-            machine_id: MachineId("peer".into()),
+            machine_id: MachineId::new("peer"),
             public_key: PublicKey([8; 32]),
             overlay_ip: OverlayIp("fd00::8".parse().expect("valid overlay")),
             subnet: None,
@@ -1290,7 +1290,7 @@ mod tests {
         gateway_listen_addr: &str,
     ) -> DaemonState {
         let data_dir = unique_temp_dir("ployz-start-mesh");
-        let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [1; 32]);
 
         DaemonState::new(
             &data_dir,
@@ -1314,7 +1314,7 @@ mod tests {
 
     fn make_test_state(gateway_listen_addr: &str) -> DaemonState {
         let data_dir = unique_temp_dir("ployz-start-mesh");
-        let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [1; 32]);
 
         DaemonState::new_for_tests(
             &data_dir,

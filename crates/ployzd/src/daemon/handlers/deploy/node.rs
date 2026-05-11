@@ -24,7 +24,7 @@ impl DaemonState {
         namespace: &str,
         _deploy_id: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = Namespace::new(namespace.to_string());
         let agent = match self.deploy_node_agent().await {
             Ok(agent) => agent,
             Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
@@ -51,8 +51,8 @@ impl DaemonState {
         spec_json: &str,
         volumes_json: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
-        let deploy_id = DeployId(deploy_id.to_string());
+        let namespace = Namespace::new(namespace.to_string());
+        let deploy_id = DeployId::new(deploy_id.to_string());
         let agent = match self.deploy_node_agent().await {
             Ok(agent) => agent,
             Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
@@ -62,8 +62,8 @@ impl DaemonState {
             .start_candidate(
                 &context,
                 service,
-                &SlotId(slot_id.to_string()),
-                &InstanceId(instance_id.to_string()),
+                &SlotId::new(slot_id.to_string()),
+                &InstanceId::new(instance_id.to_string()),
                 &deploy_id,
                 spec_json,
                 volumes_json,
@@ -117,13 +117,13 @@ impl DaemonState {
         instance_id: &str,
         op: DeployNodeOp,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = Namespace::new(namespace.to_string());
         let agent = match self.deploy_node_agent().await {
             Ok(agent) => agent,
             Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
         };
         let context = agent.command_context(namespace);
-        let instance_id = InstanceId(instance_id.to_string());
+        let instance_id = InstanceId::new(instance_id.to_string());
         let result = match op {
             DeployNodeOp::Drain => agent.drain_instance(&context, &instance_id).await,
             DeployNodeOp::Remove => agent.remove_instance(&context, &instance_id).await,
@@ -193,8 +193,8 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             .request(
                 NodeCommandSubject::deploy_inspect_namespace(&machine.id),
                 &ployz_api::DaemonRequest::DeployNodeInspectNamespace {
-                    namespace: namespace.0.clone(),
-                    deploy_id: deploy_id.0.clone(),
+                    namespace: namespace.as_str().to_string(),
+                    deploy_id: deploy_id.as_str().to_string(),
                 },
             )
             .await
@@ -226,11 +226,11 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             .request(
                 NodeCommandSubject::deploy_start_candidate(machine_id),
                 &ployz_api::DaemonRequest::DeployNodeStartCandidate {
-                    namespace: namespace.0.clone(),
-                    deploy_id: deploy_id.0.clone(),
+                    namespace: namespace.as_str().to_string(),
+                    deploy_id: deploy_id.as_str().to_string(),
                     service: request.service,
-                    slot_id: request.slot_id.0,
-                    instance_id: request.instance_id.0,
+                    slot_id: request.slot_id.as_str().to_string(),
+                    instance_id: request.instance_id.as_str().to_string(),
                     spec_json: request.spec_json,
                     volumes_json: request.volumes_json,
                 },
@@ -288,10 +288,10 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             .request(
                 NodeCommandSubject::deploy_clone_volume(machine_id),
                 &ployz_api::DaemonRequest::DeployNodeCloneVolume {
-                    namespace: namespace.0.clone(),
-                    deploy_id: deploy_id.0.clone(),
+                    namespace: namespace.as_str().to_string(),
+                    deploy_id: deploy_id.as_str().to_string(),
                     volume: request.volume,
-                    source_namespace: request.source_namespace.0,
+                    source_namespace: request.source_namespace.as_str().to_string(),
                     source_volume: request.source_volume,
                     snapshot: request.snapshot,
                     quota: request.quota,
@@ -336,10 +336,10 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             .request(
                 NodeCommandSubject::deploy_clone_volume(machine_id),
                 &ployz_api::DaemonRequest::DeployNodeCleanupUncommittedVolumeClone {
-                    namespace: namespace.0.clone(),
-                    deploy_id: deploy_id.0.clone(),
+                    namespace: namespace.as_str().to_string(),
+                    deploy_id: deploy_id.as_str().to_string(),
                     volume: request.volume,
-                    source_namespace: request.source_namespace.0,
+                    source_namespace: request.source_namespace.as_str().to_string(),
                     source_volume: request.source_volume,
                     snapshot: request.snapshot,
                 },
@@ -366,9 +366,9 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         self.expect_ok(
             NodeCommandSubject::deploy_drain_instance(machine_id),
             ployz_api::DaemonRequest::DeployNodeDrainInstance {
-                namespace: namespace.0.clone(),
-                deploy_id: deploy_id.0.clone(),
-                instance_id: instance_id.0.clone(),
+                namespace: namespace.as_str().to_string(),
+                deploy_id: deploy_id.as_str().to_string(),
+                instance_id: instance_id.as_str().to_string(),
             },
             "deploy_node_drain",
         )
@@ -385,9 +385,9 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         self.expect_ok(
             NodeCommandSubject::deploy_remove_instance(machine_id),
             ployz_api::DaemonRequest::DeployNodeRemoveInstance {
-                namespace: namespace.0.clone(),
-                deploy_id: deploy_id.0.clone(),
-                instance_id: instance_id.0.clone(),
+                namespace: namespace.as_str().to_string(),
+                deploy_id: deploy_id.as_str().to_string(),
+                instance_id: instance_id.as_str().to_string(),
             },
             "deploy_node_remove",
         )

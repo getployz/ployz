@@ -52,7 +52,7 @@ pub struct RuntimeStatePayload {
 
 #[must_use]
 pub fn machine_runtime_key(record: &MachineMembership) -> String {
-    record.id.0.clone()
+    record.id.as_str().to_string()
 }
 
 #[must_use]
@@ -70,7 +70,7 @@ pub fn release_runtime_key(record: &ServiceReleaseRecord) -> String {
 
 #[must_use]
 pub fn instance_runtime_key(record: &InstanceStatusRecord) -> String {
-    record.instance_id.0.clone()
+    record.instance_id.as_str().to_string()
 }
 
 pub fn sort_routing_state(state: &mut RoutingState) {
@@ -89,7 +89,7 @@ pub fn runtime_frame_from_event(event: RoutingEvent) -> RuntimeWatchFrame {
             record: RuntimeRecord::Machine(record),
         },
         RoutingEvent::MachineRemoved { id } => RuntimeWatchFrame::Remove {
-            key: id.0,
+            key: id.into_string(),
             collection: RuntimeCollection::Machine,
         },
         RoutingEvent::RevisionUpsert(record) => RuntimeWatchFrame::Upsert {
@@ -120,7 +120,7 @@ pub fn runtime_frame_from_event(event: RoutingEvent) -> RuntimeWatchFrame {
             record: RuntimeRecord::Instance(record),
         },
         RoutingEvent::InstanceRemoved { instance_id } => RuntimeWatchFrame::Remove {
-            key: instance_id.0,
+            key: instance_id.into_string(),
             collection: RuntimeCollection::Instance,
         },
     }
@@ -525,7 +525,7 @@ mod tests {
                     started_at: 10,
                     updated_at: 20,
                     last_error: Some(String::from("daemon restarted before operation completed")),
-                    machine_id: Some(MachineId("machine-a".into())),
+                    machine_id: Some(MachineId::new("machine-a")),
                     invite_id: Some(String::from("invite-1")),
                     allocated_subnet: Some(String::from("10.210.1.0/24")),
                 },
@@ -682,7 +682,7 @@ mod tests {
 
     fn machine_record(id: &str) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             public_key: PublicKey([7; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
@@ -691,8 +691,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
             lifecycle: MachineLifecycle::Active,
-            storage: true,
-            storage_participation: StorageParticipation::default_authority(),
+            storage_role: StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 2,
             labels: BTreeMap::new(),
@@ -705,18 +704,18 @@ mod tests {
         revision_hash: &str,
     ) -> ServiceRevisionRecord {
         ServiceRevisionRecord {
-            namespace: Namespace(namespace.into()),
+            namespace: Namespace::new(namespace),
             service: service.into(),
             revision_hash: revision_hash.into(),
             spec_json: String::from("{}"),
-            created_by: MachineId(String::from("machine-1")),
+            created_by: MachineId::new(String::from("machine-1")),
             created_at: 1,
         }
     }
 
     fn release_record(namespace: &str, service: &str) -> ServiceReleaseRecord {
         ServiceReleaseRecord {
-            namespace: Namespace(namespace.into()),
+            namespace: Namespace::new(namespace),
             service: service.into(),
             release: ServiceRelease {
                 primary_revision_hash: String::from("rev-1"),
@@ -725,12 +724,12 @@ mod tests {
                     revision_hash: String::from("rev-1"),
                 },
                 slots: vec![ServiceReleaseSlot {
-                    slot_id: SlotId(String::from("slot-1")),
-                    machine_id: MachineId(String::from("machine-1")),
-                    active_instance_id: InstanceId(String::from("instance-1")),
+                    slot_id: SlotId::new(String::from("slot-1")),
+                    machine_id: MachineId::new(String::from("machine-1")),
+                    active_instance_id: InstanceId::new(String::from("instance-1")),
                     revision_hash: String::from("rev-1"),
                 }],
-                updated_by_deploy_id: DeployId(String::from("deploy-1")),
+                updated_by_deploy_id: DeployId::new(String::from("deploy-1")),
                 updated_at: 1,
             },
         }
@@ -740,13 +739,13 @@ mod tests {
         let mut backend_ports = BTreeMap::new();
         backend_ports.insert(String::from("http"), 8080);
         InstanceStatusRecord {
-            instance_id: InstanceId(id.into()),
-            namespace: Namespace(namespace.into()),
+            instance_id: InstanceId::new(id),
+            namespace: Namespace::new(namespace),
             service: service.into(),
-            slot_id: SlotId(String::from("slot-1")),
-            machine_id: MachineId(String::from("machine-1")),
+            slot_id: SlotId::new(String::from("slot-1")),
+            machine_id: MachineId::new(String::from("machine-1")),
             revision_hash: String::from("rev-1"),
-            deploy_id: DeployId(String::from("deploy-1")),
+            deploy_id: DeployId::new(String::from("deploy-1")),
             docker_container_id: String::from("container-1"),
             overlay_ip: Some(Ipv4Addr::new(10, 0, 0, 2)),
             backend_ports,

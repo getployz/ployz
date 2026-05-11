@@ -43,7 +43,7 @@ impl SubnetReservationCoordinator for NatsSubnetCoordinator {
         let expires_at = now_unix_secs().saturating_add(ttl.as_secs());
         match self
             .locks
-            .acquire(&key, owner.0.clone(), nonce, ttl, expires_at)
+            .acquire(&key, owner.as_str().to_string(), nonce, ttl, expires_at)
             .await
         {
             Ok(lease) => Ok(SubnetClaim::new(Box::new(NatsSubnetClaimRelease {

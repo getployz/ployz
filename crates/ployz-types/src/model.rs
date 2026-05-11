@@ -6,20 +6,212 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::num::NonZeroU16;
 use strum::EnumString;
 
 use crate::spec::{
     Namespace, VolumeCloneConsistency, VolumeCloneDataPolicy, VolumeScope, stable_hash_hex,
 };
 
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, JsonSchema,
-)]
-pub struct MachineId(pub String);
+macro_rules! validated_string_id {
+    ($(#[$meta:meta])* pub struct $name:ident($label:literal);) => {
+        $(#[$meta])*
+        #[derive(
+            Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+        )]
+        #[serde(try_from = "String", into = "String")]
+        pub struct $name(String);
 
-impl AsRef<str> for MachineId {
-    fn as_ref(&self) -> &str {
+        impl $name {
+            #[must_use]
+            pub fn new(value: impl Into<String>) -> Self {
+                Self::try_new(value).expect(concat!("valid ", $label))
+            }
+
+            pub fn try_new(value: impl Into<String>) -> std::result::Result<Self, String> {
+                let value = value.into();
+                validate_non_empty_identifier(&value, $label)?;
+                Ok(Self(value))
+            }
+
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+
+            #[must_use]
+            pub fn into_string(self) -> String {
+                self.0
+            }
+        }
+
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str {
+                self.as_str()
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+
+        impl From<$name> for String {
+            fn from(value: $name) -> Self {
+                value.into_string()
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = String;
+
+            fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+                Self::try_new(value)
+            }
+        }
+
+        impl TryFrom<&str> for $name {
+            type Error = String;
+
+            fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
+                Self::try_new(value)
+            }
+        }
+    };
+}
+
+fn validate_non_empty_identifier(value: &str, label: &str) -> std::result::Result<(), String> {
+    if value.is_empty() {
+        return Err(format!("{label} cannot be empty"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!("{label} cannot contain control characters"));
+    }
+    if value.chars().any(char::is_whitespace) {
+        return Err(format!("{label} cannot contain whitespace"));
+    }
+    Ok(())
+}
+
+validated_string_id!(pub struct MachineId("machine id"););
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(try_from = "u16", into = "u16")]
+pub struct NonZeroReplicaCount(NonZeroU16);
+
+impl NonZeroReplicaCount {
+    pub fn try_new(value: u16) -> std::result::Result<Self, String> {
+        NonZeroU16::new(value)
+            .map(Self)
+            .ok_or_else(|| "replica count must be non-zero".to_string())
+    }
+
+    #[must_use]
+    pub fn get(self) -> u16 {
+        self.0.get()
+    }
+}
+
+impl TryFrom<u16> for NonZeroReplicaCount {
+    type Error = String;
+
+    fn try_from(value: u16) -> std::result::Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<NonZeroReplicaCount> for u16 {
+    fn from(value: NonZeroReplicaCount) -> Self {
+        value.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "f64", into = "f64")]
+pub struct PositiveScalar(f64);
+
+impl PositiveScalar {
+    pub fn try_new(value: f64) -> std::result::Result<Self, String> {
+        if !value.is_finite() || value <= 0.0 {
+            return Err("positive scalar must be finite and greater than zero".to_string());
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for PositiveScalar {
+    type Error = String;
+
+    fn try_from(value: f64) -> std::result::Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<PositiveScalar> for f64 {
+    fn from(value: PositiveScalar) -> Self {
+        value.get()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[schemars(with = "String")]
+#[serde(try_from = "String")]
+pub struct RedactedSecretString(String);
+
+impl RedactedSecretString {
+    const REDACTED: &'static str = "<redacted>";
+
+    pub fn try_new(value: impl Into<String>) -> std::result::Result<Self, String> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err("secret cannot be empty".to_string());
+        }
+        if value.chars().any(char::is_control) {
+            return Err("secret cannot contain control characters".to_string());
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn expose_secret(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for RedactedSecretString {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl fmt::Debug for RedactedSecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(Self::REDACTED)
+    }
+}
+
+impl fmt::Display for RedactedSecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(Self::REDACTED)
+    }
+}
+
+impl Serialize for RedactedSecretString {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(Self::REDACTED)
     }
 }
 
@@ -314,14 +506,7 @@ impl AsRef<str> for NetworkName {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
-pub struct NetworkId(pub String);
-
-impl AsRef<str> for NetworkId {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
+validated_string_id!(pub struct NetworkId("network id"););
 
 impl NetworkId {
     #[must_use]
@@ -332,53 +517,25 @@ impl NetworkId {
         for b in &bytes {
             let _ = write!(&mut value, "{b:02x}");
         }
-        Self(value)
+        Self::new(value)
     }
 }
 
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, JsonSchema,
-)]
-pub struct InstallationId(pub String);
+validated_string_id!(pub struct InstallationId("installation id"););
 
 impl InstallationId {
     #[must_use]
     pub fn local() -> Self {
-        Self("local".into())
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
+        Self::new("local")
     }
 }
 
-impl AsRef<str> for InstallationId {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, JsonSchema,
-)]
-pub struct AuthorityId(pub String);
+validated_string_id!(pub struct AuthorityId("authority id"););
 
 impl AuthorityId {
     #[must_use]
     pub fn default_authority() -> Self {
-        Self("auth-default".into())
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl AsRef<str> for AuthorityId {
-    fn as_ref(&self) -> &str {
-        self.as_str()
+        Self::new("auth-default")
     }
 }
 
@@ -472,6 +629,55 @@ impl StorageParticipation {
         match self {
             Self::Candidate => None,
             Self::Authority { authority_id } => Some(authority_id),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MachineStorageRole {
+    Compute,
+    Candidate,
+    Authority { authority_id: AuthorityId },
+}
+
+impl MachineStorageRole {
+    #[must_use]
+    pub fn default_authority() -> Self {
+        Self::Authority {
+            authority_id: AuthorityId::default_authority(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_storage_capable(&self) -> bool {
+        !matches!(self, Self::Compute)
+    }
+
+    #[must_use]
+    pub fn authority_id(&self) -> Option<&AuthorityId> {
+        match self {
+            Self::Authority { authority_id } => Some(authority_id),
+            Self::Compute | Self::Candidate => None,
+        }
+    }
+
+    #[must_use]
+    pub fn storage_participation(&self) -> StorageParticipation {
+        match self {
+            Self::Compute | Self::Candidate => StorageParticipation::Candidate,
+            Self::Authority { authority_id } => StorageParticipation::Authority {
+                authority_id: authority_id.clone(),
+            },
+        }
+    }
+}
+
+impl From<StorageParticipation> for MachineStorageRole {
+    fn from(value: StorageParticipation) -> Self {
+        match value {
+            StorageParticipation::Candidate => Self::Candidate,
+            StorageParticipation::Authority { authority_id } => Self::Authority { authority_id },
         }
     }
 }
@@ -582,7 +788,25 @@ impl AuthorityNodePosture {
 
     #[must_use]
     pub fn from_machine_membership(machine: &MachineMembership) -> Self {
-        Self::from_storage_participation(machine.storage, &machine.storage_participation)
+        match &machine.storage_role {
+            MachineStorageRole::Authority { authority_id } => Self {
+                role: AuthorityNodeRole::AuthorityStorage {
+                    authority_id: authority_id.clone(),
+                },
+                data_bucket: ControlPlaneDataBucket::StoredIntent,
+                loss_impact: ControlPlaneLossImpact::StoredTruthLost,
+            },
+            MachineStorageRole::Candidate => Self {
+                role: AuthorityNodeRole::StorageCandidate,
+                data_bucket: ControlPlaneDataBucket::StoredIntent,
+                loss_impact: ControlPlaneLossImpact::NoStoredTruthLost,
+            },
+            MachineStorageRole::Compute => Self {
+                role: AuthorityNodeRole::Compute,
+                data_bucket: ControlPlaneDataBucket::LiveFacts,
+                loss_impact: ControlPlaneLossImpact::NoStoredTruthLost,
+            },
+        }
     }
 }
 
@@ -926,8 +1150,7 @@ pub struct MachineMembership {
     pub endpoints: Vec<String>,
     #[serde(default)]
     pub lifecycle: MachineLifecycle,
-    pub storage: bool,
-    pub storage_participation: StorageParticipation,
+    pub storage_role: MachineStorageRole,
     pub created_at: u64,
     pub updated_at: u64,
     pub labels: BTreeMap<String, String>,
@@ -956,8 +1179,7 @@ impl MachineMembership {
             bridge_ip: None,
             endpoints,
             lifecycle: MachineLifecycle::Standby,
-            storage: true,
-            storage_participation: StorageParticipation::Candidate,
+            storage_role: MachineStorageRole::Candidate,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -975,6 +1197,16 @@ impl MachineMembership {
             cidrs.push(format!("{}/128", bridge_ip.0));
         }
         cidrs
+    }
+
+    #[must_use]
+    pub fn storage(&self) -> bool {
+        self.storage_role.is_storage_capable()
+    }
+
+    #[must_use]
+    pub fn storage_participation(&self) -> StorageParticipation {
+        self.storage_role.storage_participation()
     }
 
     #[must_use]
@@ -1236,8 +1468,7 @@ pub enum AcmeChallengeEvent {
     Removed { hostname: String, token: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
-pub struct SidecarId(pub String);
+validated_string_id!(pub struct SidecarId("sidecar id"););
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SidecarRecord {
@@ -1248,14 +1479,11 @@ pub struct SidecarRecord {
     pub sidecar_container: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display, JsonSchema)]
-pub struct InstanceId(pub String);
+validated_string_id!(pub struct InstanceId("instance id"););
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display, JsonSchema)]
-pub struct DeployId(pub String);
+validated_string_id!(pub struct DeployId("deploy id"););
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display, JsonSchema)]
-pub struct SlotId(pub String);
+validated_string_id!(pub struct SlotId("slot id"););
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceRevisionRecord {
@@ -2180,11 +2408,7 @@ pub enum DeployChangeKind {
     Unchanged,
 }
 
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, JsonSchema,
-)]
-#[display("{_0}")]
-pub struct DeployPhaseId(pub String);
+validated_string_id!(pub struct DeployPhaseId("deploy phase id"););
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -2828,6 +3052,47 @@ mod tests {
     use std::str::FromStr;
 
     #[test]
+    fn validated_string_ids_reject_empty_and_control_characters() {
+        assert!(MachineId::try_new("machine-a").is_ok());
+        assert!(MachineId::try_new("").is_err());
+        assert!(DeployId::try_new("deploy\n1").is_err());
+    }
+
+    #[test]
+    fn non_zero_replica_count_rejects_zero() {
+        let count = NonZeroReplicaCount::try_new(3).expect("valid replica count");
+
+        assert_eq!(count.get(), 3);
+        assert!(NonZeroReplicaCount::try_new(0).is_err());
+        assert!(serde_json::from_str::<NonZeroReplicaCount>("0").is_err());
+        assert_eq!(serde_json::to_string(&count).expect("json"), "3");
+    }
+
+    #[test]
+    fn positive_scalar_rejects_zero_negative_and_non_finite_values() {
+        let scalar = PositiveScalar::try_new(1.25).expect("valid positive scalar");
+
+        assert_eq!(scalar.get(), 1.25);
+        assert!(PositiveScalar::try_new(0.0).is_err());
+        assert!(PositiveScalar::try_new(-1.0).is_err());
+        assert!(PositiveScalar::try_new(f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn redacted_secret_string_never_displays_raw_value() {
+        let secret = RedactedSecretString::try_new("super-secret").expect("valid secret");
+
+        assert_eq!(secret.expose_secret(), "super-secret");
+        assert_eq!(format!("{secret}"), "<redacted>");
+        assert_eq!(format!("{secret:?}"), "<redacted>");
+        assert_eq!(
+            serde_json::to_string(&secret).expect("json"),
+            r#""<redacted>""#
+        );
+        assert!(RedactedSecretString::try_new("").is_err());
+    }
+
+    #[test]
     fn image_digest_requires_algorithm_and_hex_hash() {
         assert!(ImageDigest::try_new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").is_ok());
         assert!(ImageDigest::try_new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").is_err());
@@ -2913,10 +3178,10 @@ mod tests {
     #[test]
     fn deploy_preview_serializes_volume_clone_preflight_contract() {
         let preview = DeployPreview {
-            namespace: Namespace("pr-39".into()),
+            namespace: Namespace::new("pr-39"),
             manifest_hash: "manifest".into(),
             baseline: None,
-            participants: vec![MachineId("machine-a".into())],
+            participants: vec![MachineId::new("machine-a")],
             phases: Vec::new(),
             services: Vec::new(),
             service_sources: Vec::new(),
@@ -2925,7 +3190,7 @@ mod tests {
             volume_moves: Vec::new(),
             volume_clones: Vec::new(),
             volume_clone_preflights: vec![VolumeClonePreflightPlan {
-                phase_id: DeployPhaseId("data".into()),
+                phase_id: DeployPhaseId::new("data"),
                 volumes: vec!["data".into(), "cache".into()],
                 action: VolumeClonePreflightAction::DrainAndRemoveBeforeCloneReplacement,
                 scope: VolumeClonePreflightScope::UncommittedNamespaceInstances,
@@ -2988,10 +3253,10 @@ mod tests {
         let digest =
             ImageDigest::try_new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("valid digest");
         let preview = DeployPreview {
-            namespace: Namespace("default".into()),
+            namespace: Namespace::new("default"),
             manifest_hash: "manifest".into(),
             baseline: None,
-            participants: vec![MachineId("machine-a".into())],
+            participants: vec![MachineId::new("machine-a")],
             phases: Vec::new(),
             services: Vec::new(),
             service_sources: Vec::new(),
@@ -3002,8 +3267,8 @@ mod tests {
             volume_clone_preflights: Vec::new(),
             image_availability: vec![DeployImageAvailabilityPlan {
                 service: "web".into(),
-                slot_id: SlotId("web-0".into()),
-                machine_id: MachineId("machine-a".into()),
+                slot_id: SlotId::new("web-0"),
+                machine_id: MachineId::new("machine-a"),
                 image: digest.as_str().into(),
                 digest: digest.clone(),
                 status: DeployImageAvailabilityStatus::Present,
@@ -3043,7 +3308,7 @@ mod tests {
             ..baseline.components.clone()
         });
         let preview = DeployPreview {
-            namespace: Namespace("pr-39".into()),
+            namespace: Namespace::new("pr-39"),
             manifest_hash: "manifest".into(),
             baseline: Some(baseline.clone()),
             participants: Vec::new(),
@@ -3145,7 +3410,7 @@ mod tests {
             volume_clones: "clones".into(),
         });
         let preview = DeployPreview {
-            namespace: Namespace("prod".into()),
+            namespace: Namespace::new("prod"),
             manifest_hash: "manifest".into(),
             baseline: Some(baseline.clone()),
             participants: Vec::new(),
@@ -3161,13 +3426,13 @@ mod tests {
             warnings: Vec::new(),
         };
         let record = PreparedDeployRecord {
-            prepared_deploy_id: DeployId("prepare-1".into()),
-            namespace: Namespace("prod".into()),
+            prepared_deploy_id: DeployId::new("prepare-1"),
+            namespace: Namespace::new("prod"),
             manifest_hash: "manifest".into(),
             manifest_json: r#"{"namespace":"prod","services":[]}"#.into(),
             preview,
             baseline,
-            coordinator_machine_id: MachineId("machine-a".into()),
+            coordinator_machine_id: MachineId::new("machine-a"),
             state: PreparedDeployState::Prepared,
             created_at: 10,
             expires_at: 20,
@@ -3194,7 +3459,7 @@ mod tests {
             ServiceSourcePlan {
                 service: "web".into(),
                 mode: ServiceSourceMode::Branch {
-                    source_namespace: Namespace("prod".into()),
+                    source_namespace: Namespace::new("prod"),
                     source_service: "web".into(),
                     source_revision_hash: "source-rev".into(),
                 },
@@ -3202,7 +3467,7 @@ mod tests {
         ];
         let fingerprint = service_source_fingerprint(&service_sources);
         let preview = DeployPreview {
-            namespace: Namespace("pr-39".into()),
+            namespace: Namespace::new("pr-39"),
             manifest_hash: "manifest".into(),
             baseline: None,
             participants: Vec::new(),
@@ -3251,7 +3516,7 @@ mod tests {
         let branch = ServiceSourcePlan {
             service: "web".into(),
             mode: ServiceSourceMode::Branch {
-                source_namespace: Namespace("prod".into()),
+                source_namespace: Namespace::new("prod"),
                 source_service: "web".into(),
                 source_revision_hash: "rev-1".into(),
             },
@@ -3269,7 +3534,7 @@ mod tests {
         let branch_with_other_namespace = ServiceSourcePlan {
             service: "web".into(),
             mode: ServiceSourceMode::Branch {
-                source_namespace: Namespace("staging".into()),
+                source_namespace: Namespace::new("staging"),
                 source_service: "web".into(),
                 source_revision_hash: "rev-1".into(),
             },
@@ -3282,7 +3547,7 @@ mod tests {
         let branch_with_other_service = ServiceSourcePlan {
             service: "web".into(),
             mode: ServiceSourceMode::Branch {
-                source_namespace: Namespace("prod".into()),
+                source_namespace: Namespace::new("prod"),
                 source_service: "api".into(),
                 source_revision_hash: "rev-1".into(),
             },
@@ -3295,7 +3560,7 @@ mod tests {
         let branch_with_other_revision = ServiceSourcePlan {
             service: "web".into(),
             mode: ServiceSourceMode::Branch {
-                source_namespace: Namespace("prod".into()),
+                source_namespace: Namespace::new("prod"),
                 source_service: "web".into(),
                 source_revision_hash: "rev-2".into(),
             },
@@ -3328,7 +3593,7 @@ mod tests {
             provenance: ImageArtifactProvenance::Build {
                 method: BuildMethod::Railpack,
                 location: BuildLocation::Machine {
-                    machine_id: MachineId("builder-a".into()),
+                    machine_id: MachineId::new("builder-a"),
                 },
                 source_digest: Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()),
             },
@@ -3347,7 +3612,7 @@ mod tests {
             ImageArtifactProvenance::Build {
                 method: BuildMethod::Railpack,
                 location: BuildLocation::Machine {
-                    machine_id: MachineId("builder-a".into()),
+                    machine_id: MachineId::new("builder-a"),
                 },
                 source_digest: Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()),
             }
@@ -3358,7 +3623,7 @@ mod tests {
     fn image_availability_record_carries_machine_scoped_presence() {
         let digest = ImageDigest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into());
         let record = ImageAvailabilityRecord {
-            machine_id: MachineId("machine-a".into()),
+            machine_id: MachineId::new("machine-a"),
             digest: digest.clone(),
             presence: ImagePresence::Failed {
                 reason: "transfer interrupted".into(),
@@ -3369,7 +3634,7 @@ mod tests {
         };
 
         assert_eq!(record.digest, digest);
-        assert_eq!(record.machine_id, MachineId("machine-a".into()));
+        assert_eq!(record.machine_id, MachineId::new("machine-a"));
     }
 
     #[test]
@@ -3673,7 +3938,7 @@ mod tests {
                     summary_json: "{}".into(),
                 },
                 evidence: DeployTransitionEvidence::DeployExecutor {
-                    coordinator_machine_id: MachineId("m1".into()),
+                    coordinator_machine_id: MachineId::new("m1"),
                 },
                 at_unix_secs: 42,
             })
@@ -3699,7 +3964,7 @@ mod tests {
                     summary_json: r#"{"started":2}"#.into(),
                 },
                 evidence: DeployTransitionEvidence::DeployExecutor {
-                    coordinator_machine_id: MachineId("m1".into()),
+                    coordinator_machine_id: MachineId::new("m1"),
                 },
                 at_unix_secs: 99,
             })
@@ -3723,7 +3988,7 @@ mod tests {
             .apply_state_transition(DeployStateTransition {
                 goal: DeployStateGoal::MarkCleanupPending,
                 evidence: DeployTransitionEvidence::DeployExecutor {
-                    coordinator_machine_id: MachineId("m1".into()),
+                    coordinator_machine_id: MachineId::new("m1"),
                 },
                 at_unix_secs: 99,
             })
@@ -3744,7 +4009,7 @@ mod tests {
             .apply_state_transition(DeployStateTransition {
                 goal: DeployStateGoal::MarkCleanupPending,
                 evidence: DeployTransitionEvidence::DeployExecutor {
-                    coordinator_machine_id: MachineId("m1".into()),
+                    coordinator_machine_id: MachineId::new("m1"),
                 },
                 at_unix_secs: 42,
             })
@@ -3863,7 +4128,7 @@ mod tests {
             .apply_status_transition(InstanceStatusTransition {
                 goal: InstanceStatusGoal::MarkDraining,
                 evidence: InstanceStatusEvidence::DeployCleanup {
-                    deploy_id: DeployId("deploy-1".into()),
+                    deploy_id: DeployId::new("deploy-1"),
                 },
                 at_unix_secs: 42,
             })
@@ -3890,7 +4155,7 @@ mod tests {
             .apply_status_transition(InstanceStatusTransition {
                 goal: InstanceStatusGoal::MarkDraining,
                 evidence: InstanceStatusEvidence::DeployCleanup {
-                    deploy_id: DeployId("deploy-1".into()),
+                    deploy_id: DeployId::new("deploy-1"),
                 },
                 at_unix_secs: 99,
             })
@@ -3914,7 +4179,7 @@ mod tests {
                     error: "image pull failed".into(),
                 },
                 evidence: InstanceStatusEvidence::RuntimeStart {
-                    deploy_id: DeployId("deploy-1".into()),
+                    deploy_id: DeployId::new("deploy-1"),
                 },
                 at_unix_secs: 42,
             })
@@ -3931,7 +4196,7 @@ mod tests {
                     error: "image pull failed".into(),
                 },
                 evidence: InstanceStatusEvidence::RuntimeStart {
-                    deploy_id: DeployId("deploy-1".into()),
+                    deploy_id: DeployId::new("deploy-1"),
                 },
                 at_unix_secs: 99,
             })
@@ -3947,7 +4212,7 @@ mod tests {
                     error: "health check failed".into(),
                 },
                 evidence: InstanceStatusEvidence::RuntimeStart {
-                    deploy_id: DeployId("deploy-1".into()),
+                    deploy_id: DeployId::new("deploy-1"),
                 },
                 at_unix_secs: 100,
             })
@@ -3976,7 +4241,7 @@ mod tests {
         };
         let participation = AuthorityParticipationRecord {
             authority: AuthorityId::default_authority(),
-            machine_id: MachineId("node-1".into()),
+            machine_id: MachineId::new("node-1"),
             role: AuthorityParticipationRole::Participant,
             created_at: 1,
             updated_at: 2,
@@ -4164,7 +4429,7 @@ mod tests {
         let mut labels = BTreeMap::new();
         labels.insert("region".into(), "iad".into());
         MachineMembership {
-            id: MachineId("m1".into()),
+            id: MachineId::new("m1"),
             public_key: PublicKey([0x11; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 7)),
             topology: MachineTopology::local(),
@@ -4173,8 +4438,7 @@ mod tests {
             bridge_ip: Some(OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 8))),
             endpoints: vec!["1.2.3.4:51820".into(), "5.6.7.8:51820".into()],
             lifecycle: MachineLifecycle::Active,
-            storage: true,
-            storage_participation: StorageParticipation::default_authority(),
+            storage_role: StorageParticipation::default_authority().into(),
             created_at: 100,
             updated_at: 200,
             labels,
@@ -4183,9 +4447,9 @@ mod tests {
 
     fn deploy_record(state: DeployState) -> DeployRecord {
         DeployRecord {
-            deploy_id: DeployId("deploy-1".into()),
-            namespace: Namespace("default".into()),
-            coordinator_machine_id: MachineId("m1".into()),
+            deploy_id: DeployId::new("deploy-1"),
+            namespace: Namespace::new("default"),
+            coordinator_machine_id: MachineId::new("m1"),
             manifest_hash: "hash".into(),
             state,
             started_at: 1,
@@ -4197,13 +4461,13 @@ mod tests {
 
     fn instance_record() -> InstanceStatusRecord {
         InstanceStatusRecord {
-            instance_id: InstanceId("instance-1".into()),
-            namespace: Namespace("default".into()),
+            instance_id: InstanceId::new("instance-1"),
+            namespace: Namespace::new("default"),
             service: "api".into(),
-            slot_id: SlotId("slot-1".into()),
-            machine_id: MachineId("m1".into()),
+            slot_id: SlotId::new("slot-1"),
+            machine_id: MachineId::new("m1"),
             revision_hash: "rev1".into(),
-            deploy_id: DeployId("deploy-1".into()),
+            deploy_id: DeployId::new("deploy-1"),
             docker_container_id: "container-1".into(),
             overlay_ip: None,
             backend_ports: BTreeMap::new(),
@@ -4293,7 +4557,7 @@ mod tests {
     #[test]
     fn machine_observation_seed_omits_bridge_ip() {
         let observation = MachineObservation::seed(
-            MachineId("m9".into()),
+            MachineId::new("m9"),
             PublicKey([0x22; 32]),
             OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 9)),
             None,

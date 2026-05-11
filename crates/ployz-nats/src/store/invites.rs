@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn validate_redeemable_returns_structured_lifecycle_errors() {
-        let machine = MachineId("machine-a".into());
+        let machine = MachineId::new("machine-a");
 
         let mut revoked = test_invite("revoked");
         revoked.revoked_at = Some(1);
@@ -303,7 +303,7 @@ mod tests {
         );
 
         let mut consumed = test_invite("consumed");
-        consumed.consumed_by = Some(MachineId("machine-b".into()));
+        consumed.consumed_by = Some(MachineId::new("machine-b"));
         assert_eq!(
             validate_redeemable("consumed", &consumed, &machine, 2),
             Err(Error::InviteConsumed {
@@ -315,8 +315,8 @@ mod tests {
     fn test_invite(id: &str) -> InviteRecord {
         InviteRecord {
             invite_id: id.into(),
-            network_id: NetworkId("net-a".into()),
-            issuer_machine_id: MachineId("issuer".into()),
+            network_id: NetworkId::new("net-a"),
+            issuer_machine_id: MachineId::new("issuer"),
             issuer_verify_key: "verify".into(),
             expires_at: 100,
             consumed_by: None,
