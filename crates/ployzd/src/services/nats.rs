@@ -21,12 +21,12 @@ use ployz_store_api::{
 use ployz_types::Result;
 use ployz_types::error::Error;
 use ployz_types::model::{
-    AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
-    DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord, ImageAvailabilityRecord, ImageDigest,
-    InstanceId, InstanceStatusRecord, InviteRecord, MachineId, MachineMembership, OverlayIp,
-    PreparedDeployRecord, RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord,
-    ServiceRevisionRecord, StorageParticipation, StorageReplicaPolicy, VolumeBranchLineageRecord,
-    VolumeMovementRecord, VolumeRecord,
+    AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, BranchEnvironmentFailure,
+    BranchEnvironmentRecord, CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord,
+    DeployRecord, ImageAvailabilityRecord, ImageDigest, InstanceId, InstanceStatusRecord,
+    InviteRecord, MachineId, MachineMembership, OverlayIp, PreparedDeployRecord, RoutingState,
+    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord, StorageParticipation,
+    StorageReplicaPolicy, VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -530,6 +530,55 @@ where
         DeployStore::supersede_prepared_deploy(
             self.store().await?.as_ref(),
             prepared_deploy_id,
+            updated_at,
+        )
+        .await
+    }
+
+    async fn upsert_branch_environment(&self, record: &BranchEnvironmentRecord) -> Result<()> {
+        DeployStore::upsert_branch_environment(self.store().await?.as_ref(), record).await
+    }
+
+    async fn get_branch_environment(
+        &self,
+        target_namespace: &Namespace,
+    ) -> Result<Option<BranchEnvironmentRecord>> {
+        DeployStore::get_branch_environment(self.store().await?.as_ref(), target_namespace).await
+    }
+
+    async fn list_branch_environments(&self) -> Result<Vec<BranchEnvironmentRecord>> {
+        DeployStore::list_branch_environments(self.store().await?.as_ref()).await
+    }
+
+    async fn mark_branch_environment_active(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        applied_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<BranchEnvironmentRecord> {
+        DeployStore::mark_branch_environment_active(
+            self.store().await?.as_ref(),
+            target_namespace,
+            prepared_deploy_id,
+            applied_deploy_id,
+            updated_at,
+        )
+        .await
+    }
+
+    async fn mark_branch_environment_failed(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        failure: &BranchEnvironmentFailure,
+        updated_at: u64,
+    ) -> Result<BranchEnvironmentRecord> {
+        DeployStore::mark_branch_environment_failed(
+            self.store().await?.as_ref(),
+            target_namespace,
+            prepared_deploy_id,
+            failure,
             updated_at,
         )
         .await

@@ -1,12 +1,13 @@
 use crate::{CliError, Result};
 use ployz_api::{
-    BuildResultPayload, DaemonPayload, DaemonRequest, DaemonResponse, DoctorPayload, DoctorPeer,
-    MachineInviteListPayload, MachineListPayload, MachineOperationInfo,
-    MachineOperationListPayload, MachineOperationPayload, MachineRttPayload,
-    MachineStoragePromotionPayload, MeshListPayload, MeshReadyPayload, MeshSelfRecordPayload,
-    MeshStatusPayload, StatusPayload,
+    BranchEnvironmentListPayload, BranchEnvironmentPayload, BuildResultPayload, DaemonPayload,
+    DaemonRequest, DaemonResponse, DoctorPayload, DoctorPeer, MachineInviteListPayload,
+    MachineListPayload, MachineOperationInfo, MachineOperationListPayload, MachineOperationPayload,
+    MachineRttPayload, MachineStoragePromotionPayload, MeshListPayload, MeshReadyPayload,
+    MeshSelfRecordPayload, MeshStatusPayload, StatusPayload,
 };
 use ployz_sdk::{Transport, UnixSocketTransport};
+use ployz_types::model::BranchEnvironmentRecord;
 use std::io::{BufRead, BufReader, Read, Write};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
 use tokio::net::UnixStream;
@@ -196,6 +197,10 @@ fn render_plain_success(response: &DaemonResponse) -> String {
         Some(DaemonPayload::MachineStoragePromotion(payload)) => {
             render_plain_machine_storage_promotion(payload)
         }
+        Some(DaemonPayload::BranchEnvironment(payload)) => render_plain_branch_environment(payload),
+        Some(DaemonPayload::BranchEnvironmentList(payload)) => {
+            render_plain_branch_environment_list(payload)
+        }
         Some(DaemonPayload::BuildResult(payload)) => render_plain_build_result(payload),
         Some(DaemonPayload::ImagePush(payload)) => render_plain_image_push(payload),
         Some(DaemonPayload::ImageDistribute(payload)) => render_plain_image_distribute(payload),
@@ -216,6 +221,42 @@ fn render_plain_error(response: &DaemonResponse) -> String {
         }
         _ => response.message.clone(),
     }
+}
+
+fn render_plain_branch_environment(payload: &BranchEnvironmentPayload) -> String {
+    render_plain_branch_environment_record(&payload.environment)
+}
+
+fn render_plain_branch_environment_list(payload: &BranchEnvironmentListPayload) -> String {
+    if payload.environments.is_empty() {
+        return "no branch environments".into();
+    }
+    payload
+        .environments
+        .iter()
+        .map(render_plain_branch_environment_record)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_plain_branch_environment_record(environment: &BranchEnvironmentRecord) -> String {
+    let mut parts = vec![
+        format!("branch {}", environment.target_namespace),
+        format!("state={}", environment.state),
+        format!("source={}", environment.source_namespace),
+        format!("service_mode={}", environment.default_service_mode),
+        format!("volume_mode={}", environment.default_volume_mode),
+    ];
+    if let Some(prepared_deploy_id) = &environment.prepared_deploy_id {
+        parts.push(format!("prepared={prepared_deploy_id}"));
+    }
+    if let Some(applied_deploy_id) = &environment.applied_deploy_id {
+        parts.push(format!("applied={applied_deploy_id}"));
+    }
+    if let Some(failure) = &environment.failure {
+        parts.push(format!("failure={}:{}", failure.code, failure.message));
+    }
+    parts.join(" ")
 }
 
 fn render_plain_build_result(payload: &BuildResultPayload) -> String {

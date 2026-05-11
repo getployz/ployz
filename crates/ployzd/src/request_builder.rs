@@ -1,6 +1,6 @@
 use crate::cli::{
-    BranchResourceModeArg, BuildAction, BuildOperationAction, VolumeAction, VolumeZfsAction,
-    VolumeZfsTransferAction,
+    BranchResourceModeArg, BranchStatusArgs, BuildAction, BuildOperationAction, VolumeAction,
+    VolumeZfsAction, VolumeZfsTransferAction,
 };
 use crate::cli_io::{read_optional_text_file, read_stdin_string, read_text_source, request_daemon};
 use crate::{
@@ -11,11 +11,11 @@ use crate::{
     Result, RuntimeTargetArg, ServiceModeArg,
 };
 use ployz_api::{
-    BranchNamespaceMode, BranchNamespaceRequest, BranchResourceMode, BranchResourceModeOverride,
-    BuildInputs, BuildLocalRequest, DaemonRequest, DeployApplyPreparedRequest, DeployOptions,
-    ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageStatusRequest,
-    InstallSource as MachineInstallSource, MachineAddOptions, MachineInstallOptions,
-    MachineStoragePromoteRequest, MigrateServiceMode, MigrateServiceRequest,
+    BranchApplyPreparedRequest, BranchEnvironmentStatusRequest, BranchNamespaceMode,
+    BranchNamespaceRequest, BranchResourceMode, BranchResourceModeOverride, BuildInputs,
+    BuildLocalRequest, DaemonRequest, DeployOptions, ImageDistributeRequest, ImageInspectRequest,
+    ImagePushRequest, ImageStatusRequest, InstallSource as MachineInstallSource, MachineAddOptions,
+    MachineInstallOptions, MachineStoragePromoteRequest, MigrateServiceMode, MigrateServiceRequest,
 };
 use ployz_sdk::Transport;
 use ployz_types::model::{DeployId, ImageDigest, ImagePlatform, MachineId, StorageReplicaPolicy};
@@ -301,6 +301,7 @@ pub(crate) fn build_branch_request(action: BranchAction) -> Result<DaemonRequest
             build_branch_namespace_request(args, BranchNamespaceMode::Apply)
         }
         BranchAction::ApplyPrepared(args) => build_branch_apply_prepared_request(args),
+        BranchAction::List => Ok(DaemonRequest::BranchEnvironmentList),
         BranchAction::Prepare(args) => {
             build_branch_namespace_request(args, BranchNamespaceMode::Prepare)
         }
@@ -310,6 +311,7 @@ pub(crate) fn build_branch_request(action: BranchAction) -> Result<DaemonRequest
         BranchAction::RenderManifest(args) => {
             build_branch_namespace_request(args, BranchNamespaceMode::RenderManifest)
         }
+        BranchAction::Status(args) => build_branch_status_request(args),
     }
 }
 
@@ -319,9 +321,22 @@ fn build_branch_apply_prepared_request(args: BranchApplyPreparedArgs) -> Result<
             "branch apply-prepared requires a prepared deploy id".into(),
         ));
     }
-    Ok(DaemonRequest::DeployApplyPrepared {
-        request: DeployApplyPreparedRequest {
+    Ok(DaemonRequest::BranchApplyPrepared {
+        request: BranchApplyPreparedRequest {
             prepared_deploy_id: DeployId(args.prepared_deploy_id),
+        },
+    })
+}
+
+fn build_branch_status_request(args: BranchStatusArgs) -> Result<DaemonRequest> {
+    if !valid_storage_segment(&args.target_namespace) {
+        return Err(CliError::Usage(
+            "branch target namespace must be 1-63 chars of [a-z0-9_-], starting with a letter or digit".into(),
+        ));
+    }
+    Ok(DaemonRequest::BranchEnvironmentStatus {
+        request: BranchEnvironmentStatusRequest {
+            target_namespace: args.target_namespace,
         },
     })
 }
