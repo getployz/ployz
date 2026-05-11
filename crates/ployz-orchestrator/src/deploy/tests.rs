@@ -1969,6 +1969,7 @@ async fn preview_plans_volume_clone_on_source_machine() {
                 source_volume: "data".into(),
                 data_policy: VolumeCloneDataPolicy::Raw,
                 consistency: VolumeCloneConsistency::CrashConsistent,
+                expected_source_record_fingerprint: None,
             },
         }],
         phases: Vec::new(),
@@ -2022,6 +2023,49 @@ async fn preview_plans_volume_clone_on_source_machine() {
 }
 
 #[tokio::test]
+async fn resolve_plan_rejects_volume_clone_source_drift() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    seed_volume(&store, &source_namespace, "data", "machine-b").await;
+    let mut manifest = volume_manifest();
+    manifest.namespace = Namespace("pr-39".into());
+    manifest.intent = Some(DeployIntent {
+        services: Vec::new(),
+        volumes: vec![VolumeIntentHint {
+            volume: "data".into(),
+            intent: VolumeIntent::Clone {
+                source_namespace: source_namespace.clone(),
+                source_volume: "data".into(),
+                data_policy: VolumeCloneDataPolicy::Raw,
+                consistency: VolumeCloneConsistency::CrashConsistent,
+                expected_source_record_fingerprint: Some("older-source-record".into()),
+            },
+        }],
+        phases: Vec::new(),
+    });
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("volume clone source drift should fail");
+
+    assert!(matches!(
+        error,
+        Error::Deploy(DeployError::VolumeCloneSourceChanged {
+            volume,
+            source_namespace,
+            source_volume,
+            expected_source_record_fingerprint,
+            actual_source_record_fingerprint,
+        }) if volume == "data"
+            && source_namespace == "prod"
+            && source_volume == "data"
+            && expected_source_record_fingerprint == "older-source-record"
+            && !actual_source_record_fingerprint.is_empty()
+    ));
+}
+
+#[tokio::test]
 async fn apply_executes_volume_clone_before_startup_and_commits_lineage() {
     let (store, _backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
     let local_machine_id = MachineId("local".into());
@@ -2038,6 +2082,7 @@ async fn apply_executes_volume_clone_before_startup_and_commits_lineage() {
                 source_volume: "data".into(),
                 data_policy: VolumeCloneDataPolicy::Raw,
                 consistency: VolumeCloneConsistency::CrashConsistent,
+                expected_source_record_fingerprint: None,
             },
         }],
         phases: Vec::new(),
@@ -2185,6 +2230,7 @@ async fn preview_rejects_volume_clone_when_target_exists() {
                 source_volume: "data".into(),
                 data_policy: VolumeCloneDataPolicy::Raw,
                 consistency: VolumeCloneConsistency::CrashConsistent,
+                expected_source_record_fingerprint: None,
             },
         }],
         phases: Vec::new(),
@@ -2223,6 +2269,7 @@ async fn apply_cleans_uncommitted_volume_clone_when_startup_fails() {
                 source_volume: "data".into(),
                 data_policy: VolumeCloneDataPolicy::Raw,
                 consistency: VolumeCloneConsistency::CrashConsistent,
+                expected_source_record_fingerprint: None,
             },
         }],
         phases: Vec::new(),
@@ -2268,6 +2315,7 @@ async fn apply_keeps_volume_clone_when_attached_service_start_returns_error() {
                 source_volume: "data".into(),
                 data_policy: VolumeCloneDataPolicy::Raw,
                 consistency: VolumeCloneConsistency::CrashConsistent,
+                expected_source_record_fingerprint: None,
             },
         }],
         phases: Vec::new(),
@@ -2322,6 +2370,7 @@ async fn apply_keeps_started_uncheckpointed_volume_clone_when_later_phase_fails(
                 source_volume: "data".into(),
                 data_policy: VolumeCloneDataPolicy::Raw,
                 consistency: VolumeCloneConsistency::CrashConsistent,
+                expected_source_record_fingerprint: None,
             },
         }],
         phases: vec![
@@ -2397,6 +2446,7 @@ async fn apply_keeps_started_volume_clone_when_same_phase_later_service_fails() 
                 source_volume: "data".into(),
                 data_policy: VolumeCloneDataPolicy::Raw,
                 consistency: VolumeCloneConsistency::CrashConsistent,
+                expected_source_record_fingerprint: None,
             },
         }],
         phases: vec![DeployPhaseIntent {
@@ -2468,6 +2518,7 @@ async fn apply_drains_live_uncommitted_volume_clone_writers_before_retrying_clon
                 source_volume: "data".into(),
                 data_policy: VolumeCloneDataPolicy::Raw,
                 consistency: VolumeCloneConsistency::CrashConsistent,
+                expected_source_record_fingerprint: None,
             },
         }],
         phases: vec![DeployPhaseIntent {
@@ -2609,6 +2660,7 @@ async fn apply_drains_removed_uncommitted_volume_clone_candidates_before_retryin
                     source_volume: "data".into(),
                     data_policy: VolumeCloneDataPolicy::Raw,
                     consistency: VolumeCloneConsistency::CrashConsistent,
+                    expected_source_record_fingerprint: None,
                 },
             },
             VolumeIntentHint {
@@ -2618,6 +2670,7 @@ async fn apply_drains_removed_uncommitted_volume_clone_candidates_before_retryin
                     source_volume: "cache".into(),
                     data_policy: VolumeCloneDataPolicy::Raw,
                     consistency: VolumeCloneConsistency::CrashConsistent,
+                    expected_source_record_fingerprint: None,
                 },
             },
         ],
@@ -2797,6 +2850,7 @@ async fn apply_does_not_drain_committed_service_before_creating_new_clone() {
                 source_volume: "data".into(),
                 data_policy: VolumeCloneDataPolicy::Raw,
                 consistency: VolumeCloneConsistency::CrashConsistent,
+                expected_source_record_fingerprint: None,
             },
         }],
         phases: Vec::new(),
@@ -2868,6 +2922,7 @@ async fn apply_surfaces_uncommitted_volume_clone_cleanup_failures() {
                 source_volume: "data".into(),
                 data_policy: VolumeCloneDataPolicy::Raw,
                 consistency: VolumeCloneConsistency::CrashConsistent,
+                expected_source_record_fingerprint: None,
             },
         }],
         phases: Vec::new(),
@@ -2919,6 +2974,7 @@ async fn apply_cleans_successful_volume_clones_when_later_clone_fails() {
                     source_volume: "data".into(),
                     data_policy: VolumeCloneDataPolicy::Raw,
                     consistency: VolumeCloneConsistency::CrashConsistent,
+                    expected_source_record_fingerprint: None,
                 },
             },
             VolumeIntentHint {
@@ -2928,6 +2984,7 @@ async fn apply_cleans_successful_volume_clones_when_later_clone_fails() {
                     source_volume: "cache".into(),
                     data_policy: VolumeCloneDataPolicy::Raw,
                     consistency: VolumeCloneConsistency::CrashConsistent,
+                    expected_source_record_fingerprint: None,
                 },
             },
         ],
@@ -4620,6 +4677,7 @@ async fn resolve_plan_baseline_tracks_volume_clone_changes() {
                 source_volume: "data".into(),
                 data_policy: VolumeCloneDataPolicy::Raw,
                 consistency: VolumeCloneConsistency::CrashConsistent,
+                expected_source_record_fingerprint: None,
             },
         }],
         phases: Vec::new(),
@@ -4702,6 +4760,7 @@ async fn resolve_plan_includes_branch_source_preview_evidence() {
             intent: ServiceIntent::Branch {
                 source_namespace: source_namespace.clone(),
                 source_service: "web".into(),
+                expected_source_revision_hash: None,
             },
         }],
         volumes: Vec::new(),
@@ -4771,6 +4830,7 @@ async fn resolve_plan_rejects_missing_branch_source_release() {
             intent: ServiceIntent::Branch {
                 source_namespace: Namespace("prod".into()),
                 source_service: "web".into(),
+                expected_source_revision_hash: None,
             },
         }],
         volumes: Vec::new(),
@@ -4816,6 +4876,7 @@ async fn resolve_plan_rejects_branch_source_missing_revision() {
             intent: ServiceIntent::Branch {
                 source_namespace: source_namespace.clone(),
                 source_service: "web".into(),
+                expected_source_revision_hash: None,
             },
         }],
         volumes: Vec::new(),
@@ -4832,6 +4893,48 @@ async fn resolve_plan_rejects_branch_source_missing_revision() {
             namespace: "prod".into(),
             service: "web".into(),
             revision_hash: "missing-source-rev".into()
+        })
+    );
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_branch_source_revision_drift() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let source_namespace = Namespace("prod".into());
+    let source_spec = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let actual_revision_hash = source_spec.revision_hash().expect("source revision hash");
+    seed_committed_service_release(&store, &source_namespace, source_spec).await;
+    let mut manifest = test_manifest(vec![test_service_spec(
+        "web",
+        Placement::Replicated { count: 1 },
+        "example/web:pr-39",
+    )]);
+    manifest.namespace = Namespace("pr-39".into());
+    manifest.intent = Some(DeployIntent {
+        services: vec![ServiceIntentHint {
+            service: "web".into(),
+            intent: ServiceIntent::Branch {
+                source_namespace: source_namespace.clone(),
+                source_service: "web".into(),
+                expected_source_revision_hash: Some("older-revision".into()),
+            },
+        }],
+        volumes: Vec::new(),
+        phases: Vec::new(),
+    });
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("source revision drift should fail");
+
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::BranchSourceRevisionChanged {
+            namespace: "prod".into(),
+            service: "web".into(),
+            expected_revision_hash: "older-revision".into(),
+            actual_revision_hash,
         })
     );
 }
@@ -4881,6 +4984,7 @@ async fn resolve_plan_rejects_undecodable_branch_source_revision() {
             intent: ServiceIntent::Branch {
                 source_namespace: source_namespace.clone(),
                 source_service: "web".into(),
+                expected_source_revision_hash: None,
             },
         }],
         volumes: Vec::new(),
@@ -4917,6 +5021,7 @@ async fn resolve_plan_rejects_branch_source_same_as_target() {
             intent: ServiceIntent::Branch {
                 source_namespace: Namespace("pr-39".into()),
                 source_service: "web".into(),
+                expected_source_revision_hash: None,
             },
         }],
         volumes: Vec::new(),
@@ -4960,6 +5065,7 @@ async fn ensure_plan_stable_rejects_branch_source_revision_drift() {
             intent: ServiceIntent::Branch {
                 source_namespace: source_namespace.clone(),
                 source_service: "web".into(),
+                expected_source_revision_hash: None,
             },
         }],
         volumes: Vec::new(),
@@ -5019,6 +5125,7 @@ async fn ensure_plan_stable_preserves_execution_plan_changed_without_service_sou
             intent: ServiceIntent::Branch {
                 source_namespace: source_namespace.clone(),
                 source_service: "web".into(),
+                expected_source_revision_hash: None,
             },
         }],
         volumes: Vec::new(),
@@ -5107,6 +5214,7 @@ async fn apply_rejects_stale_service_source_baseline_before_participant_inspect(
             intent: ServiceIntent::Branch {
                 source_namespace: source_namespace.clone(),
                 source_service: "web".into(),
+                expected_source_revision_hash: None,
             },
         }],
         volumes: Vec::new(),
@@ -5237,6 +5345,7 @@ async fn apply_accepts_matching_service_source_baseline_and_commits_branch_linea
             intent: ServiceIntent::Branch {
                 source_namespace: source_namespace.clone(),
                 source_service: "web".into(),
+                expected_source_revision_hash: None,
             },
         }],
         volumes: Vec::new(),
@@ -6137,6 +6246,7 @@ async fn apply_commits_branch_lineage_when_only_source_revision_changes() {
             intent: ServiceIntent::Branch {
                 source_namespace: source_namespace.clone(),
                 source_service: "web".into(),
+                expected_source_revision_hash: None,
             },
         }],
         volumes: Vec::new(),
@@ -6220,6 +6330,7 @@ async fn apply_preserves_checkpointed_branch_lineage_after_final_commit() {
         intent: ServiceIntent::Branch {
             source_namespace: source_namespace.clone(),
             source_service: "db".into(),
+            expected_source_revision_hash: None,
         },
     }];
 
@@ -7818,6 +7929,7 @@ async fn commit_plan_contains_branch_lineage() {
             intent: ServiceIntent::Branch {
                 source_namespace: source_namespace.clone(),
                 source_service: "web".into(),
+                expected_source_revision_hash: None,
             },
         }],
         volumes: Vec::new(),

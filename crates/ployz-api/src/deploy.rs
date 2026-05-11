@@ -12,6 +12,40 @@ pub enum MigrateServiceMode {
     RenderManifest,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchNamespaceMode {
+    Apply,
+    Preview,
+    RenderManifest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchResourceMode {
+    Fresh,
+    Branch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchResourceModeOverride {
+    pub name: String,
+    pub mode: BranchResourceMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchNamespaceRequest {
+    pub source_namespace: String,
+    pub target_namespace: String,
+    pub mode: BranchNamespaceMode,
+    pub default_service_mode: BranchResourceMode,
+    pub default_volume_mode: BranchResourceMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<BranchResourceModeOverride>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<BranchResourceModeOverride>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MigrateServiceRequest {
     pub namespace: String,
@@ -229,6 +263,40 @@ mod tests {
             request_roundtrip.prepared_deploy_id,
             DeployId("prepare-1".into())
         );
+    }
+
+    #[test]
+    fn branch_namespace_request_roundtrips_modes_and_overrides() {
+        let request = BranchNamespaceRequest {
+            source_namespace: "prod".into(),
+            target_namespace: "pr-39".into(),
+            mode: BranchNamespaceMode::Preview,
+            default_service_mode: BranchResourceMode::Branch,
+            default_volume_mode: BranchResourceMode::Fresh,
+            services: vec![BranchResourceModeOverride {
+                name: "worker".into(),
+                mode: BranchResourceMode::Fresh,
+            }],
+            volumes: vec![BranchResourceModeOverride {
+                name: "data".into(),
+                mode: BranchResourceMode::Branch,
+            }],
+        };
+
+        let json = serde_json::to_value(&request).expect("serialize branch request");
+
+        assert_eq!(json["mode"], serde_json::json!("preview"));
+        assert_eq!(json["default_service_mode"], serde_json::json!("branch"));
+        assert_eq!(json["default_volume_mode"], serde_json::json!("fresh"));
+        assert_eq!(json["services"][0]["mode"], serde_json::json!("fresh"));
+        assert_eq!(json["volumes"][0]["mode"], serde_json::json!("branch"));
+        let roundtrip: BranchNamespaceRequest =
+            serde_json::from_value(json).expect("deserialize branch request");
+        assert_eq!(roundtrip.source_namespace, request.source_namespace);
+        assert_eq!(roundtrip.target_namespace, request.target_namespace);
+        assert_eq!(roundtrip.mode, request.mode);
+        assert_eq!(roundtrip.services, request.services);
+        assert_eq!(roundtrip.volumes, request.volumes);
     }
 
     #[test]

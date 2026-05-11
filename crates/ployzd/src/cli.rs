@@ -39,6 +39,12 @@ pub(crate) enum BuildMethodArg {
     Railpack,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum BranchResourceModeArg {
+    Fresh,
+    Branch,
+}
+
 impl From<RuntimeTargetArg> for RuntimeTarget {
     fn from(value: RuntimeTargetArg) -> Self {
         match value {
@@ -195,6 +201,10 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: MigrateAction,
     },
+    Branch {
+        #[command(subcommand)]
+        action: BranchAction,
+    },
     Runtime {
         #[command(subcommand)]
         action: RuntimeAction,
@@ -257,6 +267,31 @@ pub(crate) enum MigrateAction {
     Apply(MigrateServiceArgs),
     Preview(MigrateServiceArgs),
     RenderManifest(MigrateServiceArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum BranchAction {
+    Apply(BranchNamespaceArgs),
+    Preview(BranchNamespaceArgs),
+    RenderManifest(BranchNamespaceArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct BranchNamespaceArgs {
+    pub(crate) source_namespace: String,
+    pub(crate) target_namespace: String,
+
+    #[arg(long, value_enum, default_value_t = BranchResourceModeArg::Branch)]
+    pub(crate) service_mode: BranchResourceModeArg,
+
+    #[arg(long, value_enum, default_value_t = BranchResourceModeArg::Fresh)]
+    pub(crate) volume_mode: BranchResourceModeArg,
+
+    #[arg(long, value_name = "NAME=MODE")]
+    pub(crate) service: Vec<String>,
+
+    #[arg(long, value_name = "NAME=MODE")]
+    pub(crate) volume: Vec<String>,
 }
 
 #[derive(Debug, Args)]
