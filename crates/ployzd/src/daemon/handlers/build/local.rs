@@ -1666,7 +1666,7 @@ mod tests {
     async fn active_state() -> DaemonState {
         let data_dir = temp_dir("ployz-build-local-test");
         std::fs::create_dir_all(&data_dir).expect("create data dir");
-        let identity = Identity::generate(MachineId("founder".into()), [11; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [11; 32]);
         let mut config = NetworkConfig::new(
             NetworkName("alpha".into()),
             &identity.public_key,
@@ -1677,7 +1677,7 @@ mod tests {
         let store = StoreDriver::memory();
         store
             .upsert_self_machine(&MachineMembership::seed(
-                MachineId("founder".into()),
+                MachineId::new("founder"),
                 PublicKey([11; 32]),
                 OverlayIp("fd00::11".parse().expect("valid overlay")),
                 None,
@@ -2410,9 +2410,9 @@ mod tests {
             created_at: 1,
         };
 
-        let record = present_build_availability(&MachineId("founder".into()), artifact, "build-1");
+        let record = present_build_availability(&MachineId::new("founder"), artifact, "build-1");
 
-        assert_eq!(record.machine_id.0, "founder");
+        assert_eq!(record.machine_id.as_str(), "founder");
         let ImagePresence::Present {
             source_operation_id,
             ..
@@ -2509,7 +2509,7 @@ mod tests {
         let record = active
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &image_digest)
+            .get_image_availability(&MachineId::new("founder"), &image_digest)
             .await
             .expect("read availability")
             .expect("availability exists");

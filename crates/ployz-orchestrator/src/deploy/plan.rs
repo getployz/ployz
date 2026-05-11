@@ -486,8 +486,8 @@ pub(super) async fn preflight_image_availability(
                     return Err(Error::Deploy(
                         DeployError::DeployImageAvailabilityNotPresent {
                             service: service.service.clone(),
-                            slot_id: slot.slot_id.0.clone(),
-                            machine_id: slot.machine_id.0.clone(),
+                            slot_id: slot.slot_id.as_str().to_string(),
+                            machine_id: slot.machine_id.as_str().to_string(),
                             image,
                             digest: digest.as_str().into(),
                             state: image_presence_state(presence).into(),
@@ -497,8 +497,8 @@ pub(super) async fn preflight_image_availability(
                 None => {
                     return Err(Error::Deploy(DeployError::DeployImageAvailabilityMissing {
                         service: service.service.clone(),
-                        slot_id: slot.slot_id.0.clone(),
-                        machine_id: slot.machine_id.0.clone(),
+                        slot_id: slot.slot_id.as_str().to_string(),
+                        machine_id: slot.machine_id.as_str().to_string(),
                         image,
                         digest: digest.as_str().into(),
                     }));
@@ -666,7 +666,7 @@ pub(super) async fn resolve_plan(
         current_writer_slots.sort_by(|left, right| {
             left.service
                 .cmp(&right.service)
-                .then_with(|| left.slot.slot_id.0.cmp(&right.slot.slot_id.0))
+                .then_with(|| left.slot.slot_id.as_str().cmp(right.slot.slot_id.as_str()))
         });
         let volume_move_intent = volume_move_intents.get(&declaration.name);
         let volume_clone_intent = volume_clone_intents.get(&declaration.name);
@@ -694,7 +694,7 @@ pub(super) async fn resolve_plan(
                     return Err(Error::Deploy(
                         DeployError::VolumeBoundToUnavailableMachine {
                             volume: declaration.name.clone(),
-                            machine_id: record.machine_id.0.clone(),
+                            machine_id: record.machine_id.as_str().to_string(),
                         },
                     ));
                 }
@@ -821,13 +821,13 @@ pub(super) async fn resolve_plan(
         let mut current_slots_by_id: HashMap<String, ServiceReleaseSlot> = current_service_slots
             .iter()
             .cloned()
-            .map(|slot| (slot.slot_id.0.clone(), slot))
+            .map(|slot| (slot.slot_id.as_str().to_string(), slot))
             .collect();
         let mut slots = Vec::new();
 
         for desired_slot in &desired_slots {
             participants.insert(desired_slot.machine_id.clone());
-            let current = current_slots_by_id.remove(&desired_slot.slot_id.0);
+            let current = current_slots_by_id.remove(desired_slot.slot_id.as_str());
             if let Some(current_slot) = &current {
                 participants.insert(current_slot.machine_id.clone());
             }
@@ -851,7 +851,8 @@ pub(super) async fn resolve_plan(
         }
 
         let mut extra_current_slots = current_slots_by_id.into_values().collect::<Vec<_>>();
-        extra_current_slots.sort_by(|left, right| left.slot_id.0.cmp(&right.slot_id.0));
+        extra_current_slots
+            .sort_by(|left, right| left.slot_id.as_str().cmp(right.slot_id.as_str()));
         for current_slot in extra_current_slots {
             participants.insert(current_slot.machine_id.clone());
             slots.push(PlannedSlot {
@@ -862,7 +863,7 @@ pub(super) async fn resolve_plan(
             });
         }
 
-        slots.sort_by(|left, right| left.slot_id.0.cmp(&right.slot_id.0));
+        slots.sort_by(|left, right| left.slot_id.as_str().cmp(right.slot_id.as_str()));
 
         let action = if current_release.is_none() {
             DeployChangeKind::Create
@@ -923,7 +924,7 @@ pub(super) async fn resolve_plan(
                 }
             })
             .collect::<Vec<_>>();
-        slots.sort_by(|left, right| left.slot_id.0.cmp(&right.slot_id.0));
+        slots.sort_by(|left, right| left.slot_id.as_str().cmp(right.slot_id.as_str()));
         services.push(PlannedService {
             service: release.service.clone(),
             phase: None,
@@ -1041,7 +1042,7 @@ fn phase_service_owners(phases: &[DeployPhaseIntent]) -> BTreeMap<String, Deploy
             phase
                 .services
                 .iter()
-                .map(|service| (service.clone(), DeployPhaseId(phase.phase_id.clone())))
+                .map(|service| (service.clone(), DeployPhaseId::new(phase.phase_id.clone())))
         })
         .collect()
 }
@@ -1053,7 +1054,7 @@ fn phase_volume_owners(phases: &[DeployPhaseIntent]) -> BTreeMap<String, DeployP
             phase
                 .volumes
                 .iter()
-                .map(|volume| (volume.clone(), DeployPhaseId(phase.phase_id.clone())))
+                .map(|volume| (volume.clone(), DeployPhaseId::new(phase.phase_id.clone())))
         })
         .collect()
 }
@@ -1068,7 +1069,7 @@ fn phase_index_for_service(
         .and_then(|phase_id| {
             phase_intents
                 .iter()
-                .position(|phase| phase.phase_id == phase_id.0)
+                .position(|phase| phase.phase_id == phase_id.as_str())
         })
         .unwrap_or(phase_intents.len()) as u32
 }
@@ -1126,7 +1127,7 @@ fn build_phase_plans(
     service_phase_owners: &BTreeMap<String, DeployPhaseId>,
     volume_phase_owners: &BTreeMap<String, DeployPhaseId>,
 ) -> Vec<DeployPhasePlan> {
-    let default_phase_id = DeployPhaseId(SYNTHETIC_DEPLOY_PHASE_ID.into());
+    let default_phase_id = DeployPhaseId::new(SYNTHETIC_DEPLOY_PHASE_ID);
     let mut phase_work: BTreeMap<DeployPhaseId, Vec<DeployPhaseWork>> = BTreeMap::new();
     let mut phase_participants: BTreeMap<DeployPhaseId, BTreeSet<MachineId>> = BTreeMap::new();
 
@@ -1240,7 +1241,7 @@ fn build_phase_plans(
 
     let mut phases = Vec::new();
     for (index, intent) in phase_intents.iter().enumerate() {
-        let phase_id = DeployPhaseId(intent.phase_id.clone());
+        let phase_id = DeployPhaseId::new(intent.phase_id.clone());
         phases.push(DeployPhasePlan {
             phase_id: phase_id.clone(),
             name: intent
@@ -1248,7 +1249,12 @@ fn build_phase_plans(
                 .clone()
                 .unwrap_or_else(|| intent.phase_id.clone()),
             order: index as u32,
-            after: intent.after.iter().cloned().map(DeployPhaseId).collect(),
+            after: intent
+                .after
+                .iter()
+                .cloned()
+                .map(DeployPhaseId::new)
+                .collect(),
             participants: phase_participants
                 .remove(&phase_id)
                 .unwrap_or_default()
@@ -1333,8 +1339,8 @@ fn volume_move_intents(manifest: &DeployManifest) -> HashMap<String, VolumeMoveI
                 intents.insert(
                     hint.volume.clone(),
                     VolumeMoveIntent {
-                        from_machine: MachineId(from_machine.clone()),
-                        to_machine: MachineId(to_machine.clone()),
+                        from_machine: MachineId::new(from_machine.clone()),
+                        to_machine: MachineId::new(to_machine.clone()),
                     },
                 );
             }
@@ -1390,7 +1396,7 @@ async fn resolve_branch_source(
 ) -> Result<PlannedBranchSource> {
     if &intent.source_namespace == target_namespace && intent.source_service == target_service {
         return Err(Error::Deploy(DeployError::BranchSourceIsTarget {
-            namespace: target_namespace.0.clone(),
+            namespace: target_namespace.as_str().to_string(),
             service: target_service.to_string(),
         }));
     }
@@ -1401,7 +1407,7 @@ async fn resolve_branch_source(
         .find(|release| release.service == intent.source_service)
     else {
         return Err(Error::Deploy(DeployError::BranchSourceMissingRelease {
-            namespace: intent.source_namespace.0.clone(),
+            namespace: intent.source_namespace.as_str().to_string(),
             service: intent.source_service.clone(),
         }));
     };
@@ -1410,7 +1416,7 @@ async fn resolve_branch_source(
         && expected_revision_hash != &source_revision_hash
     {
         return Err(Error::Deploy(DeployError::BranchSourceRevisionChanged {
-            namespace: intent.source_namespace.0.clone(),
+            namespace: intent.source_namespace.as_str().to_string(),
             service: intent.source_service.clone(),
             expected_revision_hash: expected_revision_hash.clone(),
             actual_revision_hash: source_revision_hash,
@@ -1424,7 +1430,7 @@ async fn resolve_branch_source(
         revision.service == intent.source_service && revision.revision_hash == source_revision_hash
     }) else {
         return Err(Error::Deploy(DeployError::BranchSourceMissingRevision {
-            namespace: intent.source_namespace.0.clone(),
+            namespace: intent.source_namespace.as_str().to_string(),
             service: intent.source_service.clone(),
             revision_hash: source_revision_hash,
         }));
@@ -1433,7 +1439,7 @@ async fn resolve_branch_source(
     let _source_spec: ServiceSpec =
         serde_json::from_str(&source_revision.spec_json).map_err(|error| {
             Error::Deploy(DeployError::BranchSourceSpecDecode {
-                namespace: intent.source_namespace.0.clone(),
+                namespace: intent.source_namespace.as_str().to_string(),
                 service: intent.source_service.clone(),
                 message: error.to_string(),
             })
@@ -1465,7 +1471,7 @@ async fn resolve_volume_clone(
     else {
         return Err(Error::Deploy(DeployError::VolumeCloneSourceMissing {
             volume: declaration.name.clone(),
-            source_namespace: intent.source_namespace.0.clone(),
+            source_namespace: intent.source_namespace.as_str().to_string(),
             source_volume: intent.source_volume.clone(),
         }));
     };
@@ -1475,7 +1481,7 @@ async fn resolve_volume_clone(
     {
         return Err(Error::Deploy(DeployError::VolumeCloneSourceChanged {
             volume: declaration.name.clone(),
-            source_namespace: intent.source_namespace.0.clone(),
+            source_namespace: intent.source_namespace.as_str().to_string(),
             source_volume: intent.source_volume.clone(),
             expected_source_record_fingerprint: expected_source_record_fingerprint.clone(),
             actual_source_record_fingerprint,
@@ -1492,7 +1498,7 @@ async fn resolve_volume_clone(
         return Err(Error::Deploy(
             DeployError::VolumeCloneSourceMachineMissing {
                 volume: declaration.name.clone(),
-                machine_id: source_record.machine_id.0.clone(),
+                machine_id: source_record.machine_id.as_str().to_string(),
             },
         ));
     };
@@ -1500,15 +1506,15 @@ async fn resolve_volume_clone(
         return Err(Error::Deploy(
             DeployError::VolumeCloneSourceMachineIneligible {
                 volume: declaration.name.clone(),
-                machine_id: source_record.machine_id.0.clone(),
+                machine_id: source_record.machine_id.as_str().to_string(),
             },
         ));
     }
-    if !source_machine.storage {
+    if !source_machine.storage() {
         return Err(Error::Deploy(
             DeployError::VolumeCloneSourceMachineNotStorageCapable {
                 volume: declaration.name.clone(),
-                machine_id: source_record.machine_id.0.clone(),
+                machine_id: source_record.machine_id.as_str().to_string(),
             },
         ));
     }
@@ -1532,7 +1538,7 @@ pub(super) fn deployable_machines(
         .filter(|machine| is_new_placement_candidate(&machine.placement_candidate()))
         .map(|machine| machine.id.clone())
         .collect();
-    enabled.sort_by(|left, right| left.0.cmp(&right.0));
+    enabled.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     if !enabled.is_empty() {
         return enabled;
     }
@@ -1555,15 +1561,11 @@ pub(super) fn desired_slots(
     let candidates = machines.to_vec();
 
     let mut desired = Vec::new();
-    match spec.placement {
+    match &spec.placement {
         Placement::Replicated { count } => {
-            if count == 0 {
-                return Err(Error::Deploy(DeployError::ZeroReplicas {
-                    service: spec.name.clone(),
-                }));
-            }
-            for index in 0..count {
-                let slot_id = SlotId(format!("slot-{number:04}", number = usize::from(index) + 1));
+            for index in 0..count.get() {
+                let slot_id =
+                    SlotId::new(format!("slot-{number:04}", number = usize::from(index) + 1));
                 let retained_machine = current_slots
                     .and_then(|slots| slots.iter().find(|slot| slot.slot_id == slot_id))
                     .filter(|slot| {
@@ -1598,7 +1600,7 @@ pub(super) fn desired_slots(
             }
             for machine_id in &candidates {
                 desired.push(DesiredSlot {
-                    slot_id: SlotId(format!("slot-{}", machine_id.0)),
+                    slot_id: SlotId::new(format!("slot-{}", machine_id.as_str())),
                     machine_id: machine_id.clone(),
                 });
             }
@@ -1788,8 +1790,8 @@ fn resolve_volume_move(
     if record.machine_id != intent.from_machine {
         return Err(Error::Deploy(DeployError::VolumeMoveSourceMismatch {
             volume: declaration.name.clone(),
-            expected_machine: intent.from_machine.0.clone(),
-            actual_machine: record.machine_id.0.clone(),
+            expected_machine: intent.from_machine.as_str().to_string(),
+            actual_machine: record.machine_id.as_str().to_string(),
         }));
     }
     if declaration.scope != VolumeScope::Single {
@@ -1833,7 +1835,7 @@ fn resolve_inferred_volume_move(
         && target != &record.machine_id
         && machine_map
             .get(target)
-            .is_some_and(|machine| machine.storage)
+            .is_some_and(|machine| machine.storage())
     {
         return Ok((
             target.clone(),
@@ -1848,7 +1850,7 @@ fn resolve_inferred_volume_move(
         **machine_id != record.machine_id
             && machine_map
                 .get(*machine_id)
-                .is_some_and(|machine| machine.storage)
+                .is_some_and(|machine| machine.storage())
     }) else {
         return Err(Error::Deploy(DeployError::NoEligiblePlacementTargets));
     };
@@ -1906,7 +1908,7 @@ fn preferred_existing_volume_pin(
             let Some(machine) = machine_map.get(&machine_id) else {
                 continue;
             };
-            if !machine.storage || !is_new_placement_candidate(&machine.placement_candidate()) {
+            if !machine.storage() || !is_new_placement_candidate(&machine.placement_candidate()) {
                 continue;
             }
             if preferred
@@ -1933,7 +1935,7 @@ fn pending_volume_move_target(
         return None;
     }
     let machine = machine_map.get(&intent.to_machine)?;
-    if !machine.storage || !is_new_placement_candidate(&machine.placement_candidate()) {
+    if !machine.storage() || !is_new_placement_candidate(&machine.placement_candidate()) {
         return None;
     }
     Some(intent.to_machine.clone())
@@ -1947,20 +1949,20 @@ fn volume_move_target(
     let Some(machine) = machine_map.get(machine_id) else {
         return Err(Error::Deploy(DeployError::VolumeMoveTargetMissing {
             volume: volume.to_string(),
-            machine_id: machine_id.0.clone(),
+            machine_id: machine_id.as_str().to_string(),
         }));
     };
     if !is_new_placement_candidate(&machine.placement_candidate()) {
         return Err(Error::Deploy(DeployError::VolumeMoveTargetIneligible {
             volume: volume.to_string(),
-            machine_id: machine_id.0.clone(),
+            machine_id: machine_id.as_str().to_string(),
         }));
     }
-    if !machine.storage {
+    if !machine.storage() {
         return Err(Error::Deploy(
             DeployError::VolumeMoveTargetNotStorageCapable {
                 volume: volume.to_string(),
-                machine_id: machine_id.0.clone(),
+                machine_id: machine_id.as_str().to_string(),
             },
         ));
     }

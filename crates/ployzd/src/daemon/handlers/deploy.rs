@@ -262,7 +262,7 @@ impl DaemonState {
                 return self.deploy_error_response(
                     "DEPLOY_APPLY_PREPARED_FAILED",
                     PloyzError::Deploy(DeployError::PreparedDeployMissing {
-                        prepared_deploy_id: request.prepared_deploy_id.0.clone(),
+                        prepared_deploy_id: request.prepared_deploy_id.as_str().to_string(),
                     }),
                 );
             }
@@ -788,7 +788,7 @@ impl DaemonState {
             Ok(active) => active,
             Err(response) => return *response,
         };
-        let namespace = Namespace(namespace.to_string());
+        let namespace = Namespace::new(namespace.to_string());
         let manifest = match export_manifest(&active.mesh.store, &namespace).await {
             Ok(manifest) => manifest,
             Err(err) => return self.err("DEPLOY_EXPORT_FAILED", format!("{err}")),
@@ -982,7 +982,7 @@ impl DaemonState {
                     .await
             }
             MigrateServiceMode::Apply => {
-                let namespace = Namespace(request.namespace.clone());
+                let namespace = Namespace::new(request.namespace.clone());
                 let runtime = match self
                     .prepare_deploy_apply_runtime(active, &namespace, "DEPLOY_APPLY_FAILED")
                     .await
@@ -1331,7 +1331,13 @@ async fn deploy_has_checkpoint_commit_point(
     let checkpoint_phase_ids = phases
         .iter()
         .filter(|phase| phase.commit_policy == DeployPhaseCommitPolicy::Checkpoint)
-        .map(|phase| DeployId(format!("{}:phase:{}", deploy_id.0, phase.phase_id.0)))
+        .map(|phase| {
+            DeployId::new(format!(
+                "{}:phase:{}",
+                deploy_id.as_str(),
+                phase.phase_id.as_str()
+            ))
+        })
         .collect::<HashSet<_>>();
     if checkpoint_phase_ids.is_empty() {
         return false;
@@ -1473,7 +1479,7 @@ mod tests {
     fn test_daemon_state() -> DaemonState {
         DaemonState::new_for_tests(
             &unique_temp_dir("ployz-deploy-handler"),
-            Identity::generate(MachineId("founder".into()), [42; 32]),
+            Identity::generate(MachineId::new("founder"), [42; 32]),
             "10.210.0.0/16".into(),
             24,
             4319,
@@ -1597,7 +1603,7 @@ mod tests {
     fn test_service_with_mounts(name: &str, mounts: Vec<Mount>) -> ServiceSpec {
         ServiceSpec {
             name: name.into(),
-            placement: Placement::Replicated { count: 1 },
+            placement: Placement::replicated(1),
             template: ContainerSpec {
                 image: "postgres:17".into(),
                 command: None,
@@ -1639,15 +1645,15 @@ mod tests {
             namespace: namespace.clone(),
             volume_name: volume.into(),
             scope,
-            machine_id: MachineId(machine.into()),
+            machine_id: MachineId::new(machine),
             quota: "10G".into(),
             mode: "0750".into(),
             owner: "999:999".into(),
             attached_services: vec!["db".into()],
             created_at: 1,
-            created_by_deploy_id: DeployId("deploy-1".into()),
+            created_by_deploy_id: DeployId::new("deploy-1"),
             last_modified_at: 1,
-            last_modified_by_deploy_id: DeployId("deploy-1".into()),
+            last_modified_by_deploy_id: DeployId::new("deploy-1"),
         }
     }
 
@@ -1658,7 +1664,7 @@ mod tests {
         volumes: Vec<VolumeRecord>,
     ) {
         let revision_hash = format!("rev-{}", service.name);
-        let deploy_id = DeployId("deploy-1".into());
+        let deploy_id = DeployId::new("deploy-1");
         store
             .commit_deploy(&DeployCommit {
                 namespace: namespace.clone(),
@@ -1667,7 +1673,7 @@ mod tests {
                     service: service.name.clone(),
                     revision_hash: revision_hash.clone(),
                     spec_json: serde_json::to_string(&service).expect("serialize service"),
-                    created_by: MachineId("local".into()),
+                    created_by: MachineId::new("local"),
                     created_at: 1,
                 }],
                 removed_services: Vec::new(),
@@ -1692,7 +1698,7 @@ mod tests {
                 deploy: DeployRecord {
                     deploy_id,
                     namespace: namespace.clone(),
-                    coordinator_machine_id: MachineId("local".into()),
+                    coordinator_machine_id: MachineId::new("local"),
                     manifest_hash: "manifest".into(),
                     state: DeployState::Committed,
                     started_at: 1,
@@ -1708,7 +1714,7 @@ mod tests {
     #[test]
     fn decode_manifest_accepts_empty_services() {
         let manifest_json = serde_json::to_string(&DeployManifest {
-            namespace: Namespace("prod".into()),
+            namespace: Namespace::new("prod"),
             intent: None,
             volumes: Vec::new(),
             services: Vec::new(),
@@ -1717,7 +1723,7 @@ mod tests {
 
         let manifest = decode_manifest(&manifest_json).expect("decode manifest");
 
-        assert_eq!(manifest.namespace, Namespace("prod".into()));
+        assert_eq!(manifest.namespace, Namespace::new("prod"));
         assert!(manifest.services.is_empty());
     }
 
@@ -1761,7 +1767,7 @@ mod tests {
     #[tokio::test]
     async fn render_migrate_service_manifest_adds_volume_move_hint() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         seed_committed_service(
             &store,
             &namespace,
@@ -1799,7 +1805,7 @@ mod tests {
     #[tokio::test]
     async fn render_migrate_service_manifest_rejects_missing_service() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         seed_committed_service(
             &store,
             &namespace,
@@ -1826,7 +1832,7 @@ mod tests {
     #[tokio::test]
     async fn render_migrate_service_manifest_rejects_service_without_managed_volumes() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let service = test_service_with_mounts(
             "db",
             vec![Mount {
@@ -1858,7 +1864,7 @@ mod tests {
     #[tokio::test]
     async fn render_migrate_service_manifest_rejects_bind_mounts() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let service = test_service_with_mounts(
             "db",
             vec![
@@ -1903,7 +1909,7 @@ mod tests {
     #[tokio::test]
     async fn render_migrate_service_manifest_rejects_duplicate_managed_volume_mounts() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let service = test_service_with_mounts(
             "db",
             vec![
@@ -1948,7 +1954,7 @@ mod tests {
     #[tokio::test]
     async fn render_migrate_service_manifest_rejects_missing_committed_volume() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         seed_committed_service(&store, &namespace, test_service(), Vec::new()).await;
 
         let error = render_migrate_service_manifest(
@@ -1972,7 +1978,7 @@ mod tests {
     #[tokio::test]
     async fn render_migrate_service_manifest_rejects_already_on_target() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         seed_committed_service(
             &store,
             &namespace,
@@ -1999,7 +2005,7 @@ mod tests {
     #[tokio::test]
     async fn render_migrate_service_manifest_rejects_shared_volume() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         seed_committed_service(
             &store,
             &namespace,
@@ -2034,7 +2040,7 @@ mod tests {
     #[tokio::test]
     async fn render_migrate_service_manifest_sorts_multi_volume_hints() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let service = test_service_with_mounts(
             "db",
             vec![
@@ -2085,7 +2091,7 @@ mod tests {
     #[tokio::test]
     async fn render_branch_namespace_manifest_branches_services_and_fresh_volumes_by_default() {
         let store = StoreDriver::memory();
-        let source = Namespace("prod".into());
+        let source = Namespace::new("prod");
         seed_committed_service(
             &store,
             &source,
@@ -2109,7 +2115,7 @@ mod tests {
         .await
         .expect("render branch manifest");
 
-        assert_eq!(manifest.namespace, Namespace("pr-39".into()));
+        assert_eq!(manifest.namespace, Namespace::new("pr-39"));
         let intent = manifest.intent.expect("branch service intent");
         let [service] = intent.services.as_slice() else {
             panic!(
@@ -2121,7 +2127,7 @@ mod tests {
         assert_eq!(
             service.intent,
             ServiceIntent::Branch {
-                source_namespace: Namespace("prod".into()),
+                source_namespace: Namespace::new("prod"),
                 source_service: "db".into(),
                 expected_source_revision_hash: Some("rev-db".into()),
             }
@@ -2132,7 +2138,7 @@ mod tests {
     #[tokio::test]
     async fn render_branch_namespace_manifest_clones_opted_in_volumes() {
         let store = StoreDriver::memory();
-        let source = Namespace("prod".into());
+        let source = Namespace::new("prod");
         let source_volume = test_volume_record(&source, "data", "machine-a");
         let expected_source_record_fingerprint = stable_fingerprint(&source_volume);
         seed_committed_service(&store, &source, test_service(), vec![source_volume]).await;
@@ -2163,7 +2169,7 @@ mod tests {
         assert_eq!(
             volume.intent,
             VolumeIntent::Clone {
-                source_namespace: Namespace("prod".into()),
+                source_namespace: Namespace::new("prod"),
                 source_volume: "data".into(),
                 data_policy: VolumeCloneDataPolicy::Raw,
                 consistency: VolumeCloneConsistency::CrashConsistent,
@@ -2175,7 +2181,7 @@ mod tests {
     #[tokio::test]
     async fn render_branch_namespace_manifest_service_override_fresh_removes_hint() {
         let store = StoreDriver::memory();
-        let source = Namespace("prod".into());
+        let source = Namespace::new("prod");
         seed_committed_service(
             &store,
             &source,
@@ -2292,7 +2298,7 @@ mod tests {
     async fn branch_prepare_record_preserves_compiled_source_evidence() {
         let store = StoreDriver::memory();
         let mut machine = MachineMembership::seed(
-            MachineId("founder".into()),
+            MachineId::new("founder"),
             PublicKey([42; 32]),
             OverlayIp("fd00::42".parse().expect("valid overlay")),
             None,
@@ -2303,7 +2309,7 @@ mod tests {
             .upsert_self_machine(&machine)
             .await
             .expect("seed active machine");
-        let source = Namespace("prod".into());
+        let source = Namespace::new("prod");
         let source_volume = test_volume_record(&source, "data", "founder");
         let expected_source_record_fingerprint = stable_fingerprint(&source_volume);
         seed_committed_service(&store, &source, test_service(), vec![source_volume]).await;
@@ -2327,19 +2333,19 @@ mod tests {
 
         let prepared = prepare(
             &store,
-            &MachineId("founder".into()),
+            &MachineId::new("founder"),
             &manifest,
             &ployz_orchestrator::deploy::NoopParticipantProbe,
-            DeployId("prepare-branch".into()),
+            DeployId::new("prepare-branch"),
             DEPLOY_PREPARE_TTL_SECS,
         )
         .await
         .expect("prepare compiled branch manifest");
 
-        assert_eq!(prepared.namespace, Namespace("pr-39".into()));
+        assert_eq!(prepared.namespace, Namespace::new("pr-39"));
         let stored_manifest: DeployManifest =
             serde_json::from_str(&prepared.manifest_json).expect("stored manifest json");
-        assert_eq!(stored_manifest.namespace, Namespace("pr-39".into()));
+        assert_eq!(stored_manifest.namespace, Namespace::new("pr-39"));
         let intent = stored_manifest.intent.expect("stored branch intent");
         let [service] = intent.services.as_slice() else {
             panic!(
@@ -2350,7 +2356,7 @@ mod tests {
         assert_eq!(
             service.intent,
             ServiceIntent::Branch {
-                source_namespace: Namespace("prod".into()),
+                source_namespace: Namespace::new("prod"),
                 source_service: "db".into(),
                 expected_source_revision_hash: Some("rev-db".into()),
             }
@@ -2364,14 +2370,14 @@ mod tests {
         assert_eq!(
             volume.intent,
             VolumeIntent::Clone {
-                source_namespace: Namespace("prod".into()),
+                source_namespace: Namespace::new("prod"),
                 source_volume: "data".into(),
                 data_policy: VolumeCloneDataPolicy::Raw,
                 consistency: VolumeCloneConsistency::CrashConsistent,
                 expected_source_record_fingerprint: Some(expected_source_record_fingerprint),
             }
         );
-        assert_eq!(prepared.preview.namespace, Namespace("pr-39".into()));
+        assert_eq!(prepared.preview.namespace, Namespace::new("pr-39"));
         assert_eq!(prepared.preview.service_branch_sources.len(), 1);
         assert_eq!(prepared.preview.volume_clones.len(), 1);
     }
@@ -3100,7 +3106,7 @@ mod tests {
     #[tokio::test]
     async fn render_branch_namespace_manifest_rejects_unknown_and_duplicate_overrides() {
         let store = StoreDriver::memory();
-        let source = Namespace("prod".into());
+        let source = Namespace::new("prod");
         seed_committed_service(
             &store,
             &source,
@@ -3289,13 +3295,13 @@ mod tests {
 
         let result = run_volume_move_rpc(
             &client,
-            &MachineId("machine-a".into()),
-            &Namespace("prod".into()),
-            &DeployId("deploy-1".into()),
+            &MachineId::new("machine-a"),
+            &Namespace::new("prod"),
+            &DeployId::new("deploy-1"),
             MoveVolumeRequest {
                 volume: "data".into(),
-                from_machine: MachineId("machine-a".into()),
-                to_machine: MachineId("machine-b".into()),
+                from_machine: MachineId::new("machine-a"),
+                to_machine: MachineId::new("machine-b"),
                 snapshot: "ployz-move-manifest-data".into(),
             },
             Duration::from_secs(1),
@@ -3355,13 +3361,13 @@ mod tests {
 
         let error = run_volume_move_rpc(
             &client,
-            &MachineId("machine-a".into()),
-            &Namespace("prod".into()),
-            &DeployId("deploy-1".into()),
+            &MachineId::new("machine-a"),
+            &Namespace::new("prod"),
+            &DeployId::new("deploy-1"),
             MoveVolumeRequest {
                 volume: "data".into(),
-                from_machine: MachineId("machine-a".into()),
-                to_machine: MachineId("machine-b".into()),
+                from_machine: MachineId::new("machine-a"),
+                to_machine: MachineId::new("machine-b"),
                 snapshot: "ployz-move-manifest-data".into(),
             },
             Duration::from_secs(1),
@@ -3387,13 +3393,13 @@ mod tests {
 
         let error = run_volume_move_rpc(
             &client,
-            &MachineId("machine-a".into()),
-            &Namespace("prod".into()),
-            &DeployId("deploy-1".into()),
+            &MachineId::new("machine-a"),
+            &Namespace::new("prod"),
+            &DeployId::new("deploy-1"),
             MoveVolumeRequest {
                 volume: "data".into(),
-                from_machine: MachineId("machine-other".into()),
-                to_machine: MachineId("machine-b".into()),
+                from_machine: MachineId::new("machine-other"),
+                to_machine: MachineId::new("machine-b"),
                 snapshot: "ployz-move-manifest-data".into(),
             },
             Duration::from_secs(1),
@@ -3424,13 +3430,13 @@ mod tests {
 
         let error = run_volume_move_rpc(
             &client,
-            &MachineId("machine-a".into()),
-            &Namespace("prod".into()),
-            &DeployId("deploy-1".into()),
+            &MachineId::new("machine-a"),
+            &Namespace::new("prod"),
+            &DeployId::new("deploy-1"),
             MoveVolumeRequest {
                 volume: "data".into(),
-                from_machine: MachineId("machine-a".into()),
-                to_machine: MachineId("machine-b".into()),
+                from_machine: MachineId::new("machine-a"),
+                to_machine: MachineId::new("machine-b"),
                 snapshot: "ployz-move-manifest-data".into(),
             },
             Duration::from_secs(1),
@@ -3461,13 +3467,13 @@ mod tests {
 
         let error = run_volume_move_rpc(
             &client,
-            &MachineId("machine-a".into()),
-            &Namespace("prod".into()),
-            &DeployId("deploy-1".into()),
+            &MachineId::new("machine-a"),
+            &Namespace::new("prod"),
+            &DeployId::new("deploy-1"),
             MoveVolumeRequest {
                 volume: "data".into(),
-                from_machine: MachineId("machine-a".into()),
-                to_machine: MachineId("machine-b".into()),
+                from_machine: MachineId::new("machine-a"),
+                to_machine: MachineId::new("machine-b"),
                 snapshot: "ployz-move-manifest-data".into(),
             },
             Duration::from_secs(1),
@@ -3498,13 +3504,13 @@ mod tests {
 
         let result = run_volume_move_rpc(
             &client,
-            &MachineId("machine-a".into()),
-            &Namespace("prod".into()),
-            &DeployId("deploy-1".into()),
+            &MachineId::new("machine-a"),
+            &Namespace::new("prod"),
+            &DeployId::new("deploy-1"),
             MoveVolumeRequest {
                 volume: "data".into(),
-                from_machine: MachineId("machine-a".into()),
-                to_machine: MachineId("machine-b".into()),
+                from_machine: MachineId::new("machine-a"),
+                to_machine: MachineId::new("machine-b"),
                 snapshot: "ployz-move-manifest-data".into(),
             },
             Duration::from_secs(1),
@@ -3532,13 +3538,13 @@ mod tests {
 
         let error = run_volume_move_rpc(
             &client,
-            &MachineId("machine-a".into()),
-            &Namespace("prod".into()),
-            &DeployId("deploy-1".into()),
+            &MachineId::new("machine-a"),
+            &Namespace::new("prod"),
+            &DeployId::new("deploy-1"),
             MoveVolumeRequest {
                 volume: "data".into(),
-                from_machine: MachineId("machine-a".into()),
-                to_machine: MachineId("machine-b".into()),
+                from_machine: MachineId::new("machine-a"),
+                to_machine: MachineId::new("machine-b"),
                 snapshot: "ployz-move-manifest-data".into(),
             },
             Duration::from_secs(1),
@@ -3572,13 +3578,13 @@ mod tests {
 
         let error = run_volume_move_rpc(
             &client,
-            &MachineId("machine-a".into()),
-            &Namespace("prod".into()),
-            &DeployId("deploy-1".into()),
+            &MachineId::new("machine-a"),
+            &Namespace::new("prod"),
+            &DeployId::new("deploy-1"),
             MoveVolumeRequest {
                 volume: "data".into(),
-                from_machine: MachineId("machine-a".into()),
-                to_machine: MachineId("machine-b".into()),
+                from_machine: MachineId::new("machine-a"),
+                to_machine: MachineId::new("machine-b"),
                 snapshot: "ployz-move-manifest-data".into(),
             },
             Duration::from_secs(1),
@@ -3605,13 +3611,13 @@ mod tests {
 
         let error = run_volume_move_rpc(
             &client,
-            &MachineId("machine-a".into()),
-            &Namespace("prod".into()),
-            &DeployId("deploy-1".into()),
+            &MachineId::new("machine-a"),
+            &Namespace::new("prod"),
+            &DeployId::new("deploy-1"),
             MoveVolumeRequest {
                 volume: "data".into(),
-                from_machine: MachineId("machine-a".into()),
-                to_machine: MachineId("machine-b".into()),
+                from_machine: MachineId::new("machine-a"),
+                to_machine: MachineId::new("machine-b"),
                 snapshot: "ployz-move-manifest-data".into(),
             },
             Duration::from_secs(1),
@@ -3691,7 +3697,7 @@ mod tests {
         assert_eq!(payload.reason, DeployFailureReason::PreparedDeployMissing);
         assert_eq!(
             payload.prepared_deploy_id,
-            Some(DeployId("prepare-missing".into()))
+            Some(DeployId::new("prepare-missing"))
         );
 
         let not_applicable = test_daemon_state().deploy_error_response(
@@ -3728,7 +3734,7 @@ mod tests {
         assert_eq!(payload.reason, DeployFailureReason::PreparedDeployExpired);
         assert_eq!(
             payload.prepared_deploy_id,
-            Some(DeployId("prepare-expired".into()))
+            Some(DeployId::new("prepare-expired"))
         );
         assert_eq!(
             payload.prepared_deploy_state,
@@ -3750,7 +3756,7 @@ mod tests {
         assert_eq!(payload.reason, DeployFailureReason::PreparedDeployInvalid);
         assert_eq!(
             payload.prepared_deploy_id,
-            Some(DeployId("prepare-invalid".into()))
+            Some(DeployId::new("prepare-invalid"))
         );
     }
 
@@ -3893,7 +3899,7 @@ mod tests {
     async fn deploy_prepare_and_apply_prepared_require_active_mesh() {
         let state = test_daemon_state();
         let manifest_json = serde_json::to_string(&DeployManifest {
-            namespace: Namespace("prod".into()),
+            namespace: Namespace::new("prod"),
             intent: None,
             volumes: Vec::new(),
             services: Vec::new(),
@@ -3902,7 +3908,7 @@ mod tests {
         let prepare = state.handle_deploy_prepare(&manifest_json).await;
         let apply = state
             .handle_deploy_apply_prepared(&DeployApplyPreparedRequest {
-                prepared_deploy_id: DeployId("prepare-1".into()),
+                prepared_deploy_id: DeployId::new("prepare-1"),
             })
             .await;
         let prepare_via_shared = state
@@ -3913,7 +3919,7 @@ mod tests {
         let apply_via_shared = state
             .handle_shared(DaemonRequest::DeployApplyPrepared {
                 request: DeployApplyPreparedRequest {
-                    prepared_deploy_id: DeployId("prepare-2".into()),
+                    prepared_deploy_id: DeployId::new("prepare-2"),
                 },
             })
             .await;
@@ -3931,9 +3937,9 @@ mod tests {
     #[tokio::test]
     async fn lock_loss_marks_applying_deploy_failed_with_warning() {
         let store = StoreDriver::memory();
-        let deploy_id = DeployId("deploy-lock-loss".into());
+        let deploy_id = DeployId::new("deploy-lock-loss");
         let preview = DeployPreview {
-            namespace: Namespace("prod".into()),
+            namespace: Namespace::new("prod"),
             manifest_hash: "manifest".into(),
             baseline: None,
             participants: Vec::new(),
@@ -3951,8 +3957,8 @@ mod tests {
         store
             .write_deploy_status(&DeployRecord {
                 deploy_id: deploy_id.clone(),
-                namespace: Namespace("prod".into()),
-                coordinator_machine_id: MachineId("local".into()),
+                namespace: Namespace::new("prod"),
+                coordinator_machine_id: MachineId::new("local"),
                 manifest_hash: "manifest".into(),
                 state: DeployState::Applying,
                 started_at: 1,
@@ -3986,13 +3992,13 @@ mod tests {
     #[tokio::test]
     async fn lock_loss_marks_running_deploy_phases_failed() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("prod".into());
-        let deploy_id = DeployId("deploy-lock-loss-phase".into());
+        let namespace = Namespace::new("prod");
+        let deploy_id = DeployId::new("deploy-lock-loss-phase");
         store
             .write_deploy_status(&DeployRecord {
                 deploy_id: deploy_id.clone(),
                 namespace: namespace.clone(),
-                coordinator_machine_id: MachineId("local".into()),
+                coordinator_machine_id: MachineId::new("local"),
                 manifest_hash: "manifest".into(),
                 state: DeployState::Applying,
                 started_at: 1,
@@ -4022,7 +4028,7 @@ mod tests {
             .upsert_deploy_phase(&DeployPhaseRecord {
                 namespace: namespace.clone(),
                 deploy_id: deploy_id.clone(),
-                phase_id: DeployPhaseId("deploy".into()),
+                phase_id: DeployPhaseId::new("deploy"),
                 commit_deploy_id: None,
                 name: "Deploy".into(),
                 order: 0,
@@ -4058,12 +4064,12 @@ mod tests {
     #[tokio::test]
     async fn lock_loss_after_commit_does_not_mark_deploy_failed() {
         let store = StoreDriver::memory();
-        let deploy_id = DeployId("deploy-lock-loss-committed".into());
+        let deploy_id = DeployId::new("deploy-lock-loss-committed");
         store
             .write_deploy_status(&DeployRecord {
                 deploy_id: deploy_id.clone(),
-                namespace: Namespace("prod".into()),
-                coordinator_machine_id: MachineId("local".into()),
+                namespace: Namespace::new("prod"),
+                coordinator_machine_id: MachineId::new("local"),
                 manifest_hash: "manifest".into(),
                 state: DeployState::Committed,
                 started_at: 1,
@@ -4088,12 +4094,12 @@ mod tests {
     #[tokio::test]
     async fn lock_loss_after_checkpoint_status_waits_for_apply() {
         let store = StoreDriver::memory();
-        let deploy_id = DeployId("deploy-lock-loss-checkpoint-status".into());
+        let deploy_id = DeployId::new("deploy-lock-loss-checkpoint-status");
         store
             .write_deploy_status(&DeployRecord {
                 deploy_id: deploy_id.clone(),
-                namespace: Namespace("prod".into()),
-                coordinator_machine_id: MachineId("local".into()),
+                namespace: Namespace::new("prod"),
+                coordinator_machine_id: MachineId::new("local"),
                 manifest_hash: "manifest".into(),
                 state: DeployState::CheckpointCommitted,
                 started_at: 1,
@@ -4118,17 +4124,21 @@ mod tests {
     #[tokio::test]
     async fn lock_loss_after_durable_checkpoint_commit_evidence_waits_for_apply() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("prod".into());
-        let deploy_id = DeployId("deploy-lock-loss-checkpoint-evidence".into());
-        let phase_id = DeployPhaseId("db".into());
-        let phase_commit_id = DeployId(format!("{}:phase:{}", deploy_id.0, phase_id.0));
+        let namespace = Namespace::new("prod");
+        let deploy_id = DeployId::new("deploy-lock-loss-checkpoint-evidence");
+        let phase_id = DeployPhaseId::new("db");
+        let phase_commit_id = DeployId::new(format!(
+            "{}:phase:{}",
+            deploy_id.as_str(),
+            phase_id.as_str()
+        ));
         let service = test_service();
         let revision_hash = "rev-db".to_string();
         store
             .write_deploy_status(&DeployRecord {
                 deploy_id: deploy_id.clone(),
                 namespace: namespace.clone(),
-                coordinator_machine_id: MachineId("local".into()),
+                coordinator_machine_id: MachineId::new("local"),
                 manifest_hash: "manifest".into(),
                 state: DeployState::Applying,
                 started_at: 1,
@@ -4181,7 +4191,7 @@ mod tests {
                     service: service.name.clone(),
                     revision_hash: revision_hash.clone(),
                     spec_json: serde_json::to_string(&service).expect("serialize service"),
-                    created_by: MachineId("local".into()),
+                    created_by: MachineId::new("local"),
                     created_at: 1,
                 }],
                 removed_services: Vec::new(),
@@ -4206,7 +4216,7 @@ mod tests {
                 deploy: DeployRecord {
                     deploy_id: phase_commit_id,
                     namespace: namespace.clone(),
-                    coordinator_machine_id: MachineId("local".into()),
+                    coordinator_machine_id: MachineId::new("local"),
                     manifest_hash: "manifest".into(),
                     state: DeployState::CheckpointCommitted,
                     started_at: 1,
@@ -4238,10 +4248,10 @@ mod tests {
     #[tokio::test]
     async fn export_manifest_includes_stored_volume_declarations() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let service = test_service();
         let revision_hash = "rev-db".to_string();
-        let deploy_id = DeployId("deploy-1".into());
+        let deploy_id = DeployId::new("deploy-1");
 
         store
             .commit_deploy(&DeployCommit {
@@ -4251,7 +4261,7 @@ mod tests {
                     service: service.name.clone(),
                     revision_hash: revision_hash.clone(),
                     spec_json: serde_json::to_string(&service).expect("serialize service"),
-                    created_by: MachineId("local".into()),
+                    created_by: MachineId::new("local"),
                     created_at: 1,
                 }],
                 removed_services: Vec::new(),
@@ -4276,7 +4286,7 @@ mod tests {
                     namespace: namespace.clone(),
                     volume_name: "data".into(),
                     scope: VolumeScope::Single,
-                    machine_id: MachineId("machine-a".into()),
+                    machine_id: MachineId::new("machine-a"),
                     quota: "10G".into(),
                     mode: "0750".into(),
                     owner: "999:999".into(),
@@ -4289,7 +4299,7 @@ mod tests {
                 deploy: DeployRecord {
                     deploy_id,
                     namespace: namespace.clone(),
-                    coordinator_machine_id: MachineId("local".into()),
+                    coordinator_machine_id: MachineId::new("local"),
                     manifest_hash: "manifest".into(),
                     state: DeployState::Committed,
                     started_at: 1,
@@ -4319,8 +4329,8 @@ mod tests {
     #[tokio::test]
     async fn export_manifest_surfaces_release_referencing_missing_revision() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("prod".into());
-        let deploy_id = DeployId("deploy-1".into());
+        let namespace = Namespace::new("prod");
+        let deploy_id = DeployId::new("deploy-1");
 
         store
             .commit_deploy(&DeployCommit {
@@ -4350,7 +4360,7 @@ mod tests {
                 deploy: DeployRecord {
                     deploy_id,
                     namespace: namespace.clone(),
-                    coordinator_machine_id: MachineId("local".into()),
+                    coordinator_machine_id: MachineId::new("local"),
                     manifest_hash: "manifest".into(),
                     state: DeployState::Committed,
                     started_at: 1,
@@ -4378,11 +4388,11 @@ mod tests {
     #[tokio::test]
     async fn export_manifest_surfaces_stored_spec_service_mismatch() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let mut service = test_service();
         service.name = "wrong-service".into();
         let revision_hash = "rev-api".to_string();
-        let deploy_id = DeployId("deploy-1".into());
+        let deploy_id = DeployId::new("deploy-1");
 
         store
             .commit_deploy(&DeployCommit {
@@ -4392,7 +4402,7 @@ mod tests {
                     service: "api".into(),
                     revision_hash: revision_hash.clone(),
                     spec_json: serde_json::to_string(&service).expect("serialize service"),
-                    created_by: MachineId("local".into()),
+                    created_by: MachineId::new("local"),
                     created_at: 1,
                 }],
                 removed_services: Vec::new(),
@@ -4417,7 +4427,7 @@ mod tests {
                 deploy: DeployRecord {
                     deploy_id,
                     namespace: namespace.clone(),
-                    coordinator_machine_id: MachineId("local".into()),
+                    coordinator_machine_id: MachineId::new("local"),
                     manifest_hash: "manifest".into(),
                     state: DeployState::Committed,
                     started_at: 1,
@@ -4521,8 +4531,8 @@ mod tests {
                 id: "transfer-1".into(),
                 namespace: "prod".into(),
                 volume: "data".into(),
-                source_machine: MachineId("machine-a".into()),
-                target_machine: MachineId("machine-b".into()),
+                source_machine: MachineId::new("machine-a"),
+                target_machine: MachineId::new("machine-b"),
                 status: status.into(),
                 stage: "finished".into(),
                 snapshot_name: "ployz-move-manifest-data".into(),

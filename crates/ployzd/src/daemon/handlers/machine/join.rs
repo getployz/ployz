@@ -8,7 +8,7 @@ pub(in crate::daemon::handlers::machine) use self::coordination::release_reserve
 
 use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions,
-    MachineTransitionGoal,
+    MachineSelfTransition,
 };
 use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership};
 use tokio::task::JoinSet;
@@ -188,7 +188,7 @@ impl DaemonState {
                 }
             };
             tracing::info!(%target, "machine add invite token issued");
-            let target_machine_id = MachineId(target.clone());
+            let target_machine_id = MachineId::new(target.clone());
             let mut subnet_claim = match self.reserve_machine_subnet(&target_machine_id).await {
                 Ok(claim) => claim,
                 Err(err) => {
@@ -281,7 +281,7 @@ impl DaemonState {
                 );
             }
         };
-        let machine_id = MachineId(target.to_string());
+        let machine_id = MachineId::new(target.to_string());
         let Some(record) =
             (match super::list::find_machine_record(&active.mesh.store, &machine_id).await {
                 Ok(record) => record,
@@ -349,9 +349,7 @@ impl DaemonState {
             nats_client,
             NodeCommandSubject::machine_transition_self(&record.id),
             DaemonRequest::MachineTransitionSelf {
-                goal: MachineTransitionGoal::Activate,
-                assigned_subnet: Some(assigned_subnet),
-                force: false,
+                transition: MachineSelfTransition::Activate { assigned_subnet },
             },
         )
         .await
@@ -392,17 +390,17 @@ impl DaemonState {
     }
 
     pub(crate) async fn handle_machine_drain(&mut self, target: &str) -> DaemonResponse {
-        let machine_id = MachineId(target.to_string());
+        let machine_id = MachineId::new(target.to_string());
         if machine_id == self.identity.machine_id {
             return self
-                .handle_machine_transition_self(MachineTransitionGoal::Drain, None, false)
+                .handle_machine_transition_self(MachineSelfTransition::Drain)
                 .await;
         }
         self.handle_remote_machine_drain(target).await
     }
 
     pub(crate) async fn handle_remote_machine_drain(&self, target: &str) -> DaemonResponse {
-        let machine_id = MachineId(target.to_string());
+        let machine_id = MachineId::new(target.to_string());
         if machine_id == self.identity.machine_id {
             return self.err(
                 "LOCAL_DRAIN_REQUIRES_EXCLUSIVE_LANE",
@@ -439,9 +437,7 @@ impl DaemonState {
             .request(
                 NodeCommandSubject::machine_transition_self(&record.id),
                 &DaemonRequest::MachineTransitionSelf {
-                    goal: MachineTransitionGoal::Drain,
-                    assigned_subnet: None,
-                    force: false,
+                    transition: MachineSelfTransition::Drain,
                 },
             )
             .await;
@@ -495,10 +491,10 @@ impl DaemonState {
         target: &str,
         force: bool,
     ) -> DaemonResponse {
-        let machine_id = MachineId(target.to_string());
+        let machine_id = MachineId::new(target.to_string());
         if machine_id == self.identity.machine_id {
             return self
-                .handle_machine_transition_self(MachineTransitionGoal::Standby, None, force)
+                .handle_machine_transition_self(MachineSelfTransition::Standby { force })
                 .await;
         }
         self.handle_remote_machine_standby(target, force).await
@@ -509,7 +505,7 @@ impl DaemonState {
         target: &str,
         force: bool,
     ) -> DaemonResponse {
-        let machine_id = MachineId(target.to_string());
+        let machine_id = MachineId::new(target.to_string());
         if machine_id == self.identity.machine_id {
             return self.err(
                 "LOCAL_STANDBY_REQUIRES_EXCLUSIVE_LANE",
@@ -546,9 +542,7 @@ impl DaemonState {
             .request(
                 NodeCommandSubject::machine_transition_self(&record.id),
                 &DaemonRequest::MachineTransitionSelf {
-                    goal: MachineTransitionGoal::Standby,
-                    assigned_subnet: None,
-                    force,
+                    transition: MachineSelfTransition::Standby { force },
                 },
             )
             .await;

@@ -80,7 +80,7 @@ pub(crate) fn duplicate_subnet_claims(
         claimants_by_subnet
             .entry(subnet.to_string())
             .or_default()
-            .push(machine.id.0.clone());
+            .push(machine.id.as_str().to_string());
     }
 
     claimants_by_subnet
@@ -105,7 +105,7 @@ mod tests {
 
     fn test_machine(id: &str, subnet: Option<Ipv4Net>) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
@@ -114,8 +114,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec![],
             lifecycle: MachineLifecycle::Standby,
-            storage: true,
-            storage_participation: crate::model::StorageParticipation::default_authority(),
+            storage_role: crate::model::StorageParticipation::default_authority().into(),
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),

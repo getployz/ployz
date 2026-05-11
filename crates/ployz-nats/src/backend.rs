@@ -241,8 +241,8 @@ mod tests {
     #[test]
     fn routing_consumer_filter_uses_scope() {
         let scope = NatsScope::new(
-            ployz_types::model::InstallationId("inst-acme".into()),
-            ployz_types::model::AuthorityId("auth-sin".into()),
+            ployz_types::model::InstallationId::new("inst-acme"),
+            ployz_types::model::AuthorityId::new("auth-sin"),
         );
         let config = routing_consumer_config(1, "_INBOX.runtime.1".to_string(), &scope);
 
@@ -330,7 +330,7 @@ mod tests {
 
     fn test_machine(id: &str) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.to_string()),
+            id: MachineId::new(id.to_string()),
             public_key: ployz_types::model::PublicKey([0; 32]),
             overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
             topology: ployz_types::model::MachineTopology::local(),
@@ -339,8 +339,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: ployz_types::model::MachineLifecycle::Active,
-            storage: true,
-            storage_participation: ployz_types::model::StorageParticipation::default_authority(),
+            storage_role: ployz_types::model::StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: Default::default(),

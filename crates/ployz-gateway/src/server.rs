@@ -266,7 +266,7 @@ where
     // The multi-thread runtime's worker threads keep polling store events while
     // Pingora blocks the main thread.
     let sync_snapshot = shared_snapshot.clone();
-    let sync_machine_id = MachineId(config.machine_id.clone());
+    let sync_machine_id = MachineId::new(config.machine_id.clone());
     runtime.spawn(async move {
         if let Err(err) = crate::sync::run_sync_loop(store, sync_snapshot, sync_machine_id).await {
             tracing::warn!(?err, "gateway sync loop exited");
@@ -387,18 +387,15 @@ mod tests {
 
         let snapshot = GatewaySnapshot {
             http_routes: vec![HttpRouteView {
-                route_id: RouteId::http(
-                    &ServiceKey::new(Namespace("prod".into()), "web".into()),
-                    0,
-                ),
-                namespace: Namespace("prod".into()),
+                route_id: RouteId::http(&ServiceKey::new(Namespace::new("prod"), "web".into()), 0),
+                namespace: Namespace::new("prod"),
                 service: "web".into(),
                 revision_hash: "rev-1".into(),
                 hostnames: vec!["example.com".into()],
                 path_prefix: "/".into(),
                 backends: vec![BackendView {
-                    instance_id: InstanceId("inst-1".into()),
-                    machine_id: MachineId("machine-1".into()),
+                    instance_id: InstanceId::new("inst-1"),
+                    machine_id: MachineId::new("machine-1"),
                     topology: MachineTopology::local(),
                     service_port: "http".into(),
                     address: upstream_addr,
@@ -673,18 +670,15 @@ mod tests {
     fn gateway_snapshot(upstream_addr: SocketAddr) -> GatewaySnapshot {
         GatewaySnapshot {
             http_routes: vec![HttpRouteView {
-                route_id: RouteId::http(
-                    &ServiceKey::new(Namespace("prod".into()), "web".into()),
-                    0,
-                ),
-                namespace: Namespace("prod".into()),
+                route_id: RouteId::http(&ServiceKey::new(Namespace::new("prod"), "web".into()), 0),
+                namespace: Namespace::new("prod"),
                 service: "web".into(),
                 revision_hash: "rev-1".into(),
                 hostnames: vec!["example.com".into()],
                 path_prefix: "/".into(),
                 backends: vec![BackendView {
-                    instance_id: InstanceId("inst-1".into()),
-                    machine_id: MachineId("machine-1".into()),
+                    instance_id: InstanceId::new("inst-1"),
+                    machine_id: MachineId::new("machine-1"),
                     topology: MachineTopology::local(),
                     service_port: "http".into(),
                     address: upstream_addr,

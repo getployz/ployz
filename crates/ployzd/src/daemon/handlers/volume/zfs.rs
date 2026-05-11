@@ -195,7 +195,7 @@ impl TransferStore {
     ) -> Result<TransferRecord, String> {
         let record = TransferRecord {
             id,
-            namespace: namespace.0.clone(),
+            namespace: namespace.as_str().to_string(),
             volume: volume.to_string(),
             source_machine,
             target_machine,
@@ -228,7 +228,7 @@ impl TransferStore {
         from_snapshot_name: Option<&str>,
     ) -> Result<Option<TransferRecord>, String> {
         Ok(self.list()?.into_iter().find(|record| {
-            record.namespace == namespace.0
+            record.namespace == namespace.as_str()
                 && record.volume == volume
                 && record.source_machine == *source_machine
                 && record.target_machine == *target_machine
@@ -425,7 +425,7 @@ impl TransferStore {
 
     fn delete_claim_for(&self, record: &TransferRecord) {
         let key = move_claim_key(
-            &Namespace(record.namespace.clone()),
+            &Namespace::new(record.namespace.clone()),
             &record.volume,
             &record.source_machine,
             &record.target_machine,
@@ -495,9 +495,9 @@ fn move_claim_key(
 ) -> String {
     let raw = format!(
         "{}\n{volume}\n{}\n{}\n{snapshot_name}\n{}",
-        namespace.0,
-        source_machine.0,
-        target_machine.0,
+        namespace.as_str(),
+        source_machine.as_str(),
+        target_machine.as_str(),
         from_snapshot_name.unwrap_or("")
     );
     ployz_types::spec::stable_hash_hex(raw.as_bytes())
@@ -554,19 +554,19 @@ impl DaemonState {
         volume: &str,
         machine: Option<&str>,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = Namespace::new(namespace.to_string());
         let target_machine: Option<String> = match machine {
             Some(machine) => Some(machine.to_string()),
             None => match self.volume_record(&namespace, volume).await {
-                Ok(record) => Some(record.machine_id.0),
+                Ok(record) => Some(record.machine_id.as_str().to_string()),
                 Err(error) => return self.err("VOLUME_ZFS_INSPECT_FAILED", error),
             },
         };
         if let Some(machine) = target_machine
-            && machine != self.identity.machine_id.0
+            && machine != self.identity.machine_id.as_str()
         {
             return self
-                .forward_volume_zfs_inspect(&namespace.0, volume, &machine)
+                .forward_volume_zfs_inspect(&namespace.as_str(), volume, &machine)
                 .await;
         }
         match self.inspect_local_volume_zfs(&namespace, volume).await {
@@ -584,7 +584,7 @@ impl DaemonState {
         volume: &str,
         snapshot: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = Namespace::new(namespace.to_string());
         let record = match self.volume_record(&namespace, volume).await {
             Ok(record) => record,
             Err(error) => return self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error),
@@ -619,8 +619,8 @@ impl DaemonState {
         mode: &str,
         owner: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
-        let source_namespace = Namespace(source_namespace.to_string());
+        let namespace = Namespace::new(namespace.to_string());
+        let source_namespace = Namespace::new(source_namespace.to_string());
         match self
             .clone_local_volume_zfs(
                 &namespace,
@@ -652,8 +652,8 @@ impl DaemonState {
         source_volume: &str,
         snapshot: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
-        let source_namespace = Namespace(source_namespace.to_string());
+        let namespace = Namespace::new(namespace.to_string());
+        let source_namespace = Namespace::new(source_namespace.to_string());
         match self
             .cleanup_uncommitted_local_volume_clone_zfs(
                 &namespace,
@@ -678,7 +678,7 @@ impl DaemonState {
         target_machine: &str,
         from_snapshot: Option<&str>,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = Namespace::new(namespace.to_string());
         let record = match self.volume_record(&namespace, volume).await {
             Ok(record) => record,
             Err(error) => return self.err("VOLUME_ZFS_SEND_FAILED", error),
@@ -688,12 +688,14 @@ impl DaemonState {
                 "VOLUME_ZFS_SCOPE_NOT_SUPPORTED",
                 format!(
                     "volume '{}/{}' has scope {:?}; only Single is supported in this build",
-                    namespace.0, volume, record.scope
+                    namespace.as_str(),
+                    volume,
+                    record.scope
                 ),
             );
         }
         let source = match self
-            .find_volume_move_source_machine(&record.machine_id.0)
+            .find_volume_move_source_machine(&record.machine_id.as_str())
             .await
         {
             Ok(record) => record,
@@ -907,7 +909,7 @@ impl DaemonState {
         volume: &str,
         snapshot: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = Namespace::new(namespace.to_string());
         match self
             .snapshot_local_source_volume_zfs(&namespace, volume, snapshot)
             .await
@@ -926,7 +928,7 @@ impl DaemonState {
         volume: &str,
         snapshot: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = Namespace::new(namespace.to_string());
         match self
             .snapshot_guid_local_volume_zfs(&namespace, volume, snapshot)
             .await
@@ -949,7 +951,7 @@ impl DaemonState {
         from_snapshot: Option<&str>,
         from_snapshot_guid: Option<u64>,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = Namespace::new(namespace.to_string());
         let record = match self.volume_record(&namespace, volume).await {
             Ok(record) => record,
             Err(error) => return self.err("VOLUME_ZFS_PEER_START_SEND_FAILED", error),
@@ -959,7 +961,10 @@ impl DaemonState {
                 "VOLUME_ZFS_PEER_START_SEND_FAILED",
                 format!(
                     "volume '{}/{}' is pinned to machine '{}', not local machine '{}'",
-                    namespace.0, volume, record.machine_id, self.identity.machine_id
+                    namespace.as_str(),
+                    volume,
+                    record.machine_id,
+                    self.identity.machine_id
                 ),
             );
         }
@@ -1040,7 +1045,7 @@ impl DaemonState {
             .await
             .map_err(|error| error.to_string())?;
         Ok(VolumeZfsInspectPayload {
-            namespace: namespace.0.clone(),
+            namespace: namespace.as_str().to_string(),
             volume: volume.to_string(),
             machine_id: record.machine_id,
             dataset,
@@ -1072,7 +1077,7 @@ impl DaemonState {
             .await
             .map_err(|error| error.to_string())?;
         Ok(VolumeZfsSnapshotPayload {
-            namespace: namespace.0.clone(),
+            namespace: namespace.as_str().to_string(),
             volume: volume.to_string(),
             machine_id: record.machine_id,
             dataset,
@@ -1091,7 +1096,10 @@ impl DaemonState {
         if record.machine_id != self.identity.machine_id {
             return Err(format!(
                 "volume '{}/{}' is pinned to machine '{}', not local machine '{}'",
-                namespace.0, volume, record.machine_id, self.identity.machine_id
+                namespace.as_str(),
+                volume,
+                record.machine_id,
+                self.identity.machine_id
             ));
         }
         self.snapshot_local_volume_zfs(namespace, volume, snapshot)
@@ -1115,13 +1123,15 @@ impl DaemonState {
         if source_record.scope != VolumeScope::Single {
             return Err(format!(
                 "volume '{}/{}' has scope {:?}, expected single",
-                source_namespace.0, source_volume, source_record.scope
+                source_namespace.as_str(),
+                source_volume,
+                source_record.scope
             ));
         }
         if source_record.machine_id != self.identity.machine_id {
             return Err(format!(
                 "volume '{}/{}' is pinned to machine '{}', not local machine '{}'",
-                source_namespace.0,
+                source_namespace.as_str(),
                 source_volume,
                 source_record.machine_id,
                 self.identity.machine_id
@@ -1141,7 +1151,8 @@ impl DaemonState {
         {
             return Err(format!(
                 "volume '{}/{}' already has a committed record",
-                namespace.0, volume
+                namespace.as_str(),
+                volume
             ));
         }
 
@@ -1150,7 +1161,10 @@ impl DaemonState {
         let target_dataset = volume_dataset(driver.root_dataset(), namespace, volume);
         let target = DatasetSpec {
             dataset: target_dataset.clone(),
-            mountpoint: driver.root_mountpoint().join(&namespace.0).join(volume),
+            mountpoint: driver
+                .root_mountpoint()
+                .join(&namespace.as_str())
+                .join(volume),
             quota: quota.to_string(),
             mode: mode.to_string(),
             owner: owner.to_string(),
@@ -1166,9 +1180,9 @@ impl DaemonState {
                 &target,
                 &CloneMetadata {
                     deploy_id: deploy_id.to_string(),
-                    namespace: namespace.0.clone(),
+                    namespace: namespace.as_str().to_string(),
                     volume: volume.to_string(),
-                    source_namespace: source_namespace.0.clone(),
+                    source_namespace: source_namespace.as_str().to_string(),
                     source_volume: source_volume.to_string(),
                     snapshot: snapshot.to_string(),
                 },
@@ -1176,9 +1190,9 @@ impl DaemonState {
             .await
             .map_err(|error| error.to_string())?;
         Ok(VolumeZfsClonePayload {
-            namespace: namespace.0.clone(),
+            namespace: namespace.as_str().to_string(),
             volume: volume.to_string(),
-            source_namespace: source_namespace.0.clone(),
+            source_namespace: source_namespace.as_str().to_string(),
             source_volume: source_volume.to_string(),
             machine_id: self.identity.machine_id.clone(),
             source_dataset,
@@ -1224,9 +1238,9 @@ impl DaemonState {
                     &dataset,
                     &CloneMetadata {
                         deploy_id: deploy_id.to_string(),
-                        namespace: namespace.0.clone(),
+                        namespace: namespace.as_str().to_string(),
                         volume: volume.to_string(),
-                        source_namespace: source_namespace.0.clone(),
+                        source_namespace: source_namespace.as_str().to_string(),
                         source_volume: source_volume.to_string(),
                         snapshot: snapshot.to_string(),
                     },
@@ -1236,7 +1250,9 @@ impl DaemonState {
             if !destroyed {
                 target_cleanup_error = Some(format!(
                     "refusing to clean up uncommitted clone '{}/{}': dataset '{}' exists without matching clone metadata",
-                    namespace.0, volume, dataset
+                    namespace.as_str(),
+                    volume,
+                    dataset
                 ));
             }
         }
@@ -1264,7 +1280,7 @@ impl DaemonState {
             .await
             .map_err(|error| error.to_string())?;
         Ok(VolumeZfsSnapshotPayload {
-            namespace: namespace.0.clone(),
+            namespace: namespace.as_str().to_string(),
             volume: volume.to_string(),
             machine_id: self.identity.machine_id.clone(),
             dataset,
@@ -1337,7 +1353,7 @@ impl DaemonState {
         volume: &str,
         snapshot: &str,
     ) -> DaemonResponse {
-        let Some(machine) = self.find_machine(&machine_id.0).await else {
+        let Some(machine) = self.find_machine(&machine_id.as_str()).await else {
             return self.err(
                 "MACHINE_NOT_FOUND",
                 format!("machine '{}' not found", machine_id),
@@ -1351,7 +1367,7 @@ impl DaemonState {
             .request(
                 NodeCommandSubject::volume_zfs_snapshot(&machine.id),
                 &ployz_api::DaemonRequest::VolumeZfsSnapshot {
-                    namespace: namespace.0.clone(),
+                    namespace: namespace.as_str().to_string(),
                     volume: volume.to_string(),
                     snapshot: snapshot.to_string(),
                 },
@@ -1366,7 +1382,9 @@ impl DaemonState {
     async fn find_machine(&self, machine: &str) -> Option<ployz_types::model::MachineMembership> {
         let active = self.active.as_ref()?;
         let machines = active.mesh.store.list_machines().await.ok()?;
-        machines.into_iter().find(|record| record.id.0 == machine)
+        machines
+            .into_iter()
+            .find(|record| record.id.as_str() == machine)
     }
 
     async fn find_active_machine(&self, machine: &str) -> Result<MachineMembership, String> {
@@ -1405,7 +1423,7 @@ impl DaemonState {
 }
 
 fn volume_dataset(root: &str, namespace: &Namespace, volume: &str) -> String {
-    format!("{root}/{}/{}", namespace.0, volume)
+    format!("{root}/{}/{}", namespace.as_str(), volume)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1542,7 +1560,7 @@ async fn send_zfs_stream_from_local(
         .map_err(|err| format!("connect zfs transfer target {address}: {err}"))?;
     let (reader, mut writer) = stream.into_split();
     let open = ZfsTransferOpen {
-        namespace: record.namespace.0.clone(),
+        namespace: record.namespace.as_str().to_string(),
         volume: record.volume_name.clone(),
         snapshot: snapshot.to_string(),
         expected_guid,
@@ -1647,7 +1665,7 @@ async fn snapshot_on_machine(
             .await
             .map_err(|error| error.to_string())?;
         return Ok(VolumeZfsSnapshotPayload {
-            namespace: namespace.0.clone(),
+            namespace: namespace.as_str().to_string(),
             volume: volume.to_string(),
             machine_id: machine.id.clone(),
             dataset,
@@ -1661,7 +1679,7 @@ async fn snapshot_on_machine(
         .request(
             NodeCommandSubject::volume_zfs_snapshot(&machine.id),
             &ployz_api::DaemonRequest::VolumeZfsPeerSnapshot {
-                namespace: namespace.0.clone(),
+                namespace: namespace.as_str().to_string(),
                 volume: volume.to_string(),
                 snapshot: snapshot.to_string(),
             },
@@ -1689,7 +1707,7 @@ async fn snapshot_guid_on_machine(
             .await
             .map_err(|error| error.to_string())?;
         return Ok(VolumeZfsSnapshotPayload {
-            namespace: namespace.0.clone(),
+            namespace: namespace.as_str().to_string(),
             volume: volume.to_string(),
             machine_id: machine.id.clone(),
             dataset,
@@ -1703,7 +1721,7 @@ async fn snapshot_guid_on_machine(
         .request(
             NodeCommandSubject::volume_zfs_snapshot_guid(&machine.id),
             &ployz_api::DaemonRequest::VolumeZfsPeerSnapshotGuid {
-                namespace: namespace.0.clone(),
+                namespace: namespace.as_str().to_string(),
                 volume: volume.to_string(),
                 snapshot: snapshot.to_string(),
             },
@@ -1749,10 +1767,10 @@ async fn start_send_on_machine(
         .request(
             NodeCommandSubject::volume_zfs_start_send(&source.id),
             &ployz_api::DaemonRequest::VolumeZfsPeerStartSend {
-                namespace: record.namespace.0.clone(),
+                namespace: record.namespace.as_str().to_string(),
                 volume: record.volume_name.clone(),
                 snapshot: snapshot.to_string(),
-                target_machine: target.id.0.clone(),
+                target_machine: target.id.as_str().to_string(),
                 expected_guid,
                 from_snapshot: from_snapshot.map(str::to_string),
                 from_snapshot_guid,
@@ -1833,10 +1851,10 @@ mod tests {
     fn begin(store: &TransferStore) -> super::TransferRecord {
         store
             .begin(
-                &Namespace("default".into()),
+                &Namespace::new("default"),
                 "data",
-                MachineId("source".into()),
-                MachineId("target".into()),
+                MachineId::new("source"),
+                MachineId::new("target"),
                 "snap".into(),
                 None,
             )
@@ -1846,10 +1864,10 @@ mod tests {
     fn create_claim(store: &TransferStore, transfer_id: &str) -> MoveClaimOutcome {
         store
             .create_move_claim(
-                &Namespace("default".into()),
+                &Namespace::new("default"),
                 "data",
-                &MachineId("source".into()),
-                &MachineId("target".into()),
+                &MachineId::new("source"),
+                &MachineId::new("target"),
                 "snap",
                 None,
                 transfer_id,
@@ -1859,10 +1877,10 @@ mod tests {
 
     fn claim_path(store: &TransferStore) -> PathBuf {
         let key = super::move_claim_key(
-            &Namespace("default".into()),
+            &Namespace::new("default"),
             "data",
-            &MachineId("source".into()),
-            &MachineId("target".into()),
+            &MachineId::new("source"),
+            &MachineId::new("target"),
             "snap",
             None,
         );
@@ -1921,10 +1939,10 @@ mod tests {
             MoveClaimOutcome::Created
         ));
         store.delete_move_claim(
-            &Namespace("default".into()),
+            &Namespace::new("default"),
             "data",
-            &MachineId("source".into()),
-            &MachineId("target".into()),
+            &MachineId::new("source"),
+            &MachineId::new("target"),
             "snap",
             None,
         );
@@ -1948,10 +1966,10 @@ mod tests {
             MoveClaimOutcome::Created => panic!("claim should already exist"),
         }
         store.delete_move_claim(
-            &Namespace("default".into()),
+            &Namespace::new("default"),
             "data",
-            &MachineId("source".into()),
-            &MachineId("target".into()),
+            &MachineId::new("source"),
+            &MachineId::new("target"),
             "snap",
             None,
         );
@@ -1979,10 +1997,10 @@ mod tests {
             delayed_store
                 .begin_with_id(
                     "transfer-a".into(),
-                    &Namespace("default".into()),
+                    &Namespace::new("default"),
                     "data",
-                    MachineId("source".into()),
-                    MachineId("target".into()),
+                    MachineId::new("source"),
+                    MachineId::new("target"),
                     "snap".into(),
                     None,
                     super::now_unix_secs(),
@@ -2048,10 +2066,10 @@ mod tests {
 
         let found = store
             .find_reusable(
-                &Namespace("default".into()),
+                &Namespace::new("default"),
                 "data",
-                &MachineId("source".into()),
-                &MachineId("target".into()),
+                &MachineId::new("source"),
+                &MachineId::new("target"),
                 "snap",
                 None,
             )
@@ -2075,10 +2093,10 @@ mod tests {
 
             let found = store
                 .find_reusable(
-                    &Namespace("default".into()),
+                    &Namespace::new("default"),
                     "data",
-                    &MachineId("source".into()),
-                    &MachineId("target".into()),
+                    &MachineId::new("source"),
+                    &MachineId::new("target"),
                     "snap",
                     None,
                 )

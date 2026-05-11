@@ -395,7 +395,7 @@ impl GatewayProjector {
             (
                 route.hostnames.is_empty(),
                 Reverse(route.path_prefix.len()),
-                route.namespace.0.clone(),
+                route.namespace.as_str().to_string(),
                 route.service.clone(),
                 route.route_id.clone(),
             )
@@ -1139,8 +1139,8 @@ fn routable_backends_by_port(
     for values in backends.values_mut() {
         values.sort_by_key(|backend| {
             (
-                backend.machine_id.0.clone(),
-                backend.instance_id.0.clone(),
+                backend.machine_id.as_str().to_string(),
+                backend.instance_id.as_str().to_string(),
                 backend.address,
             )
         });
@@ -1293,7 +1293,7 @@ mod tests {
 
     #[test]
     fn project_only_routes_release_ready_instances() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let old = service_spec(&namespace, "api", "v1", vec!["old.example.com".into()]);
         let current = service_spec(&namespace, "api", "v2", vec!["api.example.com".into()]);
 
@@ -1339,12 +1339,12 @@ mod tests {
         let [backend] = route.backends.as_slice() else {
             panic!("expected one backend");
         };
-        assert_eq!(backend.instance_id.0, "inst-ready");
+        assert_eq!(backend.instance_id.as_str(), "inst-ready");
     }
 
     #[test]
     fn split_release_includes_backends_from_multiple_revisions() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let stable = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
         let canary = service_spec(&namespace, "api", "v2", vec!["api.example.com".into()]);
         let stable_hash = stable.revision_hash().expect("stable revision hash");
@@ -1377,7 +1377,7 @@ mod tests {
                         slot_record("slot-stable", "inst-stable", &stable),
                         slot_record("slot-canary", "inst-canary", &canary),
                     ],
-                    updated_by_deploy_id: DeployId(String::from("dep-1")),
+                    updated_by_deploy_id: DeployId::new(String::from("dep-1")),
                     updated_at: 1,
                 },
             }],
@@ -1412,7 +1412,7 @@ mod tests {
 
     #[test]
     fn specific_host_beats_wildcard_and_longer_path_beats_shorter() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let specific_route_id =
             RouteId::http(&ServiceKey::new(namespace.clone(), "specific".into()), 0);
         let snapshot = GatewaySnapshot {
@@ -1448,7 +1448,7 @@ mod tests {
 
     #[test]
     fn duplicate_http_host_and_path_is_rejected() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let left = service_spec(&namespace, "one", "v1", vec!["api.example.com".into()]);
         let right = service_spec(&namespace, "two", "v1", vec!["api.example.com".into()]);
 
@@ -1489,7 +1489,7 @@ mod tests {
 
     #[test]
     fn tcp_routes_are_projected_with_no_serving_dependency() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let mut spec = service_spec(&namespace, "db", "v1", Vec::new());
         spec.routes = vec![RouteSpec::Tcp(ployz_types::spec::TcpRoute {
             service_port: "sql".into(),
@@ -1531,7 +1531,7 @@ mod tests {
 
     #[test]
     fn projected_backend_includes_machine_topology() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let spec = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
         let machine = MachineMembership {
             topology: MachineTopology::new("us-east", Some("use1-a"))
@@ -1571,7 +1571,7 @@ mod tests {
 
     #[test]
     fn projection_fails_when_routable_instance_references_missing_machine() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let spec = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
 
         let error = project(RoutingState {
@@ -1601,8 +1601,8 @@ mod tests {
                 machine_id,
                 ..
             } => {
-                assert_eq!(instance_id.0, "inst-ready");
-                assert_eq!(machine_id.0, "machine-a");
+                assert_eq!(instance_id.as_str(), "inst-ready");
+                assert_eq!(machine_id.as_str(), "machine-a");
             }
             ProjectionError::MissingRevision { .. }
             | ProjectionError::InvalidRevisionSpec { .. }
@@ -1613,7 +1613,7 @@ mod tests {
 
     #[test]
     fn route_id_and_hostname_keys_are_stable_and_normalized() {
-        let service = ServiceKey::new(Namespace("prod".into()), "api".into());
+        let service = ServiceKey::new(Namespace::new("prod"), "api".into());
         assert_eq!(RouteId::http(&service, 2).as_str(), "http:prod:api:2");
         assert_eq!(RouteId::tcp(&service, 1).as_str(), "tcp:prod:api:1");
         assert_eq!(
@@ -1633,7 +1633,7 @@ mod tests {
 
     #[test]
     fn instance_event_reprojects_only_the_affected_service() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let api = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
         let web = service_spec(&namespace, "web", "v1", vec!["web.example.com".into()]);
         let api_service = ServiceKey::new(namespace.clone(), "api".into());
@@ -1699,7 +1699,7 @@ mod tests {
 
     #[test]
     fn thousand_route_release_update_touches_one_route() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let mut revisions = Vec::new();
         let mut releases = Vec::new();
         let mut service_keys = Vec::new();
@@ -1759,7 +1759,7 @@ mod tests {
 
     #[test]
     fn single_route_update_does_not_run_global_http_validation() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let mut revisions = Vec::new();
         let mut releases = Vec::new();
         for index in 0..1_000 {
@@ -1801,7 +1801,7 @@ mod tests {
 
     #[test]
     fn failed_reprojection_restores_existing_routes() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let spec = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
         let mut projector = GatewayProjector::new(RoutingState {
             machines: vec![machine_record("machine-a")],
@@ -1843,7 +1843,7 @@ mod tests {
 
     #[test]
     fn release_removed_emits_route_removal_delta() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let spec = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
         let release = release_record(
             &namespace,
@@ -1893,7 +1893,7 @@ mod tests {
     ) -> ServiceSpec {
         ServiceSpec {
             name: service.into(),
-            placement: Placement::Replicated { count: 1 },
+            placement: Placement::replicated(1),
             template: ContainerSpec {
                 image: format!("example:{image_tag}"),
                 command: None,
@@ -1931,13 +1931,13 @@ mod tests {
 
     fn revision_record(spec: &ServiceSpec) -> ServiceRevisionRecord {
         ServiceRevisionRecord {
-            namespace: Namespace("prod".into()),
+            namespace: Namespace::new("prod"),
             service: spec.name.clone(),
             revision_hash: spec.revision_hash().expect("revision hash"),
             spec_json: spec
                 .canonical_revision_json()
                 .expect("canonical revision json"),
-            created_by: MachineId("founder".into()),
+            created_by: MachineId::new("founder"),
             created_at: 1,
         }
     }
@@ -1958,7 +1958,7 @@ mod tests {
                     revision_hash: revision_hash.into(),
                 },
                 slots,
-                updated_by_deploy_id: DeployId("dep-1".into()),
+                updated_by_deploy_id: DeployId::new("dep-1"),
                 updated_at: 1,
             },
         }
@@ -1966,9 +1966,9 @@ mod tests {
 
     fn slot_record(slot_id: &str, instance_id: &str, spec: &ServiceSpec) -> ServiceReleaseSlot {
         ServiceReleaseSlot {
-            slot_id: SlotId(slot_id.into()),
-            machine_id: MachineId("machine-a".into()),
-            active_instance_id: InstanceId(instance_id.into()),
+            slot_id: SlotId::new(slot_id),
+            machine_id: MachineId::new("machine-a"),
+            active_instance_id: InstanceId::new(instance_id),
             revision_hash: spec.revision_hash().expect("revision hash"),
         }
     }
@@ -1983,13 +1983,13 @@ mod tests {
         spec: &ServiceSpec,
     ) -> InstanceStatusRecord {
         InstanceStatusRecord {
-            instance_id: InstanceId(instance_id.into()),
+            instance_id: InstanceId::new(instance_id),
             namespace: namespace.clone(),
             service: service.into(),
-            slot_id: SlotId(slot_id.into()),
-            machine_id: MachineId("machine-a".into()),
+            slot_id: SlotId::new(slot_id),
+            machine_id: MachineId::new("machine-a"),
             revision_hash: spec.revision_hash().expect("revision hash"),
-            deploy_id: DeployId("dep-1".into()),
+            deploy_id: DeployId::new("dep-1"),
             docker_container_id: "container".into(),
             overlay_ip: Some(Ipv4Addr::new(10, 0, 0, 2)),
             backend_ports: BTreeMap::from([
@@ -2011,7 +2011,7 @@ mod tests {
 
     fn machine_record(id: &str) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay ip")),
             topology: MachineTopology::local(),
@@ -2020,8 +2020,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
-            storage: true,
-            storage_participation: StorageParticipation::default_authority(),
+            storage_role: StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: BTreeMap::new(),
@@ -2030,8 +2029,8 @@ mod tests {
 
     fn backend(id: &str) -> BackendView {
         BackendView {
-            instance_id: InstanceId(id.into()),
-            machine_id: MachineId("machine-a".into()),
+            instance_id: InstanceId::new(id),
+            machine_id: MachineId::new("machine-a"),
             topology: MachineTopology::local(),
             service_port: "http".into(),
             address: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 2), 8080)),
@@ -2089,7 +2088,7 @@ mod tests {
 
     #[test]
     fn tls_events_do_not_reproject_routes_and_challenge_events_reuse_cert_material() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let spec = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
         let service = ServiceKey::new(namespace.clone(), "api".into());
         let mut projector = GatewayProjector::new(RoutingState {

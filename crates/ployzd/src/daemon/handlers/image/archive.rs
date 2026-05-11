@@ -669,7 +669,7 @@ mod tests {
         let root = unique_temp_dir("ployz-image-archive-upload");
         let registry = ImageRegistry::new(root.clone());
         let session = registry
-            .register_session("op-1", MachineId("founder".into()), "ployz/op-1")
+            .register_session("op-1", MachineId::new("founder"), "ployz/op-1")
             .await;
         let router = registry.clone().router();
         let work_dir = unique_temp_dir("ployz-image-archive-upload-work");
@@ -709,7 +709,7 @@ mod tests {
 
         let report = upload_archive_to_receiver(
             &ImageReceiveSessionPayload {
-                target_machine: MachineId("target".into()),
+                target_machine: MachineId::new("target"),
                 endpoint,
                 token: String::new(),
                 expires_at_unix_secs: 1,

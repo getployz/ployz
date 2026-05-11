@@ -46,7 +46,7 @@ impl NatsIssuanceCoordinator {
         self.locks
             .acquire(
                 &key,
-                self.owner.0.clone(),
+                self.owner.as_str().to_string(),
                 ReservationId::random().0,
                 self.ttl,
                 now_unix_secs().saturating_add(self.ttl.as_secs()),
@@ -227,7 +227,7 @@ fn hostname_is_advertised(routing: &RoutingState, hostname: &str) -> Result<bool
                 let spec: ServiceSpec =
                     serde_json::from_str(&record.spec_json).map_err(|error| {
                         CertificateError::Http01InvalidServiceRevision {
-                            namespace: record.namespace.0.clone(),
+                            namespace: record.namespace.as_str().to_string(),
                             service: record.service.clone(),
                             revision_hash: record.revision_hash.clone(),
                             message: error.to_string(),
@@ -278,7 +278,7 @@ fn normalize_hostname(hostname: &str) -> String {
 fn machine_id_strings(machine_ids: &[MachineId]) -> Vec<String> {
     machine_ids
         .iter()
-        .map(|machine_id| machine_id.0.clone())
+        .map(|machine_id| machine_id.as_str().to_string())
         .collect::<Vec<_>>()
 }
 
@@ -312,19 +312,15 @@ mod tests {
         let eligibility =
             challenge_eligibility(&routing, "example.com").expect("hostname should be advertised");
 
-        assert!(eligibility.eligible.contains(&MachineId("active".into())));
-        assert!(!eligibility.eligible.contains(&MachineId("standby".into())));
-        assert!(
-            !eligibility
-                .eligible
-                .contains(&MachineId("no-subnet".into()))
-        );
+        assert!(eligibility.eligible.contains(&MachineId::new("active")));
+        assert!(!eligibility.eligible.contains(&MachineId::new("standby")));
+        assert!(!eligibility.eligible.contains(&MachineId::new("no-subnet")));
         assert!(eligibility.excluded.iter().any(|excluded| {
-            excluded.machine_id == MachineId("standby".into())
+            excluded.machine_id == MachineId::new("standby")
                 && excluded.reason == "excluded_by_lifecycle"
         }));
         assert!(eligibility.excluded.iter().any(|excluded| {
-            excluded.machine_id == MachineId("no-subnet".into()) && excluded.reason == "no_subnet"
+            excluded.machine_id == MachineId::new("no-subnet") && excluded.reason == "no_subnet"
         }));
     }
 
@@ -349,17 +345,14 @@ mod tests {
     #[test]
     fn advertised_eligible_machine_missing_ack_blocks_readiness() {
         let eligibility = ChallengeEligibility {
-            eligible: BTreeSet::from([
-                MachineId("machine-a".into()),
-                MachineId("machine-b".into()),
-            ]),
+            eligible: BTreeSet::from([MachineId::new("machine-a"), MachineId::new("machine-b")]),
             excluded: Vec::new(),
         };
-        let observed = BTreeSet::from([MachineId("machine-a".into())]);
+        let observed = BTreeSet::from([MachineId::new("machine-a")]);
 
         let missing = missing_readiness(&eligibility, &observed);
 
-        assert_eq!(missing, vec![MachineId("machine-b".into())]);
+        assert_eq!(missing, vec![MachineId::new("machine-b")]);
     }
 
     #[test]
@@ -383,7 +376,7 @@ mod tests {
 
     fn test_machine(id: &str, lifecycle: MachineLifecycle, has_subnet: bool) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
@@ -392,8 +385,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle,
-            storage: true,
-            storage_participation: ployz_types::model::StorageParticipation::default_authority(),
+            storage_role: ployz_types::model::StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: Default::default(),
@@ -402,7 +394,7 @@ mod tests {
 
     fn test_revision(service: &str, revision_hash: &str, hostname: &str) -> ServiceRevisionRecord {
         ServiceRevisionRecord {
-            namespace: Namespace("prod".into()),
+            namespace: Namespace::new("prod"),
             service: service.into(),
             revision_hash: revision_hash.into(),
             spec_json: serde_json::json!({
@@ -420,14 +412,14 @@ mod tests {
                 }]
             })
             .to_string(),
-            created_by: MachineId("active".into()),
+            created_by: MachineId::new("active"),
             created_at: 1,
         }
     }
 
     fn test_release(service: &str, revision_hash: &str) -> ServiceReleaseRecord {
         ServiceReleaseRecord {
-            namespace: Namespace("prod".into()),
+            namespace: Namespace::new("prod"),
             service: service.into(),
             release: ServiceRelease {
                 primary_revision_hash: revision_hash.into(),
@@ -436,7 +428,7 @@ mod tests {
                     revision_hash: revision_hash.into(),
                 },
                 slots: Vec::new(),
-                updated_by_deploy_id: DeployId("deploy-1".into()),
+                updated_by_deploy_id: DeployId::new("deploy-1"),
                 updated_at: 1,
             },
         }

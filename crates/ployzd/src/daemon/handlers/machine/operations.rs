@@ -496,7 +496,7 @@ impl DaemonState {
                     Ok(Some(machine)) if machine.lifecycle == MachineLifecycle::Active => {
                         notes.push(format!(
                             "bootstrap membership cleanup skipped: machine '{}' is active",
-                            machine_id.0
+                            machine_id.as_str()
                         ));
                     }
                     Ok(Some(_machine)) => {
@@ -505,7 +505,7 @@ impl DaemonState {
                         } else {
                             notes.push(format!(
                                 "bootstrap membership seed '{}' removed",
-                                machine_id.0
+                                machine_id.as_str()
                             ));
                         }
                     }

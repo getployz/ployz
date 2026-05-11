@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn invite_roundtrip_preserves_bootstrap_hints() {
-        let identity = Identity::generate(MachineId("founder".into()), [7; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [7; 32]);
         let subnet = "10.210.1.0/24".parse().expect("valid subnet");
         let network = NetworkConfig::new(
             NetworkName("alpha".into()),
@@ -149,7 +149,7 @@ mod tests {
             Some(network.overlay_ip.0.to_string()),
             Some("wg-public".into()),
             vec![PeerHint {
-                machine_id: MachineId("peer-1".into()),
+                machine_id: MachineId::new("peer-1"),
                 endpoints: vec!["5.6.7.8:51820".into()],
                 wg_public_key: "wg-peer".into(),
                 overlay_ip: "fd00::2".into(),

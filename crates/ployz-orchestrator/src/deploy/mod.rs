@@ -144,7 +144,7 @@ fn invalid_prepared_record(
     message: impl Into<String>,
 ) -> Error {
     Error::Deploy(DeployError::PreparedDeployInvalid {
-        prepared_deploy_id: prepared_deploy_id.0.clone(),
+        prepared_deploy_id: prepared_deploy_id.as_str().to_string(),
         message: message.into(),
     })
 }

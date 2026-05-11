@@ -762,8 +762,8 @@ mod tests {
     #[test]
     fn asset_configs_use_provided_scope_for_names_and_subject_filters() {
         let scope = NatsScope::new(
-            ployz_types::model::InstallationId("inst-acme".into()),
-            ployz_types::model::AuthorityId("auth-sin".into()),
+            ployz_types::model::InstallationId::new("inst-acme"),
+            ployz_types::model::AuthorityId::new("auth-sin"),
         );
         let configs = asset_configs_in(&scope, AssetPolicy { replicas: 3 });
 

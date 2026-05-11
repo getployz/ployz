@@ -1,5 +1,4 @@
-use ipnet::Ipv4Net;
-use ployz_api::MachineTransitionGoal;
+use ployz_api::MachineSelfTransition;
 use ployz_types::model::{
     MachineLifecycleGoal, MachineLifecycleTransition, MachineTransitionEvidence,
     MachineTransitionOutcome, StandbyTransitionClearance,
@@ -27,14 +26,9 @@ impl TransitionError {
 impl DaemonState {
     pub(crate) async fn handle_machine_transition_self(
         &mut self,
-        goal: MachineTransitionGoal,
-        assigned_subnet: Option<Ipv4Net>,
-        force: bool,
+        transition: MachineSelfTransition,
     ) -> ployz_api::DaemonResponse {
-        match self
-            .transition_local_machine(goal, assigned_subnet, force)
-            .await
-        {
+        match self.transition_local_machine(transition).await {
             Ok(message) => self.ok(message),
             Err(error) => self.err(error.code, error.message),
         }
@@ -42,9 +36,7 @@ impl DaemonState {
 
     pub(crate) async fn transition_local_machine(
         &mut self,
-        goal: MachineTransitionGoal,
-        assigned_subnet: Option<Ipv4Net>,
-        force: bool,
+        transition: MachineSelfTransition,
     ) -> Result<String, TransitionError> {
         let (network_name, current) = {
             let Some(active) = self.active.as_ref() else {
@@ -62,14 +54,8 @@ impl DaemonState {
             (active.config.name.0.clone(), self_record)
         };
 
-        match goal {
-            MachineTransitionGoal::Activate => {
-                let Some(assigned_subnet) = assigned_subnet else {
-                    return Err(TransitionError::new(
-                        "INVALID_ARGUMENT",
-                        "machine activate requires an assigned subnet",
-                    ));
-                };
+        match transition {
+            MachineSelfTransition::Activate { assigned_subnet } => {
                 let transition = MachineLifecycleTransition {
                     goal: MachineLifecycleGoal::Activate { assigned_subnet },
                     evidence: MachineTransitionEvidence::OperatorCommand {
@@ -137,7 +123,7 @@ impl DaemonState {
                     record.id, assigned_subnet
                 ))
             }
-            MachineTransitionGoal::Drain => {
+            MachineSelfTransition::Drain => {
                 let transition = MachineLifecycleTransition {
                     goal: MachineLifecycleGoal::Drain,
                     evidence: MachineTransitionEvidence::OperatorCommand {
@@ -172,7 +158,7 @@ impl DaemonState {
                 };
                 Ok(format!("machine '{}' draining", record.id))
             }
-            MachineTransitionGoal::Standby => {
+            MachineSelfTransition::Standby { force } => {
                 let clearance = if force {
                     StandbyTransitionClearance::OperatorForced
                 } else {

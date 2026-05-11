@@ -3,8 +3,8 @@ use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_runtime_api::Identity;
 use ployz_store_api::{MachineMembershipStore, StoreDriver};
 use ployz_types::model::{
-    MachineEvent, MachineId, MachineMembership, MachineTopology, OverlayIp, PublicKey, RegionRole,
-    StorageParticipation,
+    MachineEvent, MachineId, MachineMembership, MachineStorageRole, MachineTopology, OverlayIp,
+    PublicKey, RegionRole, StorageParticipation,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -51,8 +51,11 @@ impl BootstrapPeerRecord {
             self.endpoints,
         );
         record.bridge_ip = self.bridge_ip;
-        record.storage = self.storage;
-        record.storage_participation = self.storage_participation;
+        record.storage_role = if self.storage {
+            self.storage_participation.into()
+        } else {
+            MachineStorageRole::Compute
+        };
         record.region_role = self.region_role;
         record
     }
@@ -65,8 +68,8 @@ impl BootstrapPeerRecord {
             overlay_ip: record.overlay_ip,
             subnet: record.subnet,
             bridge_ip: record.bridge_ip,
-            storage: record.storage,
-            storage_participation: record.storage_participation.clone(),
+            storage: record.storage(),
+            storage_participation: record.storage_participation().clone(),
             region_role: record.region_role,
             endpoints: record.endpoints.clone(),
         }
@@ -295,8 +298,11 @@ pub async fn build_seed_records(
         net_config.subnet,
         endpoints,
     );
-    self_record.storage = net_config.storage;
-    self_record.storage_participation = net_config.storage_participation.clone();
+    self_record.storage_role = if net_config.storage {
+        net_config.storage_participation.clone().into()
+    } else {
+        MachineStorageRole::Compute
+    };
     self_record.region_role = net_config.region_role;
     if let Some(topology) = configured_topology {
         self_record.topology = topology.clone();
@@ -531,7 +537,7 @@ mod tests {
 
     fn machine_record(id: &str, overlay_ip: &str, endpoints: Vec<&str>) -> MachineMembership {
         let mut record = MachineMembership::seed(
-            MachineId(id.into()),
+            MachineId::new(id),
             PublicKey([id.as_bytes().first().copied().unwrap_or(1); 32]),
             OverlayIp(overlay_ip.parse().expect("valid overlay")),
             Some("10.210.9.0/24".parse().expect("valid subnet")),
@@ -557,9 +563,9 @@ mod tests {
     fn sample_invite() -> InviteToken {
         InviteToken {
             invite_id: "invite".into(),
-            network_id: NetworkId("network".into()),
+            network_id: NetworkId::new("network"),
             network_name: "alpha".into(),
-            issuer_machine_id: MachineId("founder".into()),
+            issuer_machine_id: MachineId::new("founder"),
             issuer_verify_key: "verify".into(),
             expires_at: 1,
             issuer_endpoints: vec!["10.0.0.1:51820".into()],
@@ -597,7 +603,7 @@ mod tests {
     fn bootstrap_peer_records_roundtrip_subnet_and_bridge_ip() {
         let network_dir = temp_network_dir("full-roundtrip");
         let record = BootstrapPeerRecord {
-            machine_id: MachineId("peer".into()),
+            machine_id: MachineId::new("peer"),
             public_key: PublicKey([5; 32]),
             overlay_ip: OverlayIp("fd00::5".parse().expect("valid overlay")),
             subnet: Some("10.210.5.0/24".parse().expect("valid subnet")),
@@ -633,7 +639,7 @@ mod tests {
 
     #[test]
     fn resolve_bootstrap_addrs_filters_local_self_and_storage_candidates() {
-        let local = MachineId("local".into());
+        let local = MachineId::new("local");
         let local_peer = BootstrapPeerRecord {
             machine_id: local.clone(),
             public_key: PublicKey([1; 32]),
@@ -646,7 +652,7 @@ mod tests {
             endpoints: Vec::new(),
         };
         let remote_peer = BootstrapPeerRecord {
-            machine_id: MachineId("remote".into()),
+            machine_id: MachineId::new("remote"),
             public_key: PublicKey([2; 32]),
             overlay_ip: OverlayIp("fd00::2".parse().expect("valid overlay")),
             subnet: None,
@@ -657,7 +663,7 @@ mod tests {
             endpoints: Vec::new(),
         };
         let candidate_peer = BootstrapPeerRecord {
-            machine_id: MachineId("candidate".into()),
+            machine_id: MachineId::new("candidate"),
             public_key: PublicKey([3; 32]),
             overlay_ip: OverlayIp("fd00::3".parse().expect("valid overlay")),
             subnet: None,
@@ -676,7 +682,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_seed_records_uses_bootstrap_peers_and_rebuilds_self() {
-        let identity = Identity::generate(MachineId("joiner".into()), [3; 32]);
+        let identity = Identity::generate(MachineId::new("joiner"), [3; 32]);
         let net_config = NetworkConfig::new(
             NetworkName("alpha".into()),
             &identity.public_key,
@@ -684,7 +690,7 @@ mod tests {
             "10.210.1.0/24".parse().expect("valid subnet"),
         );
         let founder = BootstrapPeerRecord {
-            machine_id: MachineId("founder".into()),
+            machine_id: MachineId::new("founder"),
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay")),
             subnet: Some("10.210.2.0/24".parse().expect("valid subnet")),
@@ -723,7 +729,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_seed_records_applies_configured_self_topology() {
-        let identity = Identity::generate(MachineId("joiner".into()), [4; 32]);
+        let identity = Identity::generate(MachineId::new("joiner"), [4; 32]);
         let net_config = NetworkConfig::new(
             NetworkName("alpha".into()),
             &identity.public_key,
@@ -751,7 +757,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_seed_records_preserves_storage_capability_and_participation() {
-        let identity = Identity::generate(MachineId("joiner".into()), [5; 32]);
+        let identity = Identity::generate(MachineId::new("joiner"), [5; 32]);
         let mut net_config = NetworkConfig::new(
             NetworkName("alpha".into()),
             &identity.public_key,
@@ -767,9 +773,9 @@ mod tests {
             .into_iter()
             .find(|machine| machine.id == identity.machine_id)
             .expect("self record");
-        assert!(self_record.storage);
+        assert!(self_record.storage());
         assert_eq!(
-            self_record.storage_participation,
+            self_record.storage_participation(),
             StorageParticipation::Candidate
         );
     }
@@ -842,7 +848,7 @@ mod tests {
         let parent = temp_network_dir("sync-write-failure");
         let network_dir = parent.join("not-a-directory");
         std::fs::write(&network_dir, "occupied").expect("write file at network dir path");
-        let local_id = MachineId("local".into());
+        let local_id = MachineId::new("local");
         let peer = machine_record("peer", "fd00::2", vec!["peer:51820"]);
         let machines = HashMap::from([(peer.id.clone(), peer)]);
         let mut last_written = None;

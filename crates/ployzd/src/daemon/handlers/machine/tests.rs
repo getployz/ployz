@@ -8,8 +8,9 @@ use crate::mesh_state::bootstrap::{bootstrap_peers_path, load_bootstrap_peer_rec
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineStorageAuthorityPeer,
-    MachineStoragePromoteRequest, MachineTransitionGoal, MeshSelfRecordPayload, StatusPayload,
+    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineSelfTransition,
+    MachineStorageAuthorityPeer, MachineStoragePromoteRequest, MeshSelfRecordPayload,
+    StatusPayload,
 };
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::driver::WireguardDriver;
@@ -19,8 +20,8 @@ use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{InviteStore, MachineMembershipStore};
 use ployz_types::model::{
-    MachineId, MachineLifecycle, MachineMembership, MachineTopology, NetworkLifecycle, OverlayIp,
-    PublicKey, RegionRole, StorageParticipation, StorageReplicaPolicy,
+    MachineId, MachineLifecycle, MachineMembership, MachineStorageRole, MachineTopology,
+    NetworkLifecycle, OverlayIp, PublicKey, RegionRole, StorageParticipation, StorageReplicaPolicy,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -81,7 +82,7 @@ async fn machine_list_json_payload_contains_rows() {
         MachineLifecycle::Standby,
         PublicKey([2; 32]),
     );
-    candidate.storage_participation = StorageParticipation::Candidate;
+    candidate.storage_role = StorageParticipation::Candidate.into();
     store
         .upsert_self_machine(&candidate)
         .await
@@ -92,8 +93,7 @@ async fn machine_list_json_payload_contains_rows() {
         MachineLifecycle::Standby,
         PublicKey([3; 32]),
     );
-    compute.storage = false;
-    compute.storage_participation = StorageParticipation::Candidate;
+    compute.storage_role = MachineStorageRole::Compute;
     store
         .upsert_self_machine(&compute)
         .await
@@ -207,7 +207,7 @@ async fn machine_add_activates_joiner_lifecycle() {
         .expect("upsert stale peer");
 
     let mut reserved = state
-        .reserve_machine_subnet(&MachineId("join-target".into()))
+        .reserve_machine_subnet(&MachineId::new("join-target"))
         .await
         .expect("reserve expected subnet");
     let expected_subnet = reserved.subnet();
@@ -222,8 +222,7 @@ async fn machine_add_activates_joiner_lifecycle() {
         PublicKey([4; 32]),
     );
     joiner_record.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
-    joiner_record.storage = true;
-    joiner_record.storage_participation = StorageParticipation::Candidate;
+    joiner_record.storage_role = StorageParticipation::Candidate.into();
     joiner_record.region_role = RegionRole::Compute;
     joiner_record.endpoints = vec!["203.0.113.10:51820".into()];
 
@@ -270,12 +269,12 @@ async fn machine_add_activates_joiner_lifecycle() {
         .await
         .expect("list machines")
         .into_iter()
-        .find(|machine| machine.id.0 == "joiner-1")
+        .find(|machine| machine.id.as_str() == "joiner-1")
         .expect("joiner should be in store after enable");
     assert_eq!(joiner.lifecycle, MachineLifecycle::Active);
-    assert!(joiner.storage);
+    assert!(joiner.storage());
     assert_eq!(
-        joiner.storage_participation,
+        joiner.storage_participation(),
         StorageParticipation::Candidate
     );
     assert_eq!(joiner.region_role, RegionRole::Compute);
@@ -283,7 +282,7 @@ async fn machine_add_activates_joiner_lifecycle() {
         network
             .current_peers()
             .into_iter()
-            .any(|peer| peer.id().0 == "joiner-1")
+            .any(|peer| peer.id().as_str() == "joiner-1")
     );
     teardown_state(&mut state).await;
 }
@@ -299,7 +298,7 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
     ));
 
     let mut reserved = state
-        .reserve_machine_subnet(&MachineId("join-target".into()))
+        .reserve_machine_subnet(&MachineId::new("join-target"))
         .await
         .expect("reserve expected subnet");
     let expected_subnet = reserved.subnet();
@@ -314,8 +313,7 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
         PublicKey([5; 32]),
     );
     joiner_record.overlay_ip = "fd00::5".parse().map(OverlayIp).expect("valid overlay");
-    joiner_record.storage = true;
-    joiner_record.storage_participation = StorageParticipation::Candidate;
+    joiner_record.storage_role = StorageParticipation::Candidate.into();
     joiner_record.endpoints = vec!["203.0.113.11:51820".into()];
 
     let ssh_dir = unique_temp_dir("ployz-fake-ssh");
@@ -366,13 +364,13 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
     assert!(
         !machines
             .into_iter()
-            .any(|machine| machine.id.0 == "joiner-2")
+            .any(|machine| machine.id.as_str() == "joiner-2")
     );
     assert!(
         !network
             .current_peers()
             .into_iter()
-            .any(|peer| peer.id().0 == "joiner-2")
+            .any(|peer| peer.id().as_str() == "joiner-2")
     );
 
     teardown_state(&mut state).await;
@@ -411,12 +409,12 @@ async fn subnet_reservation_skips_currently_held_candidate() {
     let (mut state, _, _) = make_state(true).await;
 
     let mut first = state
-        .reserve_machine_subnet(&MachineId("join-target".into()))
+        .reserve_machine_subnet(&MachineId::new("join-target"))
         .await
         .expect("first reservation");
     let first_subnet = first.subnet();
     let mut second = state
-        .reserve_machine_subnet(&MachineId("join-target".into()))
+        .reserve_machine_subnet(&MachineId::new("join-target"))
         .await
         .expect("second reservation should skip held candidate");
 
@@ -452,7 +450,7 @@ async fn machine_remove_refuses_offline_peer_without_force() {
     let machines = store.list_machines().await.expect("list machines");
     let peer = machines
         .into_iter()
-        .find(|machine| machine.id.0 == "peer-1")
+        .find(|machine| machine.id.as_str() == "peer-1")
         .expect("failed unforced remove must preserve membership record");
     assert_eq!(peer.lifecycle, MachineLifecycle::Active);
     assert_eq!(
@@ -478,7 +476,11 @@ async fn machine_remove_force_deletes_membership_record() {
     assert!(response.ok, "{}", response.message);
 
     let machines = store.list_machines().await.expect("list machines");
-    assert!(!machines.into_iter().any(|machine| machine.id.0 == "peer-1"));
+    assert!(
+        !machines
+            .into_iter()
+            .any(|machine| machine.id.as_str() == "peer-1")
+    );
 }
 
 #[tokio::test]
@@ -518,7 +520,7 @@ async fn local_drain_preserves_subnet_and_marks_draining() {
     mark_local_machine_active(&mut state).await;
 
     let response = state
-        .transition_local_machine(MachineTransitionGoal::Drain, None, false)
+        .transition_local_machine(MachineSelfTransition::Drain)
         .await;
     assert!(response.is_ok(), "{response:?}");
 
@@ -584,7 +586,7 @@ async fn mark_local_machine_active(state: &mut DaemonState) {
 async fn local_standby_clears_subnet_and_marks_standby() {
     let (mut state, store, _) = make_state(true).await;
     let response = state
-        .transition_local_machine(MachineTransitionGoal::Standby, None, true)
+        .transition_local_machine(MachineSelfTransition::Standby { force: true })
         .await;
     assert!(response.is_ok(), "{response:?}");
 
@@ -629,7 +631,7 @@ async fn local_standby_requires_draining_without_force() {
     }
 
     let response = state
-        .transition_local_machine(MachineTransitionGoal::Standby, None, false)
+        .transition_local_machine(MachineSelfTransition::Standby { force: false })
         .await;
     assert!(response.is_err());
 
@@ -671,7 +673,7 @@ async fn machine_transition_self_surfaces_actionable_invalid_transition() {
     }
 
     let response = state
-        .handle_machine_transition_self(MachineTransitionGoal::Standby, None, false)
+        .handle_machine_transition_self(MachineSelfTransition::Standby { force: false })
         .await;
 
     assert!(!response.ok);
@@ -705,7 +707,7 @@ async fn local_standby_restores_subnet_when_restart_fails() {
     state.gateway_listen_addr = "invalid".into();
 
     let response = state
-        .transition_local_machine(MachineTransitionGoal::Standby, None, true)
+        .transition_local_machine(MachineSelfTransition::Standby { force: true })
         .await;
     assert!(response.is_err());
 
@@ -718,7 +720,7 @@ async fn mesh_start_reactivates_local_machine_after_stop() {
     let (mut state, _, _) = make_state(true).await;
 
     let standby = state
-        .transition_local_machine(MachineTransitionGoal::Standby, None, true)
+        .transition_local_machine(MachineSelfTransition::Standby { force: true })
         .await;
     assert!(standby.is_ok(), "{standby:?}");
 
@@ -747,11 +749,9 @@ async fn mesh_start_reactivates_local_machine_after_stop() {
 async fn mesh_stop_restores_local_record_when_destroy_fails() {
     let (mut state, store, network) = make_state(true).await;
     let activate = state
-        .transition_local_machine(
-            MachineTransitionGoal::Activate,
-            Some("10.210.0.0/24".parse().expect("valid subnet")),
-            false,
-        )
+        .transition_local_machine(MachineSelfTransition::Activate {
+            assigned_subnet: "10.210.0.0/24".parse().expect("valid subnet"),
+        })
         .await;
     assert!(activate.is_ok(), "{activate:?}");
 
@@ -842,8 +842,7 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
         PublicKey([14; 32]),
     );
     joiner_record.overlay_ip = "fd00::14".parse().map(OverlayIp).expect("valid overlay");
-    joiner_record.storage = true;
-    joiner_record.storage_participation = StorageParticipation::Candidate;
+    joiner_record.storage_role = StorageParticipation::Candidate.into();
     joiner_record.endpoints = vec!["203.0.113.14:51820".into()];
 
     let ssh_dir = unique_temp_dir("ployz-fake-ssh-mismatch");
@@ -890,7 +889,7 @@ async fn machine_add_rejects_remote_authority_posture_before_invite_consume() {
     let (state, store, _) = make_state(true).await;
 
     let mut reserved = state
-        .reserve_machine_subnet(&MachineId("join-target".into()))
+        .reserve_machine_subnet(&MachineId::new("join-target"))
         .await
         .expect("reserve expected subnet");
     let expected_subnet = reserved.subnet();
@@ -905,8 +904,7 @@ async fn machine_add_rejects_remote_authority_posture_before_invite_consume() {
         PublicKey([15; 32]),
     );
     joiner_record.overlay_ip = "fd00::15".parse().map(OverlayIp).expect("valid overlay");
-    joiner_record.storage = true;
-    joiner_record.storage_participation = StorageParticipation::default_authority();
+    joiner_record.storage_role = StorageParticipation::default_authority().into();
     joiner_record.endpoints = vec!["203.0.113.15:51820".into()];
 
     let ssh_dir = unique_temp_dir("ployz-fake-ssh-authority-posture");
@@ -949,7 +947,7 @@ async fn machine_add_rejects_remote_authority_posture_before_invite_consume() {
     assert!(
         !machines
             .into_iter()
-            .any(|machine| machine.id.0 == "joiner-authority")
+            .any(|machine| machine.id.as_str() == "joiner-authority")
     );
 }
 
@@ -972,14 +970,14 @@ async fn machine_storage_promote_marks_active_candidates_as_authority_storage() 
         MachineLifecycle::Active,
         PublicKey([16; 32]),
     );
-    candidate_a.storage_participation = StorageParticipation::Candidate;
+    candidate_a.storage_role = StorageParticipation::Candidate.into();
     let mut candidate_b = test_machine_record(
         "candidate-b",
         "10.210.3.0/24",
         MachineLifecycle::Active,
         PublicKey([17; 32]),
     );
-    candidate_b.storage_participation = StorageParticipation::Candidate;
+    candidate_b.storage_role = StorageParticipation::Candidate.into();
     store
         .upsert_self_machine(&candidate_a)
         .await
@@ -1009,7 +1007,7 @@ async fn machine_storage_promote_marks_active_candidates_as_authority_storage() 
     let machines = store.list_machines().await.expect("list machines");
     let authority_count = machines
         .iter()
-        .filter(|machine| machine.storage_participation.is_authority())
+        .filter(|machine| machine.storage_participation().is_authority())
         .count();
     assert_eq!(authority_count, 3);
     let config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
@@ -1019,7 +1017,7 @@ async fn machine_storage_promote_marks_active_candidates_as_authority_storage() 
         .expect("load bootstrap peers after promotion");
     let peer_ids = peers
         .iter()
-        .map(|peer| peer.machine_id.0.as_str())
+        .map(|peer| peer.machine_id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(peer_ids, vec!["candidate-a", "candidate-b", "founder"]);
 }
@@ -1043,7 +1041,7 @@ async fn machine_storage_promote_rejects_wrong_final_authority_count() {
         MachineLifecycle::Active,
         PublicKey([16; 32]),
     );
-    candidate.storage_participation = StorageParticipation::Candidate;
+    candidate.storage_role = StorageParticipation::Candidate.into();
     store
         .upsert_self_machine(&candidate)
         .await
@@ -1065,10 +1063,10 @@ async fn machine_storage_promote_rejects_wrong_final_authority_count() {
     let machines = store.list_machines().await.expect("list machines");
     let promoted = machines
         .iter()
-        .find(|machine| machine.id.0 == "candidate-a")
+        .find(|machine| machine.id.as_str() == "candidate-a")
         .expect("candidate remains present");
     assert_eq!(
-        promoted.storage_participation,
+        promoted.storage_participation(),
         StorageParticipation::Candidate
     );
 }
@@ -1092,7 +1090,7 @@ async fn machine_storage_promote_rejects_duplicate_targets_without_changing_inte
         MachineLifecycle::Active,
         PublicKey([16; 32]),
     );
-    candidate.storage_participation = StorageParticipation::Candidate;
+    candidate.storage_role = StorageParticipation::Candidate.into();
     store
         .upsert_self_machine(&candidate)
         .await
@@ -1121,10 +1119,10 @@ async fn machine_storage_promote_rejects_duplicate_targets_without_changing_inte
     let machines = store.list_machines().await.expect("list machines");
     let candidate = machines
         .iter()
-        .find(|machine| machine.id.0 == "candidate-a")
+        .find(|machine| machine.id.as_str() == "candidate-a")
         .expect("candidate remains present");
     assert_eq!(
-        candidate.storage_participation,
+        candidate.storage_participation(),
         StorageParticipation::Candidate
     );
     let config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
@@ -1151,15 +1149,14 @@ async fn machine_storage_promote_rejects_invalid_targets_without_changing_intent
         MachineLifecycle::Standby,
         PublicKey([16; 32]),
     );
-    inactive.storage_participation = StorageParticipation::Candidate;
+    inactive.storage_role = StorageParticipation::Candidate.into();
     let mut compute = test_machine_record(
         "compute-candidate",
         "10.210.3.0/24",
         MachineLifecycle::Active,
         PublicKey([17; 32]),
     );
-    compute.storage = false;
-    compute.storage_participation = StorageParticipation::Candidate;
+    compute.storage_role = MachineStorageRole::Compute;
     let existing_authority = test_machine_record(
         "existing-authority",
         "10.210.4.0/24",
@@ -1205,20 +1202,20 @@ async fn machine_storage_promote_rejects_invalid_targets_without_changing_intent
     let machines = store.list_machines().await.expect("list machines");
     let inactive = machines
         .iter()
-        .find(|machine| machine.id.0 == "inactive-candidate")
+        .find(|machine| machine.id.as_str() == "inactive-candidate")
         .expect("inactive candidate remains present");
     assert_eq!(inactive.lifecycle, MachineLifecycle::Standby);
     assert_eq!(
-        inactive.storage_participation,
+        inactive.storage_participation(),
         StorageParticipation::Candidate
     );
     let compute = machines
         .iter()
-        .find(|machine| machine.id.0 == "compute-candidate")
+        .find(|machine| machine.id.as_str() == "compute-candidate")
         .expect("compute candidate remains present");
-    assert!(!compute.storage);
+    assert!(!compute.storage());
     assert_eq!(
-        compute.storage_participation,
+        compute.storage_participation(),
         StorageParticipation::Candidate
     );
     let config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
@@ -1244,15 +1241,13 @@ async fn machine_storage_promote_self_persists_config_bootstrap_peers_and_self_r
         MachineLifecycle::Active,
         PublicKey([1; 32]),
     );
-    founder.storage = true;
-    founder.storage_participation = StorageParticipation::Candidate;
+    founder.storage_role = StorageParticipation::Candidate.into();
     store
         .upsert_self_machine(&founder)
         .await
         .expect("upsert candidate founder");
     let mut authority_founder = founder.clone();
-    authority_founder.storage = true;
-    authority_founder.storage_participation = StorageParticipation::default_authority();
+    authority_founder.storage_role = StorageParticipation::default_authority().into();
 
     let peer_a = test_machine_record(
         "peer-a",
@@ -1296,7 +1291,7 @@ async fn machine_storage_promote_self_persists_config_bootstrap_peers_and_self_r
         .expect("load bootstrap peers after self promotion");
     let peer_ids = peers
         .iter()
-        .map(|peer| peer.machine_id.0.as_str())
+        .map(|peer| peer.machine_id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(peer_ids, vec!["founder", "peer-a", "peer-b"]);
     let self_record = state
@@ -1307,9 +1302,9 @@ async fn machine_storage_promote_self_persists_config_bootstrap_peers_and_self_r
         .authoritative_self_record()
         .await
         .expect("self record");
-    assert!(self_record.storage);
+    assert!(self_record.storage());
     assert_eq!(
-        self_record.storage_participation,
+        self_record.storage_participation(),
         StorageParticipation::default_authority()
     );
 }
@@ -1409,7 +1404,7 @@ async fn machine_storage_promote_self_rejects_authority_peers_that_do_not_match_
         MachineLifecycle::Active,
         PublicKey([1; 32]),
     );
-    founder.storage_participation = StorageParticipation::Candidate;
+    founder.storage_role = StorageParticipation::Candidate.into();
     store
         .upsert_self_machine(&founder)
         .await
@@ -1472,14 +1467,13 @@ async fn machine_storage_promote_self_accepts_unsynced_nonlocal_authority_peers(
         MachineLifecycle::Active,
         PublicKey([1; 32]),
     );
-    founder.storage = true;
-    founder.storage_participation = StorageParticipation::Candidate;
+    founder.storage_role = StorageParticipation::Candidate.into();
     store
         .upsert_self_machine(&founder)
         .await
         .expect("upsert founder");
     let mut authority_founder = founder.clone();
-    authority_founder.storage_participation = StorageParticipation::default_authority();
+    authority_founder.storage_role = StorageParticipation::default_authority().into();
     let peer_a = test_machine_record(
         "peer-a",
         "10.210.2.0/24",
@@ -1506,7 +1500,7 @@ async fn machine_storage_promote_self_accepts_unsynced_nonlocal_authority_peers(
         .expect("load bootstrap peers after self promotion");
     let peer_ids = peers
         .iter()
-        .map(|peer| peer.machine_id.0.as_str())
+        .map(|peer| peer.machine_id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(peer_ids, vec!["founder", "peer-a", "peer-b"]);
 }
@@ -1516,6 +1510,7 @@ async fn machine_storage_restore_self_restores_config_bootstrap_peers_and_self_r
     let (mut state, _, _) = make_state(true).await;
     let config_path = NetworkConfig::path(&state.data_dir, "alpha");
     let mut config = NetworkConfig::load(&config_path).expect("load network config");
+    config.storage = true;
     config.storage_participation = StorageParticipation::default_authority();
     config.storage_replicas = StorageReplicaPolicy::R3;
     config.save(&config_path).expect("save promoted config");
@@ -1527,8 +1522,7 @@ async fn machine_storage_restore_self_restores_config_bootstrap_peers_and_self_r
         MachineLifecycle::Active,
         PublicKey([1; 32]),
     );
-    founder.storage = true;
-    founder.storage_participation = StorageParticipation::default_authority();
+    founder.storage_role = StorageParticipation::default_authority().into();
 
     let response = state
         .handle_machine_storage_restore_self(
@@ -1552,7 +1546,7 @@ async fn machine_storage_restore_self_restores_config_bootstrap_peers_and_self_r
         .expect("load restored bootstrap peers");
     let peer_ids = peers
         .iter()
-        .map(|peer| peer.machine_id.0.as_str())
+        .map(|peer| peer.machine_id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(peer_ids, vec!["founder"]);
     let self_record = state
@@ -1564,7 +1558,7 @@ async fn machine_storage_restore_self_restores_config_bootstrap_peers_and_self_r
         .await
         .expect("self record");
     assert_eq!(
-        self_record.storage_participation,
+        self_record.storage_participation(),
         StorageParticipation::Candidate
     );
 }
@@ -1573,16 +1567,14 @@ async fn machine_storage_restore_self_restores_config_bootstrap_peers_and_self_r
 async fn local_activate_restores_subnet_before_active_finalization() {
     let (mut state, store, _) = make_state(true).await;
     let standby_response = state
-        .transition_local_machine(MachineTransitionGoal::Standby, None, true)
+        .transition_local_machine(MachineSelfTransition::Standby { force: true })
         .await;
     assert!(standby_response.is_ok(), "{standby_response:?}");
 
     let activate_response = state
-        .transition_local_machine(
-            MachineTransitionGoal::Activate,
-            Some("10.210.2.0/24".parse().expect("valid subnet")),
-            false,
-        )
+        .transition_local_machine(MachineSelfTransition::Activate {
+            assigned_subnet: "10.210.2.0/24".parse().expect("valid subnet"),
+        })
         .await;
     assert!(activate_response.is_ok(), "{activate_response:?}");
 
@@ -1620,7 +1612,7 @@ async fn interrupted_machine_add_is_marked_interrupted_on_startup() {
             vec!["join-target".into()],
             "bootstrap-published",
             MachineOperationArtifacts {
-                machine_id: Some(MachineId("joiner-1".into())),
+                machine_id: Some(MachineId::new("joiner-1")),
                 invite_id: Some("invite-1".into()),
                 allocated_subnet: Some("10.210.2.0/24".into()),
                 ..MachineOperationArtifacts::default()
@@ -1666,7 +1658,7 @@ async fn interrupted_joined_machine_add_keeps_remote_cleanup_eligible_on_startup
             vec!["join-target".into()],
             "joined",
             MachineOperationArtifacts {
-                machine_id: Some(MachineId("joiner-1".into())),
+                machine_id: Some(MachineId::new("joiner-1")),
                 invite_id: Some("invite-1".into()),
                 allocated_subnet: Some("10.210.2.0/24".into()),
                 uses_operation_identity: true,
@@ -1712,7 +1704,7 @@ async fn interrupted_machine_add_attempts_remote_cleanup_without_active_mesh_on_
             vec!["join-target".into()],
             "bootstrap-published",
             MachineOperationArtifacts {
-                machine_id: Some(MachineId("joiner-1".into())),
+                machine_id: Some(MachineId::new("joiner-1")),
                 invite_id: Some("invite-1".into()),
                 allocated_subnet: Some("10.210.2.0/24".into()),
                 ..MachineOperationArtifacts::default()
@@ -1842,7 +1834,7 @@ async fn make_state_with_zfs_transfer_port(
     start_mesh: bool,
     zfs_transfer_port: u16,
 ) -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
-    let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
+    let identity = Identity::generate(MachineId::new("founder"), [1; 32]);
     let founder_subnet: Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
     let data_dir = unique_temp_dir("ployz-machine-state");
     let config = NetworkConfig::new(
@@ -1939,7 +1931,7 @@ fn test_machine_record(
     public_key: PublicKey,
 ) -> MachineMembership {
     MachineMembership {
-        id: MachineId(id.into()),
+        id: MachineId::new(id),
         public_key,
         overlay_ip: format!("fd00::{id_len:x}", id_len = id.len())
             .parse()
@@ -1951,8 +1943,7 @@ fn test_machine_record(
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],
         lifecycle,
-        storage: true,
-        storage_participation: StorageParticipation::default_authority(),
+        storage_role: StorageParticipation::default_authority().into(),
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),
@@ -1975,7 +1966,7 @@ fn status_response_for_record(record: &MachineMembership) -> String {
         code: "OK".into(),
         message: "status".into(),
         payload: Some(DaemonPayload::Status(StatusPayload {
-            machine_id: record.id.0.clone(),
+            machine_id: record.id.as_str().to_string(),
             public_key: record.public_key.clone(),
             version: "test-version".into(),
             network: None,

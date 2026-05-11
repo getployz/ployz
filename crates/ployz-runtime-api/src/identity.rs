@@ -88,7 +88,7 @@ impl Identity {
             .ok()
             .and_then(|value| value.into_string().ok())
             .unwrap_or_else(|| "node".into());
-        let machine_id = MachineId(hostname);
+        let machine_id = MachineId::new(hostname);
 
         let mut key_bytes = [0u8; 32];
         rand::fill(&mut key_bytes);
@@ -109,7 +109,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("identity.json");
 
-        let identity = Identity::generate(MachineId("test-1".into()), [0x42; 32]);
+        let identity = Identity::generate(MachineId::new("test-1"), [0x42; 32]);
         identity.save(&path).expect("save identity");
 
         let loaded = Identity::load(&path).expect("load identity");

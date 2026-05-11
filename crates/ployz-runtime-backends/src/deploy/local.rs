@@ -123,7 +123,7 @@ impl LocalDeployRuntime {
             .engine
             .list_by_labels(&[
                 (labels::LABEL_MANAGED, "true"),
-                (labels::LABEL_NAMESPACE, &namespace.0),
+                (labels::LABEL_NAMESPACE, &namespace.as_str()),
             ])
             .await?;
 
@@ -142,12 +142,12 @@ impl LocalDeployRuntime {
                 continue;
             };
             instances.push(ManagedInstance {
-                instance_id: InstanceId(wl.instance_id),
+                instance_id: InstanceId::new(wl.instance_id),
                 service: wl.service,
-                slot_id: SlotId(wl.slot_id),
-                machine_id: MachineId(wl.machine_id),
+                slot_id: SlotId::new(wl.slot_id),
+                machine_id: MachineId::new(wl.machine_id),
                 revision_hash: wl.revision_hash,
-                deploy_id: DeployId(wl.deploy_id),
+                deploy_id: DeployId::new(wl.deploy_id),
                 docker_container_id: container_id.clone(),
                 ip_address: *ip_address,
                 backend_ports: BTreeMap::new(),
@@ -171,17 +171,22 @@ impl LocalDeployRuntime {
             revision_hash,
             volumes,
         } = request;
-        let container_name = format!("ployz-{namespace}-{}-{}", spec.name, instance_id.0);
-        let key = format!("{namespace}/{}/{}/{}", spec.name, slot_id.0, instance_id.0);
+        let container_name = format!("ployz-{namespace}-{}-{}", spec.name, instance_id.as_str());
+        let key = format!(
+            "{namespace}/{}/{}/{}",
+            spec.name,
+            slot_id.as_str(),
+            instance_id.as_str()
+        );
 
         let meta = WorkloadMeta {
-            namespace: &namespace.0,
+            namespace: &namespace.as_str(),
             service: &spec.name,
             revision: revision_hash,
-            deploy_id: &deploy_id.0,
-            instance_id: &instance_id.0,
-            slot_id: &slot_id.0,
-            machine_id: &machine_id.0,
+            deploy_id: &deploy_id.as_str(),
+            instance_id: &instance_id.as_str(),
+            slot_id: &slot_id.as_str(),
+            machine_id: &machine_id.as_str(),
         };
         let workload_labels = build_workload_labels(&key, &meta, &spec.labels);
 
@@ -344,7 +349,7 @@ impl LocalDeployRuntime {
         namespace: &Namespace,
         service: &str,
     ) -> Result<()> {
-        let container_name = format!("ployz-{namespace}-{service}-{}", instance_id.0);
+        let container_name = format!("ployz-{namespace}-{service}-{}", instance_id.as_str());
         self.engine.remove(&container_name, STOP_GRACE_PERIOD).await
     }
 }
@@ -379,10 +384,10 @@ pub(super) async fn adopt_instances(
     let existing = store.list_instance_status(namespace).await?;
     let known: BTreeSet<String> = existing
         .iter()
-        .map(|record| record.instance_id.0.clone())
+        .map(|record| record.instance_id.as_str().to_string())
         .collect();
     for instance in runtime.list_instances(namespace).await? {
-        if known.contains(&instance.instance_id.0) {
+        if known.contains(instance.instance_id.as_str()) {
             continue;
         }
         let record = instance.to_status_record(
@@ -670,7 +675,7 @@ mod tests {
         fake.push(0, "", "");
         fake.push(0, "", "");
 
-        let namespace = Namespace("test".into());
+        let namespace = Namespace::new("test");
         let container = volume_container();
         let volumes = volume_declarations();
         let resolved = resolve_mounts_with_driver(Some(&driver), &namespace, &container, &volumes)
@@ -733,7 +738,7 @@ mod tests {
     async fn managed_volume_without_storage_driver_fails_before_runtime_start() {
         let error = resolve_mounts_with_driver::<FakeShellRunner>(
             None,
-            &Namespace("test".into()),
+            &Namespace::new("test"),
             &volume_container(),
             &volume_declarations(),
         )
@@ -750,7 +755,7 @@ mod tests {
     fn volume_service_spec() -> ServiceSpec {
         ServiceSpec {
             name: "db".into(),
-            placement: Placement::Replicated { count: 1 },
+            placement: Placement::replicated(1),
             template: volume_container(),
             network: NetworkMode::None,
             service_ports: Vec::new(),
@@ -780,12 +785,12 @@ mod tests {
         let engine = ContainerEngine::new(docker);
         let runtime = LocalDeployRuntime::from_engine(engine, None, None, None);
 
-        let namespace = Namespace("test".into());
+        let namespace = Namespace::new("test");
         let spec = volume_service_spec();
-        let deploy_id = DeployId("dep-1".into());
-        let instance_id = InstanceId("inst-1".into());
-        let slot_id = SlotId("slot-1".into());
-        let machine_id = MachineId("mach-1".into());
+        let deploy_id = DeployId::new("dep-1");
+        let instance_id = InstanceId::new("inst-1");
+        let slot_id = SlotId::new("slot-1");
+        let machine_id = MachineId::new("mach-1");
         let volumes = volume_declarations();
 
         let error = runtime

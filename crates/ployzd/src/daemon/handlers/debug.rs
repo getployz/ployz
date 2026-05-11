@@ -102,7 +102,7 @@ mod tests {
     async fn debug_tick_rejects_when_no_mesh_is_running() {
         let mut state = DaemonState::new_for_tests(
             &std::env::temp_dir().join("ployz-debug-tick-no-mesh"),
-            Identity::generate(ployz_types::model::MachineId("self".into()), [1; 32]),
+            Identity::generate(ployz_types::model::MachineId::new("self"), [1; 32]),
             DEFAULT_CLUSTER_CIDR.into(),
             24,
             4319,
@@ -120,7 +120,7 @@ mod tests {
     async fn endpoint_debug_tick_rejects_when_no_mesh_is_running() {
         let mut state = DaemonState::new_for_tests(
             &std::env::temp_dir().join("ployz-debug-tick-no-mesh-endpoints"),
-            Identity::generate(ployz_types::model::MachineId("self".into()), [1; 32]),
+            Identity::generate(ployz_types::model::MachineId::new("self"), [1; 32]),
             DEFAULT_CLUSTER_CIDR.into(),
             24,
             4319,

@@ -29,12 +29,12 @@ pub async fn resolve_volumes<R: ShellRunner>(
         let dataset = format!(
             "{}/{}/{}",
             driver.root_dataset(),
-            namespace.0,
+            namespace.as_str(),
             declaration.name
         );
         let mountpoint = driver
             .root_mountpoint()
-            .join(&namespace.0)
+            .join(&namespace.as_str())
             .join(&declaration.name);
         let info = driver
             .ensure(&super::DatasetSpec {

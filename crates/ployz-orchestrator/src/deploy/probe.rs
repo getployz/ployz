@@ -116,7 +116,7 @@ pub(super) async fn probe_participants(
         }
         details.insert(machine_id, detail);
     }
-    unreachable.sort_by(|left, right| left.0.cmp(&right.0));
+    unreachable.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     ParticipantReachability {
         unreachable,
         details,
@@ -177,7 +177,7 @@ mod tests {
 
     fn test_machine(id: &str, overlay_ip: &str) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             public_key: PublicKey([7; 32]),
             overlay_ip: OverlayIp(overlay_ip.parse::<Ipv6Addr>().expect("valid overlay ip")),
             topology: MachineTopology::local(),
@@ -186,8 +186,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
-            storage: true,
-            storage_participation: crate::model::StorageParticipation::default_authority(),
+            storage_role: crate::model::StorageParticipation::default_authority().into(),
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -269,13 +268,13 @@ mod tests {
 
     #[tokio::test]
     async fn missing_inventory_marks_unreachable() {
-        let participants = BTreeSet::from([MachineId("ghost".into())]);
+        let participants = BTreeSet::from([MachineId::new("ghost")]);
         let machine_map = HashMap::new();
         let prober = NoopParticipantProbe;
 
         let reachability = probe_participants(&prober, &participants, &machine_map).await;
 
-        assert_eq!(reachability.unreachable, vec![MachineId("ghost".into())]);
+        assert_eq!(reachability.unreachable, vec![MachineId::new("ghost")]);
         let warnings = warnings_from_reachability(&reachability);
         assert!(warnings[0].contains("inventory-missing"));
     }

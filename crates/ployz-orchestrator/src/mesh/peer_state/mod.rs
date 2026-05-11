@@ -19,7 +19,7 @@ mod tests {
 
     fn test_record(id: &str, endpoints: Vec<&str>) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
@@ -28,8 +28,7 @@ mod tests {
             bridge_ip: None,
             endpoints: endpoints.into_iter().map(String::from).collect(),
             lifecycle: MachineLifecycle::Standby,
-            storage: true,
-            storage_participation: crate::model::StorageParticipation::default_authority(),
+            storage_role: crate::model::StorageParticipation::default_authority().into(),
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),
@@ -41,7 +40,7 @@ mod tests {
         let now = Instant::now();
         let mut map = PeerStateMap::new();
         let r = MachineMembership {
-            id: MachineId("m1".into()),
+            id: MachineId::new("m1"),
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
@@ -50,8 +49,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec!["a:1".into(), "b:2".into(), "c:3".into()],
             lifecycle: MachineLifecycle::Standby,
-            storage: true,
-            storage_participation: crate::model::StorageParticipation::default_authority(),
+            storage_role: crate::model::StorageParticipation::default_authority().into(),
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),
@@ -60,7 +58,7 @@ mod tests {
 
         let planned = super::planning::plan_mesh_peers(
             &map,
-            &MachineId("self".into()),
+            &MachineId::new("self"),
             &std::collections::HashMap::new(),
         );
         let [peer] = planned.as_slice() else {

@@ -386,7 +386,7 @@ mod tests {
 
     fn make_state() -> DaemonState {
         let data_dir = unique_temp_dir("ployz-build-op-state");
-        let identity = Identity::generate(MachineId("founder".into()), [32; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [32; 32]);
         DaemonState::new_for_tests(
             &data_dir,
             identity,

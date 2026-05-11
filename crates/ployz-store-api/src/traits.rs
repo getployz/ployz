@@ -120,7 +120,7 @@ pub fn apply_routing_event(state: &mut RoutingState, event: RoutingEvent) {
         }
         RoutingEvent::InstanceUpsert(record) => {
             upsert_by(&mut state.instances, record, |record| {
-                record.instance_id.0.clone()
+                record.instance_id.as_str().to_string()
             });
         }
         RoutingEvent::InstanceRemoved { instance_id } => {
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn routing_events_replace_records_by_contract_identity() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let old_api = release(&namespace, "api", "rev-old");
         let new_api = release(&namespace, "api", "rev-new");
         let worker = release(&namespace, "worker", "worker-rev");
@@ -234,8 +234,8 @@ mod tests {
 
     #[test]
     fn routing_events_remove_only_the_matching_contract_identity() {
-        let namespace = Namespace("prod".into());
-        let other_namespace = Namespace("staging".into());
+        let namespace = Namespace::new("prod");
+        let other_namespace = Namespace::new("staging");
         let prod_api = release(&namespace, "api", "prod-rev");
         let staging_api = release(&other_namespace, "api", "staging-rev");
         let mut state = RoutingState {
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn routing_events_project_revision_updates_and_removals_by_contract_identity() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let old_api = revision(&namespace, "api", "rev-1", "{}");
         let new_api = revision(&namespace, "api", "rev-1", r#"{"image":"nginx:2"}"#);
         let worker = revision(&namespace, "worker", "rev-1", "{}");
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn routing_events_project_instance_updates_and_removals_by_instance_id() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let old_api = instance(&namespace, "inst-api", false);
         let new_api = instance(&namespace, "inst-api", true);
         let worker = instance(&namespace, "inst-worker", true);
@@ -314,7 +314,7 @@ mod tests {
             state
                 .instances
                 .iter()
-                .find(|instance| instance.instance_id == InstanceId("inst-api".into()))
+                .find(|instance| instance.instance_id == InstanceId::new("inst-api"))
                 .map(|instance| instance.ready),
             Some(true)
         );
@@ -327,10 +327,7 @@ mod tests {
         );
 
         assert_eq!(state.instances.len(), 1);
-        assert_eq!(
-            state.instances[0].instance_id,
-            InstanceId("inst-api".into())
-        );
+        assert_eq!(state.instances[0].instance_id, InstanceId::new("inst-api"));
     }
 
     #[test]
@@ -361,7 +358,7 @@ mod tests {
 
     #[test]
     fn routing_event_upserts_keep_contract_identity_order() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let mut state = RoutingState {
             machines: Vec::new(),
             revisions: Vec::new(),
@@ -387,7 +384,7 @@ mod tests {
             state
                 .machines
                 .iter()
-                .map(|record| record.id.0.as_str())
+                .map(|record| record.id.as_str())
                 .collect::<Vec<_>>(),
             ["machine-a", "machine-b"]
         );
@@ -411,7 +408,7 @@ mod tests {
             state
                 .instances
                 .iter()
-                .map(|record| record.instance_id.0.as_str())
+                .map(|record| record.instance_id.as_str())
                 .collect::<Vec<_>>(),
             ["inst-a", "inst-b"]
         );
@@ -419,7 +416,7 @@ mod tests {
 
     #[test]
     fn routing_event_removals_are_idempotent_by_contract_identity() {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let machine_a = machine("machine-a", MachineLifecycle::Active);
         let machine_b = machine("machine-b", MachineLifecycle::Active);
         let revision_a = revision(&namespace, "api", "rev-a", "{}");
@@ -486,7 +483,7 @@ mod tests {
                     revision_hash: revision_hash.into(),
                 },
                 slots: Vec::new(),
-                updated_by_deploy_id: DeployId("deploy-1".into()),
+                updated_by_deploy_id: DeployId::new("deploy-1"),
                 updated_at: 1,
             },
         }
@@ -503,20 +500,20 @@ mod tests {
             service: service.into(),
             revision_hash: revision_hash.into(),
             spec_json: spec_json.into(),
-            created_by: MachineId("machine-a".into()),
+            created_by: MachineId::new("machine-a"),
             created_at: 1,
         }
     }
 
     fn instance(namespace: &Namespace, instance_id: &str, ready: bool) -> InstanceStatusRecord {
         InstanceStatusRecord {
-            instance_id: InstanceId(instance_id.into()),
+            instance_id: InstanceId::new(instance_id),
             namespace: namespace.clone(),
             service: "api".into(),
-            slot_id: SlotId("slot-1".into()),
-            machine_id: MachineId("machine-a".into()),
+            slot_id: SlotId::new("slot-1"),
+            machine_id: MachineId::new("machine-a"),
             revision_hash: "rev-1".into(),
-            deploy_id: DeployId("deploy-1".into()),
+            deploy_id: DeployId::new("deploy-1"),
             docker_container_id: format!("container-{instance_id}"),
             overlay_ip: None,
             backend_ports: BTreeMap::new(),
@@ -531,7 +528,7 @@ mod tests {
 
     fn machine(id: &str, lifecycle: MachineLifecycle) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
@@ -540,8 +537,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle,
-            storage: true,
-            storage_participation: StorageParticipation::default_authority(),
+            storage_role: StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: BTreeMap::new(),
@@ -570,26 +566,34 @@ pub struct DeployCommit {
 
 impl DeployCommit {
     pub fn validate_identity(&self, namespace: &Namespace, deploy_id: &DeployId) -> Result<()> {
-        let expected = format!("{}/{}", namespace.0, deploy_id.0);
+        let expected = format!("{}/{}", namespace.as_str(), deploy_id.as_str());
         if &self.namespace != namespace {
             return Err(Error::store_key_mismatch(
                 StoreRecordKind::DeployCommit,
                 expected,
-                format!("{}/{}", self.namespace.0, self.deploy.deploy_id.0),
+                format!(
+                    "{}/{}",
+                    self.namespace.as_str(),
+                    self.deploy.deploy_id.as_str()
+                ),
             ));
         }
         if &self.deploy.deploy_id != deploy_id {
             return Err(Error::store_key_mismatch(
                 StoreRecordKind::DeployCommit,
                 expected,
-                format!("{}/{}", self.namespace.0, self.deploy.deploy_id.0),
+                format!(
+                    "{}/{}",
+                    self.namespace.as_str(),
+                    self.deploy.deploy_id.as_str()
+                ),
             ));
         }
         if self.deploy.namespace != self.namespace {
             return Err(Error::store_key_mismatch(
                 StoreRecordKind::DeployCommit,
-                format!("commit namespace {}", self.namespace.0),
-                format!("deploy namespace {}", self.deploy.namespace.0),
+                format!("commit namespace {}", self.namespace.as_str()),
+                format!("deploy namespace {}", self.deploy.namespace.as_str()),
             ));
         }
         for revision in &self.revisions {
@@ -637,8 +641,8 @@ impl DeployCommit {
         }
         Err(Error::store_key_mismatch(
             StoreRecordKind::DeployCommit,
-            format!("{label} namespace {}", self.namespace.0),
-            namespace.0.clone(),
+            format!("{label} namespace {}", self.namespace.as_str()),
+            namespace.as_str().to_string(),
         ))
     }
 
@@ -653,8 +657,8 @@ impl DeployCommit {
         }
         Err(Error::store_key_mismatch(
             StoreRecordKind::DeployCommit,
-            format!("{label} commit deploy {}", expected.0),
-            actual.0.clone(),
+            format!("{label} commit deploy {}", expected.as_str()),
+            actual.as_str().to_string(),
         ))
     }
 }

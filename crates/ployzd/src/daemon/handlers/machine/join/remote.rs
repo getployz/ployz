@@ -1,5 +1,5 @@
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineTransitionGoal, MeshReadyPayload,
+    DaemonPayload, DaemonRequest, DaemonResponse, MachineSelfTransition, MeshReadyPayload,
     MeshSelfRecordPayload, StatusPayload,
 };
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject};
@@ -65,7 +65,7 @@ pub(super) async fn remote_daemon_identity(
             public_key,
             ..
         })) => Ok(RemoteDaemonIdentity {
-            machine_id: MachineId(machine_id),
+            machine_id: MachineId::new(machine_id),
             public_key,
         }),
         Some(payload) => Err(format!("unexpected status payload: {payload:?}")),
@@ -256,9 +256,7 @@ pub(super) async fn log_nats_enable_rollback(
     original_error: &str,
 ) {
     let request = DaemonRequest::MachineTransitionSelf {
-        goal: MachineTransitionGoal::Standby,
-        assigned_subnet: None,
-        force: true,
+        transition: MachineSelfTransition::Standby { force: true },
     };
     if let Err(rollback_error) = nats_rpc_expect_ok(
         client,

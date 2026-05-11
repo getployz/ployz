@@ -158,7 +158,7 @@ mod tests {
             state
                 .instances
                 .iter()
-                .map(|record| record.instance_id.0.as_str())
+                .map(|record| record.instance_id.as_str())
                 .collect::<Vec<_>>(),
             ["instance-a", "instance-b"]
         );
@@ -289,13 +289,13 @@ mod tests {
         let mut backend_ports = BTreeMap::new();
         backend_ports.insert(String::from("http"), 8080);
         InstanceStatusRecord {
-            instance_id: InstanceId(id.into()),
-            namespace: Namespace(namespace.into()),
+            instance_id: InstanceId::new(id),
+            namespace: Namespace::new(namespace),
             service: service.into(),
-            slot_id: SlotId(String::from("slot-1")),
-            machine_id: MachineId(String::from("machine-1")),
+            slot_id: SlotId::new(String::from("slot-1")),
+            machine_id: MachineId::new(String::from("machine-1")),
             revision_hash: String::from("rev-1"),
-            deploy_id: DeployId(String::from("deploy-1")),
+            deploy_id: DeployId::new(String::from("deploy-1")),
             docker_container_id: String::from("container-1"),
             overlay_ip: Some(Ipv4Addr::new(10, 0, 0, 2)),
             backend_ports,

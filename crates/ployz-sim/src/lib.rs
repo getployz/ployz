@@ -250,7 +250,7 @@ impl FakeRuntime {
     #[must_use]
     pub fn containers(&self) -> Vec<RuntimeContainer> {
         let mut containers = self.containers.values().cloned().collect::<Vec<_>>();
-        containers.sort_by(|left, right| left.instance_id.0.cmp(&right.instance_id.0));
+        containers.sort_by(|left, right| left.instance_id.as_str().cmp(right.instance_id.as_str()));
         containers
     }
 }
@@ -599,14 +599,14 @@ impl ProductSnapshot {
             .filter(|machine| machine.lifecycle == MachineLifecycle::Active)
             .map(|machine| machine.id.clone())
             .collect::<Vec<_>>();
-        active_machines.sort_by(|left, right| left.0.cmp(&right.0));
+        active_machines.sort_by(|left, right| left.as_str().cmp(right.as_str()));
         let mut wireguard_peers = sim
             .wireguard
             .current_peers()
             .iter()
             .map(|peer| peer.id().clone())
             .collect::<Vec<_>>();
-        wireguard_peers.sort_by(|left, right| left.0.cmp(&right.0));
+        wireguard_peers.sort_by(|left, right| left.as_str().cmp(right.as_str()));
         let runtime_containers = sim
             .runtime
             .containers()
@@ -707,7 +707,7 @@ impl ProductSwarm {
     pub fn new(options: ProductSwarmOptions) -> Self {
         let namespace = Namespace::default_ns();
         let instance = fixture::instance(namespace.clone(), InstancePhase::Ready);
-        let volume = fixture::volume(namespace.clone(), MachineId("machine-1".into()));
+        let volume = fixture::volume(namespace.clone(), MachineId::new("machine-1"));
         Self {
             options,
             rng: StdRng::seed_from_u64(options.seed),
@@ -895,7 +895,7 @@ impl ProductSwarm {
             return Ok(());
         };
         self.volume.machine_id = machine_id;
-        self.volume.last_modified_by_deploy_id = DeployId(format!(
+        self.volume.last_modified_by_deploy_id = DeployId::new(format!(
             "swarm-volume-{}",
             self.volume.last_modified_at.saturating_add(1)
         ));
@@ -952,7 +952,7 @@ fn swarm_commit(
     deploy_id: &str,
 ) -> DeployCommit {
     let mut deploy = fixture::deploy(namespace.clone());
-    deploy.deploy_id = DeployId(deploy_id.into());
+    deploy.deploy_id = DeployId::new(deploy_id);
     DeployCommit {
         namespace,
         revisions,
@@ -1713,7 +1713,7 @@ pub mod fixture {
             MachineLifecycle::Standby => None,
         };
         MachineMembership {
-            id: MachineId(format!("machine-{index}")),
+            id: MachineId::new(format!("machine-{index}")),
             public_key: PublicKey([index; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, u16::from(index))),
             topology: ployz_types::model::MachineTopology::local(),
@@ -1722,8 +1722,7 @@ pub mod fixture {
             bridge_ip: None,
             endpoints: vec![format!("192.0.2.{index}:51820")],
             lifecycle,
-            storage: true,
-            storage_participation: StorageParticipation::default_authority(),
+            storage_role: StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: BTreeMap::new(),
@@ -1734,7 +1733,7 @@ pub mod fixture {
     pub fn service_spec() -> ServiceSpec {
         ServiceSpec {
             name: "web".into(),
-            placement: Placement::Replicated { count: 1 },
+            placement: Placement::replicated(1),
             template: ContainerSpec {
                 image: "example/web:latest".into(),
                 command: None,
@@ -1781,7 +1780,7 @@ pub mod fixture {
             service: service.name,
             revision_hash: "rev-a".into(),
             spec_json,
-            created_by: MachineId("machine-1".into()),
+            created_by: MachineId::new("machine-1"),
             created_at: 1,
         }
     }
@@ -1789,13 +1788,13 @@ pub mod fixture {
     #[must_use]
     pub fn instance(namespace: Namespace, phase: InstancePhase) -> InstanceStatusRecord {
         InstanceStatusRecord {
-            instance_id: InstanceId("inst-web-1".into()),
+            instance_id: InstanceId::new("inst-web-1"),
             namespace,
             service: "web".into(),
-            slot_id: SlotId("slot-1".into()),
-            machine_id: MachineId("machine-1".into()),
+            slot_id: SlotId::new("slot-1"),
+            machine_id: MachineId::new("machine-1"),
             revision_hash: "rev-a".into(),
-            deploy_id: DeployId("deploy-1".into()),
+            deploy_id: DeployId::new("deploy-1"),
             docker_container_id: "container-1".into(),
             overlay_ip: Some(Ipv4Addr::new(10, 42, 1, 10)),
             backend_ports: BTreeMap::from([(String::from("http"), 8080)]),
@@ -1820,12 +1819,12 @@ pub mod fixture {
                     revision_hash: "rev-a".into(),
                 },
                 slots: vec![ServiceReleaseSlot {
-                    slot_id: SlotId("slot-1".into()),
-                    machine_id: MachineId("machine-1".into()),
-                    active_instance_id: InstanceId("inst-web-1".into()),
+                    slot_id: SlotId::new("slot-1"),
+                    machine_id: MachineId::new("machine-1"),
+                    active_instance_id: InstanceId::new("inst-web-1"),
                     revision_hash: "rev-a".into(),
                 }],
-                updated_by_deploy_id: DeployId("deploy-1".into()),
+                updated_by_deploy_id: DeployId::new("deploy-1"),
                 updated_at: 1,
             },
         }
@@ -1834,9 +1833,9 @@ pub mod fixture {
     #[must_use]
     pub fn deploy(namespace: Namespace) -> DeployRecord {
         DeployRecord {
-            deploy_id: DeployId("deploy-1".into()),
+            deploy_id: DeployId::new("deploy-1"),
             namespace,
-            coordinator_machine_id: MachineId("machine-1".into()),
+            coordinator_machine_id: MachineId::new("machine-1"),
             manifest_hash: "manifest-a".into(),
             state: DeployState::Committed,
             started_at: 1,
@@ -1858,9 +1857,9 @@ pub mod fixture {
             owner: "1000:1000".into(),
             attached_services: vec!["web".into()],
             created_at: 1,
-            created_by_deploy_id: DeployId("deploy-1".into()),
+            created_by_deploy_id: DeployId::new("deploy-1"),
             last_modified_at: 1,
-            last_modified_by_deploy_id: DeployId("deploy-1".into()),
+            last_modified_by_deploy_id: DeployId::new("deploy-1"),
         }
     }
 }
@@ -1881,7 +1880,7 @@ mod tests {
         deploy_id: &str,
     ) -> DeployCommit {
         let mut deploy = fixture::deploy(namespace.clone());
-        deploy.deploy_id = DeployId(deploy_id.into());
+        deploy.deploy_id = DeployId::new(deploy_id);
         DeployCommit {
             namespace,
             revisions,
@@ -1950,7 +1949,7 @@ mod tests {
         let mut first = SeededEventScheduler::new(7);
         let mut second = SeededEventScheduler::new(7);
         for index in 0..8 {
-            let event = SimEvent::RemoveMachine(MachineId(format!("m-{index}")));
+            let event = SimEvent::RemoveMachine(MachineId::new(format!("m-{index}")));
             first
                 .schedule_with_jitter(SimInstant { unix_secs: 10 }, 5, event.clone())
                 .expect("schedule first");
@@ -2044,7 +2043,7 @@ mod tests {
     #[test]
     fn volume_ownership_catches_missing_machine_and_multi_attach_single_volume() {
         let namespace = Namespace::default_ns();
-        let mut volume = fixture::volume(namespace, MachineId("missing-machine".into()));
+        let mut volume = fixture::volume(namespace, MachineId::new("missing-machine"));
         volume.attached_services.push("worker".into());
         let state = RoutingState {
             machines: vec![fixture::machine(1, MachineLifecycle::Active)],
@@ -2210,9 +2209,9 @@ mod tests {
         assert_eq!(result.report.violations, Vec::new());
         assert_exposure(&sim, &namespace, 0).await;
 
-        sim.schedule_now(SimEvent::RuntimeStop(InstanceId("inst-web-1".into())))
+        sim.schedule_now(SimEvent::RuntimeStop(InstanceId::new("inst-web-1")))
             .expect("schedule runtime stop");
-        sim.schedule_now(SimEvent::RemoveInstance(InstanceId("inst-web-1".into())))
+        sim.schedule_now(SimEvent::RemoveInstance(InstanceId::new("inst-web-1")))
             .expect("schedule status remove");
         sim.schedule_now(SimEvent::CommitDeploy(Box::new(commit(
             namespace.clone(),
@@ -2271,7 +2270,7 @@ mod tests {
         assert_eq!(sim.wireguard.current_peers().len(), 2);
         assert_exposure(&sim, &namespace, 1).await;
 
-        sim.schedule_now(SimEvent::RemoveMachine(MachineId("machine-2".into())))
+        sim.schedule_now(SimEvent::RemoveMachine(MachineId::new("machine-2")))
             .expect("schedule machine removal");
         sim.schedule_now(SimEvent::SyncWireGuardFromStore)
             .expect("schedule wireguard resync");
@@ -2286,7 +2285,7 @@ mod tests {
             .iter()
             .map(|peer| peer.id().clone())
             .collect::<HashSet<_>>();
-        assert_eq!(peer_ids, HashSet::from([MachineId("machine-1".into())]));
+        assert_eq!(peer_ids, HashSet::from([MachineId::new("machine-1")]));
         assert_exposure(&sim, &namespace, 1).await;
     }
 
@@ -2294,7 +2293,7 @@ mod tests {
     async fn product_volume_ownership_must_move_before_node_removal() {
         let namespace = Namespace::default_ns();
         let instance = fixture::instance(namespace.clone(), InstancePhase::Ready);
-        let mut volume = fixture::volume(namespace.clone(), MachineId("machine-1".into()));
+        let mut volume = fixture::volume(namespace.clone(), MachineId::new("machine-1"));
         let mut sim = MiniSimulator::new(23, 1);
         sim.schedule_now(SimEvent::UpsertMachine(fixture::machine(
             1,
@@ -2326,8 +2325,8 @@ mod tests {
         let result = sim.run_scripted_until_idle().await.expect("sim runs");
         assert_eq!(result.report.violations, Vec::new());
 
-        volume.machine_id = MachineId("machine-2".into());
-        volume.last_modified_by_deploy_id = DeployId("deploy-volume-machine-2".into());
+        volume.machine_id = MachineId::new("machine-2");
+        volume.last_modified_by_deploy_id = DeployId::new("deploy-volume-machine-2");
         sim.schedule_now(SimEvent::CommitDeploy(Box::new(commit(
             namespace.clone(),
             Vec::new(),
@@ -2351,10 +2350,10 @@ mod tests {
             .expect("volumes");
         assert_eq!(
             volumes.first().map(|volume| volume.machine_id.clone()),
-            Some(MachineId("machine-2".into()))
+            Some(MachineId::new("machine-2"))
         );
 
-        sim.schedule_now(SimEvent::RemoveMachine(MachineId("machine-2".into())))
+        sim.schedule_now(SimEvent::RemoveMachine(MachineId::new("machine-2")))
             .expect("schedule owner removal");
         sim.schedule_now(SimEvent::CheckInvariants)
             .expect("schedule invalid observation");
@@ -2525,7 +2524,7 @@ mod tests {
     async fn product_volume_transfer_then_node_removal_converges_without_route_loss() {
         let namespace = Namespace::default_ns();
         let instance = fixture::instance(namespace.clone(), InstancePhase::Ready);
-        let mut volume = fixture::volume(namespace.clone(), MachineId("machine-1".into()));
+        let mut volume = fixture::volume(namespace.clone(), MachineId::new("machine-1"));
         let mut sim = MiniSimulator::new(26, 1);
         sim.schedule_now(SimEvent::UpsertMachine(fixture::machine(
             1,
@@ -2562,16 +2561,16 @@ mod tests {
         assert_eq!(first_snapshot.wireguard_peers.len(), 2);
 
         let mut migrated_instance = fixture::instance(namespace.clone(), InstancePhase::Ready);
-        migrated_instance.machine_id = MachineId("machine-2".into());
+        migrated_instance.machine_id = MachineId::new("machine-2");
         migrated_instance.updated_at = 2;
         let mut migrated_release = fixture::release(namespace.clone());
         if let Some(slot) = migrated_release.release.slots.first_mut() {
-            slot.machine_id = MachineId("machine-2".into());
+            slot.machine_id = MachineId::new("machine-2");
         }
-        migrated_release.release.updated_by_deploy_id = DeployId("deploy-volume-transfer".into());
+        migrated_release.release.updated_by_deploy_id = DeployId::new("deploy-volume-transfer");
         migrated_release.release.updated_at = 2;
-        volume.machine_id = MachineId("machine-2".into());
-        volume.last_modified_by_deploy_id = DeployId("deploy-volume-transfer".into());
+        volume.machine_id = MachineId::new("machine-2");
+        volume.last_modified_by_deploy_id = DeployId::new("deploy-volume-transfer");
         volume.last_modified_at = 2;
         sim.schedule_now(SimEvent::RecordInstance(migrated_instance.clone()))
             .expect("schedule migrated status");
@@ -2587,7 +2586,7 @@ mod tests {
             "deploy-volume-transfer",
         ))))
         .expect("schedule volume transfer");
-        sim.schedule_now(SimEvent::RemoveMachine(MachineId("machine-1".into())))
+        sim.schedule_now(SimEvent::RemoveMachine(MachineId::new("machine-1")))
             .expect("schedule old owner removal");
         sim.schedule_now(SimEvent::SyncWireGuardFromStore)
             .expect("schedule wireguard resync");
@@ -2597,20 +2596,14 @@ mod tests {
         let result = sim.run_scripted_until_idle().await.expect("sim runs");
         assert_eq!(result.report.violations, Vec::new());
         let converged = assert_product_snapshot(&sim, &namespace, 1, 1).await;
-        assert_eq!(
-            converged.active_machines,
-            vec![MachineId("machine-2".into())]
-        );
-        assert_eq!(
-            converged.wireguard_peers,
-            vec![MachineId("machine-2".into())]
-        );
+        assert_eq!(converged.active_machines, vec![MachineId::new("machine-2")]);
+        assert_eq!(converged.wireguard_peers, vec![MachineId::new("machine-2")]);
         assert_eq!(
             converged
                 .volumes
                 .first()
                 .map(|volume| volume.machine_id.clone()),
-            Some(MachineId("machine-2".into()))
+            Some(MachineId::new("machine-2"))
         );
     }
 
@@ -2660,7 +2653,7 @@ mod tests {
     #[test]
     fn fixture_deploy_record_uses_committed_state_without_default() {
         let deploy = fixture::deploy(Namespace::default_ns());
-        assert_eq!(deploy.deploy_id, DeployId("deploy-1".into()));
+        assert_eq!(deploy.deploy_id, DeployId::new("deploy-1"));
         assert_eq!(deploy.state, DeployState::Committed);
     }
 }

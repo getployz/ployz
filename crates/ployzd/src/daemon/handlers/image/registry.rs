@@ -375,7 +375,7 @@ impl ImageRegistry {
             return Err(ImageRegistryError::Unauthorized);
         }
         if session.operation_id != operation_id
-            || session.source_machine.0 != source_machine
+            || session.source_machine.as_str() != source_machine
             || session.repository != repository
         {
             return Err(ImageRegistryError::Unauthorized);
@@ -1165,7 +1165,7 @@ mod tests {
         let registry = ImageRegistry::new(root);
         let headers = session_headers(
             registry
-                .register_session("image-push-1", MachineId("machine-a".into()), "apps/web")
+                .register_session("image-push-1", MachineId::new("machine-a"), "apps/web")
                 .await,
         );
         let digest = sha256_digest(b"hello world");
@@ -1205,7 +1205,7 @@ mod tests {
         let registry = ImageRegistry::new(root);
         let headers = session_headers(
             registry
-                .register_session("image-push-2", MachineId("machine-a".into()), "apps/web")
+                .register_session("image-push-2", MachineId::new("machine-a"), "apps/web")
                 .await,
         );
         let upload = registry
@@ -1259,7 +1259,7 @@ mod tests {
         let registry = ImageRegistry::new(root);
         let headers = session_headers(
             registry
-                .register_session("image-push-3", MachineId("machine-a".into()), "apps/web")
+                .register_session("image-push-3", MachineId::new("machine-a"), "apps/web")
                 .await,
         );
 
@@ -1298,7 +1298,7 @@ mod tests {
         let registry = ImageRegistry::new(root);
         let headers = session_headers(
             registry
-                .register_session("image-push-4", MachineId("machine-a".into()), "apps/web")
+                .register_session("image-push-4", MachineId::new("machine-a"), "apps/web")
                 .await,
         );
         let digest = sha256_digest(b"hello world");
@@ -1374,7 +1374,7 @@ mod tests {
         let registry = ImageRegistry::new(root);
         let mut headers = session_headers(
             registry
-                .register_session("image-push-5", MachineId("machine-a".into()), "apps/web")
+                .register_session("image-push-5", MachineId::new("machine-a"), "apps/web")
                 .await,
         );
         headers.insert(
@@ -1441,7 +1441,7 @@ mod tests {
         let registry = ImageRegistry::new(root);
         let headers = session_headers(
             registry
-                .register_session("image-push-6", MachineId("machine-a".into()), "apps/web")
+                .register_session("image-push-6", MachineId::new("machine-a"), "apps/web")
                 .await,
         );
         let digest = sha256_digest(b"hello");
@@ -1469,7 +1469,7 @@ mod tests {
         let registry = ImageRegistry::new(root);
         let headers = session_headers(
             registry
-                .register_session("image-push-7", MachineId("machine-a".into()), "apps/web")
+                .register_session("image-push-7", MachineId::new("machine-a"), "apps/web")
                 .await,
         );
         let router = registry.router();
@@ -1508,7 +1508,7 @@ mod tests {
         let root = unique_temp_dir("ployz-image-registry-revoke");
         let registry = ImageRegistry::new(root);
         let session = registry
-            .register_session("image-push-8", MachineId("machine-a".into()), "apps/web")
+            .register_session("image-push-8", MachineId::new("machine-a"), "apps/web")
             .await;
         let headers = session_headers(session.clone());
         let upload = registry
@@ -1609,7 +1609,7 @@ mod tests {
         );
         headers.insert(
             REGISTRY_SOURCE_MACHINE_HEADER,
-            HeaderValue::from_str(&session.source_machine.0).expect("source machine"),
+            HeaderValue::from_str(&session.source_machine.as_str()).expect("source machine"),
         );
         headers
     }

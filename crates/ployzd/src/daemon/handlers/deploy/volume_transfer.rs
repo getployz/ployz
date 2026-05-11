@@ -64,10 +64,10 @@ pub(super) async fn run_volume_move_rpc<R: DeployMoveRpcClient>(
         .request(
             NodeCommandSubject::volume_zfs_send(machine_id),
             &ployz_api::DaemonRequest::VolumeZfsSend {
-                namespace: namespace.0.clone(),
+                namespace: namespace.as_str().to_string(),
                 volume,
                 snapshot,
-                target_machine: to_machine.0,
+                target_machine: to_machine.as_str().to_string(),
                 from_snapshot: None,
             },
         )

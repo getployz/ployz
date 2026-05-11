@@ -99,11 +99,11 @@ fn build_doctor_payload(
             },
         },
         local: DoctorLocal {
-            machine_id: local_record.id.0.clone(),
+            machine_id: local_record.id.as_str().to_string(),
             network: active.config.name.0.clone(),
             network_lifecycle: active.config.lifecycle.to_string(),
             machine_lifecycle: format_lifecycle(local_record).to_string(),
-            storage: local_record.storage,
+            storage: local_record.storage(),
             storage_participation: format_storage_participation(local_record),
             config_subnet: active.config.subnet.map(|subnet| subnet.to_string()),
             record_subnet: local_record.subnet.map(|subnet| subnet.to_string()),
@@ -216,7 +216,7 @@ fn store_status_column(row: &DoctorPeer) -> String {
 }
 
 fn format_storage_participation(machine: &MachineMembership) -> String {
-    match &machine.storage_participation {
+    match &machine.storage_participation() {
         ployz_types::model::StorageParticipation::Candidate => String::from("candidate"),
         ployz_types::model::StorageParticipation::Authority { authority_id } => {
             format!("authority:{}", authority_id.as_str())
@@ -279,9 +279,9 @@ fn build_participation_rows(
             let (cause_code, cause_message) = cause_parts(handshake_state);
             let healthy = handshake_state == HandshakeState::Fresh;
             Some(DoctorPeer {
-                machine_id: machine.id.0.clone(),
+                machine_id: machine.id.as_str().to_string(),
                 role: diagnostic_role_name(role).to_string(),
-                storage: machine.storage,
+                storage: machine.storage(),
                 storage_participation: format_storage_participation(machine),
                 blocking: role == DiagnosticRole::Blocking && !healthy,
                 store_lifecycle: format_lifecycle(machine).to_string(),
@@ -573,7 +573,7 @@ mod tests {
     }
 
     async fn make_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
-        let identity = Identity::generate(MachineId(String::from("joiner5")), [1; 32]);
+        let identity = Identity::generate(MachineId::new(String::from("joiner5")), [1; 32]);
         let config = NetworkConfig::new(
             ployz_types::model::NetworkName(String::from("alpha")),
             &identity.public_key,
@@ -635,7 +635,7 @@ mod tests {
         public_key: PublicKey,
     ) -> MachineMembership {
         MachineMembership {
-            id: MachineId(String::from(id)),
+            id: MachineId::new(String::from(id)),
             public_key,
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
@@ -644,8 +644,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
             lifecycle,
-            storage: true,
-            storage_participation: ployz_types::model::StorageParticipation::default_authority(),
+            storage_role: ployz_types::model::StorageParticipation::default_authority().into(),
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),
@@ -653,7 +652,7 @@ mod tests {
     }
 
     fn test_active_mesh() -> ActiveMesh {
-        let identity = Identity::generate(MachineId(String::from("joiner5")), [1; 32]);
+        let identity = Identity::generate(MachineId::new(String::from("joiner5")), [1; 32]);
         let mut config = NetworkConfig::new(
             ployz_types::model::NetworkName(String::from("alpha")),
             &identity.public_key,

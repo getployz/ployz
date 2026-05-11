@@ -8,11 +8,10 @@ use crate::image::{
     ImageReceivedImportRequest, ImageStatusRequest,
 };
 use crate::machine::{
-    MachineAddOptions, MachineInstallOptions, MachineStorageAuthorityPeer,
-    MachineStoragePromoteRequest, MachineTransitionGoal,
+    MachineAddOptions, MachineInstallOptions, MachineSelfTransition, MachineStorageAuthorityPeer,
+    MachineStoragePromoteRequest,
 };
 use crate::mesh::MeshBootstrapRequest;
-use ipnet::Ipv4Net;
 use ployz_types::model::{
     MachineId, MachineMembership, NetworkId, StorageParticipation, StorageReplicaPolicy,
 };
@@ -141,10 +140,7 @@ pub enum DaemonRequest {
         request: MeshBootstrapRequest,
     },
     MachineTransitionSelf {
-        goal: MachineTransitionGoal,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        assigned_subnet: Option<Ipv4Net>,
-        force: bool,
+        transition: MachineSelfTransition,
     },
     MachineStoragePromoteSelf {
         replicas: StorageReplicaPolicy,
@@ -423,7 +419,7 @@ mod tests {
         };
         let apply = DaemonRequest::DeployApplyPrepared {
             request: DeployApplyPreparedRequest {
-                prepared_deploy_id: ployz_types::model::DeployId("prepare-1".into()),
+                prepared_deploy_id: ployz_types::model::DeployId::new("prepare-1"),
             },
         };
 
@@ -484,7 +480,7 @@ mod tests {
         let request = DaemonRequest::ImagePush {
             request: ImagePushRequest {
                 source_image: "registry.example/api:sha".into(),
-                target_machines: vec![MachineId("machine-a".into()), MachineId("machine-b".into())],
+                target_machines: vec![MachineId::new("machine-a"), MachineId::new("machine-b")],
                 platform: None,
                 expected_digest: Some(digest()),
             },
@@ -511,7 +507,7 @@ mod tests {
         assert_eq!(request.source_image, "registry.example/api:sha");
         assert_eq!(
             request.target_machines,
-            vec![MachineId("machine-a".into()), MachineId("machine-b".into())]
+            vec![MachineId::new("machine-a"), MachineId::new("machine-b")]
         );
         assert_eq!(
             request.expected_digest.expect("expected digest").as_str(),
@@ -524,8 +520,8 @@ mod tests {
         let request = DaemonRequest::ImageDistribute {
             request: ImageDistributeRequest {
                 digest: digest(),
-                source_machine: MachineId("machine-a".into()),
-                target_machines: vec![MachineId("machine-b".into())],
+                source_machine: MachineId::new("machine-a"),
+                target_machines: vec![MachineId::new("machine-b")],
                 platform: Some(ployz_types::model::ImagePlatform {
                     os: "linux".into(),
                     architecture: "amd64".into(),
@@ -560,8 +556,8 @@ mod tests {
             request.digest.as_str(),
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         );
-        assert_eq!(request.source_machine, MachineId("machine-a".into()));
-        assert_eq!(request.target_machines, vec![MachineId("machine-b".into())]);
+        assert_eq!(request.source_machine, MachineId::new("machine-a"));
+        assert_eq!(request.target_machines, vec![MachineId::new("machine-b")]);
         assert_eq!(request.platform.expect("platform").architecture, "amd64");
     }
 
@@ -570,7 +566,7 @@ mod tests {
         let request = DaemonRequest::ImageReceiveSession {
             request: ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("machine-a".into()),
+                source_machine: MachineId::new("machine-a"),
                 repository: Some("ployz/image-push-1".into()),
             },
         };
@@ -594,7 +590,7 @@ mod tests {
             panic!("expected image receive session request");
         };
         assert_eq!(request.operation_id, "image-push-1");
-        assert_eq!(request.source_machine, MachineId("machine-a".into()));
+        assert_eq!(request.source_machine, MachineId::new("machine-a"));
         assert_eq!(request.repository.as_deref(), Some("ployz/image-push-1"));
     }
 
@@ -603,7 +599,7 @@ mod tests {
         let request = DaemonRequest::ImageReceivedImport {
             request: ImageReceivedImportRequest {
                 operation_id: "image-distribute-1".into(),
-                source_machine: MachineId("machine-a".into()),
+                source_machine: MachineId::new("machine-a"),
                 repository: "ployz/image-distribute-1".into(),
                 reference: "image-distribute-1".into(),
                 expected_digest: digest(),
@@ -634,7 +630,7 @@ mod tests {
             panic!("expected image received import request");
         };
         assert_eq!(request.operation_id, "image-distribute-1");
-        assert_eq!(request.source_machine, MachineId("machine-a".into()));
+        assert_eq!(request.source_machine, MachineId::new("machine-a"));
         assert_eq!(request.repository, "ployz/image-distribute-1");
         assert_eq!(request.reference, "image-distribute-1");
         assert_eq!(request.repo_tags, vec!["example/app:latest"]);
@@ -648,7 +644,7 @@ mod tests {
                 reference: Some(
                     "registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                 ),
-                machines: vec![MachineId("machine-a".into())],
+                machines: vec![MachineId::new("machine-a")],
             },
         };
 
@@ -667,7 +663,7 @@ mod tests {
             request.reference.as_deref(),
             Some("registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
-        assert_eq!(request.machines, vec![MachineId("machine-a".into())]);
+        assert_eq!(request.machines, vec![MachineId::new("machine-a")]);
     }
 
     #[test]
@@ -676,7 +672,7 @@ mod tests {
             method: BuildMethod::Railpack,
             context_path: ".".into(),
             image_name: "api".into(),
-            machine_id: MachineId("builder-a".into()),
+            machine_id: MachineId::new("builder-a"),
             platform: None,
             inputs: BuildInputs::default(),
         };

@@ -35,7 +35,7 @@ impl DaemonState {
         }
 
         let targets = if ids.is_empty() {
-            vec![self.identity.machine_id.0.clone()]
+            vec![self.identity.machine_id.as_str().to_string()]
         } else {
             if let Some(duplicate) = first_duplicate(ids) {
                 return self.err(
@@ -71,7 +71,7 @@ impl DaemonState {
             {
                 return self.err("MACHINE_UPDATE_OPERATION_FAILED", error);
             }
-            let result = if target == self.identity.machine_id.0 {
+            let result = if target == self.identity.machine_id.as_str() {
                 self.update_local_machine(
                     &operation_id,
                     &version,
@@ -87,7 +87,7 @@ impl DaemonState {
 
             match result {
                 Ok(row) => {
-                    let deferred_self_update = target == self.identity.machine_id.0
+                    let deferred_self_update = target == self.identity.machine_id.as_str()
                         && row.message == "scheduled local update";
                     updated.push(row);
                     if deferred_self_update {
@@ -166,7 +166,7 @@ impl DaemonState {
             if let Err(error) = ensure_update_operation(
                 &operation_store,
                 operation_id,
-                &[self.identity.machine_id.0.clone()],
+                &[self.identity.machine_id.as_str().to_string()],
                 &version,
                 "already-current",
             )
@@ -189,7 +189,7 @@ impl DaemonState {
         let operation = match ensure_update_operation(
             &operation_store,
             operation_id,
-            &[self.identity.machine_id.0.clone()],
+            &[self.identity.machine_id.as_str().to_string()],
             &version,
             "execute",
         ) {
@@ -264,13 +264,13 @@ impl DaemonState {
             Ok(active) => active,
             Err(response) => {
                 return Err(update_row(
-                    &MachineId(target.to_string()),
+                    &MachineId::new(target.to_string()),
                     version,
                     response.message,
                 ));
             }
         };
-        let machine_id = MachineId(target.to_string());
+        let machine_id = MachineId::new(target.to_string());
         let record = match find_machine_record(&active.mesh.store, &machine_id).await {
             Ok(Some(record)) => record,
             Ok(None) => {
@@ -563,7 +563,7 @@ fn installer_version_argument(canonical: &str) -> String {
 
 fn update_row(id: &MachineId, version: &str, message: impl Into<String>) -> MachineUpdateRow {
     MachineUpdateRow {
-        id: id.0.clone(),
+        id: id.as_str().to_string(),
         version: version.to_string(),
         message: message.into(),
     }
@@ -594,11 +594,11 @@ fn first_duplicate(values: &[String]) -> Option<String> {
 fn update_targets_with_self_last(ids: &[String], local_machine_id: &MachineId) -> Vec<String> {
     let mut targets: Vec<String> = ids
         .iter()
-        .filter(|id| *id != &local_machine_id.0)
+        .filter(|id| *id != &local_machine_id.as_str())
         .cloned()
         .collect();
-    if ids.iter().any(|id| id == &local_machine_id.0) {
-        targets.push(local_machine_id.0.clone());
+    if ids.iter().any(|id| id == &local_machine_id.as_str()) {
+        targets.push(local_machine_id.as_str().to_string());
     }
     targets
 }
@@ -650,7 +650,7 @@ mod tests {
                 "remote-a".to_string(),
                 "remote-b".to_string(),
             ],
-            &MachineId("self".into()),
+            &MachineId::new("self"),
         );
 
         assert_eq!(targets, vec!["remote-a", "remote-b", "self"]);

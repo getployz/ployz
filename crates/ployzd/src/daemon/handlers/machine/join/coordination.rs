@@ -141,7 +141,7 @@ pub(super) async fn assert_subnet_unique(
     let conflicting_machine_ids = machines
         .into_iter()
         .filter(|machine| machine.id != *machine_id && machine.subnet == Some(claimed_subnet))
-        .map(|machine| machine.id.0)
+        .map(|machine| machine.id.into_string())
         .collect::<Vec<_>>();
     if conflicting_machine_ids.is_empty() {
         return Ok(());
@@ -177,7 +177,7 @@ mod tests {
             .await
             .expect("upsert beta");
 
-        let err = assert_subnet_unique(&store, &MachineId("alpha".into()), subnet)
+        let err = assert_subnet_unique(&store, &MachineId::new("alpha"), subnet)
             .await
             .expect_err("duplicate subnet should fail");
 
@@ -198,7 +198,7 @@ mod tests {
             .await
             .expect("upsert beta");
 
-        let result = assert_subnet_unique(&store, &MachineId("alpha".into()), claimed_subnet).await;
+        let result = assert_subnet_unique(&store, &MachineId::new("alpha"), claimed_subnet).await;
 
         assert!(result.is_ok());
     }
@@ -209,7 +209,7 @@ mod tests {
         subnet: Option<Ipv4Net>,
     ) -> MachineMembership {
         let record = MachineMembership::seed(
-            MachineId(machine_id.into()),
+            MachineId::new(machine_id),
             PublicKey([1; 32]),
             overlay_ip.parse().map(OverlayIp).expect("valid overlay"),
             subnet,

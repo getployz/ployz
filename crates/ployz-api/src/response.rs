@@ -101,7 +101,7 @@ mod tests {
             message: "created".into(),
             payload: Some(DaemonPayload::ImageReceiveSession(
                 ImageReceiveSessionPayload {
-                    target_machine: MachineId("machine-b".into()),
+                    target_machine: MachineId::new("machine-b"),
                     endpoint: "http://127.0.0.1:4320/v2/ployz/image-push-1".into(),
                     token: "token-1".into(),
                     expires_at_unix_secs: 1_777_646_000,
@@ -141,12 +141,12 @@ mod tests {
                 ImageDistributeValidationPayload {
                     request: crate::image::ImageDistributeRequest {
                         digest: digest.clone(),
-                        source_machine: MachineId("founder".into()),
-                        target_machines: vec![MachineId("peer".into()), MachineId("peer".into())],
+                        source_machine: MachineId::new("founder"),
+                        target_machines: vec![MachineId::new("peer"), MachineId::new("peer")],
                         platform: None,
                     },
                     failure: ImageDistributeValidationFailure::DuplicateTarget {
-                        duplicate_target: MachineId("peer".into()),
+                        duplicate_target: MachineId::new("peer"),
                     },
                 },
             )),
@@ -181,9 +181,9 @@ mod tests {
                 crate::image::ImageDistributePayload {
                     operation_id: "image-distribute-1".into(),
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
+                    source_machine: MachineId::new("founder"),
                     targets: vec![ImageTransferTargetResult {
-                        machine_id: MachineId("peer".into()),
+                        machine_id: MachineId::new("peer"),
                         status: ImageTransferTargetStatus::Failed,
                         record: None,
                         failure: Some(ImageTransferFailure {
