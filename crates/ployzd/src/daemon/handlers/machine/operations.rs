@@ -110,6 +110,46 @@ pub(super) struct MachineOperationArtifacts {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+pub(super) enum MachineOperationState {
+    Running {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+    Succeeded {},
+    Failed {
+        last_error: String,
+    },
+    Interrupted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+}
+
+impl MachineOperationState {
+    #[must_use]
+    fn status(&self) -> MachineOperationStatus {
+        match self {
+            Self::Running { .. } => MachineOperationStatus::Running,
+            Self::Succeeded { .. } => MachineOperationStatus::Succeeded,
+            Self::Failed { .. } => MachineOperationStatus::Failed,
+            Self::Interrupted { .. } => MachineOperationStatus::Interrupted,
+        }
+    }
+
+    #[must_use]
+    fn last_error(&self) -> Option<&str> {
+        match self {
+            Self::Running { last_error } | Self::Interrupted { last_error } => {
+                last_error.as_deref()
+            }
+            Self::Failed { last_error } => Some(last_error.as_str()),
+            Self::Succeeded { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct MachineOperationRecord {
     pub id: String,
     pub kind: MachineOperationKind,
@@ -117,17 +157,25 @@ pub(super) struct MachineOperationRecord {
     pub network_name: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<String>,
-    pub status: MachineOperationStatus,
     pub stage: String,
     pub started_at: u64,
     pub updated_at: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
+    pub state: MachineOperationState,
     #[serde(default)]
     pub artifacts: MachineOperationArtifacts,
 }
 
 impl MachineOperationRecord {
+    #[must_use]
+    pub(super) fn status(&self) -> MachineOperationStatus {
+        self.state.status()
+    }
+
+    #[must_use]
+    pub(super) fn last_error(&self) -> Option<&str> {
+        self.state.last_error()
+    }
+
     #[must_use]
     pub(super) fn info(&self) -> MachineOperationInfo {
         MachineOperationInfo {
@@ -135,11 +183,11 @@ impl MachineOperationRecord {
             kind: self.kind.as_str().into(),
             network_name: self.network_name.clone(),
             targets: self.targets.clone(),
-            status: self.status.as_str().into(),
+            status: self.status().as_str().into(),
             stage: self.stage.clone(),
             started_at: self.started_at,
             updated_at: self.updated_at,
-            last_error: self.last_error.clone(),
+            last_error: self.last_error().map(str::to_string),
             machine_id: self.artifacts.machine_id.clone(),
             invite_id: self.artifacts.invite_id.clone(),
             allocated_subnet: self.artifacts.allocated_subnet.clone(),
@@ -152,17 +200,18 @@ impl MachineOperationRecord {
             last_error,
             at_unix_secs,
         } = transition;
-        self.status = status;
-        match status {
-            MachineOperationStatus::Succeeded => self.last_error = None,
-            MachineOperationStatus::Failed
-            | MachineOperationStatus::Interrupted
-            | MachineOperationStatus::Running => {
-                if let Some(last_error) = last_error {
-                    self.last_error = Some(last_error);
-                }
+        self.state = match status {
+            MachineOperationStatus::Running => MachineOperationState::Running {
+                last_error: last_error.or_else(|| self.last_error().map(str::to_string)),
+            },
+            MachineOperationStatus::Succeeded => MachineOperationState::Succeeded {},
+            MachineOperationStatus::Failed => MachineOperationState::Failed {
+                last_error: last_error.unwrap_or_else(|| "machine operation failed".into()),
+            },
+            MachineOperationStatus::Interrupted => {
+                MachineOperationState::Interrupted { last_error }
             }
-        }
+        };
         self.updated_at = at_unix_secs;
     }
 }
@@ -192,11 +241,10 @@ impl MachineOperationStore {
             kind,
             network_name,
             targets,
-            status: MachineOperationStatus::Running,
             stage: stage.into(),
             started_at: now,
             updated_at: now,
-            last_error: None,
+            state: MachineOperationState::Running { last_error: None },
             artifacts,
         };
         self.save(&record)?;
@@ -219,11 +267,10 @@ impl MachineOperationStore {
             kind,
             network_name,
             targets,
-            status: MachineOperationStatus::Running,
             stage: stage.into(),
             started_at: now,
             updated_at: now,
-            last_error: None,
+            state: MachineOperationState::Running { last_error: None },
             artifacts,
         };
         self.save(&record)?;
@@ -359,7 +406,7 @@ impl DaemonState {
                     "{}  {}  {}  {}  {}",
                     record.id,
                     record.kind.as_str(),
-                    record.status.as_str(),
+                    record.status().as_str(),
                     network,
                     record.stage
                 )
@@ -406,7 +453,7 @@ impl DaemonState {
         };
 
         for mut record in records {
-            if record.status != MachineOperationStatus::Running {
+            if record.status() != MachineOperationStatus::Running {
                 continue;
             }
             if let Err(err) = store.update_status(
@@ -423,7 +470,7 @@ impl DaemonState {
                 Err(err) => Some(err),
             };
             if let Some(note) = note {
-                let combined = merge_operation_notes(record.last_error.as_deref(), &note);
+                let combined = merge_operation_notes(record.last_error(), &note);
                 if let Err(err) = store.update_status(
                     &mut record,
                     MachineOperationStatus::Interrupted,
@@ -606,7 +653,8 @@ fn merge_operation_notes(existing: Option<&str>, next: &str) -> String {
 mod tests {
     use super::{
         MAX_OPERATION_ID_LEN, MachineOperationArtifacts, MachineOperationKind,
-        MachineOperationStatus, MachineOperationStore, unique_operation_id, validate_operation_id,
+        MachineOperationRecord, MachineOperationStatus, MachineOperationStore, unique_operation_id,
+        validate_operation_id,
     };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -702,9 +750,9 @@ mod tests {
             .load("op-visible-failure")
             .expect("load operation")
             .expect("operation present");
-        assert_eq!(loaded.status, MachineOperationStatus::Running);
+        assert_eq!(loaded.status(), MachineOperationStatus::Running);
         assert_eq!(loaded.stage, "cleanup");
-        assert_eq!(loaded.last_error.as_deref(), Some("bootstrap failed"));
+        assert_eq!(loaded.last_error(), Some("bootstrap failed"));
         assert_eq!(
             loaded.info().last_error.as_deref(),
             Some("bootstrap failed")
@@ -717,7 +765,28 @@ mod tests {
             .load("op-visible-failure")
             .expect("load succeeded operation")
             .expect("operation present");
-        assert_eq!(succeeded.status, MachineOperationStatus::Succeeded);
-        assert_eq!(succeeded.last_error, None);
+        assert_eq!(succeeded.status(), MachineOperationStatus::Succeeded);
+        assert_eq!(succeeded.last_error(), None);
+    }
+
+    #[test]
+    fn operation_state_rejects_success_with_error() {
+        let json = serde_json::json!({
+            "id": "op-invalid",
+            "kind": "add",
+            "network_name": "alpha",
+            "targets": ["machine-a"],
+            "stage": "bootstrap",
+            "started_at": 1,
+            "updated_at": 1,
+            "state": {
+                "status": "succeeded",
+                "last_error": "bootstrap failed"
+            },
+            "artifacts": {}
+        });
+
+        serde_json::from_value::<MachineOperationRecord>(json)
+            .expect_err("succeeded machine operation cannot carry last_error");
     }
 }

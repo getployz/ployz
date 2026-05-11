@@ -1643,18 +1643,16 @@ async fn interrupted_machine_add_is_marked_interrupted_on_startup() {
         .load(&operation.id)
         .expect("load operation")
         .expect("operation exists");
-    assert_eq!(recovered.status, MachineOperationStatus::Interrupted);
+    assert_eq!(recovered.status(), MachineOperationStatus::Interrupted);
     assert!(
         recovered
-            .last_error
-            .as_deref()
+            .last_error()
             .expect("last error")
             .contains("daemon restarted")
     );
     assert!(
         recovered
-            .last_error
-            .as_deref()
+            .last_error()
             .expect("last error")
             .contains("remote cleanup attempted for 'join-target'")
     );
@@ -1690,11 +1688,10 @@ async fn interrupted_joined_machine_add_keeps_remote_cleanup_eligible_on_startup
         .load(&operation.id)
         .expect("load operation")
         .expect("operation exists");
-    assert_eq!(recovered.status, MachineOperationStatus::Interrupted);
+    assert_eq!(recovered.status(), MachineOperationStatus::Interrupted);
     assert!(
         recovered
-            .last_error
-            .as_deref()
+            .last_error()
             .expect("last error")
             .contains("operation-scoped ssh identity is unavailable")
     );
@@ -1735,8 +1732,8 @@ async fn interrupted_machine_add_attempts_remote_cleanup_without_active_mesh_on_
         .load(&operation.id)
         .expect("load operation")
         .expect("operation exists");
-    assert_eq!(recovered.status, MachineOperationStatus::Interrupted);
-    let last_error = recovered.last_error.as_deref().expect("last error");
+    assert_eq!(recovered.status(), MachineOperationStatus::Interrupted);
+    let last_error = recovered.last_error().expect("last error");
     assert!(last_error.contains("bootstrap membership cleanup skipped: no running network"));
     assert!(last_error.contains("remote cleanup attempted for 'join-target'"));
 }
@@ -1766,11 +1763,10 @@ async fn interrupted_latest_machine_update_without_version_change_stays_interrup
         .load(&operation.id)
         .expect("load operation")
         .expect("operation exists");
-    assert_eq!(recovered.status, MachineOperationStatus::Interrupted);
+    assert_eq!(recovered.status(), MachineOperationStatus::Interrupted);
     assert!(
         recovered
-            .last_error
-            .as_deref()
+            .last_error()
             .expect("last error")
             .contains("expected latest")
     );
@@ -1801,8 +1797,8 @@ async fn interrupted_latest_machine_update_with_version_change_succeeds_on_start
         .load(&operation.id)
         .expect("load operation")
         .expect("operation exists");
-    assert_eq!(recovered.status, MachineOperationStatus::Succeeded);
-    assert!(recovered.last_error.is_none());
+    assert_eq!(recovered.status(), MachineOperationStatus::Succeeded);
+    assert!(recovered.last_error().is_none());
 }
 
 #[tokio::test]
@@ -1829,11 +1825,10 @@ async fn interrupted_pinned_machine_update_requires_matching_version_on_startup(
         .load(&operation.id)
         .expect("load operation")
         .expect("operation exists");
-    assert_eq!(recovered.status, MachineOperationStatus::Interrupted);
+    assert_eq!(recovered.status(), MachineOperationStatus::Interrupted);
     assert!(
         recovered
-            .last_error
-            .as_deref()
+            .last_error()
             .expect("last error")
             .contains("expected 999.999.999")
     );
