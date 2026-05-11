@@ -9,7 +9,9 @@ use crate::deploy::lifecycle::{
 };
 use crate::deploy::managed_domains;
 use crate::deploy::participant::{self, DeployParticipantClient};
-use crate::deploy::plan::{ResolvedPlan, VolumeChange, resolve_plan, volume_record_change};
+use crate::deploy::plan::{
+    ResolvedPlan, VolumeChange, preflight_image_availability, resolve_plan, volume_record_change,
+};
 use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_participants};
 use crate::error::{DeployError, Error, Result, StoreError};
 use crate::model::{
@@ -298,6 +300,7 @@ pub(super) async fn apply_with_deploy_id_and_preconditions(
 ) -> Result<DeployApplyResult> {
     let initial_plan = resolve_plan(store, local_machine_id, manifest).await?;
     ensure_deploy_baseline(preconditions.expected_baseline, &initial_plan)?;
+    preflight_image_availability(store, &initial_plan).await?;
     let expected_baseline = preconditions.expected_baseline.cloned();
     ensure_volume_move_execution_supported(participant_client, &initial_plan)?;
     ensure_volume_clone_execution_supported(participant_client, &initial_plan)?;
@@ -371,12 +374,14 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         let final_plan = resolve_plan(store, local_machine_id, manifest).await?;
         ensure_plan_stable(&initial_plan, &final_plan, expected_baseline.as_ref())?;
         managed_domains::validate_hostname_ownership(store, &final_plan).await?;
+        let image_availability = preflight_image_availability(store, &final_plan).await?;
 
         let prepared = PreparedDeploy::new(
             deploy_id.clone(),
             started_at,
             local_machine_id.clone(),
             final_plan,
+            image_availability,
         )?;
         store
             .write_deploy_status(prepared.applying_record())

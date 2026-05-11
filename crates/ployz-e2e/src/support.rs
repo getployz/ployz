@@ -61,6 +61,10 @@ pub(crate) struct DaemonJsonResponse {
 pub(crate) enum DaemonJsonPayload {
     Doctor(DoctorPayload),
     MachineList(MachineListPayload),
+    DeployFailure {
+        #[serde(flatten)]
+        _ignored: std::collections::BTreeMap<String, serde_json::Value>,
+    },
     ImageStatus(ImageStatusPayload),
 }
 
