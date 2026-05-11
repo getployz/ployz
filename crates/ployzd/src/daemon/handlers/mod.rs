@@ -62,6 +62,7 @@ impl DaemonState {
             | DaemonRequest::ImageReceivedImport { .. }
             | DaemonRequest::ImageOperationGet { .. }
             | DaemonRequest::ImageOperationList
+            | DaemonRequest::BuildLocal { .. }
             | DaemonRequest::BuildOperationGet { .. }
             | DaemonRequest::BuildOperationList
             | DaemonRequest::DeployNodeInspectNamespace { .. }
@@ -177,6 +178,7 @@ impl DaemonState {
             }
             DaemonRequest::ImageOperationGet { id } => self.handle_image_operation_get(&id).await,
             DaemonRequest::ImageOperationList => self.handle_image_operation_list().await,
+            DaemonRequest::BuildLocal { request } => self.handle_build_local(&request).await,
             DaemonRequest::BuildOperationGet { id } => self.handle_build_operation_get(&id).await,
             DaemonRequest::BuildOperationList => self.handle_build_operation_list().await,
             DaemonRequest::DeployNodeInspectNamespace {
@@ -503,6 +505,7 @@ impl DaemonState {
             | DaemonRequest::ImageReceivedImport { .. }
             | DaemonRequest::ImageOperationGet { .. }
             | DaemonRequest::ImageOperationList
+            | DaemonRequest::BuildLocal { .. }
             | DaemonRequest::BuildOperationGet { .. }
             | DaemonRequest::BuildOperationList
             | DaemonRequest::DeployNodeInspectNamespace { .. }
@@ -550,10 +553,11 @@ mod tests {
     use super::RequestLane;
     use crate::daemon::DaemonState;
     use ployz_api::{
-        DaemonRequest, DebugTickTask, DeployApplyPreparedRequest, ImageDistributeRequest,
-        ImagePushRequest, ImageReceiveSessionRequest, ImageReceivedImportRequest,
+        BuildLocalRequest, DaemonRequest, DebugTickTask, DeployApplyPreparedRequest,
+        ImageDistributeRequest, ImagePushRequest, ImageReceiveSessionRequest,
+        ImageReceivedImportRequest,
     };
-    use ployz_types::model::{DeployId, ImageDigest, MachineId};
+    use ployz_types::model::{BuildMethod, DeployId, ImageDigest, MachineId};
 
     #[test]
     fn debug_tick_routes_to_exclusive_lane() {
@@ -571,6 +575,22 @@ mod tests {
             version: "latest".into(),
         });
         assert_eq!(lane, RequestLane::Exclusive);
+    }
+
+    #[test]
+    fn build_local_routes_to_shared_lane() {
+        let lane = DaemonState::request_lane(&DaemonRequest::BuildLocal {
+            request: BuildLocalRequest {
+                method: BuildMethod::Dockerfile,
+                context_dir: "/tmp/context".into(),
+                image_name: "example/app:latest".into(),
+                platform: None,
+                push_target: None,
+                distribute_targets: Vec::new(),
+            },
+        });
+
+        assert_eq!(lane, RequestLane::Shared);
     }
 
     #[test]

@@ -1,4 +1,6 @@
-use crate::cli::{VolumeAction, VolumeZfsAction, VolumeZfsTransferAction};
+use crate::cli::{
+    BuildAction, BuildOperationAction, VolumeAction, VolumeZfsAction, VolumeZfsTransferAction,
+};
 use crate::cli_io::{read_optional_text_file, read_stdin_string, read_text_source, request_daemon};
 use crate::{
     CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
@@ -7,8 +9,8 @@ use crate::{
     MigrateServiceArgs, Result, RuntimeTargetArg, ServiceModeArg,
 };
 use ployz_api::{
-    DaemonRequest, DeployOptions, ImageDistributeRequest, ImageInspectRequest, ImagePushRequest,
-    ImageStatusRequest, InstallSource as MachineInstallSource, MachineAddOptions,
+    BuildLocalRequest, DaemonRequest, DeployOptions, ImageDistributeRequest, ImageInspectRequest,
+    ImagePushRequest, ImageStatusRequest, InstallSource as MachineInstallSource, MachineAddOptions,
     MachineInstallOptions, MachineStoragePromoteRequest, MigrateServiceMode, MigrateServiceRequest,
 };
 use ployz_sdk::Transport;
@@ -37,6 +39,7 @@ pub(crate) async fn build_request<T: Transport>(
         Command::Mesh { action } => build_mesh_request(action),
         Command::Machine { action } => build_machine_request(action),
         Command::Image { action } => build_image_request(action),
+        Command::Build { action } => build_build_request(action),
         Command::Volume { action } => build_volume_request(action),
         Command::RpcStdio => Err(CliError::Usage(
             "internal error: rpc-stdio is handled directly".into(),
@@ -44,6 +47,38 @@ pub(crate) async fn build_request<T: Transport>(
         Command::Run { .. } => Err(CliError::Usage(
             "internal error: daemon command cannot be encoded as a daemon request".into(),
         )),
+    }
+}
+
+pub(crate) fn build_build_request(action: BuildAction) -> Result<DaemonRequest> {
+    match action {
+        BuildAction::Local {
+            method,
+            image,
+            platform,
+            context,
+        } => {
+            let context_dir = std::fs::canonicalize(&context).map_err(|error| {
+                CliError::Usage(format!(
+                    "build context '{}' is not readable: {error}",
+                    context.display()
+                ))
+            })?;
+            Ok(DaemonRequest::BuildLocal {
+                request: BuildLocalRequest {
+                    method: method.into(),
+                    context_dir: context_dir.display().to_string(),
+                    image_name: image,
+                    platform: platform.map(parse_image_platform).transpose()?,
+                    push_target: None,
+                    distribute_targets: Vec::new(),
+                },
+            })
+        }
+        BuildAction::Operation { action } => match action {
+            BuildOperationAction::List => Ok(DaemonRequest::BuildOperationList),
+            BuildOperationAction::Get { id } => Ok(DaemonRequest::BuildOperationGet { id }),
+        },
     }
 }
 

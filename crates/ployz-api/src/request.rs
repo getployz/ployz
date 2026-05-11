@@ -1,3 +1,4 @@
+use crate::build::BuildLocalRequest;
 use crate::deploy::{DeployApplyPreparedRequest, DeployOptions, MigrateServiceRequest};
 use crate::image::{
     ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageReceiveSessionRequest,
@@ -201,6 +202,9 @@ pub enum DaemonRequest {
         id: String,
     },
     ImageOperationList,
+    BuildLocal {
+        request: BuildLocalRequest,
+    },
     BuildOperationGet {
         id: String,
     },
@@ -293,7 +297,7 @@ pub enum DaemonRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::BuildMachineRequest;
+    use crate::build::{BuildLocalRequest, BuildMachineRequest};
     use crate::deploy::MigrateServiceMode;
     use crate::image::{
         ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageReceiveSessionRequest,
@@ -607,6 +611,33 @@ mod tests {
         let json = serde_json::to_value(&request).expect("serialize build request");
 
         assert_eq!(json["method"], "railpack");
+    }
+
+    #[test]
+    fn build_local_request_roundtrips_as_daemon_request() {
+        let request = DaemonRequest::BuildLocal {
+            request: BuildLocalRequest {
+                method: BuildMethod::Dockerfile,
+                context_dir: "/work/app".into(),
+                image_name: "example/app:latest".into(),
+                platform: None,
+                push_target: None,
+                distribute_targets: Vec::new(),
+            },
+        };
+
+        let json = serde_json::to_value(&request).expect("serialize build local request");
+
+        assert_eq!(json["BuildLocal"]["request"]["method"], "dockerfile");
+        assert_eq!(json["BuildLocal"]["request"]["context_dir"], "/work/app");
+        let roundtrip: DaemonRequest =
+            serde_json::from_value(json).expect("deserialize build local request");
+        let DaemonRequest::BuildLocal { request } = roundtrip else {
+            panic!("expected build local request");
+        };
+        assert_eq!(request.method, BuildMethod::Dockerfile);
+        assert_eq!(request.image_name, "example/app:latest");
+        assert!(request.distribute_targets.is_empty());
     }
 
     fn digest() -> ImageDigest {

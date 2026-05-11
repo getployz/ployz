@@ -70,7 +70,7 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         )));
     };
     match &record.presence {
-        ImagePresence::Present {} => Ok(()),
+        ImagePresence::Present { .. } => Ok(()),
         ImagePresence::Failed { reason } => Err(Error::Message(format!(
             "peer image availability for {digest} failed: {reason}"
         ))),
