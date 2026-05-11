@@ -1091,7 +1091,7 @@ mod tests {
         DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord, DeployPhaseRollbackPolicy,
         DeployPhaseState, DeployPreview, DeployPreviewBaseline, DeployPreviewBaselineComponents,
         DeployRecordState, MachineId, PreparedDeployRecord, PreparedDeployState, ServiceRelease,
-        ServiceRevisionRecord, ServiceRoutingPolicy,
+        ServiceRevisionRecord,
     };
     use ployz_types::spec::Namespace;
 
@@ -1371,16 +1371,7 @@ mod tests {
         ServiceReleaseRecord {
             namespace: namespace.clone(),
             service: service.into(),
-            release: ServiceRelease {
-                primary_revision_hash: revision_hash.into(),
-                referenced_revision_hashes: vec![revision_hash.into()],
-                routing: ServiceRoutingPolicy::Direct {
-                    revision_hash: revision_hash.into(),
-                },
-                slots: Vec::new(),
-                updated_by_deploy_id: DeployId::new(deploy_id),
-                updated_at: 1,
-            },
+            release: ServiceRelease::direct(revision_hash, Vec::new(), DeployId::new(deploy_id), 1),
         }
     }
 

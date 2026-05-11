@@ -163,8 +163,8 @@ mod tests {
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
         MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey, RoutingEvent,
-        RoutingState, ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord,
-        ServiceRoutingPolicy, SlotId, StorageParticipation,
+        RoutingState, ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord, SlotId,
+        StorageParticipation,
     };
     use ployz_types::spec::Namespace;
     use std::collections::BTreeMap;
@@ -226,7 +226,7 @@ mod tests {
                 .releases
                 .iter()
                 .find(|release| release.service == "api")
-                .map(|release| release.release.primary_revision_hash.as_str()),
+                .map(|release| release.release.primary_revision_hash()),
             Some("rev-new")
         );
         assert!(state.releases.iter().any(|release| release == &worker));
@@ -476,16 +476,12 @@ mod tests {
         ServiceReleaseRecord {
             namespace: namespace.clone(),
             service: service.into(),
-            release: ServiceRelease {
-                primary_revision_hash: revision_hash.into(),
-                referenced_revision_hashes: vec![revision_hash.into()],
-                routing: ServiceRoutingPolicy::Direct {
-                    revision_hash: revision_hash.into(),
-                },
-                slots: Vec::new(),
-                updated_by_deploy_id: DeployId::new("deploy-1"),
-                updated_at: 1,
-            },
+            release: ServiceRelease::direct(
+                revision_hash,
+                Vec::new(),
+                DeployId::new("deploy-1"),
+                1,
+            ),
         }
     }
 

@@ -1688,14 +1688,12 @@ mod tests {
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
                     service: service.name,
-                    release: ServiceRelease {
-                        primary_revision_hash: revision_hash.clone(),
-                        referenced_revision_hashes: vec![revision_hash.clone()],
-                        routing: ServiceRoutingPolicy::Direct { revision_hash },
-                        slots: Vec::new(),
-                        updated_by_deploy_id: deploy_id.clone(),
-                        updated_at: 1,
-                    },
+                    release: ServiceRelease::direct(
+                        revision_hash,
+                        Vec::new(),
+                        deploy_id.clone(),
+                        1,
+                    ),
                 }],
                 volumes,
                 deploy: DeployRecord {
@@ -4235,14 +4233,12 @@ mod tests {
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
                     service: service.name.clone(),
-                    release: ServiceRelease {
-                        primary_revision_hash: revision_hash.clone(),
-                        referenced_revision_hashes: vec![revision_hash.clone()],
-                        routing: ServiceRoutingPolicy::Direct { revision_hash },
-                        slots: Vec::new(),
-                        updated_by_deploy_id: phase_commit_id.clone(),
-                        updated_at: 2,
-                    },
+                    release: ServiceRelease::direct(
+                        revision_hash,
+                        Vec::new(),
+                        phase_commit_id.clone(),
+                        2,
+                    ),
                 }],
                 volumes: Vec::new(),
                 deploy: DeployRecord {
@@ -4304,14 +4300,12 @@ mod tests {
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
                     service: service.name.clone(),
-                    release: ServiceRelease {
-                        primary_revision_hash: revision_hash.clone(),
-                        referenced_revision_hashes: vec![revision_hash.clone()],
-                        routing: ServiceRoutingPolicy::Direct { revision_hash },
-                        slots: Vec::new(),
-                        updated_by_deploy_id: deploy_id.clone(),
-                        updated_at: 1,
-                    },
+                    release: ServiceRelease::direct(
+                        revision_hash,
+                        Vec::new(),
+                        deploy_id.clone(),
+                        1,
+                    ),
                 }],
                 volumes: vec![VolumeRecord {
                     namespace: namespace.clone(),
@@ -4377,16 +4371,12 @@ mod tests {
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
                     service: "api".into(),
-                    release: ServiceRelease {
-                        primary_revision_hash: "missing-rev".into(),
-                        referenced_revision_hashes: vec!["missing-rev".into()],
-                        routing: ServiceRoutingPolicy::Direct {
-                            revision_hash: "missing-rev".into(),
-                        },
-                        slots: Vec::new(),
-                        updated_by_deploy_id: deploy_id.clone(),
-                        updated_at: 1,
-                    },
+                    release: ServiceRelease::direct(
+                        "missing-rev",
+                        Vec::new(),
+                        deploy_id.clone(),
+                        1,
+                    ),
                 }],
                 volumes: Vec::new(),
                 deploy: DeployRecord {
@@ -4447,14 +4437,12 @@ mod tests {
                 releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
                     service: "api".into(),
-                    release: ServiceRelease {
-                        primary_revision_hash: revision_hash.clone(),
-                        referenced_revision_hashes: vec![revision_hash.clone()],
-                        routing: ServiceRoutingPolicy::Direct { revision_hash },
-                        slots: Vec::new(),
-                        updated_by_deploy_id: deploy_id.clone(),
-                        updated_at: 1,
-                    },
+                    release: ServiceRelease::direct(
+                        revision_hash,
+                        Vec::new(),
+                        deploy_id.clone(),
+                        1,
+                    ),
                 }],
                 volumes: Vec::new(),
                 deploy: DeployRecord {

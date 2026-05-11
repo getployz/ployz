@@ -870,7 +870,7 @@ pub(super) async fn resolve_plan(
         } else if slots
             .iter()
             .all(|slot| slot.action == DeployChangeKind::Unchanged)
-            && current_release.map(|release| release.release.primary_revision_hash.as_str())
+            && current_release.map(|release| release.release.primary_revision_hash())
                 == Some(revision_hash.as_str())
         {
             DeployChangeKind::Unchanged
@@ -888,7 +888,7 @@ pub(super) async fn resolve_plan(
             spec: Some(spec.clone()),
             spec_json: Some(spec_json),
             current_revision_hash: current_release
-                .map(|release| release.release.primary_revision_hash.clone()),
+                .map(|release| release.release.primary_revision_hash().to_string()),
             next_revision_hash: Some(revision_hash),
             slots,
             action,
@@ -930,7 +930,7 @@ pub(super) async fn resolve_plan(
             phase: None,
             spec: None,
             spec_json: None,
-            current_revision_hash: Some(release.release.primary_revision_hash.clone()),
+            current_revision_hash: Some(release.release.primary_revision_hash().to_string()),
             next_revision_hash: None,
             slots,
             action: DeployChangeKind::Remove,
@@ -1411,7 +1411,7 @@ async fn resolve_branch_source(
             service: intent.source_service.clone(),
         }));
     };
-    let source_revision_hash = source_release.release.primary_revision_hash.clone();
+    let source_revision_hash = source_release.release.primary_revision_hash().to_string();
     if let Some(expected_revision_hash) = &intent.expected_source_revision_hash
         && expected_revision_hash != &source_revision_hash
     {

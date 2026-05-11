@@ -353,8 +353,7 @@ mod tests {
     use super::*;
     use ployz_types::model::{
         DeployId, DeployPhaseCommitRecord, DeployPhaseId, DeployRecord, DeployRecordState,
-        MachineId, ServiceBranchLineageRecord, ServiceRelease, ServiceRoutingPolicy,
-        VolumeMovementRecord,
+        MachineId, ServiceBranchLineageRecord, ServiceRelease, VolumeMovementRecord,
     };
     use ployz_types::spec::VolumeScope;
 
@@ -749,16 +748,12 @@ mod tests {
         ServiceReleaseRecord {
             namespace: namespace.clone(),
             service: service.to_string(),
-            release: ServiceRelease {
-                primary_revision_hash: revision_hash.to_string(),
-                referenced_revision_hashes: vec![revision_hash.to_string()],
-                routing: ServiceRoutingPolicy::Direct {
-                    revision_hash: revision_hash.to_string(),
-                },
-                slots: Vec::new(),
-                updated_by_deploy_id: DeployId::new(format!("deploy-{service}")),
-                updated_at: 1,
-            },
+            release: ServiceRelease::direct(
+                revision_hash.to_string(),
+                Vec::new(),
+                DeployId::new(format!("deploy-{service}")),
+                1,
+            ),
         }
     }
 

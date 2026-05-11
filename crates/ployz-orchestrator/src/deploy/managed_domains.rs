@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use ployz_store_api::{CertificateStore, RoutingStateStore, StoreDriver};
 use ployz_types::model::{
     CertificateLifecycle, CertificateRecord, CertificateState, RoutingState, ServiceRelease,
-    ServiceReleaseRecord, ServiceRevisionRecord, ServiceRoutingPolicy,
+    ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
 
@@ -173,10 +173,7 @@ fn active_revision_for_release<'a>(
 }
 
 fn routing_revision_hash(release: &ServiceRelease) -> &str {
-    match &release.routing {
-        ServiceRoutingPolicy::Direct { revision_hash } => revision_hash.as_str(),
-        ServiceRoutingPolicy::Split { .. } => release.primary_revision_hash.as_str(),
-    }
+    release.primary_revision_hash()
 }
 
 fn hostnames_for_spec(spec: &ServiceSpec) -> Vec<String> {
