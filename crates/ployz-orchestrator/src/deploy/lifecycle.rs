@@ -1,8 +1,9 @@
 use crate::deploy::plan::ResolvedPlan;
 use crate::error::{DeployError, Error, Result};
 use crate::model::{
-    DeployChangeKind, DeployId, DeployPreview, DeployRecord, DeployState, InstanceStatusRecord,
-    MachineId, ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord, ServiceRoutingPolicy,
+    DeployChangeKind, DeployId, DeployImageAvailabilityPlan, DeployPreview, DeployRecord,
+    DeployState, InstanceStatusRecord, MachineId, ServiceRelease, ServiceReleaseRecord,
+    ServiceRevisionRecord, ServiceRoutingPolicy,
 };
 #[cfg(test)]
 use crate::model::{
@@ -50,8 +51,9 @@ impl PreparedDeploy {
         started_at: u64,
         coordinator_machine_id: MachineId,
         plan: ResolvedPlan,
+        image_availability: Vec<DeployImageAvailabilityPlan>,
     ) -> Result<Self> {
-        let preview = plan.to_preview(Vec::new());
+        let preview = plan.to_preview_with_image_availability(Vec::new(), image_availability);
         let applying_record = DeployRecord {
             deploy_id: deploy_id.clone(),
             namespace: plan.namespace().clone(),
