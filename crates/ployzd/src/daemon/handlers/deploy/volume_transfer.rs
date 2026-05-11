@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ployz_api::{DaemonPayload, DaemonResponse, VolumeZfsTransferPayload};
+use ployz_api::{DaemonPayload, DaemonResponse, VolumeZfsTransferPayload, VolumeZfsTransferState};
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcFailure, RpcPolicy};
 use ployz_orchestrator::deploy::participant::{MoveVolumeRequest, MoveVolumeResult};
 use ployz_types::Error as PloyzError;
@@ -195,39 +195,32 @@ fn volume_move_rpc_error(operation: &'static str, error: RpcFailure) -> PloyzErr
 pub(super) fn volume_move_result_from_transfer(
     payload: VolumeZfsTransferPayload,
 ) -> ployz_types::Result<Option<MoveVolumeResult>> {
-    match payload.transfer.status.as_str() {
-        "succeeded" => {
-            let Some(snapshot_guid) = payload.transfer.snapshot_guid else {
-                return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
-                    payload: "volume zfs transfer snapshot guid",
-                }));
-            };
-            let Some(bytes_transferred) = payload.transfer.bytes_transferred else {
-                return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
-                    payload: "volume zfs transfer bytes",
-                }));
-            };
-            Ok(Some(MoveVolumeResult {
-                snapshot: payload.transfer.snapshot_name,
-                snapshot_guid,
-                bytes_transferred,
+    match payload.transfer.state {
+        VolumeZfsTransferState::Succeeded {
+            snapshot_guid,
+            bytes_transferred,
+            ..
+        } => Ok(Some(MoveVolumeResult {
+            snapshot: payload.transfer.snapshot_name,
+            snapshot_guid,
+            bytes_transferred,
+        })),
+        VolumeZfsTransferState::Failed { last_error, .. } => {
+            Err(PloyzError::Deploy(DeployError::RemoteNodeError {
+                operation: "volume_zfs_transfer",
+                code: "failed".into(),
+                message: last_error,
             }))
         }
-        "failed" | "interrupted" => Err(PloyzError::Deploy(DeployError::RemoteNodeError {
-            operation: "volume_zfs_transfer",
-            code: payload.transfer.status,
-            message: payload.transfer.last_error.unwrap_or_else(|| {
-                format!("zfs transfer '{}' did not succeed", payload.transfer.id)
-            }),
-        })),
-        "running" => Ok(None),
-        other => Err(PloyzError::Deploy(DeployError::RemoteNodeError {
-            operation: "volume_zfs_transfer",
-            code: other.to_string(),
-            message: format!(
-                "zfs transfer '{}' reported unknown status '{other}'",
-                payload.transfer.id
-            ),
-        })),
+        VolumeZfsTransferState::Interrupted { last_error, .. } => {
+            Err(PloyzError::Deploy(DeployError::RemoteNodeError {
+                operation: "volume_zfs_transfer",
+                code: "interrupted".into(),
+                message: last_error.unwrap_or_else(|| {
+                    format!("zfs transfer '{}' did not succeed", payload.transfer.id)
+                }),
+            }))
+        }
+        VolumeZfsTransferState::Running { .. } => Ok(None),
     }
 }
