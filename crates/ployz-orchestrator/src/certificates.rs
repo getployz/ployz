@@ -379,7 +379,7 @@ where
 }
 
 fn needs_start_order(record: &CertificateRecord) -> bool {
-    match record.state {
+    match record.state() {
         CertificateState::Pending | CertificateState::Failed | CertificateState::RenewalDue => true,
         CertificateState::Issuing | CertificateState::Active => false,
     }
@@ -526,10 +526,10 @@ where
 {
     let certificates = store.list_certificates().await?;
     for certificate in certificates {
-        if certificate.state != CertificateState::Issuing {
+        if certificate.state() != CertificateState::Issuing {
             continue;
         }
-        let Some(order_url) = certificate.order_url.clone() else {
+        let Some(order_url) = certificate.order_url().map(ToString::to_string) else {
             continue;
         };
         finalize_one(store, issuer, coordinator, certificate, &order_url).await?;
@@ -609,8 +609,8 @@ where
         tracing::info!(
             hostname = %hostname,
             order_url,
-            current_state = %pre.state,
-            current_order_url = ?pre.order_url,
+            current_state = %pre.state(),
+            current_order_url = ?pre.order_url(),
             "skipping stale ACME finalization"
         );
         return Ok(());
@@ -635,14 +635,14 @@ where
         tracing::info!(
             hostname = %hostname,
             order_url,
-            current_state = %current.state,
-            current_order_url = ?current.order_url,
+            current_state = %current.state(),
+            current_order_url = ?current.order_url(),
             "skipping stale ACME finalization write"
         );
         return Ok(());
     }
 
-    let previous_active_version_id = current.active_version_id.clone();
+    let previous_active_version_id = current.active_version_id().map(ToString::to_string);
     match outcome {
         Ok(issued) => {
             let now = now_unix_secs();
@@ -721,7 +721,7 @@ where
 }
 
 fn is_same_inflight_order(record: &CertificateRecord, order_url: &str) -> bool {
-    record.state == CertificateState::Issuing && record.order_url.as_deref() == Some(order_url)
+    record.state() == CertificateState::Issuing && record.order_url() == Some(order_url)
 }
 
 fn is_retryable_challenge_visibility(error: &Error) -> bool {
@@ -844,9 +844,9 @@ where
         return Ok(());
     };
     let now = now_unix_secs();
-    let due = match record.state {
+    let due = match record.state() {
         CertificateState::Active => {
-            let Some(threshold) = record.next_renewal_at else {
+            let Some(threshold) = record.next_renewal_at() else {
                 return Ok(());
             };
             if now < threshold {
@@ -908,8 +908,49 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{AcmeChallengeRecord, CertificateRecord};
+    use ployz_types::model::{AcmeChallengeRecord, CertificateLifecycle, CertificateRecord};
     use std::sync::Mutex;
+
+    fn set_issuing(record: &mut CertificateRecord, order_url: &str) {
+        record.lifecycle = CertificateLifecycle::Issuing {
+            order_url: order_url.into(),
+            active_version_id: None,
+            last_error: None,
+        };
+    }
+
+    fn set_issuing_with_active(record: &mut CertificateRecord, order_url: &str, version_id: &str) {
+        record.lifecycle = CertificateLifecycle::Issuing {
+            order_url: order_url.into(),
+            active_version_id: Some(version_id.into()),
+            last_error: None,
+        };
+    }
+
+    fn set_active(record: &mut CertificateRecord, version_id: &str, next_renewal_at: Option<u64>) {
+        record.lifecycle = CertificateLifecycle::Active {
+            active_version_id: version_id.into(),
+            next_renewal_at,
+        };
+    }
+
+    fn set_renewal_due(
+        record: &mut CertificateRecord,
+        version_id: &str,
+        next_renewal_at: Option<u64>,
+    ) {
+        record.lifecycle = CertificateLifecycle::RenewalDue {
+            active_version_id: version_id.into(),
+            next_renewal_at,
+        };
+    }
+
+    fn set_failed(record: &mut CertificateRecord, error: &str, active_version_id: Option<&str>) {
+        record.lifecycle = CertificateLifecycle::Failed {
+            last_error: error.into(),
+            active_version_id: active_version_id.map(String::from),
+        };
+    }
 
     struct FakeIssuer {
         start_result: Mutex<Option<Result<StartedOrder>>>,
@@ -1006,9 +1047,10 @@ mod tests {
                     fullchain_pem,
                     private_key_pem,
                 } => {
-                    current.state = CertificateState::Active;
-                    current.order_url = None;
-                    current.active_version_id = Some(active_version_id.clone());
+                    current.lifecycle = CertificateLifecycle::Active {
+                        active_version_id: active_version_id.clone(),
+                        next_renewal_at: None,
+                    };
                     current.versions.push(CertificateVersion {
                         version_id: active_version_id.clone(),
                         fullchain_pem: fullchain_pem.clone(),
@@ -1019,7 +1061,11 @@ mod tests {
                     });
                 }
                 FinalizeMutation::ReplaceOrder { order_url } => {
-                    current.order_url = Some(order_url.clone());
+                    current.lifecycle = CertificateLifecycle::Issuing {
+                        order_url: order_url.clone(),
+                        active_version_id: current.active_version_id().map(ToString::to_string),
+                        last_error: current.last_error().map(ToString::to_string),
+                    };
                     current.updated_at = now_unix_secs();
                 }
             }
@@ -1100,8 +1146,7 @@ mod tests {
         // ACME order for the same hostname.
         let store = StoreDriver::memory();
         let mut already_issuing = pending_record("example.com");
-        already_issuing.state = CertificateState::Issuing;
-        already_issuing.order_url = Some("https://acme/orders/41".into());
+        set_issuing(&mut already_issuing, "https://acme/orders/41");
         store
             .upsert_certificate(&already_issuing)
             .await
@@ -1122,8 +1167,8 @@ mod tests {
             .await
             .expect("cert lookup should work")
             .expect("cert record should exist");
-        assert_eq!(record.state, CertificateState::Issuing);
-        assert_eq!(record.order_url.as_deref(), Some("https://acme/orders/41"));
+        assert_eq!(record.state(), CertificateState::Issuing);
+        assert_eq!(record.order_url(), Some("https://acme/orders/41"));
     }
 
     #[tokio::test]
@@ -1169,9 +1214,9 @@ mod tests {
             .expect("release should have captured the record");
         // If the lock had been released before the upsert, this would still
         // be Pending with no order_url.
-        assert_eq!(snapshot_at_release.state, CertificateState::Issuing);
+        assert_eq!(snapshot_at_release.state(), CertificateState::Issuing);
         assert_eq!(
-            snapshot_at_release.order_url.as_deref(),
+            snapshot_at_release.order_url(),
             Some("https://acme/orders/42")
         );
     }
@@ -1186,8 +1231,7 @@ mod tests {
         // the cluster, and bloats every gateway snapshot rebuild.
         let store = StoreDriver::memory();
         let mut failed = pending_record("example.com");
-        failed.state = CertificateState::Failed;
-        failed.last_error = Some("previous order failed".into());
+        set_failed(&mut failed, "previous order failed", None);
         store
             .upsert_certificate(&failed)
             .await
@@ -1260,9 +1304,9 @@ mod tests {
             .await
             .expect("cert lookup should work")
             .expect("cert record should exist");
-        assert_eq!(record.state, CertificateState::Issuing);
-        assert_eq!(record.order_url.as_deref(), Some("https://acme/orders/42"));
-        assert!(record.last_error.is_none());
+        assert_eq!(record.state(), CertificateState::Issuing);
+        assert_eq!(record.order_url(), Some("https://acme/orders/42"));
+        assert!(record.last_error().is_none());
     }
 
     #[tokio::test]
@@ -1292,15 +1336,9 @@ mod tests {
             .await
             .expect("cert lookup should work")
             .expect("cert record should exist");
-        assert_eq!(record.state, CertificateState::Failed);
-        assert!(
-            record
-                .last_error
-                .as_deref()
-                .unwrap()
-                .contains("rateLimited")
-        );
-        assert!(record.order_url.is_none());
+        assert_eq!(record.state(), CertificateState::Failed);
+        assert!(record.last_error().unwrap().contains("rateLimited"));
+        assert!(record.order_url().is_none());
     }
 
     #[tokio::test]
@@ -1336,17 +1374,16 @@ mod tests {
             .await
             .expect("unrelated cert lookup should work")
             .expect("unrelated cert should exist");
-        assert_eq!(target.state, CertificateState::Issuing);
-        assert_eq!(unrelated.state, CertificateState::Pending);
-        assert!(unrelated.order_url.is_none());
+        assert_eq!(target.state(), CertificateState::Issuing);
+        assert_eq!(unrelated.state(), CertificateState::Pending);
+        assert!(unrelated.order_url().is_none());
     }
 
     #[tokio::test]
     async fn finalize_due_writes_active_certificate() {
         let store = StoreDriver::memory();
         let mut record = pending_record("example.com");
-        record.state = CertificateState::Issuing;
-        record.order_url = Some("https://acme/orders/42".into());
+        set_issuing(&mut record, "https://acme/orders/42");
         store
             .upsert_certificate(&record)
             .await
@@ -1371,20 +1408,18 @@ mod tests {
             .await
             .expect("cert lookup should work")
             .expect("cert record should exist");
-        assert_eq!(record.state, CertificateState::Active);
-        assert!(record.active_version_id.is_some());
+        assert_eq!(record.state(), CertificateState::Active);
+        assert!(record.active_version_id().is_some());
         assert_eq!(record.versions.len(), 1);
         assert_eq!(record.versions[0].fullchain_pem, "fullchain");
-        assert!(record.order_url.is_none());
+        assert!(record.order_url().is_none());
     }
 
     #[tokio::test]
     async fn finalize_failure_keeps_previous_active_version() {
         let store = StoreDriver::memory();
         let mut record = pending_record("example.com");
-        record.state = CertificateState::Issuing;
-        record.order_url = Some("https://acme/orders/42".into());
-        record.active_version_id = Some("old".into());
+        set_issuing_with_active(&mut record, "https://acme/orders/42", "old");
         record.versions.push(CertificateVersion {
             version_id: "old".into(),
             fullchain_pem: "old-chain".into(),
@@ -1414,18 +1449,17 @@ mod tests {
             .await
             .expect("cert lookup should work")
             .expect("cert record should exist");
-        assert_eq!(record.state, CertificateState::Failed);
-        assert_eq!(record.active_version_id.as_deref(), Some("old"));
+        assert_eq!(record.state(), CertificateState::Failed);
+        assert_eq!(record.active_version_id(), Some("old"));
         assert_eq!(record.versions.len(), 1);
-        assert!(record.order_url.is_none());
+        assert!(record.order_url().is_none());
     }
 
     #[tokio::test]
     async fn stale_finalize_failure_does_not_overwrite_active_certificate() {
         let store = StoreDriver::memory();
         let mut record = pending_record("example.com");
-        record.state = CertificateState::Issuing;
-        record.order_url = Some("https://acme/orders/42".into());
+        set_issuing(&mut record, "https://acme/orders/42");
         store
             .upsert_certificate(&record)
             .await
@@ -1453,19 +1487,18 @@ mod tests {
             .await
             .expect("cert lookup should work")
             .expect("cert record should exist");
-        assert_eq!(record.state, CertificateState::Active);
-        assert_eq!(record.active_version_id.as_deref(), Some("new"));
+        assert_eq!(record.state(), CertificateState::Active);
+        assert_eq!(record.active_version_id(), Some("new"));
         assert_eq!(record.versions.len(), 1);
-        assert!(record.order_url.is_none());
-        assert!(record.last_error.is_none());
+        assert!(record.order_url().is_none());
+        assert!(record.last_error().is_none());
     }
 
     #[tokio::test]
     async fn stale_finalize_success_does_not_overwrite_new_order() {
         let store = StoreDriver::memory();
         let mut record = pending_record("example.com");
-        record.state = CertificateState::Issuing;
-        record.order_url = Some("https://acme/orders/42".into());
+        set_issuing(&mut record, "https://acme/orders/42");
         store
             .upsert_certificate(&record)
             .await
@@ -1494,9 +1527,9 @@ mod tests {
             .await
             .expect("cert lookup should work")
             .expect("cert record should exist");
-        assert_eq!(record.state, CertificateState::Issuing);
-        assert_eq!(record.order_url.as_deref(), Some("https://acme/orders/43"));
-        assert!(record.active_version_id.is_none());
+        assert_eq!(record.state(), CertificateState::Issuing);
+        assert_eq!(record.order_url(), Some("https://acme/orders/43"));
+        assert!(record.active_version_id().is_none());
         assert!(record.versions.is_empty());
     }
 
@@ -1552,8 +1585,7 @@ mod tests {
         // bug: stale finalizers ran ACME side effects unconditionally).
         let store = StoreDriver::memory();
         let mut current = pending_record("example.com");
-        current.state = CertificateState::Issuing;
-        current.order_url = Some("https://acme/orders/43".into());
+        set_issuing(&mut current, "https://acme/orders/43");
         store
             .upsert_certificate(&current)
             .await
@@ -1561,8 +1593,7 @@ mod tests {
 
         let stale_snapshot = {
             let mut record = pending_record("example.com");
-            record.state = CertificateState::Issuing;
-            record.order_url = Some("https://acme/orders/42".into());
+            set_issuing(&mut record, "https://acme/orders/42");
             record
         };
 
@@ -1589,8 +1620,8 @@ mod tests {
             .await
             .expect("cert lookup should work")
             .expect("cert record should exist");
-        assert_eq!(record.state, CertificateState::Issuing);
-        assert_eq!(record.order_url.as_deref(), Some("https://acme/orders/43"));
+        assert_eq!(record.state(), CertificateState::Issuing);
+        assert_eq!(record.order_url(), Some("https://acme/orders/43"));
     }
 
     // -------------------------------------------------------------------
@@ -1655,7 +1686,7 @@ mod tests {
     async fn process_renewal_job_fails_on_coordination_backend_error() {
         let store = StoreDriver::memory();
         let mut record = pending_record("example.com");
-        record.state = CertificateState::RenewalDue;
+        set_renewal_due(&mut record, "v1", None);
         store
             .upsert_certificate(&record)
             .await
@@ -1680,8 +1711,7 @@ mod tests {
     async fn finalize_one_skips_acme_when_coordinator_vetoes() {
         let store = StoreDriver::memory();
         let mut record = pending_record("example.com");
-        record.state = CertificateState::Issuing;
-        record.order_url = Some("https://acme/orders/42".into());
+        set_issuing(&mut record, "https://acme/orders/42");
         store
             .upsert_certificate(&record)
             .await
@@ -1709,17 +1739,16 @@ mod tests {
             .await
             .expect("cert lookup should work")
             .expect("cert record should exist");
-        assert_eq!(record.state, CertificateState::Issuing);
-        assert_eq!(record.order_url.as_deref(), Some("https://acme/orders/42"));
-        assert!(record.last_error.is_none());
+        assert_eq!(record.state(), CertificateState::Issuing);
+        assert_eq!(record.order_url(), Some("https://acme/orders/42"));
+        assert!(record.last_error().is_none());
     }
 
     #[tokio::test]
     async fn finalize_one_fails_on_coordination_backend_error() {
         let store = StoreDriver::memory();
         let mut record = pending_record("example.com");
-        record.state = CertificateState::Issuing;
-        record.order_url = Some("https://acme/orders/42".into());
+        set_issuing(&mut record, "https://acme/orders/42");
         store
             .upsert_certificate(&record)
             .await
@@ -1755,8 +1784,7 @@ mod tests {
         // grab the (released) lock, and start a duplicate fresh order.
         let store = StoreDriver::memory();
         let mut record = pending_record("example.com");
-        record.state = CertificateState::Issuing;
-        record.order_url = Some("https://acme/orders/42".into());
+        set_issuing(&mut record, "https://acme/orders/42");
         store
             .upsert_certificate(&record)
             .await
@@ -1790,9 +1818,9 @@ mod tests {
             .expect("captured lock")
             .clone()
             .expect("release callback should observe a record");
-        assert_eq!(record_at_release.state, CertificateState::Active);
-        assert!(record_at_release.active_version_id.is_some());
-        assert!(record_at_release.order_url.is_none());
+        assert_eq!(record_at_release.state(), CertificateState::Active);
+        assert!(record_at_release.active_version_id().is_some());
+        assert!(record_at_release.order_url().is_none());
         let [version] = record_at_release.versions.as_slice() else {
             panic!(
                 "expected exactly one issued version, got {:?}",
@@ -1888,8 +1916,7 @@ mod tests {
         // winner's `poll_certificate` returned.
         let store = StoreDriver::memory();
         let mut record = pending_record("example.com");
-        record.state = CertificateState::Issuing;
-        record.order_url = Some("https://acme/orders/42".into());
+        set_issuing(&mut record, "https://acme/orders/42");
         store
             .upsert_certificate(&record)
             .await
@@ -1941,7 +1968,7 @@ mod tests {
             .expect("cert lookup should work")
             .expect("cert record should exist");
         assert_eq!(
-            record.state,
+            record.state(),
             CertificateState::Active,
             "issued cert must land on the record, not Failed"
         );
@@ -1952,16 +1979,15 @@ mod tests {
             );
         };
         assert_eq!(version.fullchain_pem, "winner-chain");
-        assert!(record.last_error.is_none());
-        assert!(record.order_url.is_none());
+        assert!(record.last_error().is_none());
+        assert!(record.order_url().is_none());
     }
 
     #[tokio::test]
     async fn challenge_visibility_failure_keeps_order_issuing_for_retry() {
         let store = StoreDriver::memory();
         let mut record = pending_record("example.com");
-        record.state = CertificateState::Issuing;
-        record.order_url = Some("https://acme/orders/42".into());
+        set_issuing(&mut record, "https://acme/orders/42");
         store
             .upsert_certificate(&record)
             .await
@@ -1986,12 +2012,11 @@ mod tests {
             .await
             .expect("cert lookup should work")
             .expect("cert record should exist");
-        assert_eq!(record.state, CertificateState::Issuing);
-        assert_eq!(record.order_url.as_deref(), Some("https://acme/orders/42"));
+        assert_eq!(record.state(), CertificateState::Issuing);
+        assert_eq!(record.order_url(), Some("https://acme/orders/42"));
         assert!(
             record
-                .last_error
-                .as_deref()
+                .last_error()
                 .is_some_and(|error| error.contains("peer did not see challenge yet"))
         );
     }
@@ -2039,9 +2064,7 @@ mod tests {
         let store = StoreDriver::memory();
         let now = now_unix_secs();
         let mut record = pending_record("example.com");
-        record.state = CertificateState::Active;
-        record.active_version_id = Some("v1".into());
-        record.next_renewal_at = Some(now.saturating_sub(10));
+        set_active(&mut record, "v1", Some(now.saturating_sub(10)));
         store
             .upsert_certificate(&record)
             .await
@@ -2066,8 +2089,8 @@ mod tests {
             .expect("cert record should exist");
         // RenewalDue was picked up by start_pending_orders in the same job.
         // FakeIssuer returned Err → state is Failed, last_error captured.
-        assert_eq!(record.state, CertificateState::Failed);
-        assert!(record.last_error.is_some());
+        assert_eq!(record.state(), CertificateState::Failed);
+        assert!(record.last_error().is_some());
     }
 
     #[tokio::test]
@@ -2075,8 +2098,7 @@ mod tests {
         let store = StoreDriver::memory();
         let now = now_unix_secs();
         let mut record = pending_record("example.com");
-        record.state = CertificateState::Issuing;
-        record.order_url = Some("https://acme/orders/stale".into());
+        set_issuing(&mut record, "https://acme/orders/stale");
         record.updated_at = now.saturating_sub(STUCK_ISSUING_MAX_AGE_SECS + 1);
         store
             .upsert_certificate(&record)
@@ -2104,8 +2126,8 @@ mod tests {
             .expect("cert record should exist");
         // Stuck Issuing flipped to Pending, then start_pending_orders opened
         // a new order and moved it to Issuing with the fresh URL.
-        assert_eq!(record.state, CertificateState::Issuing);
-        assert_eq!(record.order_url.as_deref(), Some("https://acme/orders/new"));
+        assert_eq!(record.state(), CertificateState::Issuing);
+        assert_eq!(record.order_url(), Some("https://acme/orders/new"));
     }
 
     #[tokio::test]
@@ -2113,9 +2135,7 @@ mod tests {
         let store = StoreDriver::memory();
         let now = now_unix_secs();
         let mut record = pending_record("example.com");
-        record.state = CertificateState::Active;
-        record.active_version_id = Some("v1".into());
-        record.next_renewal_at = Some(now.saturating_add(3600));
+        set_active(&mut record, "v1", Some(now.saturating_add(3600)));
         store
             .upsert_certificate(&record)
             .await
@@ -2138,8 +2158,8 @@ mod tests {
             .await
             .expect("cert lookup should work")
             .expect("cert record should exist");
-        assert_eq!(record.state, CertificateState::Active);
-        assert!(record.last_error.is_none());
+        assert_eq!(record.state(), CertificateState::Active);
+        assert!(record.last_error().is_none());
     }
 
     #[tokio::test]
@@ -2147,13 +2167,9 @@ mod tests {
         let store = StoreDriver::memory();
         let now = now_unix_secs();
         let mut due = pending_record("due.example.com");
-        due.state = CertificateState::Active;
-        due.active_version_id = Some("v1".into());
-        due.next_renewal_at = Some(now.saturating_sub(1));
+        set_active(&mut due, "v1", Some(now.saturating_sub(1)));
         let mut other = pending_record("other.example.com");
-        other.state = CertificateState::Active;
-        other.active_version_id = Some("v1".into());
-        other.next_renewal_at = Some(now.saturating_sub(1));
+        set_active(&mut other, "v1", Some(now.saturating_sub(1)));
         store
             .upsert_certificate(&due)
             .await
@@ -2184,10 +2200,10 @@ mod tests {
             .await
             .expect("cert lookup should work")
             .expect("other cert should exist");
-        assert_eq!(due.state, CertificateState::Issuing);
-        assert_eq!(due.order_url.as_deref(), Some("https://acme/orders/due"));
-        assert_eq!(other.state, CertificateState::Active);
-        assert!(other.order_url.is_none());
+        assert_eq!(due.state(), CertificateState::Issuing);
+        assert_eq!(due.order_url(), Some("https://acme/orders/due"));
+        assert_eq!(other.state(), CertificateState::Active);
+        assert!(other.order_url().is_none());
     }
 
     #[tokio::test]
@@ -2281,14 +2297,10 @@ mod tests {
             hostname: hostname.into(),
             issuer_url: DEFAULT_ACME_DIRECTORY_URL.into(),
             account_id: account_id_for_issuer_url(DEFAULT_ACME_DIRECTORY_URL),
-            state: CertificateState::Pending,
-            active_version_id: None,
+            lifecycle: CertificateLifecycle::Pending { last_error: None },
             versions: Vec::new(),
-            order_url: None,
-            last_error: None,
             requested_at: 1,
             updated_at: 1,
-            next_renewal_at: None,
         }
     }
 }

@@ -17,18 +17,12 @@ pub struct PortBinding {
 
 pub type PortMap = HashMap<String, Option<Vec<PortBinding>>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RestartPolicyName {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestartPolicy {
     No,
     Always,
     UnlessStopped,
-    OnFailure,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RestartPolicy {
-    pub name: Option<RestartPolicyName>,
-    pub maximum_retry_count: Option<i64>,
+    OnFailure { maximum_retry_count: i64 },
 }
 
 /// Flat declarative spec for a managed container.
@@ -168,32 +162,38 @@ fn parse_env_pair(s: &str) -> Result<(String, String), String> {
 
 #[cfg(feature = "docker")]
 fn restart_policy_from_bollard(policy: &bollard::models::RestartPolicy) -> RestartPolicy {
-    let name = policy.name.as_ref().and_then(|n| match n {
-        bollard::models::RestartPolicyNameEnum::NO => Some(RestartPolicyName::No),
-        bollard::models::RestartPolicyNameEnum::ALWAYS => Some(RestartPolicyName::Always),
-        bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED => {
-            Some(RestartPolicyName::UnlessStopped)
+    match policy.name.as_ref() {
+        Some(bollard::models::RestartPolicyNameEnum::NO)
+        | Some(bollard::models::RestartPolicyNameEnum::EMPTY)
+        | None => RestartPolicy::No,
+        Some(bollard::models::RestartPolicyNameEnum::ALWAYS) => RestartPolicy::Always,
+        Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED) => {
+            RestartPolicy::UnlessStopped
         }
-        bollard::models::RestartPolicyNameEnum::ON_FAILURE => Some(RestartPolicyName::OnFailure),
-        bollard::models::RestartPolicyNameEnum::EMPTY => None,
-    });
-    RestartPolicy {
-        name,
-        maximum_retry_count: policy.maximum_retry_count,
+        Some(bollard::models::RestartPolicyNameEnum::ON_FAILURE) => RestartPolicy::OnFailure {
+            maximum_retry_count: policy.maximum_retry_count.unwrap_or(0),
+        },
     }
 }
 
 #[cfg(feature = "docker")]
 pub(crate) fn restart_policy_to_bollard(policy: &RestartPolicy) -> bollard::models::RestartPolicy {
-    let name = policy.name.map(|n| match n {
-        RestartPolicyName::No => bollard::models::RestartPolicyNameEnum::NO,
-        RestartPolicyName::Always => bollard::models::RestartPolicyNameEnum::ALWAYS,
-        RestartPolicyName::UnlessStopped => bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED,
-        RestartPolicyName::OnFailure => bollard::models::RestartPolicyNameEnum::ON_FAILURE,
-    });
+    let (name, maximum_retry_count) = match policy {
+        RestartPolicy::No => (bollard::models::RestartPolicyNameEnum::NO, None),
+        RestartPolicy::Always => (bollard::models::RestartPolicyNameEnum::ALWAYS, None),
+        RestartPolicy::UnlessStopped => {
+            (bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED, None)
+        }
+        RestartPolicy::OnFailure {
+            maximum_retry_count,
+        } => (
+            bollard::models::RestartPolicyNameEnum::ON_FAILURE,
+            Some(*maximum_retry_count),
+        ),
+    };
     bollard::models::RestartPolicy {
-        name,
-        maximum_retry_count: policy.maximum_retry_count,
+        name: Some(name),
+        maximum_retry_count,
     }
 }
 

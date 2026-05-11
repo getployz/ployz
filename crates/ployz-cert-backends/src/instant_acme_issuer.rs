@@ -10,7 +10,9 @@ use ployz_orchestrator::certificates::{
     account_id_for_issuer_url,
 };
 use ployz_store_api::{CertificateStore, StoreDriver};
-use ployz_types::error::{CertificateError, Error, Result};
+use ployz_types::error::{
+    AcmeAuthorizationStatus, AcmeOrderStatus, CertificateError, Error, Result,
+};
 use ployz_types::model::{AcmeAccountRecord, AcmeChallengeRecord};
 use ployz_types::time::now_unix_secs;
 use std::sync::Arc;
@@ -78,7 +80,7 @@ impl AcmeIssuer for InstantAcmeIssuer {
                 | AuthorizationStatus::Deactivated => {
                     return Err(CertificateError::AcmeAuthorizationUnexpectedStatus {
                         hostname: hostname.to_string(),
-                        status: format!("{:?}", authorization.status),
+                        status: acme_authorization_status(authorization.status),
                     }
                     .into());
                 }
@@ -146,7 +148,7 @@ impl AcmeIssuer for InstantAcmeIssuer {
                 | AuthorizationStatus::Deactivated => {
                     return Err(CertificateError::AcmeAuthorizationUnexpectedStatus {
                         hostname: hostname.to_string(),
-                        status: format!("{status:?}"),
+                        status: acme_authorization_status(status),
                     }
                     .into());
                 }
@@ -169,7 +171,7 @@ impl AcmeIssuer for InstantAcmeIssuer {
         if status != OrderStatus::Ready {
             return Err(CertificateError::AcmeOrderUnexpectedStatus {
                 hostname: hostname.to_string(),
-                status: format!("{status:?}"),
+                status: acme_order_status(status),
             }
             .into());
         }
@@ -186,6 +188,27 @@ impl AcmeIssuer for InstantAcmeIssuer {
             fullchain_pem,
             private_key_pem,
         })
+    }
+}
+
+fn acme_authorization_status(status: AuthorizationStatus) -> AcmeAuthorizationStatus {
+    match status {
+        AuthorizationStatus::Pending => AcmeAuthorizationStatus::Pending,
+        AuthorizationStatus::Valid => AcmeAuthorizationStatus::Valid,
+        AuthorizationStatus::Invalid => AcmeAuthorizationStatus::Invalid,
+        AuthorizationStatus::Revoked => AcmeAuthorizationStatus::Revoked,
+        AuthorizationStatus::Expired => AcmeAuthorizationStatus::Expired,
+        AuthorizationStatus::Deactivated => AcmeAuthorizationStatus::Deactivated,
+    }
+}
+
+fn acme_order_status(status: OrderStatus) -> AcmeOrderStatus {
+    match status {
+        OrderStatus::Pending => AcmeOrderStatus::Pending,
+        OrderStatus::Ready => AcmeOrderStatus::Ready,
+        OrderStatus::Processing => AcmeOrderStatus::Processing,
+        OrderStatus::Valid => AcmeOrderStatus::Valid,
+        OrderStatus::Invalid => AcmeOrderStatus::Invalid,
     }
 }
 

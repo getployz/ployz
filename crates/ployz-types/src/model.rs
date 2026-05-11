@@ -1359,18 +1359,19 @@ pub enum RouteAudience {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum RouteGrantState {
+    Active { route_id: String, expires_at: u64 },
+    Revoked { revoked_at: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RouteGrantRecord {
     pub grant_id: String,
     pub owner_authority: AuthorityId,
     pub audience: RouteAudience,
     pub namespace: Namespace,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub route_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<u64>,
+    pub state: RouteGrantState,
     pub created_at: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub revoked_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1450,6 +1451,104 @@ pub enum CertificateState {
     #[display("failed")]
     #[strum(serialize = "failed")]
     Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CertificateLifecycle {
+    Pending {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+    Issuing {
+        order_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        active_version_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+    Active {
+        active_version_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_renewal_at: Option<u64>,
+    },
+    RenewalDue {
+        active_version_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_renewal_at: Option<u64>,
+    },
+    Failed {
+        last_error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        active_version_id: Option<String>,
+    },
+}
+
+impl CertificateLifecycle {
+    #[must_use]
+    pub fn phase(&self) -> CertificateState {
+        match self {
+            Self::Pending { .. } => CertificateState::Pending,
+            Self::Issuing { .. } => CertificateState::Issuing,
+            Self::Active { .. } => CertificateState::Active,
+            Self::RenewalDue { .. } => CertificateState::RenewalDue,
+            Self::Failed { .. } => CertificateState::Failed,
+        }
+    }
+
+    #[must_use]
+    pub fn active_version_id(&self) -> Option<&str> {
+        match self {
+            Self::Pending { .. } => None,
+            Self::Issuing {
+                active_version_id, ..
+            }
+            | Self::Failed {
+                active_version_id, ..
+            } => active_version_id.as_deref(),
+            Self::Active {
+                active_version_id, ..
+            }
+            | Self::RenewalDue {
+                active_version_id, ..
+            } => Some(active_version_id.as_str()),
+        }
+    }
+
+    #[must_use]
+    pub fn order_url(&self) -> Option<&str> {
+        match self {
+            Self::Issuing { order_url, .. } => Some(order_url.as_str()),
+            Self::Pending { .. }
+            | Self::Active { .. }
+            | Self::RenewalDue { .. }
+            | Self::Failed { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        match self {
+            Self::Pending { last_error } | Self::Issuing { last_error, .. } => {
+                last_error.as_deref()
+            }
+            Self::Failed { last_error, .. } => Some(last_error.as_str()),
+            Self::Active { .. } | Self::RenewalDue { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn next_renewal_at(&self) -> Option<u64> {
+        match self {
+            Self::Active {
+                next_renewal_at, ..
+            }
+            | Self::RenewalDue {
+                next_renewal_at, ..
+            } => *next_renewal_at,
+            Self::Pending { .. } | Self::Issuing { .. } | Self::Failed { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1544,17 +1643,38 @@ pub struct CertificateRecord {
     pub hostname: String,
     pub issuer_url: String,
     pub account_id: String,
-    pub state: CertificateState,
-    pub active_version_id: Option<String>,
+    pub lifecycle: CertificateLifecycle,
     pub versions: Vec<CertificateVersion>,
-    pub order_url: Option<String>,
-    pub last_error: Option<String>,
     pub requested_at: u64,
     pub updated_at: u64,
-    pub next_renewal_at: Option<u64>,
 }
 
 impl CertificateRecord {
+    #[must_use]
+    pub fn state(&self) -> CertificateState {
+        self.lifecycle.phase()
+    }
+
+    #[must_use]
+    pub fn active_version_id(&self) -> Option<&str> {
+        self.lifecycle.active_version_id()
+    }
+
+    #[must_use]
+    pub fn order_url(&self) -> Option<&str> {
+        self.lifecycle.order_url()
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        self.lifecycle.last_error()
+    }
+
+    #[must_use]
+    pub fn next_renewal_at(&self) -> Option<u64> {
+        self.lifecycle.next_renewal_at()
+    }
+
     pub fn apply_state_transition(
         &mut self,
         transition: CertificateStateTransition,
@@ -1566,94 +1686,120 @@ impl CertificateRecord {
         } = transition;
         match goal {
             CertificateStateGoal::StartIssuing { order_url } => {
-                if self.state == CertificateState::Issuing
-                    && self.order_url.as_deref() == Some(order_url.as_str())
+                if self.state() == CertificateState::Issuing
+                    && self.order_url() == Some(order_url.as_str())
                 {
                     return Ok(CertificateTransitionOutcome::AlreadyInState);
                 }
-                match self.state {
-                    CertificateState::Pending
-                    | CertificateState::Failed
-                    | CertificateState::RenewalDue => {
-                        self.state = CertificateState::Issuing;
-                        self.order_url = Some(order_url);
-                        self.last_error = None;
+                match self.lifecycle.clone() {
+                    CertificateLifecycle::Pending { .. }
+                    | CertificateLifecycle::Failed { .. }
+                    | CertificateLifecycle::RenewalDue { .. } => {
+                        let active_version_id =
+                            self.lifecycle.active_version_id().map(ToString::to_string);
+                        self.lifecycle = CertificateLifecycle::Issuing {
+                            order_url,
+                            active_version_id,
+                            last_error: None,
+                        };
                     }
-                    CertificateState::Issuing | CertificateState::Active => {
+                    CertificateLifecycle::Issuing { .. } | CertificateLifecycle::Active { .. } => {
                         return Err(CertificateTransitionError::invalid(format!(
                             "certificate '{}' cannot start issuing from state {}",
-                            self.hostname, self.state
+                            self.hostname,
+                            self.state()
                         )));
                     }
                 }
             }
             CertificateStateGoal::MarkOrderFailed { error } => {
-                self.state = CertificateState::Failed;
-                self.order_url = None;
-                self.last_error = Some(error);
+                self.lifecycle = CertificateLifecycle::Failed {
+                    last_error: error,
+                    active_version_id: self.active_version_id().map(ToString::to_string),
+                };
             }
             CertificateStateGoal::FinalizeActive {
                 active_version_id,
                 next_renewal_at,
             } => {
-                if self.state != CertificateState::Issuing {
+                if self.state() != CertificateState::Issuing {
                     return Err(CertificateTransitionError::invalid(format!(
                         "certificate '{}' must be issuing before finalize; current state is {}",
-                        self.hostname, self.state
+                        self.hostname,
+                        self.state()
                     )));
                 }
-                self.state = CertificateState::Active;
-                self.active_version_id = Some(active_version_id);
-                self.next_renewal_at = next_renewal_at;
-                self.order_url = None;
-                self.last_error = None;
+                self.lifecycle = CertificateLifecycle::Active {
+                    active_version_id,
+                    next_renewal_at,
+                };
             }
             CertificateStateGoal::KeepIssuingAfterRetryableFailure { error } => {
-                if self.state != CertificateState::Issuing {
+                let CertificateLifecycle::Issuing {
+                    order_url,
+                    active_version_id,
+                    ..
+                } = self.lifecycle.clone()
+                else {
                     return Err(CertificateTransitionError::invalid(format!(
                         "certificate '{}' must be issuing before retryable finalize failure; current state is {}",
-                        self.hostname, self.state
+                        self.hostname,
+                        self.state()
                     )));
-                }
-                self.last_error = Some(error);
+                };
+                self.lifecycle = CertificateLifecycle::Issuing {
+                    order_url,
+                    active_version_id,
+                    last_error: Some(error),
+                };
             }
             CertificateStateGoal::MarkFinalizeFailed {
                 error,
                 previous_active_version_id,
             } => {
-                if self.state != CertificateState::Issuing {
+                if self.state() != CertificateState::Issuing {
                     return Err(CertificateTransitionError::invalid(format!(
                         "certificate '{}' must be issuing before finalize failure; current state is {}",
-                        self.hostname, self.state
+                        self.hostname,
+                        self.state()
                     )));
                 }
-                self.state = CertificateState::Failed;
-                self.active_version_id = previous_active_version_id;
-                self.order_url = None;
-                self.last_error = Some(error);
+                self.lifecycle = CertificateLifecycle::Failed {
+                    last_error: error,
+                    active_version_id: previous_active_version_id,
+                };
             }
             CertificateStateGoal::MarkRenewalDue => {
-                if self.state == CertificateState::RenewalDue {
+                if self.state() == CertificateState::RenewalDue {
                     return Ok(CertificateTransitionOutcome::AlreadyInState);
                 }
-                if self.state != CertificateState::Active {
+                let CertificateLifecycle::Active {
+                    active_version_id,
+                    next_renewal_at,
+                } = self.lifecycle.clone()
+                else {
                     return Err(CertificateTransitionError::invalid(format!(
                         "certificate '{}' must be active before renewal due; current state is {}",
-                        self.hostname, self.state
+                        self.hostname,
+                        self.state()
                     )));
-                }
-                self.state = CertificateState::RenewalDue;
+                };
+                self.lifecycle = CertificateLifecycle::RenewalDue {
+                    active_version_id,
+                    next_renewal_at,
+                };
             }
             CertificateStateGoal::ResetStalledIssuing { error } => {
-                if self.state != CertificateState::Issuing {
+                if self.state() != CertificateState::Issuing {
                     return Err(CertificateTransitionError::invalid(format!(
                         "certificate '{}' must be issuing before stalled reset; current state is {}",
-                        self.hostname, self.state
+                        self.hostname,
+                        self.state()
                     )));
                 }
-                self.state = CertificateState::Pending;
-                self.order_url = None;
-                self.last_error = Some(error);
+                self.lifecycle = CertificateLifecycle::Pending {
+                    last_error: Some(error),
+                };
             }
         }
         self.updated_at = at_unix_secs;
@@ -1668,7 +1814,7 @@ impl CertificateRecord {
     /// consumers should ask the type for material here, not gate on `state`.
     #[must_use]
     pub fn installed_version(&self) -> Option<&CertificateVersion> {
-        let id = self.active_version_id.as_deref()?;
+        let id = self.active_version_id()?;
         self.versions
             .iter()
             .find(|version| version.version_id == id)
@@ -3360,17 +3506,20 @@ mod tests {
             .expect("pending certificate can issue");
 
         assert_eq!(outcome, CertificateTransitionOutcome::Applied);
-        assert_eq!(record.state, CertificateState::Issuing);
-        assert_eq!(record.order_url.as_deref(), Some("https://issuer/order/1"));
+        assert_eq!(record.state(), CertificateState::Issuing);
+        assert_eq!(record.order_url(), Some("https://issuer/order/1"));
         assert_eq!(record.updated_at, 42);
-        assert!(record.last_error.is_none());
+        assert!(record.last_error().is_none());
     }
 
     #[test]
     fn certificate_transition_finalize_failure_preserves_previous_active_version() {
         let mut record = cert_record(CertificateState::Issuing);
-        record.active_version_id = Some("v1".into());
-        record.order_url = Some("https://issuer/order/1".into());
+        record.lifecycle = CertificateLifecycle::Issuing {
+            order_url: "https://issuer/order/1".into(),
+            active_version_id: Some("v1".into()),
+            last_error: None,
+        };
 
         record
             .apply_state_transition(CertificateStateTransition {
@@ -3385,17 +3534,20 @@ mod tests {
             })
             .expect("issuing certificate can fail finalization");
 
-        assert_eq!(record.state, CertificateState::Failed);
-        assert_eq!(record.active_version_id.as_deref(), Some("v1"));
-        assert!(record.order_url.is_none());
-        assert_eq!(record.last_error.as_deref(), Some("bad challenge"));
+        assert_eq!(record.state(), CertificateState::Failed);
+        assert_eq!(record.active_version_id(), Some("v1"));
+        assert!(record.order_url().is_none());
+        assert_eq!(record.last_error(), Some("bad challenge"));
     }
 
     #[test]
     fn certificate_transition_retryable_failure_stays_issuing_until_success_clears_error() {
         let mut record = cert_record(CertificateState::Issuing);
-        record.active_version_id = Some("v1".into());
-        record.order_url = Some("https://issuer/order/1".into());
+        record.lifecycle = CertificateLifecycle::Issuing {
+            order_url: "https://issuer/order/1".into(),
+            active_version_id: Some("v1".into()),
+            last_error: None,
+        };
 
         let outcome = record
             .apply_state_transition(CertificateStateTransition {
@@ -3410,10 +3562,10 @@ mod tests {
             .expect("retryable finalize failure remains in issuing");
 
         assert_eq!(outcome, CertificateTransitionOutcome::Applied);
-        assert_eq!(record.state, CertificateState::Issuing);
-        assert_eq!(record.active_version_id.as_deref(), Some("v1"));
-        assert_eq!(record.order_url.as_deref(), Some("https://issuer/order/1"));
-        assert_eq!(record.last_error.as_deref(), Some("acme rate limited"));
+        assert_eq!(record.state(), CertificateState::Issuing);
+        assert_eq!(record.active_version_id(), Some("v1"));
+        assert_eq!(record.order_url(), Some("https://issuer/order/1"));
+        assert_eq!(record.last_error(), Some("acme rate limited"));
         assert_eq!(record.updated_at, 43);
 
         let outcome = record
@@ -3430,11 +3582,11 @@ mod tests {
             .expect("successful finalize resolves the visible retryable error");
 
         assert_eq!(outcome, CertificateTransitionOutcome::Applied);
-        assert_eq!(record.state, CertificateState::Active);
-        assert_eq!(record.active_version_id.as_deref(), Some("v2"));
-        assert!(record.order_url.is_none());
-        assert!(record.last_error.is_none());
-        assert_eq!(record.next_renewal_at, Some(90));
+        assert_eq!(record.state(), CertificateState::Active);
+        assert_eq!(record.active_version_id(), Some("v2"));
+        assert!(record.order_url().is_none());
+        assert!(record.last_error().is_none());
+        assert_eq!(record.next_renewal_at(), Some(90));
         assert_eq!(record.updated_at, 44);
     }
 
@@ -3620,14 +3772,29 @@ mod tests {
             hostname: "example.com".into(),
             issuer_url: "https://acme.example/directory".into(),
             account_id: "acct".into(),
-            state,
-            active_version_id: None,
+            lifecycle: match state {
+                CertificateState::Pending => CertificateLifecycle::Pending { last_error: None },
+                CertificateState::Issuing => CertificateLifecycle::Issuing {
+                    order_url: "https://issuer/order/1".into(),
+                    active_version_id: None,
+                    last_error: None,
+                },
+                CertificateState::Active => CertificateLifecycle::Active {
+                    active_version_id: "v1".into(),
+                    next_renewal_at: None,
+                },
+                CertificateState::RenewalDue => CertificateLifecycle::RenewalDue {
+                    active_version_id: "v1".into(),
+                    next_renewal_at: None,
+                },
+                CertificateState::Failed => CertificateLifecycle::Failed {
+                    last_error: "failed".into(),
+                    active_version_id: None,
+                },
+            },
             versions: Vec::new(),
-            order_url: None,
-            last_error: None,
             requested_at: 0,
             updated_at: 0,
-            next_renewal_at: None,
         }
     }
 
@@ -3643,7 +3810,10 @@ mod tests {
         // The pointer is dangling — `versions` was rolled back or never
         // populated. Treat as "no installable material" rather than panicking.
         let mut record = cert_record(CertificateState::Active);
-        record.active_version_id = Some("v-missing".into());
+        record.lifecycle = CertificateLifecycle::Active {
+            active_version_id: "v-missing".into(),
+            next_renewal_at: None,
+        };
         assert!(record.installed_version().is_none());
     }
 
@@ -3652,7 +3822,6 @@ mod tests {
         // Steady state: `state == Active`, single version, pointer matches.
         let mut record = cert_record(CertificateState::Active);
         record.versions.push(cert_version("v1"));
-        record.active_version_id = Some("v1".into());
         assert_eq!(
             record.installed_version().map(|v| v.version_id.as_str()),
             Some("v1")
@@ -3667,7 +3836,6 @@ mod tests {
         // renewal window.
         let mut record = cert_record(CertificateState::RenewalDue);
         record.versions.push(cert_version("v1"));
-        record.active_version_id = Some("v1".into());
         assert_eq!(
             record.installed_version().map(|v| v.version_id.as_str()),
             Some("v1")
@@ -3681,7 +3849,11 @@ mod tests {
         // serve the old material until finalize replaces it.
         let mut record = cert_record(CertificateState::Issuing);
         record.versions.push(cert_version("v1"));
-        record.active_version_id = Some("v1".into());
+        record.lifecycle = CertificateLifecycle::Issuing {
+            order_url: "https://issuer/order/1".into(),
+            active_version_id: Some("v1".into()),
+            last_error: None,
+        };
         assert_eq!(
             record.installed_version().map(|v| v.version_id.as_str()),
             Some("v1")
@@ -3696,7 +3868,10 @@ mod tests {
         // Old version is still in `versions`; new (failed) version is not added.
         let mut record = cert_record(CertificateState::Failed);
         record.versions.push(cert_version("v1"));
-        record.active_version_id = Some("v1".into());
+        record.lifecycle = CertificateLifecycle::Failed {
+            last_error: "failed".into(),
+            active_version_id: Some("v1".into()),
+        };
         assert_eq!(
             record.installed_version().map(|v| v.version_id.as_str()),
             Some("v1")
@@ -3710,7 +3885,10 @@ mod tests {
         let mut record = cert_record(CertificateState::Active);
         record.versions.push(cert_version("v1"));
         record.versions.push(cert_version("v2"));
-        record.active_version_id = Some("v2".into());
+        record.lifecycle = CertificateLifecycle::Active {
+            active_version_id: "v2".into(),
+            next_renewal_at: None,
+        };
         assert_eq!(
             record.installed_version().map(|v| v.version_id.as_str()),
             Some("v2")

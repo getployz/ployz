@@ -734,7 +734,7 @@ mod tests {
     mod resolve_tls_material_tests {
         use crate::routes::{GatewaySnapshot, ProjectedTlsMaterial, project_certificates};
         use crate::server::{TlsResolution, resolve_tls_material};
-        use ployz_types::model::{CertificateRecord, CertificateState, CertificateVersion};
+        use ployz_types::model::{CertificateLifecycle, CertificateRecord, CertificateVersion};
         use std::collections::HashMap;
         use std::sync::Arc;
 
@@ -752,8 +752,10 @@ mod tests {
                 hostname: hostname.into(),
                 issuer_url: "https://acme.test/directory".into(),
                 account_id: "acct-test".into(),
-                state: CertificateState::Active,
-                active_version_id: Some("v1".into()),
+                lifecycle: CertificateLifecycle::Active {
+                    active_version_id: "v1".into(),
+                    next_renewal_at: None,
+                },
                 versions: vec![CertificateVersion {
                     version_id: "v1".into(),
                     fullchain_pem,
@@ -762,11 +764,8 @@ mod tests {
                     not_after: Some(100),
                     issued_at: 0,
                 }],
-                order_url: None,
-                last_error: None,
                 requested_at: 0,
                 updated_at: 0,
-                next_renewal_at: None,
             };
             GatewaySnapshot {
                 http_routes: Vec::new(),
