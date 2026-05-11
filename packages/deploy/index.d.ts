@@ -20,6 +20,7 @@ export type DeployPhaseRollbackPolicy = "reversible" | "forward_only" | "externa
 export type ServiceIntent =
   | {
       branch: {
+        expected_source_revision_hash?: string | null;
         source_namespace: Namespace;
         source_service: string;
       };
@@ -55,6 +56,7 @@ export type VolumeIntent =
       clone: {
         consistency: VolumeCloneConsistency;
         data_policy: VolumeCloneDataPolicy;
+        expected_source_record_fingerprint?: string | null;
         source_namespace: Namespace;
         source_volume: string;
       };
