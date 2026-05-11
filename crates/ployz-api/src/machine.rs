@@ -88,11 +88,18 @@ pub enum InstallServiceMode {
     System,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum InstallSource {
-    Release,
-    Git,
+    Release {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
+    Git {
+        git_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        git_ref: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,12 +110,6 @@ pub struct MachineInstallOptions {
     pub service_mode: Option<InstallServiceMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<InstallSource>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub git_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub git_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,4 +264,59 @@ pub struct MachineOperationInfo {
     pub invite_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allocated_subnet: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_source_release_owns_version() {
+        let options = MachineInstallOptions {
+            runtime_target: Some(InstallRuntimeTarget::Host),
+            service_mode: Some(InstallServiceMode::User),
+            source: Some(InstallSource::Release {
+                version: Some("0.6.1".into()),
+            }),
+        };
+
+        let json = serde_json::to_value(&options).expect("serialize install options");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "runtime_target": "host",
+                "service_mode": "user",
+                "source": {
+                    "kind": "release",
+                    "version": "0.6.1"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn install_source_git_owns_url_and_ref() {
+        let options = MachineInstallOptions {
+            runtime_target: None,
+            service_mode: None,
+            source: Some(InstallSource::Git {
+                git_url: "https://example.invalid/ployz.git".into(),
+                git_ref: Some("main".into()),
+            }),
+        };
+
+        let json = serde_json::to_value(&options).expect("serialize install options");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "source": {
+                    "kind": "git",
+                    "git_url": "https://example.invalid/ployz.git",
+                    "git_ref": "main"
+                }
+            })
+        );
+    }
 }

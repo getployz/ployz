@@ -24,7 +24,8 @@ use ployz_api::DaemonRequest;
 #[cfg(test)]
 use ployz_api::{
     DebugTickTask as ProtocolDebugTickTask, InstallRuntimeTarget as ApiInstallRuntimeTarget,
-    InstallServiceMode as ApiInstallServiceMode, MigrateServiceMode,
+    InstallServiceMode as ApiInstallServiceMode, InstallSource as ApiInstallSource,
+    MigrateServiceMode,
 };
 use ployz_config::{RuntimeTarget, ServiceMode, load_client_config, load_daemon_config};
 use ployz_sdk::UnixSocketTransport;
@@ -635,8 +636,52 @@ mod tests {
                 .and_then(|install| install.service_mode),
             Some(ApiInstallServiceMode::User)
         );
+        assert_eq!(
+            options
+                .install
+                .as_ref()
+                .and_then(|install| install.source.as_ref()),
+            Some(&ApiInstallSource::Git {
+                git_url: "https://example.invalid/ployz.git".into(),
+                git_ref: Some("main".into())
+            })
+        );
 
         std::fs::remove_file(path).expect("remove identity");
+    }
+
+    #[test]
+    fn build_machine_add_request_rejects_incoherent_install_source_options() {
+        let error = build_machine_request(MachineAction::Add {
+            identity: None,
+            runtime: None,
+            service_mode: None,
+            install_source: Some(InstallSourceArg::Release),
+            install_version: Some("0.6.1".into()),
+            install_git_url: Some("https://example.invalid/ployz.git".into()),
+            install_git_ref: None,
+            targets: vec!["ops@example".into()],
+        })
+        .expect_err("release source cannot include git options");
+
+        assert_eq!(error.exit_code(), 2);
+    }
+
+    #[test]
+    fn build_machine_add_request_rejects_git_source_without_url() {
+        let error = build_machine_request(MachineAction::Add {
+            identity: None,
+            runtime: None,
+            service_mode: None,
+            install_source: Some(InstallSourceArg::Git),
+            install_version: None,
+            install_git_url: None,
+            install_git_ref: Some("main".into()),
+            targets: vec!["ops@example".into()],
+        })
+        .expect_err("git source needs a url");
+
+        assert_eq!(error.exit_code(), 2);
     }
 
     #[test]
