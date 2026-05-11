@@ -181,12 +181,14 @@ impl DaemonState {
             BuildOperationKind::Local,
             request.method,
             BuildLocation::Local,
-            "building image",
+            "waiting for image build lock",
         ) {
             Ok(operation) => operation,
             Err(error) => return self.err("BUILD_LOCAL_OPERATION_FAILED", error),
         };
 
+        let build_lock = self.local_build_lock(&request.image_name).await;
+        let _build_guard = build_lock.lock().await;
         let command = build_command(request, &context_dir);
         if let Err(error) = operation_store.update_stage(&mut operation, "running build command") {
             return self.fail_build_local_operation(
