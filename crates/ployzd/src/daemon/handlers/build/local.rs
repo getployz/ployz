@@ -284,18 +284,6 @@ impl DaemonState {
                 None,
             );
         }
-        if let Err(error) =
-            operation_store.update_status(&mut operation, OperationStatus::Succeeded, None)
-        {
-            return self.fail_build_local_operation_with_result(
-                &operation_store,
-                &mut operation,
-                "BUILD_LOCAL_OPERATION_FAILED",
-                error,
-                artifact,
-                None,
-            );
-        }
         if let Err(error) = active.mesh.store.upsert_image_availability(&record).await {
             let message = format!("record built image availability: {error}");
             return self.fail_build_local_operation_with_result(
@@ -305,6 +293,18 @@ impl DaemonState {
                 message,
                 artifact,
                 None,
+            );
+        }
+        if let Err(error) =
+            operation_store.update_status(&mut operation, OperationStatus::Succeeded, None)
+        {
+            return self.fail_build_local_operation_with_result(
+                &operation_store,
+                &mut operation,
+                "BUILD_LOCAL_OPERATION_FAILED",
+                error,
+                artifact,
+                Some(record),
             );
         }
 
