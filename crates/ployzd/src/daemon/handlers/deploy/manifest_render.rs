@@ -8,7 +8,8 @@ use ployz_types::model::VolumeRecord;
 use ployz_types::spec::{
     DeployIntent, DeployManifest, MountSource, Namespace, ServiceIntent, ServiceIntentHint,
     ServiceSpec, VolumeCloneConsistency, VolumeCloneDataPolicy, VolumeDeclaration, VolumeIntent,
-    VolumeIntentHint, VolumeScope, stable_hash_hex, valid_storage_segment,
+    VolumeIntentHint, VolumeMode, VolumeOwner, VolumeQuota, VolumeScope, stable_hash_hex,
+    valid_storage_segment,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -184,9 +185,9 @@ pub(super) async fn export_manifest_with_evidence(
         .map(|record| VolumeDeclaration {
             name: record.volume_name.clone(),
             scope: record.scope,
-            quota: record.quota.clone(),
-            mode: record.mode.clone(),
-            owner: record.owner.clone(),
+            quota: VolumeQuota::new(record.quota.clone()),
+            mode: VolumeMode::new(record.mode.clone()),
+            owner: VolumeOwner::new(record.owner.clone()),
         })
         .collect();
     volumes.sort_by(|left, right| left.name.cmp(&right.name));

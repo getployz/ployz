@@ -12,9 +12,10 @@ use ployz_types::model::{
     BranchEnvironmentFailure, BranchEnvironmentRecord, BranchEnvironmentState, CertificateEvent,
     CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord, DeployPhaseState, DeployRecord,
     ImageAvailabilityRecord, ImageDigest, InstanceId, InstanceStatusRecord, InviteRecord,
-    MachineEvent, MachineId, MachineMembership, PreparedDeployRecord, PreparedDeployState,
-    RoutingEvent, RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord,
-    ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
+    InviteStatus, MachineEvent, MachineId, MachineMembership, PreparedDeployRecord,
+    PreparedDeployState, RoutingEvent, RoutingState, ServiceBranchLineageRecord,
+    ServiceReleaseRecord, ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord,
+    VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::{BTreeMap, HashMap};
@@ -488,7 +489,7 @@ impl InviteStore for MemoryStore {
             return Err(Error::invite_not_found(invite_id));
         };
 
-        if invite.revoked_at.is_some() {
+        if invite.status.is_revoked() {
             return Err(Error::invite_revoked(invite_id));
         }
 
@@ -496,7 +497,7 @@ impl InviteStore for MemoryStore {
             return Err(Error::invite_expired(invite_id));
         }
 
-        if let Some(consumed_by) = &invite.consumed_by {
+        if let Some(consumed_by) = invite.status.consumed_by() {
             if consumed_by == machine_id {
                 return Ok(invite);
             }
@@ -504,8 +505,10 @@ impl InviteStore for MemoryStore {
         }
 
         let mut next_invite = invite.clone();
-        next_invite.consumed_by = Some(machine_id.clone());
-        next_invite.consumed_at = Some(now_unix_secs);
+        next_invite.status = InviteStatus::Consumed {
+            consumed_by: machine_id.clone(),
+            consumed_at: now_unix_secs,
+        };
         inner
             .invites
             .insert(invite_id.to_string(), next_invite.clone());
@@ -519,12 +522,14 @@ impl InviteStore for MemoryStore {
             .invites
             .get(invite_id)
             .ok_or_else(|| Error::invite_not_found(invite_id))?;
-        if invite.consumed_by.is_some() {
+        if invite.status.is_consumed() {
             return Err(Error::invite_consumed(invite_id));
         }
 
         let mut next_invite = invite.clone();
-        next_invite.revoked_at = Some(now_unix_secs);
+        next_invite.status = InviteStatus::Revoked {
+            revoked_at: now_unix_secs,
+        };
         inner
             .invites
             .insert(invite_id.to_string(), next_invite.clone());
@@ -1314,9 +1319,7 @@ mod tests {
             issuer_machine_id: MachineId::new("issuer"),
             issuer_verify_key: "verify".into(),
             expires_at: 10_000,
-            consumed_by: None,
-            consumed_at: None,
-            revoked_at: None,
+            status: InviteStatus::Active,
             signature: "sig".into(),
         };
 
@@ -1344,9 +1347,7 @@ mod tests {
             issuer_machine_id: MachineId::new("issuer"),
             issuer_verify_key: "verify".into(),
             expires_at: 50,
-            consumed_by: None,
-            consumed_at: None,
-            revoked_at: None,
+            status: InviteStatus::Active,
             signature: "sig".into(),
         };
 

@@ -16,7 +16,7 @@ const SUBNET_RESERVATION_TTL: Duration = Duration::from_secs(30);
 const MAX_SUBNET_ATTEMPTS: usize = 64;
 
 pub(in super::super) struct BootstrapSubnetClaim {
-    claim: Option<SubnetClaim>,
+    claim: SubnetClaim,
     pub(super) subnet: Ipv4Net,
 }
 
@@ -75,7 +75,7 @@ impl DaemonState {
             {
                 Ok(claim) => {
                     return Ok(BootstrapSubnetClaim {
-                        claim: Some(claim),
+                        claim,
                         subnet: candidate,
                     });
                 }
@@ -94,14 +94,12 @@ impl DaemonState {
 }
 
 pub(in crate::daemon::handlers::machine) async fn release_reserved_subnet(
-    subnet_claim: &mut BootstrapSubnetClaim,
+    subnet_claim: BootstrapSubnetClaim,
 ) -> Result<(), String> {
-    let Some(claim) = subnet_claim.claim.take() else {
-        return Ok(());
-    };
-    if let Err(err) = claim.release().await {
+    let subnet = subnet_claim.subnet;
+    if let Err(err) = subnet_claim.claim.release().await {
         tracing::warn!(
-            subnet = %subnet_claim.subnet,
+            subnet = %subnet,
             error = %err,
             "subnet reservation release failed; lease will expire by TTL"
         );

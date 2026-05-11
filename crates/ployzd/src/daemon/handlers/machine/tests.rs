@@ -206,12 +206,12 @@ async fn machine_add_activates_joiner_lifecycle() {
         .await
         .expect("upsert stale peer");
 
-    let mut reserved = state
+    let reserved = state
         .reserve_machine_subnet(&MachineId::new("join-target"))
         .await
         .expect("reserve expected subnet");
     let expected_subnet = reserved.subnet();
-    release_reserved_subnet(&mut reserved)
+    release_reserved_subnet(reserved)
         .await
         .expect("release reserved subnet for re-acquire");
 
@@ -297,12 +297,12 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
         Duration::from_millis(20),
     ));
 
-    let mut reserved = state
+    let reserved = state
         .reserve_machine_subnet(&MachineId::new("join-target"))
         .await
         .expect("reserve expected subnet");
     let expected_subnet = reserved.subnet();
-    release_reserved_subnet(&mut reserved)
+    release_reserved_subnet(reserved)
         .await
         .expect("release reserved subnet for re-acquire");
 
@@ -396,7 +396,8 @@ async fn machine_add_releases_reserved_subnet_when_operation_start_fails() {
         invites
             .first()
             .expect("invite created")
-            .consumed_by
+            .status
+            .consumed_by()
             .is_none()
     );
     assert!(network.current_peers().is_empty());
@@ -408,24 +409,22 @@ async fn machine_add_releases_reserved_subnet_when_operation_start_fails() {
 async fn subnet_reservation_skips_currently_held_candidate() {
     let (mut state, _, _) = make_state(true).await;
 
-    let mut first = state
+    let first = state
         .reserve_machine_subnet(&MachineId::new("join-target"))
         .await
         .expect("first reservation");
     let first_subnet = first.subnet();
-    let mut second = state
+    let second = state
         .reserve_machine_subnet(&MachineId::new("join-target"))
         .await
         .expect("second reservation should skip held candidate");
 
     assert_ne!(first_subnet, second.subnet());
 
-    release_reserved_subnet(&mut second)
+    release_reserved_subnet(second)
         .await
         .expect("release second");
-    release_reserved_subnet(&mut first)
-        .await
-        .expect("release first");
+    release_reserved_subnet(first).await.expect("release first");
     teardown_state(&mut state).await;
 }
 
@@ -880,7 +879,14 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
 
     let invites = store.list_invites().await.expect("list invites");
     assert_eq!(invites.len(), 1);
-    assert_eq!(invites.first().expect("invite created").consumed_by, None);
+    assert_eq!(
+        invites
+            .first()
+            .expect("invite created")
+            .status
+            .consumed_by(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -888,12 +894,12 @@ async fn machine_add_rejects_remote_authority_posture_before_invite_consume() {
     let _guard = test_ssh_env_lock().lock().await;
     let (state, store, _) = make_state(true).await;
 
-    let mut reserved = state
+    let reserved = state
         .reserve_machine_subnet(&MachineId::new("join-target"))
         .await
         .expect("reserve expected subnet");
     let expected_subnet = reserved.subnet();
-    release_reserved_subnet(&mut reserved)
+    release_reserved_subnet(reserved)
         .await
         .expect("release reserved subnet for re-acquire");
 
@@ -942,7 +948,14 @@ async fn machine_add_rejects_remote_authority_posture_before_invite_consume() {
 
     let invites = store.list_invites().await.expect("list invites");
     assert_eq!(invites.len(), 1);
-    assert_eq!(invites.first().expect("invite created").consumed_by, None);
+    assert_eq!(
+        invites
+            .first()
+            .expect("invite created")
+            .status
+            .consumed_by(),
+        None
+    );
     let machines = store.list_machines().await.expect("list machines");
     assert!(
         !machines

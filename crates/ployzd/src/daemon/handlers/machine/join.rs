@@ -189,7 +189,7 @@ impl DaemonState {
             };
             tracing::info!(%target, "machine add invite token issued");
             let target_machine_id = MachineId::new(target.clone());
-            let mut subnet_claim = match self.reserve_machine_subnet(&target_machine_id).await {
+            let subnet_claim = match self.reserve_machine_subnet(&target_machine_id).await {
                 Ok(claim) => claim,
                 Err(err) => {
                     report.push(super::types::MachineAddTargetResult::Failed {
@@ -216,7 +216,7 @@ impl DaemonState {
             ) {
                 Ok(operation) => operation,
                 Err(err) => {
-                    if let Err(release_err) = release_reserved_subnet(&mut subnet_claim).await {
+                    if let Err(release_err) = release_reserved_subnet(subnet_claim).await {
                         tracing::warn!(
                             target = %target,
                             error = %release_err,
@@ -303,13 +303,14 @@ impl DaemonState {
             Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
         };
 
-        let mut subnet_claim = match self.reserve_machine_subnet(&machine_id).await {
+        let subnet_claim = match self.reserve_machine_subnet(&machine_id).await {
             Ok(claim) => claim,
             Err(err) => return self.err("SUBNET_RESERVATION_FAILED", err),
         };
+        let assigned_subnet = subnet_claim.subnet();
 
         let result = self
-            .handle_machine_activate_remote(&machine_id, &record, &nats_client, &mut subnet_claim)
+            .handle_machine_activate_remote(&machine_id, &record, &nats_client, subnet_claim)
             .await;
 
         if result.ok {
@@ -323,7 +324,7 @@ impl DaemonState {
                 Ok(()) => match self::coordination::assert_subnet_unique(
                     &active.mesh.store,
                     &machine_id,
-                    subnet_claim.subnet(),
+                    assigned_subnet,
                 )
                 .await
                 {
@@ -342,7 +343,7 @@ impl DaemonState {
         machine_id: &MachineId,
         record: &MachineMembership,
         nats_client: &ployz_nats::NatsNodeRpcClient,
-        subnet_claim: &mut BootstrapSubnetClaim,
+        subnet_claim: BootstrapSubnetClaim,
     ) -> DaemonResponse {
         let assigned_subnet = subnet_claim.subnet();
         if let Err(err) = nats_rpc_expect_ok(

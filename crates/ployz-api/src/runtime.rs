@@ -1,27 +1,10 @@
 use ployz_types::model::{
-    InstanceStatusRecord, MachineMembership, RoutingEvent, RoutingState, ServiceReleaseRecord,
-    ServiceRevisionRecord,
+    InstanceId, InstanceStatusRecord, MachineId, MachineMembership, RoutingEvent, RoutingState,
+    ServiceReleaseRecord, ServiceRevisionRecord,
 };
+use ployz_types::spec::Namespace;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeCollection {
-    Machine,
-    Revision,
-    Release,
-    Instance,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum RuntimeRecord {
-    Machine(MachineMembership),
-    Revision(ServiceRevisionRecord),
-    Release(ServiceReleaseRecord),
-    Instance(InstanceStatusRecord),
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -29,14 +12,40 @@ pub enum RuntimeWatchFrame {
     Snapshot {
         state: RoutingState,
     },
-    Upsert {
-        collection: RuntimeCollection,
+    MachineUpsert {
         key: String,
-        record: RuntimeRecord,
+        record: MachineMembership,
     },
-    Remove {
-        collection: RuntimeCollection,
+    MachineRemove {
         key: String,
+        id: MachineId,
+    },
+    RevisionUpsert {
+        key: String,
+        record: ServiceRevisionRecord,
+    },
+    RevisionRemove {
+        key: String,
+        namespace: Namespace,
+        service: String,
+        revision_hash: String,
+    },
+    ReleaseUpsert {
+        key: String,
+        record: ServiceReleaseRecord,
+    },
+    ReleaseRemove {
+        key: String,
+        namespace: Namespace,
+        service: String,
+    },
+    InstanceUpsert {
+        key: String,
+        record: InstanceStatusRecord,
+    },
+    InstanceRemove {
+        key: String,
+        instance_id: InstanceId,
     },
     Error {
         code: String,
@@ -83,45 +92,44 @@ pub fn sort_routing_state(state: &mut RoutingState) {
 #[must_use]
 pub fn runtime_frame_from_event(event: RoutingEvent) -> RuntimeWatchFrame {
     match event {
-        RoutingEvent::MachineUpsert(record) => RuntimeWatchFrame::Upsert {
+        RoutingEvent::MachineUpsert(record) => RuntimeWatchFrame::MachineUpsert {
             key: machine_runtime_key(&record),
-            collection: RuntimeCollection::Machine,
-            record: RuntimeRecord::Machine(record),
+            record,
         },
-        RoutingEvent::MachineRemoved { id } => RuntimeWatchFrame::Remove {
-            key: id.into_string(),
-            collection: RuntimeCollection::Machine,
+        RoutingEvent::MachineRemoved { id } => RuntimeWatchFrame::MachineRemove {
+            key: id.as_str().to_string(),
+            id,
         },
-        RoutingEvent::RevisionUpsert(record) => RuntimeWatchFrame::Upsert {
+        RoutingEvent::RevisionUpsert(record) => RuntimeWatchFrame::RevisionUpsert {
             key: revision_runtime_key(&record),
-            collection: RuntimeCollection::Revision,
-            record: RuntimeRecord::Revision(record),
+            record,
         },
         RoutingEvent::RevisionRemoved {
             namespace,
             service,
             revision_hash,
-        } => RuntimeWatchFrame::Remove {
+        } => RuntimeWatchFrame::RevisionRemove {
             key: format!("{namespace}:{service}:{revision_hash}"),
-            collection: RuntimeCollection::Revision,
+            namespace,
+            service,
+            revision_hash,
         },
-        RoutingEvent::ReleaseUpsert(record) => RuntimeWatchFrame::Upsert {
+        RoutingEvent::ReleaseUpsert(record) => RuntimeWatchFrame::ReleaseUpsert {
             key: release_runtime_key(&record),
-            collection: RuntimeCollection::Release,
-            record: RuntimeRecord::Release(record),
+            record,
         },
-        RoutingEvent::ReleaseRemoved { namespace, service } => RuntimeWatchFrame::Remove {
+        RoutingEvent::ReleaseRemoved { namespace, service } => RuntimeWatchFrame::ReleaseRemove {
             key: format!("{namespace}:{service}"),
-            collection: RuntimeCollection::Release,
+            namespace,
+            service,
         },
-        RoutingEvent::InstanceUpsert(record) => RuntimeWatchFrame::Upsert {
+        RoutingEvent::InstanceUpsert(record) => RuntimeWatchFrame::InstanceUpsert {
             key: instance_runtime_key(&record),
-            collection: RuntimeCollection::Instance,
-            record: RuntimeRecord::Instance(record),
+            record,
         },
-        RoutingEvent::InstanceRemoved { instance_id } => RuntimeWatchFrame::Remove {
-            key: instance_id.into_string(),
-            collection: RuntimeCollection::Instance,
+        RoutingEvent::InstanceRemoved { instance_id } => RuntimeWatchFrame::InstanceRemove {
+            key: instance_id.as_str().to_string(),
+            instance_id,
         },
     }
 }
@@ -129,9 +137,8 @@ pub fn runtime_frame_from_event(event: RoutingEvent) -> RuntimeWatchFrame {
 #[cfg(test)]
 mod tests {
     use super::{
-        RuntimeCollection, RuntimeRecord, RuntimeWatchFrame, instance_runtime_key,
-        machine_runtime_key, release_runtime_key, revision_runtime_key, runtime_frame_from_event,
-        sort_routing_state,
+        RuntimeWatchFrame, instance_runtime_key, machine_runtime_key, release_runtime_key,
+        revision_runtime_key, runtime_frame_from_event, sort_routing_state,
     };
     use crate::{
         ControlPlaneHealthState, ControlPlaneStatus, DaemonPayload, DaemonResponse,
@@ -213,17 +220,16 @@ mod tests {
 
         assert_eq!(
             upsert,
-            RuntimeWatchFrame::Upsert {
-                collection: RuntimeCollection::Instance,
+            RuntimeWatchFrame::InstanceUpsert {
                 key: String::from("instance-1"),
-                record: RuntimeRecord::Instance(record.clone()),
+                record: record.clone(),
             }
         );
         assert_eq!(
             removed,
-            RuntimeWatchFrame::Remove {
-                collection: RuntimeCollection::Instance,
+            RuntimeWatchFrame::InstanceRemove {
                 key: String::from("instance-1"),
+                instance_id: record.instance_id.clone(),
             }
         );
     }
@@ -240,27 +246,25 @@ mod tests {
         let cases = [
             (
                 runtime_frame_from_event(RoutingEvent::MachineUpsert(new_machine.clone())),
-                RuntimeWatchFrame::Upsert {
-                    collection: RuntimeCollection::Machine,
+                RuntimeWatchFrame::MachineUpsert {
                     key: String::from("machine-1"),
-                    record: RuntimeRecord::Machine(new_machine.clone()),
+                    record: new_machine.clone(),
                 },
             ),
             (
                 runtime_frame_from_event(RoutingEvent::MachineRemoved {
                     id: new_machine.id.clone(),
                 }),
-                RuntimeWatchFrame::Remove {
-                    collection: RuntimeCollection::Machine,
+                RuntimeWatchFrame::MachineRemove {
                     key: String::from("machine-1"),
+                    id: new_machine.id.clone(),
                 },
             ),
             (
                 runtime_frame_from_event(RoutingEvent::RevisionUpsert(new_revision.clone())),
-                RuntimeWatchFrame::Upsert {
-                    collection: RuntimeCollection::Revision,
+                RuntimeWatchFrame::RevisionUpsert {
                     key: String::from("prod:api:rev-1"),
-                    record: RuntimeRecord::Revision(new_revision.clone()),
+                    record: new_revision.clone(),
                 },
             ),
             (
@@ -269,17 +273,18 @@ mod tests {
                     service: new_revision.service.clone(),
                     revision_hash: new_revision.revision_hash.clone(),
                 }),
-                RuntimeWatchFrame::Remove {
-                    collection: RuntimeCollection::Revision,
+                RuntimeWatchFrame::RevisionRemove {
                     key: String::from("prod:api:rev-1"),
+                    namespace: new_revision.namespace.clone(),
+                    service: new_revision.service.clone(),
+                    revision_hash: new_revision.revision_hash.clone(),
                 },
             ),
             (
                 runtime_frame_from_event(RoutingEvent::ReleaseUpsert(new_release.clone())),
-                RuntimeWatchFrame::Upsert {
-                    collection: RuntimeCollection::Release,
+                RuntimeWatchFrame::ReleaseUpsert {
                     key: String::from("prod:api"),
-                    record: RuntimeRecord::Release(new_release.clone()),
+                    record: new_release.clone(),
                 },
             ),
             (
@@ -287,9 +292,10 @@ mod tests {
                     namespace: new_release.namespace.clone(),
                     service: new_release.service.clone(),
                 }),
-                RuntimeWatchFrame::Remove {
-                    collection: RuntimeCollection::Release,
+                RuntimeWatchFrame::ReleaseRemove {
                     key: String::from("prod:api"),
+                    namespace: new_release.namespace.clone(),
+                    service: new_release.service.clone(),
                 },
             ),
         ];
@@ -321,10 +327,9 @@ mod tests {
 
     #[test]
     fn runtime_watch_frame_serialization_roundtrips() {
-        let frame = RuntimeWatchFrame::Upsert {
-            collection: RuntimeCollection::Instance,
+        let frame = RuntimeWatchFrame::InstanceUpsert {
             key: String::from("instance-1"),
-            record: RuntimeRecord::Instance(instance_record("instance-1", "prod", "api")),
+            record: instance_record("instance-1", "prod", "api"),
         };
 
         let json = serde_json::to_value(&frame).expect("serialize runtime watch frame");
@@ -332,8 +337,7 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "kind": "upsert",
-                "collection": "instance",
+                "kind": "instance_upsert",
                 "key": "instance-1",
                 "record": {
                     "instance_id": "instance-1",
@@ -365,9 +369,10 @@ mod tests {
 
     #[test]
     fn runtime_watch_remove_frame_serialization_is_key_only() {
-        let frame = RuntimeWatchFrame::Remove {
-            collection: RuntimeCollection::Release,
+        let frame = RuntimeWatchFrame::ReleaseRemove {
             key: String::from("prod:api"),
+            namespace: Namespace::new("prod"),
+            service: String::from("api"),
         };
 
         let json = serde_json::to_value(&frame).expect("serialize runtime remove frame");
@@ -375,9 +380,10 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "kind": "remove",
-                "collection": "release",
-                "key": "prod:api"
+                "kind": "release_remove",
+                "key": "prod:api",
+                "namespace": "prod",
+                "service": "api"
             })
         );
 

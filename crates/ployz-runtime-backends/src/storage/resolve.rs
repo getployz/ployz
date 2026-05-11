@@ -40,9 +40,9 @@ pub async fn resolve_volumes<R: ShellRunner>(
             .ensure(&super::DatasetSpec {
                 dataset,
                 mountpoint,
-                quota: declaration.quota.clone(),
-                mode: declaration.mode.clone(),
-                owner: declaration.owner.clone(),
+                quota: declaration.quota.to_string(),
+                mode: declaration.mode.to_string(),
+                owner: declaration.owner.to_string(),
             })
             .await?;
         resolved.insert(name.clone(), info.mountpoint);

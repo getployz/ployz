@@ -54,12 +54,17 @@ pub struct RuntimeContainerSpec {
     pub pid_mode: Option<String>,
 }
 
-impl Default for RuntimeContainerSpec {
-    fn default() -> Self {
+impl RuntimeContainerSpec {
+    #[must_use]
+    pub fn new(
+        key: impl Into<String>,
+        container_name: impl Into<String>,
+        image: impl Into<String>,
+    ) -> Self {
         Self {
-            key: String::new(),
-            container_name: String::new(),
-            image: String::new(),
+            key: key.into(),
+            container_name: container_name.into(),
+            image: image.into(),
             pull_policy: PullPolicy::IfNotPresent,
             cmd: None,
             entrypoint: None,

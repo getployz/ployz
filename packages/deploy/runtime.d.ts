@@ -5,16 +5,54 @@ export type RuntimeWatchFrame =
       [k: string]: any;
     }
   | {
-      collection: RuntimeCollection;
       key: string;
-      kind: "upsert";
-      record: RuntimeRecord;
+      kind: "machine_upsert";
+      record: MachineMembership;
       [k: string]: any;
     }
   | {
-      collection: RuntimeCollection;
+      id: MachineId;
       key: string;
-      kind: "remove";
+      kind: "machine_remove";
+      [k: string]: any;
+    }
+  | {
+      key: string;
+      kind: "revision_upsert";
+      record: ServiceRevisionRecord;
+      [k: string]: any;
+    }
+  | {
+      key: string;
+      kind: "revision_remove";
+      namespace: Namespace;
+      revision_hash: string;
+      service: string;
+      [k: string]: any;
+    }
+  | {
+      key: string;
+      kind: "release_upsert";
+      record: ServiceReleaseRecord;
+      [k: string]: any;
+    }
+  | {
+      key: string;
+      kind: "release_remove";
+      namespace: Namespace;
+      service: string;
+      [k: string]: any;
+    }
+  | {
+      key: string;
+      kind: "instance_upsert";
+      record: InstanceStatusRecord;
+      [k: string]: any;
+    }
+  | {
+      instance_id: InstanceId;
+      key: string;
+      kind: "instance_remove";
       [k: string]: any;
     }
   | {
@@ -75,7 +113,11 @@ export type PublicKey = [
   number
 ];
 export type RegionRole = "home_data" | "compute" | "disabled" | "draining";
-export type StorageParticipation =
+export type MachineStorageRole =
+  | {
+      kind: "compute";
+      [k: string]: any;
+    }
   | {
       kind: "candidate";
       [k: string]: any;
@@ -99,8 +141,6 @@ export type ServiceRoutingPolicy =
       kind: "split";
       [k: string]: any;
     };
-export type RuntimeCollection = "machine" | "revision" | "release" | "instance";
-export type RuntimeRecord = MachineMembership | ServiceRevisionRecord | ServiceReleaseRecord | InstanceStatusRecord;
 
 export interface RoutingState {
   instances: InstanceStatusRecord[];
@@ -142,8 +182,7 @@ export interface MachineMembership {
   overlay_ip: OverlayIp;
   public_key: PublicKey;
   region_role: RegionRole;
-  storage: boolean;
-  storage_participation: StorageParticipation;
+  storage_role: MachineStorageRole;
   subnet?: string | null;
   topology: MachineTopology;
   updated_at: number;
