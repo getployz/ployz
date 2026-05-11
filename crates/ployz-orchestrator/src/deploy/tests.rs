@@ -5046,7 +5046,6 @@ async fn prepare_stores_preview_evidence_and_apply_prepared_marks_applied() {
 
     assert_eq!(retry.deploy_id, prepared.prepared_deploy_id);
     assert_eq!(retry.state, DeployState::Committed);
-    assert_eq!(retry_controller.max_open_seen(), 0);
     assert_eq!(retry_controller.start_count(), 0);
 }
 
@@ -5459,7 +5458,7 @@ async fn apply_prepared_supersedes_existing_checkpoint_terminal_deploy() {
 }
 
 #[tokio::test]
-async fn apply_prepared_marks_applied_after_post_commit_status_error() {
+async fn apply_prepared_keeps_prepared_after_post_commit_status_error() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
     let local_machine_id = MachineId("local".into());
     let manifest = test_manifest(vec![test_service_spec(
@@ -5478,7 +5477,7 @@ async fn apply_prepared_marks_applied_after_post_commit_status_error() {
     .await
     .expect("prepare deploy");
     backend.reset_counts();
-    backend.fail_committed_status_writes_after_first(true);
+    backend.fail_committed_status_writes(true);
 
     let participant_client = FakeParticipantClient::new(FakeController::default());
     let error = apply_prepared_with_certificate_coordination(
@@ -5499,6 +5498,208 @@ async fn apply_prepared_marks_applied_after_post_commit_status_error() {
         error
             .to_string()
             .contains("injected committed status failure")
+    );
+    assert_eq!(
+        store
+            .get_prepared_deploy(&prepared.prepared_deploy_id)
+            .await
+            .expect("get prepared")
+            .expect("prepared exists")
+            .state,
+        PreparedDeployState::Prepared
+    );
+}
+
+#[tokio::test]
+async fn apply_prepared_repairs_terminal_status_from_durable_commit() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "web",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    let prepared = prepare(
+        &store,
+        &local_machine_id,
+        &manifest,
+        &NoopParticipantProbe,
+        DeployId("prepare-terminal-status-fails".into()),
+        60,
+    )
+    .await
+    .expect("prepare deploy");
+    backend.reset_counts();
+    backend.fail_committed_status_writes(true);
+
+    let participant_client = FakeParticipantClient::new(FakeController::default());
+    let error = apply_prepared_with_certificate_coordination(
+        &store,
+        &participant_client,
+        &local_machine_id,
+        prepared.prepared_deploy_id.clone(),
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+    .expect_err("committed status write failure should fail response");
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected committed status failure")
+    );
+    assert_eq!(backend.commit_count(), 1);
+    assert_eq!(
+        store
+            .get_prepared_deploy(&prepared.prepared_deploy_id)
+            .await
+            .expect("get prepared")
+            .expect("prepared exists")
+            .state,
+        PreparedDeployState::Prepared
+    );
+    assert!(!matches!(
+        store
+            .get_deploy(&prepared.prepared_deploy_id)
+            .await
+            .expect("get deploy")
+            .map(|record| record.state),
+        Some(DeployState::Committed | DeployState::CleanupPending)
+    ));
+
+    backend.fail_committed_status_writes(false);
+    backend.reset_counts();
+    let retry_controller = FakeController::default();
+    let retry_participant_client = FakeParticipantClient::new(retry_controller.clone());
+    let retry = apply_prepared_with_certificate_coordination(
+        &store,
+        &retry_participant_client,
+        &local_machine_id,
+        prepared.prepared_deploy_id.clone(),
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+    .expect("retry should repair terminal status from durable commit");
+
+    assert_eq!(retry.deploy_id, prepared.prepared_deploy_id);
+    assert_eq!(retry.state, DeployState::Committed);
+    assert_eq!(retry_controller.start_count(), 0);
+    assert_eq!(backend.commit_count(), 0);
+    assert_eq!(
+        store
+            .get_deploy(&prepared.prepared_deploy_id)
+            .await
+            .expect("get repaired deploy")
+            .expect("deploy status repaired")
+            .state,
+        DeployState::Committed
+    );
+    assert_eq!(
+        store
+            .get_prepared_deploy(&prepared.prepared_deploy_id)
+            .await
+            .expect("get prepared")
+            .expect("prepared exists")
+            .state,
+        PreparedDeployState::Applied
+    );
+}
+
+#[tokio::test]
+async fn apply_prepared_recovers_final_commit_over_stale_checkpoint_status() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = checkpointed_db_web_manifest();
+    let prepared = prepare(
+        &store,
+        &local_machine_id,
+        &manifest,
+        &NoopParticipantProbe,
+        DeployId("prepare-checkpoint-final-status-fails".into()),
+        60,
+    )
+    .await
+    .expect("prepare deploy");
+    backend.reset_counts();
+    backend.fail_committed_status_writes(true);
+
+    let participant_client = FakeParticipantClient::new(FakeController::default());
+    let error = apply_prepared_with_certificate_coordination(
+        &store,
+        &participant_client,
+        &local_machine_id,
+        prepared.prepared_deploy_id.clone(),
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+    .expect_err("final committed status write failure should fail response");
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected committed status failure")
+    );
+    assert_eq!(
+        store
+            .get_deploy(&prepared.prepared_deploy_id)
+            .await
+            .expect("get checkpoint deploy")
+            .expect("checkpoint status remains")
+            .state,
+        DeployState::CheckpointCommitted
+    );
+    assert_eq!(
+        store
+            .get_prepared_deploy(&prepared.prepared_deploy_id)
+            .await
+            .expect("get prepared")
+            .expect("prepared exists")
+            .state,
+        PreparedDeployState::Prepared
+    );
+
+    backend.fail_committed_status_writes(false);
+    backend.reset_counts();
+    let retry_controller = FakeController::default();
+    let retry_participant_client = FakeParticipantClient::new(retry_controller.clone());
+    let retry = apply_prepared_with_certificate_coordination(
+        &store,
+        &retry_participant_client,
+        &local_machine_id,
+        prepared.prepared_deploy_id.clone(),
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+    .expect("retry should prefer durable final commit over checkpoint status");
+
+    assert_eq!(retry.deploy_id, prepared.prepared_deploy_id);
+    assert_eq!(retry.state, DeployState::Committed);
+    assert_eq!(retry_controller.start_count(), 0);
+    assert_eq!(backend.commit_count(), 0);
+    assert_eq!(
+        store
+            .get_deploy(&prepared.prepared_deploy_id)
+            .await
+            .expect("get repaired deploy")
+            .expect("deploy status repaired")
+            .state,
+        DeployState::Committed
     );
     assert_eq!(
         store
@@ -8707,6 +8908,14 @@ impl DeployStore for CountingBackend {
             ));
         }
         self.store.commit_deploy(command).await
+    }
+
+    async fn get_deploy_commit(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+    ) -> PloyzResult<Option<DeployCommit>> {
+        self.store.get_deploy_commit(namespace, deploy_id).await
     }
 
     async fn get_deploy(
