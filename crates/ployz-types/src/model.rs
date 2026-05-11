@@ -2403,6 +2403,42 @@ pub struct DeployPreview {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedDeployState {
+    Prepared,
+    Applied,
+    Expired,
+    Superseded,
+}
+
+impl std::fmt::Display for PreparedDeployState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Prepared => "prepared",
+            Self::Applied => "applied",
+            Self::Expired => "expired",
+            Self::Superseded => "superseded",
+        };
+        formatter.write_str(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedDeployRecord {
+    pub prepared_deploy_id: DeployId,
+    pub namespace: Namespace,
+    pub manifest_hash: String,
+    pub manifest_json: String,
+    pub preview: DeployPreview,
+    pub baseline: DeployPreviewBaseline,
+    pub coordinator_machine_id: MachineId,
+    pub state: PreparedDeployState,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub updated_at: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployEvent {
     pub step: String,
@@ -2683,6 +2719,58 @@ mod tests {
             assert_ne!(baseline.fingerprint, changed.fingerprint);
             assert_eq!(baseline.changed_components(&changed), vec![component]);
         }
+    }
+
+    #[test]
+    fn prepared_deploy_record_serializes_contract() {
+        let baseline = DeployPreviewBaseline::new(DeployPreviewBaselineComponents {
+            manifest: "manifest".into(),
+            participants: "participants".into(),
+            phases: "phases".into(),
+            services: "services".into(),
+            service_sources: "sources".into(),
+            volumes: "volumes".into(),
+            volume_moves: "moves".into(),
+            volume_clones: "clones".into(),
+        });
+        let preview = DeployPreview {
+            namespace: Namespace("prod".into()),
+            manifest_hash: "manifest".into(),
+            baseline: Some(baseline.clone()),
+            participants: Vec::new(),
+            phases: Vec::new(),
+            services: Vec::new(),
+            service_sources: Vec::new(),
+            service_source_fingerprint: String::new(),
+            service_branch_sources: Vec::new(),
+            volume_moves: Vec::new(),
+            volume_clones: Vec::new(),
+            volume_clone_preflights: Vec::new(),
+            image_availability: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let record = PreparedDeployRecord {
+            prepared_deploy_id: DeployId("prepare-1".into()),
+            namespace: Namespace("prod".into()),
+            manifest_hash: "manifest".into(),
+            manifest_json: r#"{"namespace":"prod","services":[]}"#.into(),
+            preview,
+            baseline,
+            coordinator_machine_id: MachineId("machine-a".into()),
+            state: PreparedDeployState::Prepared,
+            created_at: 10,
+            expires_at: 20,
+            updated_at: 10,
+        };
+
+        let json = serde_json::to_value(&record).expect("serialize prepared deploy");
+
+        assert_eq!(json["prepared_deploy_id"], serde_json::json!("prepare-1"));
+        assert_eq!(json["state"], serde_json::json!("prepared"));
+        assert_eq!(json["expires_at"], serde_json::json!(20));
+        let roundtrip: PreparedDeployRecord =
+            serde_json::from_value(json).expect("deserialize prepared deploy");
+        assert_eq!(roundtrip, record);
     }
 
     #[test]
