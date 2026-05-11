@@ -1392,14 +1392,17 @@ mod tests {
                     intent: ServiceIntent::Branch {
                         source_namespace: Namespace("prod".into()),
                         source_service: "api".into(),
-                        expected_source_revision_hash: None,
+                        expected_source_revision_hash: Some("rev-api".into()),
                     },
                 }],
                 volumes: vec![VolumeIntentHint {
                     volume: "data".into(),
-                    intent: VolumeIntent::Move {
-                        from_machine: "machine-a".into(),
-                        to_machine: "machine-b".into(),
+                    intent: VolumeIntent::Clone {
+                        source_namespace: Namespace("prod".into()),
+                        source_volume: "data".into(),
+                        data_policy: VolumeCloneDataPolicy::Raw,
+                        consistency: VolumeCloneConsistency::CrashConsistent,
+                        expected_source_record_fingerprint: Some("volume-fingerprint".into()),
                     },
                 }],
                 phases: Vec::new(),
@@ -1417,7 +1420,9 @@ mod tests {
         let json = serde_json::to_string(&manifest).expect("serialize manifest");
         assert!(json.contains("\"intent\""));
         assert!(json.contains("\"branch\""));
-        assert!(json.contains("\"move\""));
+        assert!(json.contains("\"expected_source_revision_hash\":\"rev-api\""));
+        assert!(json.contains("\"clone\""));
+        assert!(json.contains("\"expected_source_record_fingerprint\":\"volume-fingerprint\""));
 
         let deserialized: DeployManifest =
             serde_json::from_str(&json).expect("deserialize manifest");
