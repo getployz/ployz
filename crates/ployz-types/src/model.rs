@@ -561,10 +561,49 @@ impl ImageOperationTargetOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageOperationState {
+    Running {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+    Succeeded {},
+    Failed {
+        last_error: String,
+    },
+    Interrupted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+}
+
+impl ImageOperationState {
+    #[must_use]
+    pub fn status(&self) -> OperationStatus {
+        match self {
+            Self::Running { .. } => OperationStatus::Running,
+            Self::Succeeded { .. } => OperationStatus::Succeeded,
+            Self::Failed { .. } => OperationStatus::Failed,
+            Self::Interrupted { .. } => OperationStatus::Interrupted,
+        }
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        match self {
+            Self::Failed { last_error } => Some(last_error.as_str()),
+            Self::Running { last_error } | Self::Interrupted { last_error } => {
+                last_error.as_deref()
+            }
+            Self::Succeeded { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ImageOperationRecord {
     pub id: String,
     pub kind: ImageOperationKind,
-    pub status: OperationStatus,
     pub stage: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<ImageDigest>,
@@ -574,8 +613,19 @@ pub struct ImageOperationRecord {
     pub targets: Vec<ImageOperationTargetOutcome>,
     pub started_at: u64,
     pub updated_at: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
+    pub state: ImageOperationState,
+}
+
+impl ImageOperationRecord {
+    #[must_use]
+    pub fn status(&self) -> OperationStatus {
+        self.state.status()
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        self.state.last_error()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
@@ -3908,6 +3958,29 @@ mod tests {
 
         serde_json::from_value::<ImageOperationTargetOutcome>(json)
             .expect_err("failed target cannot carry success bytes");
+    }
+
+    #[test]
+    fn image_operation_state_rejects_success_with_error() {
+        let json = serde_json::json!({
+            "id": "image-push-1",
+            "kind": "push",
+            "stage": "complete",
+            "digest": {
+                "kind": "digest",
+                "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "targets": [],
+            "started_at": 1,
+            "updated_at": 2,
+            "state": {
+                "status": "succeeded",
+                "last_error": "copy failed"
+            }
+        });
+
+        serde_json::from_value::<ImageOperationRecord>(json)
+            .expect_err("succeeded image operation cannot carry last_error");
     }
 
     #[test]
