@@ -218,7 +218,7 @@ async fn machine_add_activates_joiner_lifecycle() {
     let mut joiner_record = test_machine_record(
         "joiner-1",
         &expected_subnet.to_string(),
-        MachineLifecycle::Standby,
+        MachineLifecycle::Active,
         PublicKey([4; 32]),
     );
     joiner_record.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
@@ -309,7 +309,7 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
     let mut joiner_record = test_machine_record(
         "joiner-2",
         &expected_subnet.to_string(),
-        MachineLifecycle::Standby,
+        MachineLifecycle::Active,
         PublicKey([5; 32]),
     );
     joiner_record.overlay_ip = "fd00::5".parse().map(OverlayIp).expect("valid overlay");
@@ -837,7 +837,7 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
     let mut joiner_record = test_machine_record(
         "joiner-mismatch",
         "10.210.99.0/24",
-        MachineLifecycle::Standby,
+        MachineLifecycle::Active,
         PublicKey([14; 32]),
     );
     joiner_record.overlay_ip = "fd00::14".parse().map(OverlayIp).expect("valid overlay");
@@ -906,7 +906,7 @@ async fn machine_add_rejects_remote_authority_posture_before_invite_consume() {
     let mut joiner_record = test_machine_record(
         "joiner-authority",
         &expected_subnet.to_string(),
-        MachineLifecycle::Standby,
+        MachineLifecycle::Active,
         PublicKey([15; 32]),
     );
     joiner_record.overlay_ip = "fd00::15".parse().map(OverlayIp).expect("valid overlay");
@@ -1861,7 +1861,11 @@ async fn make_state_with_zfs_transfer_port(
     let founder_record = test_machine_record(
         "founder",
         "10.210.0.0/24",
-        MachineLifecycle::Standby,
+        if start_mesh {
+            MachineLifecycle::Active
+        } else {
+            MachineLifecycle::Standby
+        },
         identity.public_key.clone(),
     );
     store
@@ -1947,7 +1951,12 @@ fn test_machine_record(
             .expect("valid overlay"),
         topology: MachineTopology::local(),
         region_role: ployz_types::model::RegionRole::HomeData,
-        subnet: Some(subnet.parse().expect("valid subnet")),
+        subnet: match lifecycle {
+            MachineLifecycle::Active | MachineLifecycle::Draining => {
+                Some(subnet.parse().expect("valid subnet"))
+            }
+            MachineLifecycle::Standby => None,
+        },
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],
         lifecycle,

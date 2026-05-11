@@ -77,7 +77,7 @@ pub(super) async fn run_machine_add_target(
         remote_identity.machine_id.clone(),
         remote_identity.public_key.clone(),
         bootstrap_overlay_ip,
-        Some(subnet_claim.subnet),
+        None,
         bootstrap_wireguard_endpoints(&target),
     );
     bootstrap_record.storage_role = MachineStorageRole::Candidate;
@@ -201,6 +201,24 @@ pub(super) async fn run_machine_add_target(
         };
     }
     if let Err(err) = validate_joined_machine_authority_posture(&record) {
+        let _ = release_reserved_subnet(subnet_claim).await;
+        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
+        let _ = operation_store.update_status(
+            &mut operation,
+            MachineOperationStatus::Failed,
+            Some(err.clone()),
+        );
+        return MachineAddTargetResult::Failed {
+            target,
+            failure: MachineAddFailure::SelfRecord { reason: err },
+        };
+    }
+    if let Err(err) = context
+        .store
+        .upsert_self_machine(&record)
+        .await
+        .map_err(|err| format!("publish joined machine self-record: {err}"))
+    {
         let _ = release_reserved_subnet(subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
