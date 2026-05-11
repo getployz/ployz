@@ -3,8 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_api::{BuildOperationListPayload, BuildOperationPayload, DaemonPayload};
 use ployz_types::model::{
-    BuildLocation, BuildMethod, BuildOperationKind, BuildOperationRecord, ImageArtifact,
-    OperationStatus,
+    BuildInputSummary, BuildLocation, BuildMethod, BuildOperationKind, BuildOperationRecord,
+    ImageArtifact, OperationStatus,
 };
 use ployz_types::time::now_unix_secs;
 
@@ -32,6 +32,18 @@ impl BuildOperationStore {
         location: BuildLocation,
         stage: impl Into<String>,
     ) -> Result<BuildOperationRecord, String> {
+        self.begin_with_input_summary(kind, method, location, stage, BuildInputSummary::default())
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn begin_with_input_summary(
+        &self,
+        kind: BuildOperationKind,
+        method: BuildMethod,
+        location: BuildLocation,
+        stage: impl Into<String>,
+        inputs: BuildInputSummary,
+    ) -> Result<BuildOperationRecord, String> {
         let now = now_unix_secs();
         let record = BuildOperationRecord {
             id: unique_operation_id(kind, now),
@@ -40,6 +52,7 @@ impl BuildOperationStore {
             location,
             status: OperationStatus::Running,
             stage: stage.into(),
+            inputs,
             artifact: None,
             last_error: None,
             started_at: now,
@@ -67,6 +80,7 @@ impl BuildOperationStore {
             location,
             status: OperationStatus::Running,
             stage: stage.into(),
+            inputs: BuildInputSummary::default(),
             artifact: None,
             last_error: None,
             started_at: now,

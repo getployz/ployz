@@ -3,10 +3,10 @@ pub mod transport;
 
 pub use ployz_api::{
     BranchNamespaceMode, BranchNamespaceRequest, BranchResourceMode, BranchResourceModeOverride,
-    BuildLocalRequest, BuildMachineRequest, BuildOperationListPayload, BuildOperationPayload,
-    BuildResultPayload, DaemonPayload, DaemonRequest, DaemonResponse, DebugTickTask,
-    DeployApplyPreparedRequest, DeployOptions, DeployPreparePayload, DoctorLocal, DoctorOverall,
-    DoctorPayload, DoctorPeer, ImageDistributePayload, ImageDistributeRequest,
+    BuildEnvValue, BuildInputs, BuildLocalRequest, BuildMachineRequest, BuildOperationListPayload,
+    BuildOperationPayload, BuildResultPayload, DaemonPayload, DaemonRequest, DaemonResponse,
+    DebugTickTask, DeployApplyPreparedRequest, DeployOptions, DeployPreparePayload, DoctorLocal,
+    DoctorOverall, DoctorPayload, DoctorPeer, ImageDistributePayload, ImageDistributeRequest,
     ImageDistributeValidationFailure, ImageDistributeValidationPayload, ImageInspectPayload,
     ImageInspectRequest, ImageOperationListPayload, ImageOperationPayload, ImagePushPayload,
     ImagePushRequest, ImageStatusPayload, ImageStatusRequest, ImageTransferFailure,
