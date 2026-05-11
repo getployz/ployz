@@ -589,6 +589,12 @@
                 "source_service"
               ],
               "properties": {
+                "expected_source_revision_hash": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "source_namespace": {
                   "$ref": "#/definitions/Namespace"
                 },
@@ -866,6 +872,12 @@
                 },
                 "data_policy": {
                   "$ref": "#/definitions/VolumeCloneDataPolicy"
+                },
+                "expected_source_record_fingerprint": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "source_namespace": {
                   "$ref": "#/definitions/Namespace"
