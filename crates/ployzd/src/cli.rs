@@ -4,6 +4,7 @@ use ployz_api::{
     InstallServiceMode as ApiInstallServiceMode, InstallSource as MachineInstallSource,
 };
 use ployz_config::{RuntimeTarget, ServiceMode};
+use ployz_types::model::BuildMethod;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -30,6 +31,12 @@ pub(crate) enum DebugTickTaskArg {
     Endpoints,
     Heartbeat,
     All,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum BuildMethodArg {
+    Dockerfile,
+    Railpack,
 }
 
 impl From<RuntimeTargetArg> for RuntimeTarget {
@@ -84,6 +91,15 @@ impl From<DebugTickTaskArg> for ProtocolDebugTickTask {
             DebugTickTaskArg::Endpoints => ProtocolDebugTickTask::Endpoints,
             DebugTickTaskArg::Heartbeat => ProtocolDebugTickTask::Heartbeat,
             DebugTickTaskArg::All => ProtocolDebugTickTask::All,
+        }
+    }
+}
+
+impl From<BuildMethodArg> for BuildMethod {
+    fn from(value: BuildMethodArg) -> Self {
+        match value {
+            BuildMethodArg::Dockerfile => BuildMethod::Dockerfile,
+            BuildMethodArg::Railpack => BuildMethod::Railpack,
         }
     }
 }
@@ -195,6 +211,10 @@ pub(crate) enum Command {
     Image {
         #[command(subcommand)]
         action: ImageAction,
+    },
+    Build {
+        #[command(subcommand)]
+        action: BuildAction,
     },
     #[command(hide = true)]
     Volume {
@@ -532,6 +552,30 @@ pub(crate) enum ImageAction {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ImageOperationAction {
+    List,
+    Get { id: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum BuildAction {
+    Local {
+        #[arg(long, value_enum)]
+        method: BuildMethodArg,
+        #[arg(long, value_name = "IMAGE")]
+        image: String,
+        #[arg(long)]
+        platform: Option<String>,
+        #[arg(value_name = "CONTEXT")]
+        context: PathBuf,
+    },
+    Operation {
+        #[command(subcommand)]
+        action: BuildOperationAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum BuildOperationAction {
     List,
     Get { id: String },
 }

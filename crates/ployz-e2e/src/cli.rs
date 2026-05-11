@@ -68,13 +68,14 @@ pub(crate) enum Scenario {
     DockerBridgeForwardSmoke,
     ImagePushExistingImage,
     DeployImageAvailability,
+    LocalBuildImageAvailability,
     DrainAwareRedeployRealSmoke,
     MigrateServiceRealSmoke,
     VolumeCloneBranchRealSmoke,
 }
 
 impl Scenario {
-    const DEFAULT: [Self; 7] = [
+    const DEFAULT: [Self; 8] = [
         Self::MeshBootstrapJoinSmoke,
         Self::NodeRestartAdoptsDataPlane,
         Self::WireguardPartitionReconnect,
@@ -82,6 +83,7 @@ impl Scenario {
         Self::DockerBridgeForwardSmoke,
         Self::ImagePushExistingImage,
         Self::DeployImageAvailability,
+        Self::LocalBuildImageAvailability,
     ];
 
     #[must_use]
@@ -109,7 +111,8 @@ impl Scenario {
             | Self::DeployHttpAcmeGatewaySmoke
             | Self::DockerBridgeForwardSmoke
             | Self::ImagePushExistingImage
-            | Self::DeployImageAvailability => ZfsMode::Off,
+            | Self::DeployImageAvailability
+            | Self::LocalBuildImageAvailability => ZfsMode::Off,
         }
     }
 
@@ -128,6 +131,7 @@ impl Scenario {
             | Self::DeployHttpAcmeGatewaySmoke
             | Self::ImagePushExistingImage
             | Self::DeployImageAvailability
+            | Self::LocalBuildImageAvailability
             | Self::DockerBridgeForwardSmoke
             | Self::DrainAwareRedeployRealSmoke
             | Self::MigrateServiceRealSmoke
@@ -139,7 +143,9 @@ impl Scenario {
     pub(crate) fn node_names(self) -> &'static [&'static str] {
         match self {
             Self::DockerBridgeForwardSmoke => &["founder"],
-            Self::ImagePushExistingImage | Self::DeployImageAvailability => &["founder", "peer"],
+            Self::ImagePushExistingImage
+            | Self::DeployImageAvailability
+            | Self::LocalBuildImageAvailability => &["founder", "peer"],
             Self::VolumeCloneBranchRealSmoke => &["founder"],
             Self::MeshBootstrapJoinSmoke
             | Self::NodeRestartAdoptsDataPlane
@@ -160,6 +166,7 @@ impl Scenario {
             Self::DockerBridgeForwardSmoke => "docker_bridge_forward_smoke",
             Self::ImagePushExistingImage => "image_push_existing_image",
             Self::DeployImageAvailability => "deploy_image_availability",
+            Self::LocalBuildImageAvailability => "local_build_image_availability",
             Self::DrainAwareRedeployRealSmoke => "drain_aware_redeploy_real_smoke",
             Self::MigrateServiceRealSmoke => "migrate_service_real_smoke",
             Self::VolumeCloneBranchRealSmoke => "volume_clone_branch_real_smoke",
@@ -176,6 +183,7 @@ impl Scenario {
             | Self::WireguardPartitionReconnect
             | Self::ImagePushExistingImage
             | Self::DeployImageAvailability
+            | Self::LocalBuildImageAvailability
             | Self::DeployHttpAcmeGatewaySmoke
             | Self::DrainAwareRedeployRealSmoke
             | Self::MigrateServiceRealSmoke => "host",
@@ -201,6 +209,7 @@ mod tests {
                 Scenario::DockerBridgeForwardSmoke,
                 Scenario::ImagePushExistingImage,
                 Scenario::DeployImageAvailability,
+                Scenario::LocalBuildImageAvailability,
                 Scenario::MigrateServiceRealSmoke,
                 Scenario::DrainAwareRedeployRealSmoke,
             ]
