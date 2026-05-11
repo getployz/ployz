@@ -17,11 +17,16 @@ pub struct RuntimeImage {
 }
 
 impl RuntimeImage {
+    /// Returns whether this runtime can verify the image by the requested
+    /// digest identity. Docker archive import preserves the image id even when
+    /// repository digests are absent, so local image pushes accept either
+    /// repository digest or image id.
     #[must_use]
     pub fn has_digest(&self, digest: &ImageDigest) -> bool {
         self.repo_digests
             .iter()
             .any(|candidate| candidate == digest)
+            || self.id.as_deref() == Some(digest.as_str())
     }
 }
 
@@ -132,12 +137,15 @@ pub trait RuntimeImageBackend: Send + Sync {
         if image.has_digest(expected) {
             return Ok(image);
         }
-        let found = image
+        let mut found = image
             .repo_digests
             .iter()
             .map(ImageDigest::as_str)
-            .collect::<Vec<_>>()
-            .join(", ");
+            .collect::<Vec<_>>();
+        if let Some(id) = image.id.as_deref() {
+            found.push(id);
+        }
+        let found = found.join(", ");
         Err(RuntimeImageError::DigestMismatch {
             reference: reference.into(),
             expected: expected.clone(),
@@ -151,5 +159,30 @@ pub trait RuntimeImageBackend: Send + Sync {
     ) -> Result<ImageDiskPreflight, RuntimeImageError> {
         let _ = request;
         Ok(ImageDiskPreflight::Unknown)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_image_digest_matches_repo_digest_or_image_id() {
+        let repo_digest =
+            ImageDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("repo digest");
+        let image_id =
+            ImageDigest::try_new(format!("sha256:{}", "b".repeat(64))).expect("image id");
+        let other = ImageDigest::try_new(format!("sha256:{}", "c".repeat(64))).expect("other");
+        let image = RuntimeImage {
+            reference: "example/app:latest".into(),
+            id: Some(image_id.as_str().into()),
+            repo_digests: vec![repo_digest.clone()],
+            platform: None,
+            size_bytes: None,
+        };
+
+        assert!(image.has_digest(&repo_digest));
+        assert!(image.has_digest(&image_id));
+        assert!(!image.has_digest(&other));
     }
 }
