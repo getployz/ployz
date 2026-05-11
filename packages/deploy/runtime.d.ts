@@ -130,7 +130,7 @@ export type MachineStorageRole =
 export type AuthorityId = string;
 export type AvailabilityZoneName = string;
 export type RegionName = string;
-export type ServiceRoutingPolicy =
+export type ServiceReleaseTarget =
   | {
       kind: "direct";
       revision_hash: string;
@@ -139,6 +139,7 @@ export type ServiceRoutingPolicy =
   | {
       allocations: ServiceTrafficAllocation[];
       kind: "split";
+      primary_revision_hash: string;
       [k: string]: any;
     };
 
@@ -200,18 +201,10 @@ export interface ServiceReleaseRecord {
   [k: string]: any;
 }
 export interface ServiceRelease {
-  primary_revision_hash: string;
-  referenced_revision_hashes: string[];
-  routing: ServiceRoutingPolicy;
   slots: ServiceReleaseSlot[];
+  target: ServiceReleaseTarget;
   updated_at: number;
   updated_by_deploy_id: DeployId;
-  [k: string]: any;
-}
-export interface ServiceTrafficAllocation {
-  label?: string | null;
-  percent: number;
-  revision_hash: string;
   [k: string]: any;
 }
 export interface ServiceReleaseSlot {
@@ -219,6 +212,12 @@ export interface ServiceReleaseSlot {
   machine_id: MachineId;
   revision_hash: string;
   slot_id: SlotId;
+  [k: string]: any;
+}
+export interface ServiceTrafficAllocation {
+  label?: string | null;
+  percent: number;
+  revision_hash: string;
   [k: string]: any;
 }
 export interface ServiceRevisionRecord {

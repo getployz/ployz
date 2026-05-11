@@ -592,31 +592,20 @@
     "ServiceRelease": {
       "type": "object",
       "required": [
-        "primary_revision_hash",
-        "referenced_revision_hashes",
-        "routing",
         "slots",
+        "target",
         "updated_at",
         "updated_by_deploy_id"
       ],
       "properties": {
-        "primary_revision_hash": {
-          "type": "string"
-        },
-        "referenced_revision_hashes": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "routing": {
-          "$ref": "#/definitions/ServiceRoutingPolicy"
-        },
         "slots": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/ServiceReleaseSlot"
           }
+        },
+        "target": {
+          "$ref": "#/definitions/ServiceReleaseTarget"
         },
         "updated_at": {
           "type": "integer",
@@ -670,6 +659,53 @@
         }
       }
     },
+    "ServiceReleaseTarget": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "revision_hash"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "direct"
+              ]
+            },
+            "revision_hash": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "allocations",
+            "kind",
+            "primary_revision_hash"
+          ],
+          "properties": {
+            "allocations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ServiceTrafficAllocation"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "split"
+              ]
+            },
+            "primary_revision_hash": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
     "ServiceRevisionRecord": {
       "type": "object",
       "required": [
@@ -702,49 +738,6 @@
           "type": "string"
         }
       }
-    },
-    "ServiceRoutingPolicy": {
-      "oneOf": [
-        {
-          "type": "object",
-          "required": [
-            "kind",
-            "revision_hash"
-          ],
-          "properties": {
-            "kind": {
-              "type": "string",
-              "enum": [
-                "direct"
-              ]
-            },
-            "revision_hash": {
-              "type": "string"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "required": [
-            "allocations",
-            "kind"
-          ],
-          "properties": {
-            "allocations": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/ServiceTrafficAllocation"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "enum": [
-                "split"
-              ]
-            }
-          }
-        }
-      ]
     },
     "ServiceTrafficAllocation": {
       "type": "object",
