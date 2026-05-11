@@ -584,7 +584,7 @@ mod tests {
             .list()
             .expect("list image operations");
         assert_eq!(operations.len(), 1);
-        assert_eq!(operations[0].status, OperationStatus::Succeeded);
+        assert_eq!(operations[0].status(), OperationStatus::Succeeded);
     }
 
     #[tokio::test]

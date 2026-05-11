@@ -1758,7 +1758,7 @@ mod tests {
             .expect("list operations");
         assert_eq!(operations.len(), 1);
         assert_eq!(operations[0].kind, ImageOperationKind::Push);
-        assert_eq!(operations[0].status, OperationStatus::Succeeded);
+        assert_eq!(operations[0].status(), OperationStatus::Succeeded);
         assert!(
             !state
                 .data_dir
@@ -1798,7 +1798,7 @@ mod tests {
             .expect("list operations");
         assert_eq!(operations.len(), 1);
         assert_eq!(operations[0].kind, ImageOperationKind::Push);
-        assert_eq!(operations[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].status(), OperationStatus::Failed);
         assert_eq!(operations[0].targets[0].status(), OperationStatus::Failed);
     }
 
@@ -1989,7 +1989,7 @@ mod tests {
             .list()
             .expect("list operations");
         assert_eq!(operations.len(), 1);
-        assert_eq!(operations[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]
@@ -2024,7 +2024,7 @@ mod tests {
             .list()
             .expect("list operations");
         assert_eq!(operations.len(), 1);
-        assert_eq!(operations[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].status(), OperationStatus::Failed);
         assert_eq!(operations[0].targets[0].status(), OperationStatus::Failed);
     }
 
@@ -2099,7 +2099,7 @@ mod tests {
             .iter()
             .find(|operation| operation.kind == ImageOperationKind::Push)
             .expect("push operation");
-        assert_eq!(push.status, OperationStatus::Failed);
+        assert_eq!(push.status(), OperationStatus::Failed);
         assert!(
             push.targets
                 .iter()
@@ -2220,7 +2220,7 @@ mod tests {
             .list()
             .expect("list operations");
         assert_eq!(operations.len(), 1);
-        assert_eq!(operations[0].status, OperationStatus::Succeeded);
+        assert_eq!(operations[0].status(), OperationStatus::Succeeded);
         assert!(
             !state
                 .data_dir
@@ -2347,7 +2347,7 @@ mod tests {
             .image_operation_store()
             .list()
             .expect("list operations");
-        assert_eq!(operations[0].status, OperationStatus::Succeeded);
+        assert_eq!(operations[0].status(), OperationStatus::Succeeded);
         assert!(
             operations[0]
                 .targets
@@ -2414,7 +2414,7 @@ mod tests {
             .image_operation_store()
             .list()
             .expect("list operations");
-        assert_eq!(operations[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].status(), OperationStatus::Failed);
         assert_eq!(
             operations[0].targets[0].status(),
             OperationStatus::Succeeded
@@ -2716,7 +2716,7 @@ mod tests {
             .image_operation_store()
             .list()
             .expect("list operations");
-        assert_eq!(operations[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].status(), OperationStatus::Failed);
         assert!(
             operations[0]
                 .targets
@@ -2756,7 +2756,7 @@ mod tests {
             .list()
             .expect("list operations");
         assert_eq!(operations.len(), 1);
-        assert_eq!(operations[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].status(), OperationStatus::Failed);
         assert_eq!(operations[0].targets[0].status(), OperationStatus::Failed);
     }
 
