@@ -25,6 +25,7 @@ use crate::daemon::DaemonState;
 
 const BUILD_COMMAND_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const BUILD_OUTPUT_TAIL_BYTES: usize = 64 * 1024;
+const DOCKER_BUILDKIT_ENV: &str = "DOCKER_BUILDKIT";
 
 struct BuildCommand {
     program: &'static str,
@@ -770,13 +771,22 @@ fn build_command(
         }
     }
     args.push(".".into());
+    let mut env = match request.method {
+        BuildMethod::Dockerfile => invocation.secret_env.clone(),
+        BuildMethod::Railpack => Vec::new(),
+    };
+    if request.method == BuildMethod::Dockerfile && !invocation.buildkit_secret_env.is_empty() {
+        if env.iter().any(|(key, _value)| key == DOCKER_BUILDKIT_ENV) {
+            return Err(format!(
+                "dockerfile secret env cannot use reserved Docker client env key '{DOCKER_BUILDKIT_ENV}'"
+            ));
+        }
+        env.push((DOCKER_BUILDKIT_ENV.into(), "1".into()));
+    }
     Ok(BuildCommand {
         program,
         args,
-        env: match request.method {
-            BuildMethod::Dockerfile => invocation.secret_env.clone(),
-            BuildMethod::Railpack => Vec::new(),
-        },
+        env,
         redaction_values: invocation
             .env
             .iter()
@@ -1188,7 +1198,10 @@ mod tests {
         );
         assert_eq!(
             command.env,
-            vec![("SENTRY_AUTH_TOKEN".into(), "super-secret-token".into())]
+            vec![
+                ("SENTRY_AUTH_TOKEN".into(), "super-secret-token".into()),
+                ("DOCKER_BUILDKIT".into(), "1".into())
+            ]
         );
         assert_eq!(invocation.summary.env, vec!["NODE_ENV"]);
         assert_eq!(invocation.summary.secrets[0].name, "SENTRY_AUTH_TOKEN");
@@ -1209,6 +1222,36 @@ mod tests {
                 },
             )
             .contains("super-secret-token")
+        );
+    }
+
+    #[test]
+    fn dockerfile_secret_env_rejects_reserved_docker_client_env_key() {
+        let request = BuildLocalRequest {
+            method: BuildMethod::Dockerfile,
+            context_dir: "/tmp/context".into(),
+            image_name: "example/app:latest".into(),
+            platform: None,
+            push_target: None,
+            distribute_targets: Vec::new(),
+            inputs: BuildInputs {
+                env: BTreeMap::from([(
+                    "DOCKER_BUILDKIT".into(),
+                    BuildEnvValue::Secret {
+                        value: "not-the-client-toggle".into(),
+                        fingerprint: None,
+                    },
+                )]),
+                docker_build_args: BTreeMap::new(),
+            },
+        };
+
+        let invocation = plan_build_invocation(request.method, &request.inputs).expect("plan");
+        let error = build_command(&request, &invocation).expect_err("reserved client env");
+
+        assert_eq!(
+            error,
+            "dockerfile secret env cannot use reserved Docker client env key 'DOCKER_BUILDKIT'"
         );
     }
 
