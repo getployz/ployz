@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PACKAGE_DIR="${ROOT_DIR}/packages/deploy"
+PACKAGE_DIR="${DEPLOY_PACKAGE_DIR:-${ROOT_DIR}/packages/deploy}"
 SCHEMA_PATH="${PACKAGE_DIR}/deploy-manifest.schema.json"
 RUNTIME_SCHEMA_PATH="${PACKAGE_DIR}/runtime.schema.json"
 TYPES_PATH="${PACKAGE_DIR}/index.d.ts"
