@@ -22,9 +22,9 @@ use ployz_store_api::{
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    DeployId, DeployRecord, DrainState, InstanceId, InstancePhase,
-    InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, OverlayIp, PublicKey,
-    RoutingState, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord, WireGuardPeerSpec,
+    DeployId, DeployRecord, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
+    MachineLifecycle, MachineMembership, OverlayIp, PublicKey, RoutingState, ServiceReleaseRecord,
+    ServiceRevisionRecord, VolumeRecord, WireGuardPeerSpec,
 };
 use ployz_types::spec::{
     ContainerSpec, HttpRoute, Namespace, NetworkMode, Placement, PortProtocol, PullPolicy,

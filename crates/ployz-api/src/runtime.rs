@@ -150,8 +150,8 @@ mod tests {
         AuthorityNodePosture, DeployId, DrainState, InstanceId, InstancePhase,
         InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, MachineTopology,
         NetworkLifecycle, OverlayIp, PublicKey, RoutingEvent, RoutingState, ServiceRelease,
-        ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy,
-        SlotId, StorageParticipation, StorageReplicaPolicy,
+        ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord, SlotId,
+        StorageParticipation, StorageReplicaPolicy,
     };
     use ployz_types::spec::Namespace;
     use std::collections::BTreeMap;
@@ -358,7 +358,7 @@ mod tests {
                         "http": 8080
                     },
                     "phase": "Ready",
-                    "ready": false,
+                    "ready": true,
                     "drain_state": "None",
                     "error": null,
                     "started_at": 10,
@@ -753,7 +753,7 @@ mod tests {
             overlay_ip: Some(Ipv4Addr::new(10, 0, 0, 2)),
             backend_ports,
             phase: InstancePhase::Ready,
-            ready: false,
+            ready: true,
             drain_state: DrainState::None,
             error: None,
             started_at: 10,

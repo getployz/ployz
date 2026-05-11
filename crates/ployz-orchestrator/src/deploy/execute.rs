@@ -1993,9 +1993,9 @@ fn committed_deploy_record(
                 .mark_cleanup_pending(committed_at)
                 .expect("committed deploy can become cleanup pending");
         }
+        DeployState::CheckpointCommitted => record.mark_checkpoint_committed(summary_json),
         DeployState::Planning
         | DeployState::Applying
-        | DeployState::CheckpointCommitted
         | DeployState::FailedAfterCheckpoint
         | DeployState::Failed => {
             return Err(Error::operation(

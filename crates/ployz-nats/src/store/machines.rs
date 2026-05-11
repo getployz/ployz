@@ -201,7 +201,7 @@ mod tests {
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay")),
             topology: MachineTopology::local(),
             region_role: ployz_types::model::RegionRole::HomeData,
-            subnet: None,
+            subnet: Some("10.210.0.0/24".parse().expect("valid subnet")),
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
