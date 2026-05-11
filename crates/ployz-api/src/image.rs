@@ -89,6 +89,29 @@ pub struct ImageDistributePayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageDistributeValidationPayload {
+    pub digest: ImageDigest,
+    pub source_machine: MachineId,
+    pub target_machines: Vec<MachineId>,
+    pub failure: ImageDistributeValidationFailure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ImageDistributeValidationFailure {
+    TargetRequired {
+        target_count: usize,
+    },
+    DuplicateTarget {
+        duplicate_target: MachineId,
+    },
+    SourceNotLocal {
+        source_machine: MachineId,
+        local_machine: MachineId,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageReceiveSessionPayload {
     pub target_machine: MachineId,
     pub endpoint: String,
@@ -120,7 +143,30 @@ pub struct ImageTransferTargetResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<ImageAvailabilityRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<ImageTransferFailure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageTransferFailure {
+    pub code: String,
+    pub stage: ImageTransferFailureStage,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageTransferFailureStage {
+    AvailabilityRead,
+    SourceVerify,
+    SourceExport,
+    ArchiveParse,
+    LocalAvailability,
+    ReceiveSession,
+    Upload,
+    Import,
+    DistributingPushedImage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

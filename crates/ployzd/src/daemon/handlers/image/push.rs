@@ -1,13 +1,14 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
 use ployz_api::{
-    DaemonPayload, DaemonRequest, ImageDistributePayload, ImageDistributeRequest, ImagePushPayload,
+    DaemonPayload, DaemonRequest, ImageDistributePayload, ImageDistributeRequest,
+    ImageDistributeValidationFailure, ImageDistributeValidationPayload, ImagePushPayload,
     ImagePushRequest, ImageReceiveSessionPayload, ImageReceiveSessionRequest,
-    ImageReceivedImportPayload, ImageReceivedImportRequest, ImageTransferTargetResult,
-    ImageTransferTargetStatus,
+    ImageReceivedImportPayload, ImageReceivedImportRequest, ImageTransferFailure,
+    ImageTransferFailureStage, ImageTransferTargetResult, ImageTransferTargetStatus,
 };
 use ployz_nats::{NodeCommandSubject, RpcPolicy};
 use ployz_runtime_api::{ImageArchiveReader, RuntimeImage, RuntimeImageBackend, RuntimeImageError};
@@ -168,6 +169,7 @@ impl DaemonState {
             machine_id: first_target.clone(),
             status: ImageTransferTargetStatus::Present,
             record: Some(first_record),
+            failure: None,
             error: None,
         }];
         if let Err(error) = operation_store.update_target(
@@ -216,7 +218,13 @@ impl DaemonState {
                     }
                     targets.push(target_result);
                 }
-                Err(message) => {
+                Err(target_result) => {
+                    let message = target_result
+                        .failure
+                        .as_ref()
+                        .map(|failure| failure.message.clone())
+                        .or_else(|| target_result.error.clone())
+                        .unwrap_or_else(|| format!("image distribute to target '{target}' failed"));
                     if let Err(error) = operation_store.update_target(
                         &mut operation,
                         ImageOperationTargetOutcome {
@@ -233,12 +241,7 @@ impl DaemonState {
                             ),
                         );
                     }
-                    targets.push(ImageTransferTargetResult {
-                        machine_id: target.clone(),
-                        status: ImageTransferTargetStatus::Failed,
-                        record: None,
-                        error: Some(message),
-                    });
+                    targets.push(target_result);
                 }
             }
         }
@@ -298,6 +301,9 @@ impl DaemonState {
         &self,
         request: &ImageDistributeRequest,
     ) -> ployz_api::DaemonResponse {
+        if let Err(response) = self.validate_image_distribute_request(request) {
+            return response;
+        }
         let backend = match self.runtime_image_backend().await {
             Ok(backend) => backend,
             Err(error) => return self.err("IMAGE_DISTRIBUTE_RUNTIME_UNAVAILABLE", error),
@@ -311,30 +317,17 @@ impl DaemonState {
         request: &ImageDistributeRequest,
         backend: &dyn RuntimeImageBackend,
     ) -> ployz_api::DaemonResponse {
-        let [target_machine] = request.target_machines.as_slice() else {
-            return self.err(
-                "IMAGE_DISTRIBUTE_SINGLE_TARGET_ONLY",
-                format!(
-                    "image distribute currently supports exactly one target, got {}",
-                    request.target_machines.len()
-                ),
-            );
-        };
-        if request.source_machine != self.identity.machine_id {
-            return self.err(
-                "IMAGE_DISTRIBUTE_SOURCE_NOT_LOCAL",
-                format!(
-                    "image distribute source '{}' must match local machine '{}'",
-                    request.source_machine, self.identity.machine_id
-                ),
-            );
+        if let Err(response) = self.validate_image_distribute_request(request) {
+            return response;
         }
-        if let Err(response) = self.require_active(
+        let active = match self.require_active(
             "IMAGE_DISTRIBUTE_INACTIVE",
             "image distribute requires a running mesh",
         ) {
-            return *response;
-        }
+            Ok(active) => active,
+            Err(response) => return *response,
+        };
+        let image_store = active.mesh.store.clone();
 
         let operation_store = self.image_operation_store();
         let mut operation = match operation_store.begin(
@@ -342,185 +335,337 @@ impl DaemonState {
             "verifying source image",
             Some(request.digest.clone()),
             Some(request.source_machine.clone()),
-            vec![target_machine.clone()],
+            request.target_machines.clone(),
         ) {
             Ok(operation) => operation,
             Err(error) => return self.err("IMAGE_DISTRIBUTE_OPERATION_FAILED", error),
         };
 
-        let source_reference = request.digest.as_str();
-        if let Err(error) = backend
-            .verify_image_digest(source_reference, &request.digest)
-            .await
-        {
-            let message = format!("verify source image '{source_reference}': {error}");
-            return self.fail_image_distribute_operation(
-                &operation_store,
-                &mut operation,
-                target_machine.clone(),
-                message,
+        let mut skipped_present = BTreeMap::new();
+        let mut missing_targets = Vec::new();
+        for target_machine in &request.target_machines {
+            match image_store
+                .get_image_availability(target_machine, &request.digest)
+                .await
+            {
+                Ok(Some(record)) if matches!(record.presence, ImagePresence::Present { .. }) => {
+                    skipped_present.insert(target_machine.clone(), record);
+                }
+                Ok(_) => missing_targets.push(target_machine.clone()),
+                Err(error) => {
+                    let message =
+                        format!("read image availability for target '{target_machine}': {error}");
+                    return self.fail_all_image_distribute_targets(
+                        &operation_store,
+                        &mut operation,
+                        request,
+                        &skipped_present,
+                        &BTreeMap::new(),
+                        ImageTransferFailureStage::AvailabilityRead,
+                        "IMAGE_DISTRIBUTE_AVAILABILITY_READ_FAILED",
+                        message,
+                    );
+                }
+            }
+        }
+
+        if missing_targets.is_empty() {
+            let mut targets = Vec::with_capacity(request.target_machines.len());
+            for target_machine in &request.target_machines {
+                let Some(record) = skipped_present.get(target_machine).cloned() else {
+                    return self.err(
+                        "IMAGE_DISTRIBUTE_OPERATION_FAILED",
+                        format!("missing skipped-present record for target '{target_machine}'"),
+                    );
+                };
+                if let Err(error) = operation_store.update_target(
+                    &mut operation,
+                    ImageOperationTargetOutcome {
+                        machine_id: target_machine.clone(),
+                        status: OperationStatus::Succeeded,
+                        bytes_transferred: None,
+                        last_error: None,
+                    },
+                ) {
+                    return self.err("IMAGE_DISTRIBUTE_OPERATION_FAILED", error);
+                }
+                targets.push(ImageTransferTargetResult {
+                    machine_id: target_machine.clone(),
+                    status: ImageTransferTargetStatus::SkippedPresent,
+                    record: Some(record),
+                    failure: None,
+                    error: None,
+                });
+            }
+            if let Err(error) =
+                operation_store.update_status(&mut operation, OperationStatus::Succeeded, None)
+            {
+                return self.err("IMAGE_DISTRIBUTE_OPERATION_FAILED", error);
+            }
+            return self.ok_with_payload(
+                format!(
+                    "image {} already present on {} target(s)",
+                    request.digest.as_str(),
+                    targets.len()
+                ),
+                Some(DaemonPayload::ImageDistribute(ImageDistributePayload {
+                    operation_id: operation.id,
+                    digest: request.digest.clone(),
+                    source_machine: request.source_machine.clone(),
+                    targets,
+                })),
             );
         }
 
-        if let Err(error) = self.update_image_distribute_stage(
-            &operation_store,
-            &mut operation,
-            "exporting source image",
-            target_machine,
-        ) {
-            return error;
-        }
-        let archive_reader = match backend.export_image_archive(source_reference).await {
-            Ok(reader) => reader,
-            Err(error) => {
-                let message = format!("export source image '{source_reference}': {error}");
-                return self.fail_image_distribute_operation(
-                    &operation_store,
-                    &mut operation,
-                    target_machine.clone(),
-                    message,
-                );
-            }
-        };
-        let work_dir = self
-            .data_dir
-            .join("image-transfer")
-            .join(operation.id.clone());
-        let archive = match parse_image_archive(archive_reader, &work_dir).await {
-            Ok(archive) => archive,
-            Err(error) => {
-                cleanup_image_work_dir(&work_dir).await;
-                return self.fail_image_distribute_operation(
-                    &operation_store,
-                    &mut operation,
-                    target_machine.clone(),
-                    error.to_string(),
-                );
-            }
-        };
-
-        if let Err(error) = self.update_image_distribute_stage(
-            &operation_store,
-            &mut operation,
-            "opening receive session",
-            target_machine,
-        ) {
-            cleanup_image_work_dir(&work_dir).await;
-            return error;
-        }
-        let repository = default_receive_repository(&operation.id);
-        let session = match self
-            .image_receive_session_for_target(target_machine, &operation.id, repository.clone())
+        let source_reference = request.digest.as_str();
+        let source_image = match backend
+            .verify_image_digest(source_reference, &request.digest)
             .await
         {
-            Ok(session) => session,
-            Err(message) => {
-                cleanup_image_work_dir(&work_dir).await;
-                return self.fail_image_distribute_operation(
+            Ok(image) => image,
+            Err(error) => {
+                let message = format!("verify source image '{source_reference}': {error}");
+                return self.fail_all_image_distribute_targets(
                     &operation_store,
                     &mut operation,
-                    target_machine.clone(),
+                    request,
+                    &skipped_present,
+                    &BTreeMap::new(),
+                    ImageTransferFailureStage::SourceVerify,
+                    "IMAGE_DISTRIBUTE_SOURCE_VERIFY_FAILED",
                     message,
                 );
             }
         };
 
-        if let Err(error) = self.update_image_distribute_stage(
-            &operation_store,
-            &mut operation,
-            "uploading image blobs",
-            target_machine,
-        ) {
-            cleanup_image_work_dir(&work_dir).await;
-            return error;
+        let mut local_present = BTreeMap::new();
+        if missing_targets
+            .iter()
+            .any(|target_machine| target_machine == &self.identity.machine_id)
+        {
+            if let Ok(record) = self
+                .record_local_distributed_image_availability(
+                    &image_store,
+                    request,
+                    &source_image,
+                    &operation.id,
+                )
+                .await
+            {
+                local_present.insert(self.identity.machine_id.clone(), record);
+            }
         }
-        let reference = operation.id.clone();
-        let upload = match upload_archive_to_receiver(&session, &reference, &archive).await {
-            Ok(upload) => upload,
-            Err(error) => {
-                cleanup_image_work_dir(&work_dir).await;
-                return self.fail_image_distribute_operation(
+
+        let transfer_targets = missing_targets
+            .iter()
+            .filter(|target_machine| *target_machine != &self.identity.machine_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut archive = None;
+        let mut work_dir = None;
+        if !transfer_targets.is_empty() {
+            if let Err(error) =
+                operation_store.update_stage(&mut operation, "exporting source image")
+            {
+                return self.fail_all_image_distribute_targets(
                     &operation_store,
                     &mut operation,
-                    target_machine.clone(),
-                    error.to_string(),
+                    request,
+                    &skipped_present,
+                    &local_present,
+                    ImageTransferFailureStage::SourceExport,
+                    "IMAGE_DISTRIBUTE_STAGE_UPDATE_FAILED",
+                    format!("update image distribute stage 'exporting source image': {error}"),
                 );
             }
-        };
-        cleanup_image_work_dir(&work_dir).await;
-
-        if let Err(error) = self.update_image_distribute_stage(
-            &operation_store,
-            &mut operation,
-            "importing target image",
-            target_machine,
-        ) {
-            return error;
+            let archive_reader = match backend.export_image_archive(source_reference).await {
+                Ok(reader) => reader,
+                Err(error) => {
+                    let message = format!("export source image '{source_reference}': {error}");
+                    return self.fail_all_image_distribute_targets(
+                        &operation_store,
+                        &mut operation,
+                        request,
+                        &skipped_present,
+                        &local_present,
+                        ImageTransferFailureStage::SourceExport,
+                        "IMAGE_DISTRIBUTE_SOURCE_EXPORT_FAILED",
+                        message,
+                    );
+                }
+            };
+            let parse_work_dir = self
+                .data_dir
+                .join("image-transfer")
+                .join(operation.id.clone());
+            match parse_image_archive(archive_reader, &parse_work_dir).await {
+                Ok(parsed) => {
+                    archive = Some(parsed);
+                    work_dir = Some(parse_work_dir);
+                }
+                Err(error) => {
+                    cleanup_image_work_dir(&parse_work_dir).await;
+                    return self.fail_all_image_distribute_targets(
+                        &operation_store,
+                        &mut operation,
+                        request,
+                        &skipped_present,
+                        &local_present,
+                        ImageTransferFailureStage::ArchiveParse,
+                        "IMAGE_DISTRIBUTE_ARCHIVE_PARSE_FAILED",
+                        error.to_string(),
+                    );
+                }
+            }
         }
-        let record = match self
-            .import_received_image_for_target(
-                target_machine,
-                ImageReceivedImportRequest {
-                    operation_id: operation.id.clone(),
-                    source_machine: request.source_machine.clone(),
-                    repository,
-                    reference,
-                    expected_digest: request.digest.clone(),
-                    platform: request.platform.clone(),
-                    repo_tags: archive.repo_tags.clone(),
+
+        let mut targets = Vec::with_capacity(request.target_machines.len());
+        for target_machine in &request.target_machines {
+            let (target_result, bytes_transferred) = if let Some(record) =
+                skipped_present.get(target_machine).cloned()
+            {
+                (
+                    ImageTransferTargetResult {
+                        machine_id: target_machine.clone(),
+                        status: ImageTransferTargetStatus::SkippedPresent,
+                        record: Some(record),
+                        failure: None,
+                        error: None,
+                    },
+                    None,
+                )
+            } else if let Some(record) = local_present.get(target_machine).cloned() {
+                (
+                    ImageTransferTargetResult {
+                        machine_id: target_machine.clone(),
+                        status: ImageTransferTargetStatus::Present,
+                        record: Some(record),
+                        failure: None,
+                        error: None,
+                    },
+                    None,
+                )
+            } else if target_machine == &self.identity.machine_id {
+                match self
+                    .record_local_distributed_image_availability(
+                        &image_store,
+                        request,
+                        &source_image,
+                        &operation.id,
+                    )
+                    .await
+                {
+                    Ok(record) => (
+                        ImageTransferTargetResult {
+                            machine_id: target_machine.clone(),
+                            status: ImageTransferTargetStatus::Present,
+                            record: Some(record),
+                            failure: None,
+                            error: None,
+                        },
+                        None,
+                    ),
+                    Err(message) => (
+                        failed_image_transfer_target(
+                            target_machine.clone(),
+                            ImageTransferFailureStage::LocalAvailability,
+                            "IMAGE_DISTRIBUTE_LOCAL_AVAILABILITY_FAILED",
+                            message,
+                        ),
+                        None,
+                    ),
+                }
+            } else {
+                let Some(parsed_archive) = archive.as_ref() else {
+                    return self.err(
+                        "IMAGE_DISTRIBUTE_OPERATION_FAILED",
+                        format!("missing parsed archive for transfer target '{target_machine}'"),
+                    );
+                };
+                self.distribute_archive_to_target(
+                    &operation_store,
+                    &mut operation,
+                    target_machine,
+                    request,
+                    parsed_archive,
+                    backend,
+                )
+                .await
+            };
+            let operation_status = match target_result.status {
+                ImageTransferTargetStatus::Present | ImageTransferTargetStatus::SkippedPresent => {
+                    OperationStatus::Succeeded
+                }
+                ImageTransferTargetStatus::Failed => OperationStatus::Failed,
+            };
+            if let Err(error) = operation_store.update_target(
+                &mut operation,
+                ImageOperationTargetOutcome {
+                    machine_id: target_machine.clone(),
+                    status: operation_status,
+                    bytes_transferred,
+                    last_error: target_result.error.clone(),
                 },
-                backend,
-            )
-            .await
-        {
-            Ok(record) => record,
-            Err(message) => {
-                return self.fail_image_distribute_operation(
-                    &operation_store,
-                    &mut operation,
-                    target_machine.clone(),
-                    message,
-                );
+            ) {
+                if let Some(work_dir) = work_dir.as_deref() {
+                    cleanup_image_work_dir(work_dir).await;
+                }
+                return self.err("IMAGE_DISTRIBUTE_OPERATION_FAILED", error);
             }
-        };
+            targets.push(target_result);
+        }
+        if let Some(work_dir) = work_dir.as_deref() {
+            cleanup_image_work_dir(work_dir).await;
+        }
 
-        let target_result = ImageTransferTargetResult {
-            machine_id: target_machine.clone(),
-            status: ImageTransferTargetStatus::Present,
-            record: Some(record),
-            error: None,
+        let payload = ImageDistributePayload {
+            operation_id: operation.id.clone(),
+            digest: request.digest.clone(),
+            source_machine: request.source_machine.clone(),
+            targets,
         };
-        if let Err(error) = operation_store.update_target(
-            &mut operation,
-            ImageOperationTargetOutcome {
-                machine_id: target_machine.clone(),
-                status: OperationStatus::Succeeded,
-                bytes_transferred: Some(upload.bytes_uploaded),
-                last_error: None,
-            },
-        ) {
-            return self.err("IMAGE_DISTRIBUTE_OPERATION_FAILED", error);
+        let failed_targets = payload
+            .targets
+            .iter()
+            .filter(|target| target.status == ImageTransferTargetStatus::Failed)
+            .count();
+        if failed_targets > 0 {
+            let message = format!(
+                "image {} distributed with {failed_targets} failed target(s)",
+                request.digest.as_str()
+            );
+            if let Err(error) = operation_store.update_status(
+                &mut operation,
+                OperationStatus::Failed,
+                Some(message.clone()),
+            ) {
+                return self.err("IMAGE_DISTRIBUTE_OPERATION_FAILED", error);
+            }
+            let successful_targets = payload.targets.len() - failed_targets;
+            let code = if successful_targets > 0 {
+                "IMAGE_DISTRIBUTE_PARTIAL_FAILED"
+            } else {
+                "IMAGE_DISTRIBUTE_FAILED"
+            };
+            return self.err_with_payload(
+                code,
+                message,
+                Some(DaemonPayload::ImageDistribute(payload)),
+            );
         }
         if let Err(error) =
             operation_store.update_status(&mut operation, OperationStatus::Succeeded, None)
         {
             return self.err("IMAGE_DISTRIBUTE_OPERATION_FAILED", error);
         }
+
         self.ok_with_payload(
             format!(
-                "image {} distributed to {} ({} uploaded, {} skipped, manifest {})",
+                "image {} distributed to {} target(s)",
                 request.digest.as_str(),
-                target_machine,
-                upload.uploaded_blobs,
-                upload.skipped_blobs,
-                upload.manifest_digest
+                payload.targets.len()
             ),
-            Some(DaemonPayload::ImageDistribute(ImageDistributePayload {
-                operation_id: operation.id,
-                digest: request.digest.clone(),
-                source_machine: request.source_machine.clone(),
-                targets: vec![target_result],
-            })),
+            Some(DaemonPayload::ImageDistribute(payload)),
         )
     }
 
@@ -780,6 +925,160 @@ impl DaemonState {
         self.err("IMAGE_DISTRIBUTE_FAILED", message)
     }
 
+    fn fail_all_image_distribute_targets(
+        &self,
+        operation_store: &ImageOperationStore,
+        operation: &mut ImageOperationRecord,
+        request: &ImageDistributeRequest,
+        skipped_present: &BTreeMap<MachineId, ImageAvailabilityRecord>,
+        local_present: &BTreeMap<MachineId, ImageAvailabilityRecord>,
+        stage: ImageTransferFailureStage,
+        code: &'static str,
+        message: String,
+    ) -> ployz_api::DaemonResponse {
+        let targets = request
+            .target_machines
+            .iter()
+            .map(|target_machine| {
+                let (result, status, last_error) =
+                    if let Some(record) = skipped_present.get(target_machine) {
+                        (
+                            ImageTransferTargetResult {
+                                machine_id: target_machine.clone(),
+                                status: ImageTransferTargetStatus::SkippedPresent,
+                                record: Some(record.clone()),
+                                failure: None,
+                                error: None,
+                            },
+                            OperationStatus::Succeeded,
+                            None,
+                        )
+                    } else if let Some(record) = local_present.get(target_machine) {
+                        (
+                            ImageTransferTargetResult {
+                                machine_id: target_machine.clone(),
+                                status: ImageTransferTargetStatus::Present,
+                                record: Some(record.clone()),
+                                failure: None,
+                                error: None,
+                            },
+                            OperationStatus::Succeeded,
+                            None,
+                        )
+                    } else {
+                        (
+                            failed_image_transfer_target(
+                                target_machine.clone(),
+                                stage,
+                                code,
+                                message.clone(),
+                            ),
+                            OperationStatus::Failed,
+                            Some(message.clone()),
+                        )
+                    };
+                let outcome = ImageOperationTargetOutcome {
+                    machine_id: target_machine.clone(),
+                    status,
+                    bytes_transferred: None,
+                    last_error,
+                };
+                (result, outcome)
+            })
+            .collect::<Vec<_>>();
+        for (_, outcome) in &targets {
+            if let Err(error) = operation_store.update_target(operation, outcome.clone()) {
+                return self.err(
+                    "IMAGE_DISTRIBUTE_OPERATION_FAILED",
+                    format!(
+                        "image distribute failed: {message}; also failed to persist target failure: {error}"
+                    ),
+                );
+            }
+        }
+        if let Err(error) =
+            operation_store.update_status(operation, OperationStatus::Failed, Some(message.clone()))
+        {
+            return self.err(
+                "IMAGE_DISTRIBUTE_OPERATION_FAILED",
+                format!(
+                    "image distribute failed: {message}; also failed to persist operation failure: {error}"
+                ),
+            );
+        }
+        let code = if skipped_present.is_empty() && local_present.is_empty() {
+            "IMAGE_DISTRIBUTE_FAILED"
+        } else {
+            "IMAGE_DISTRIBUTE_PARTIAL_FAILED"
+        };
+        self.err_with_payload(
+            code,
+            message,
+            Some(DaemonPayload::ImageDistribute(ImageDistributePayload {
+                operation_id: operation.id.clone(),
+                digest: request.digest.clone(),
+                source_machine: request.source_machine.clone(),
+                targets: targets
+                    .into_iter()
+                    .map(|(target_result, _)| target_result)
+                    .collect(),
+            })),
+        )
+    }
+
+    fn validate_image_distribute_request(
+        &self,
+        request: &ImageDistributeRequest,
+    ) -> Result<(), ployz_api::DaemonResponse> {
+        if request.target_machines.is_empty() {
+            return Err(self.err_with_payload(
+                "IMAGE_DISTRIBUTE_TARGET_REQUIRED",
+                "image distribute requires at least one target machine",
+                Some(DaemonPayload::ImageDistributeValidation(
+                    image_distribute_validation_payload(
+                        request,
+                        ImageDistributeValidationFailure::TargetRequired {
+                            target_count: request.target_machines.len(),
+                        },
+                    ),
+                )),
+            ));
+        }
+        if let Some(duplicate) = first_duplicate_machine(&request.target_machines) {
+            return Err(self.err_with_payload(
+                "IMAGE_DISTRIBUTE_DUPLICATE_TARGET",
+                format!("image distribute target '{duplicate}' was provided more than once"),
+                Some(DaemonPayload::ImageDistributeValidation(
+                    image_distribute_validation_payload(
+                        request,
+                        ImageDistributeValidationFailure::DuplicateTarget {
+                            duplicate_target: duplicate,
+                        },
+                    ),
+                )),
+            ));
+        }
+        if request.source_machine != self.identity.machine_id {
+            return Err(self.err_with_payload(
+                "IMAGE_DISTRIBUTE_SOURCE_NOT_LOCAL",
+                format!(
+                    "image distribute source '{}' must match local machine '{}'",
+                    request.source_machine, self.identity.machine_id
+                ),
+                Some(DaemonPayload::ImageDistributeValidation(
+                    image_distribute_validation_payload(
+                        request,
+                        ImageDistributeValidationFailure::SourceNotLocal {
+                            source_machine: request.source_machine.clone(),
+                            local_machine: self.identity.machine_id.clone(),
+                        },
+                    ),
+                )),
+            ));
+        }
+        Ok(())
+    }
+
     fn fail_image_push_operation(
         &self,
         operation_store: &ImageOperationStore,
@@ -894,6 +1193,177 @@ impl DaemonState {
         Ok(payload)
     }
 
+    async fn distribute_archive_to_target(
+        &self,
+        operation_store: &ImageOperationStore,
+        operation: &mut ImageOperationRecord,
+        target_machine: &MachineId,
+        request: &ImageDistributeRequest,
+        archive: &crate::daemon::handlers::image::archive::ParsedImageArchive,
+        backend: &dyn RuntimeImageBackend,
+    ) -> (ImageTransferTargetResult, Option<u64>) {
+        if let Err(response) = self.update_image_distribute_stage(
+            operation_store,
+            operation,
+            "opening receive session",
+            target_machine,
+        ) {
+            return (
+                failed_image_transfer_target(
+                    target_machine.clone(),
+                    ImageTransferFailureStage::ReceiveSession,
+                    response.code,
+                    response.message,
+                ),
+                None,
+            );
+        }
+        let repository = default_receive_repository(&operation.id);
+        let session = match self
+            .image_receive_session_for_target(target_machine, &operation.id, repository.clone())
+            .await
+        {
+            Ok(session) => session,
+            Err(message) => {
+                return (
+                    failed_image_transfer_target(
+                        target_machine.clone(),
+                        ImageTransferFailureStage::ReceiveSession,
+                        "IMAGE_DISTRIBUTE_RECEIVE_SESSION_FAILED",
+                        message,
+                    ),
+                    None,
+                );
+            }
+        };
+
+        if let Err(response) = self.update_image_distribute_stage(
+            operation_store,
+            operation,
+            "uploading image blobs",
+            target_machine,
+        ) {
+            return (
+                failed_image_transfer_target(
+                    target_machine.clone(),
+                    ImageTransferFailureStage::Upload,
+                    response.code,
+                    response.message,
+                ),
+                None,
+            );
+        }
+        let reference = operation.id.clone();
+        let upload = match upload_archive_to_receiver(&session, &reference, archive).await {
+            Ok(upload) => upload,
+            Err(error) => {
+                return (
+                    failed_image_transfer_target(
+                        target_machine.clone(),
+                        ImageTransferFailureStage::Upload,
+                        "IMAGE_DISTRIBUTE_UPLOAD_FAILED",
+                        error.to_string(),
+                    ),
+                    None,
+                );
+            }
+        };
+        let _ = (
+            upload.uploaded_blobs,
+            upload.skipped_blobs,
+            &upload.manifest_digest,
+        );
+
+        if let Err(response) = self.update_image_distribute_stage(
+            operation_store,
+            operation,
+            "importing target image",
+            target_machine,
+        ) {
+            return (
+                failed_image_transfer_target(
+                    target_machine.clone(),
+                    ImageTransferFailureStage::Import,
+                    response.code,
+                    response.message,
+                ),
+                None,
+            );
+        }
+        let record = match self
+            .import_received_image_for_target(
+                target_machine,
+                ImageReceivedImportRequest {
+                    operation_id: operation.id.clone(),
+                    source_machine: request.source_machine.clone(),
+                    repository,
+                    reference,
+                    expected_digest: request.digest.clone(),
+                    platform: request.platform.clone(),
+                    repo_tags: archive.repo_tags.clone(),
+                },
+                backend,
+            )
+            .await
+        {
+            Ok(record) => record,
+            Err(message) => {
+                return (
+                    failed_image_transfer_target(
+                        target_machine.clone(),
+                        ImageTransferFailureStage::Import,
+                        "IMAGE_DISTRIBUTE_IMPORT_FAILED",
+                        message,
+                    ),
+                    None,
+                );
+            }
+        };
+
+        (
+            ImageTransferTargetResult {
+                machine_id: target_machine.clone(),
+                status: ImageTransferTargetStatus::Present,
+                record: Some(record),
+                failure: None,
+                error: None,
+            },
+            Some(upload.bytes_uploaded),
+        )
+    }
+
+    async fn record_local_distributed_image_availability(
+        &self,
+        store: &dyn ImageAvailabilityStore,
+        request: &ImageDistributeRequest,
+        source_image: &RuntimeImage,
+        operation_id: &str,
+    ) -> Result<ImageAvailabilityRecord, String> {
+        let now = now_unix_secs();
+        let record = ImageAvailabilityRecord {
+            machine_id: self.identity.machine_id.clone(),
+            digest: request.digest.clone(),
+            presence: ImagePresence::Present {
+                artifact: ImageArtifact {
+                    image: image_ref_from_tag(request.digest.as_str(), request.digest.clone()),
+                    platform: request.platform.clone().or(source_image.platform.clone()),
+                    provenance: ImageArtifactProvenance::External {
+                        source: Some(format!("image distribute from {}", request.source_machine)),
+                    },
+                    created_at: now,
+                },
+                recorded_at: now,
+                source_operation_id: Some(operation_id.into()),
+            },
+            updated_at: now,
+        };
+        store
+            .upsert_image_availability(&record)
+            .await
+            .map_err(|error| format!("record local image availability: {error}"))?;
+        Ok(record)
+    }
+
     async fn push_archive_to_target(
         &self,
         operation_store: &ImageOperationStore,
@@ -987,7 +1457,15 @@ impl DaemonState {
         digest: &ployz_types::model::ImageDigest,
         platform: Option<ployz_types::model::ImagePlatform>,
         backend: &dyn RuntimeImageBackend,
-    ) -> Result<ImageTransferTargetResult, String> {
+    ) -> Result<ImageTransferTargetResult, ImageTransferTargetResult> {
+        let failure = |message: String| {
+            failed_image_transfer_target(
+                target_machine.clone(),
+                ImageTransferFailureStage::DistributingPushedImage,
+                "IMAGE_PUSH_TARGET_DISTRIBUTE_FAILED",
+                message,
+            )
+        };
         let request = ImageDistributeRequest {
             digest: digest.clone(),
             source_machine: source_machine.clone(),
@@ -998,10 +1476,9 @@ impl DaemonState {
             self.handle_image_distribute_with_backend(&request, backend)
                 .await
         } else {
-            let client = self
-                .nats_node_rpc_client()
-                .await
-                .map_err(|error| format!("connect node rpc for image distribute: {error}"))?;
+            let client = self.nats_node_rpc_client().await.map_err(|error| {
+                failure(format!("connect node rpc for image distribute: {error}"))
+            })?;
             client
                 .with_policy(RpcPolicy {
                     timeout: IMAGE_DISTRIBUTE_RPC_TIMEOUT,
@@ -1012,23 +1489,38 @@ impl DaemonState {
                 )
                 .await
                 .map_err(|error| {
-                    format!("request image distribute from {source_machine}: {error}")
+                    failure(format!(
+                        "request image distribute from {source_machine}: {error}"
+                    ))
                 })?
         };
         if !response.ok {
-            return Err(format!(
+            if let Some(DaemonPayload::ImageDistribute(payload)) = response.payload {
+                let [target] = payload.targets.as_slice() else {
+                    return Err(failure(format!(
+                        "target image distribute failed [{}] with {} target results: {}",
+                        response.code,
+                        payload.targets.len(),
+                        response.message
+                    )));
+                };
+                return Err(target.clone());
+            }
+            return Err(failure(format!(
                 "target image distribute failed [{}]: {}",
                 response.code, response.message
-            ));
+            )));
         }
         let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
-            return Err("target image distribute response did not include a payload".into());
+            return Err(failure(
+                "target image distribute response did not include a payload".into(),
+            ));
         };
         let [target] = payload.targets.as_slice() else {
-            return Err(format!(
+            return Err(failure(format!(
                 "target image distribute returned {} target results",
                 payload.targets.len()
-            ));
+            )));
         };
         Ok(target.clone())
     }
@@ -1123,6 +1615,46 @@ fn default_receive_repository(operation_id: &str) -> String {
         segment.push_str("session");
     }
     format!("ployz/{segment}")
+}
+
+fn first_duplicate_machine(machines: &[MachineId]) -> Option<MachineId> {
+    let mut seen = BTreeSet::new();
+    machines
+        .iter()
+        .find(|machine| !seen.insert((*machine).clone()))
+        .cloned()
+}
+
+fn failed_image_transfer_target(
+    machine_id: MachineId,
+    stage: ImageTransferFailureStage,
+    code: impl Into<String>,
+    message: String,
+) -> ImageTransferTargetResult {
+    let code = code.into();
+    ImageTransferTargetResult {
+        machine_id,
+        status: ImageTransferTargetStatus::Failed,
+        record: None,
+        failure: Some(ImageTransferFailure {
+            code,
+            stage,
+            message: message.clone(),
+        }),
+        error: Some(message),
+    }
+}
+
+fn image_distribute_validation_payload(
+    request: &ImageDistributeRequest,
+    failure: ImageDistributeValidationFailure,
+) -> ImageDistributeValidationPayload {
+    ImageDistributeValidationPayload {
+        digest: request.digest.clone(),
+        source_machine: request.source_machine.clone(),
+        target_machines: request.target_machines.clone(),
+        failure,
+    }
 }
 
 fn image_ref_from_tag(reference: &str, digest: ployz_types::model::ImageDigest) -> ImageRef {
@@ -1572,6 +2104,9 @@ mod tests {
         );
         assert_eq!(payload.targets[1].machine_id, MachineId("machine-a".into()));
         assert_eq!(payload.targets[1].status, ImageTransferTargetStatus::Failed);
+        let failure = payload.targets[1].failure.as_ref().expect("target failure");
+        assert_eq!(failure.code, "IMAGE_DISTRIBUTE_RECEIVE_SESSION_FAILED");
+        assert_eq!(failure.stage, ImageTransferFailureStage::ReceiveSession);
         let stored = state
             .active
             .as_ref()
@@ -1622,6 +2157,16 @@ mod tests {
 
         assert!(!response.ok);
         assert_eq!(response.code, "IMAGE_DISTRIBUTE_SOURCE_NOT_LOCAL");
+        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload else {
+            panic!("expected validation payload");
+        };
+        assert_eq!(
+            payload.failure,
+            ImageDistributeValidationFailure::SourceNotLocal {
+                source_machine: MachineId("machine-a".into()),
+                local_machine: MachineId("founder".into()),
+            }
+        );
         assert!(
             state
                 .image_operation_store()
@@ -1632,21 +2177,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn image_distribute_self_target_uploads_imports_and_records_availability() {
+    async fn image_distribute_validates_before_runtime_backend_lookup() {
+        let state = make_state();
+        let response = state
+            .handle_image_distribute(&ImageDistributeRequest {
+                digest: digest('a'),
+                source_machine: MachineId("founder".into()),
+                target_machines: Vec::new(),
+                platform: None,
+            })
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_DISTRIBUTE_TARGET_REQUIRED");
+        assert!(
+            state
+                .image_operation_store()
+                .list()
+                .expect("list operations")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn image_distribute_source_target_verifies_and_records_local_availability() {
         let mut state = make_state();
         install_active_mesh(&mut state).await;
-        let listener = crate::daemon::handlers::image::registry::serve(
-            "127.0.0.1:0".parse().expect("bind addr"),
-            state.image_registry.clone(),
-        )
-        .await
-        .expect("serve registry");
-        let bind_addr = listener.bind_addr();
-        state
-            .active
-            .as_mut()
-            .expect("active mesh")
-            .image_receiver_bind_addr = Some(bind_addr);
         let digest = digest('a');
         let backend = FakeImageBackend::new(digest.clone(), docker_archive_bytes());
 
@@ -1673,7 +2229,8 @@ mod tests {
             ImageTransferTargetStatus::Present
         );
         assert!(payload.targets[0].record.is_some());
-        assert!(*backend.imported.lock().expect("imported lock"));
+        assert!(!*backend.imported.lock().expect("imported lock"));
+        assert_eq!(backend.export_count(), 0);
         let stored = state
             .active
             .as_ref()
@@ -1705,41 +2262,488 @@ mod tests {
                 .join(&payload.operation_id)
                 .exists()
         );
-
-        listener.shutdown().await;
     }
 
     #[tokio::test]
-    async fn image_distribute_rejects_zero_and_multiple_targets_before_operation_side_effects() {
+    async fn image_distribute_rejects_zero_and_duplicate_targets_before_operation_side_effects() {
         let state = make_state();
         let digest = digest('a');
         let backend = FakeImageBackend::new(digest.clone(), docker_archive_bytes());
 
-        for target_machines in [
-            Vec::new(),
-            vec![MachineId("founder".into()), MachineId("machine-a".into())],
-        ] {
-            let response = state
-                .handle_image_distribute_with_backend(
-                    &ImageDistributeRequest {
-                        digest: digest.clone(),
-                        source_machine: MachineId("founder".into()),
-                        target_machines,
-                        platform: None,
-                    },
-                    &backend,
-                )
-                .await;
+        let response = state
+            .handle_image_distribute_with_backend(
+                &ImageDistributeRequest {
+                    digest: digest.clone(),
+                    source_machine: MachineId("founder".into()),
+                    target_machines: Vec::new(),
+                    platform: None,
+                },
+                &backend,
+            )
+            .await;
 
-            assert!(!response.ok);
-            assert_eq!(response.code, "IMAGE_DISTRIBUTE_SINGLE_TARGET_ONLY");
-        }
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_DISTRIBUTE_TARGET_REQUIRED");
+        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload else {
+            panic!("expected validation payload");
+        };
+        assert_eq!(
+            payload.failure,
+            ImageDistributeValidationFailure::TargetRequired { target_count: 0 }
+        );
+
+        let response = state
+            .handle_image_distribute_with_backend(
+                &ImageDistributeRequest {
+                    digest,
+                    source_machine: MachineId("founder".into()),
+                    target_machines: vec![MachineId("founder".into()), MachineId("founder".into())],
+                    platform: None,
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_DISTRIBUTE_DUPLICATE_TARGET");
+        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload else {
+            panic!("expected validation payload");
+        };
+        assert_eq!(
+            payload.failure,
+            ImageDistributeValidationFailure::DuplicateTarget {
+                duplicate_target: MachineId("founder".into())
+            }
+        );
         assert!(
             state
                 .image_operation_store()
                 .list()
                 .expect("list operations")
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn image_distribute_skips_present_targets_without_exporting() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let digest = digest('a');
+        let backend = FakeImageBackend::new(digest.clone(), docker_archive_bytes());
+        let store = state
+            .active
+            .as_ref()
+            .expect("active mesh")
+            .mesh
+            .store
+            .clone();
+        store
+            .upsert_image_availability(&present_availability_record("founder", digest.clone()))
+            .await
+            .expect("seed founder availability");
+        store
+            .upsert_image_availability(&present_availability_record("machine-a", digest.clone()))
+            .await
+            .expect("seed machine-a availability");
+
+        let response = state
+            .handle_image_distribute_with_backend(
+                &ImageDistributeRequest {
+                    digest: digest.clone(),
+                    source_machine: MachineId("founder".into()),
+                    target_machines: vec![
+                        MachineId("founder".into()),
+                        MachineId("machine-a".into()),
+                    ],
+                    platform: None,
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(response.ok, "{response:?}");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+            panic!("expected distribute payload");
+        };
+        assert_eq!(payload.targets.len(), 2);
+        assert!(
+            payload
+                .targets
+                .iter()
+                .all(|target| target.status == ImageTransferTargetStatus::SkippedPresent)
+        );
+        assert_eq!(backend.export_count(), 0);
+        let operations = state
+            .image_operation_store()
+            .list()
+            .expect("list operations");
+        assert_eq!(operations[0].status, OperationStatus::Succeeded);
+        assert!(
+            operations[0]
+                .targets
+                .iter()
+                .all(|target| target.status == OperationStatus::Succeeded)
+        );
+    }
+
+    #[tokio::test]
+    async fn image_distribute_partial_failure_preserves_success_and_attempts_later_targets() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let digest = digest('a');
+        let backend = FakeImageBackend::new(digest.clone(), docker_archive_bytes());
+
+        let response = state
+            .handle_image_distribute_with_backend(
+                &ImageDistributeRequest {
+                    digest: digest.clone(),
+                    source_machine: MachineId("founder".into()),
+                    target_machines: vec![
+                        MachineId("founder".into()),
+                        MachineId("machine-a".into()),
+                    ],
+                    platform: None,
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+            panic!("expected distribute payload");
+        };
+        assert_eq!(payload.targets.len(), 2);
+        assert_eq!(payload.targets[0].machine_id, MachineId("founder".into()));
+        assert_eq!(
+            payload.targets[0].status,
+            ImageTransferTargetStatus::Present
+        );
+        assert_eq!(payload.targets[1].machine_id, MachineId("machine-a".into()));
+        assert_eq!(payload.targets[1].status, ImageTransferTargetStatus::Failed);
+        assert_eq!(
+            payload.targets[1]
+                .failure
+                .as_ref()
+                .expect("target failure")
+                .stage,
+            ImageTransferFailureStage::ReceiveSession
+        );
+        assert_eq!(backend.export_count(), 1);
+        let stored = state
+            .active
+            .as_ref()
+            .expect("active mesh")
+            .mesh
+            .store
+            .get_image_availability(&MachineId("founder".into()), &digest)
+            .await
+            .expect("get availability")
+            .expect("founder availability");
+        assert!(matches!(stored.presence, ImagePresence::Present { .. }));
+        let operations = state
+            .image_operation_store()
+            .list()
+            .expect("list operations");
+        assert_eq!(operations[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].targets[0].status, OperationStatus::Succeeded);
+        assert_eq!(operations[0].targets[1].status, OperationStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn image_distribute_continues_after_failed_target() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let digest = digest('a');
+        let backend = FakeImageBackend::new(digest.clone(), docker_archive_bytes());
+
+        let response = state
+            .handle_image_distribute_with_backend(
+                &ImageDistributeRequest {
+                    digest: digest.clone(),
+                    source_machine: MachineId("founder".into()),
+                    target_machines: vec![
+                        MachineId("machine-a".into()),
+                        MachineId("founder".into()),
+                    ],
+                    platform: None,
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+            panic!("expected distribute payload");
+        };
+        assert_eq!(payload.targets.len(), 2);
+        assert_eq!(payload.targets[0].machine_id, MachineId("machine-a".into()));
+        assert_eq!(payload.targets[0].status, ImageTransferTargetStatus::Failed);
+        assert_eq!(payload.targets[1].machine_id, MachineId("founder".into()));
+        assert_eq!(
+            payload.targets[1].status,
+            ImageTransferTargetStatus::Present
+        );
+        let stored = state
+            .active
+            .as_ref()
+            .expect("active mesh")
+            .mesh
+            .store
+            .get_image_availability(&MachineId("founder".into()), &digest)
+            .await
+            .expect("get availability")
+            .expect("founder availability");
+        assert!(matches!(stored.presence, ImagePresence::Present { .. }));
+    }
+
+    #[tokio::test]
+    async fn image_distribute_attempts_multiple_transfer_targets_from_one_export() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let digest = digest('a');
+        let backend = FakeImageBackend::new(digest.clone(), docker_archive_bytes());
+
+        let response = state
+            .handle_image_distribute_with_backend(
+                &ImageDistributeRequest {
+                    digest,
+                    source_machine: MachineId("founder".into()),
+                    target_machines: vec![
+                        MachineId("machine-a".into()),
+                        MachineId("machine-b".into()),
+                    ],
+                    platform: None,
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_DISTRIBUTE_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+            panic!("expected distribute payload");
+        };
+        assert_eq!(
+            payload
+                .targets
+                .iter()
+                .map(|target| target.machine_id.clone())
+                .collect::<Vec<_>>(),
+            vec![MachineId("machine-a".into()), MachineId("machine-b".into())]
+        );
+        assert!(
+            payload
+                .targets
+                .iter()
+                .all(|target| target.status == ImageTransferTargetStatus::Failed)
+        );
+        assert_eq!(backend.export_count(), 1);
+        let operations = state
+            .image_operation_store()
+            .list()
+            .expect("list operations");
+        assert_eq!(operations[0].targets.len(), 2);
+        assert!(
+            operations[0]
+                .targets
+                .iter()
+                .all(|target| target.status == OperationStatus::Failed)
+        );
+    }
+
+    #[tokio::test]
+    async fn image_distribute_export_failure_preserves_skipped_targets() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let digest = digest('a');
+        let backend =
+            FakeImageBackend::new(digest.clone(), docker_archive_bytes()).with_export_error();
+        let store = state
+            .active
+            .as_ref()
+            .expect("active mesh")
+            .mesh
+            .store
+            .clone();
+        store
+            .upsert_image_availability(&present_availability_record("founder", digest.clone()))
+            .await
+            .expect("seed availability");
+
+        let response = state
+            .handle_image_distribute_with_backend(
+                &ImageDistributeRequest {
+                    digest: digest.clone(),
+                    source_machine: MachineId("founder".into()),
+                    target_machines: vec![
+                        MachineId("founder".into()),
+                        MachineId("machine-a".into()),
+                    ],
+                    platform: None,
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+            panic!("expected distribute payload");
+        };
+        assert_eq!(
+            payload.targets[0].status,
+            ImageTransferTargetStatus::SkippedPresent
+        );
+        assert_eq!(payload.targets[1].status, ImageTransferTargetStatus::Failed);
+        let operations = state
+            .image_operation_store()
+            .list()
+            .expect("list operations");
+        assert_eq!(operations[0].targets[0].status, OperationStatus::Succeeded);
+        assert_eq!(operations[0].targets[1].status, OperationStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn image_distribute_export_failure_preserves_local_source_target() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let digest = digest('a');
+        let backend =
+            FakeImageBackend::new(digest.clone(), docker_archive_bytes()).with_export_error();
+
+        let response = state
+            .handle_image_distribute_with_backend(
+                &ImageDistributeRequest {
+                    digest: digest.clone(),
+                    source_machine: MachineId("founder".into()),
+                    target_machines: vec![
+                        MachineId("founder".into()),
+                        MachineId("machine-a".into()),
+                    ],
+                    platform: None,
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+            panic!("expected distribute payload");
+        };
+        assert_eq!(
+            payload.targets[0].status,
+            ImageTransferTargetStatus::Present
+        );
+        assert_eq!(payload.targets[1].status, ImageTransferTargetStatus::Failed);
+        let stored = state
+            .active
+            .as_ref()
+            .expect("active mesh")
+            .mesh
+            .store
+            .get_image_availability(&MachineId("founder".into()), &digest)
+            .await
+            .expect("get availability")
+            .expect("founder availability");
+        assert!(matches!(stored.presence, ImagePresence::Present { .. }));
+        let operations = state
+            .image_operation_store()
+            .list()
+            .expect("list operations");
+        assert_eq!(operations[0].targets[0].status, OperationStatus::Succeeded);
+        assert_eq!(operations[0].targets[1].status, OperationStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn image_distribute_archive_parse_failure_marks_all_targets_failed_and_cleans_work_dir() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let digest = digest('a');
+        let backend = FakeImageBackend::new(digest.clone(), b"not a tar archive".to_vec());
+
+        let response = state
+            .handle_image_distribute_with_backend(
+                &ImageDistributeRequest {
+                    digest: digest.clone(),
+                    source_machine: MachineId("founder".into()),
+                    target_machines: vec![MachineId("machine-a".into())],
+                    platform: None,
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_DISTRIBUTE_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+            panic!("expected distribute payload");
+        };
+        assert_eq!(payload.targets.len(), 1);
+        assert_eq!(payload.targets[0].status, ImageTransferTargetStatus::Failed);
+        assert!(
+            !state
+                .data_dir
+                .join("image-transfer")
+                .join(&payload.operation_id)
+                .exists()
+        );
+        let operations = state
+            .image_operation_store()
+            .list()
+            .expect("list operations");
+        assert_eq!(operations[0].targets[0].status, OperationStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn image_distribute_source_verify_failure_marks_all_targets_failed() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let actual = digest('a');
+        let expected = digest('b');
+        let backend = FakeImageBackend::new(actual, docker_archive_bytes());
+
+        let response = state
+            .handle_image_distribute_with_backend(
+                &ImageDistributeRequest {
+                    digest: expected.clone(),
+                    source_machine: MachineId("founder".into()),
+                    target_machines: vec![
+                        MachineId("founder".into()),
+                        MachineId("machine-a".into()),
+                    ],
+                    platform: None,
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_DISTRIBUTE_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+            panic!("expected distribute payload");
+        };
+        assert_eq!(payload.targets.len(), 2);
+        assert!(
+            payload
+                .targets
+                .iter()
+                .all(|target| target.status == ImageTransferTargetStatus::Failed)
+        );
+        assert_eq!(backend.export_count(), 0);
+        assert_no_availability(&state, &expected).await;
+        let operations = state
+            .image_operation_store()
+            .list()
+            .expect("list operations");
+        assert_eq!(operations[0].status, OperationStatus::Failed);
+        assert!(
+            operations[0]
+                .targets
+                .iter()
+                .all(|target| target.status == OperationStatus::Failed)
         );
     }
 
@@ -1760,7 +2764,7 @@ mod tests {
                 &ImageDistributeRequest {
                     digest,
                     source_machine: MachineId("founder".into()),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId("machine-a".into())],
                     platform: None,
                 },
                 &backend,
@@ -1779,30 +2783,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn image_distribute_import_failure_does_not_record_availability() {
+    async fn image_distribute_target_failure_does_not_record_availability() {
         let mut state = make_state();
         install_active_mesh(&mut state).await;
-        let listener = crate::daemon::handlers::image::registry::serve(
-            "127.0.0.1:0".parse().expect("bind addr"),
-            state.image_registry.clone(),
-        )
-        .await
-        .expect("serve registry");
-        state
-            .active
-            .as_mut()
-            .expect("active mesh")
-            .image_receiver_bind_addr = Some(listener.bind_addr());
         let digest = digest('a');
-        let backend =
-            FakeImageBackend::new(digest.clone(), docker_archive_bytes()).with_import_error();
+        let backend = FakeImageBackend::new(digest.clone(), docker_archive_bytes());
 
         let response = state
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
                     source_machine: MachineId("founder".into()),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId("machine-a".into())],
                     platform: None,
                 },
                 &backend,
@@ -1811,28 +2803,27 @@ mod tests {
 
         assert!(!response.ok);
         assert_eq!(response.code, "IMAGE_DISTRIBUTE_FAILED");
-        assert_no_availability(&state, &digest).await;
-        listener.shutdown().await;
+        assert_no_availability_on(&state, "machine-a", &digest).await;
     }
 
     #[tokio::test]
-    async fn image_distribute_verify_failure_does_not_record_availability() {
+    async fn image_distribute_source_target_skips_existing_availability_without_rewriting() {
         let mut state = make_state();
         install_active_mesh(&mut state).await;
-        let listener = crate::daemon::handlers::image::registry::serve(
-            "127.0.0.1:0".parse().expect("bind addr"),
-            state.image_registry.clone(),
-        )
-        .await
-        .expect("serve registry");
-        state
-            .active
-            .as_mut()
-            .expect("active mesh")
-            .image_receiver_bind_addr = Some(listener.bind_addr());
         let digest = digest('a');
-        let backend = FakeImageBackend::new(digest.clone(), docker_archive_bytes())
-            .with_import_verify_error();
+        let backend = FakeImageBackend::new(digest.clone(), docker_archive_bytes());
+        let store = state
+            .active
+            .as_ref()
+            .expect("active mesh")
+            .mesh
+            .store
+            .clone();
+        let existing = present_availability_record("founder", digest.clone());
+        store
+            .upsert_image_availability(&existing)
+            .await
+            .expect("seed availability");
 
         let response = state
             .handle_image_distribute_with_backend(
@@ -1846,10 +2837,22 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_FAILED");
-        assert_no_availability(&state, &digest).await;
-        listener.shutdown().await;
+        assert!(response.ok, "{response:?}");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+            panic!("expected distribute payload");
+        };
+        assert_eq!(payload.targets.len(), 1);
+        assert_eq!(
+            payload.targets[0].status,
+            ImageTransferTargetStatus::SkippedPresent
+        );
+        assert_eq!(backend.export_count(), 0);
+        let stored = store
+            .get_image_availability(&MachineId("founder".into()), &digest)
+            .await
+            .expect("get availability")
+            .expect("availability");
+        assert_eq!(stored, existing);
     }
 
     #[tokio::test]
@@ -2098,6 +3101,8 @@ mod tests {
         repo_digests: Vec<ImageDigest>,
         image_id: Option<String>,
         imported: Arc<Mutex<bool>>,
+        export_count: Arc<Mutex<u64>>,
+        export_error: bool,
         import_error: bool,
         import_verify_error: bool,
     }
@@ -2110,18 +3115,20 @@ mod tests {
                 digest,
                 archive,
                 imported: Arc::new(Mutex::new(false)),
+                export_count: Arc::new(Mutex::new(0)),
+                export_error: false,
                 import_error: false,
                 import_verify_error: false,
             }
         }
 
-        fn with_import_error(mut self) -> Self {
-            self.import_error = true;
+        fn with_export_error(mut self) -> Self {
+            self.export_error = true;
             self
         }
 
-        fn with_import_verify_error(mut self) -> Self {
-            self.import_verify_error = true;
+        fn with_import_error(mut self) -> Self {
+            self.import_error = true;
             self
         }
 
@@ -2138,6 +3145,10 @@ mod tests {
         fn with_image_id(mut self, digest: ImageDigest) -> Self {
             self.image_id = Some(digest.as_str().into());
             self
+        }
+
+        fn export_count(&self) -> u64 {
+            *self.export_count.lock().expect("export count lock")
         }
     }
 
@@ -2167,6 +3178,13 @@ mod tests {
             reference: &'a str,
         ) -> Result<ImageArchiveReader<'a>, RuntimeImageError> {
             let _ = reference;
+            *self.export_count.lock().expect("export count lock") += 1;
+            if self.export_error {
+                return Err(RuntimeImageError::backend(
+                    "fake image export",
+                    "export failed",
+                ));
+            }
             Ok(Box::pin(std::io::Cursor::new(self.archive.clone())))
         }
 
@@ -2277,6 +3295,14 @@ mod tests {
     }
 
     async fn assert_no_availability(state: &DaemonState, digest: &ImageDigest) {
+        assert_no_availability_on(state, "founder", digest).await;
+    }
+
+    async fn assert_no_availability_on(
+        state: &DaemonState,
+        machine_id: &str,
+        digest: &ImageDigest,
+    ) {
         assert!(
             state
                 .active
@@ -2284,11 +3310,36 @@ mod tests {
                 .expect("active mesh")
                 .mesh
                 .store
-                .get_image_availability(&MachineId("founder".into()), digest)
+                .get_image_availability(&MachineId(machine_id.into()), digest)
                 .await
                 .expect("get availability")
                 .is_none()
         );
+    }
+
+    fn present_availability_record(
+        machine_id: &str,
+        digest: ImageDigest,
+    ) -> ImageAvailabilityRecord {
+        let now = now_unix_secs();
+        let reference = digest.as_str().to_string();
+        ImageAvailabilityRecord {
+            machine_id: MachineId(machine_id.into()),
+            digest: digest.clone(),
+            presence: ImagePresence::Present {
+                artifact: ImageArtifact {
+                    image: image_ref_from_tag(&reference, digest),
+                    platform: None,
+                    provenance: ImageArtifactProvenance::External {
+                        source: Some("test".into()),
+                    },
+                    created_at: now,
+                },
+                recorded_at: now,
+                source_operation_id: Some("seed".into()),
+            },
+            updated_at: now,
+        }
     }
 
     fn docker_archive_bytes() -> Vec<u8> {
