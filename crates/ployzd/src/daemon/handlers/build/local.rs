@@ -1430,7 +1430,7 @@ fn present_build_availability(
     let now = now_unix_secs();
     ImageAvailabilityRecord {
         machine_id: machine_id.clone(),
-        digest: artifact.image.digest.clone(),
+        digest: artifact.image.digest().clone(),
         presence: ImagePresence::Present {
             artifact,
             recorded_at: now,
@@ -1441,9 +1441,11 @@ fn present_build_availability(
 }
 
 fn image_ref_from_tag(reference: &str, digest: ImageDigest) -> ImageRef {
-    let (repository, tag) = if reference.starts_with("sha256:") {
-        (None, None)
-    } else {
+    if reference.starts_with("sha256:") {
+        return ImageRef::digest_only(digest);
+    }
+
+    let (repository, tag) = {
         let last_slash = reference.rfind('/');
         match reference
             .rfind(':')
@@ -1451,16 +1453,12 @@ fn image_ref_from_tag(reference: &str, digest: ImageDigest) -> ImageRef {
         {
             Some(index) if index + 1 < reference.len() => {
                 let (repository, tag) = reference.split_at(index);
-                (Some(repository.to_string()), Some(tag[1..].to_string()))
+                (repository.to_string(), Some(tag[1..].to_string()))
             }
-            _ => (Some(reference.to_string()), None),
+            _ => (reference.to_string(), None),
         }
     };
-    ImageRef {
-        repository,
-        tag,
-        digest,
-    }
+    ImageRef::repository_digest(repository, tag, digest)
 }
 
 fn build_command_failure_message(command: &BuildCommand, output: &BuildCommandOutput) -> String {
@@ -2379,9 +2377,9 @@ mod tests {
 
         let artifact = build_image_artifact(&request, &image).expect("artifact");
 
-        assert_eq!(artifact.image.repository.as_deref(), Some("example/app"));
-        assert_eq!(artifact.image.tag.as_deref(), Some("latest"));
-        assert_eq!(artifact.image.digest, image_digest);
+        assert_eq!(artifact.image.repository(), Some("example/app"));
+        assert_eq!(artifact.image.tag(), Some("latest"));
+        assert_eq!(artifact.image.digest(), &image_digest);
         assert_eq!(
             artifact.provenance,
             ImageArtifactProvenance::Build {
@@ -2396,11 +2394,7 @@ mod tests {
     #[test]
     fn present_availability_points_at_build_operation() {
         let artifact = ImageArtifact {
-            image: ImageRef {
-                repository: Some("example/app".into()),
-                tag: Some("latest".into()),
-                digest: digest('b'),
-            },
+            image: ImageRef::repository_digest("example/app", Some("latest".into()), digest('b')),
             platform: None,
             provenance: ImageArtifactProvenance::Build {
                 method: BuildMethod::Railpack,
@@ -2427,18 +2421,12 @@ mod tests {
     fn image_ref_parses_registry_port_without_confusing_tag() {
         let image = image_ref_from_tag("localhost:5000/example/app:latest", digest('c'));
 
-        assert_eq!(
-            image.repository.as_deref(),
-            Some("localhost:5000/example/app")
-        );
-        assert_eq!(image.tag.as_deref(), Some("latest"));
+        assert_eq!(image.repository(), Some("localhost:5000/example/app"));
+        assert_eq!(image.tag(), Some("latest"));
 
         let untagged = image_ref_from_tag("localhost:5000/example/app", digest('d'));
-        assert_eq!(
-            untagged.repository.as_deref(),
-            Some("localhost:5000/example/app")
-        );
-        assert_eq!(untagged.tag, None);
+        assert_eq!(untagged.repository(), Some("localhost:5000/example/app"));
+        assert_eq!(untagged.tag(), None);
     }
 
     #[test]

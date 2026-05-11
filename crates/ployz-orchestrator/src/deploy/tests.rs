@@ -8883,11 +8883,7 @@ fn present_image_record(machine_id: &str, digest: ImageDigest) -> ImageAvailabil
         digest: digest.clone(),
         presence: ImagePresence::Present {
             artifact: ImageArtifact {
-                image: ImageRef {
-                    repository: None,
-                    tag: None,
-                    digest,
-                },
+                image: ImageRef::digest_only(digest),
                 platform: None,
                 provenance: ImageArtifactProvenance::External { source: None },
                 created_at: 10,

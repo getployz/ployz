@@ -160,11 +160,7 @@ mod tests {
     fn image_record(machine_id: &str) -> ImageAvailabilityRecord {
         let digest = ImageDigest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into());
         let artifact = ImageArtifact {
-            image: ImageRef {
-                repository: None,
-                tag: None,
-                digest: digest.clone(),
-            },
+            image: ImageRef::digest_only(digest.clone()),
             platform: None,
             provenance: ImageArtifactProvenance::External { source: None },
             created_at: 1,

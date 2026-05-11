@@ -274,10 +274,10 @@ fn render_plain_build_result(payload: &BuildResultPayload) -> String {
 
 fn render_build_image_ref(payload: &BuildResultPayload) -> String {
     let image = &payload.artifact.image;
-    match (&image.repository, &image.tag) {
+    match (image.repository(), image.tag()) {
         (Some(repository), Some(tag)) => format!("{repository}:{tag}"),
-        (Some(repository), None) => repository.clone(),
-        (None, _) => image.digest.as_str().into(),
+        (Some(repository), None) => repository.to_string(),
+        (None, _) => image.digest().as_str().into(),
     }
 }
 
@@ -301,7 +301,9 @@ fn render_plain_status(payload: &StatusPayload) -> String {
     if let Some(authority) = &payload.local_authority {
         lines.push(format!(
             "authority authority_role={} authority_data_bucket={} authority_loss_impact={}",
-            authority.role, authority.data_bucket, authority.loss_impact
+            authority.role(),
+            authority.data_bucket(),
+            authority.loss_impact()
         ));
     }
     for sync in &payload.edge_sync {
@@ -487,9 +489,9 @@ fn render_plain_machine_list(payload: &MachineListPayload) -> String {
                 "id={} lifecycle={} authority_role={} authority_data_bucket={} authority_loss_impact={} region={} az={} overlay_ip={} subnet={} created_at={} region_role={}",
                 row.id,
                 row.lifecycle,
-                row.authority.role,
-                row.authority.data_bucket,
-                row.authority.loss_impact,
+                row.authority.role(),
+                row.authority.data_bucket(),
+                row.authority.loss_impact(),
                 row.region,
                 row.availability_zone.as_deref().unwrap_or("—"),
                 row.overlay_ip,
@@ -806,11 +808,11 @@ mod tests {
             payload: Some(DaemonPayload::BuildResult(BuildResultPayload {
                 operation_id: String::from("build-local-1"),
                 artifact: ployz_types::model::ImageArtifact {
-                    image: ployz_types::model::ImageRef {
-                        repository: Some(String::from("example/app")),
-                        tag: Some(String::from("latest")),
-                        digest: digest.clone(),
-                    },
+                    image: ployz_types::model::ImageRef::repository_digest(
+                        "example/app",
+                        Some(String::from("latest")),
+                        digest.clone(),
+                    ),
                     platform: None,
                     provenance: ployz_types::model::ImageArtifactProvenance::Build {
                         method: ployz_types::model::BuildMethod::Dockerfile,
@@ -871,11 +873,11 @@ mod tests {
             payload: Some(DaemonPayload::ImagePush(ployz_api::ImagePushPayload {
                 operation_id: "image-push-1".into(),
                 artifact: ployz_types::model::ImageArtifact {
-                    image: ployz_types::model::ImageRef {
-                        repository: Some("example/app".into()),
-                        tag: Some("latest".into()),
-                        digest: digest.clone(),
-                    },
+                    image: ployz_types::model::ImageRef::repository_digest(
+                        "example/app",
+                        Some("latest".into()),
+                        digest.clone(),
+                    ),
                     platform: None,
                     provenance: ployz_types::model::ImageArtifactProvenance::External {
                         source: Some("test".into()),

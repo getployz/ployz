@@ -703,14 +703,17 @@ mod tests {
         let authority = payload.local_authority.expect("local authority posture");
 
         assert_eq!(
-            authority.role,
+            authority.role(),
             AuthorityNodeRole::AuthorityStorage {
                 authority_id: AuthorityId::default_authority(),
             }
         );
-        assert_eq!(authority.data_bucket, ControlPlaneDataBucket::StoredIntent);
         assert_eq!(
-            authority.loss_impact,
+            authority.data_bucket(),
+            ControlPlaneDataBucket::StoredIntent
+        );
+        assert_eq!(
+            authority.loss_impact(),
             ControlPlaneLossImpact::StoredTruthLost
         );
         teardown_status_state(&mut state).await;

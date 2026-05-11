@@ -1450,7 +1450,7 @@ mod tests {
     use crate::daemon::RetainedSubnet;
     use crate::mesh_state::network::NetworkConfig;
     use ployz_api::{
-        BranchResourceMode, DaemonRequest, DeployFailureReason, VolumeZfsTransferInfo,
+        BranchResourceMode, DaemonRequest, DeployFailurePayload, VolumeZfsTransferInfo,
         VolumeZfsTransferPayload,
     };
     use ployz_nats::{NodeCommandSubject, RpcFailure, RpcFailureKind, RpcPolicy};
@@ -3647,11 +3647,18 @@ mod tests {
         ))
         .expect("baseline failure payload");
 
-        assert_eq!(payload.reason, DeployFailureReason::DeployBaselineChanged);
-        assert_eq!(payload.expected_baseline, Some(expected));
-        assert_eq!(payload.actual_baseline, Some(actual));
+        let DeployFailurePayload::DeployBaselineChanged {
+            expected_baseline,
+            actual_baseline,
+            baseline_changed_components,
+        } = payload
+        else {
+            panic!("expected baseline changed payload, got {payload:?}");
+        };
+        assert_eq!(expected_baseline, expected);
+        assert_eq!(actual_baseline, actual);
         assert_eq!(
-            payload.baseline_changed_components,
+            baseline_changed_components,
             vec![DeployBaselineComponent::ServiceSources]
         );
     }
@@ -3673,11 +3680,18 @@ mod tests {
         let Some(DaemonPayload::DeployFailure(payload)) = response.payload else {
             panic!("expected deploy failure payload");
         };
-        assert_eq!(payload.reason, DeployFailureReason::DeployBaselineChanged);
-        assert_eq!(payload.expected_baseline, Some(expected));
-        assert_eq!(payload.actual_baseline, Some(actual));
+        let DeployFailurePayload::DeployBaselineChanged {
+            expected_baseline,
+            actual_baseline,
+            baseline_changed_components,
+        } = payload
+        else {
+            panic!("expected baseline changed payload, got {payload:?}");
+        };
+        assert_eq!(expected_baseline, expected);
+        assert_eq!(actual_baseline, actual);
         assert_eq!(
-            payload.baseline_changed_components,
+            baseline_changed_components,
             vec![DeployBaselineComponent::ServiceSources]
         );
     }
@@ -3694,11 +3708,10 @@ mod tests {
         let Some(DaemonPayload::DeployFailure(payload)) = missing.payload else {
             panic!("expected missing payload");
         };
-        assert_eq!(payload.reason, DeployFailureReason::PreparedDeployMissing);
-        assert_eq!(
-            payload.prepared_deploy_id,
-            Some(DeployId::new("prepare-missing"))
-        );
+        let DeployFailurePayload::PreparedDeployMissing { prepared_deploy_id } = payload else {
+            panic!("expected missing payload, got {payload:?}");
+        };
+        assert_eq!(prepared_deploy_id, DeployId::new("prepare-missing"));
 
         let not_applicable = test_daemon_state().deploy_error_response(
             "DEPLOY_APPLY_PREPARED_FAILED",
@@ -3711,14 +3724,15 @@ mod tests {
         let Some(DaemonPayload::DeployFailure(payload)) = not_applicable.payload else {
             panic!("expected not-applicable payload");
         };
-        assert_eq!(
-            payload.reason,
-            DeployFailureReason::PreparedDeployNotApplicable
-        );
-        assert_eq!(
-            payload.prepared_deploy_state,
-            Some(PreparedDeployState::Applied)
-        );
+        let DeployFailurePayload::PreparedDeployNotApplicable {
+            prepared_deploy_id,
+            prepared_deploy_state,
+        } = payload
+        else {
+            panic!("expected not-applicable payload, got {payload:?}");
+        };
+        assert_eq!(prepared_deploy_id, DeployId::new("prepare-applied"));
+        assert_eq!(prepared_deploy_state, PreparedDeployState::Applied);
 
         let expired = test_daemon_state().deploy_error_response(
             "DEPLOY_APPLY_PREPARED_FAILED",
@@ -3731,16 +3745,17 @@ mod tests {
         let Some(DaemonPayload::DeployFailure(payload)) = expired.payload else {
             panic!("expected expired payload");
         };
-        assert_eq!(payload.reason, DeployFailureReason::PreparedDeployExpired);
-        assert_eq!(
-            payload.prepared_deploy_id,
-            Some(DeployId::new("prepare-expired"))
-        );
-        assert_eq!(
-            payload.prepared_deploy_state,
-            Some(PreparedDeployState::Expired)
-        );
-        assert_eq!(payload.prepared_deploy_expires_at, Some(42));
+        let DeployFailurePayload::PreparedDeployExpired {
+            prepared_deploy_id,
+            prepared_deploy_state,
+            prepared_deploy_expires_at,
+        } = payload
+        else {
+            panic!("expected expired payload, got {payload:?}");
+        };
+        assert_eq!(prepared_deploy_id, DeployId::new("prepare-expired"));
+        assert_eq!(prepared_deploy_state, PreparedDeployState::Expired);
+        assert_eq!(prepared_deploy_expires_at, 42);
 
         let invalid = test_daemon_state().deploy_error_response(
             "DEPLOY_APPLY_PREPARED_FAILED",
@@ -3753,11 +3768,10 @@ mod tests {
         let Some(DaemonPayload::DeployFailure(payload)) = invalid.payload else {
             panic!("expected invalid payload");
         };
-        assert_eq!(payload.reason, DeployFailureReason::PreparedDeployInvalid);
-        assert_eq!(
-            payload.prepared_deploy_id,
-            Some(DeployId::new("prepare-invalid"))
-        );
+        let DeployFailurePayload::PreparedDeployInvalid { prepared_deploy_id } = payload else {
+            panic!("expected invalid payload, got {payload:?}");
+        };
+        assert_eq!(prepared_deploy_id, DeployId::new("prepare-invalid"));
     }
 
     #[test]
@@ -3778,18 +3792,20 @@ mod tests {
         let Some(DaemonPayload::DeployFailure(payload)) = response.payload else {
             panic!("expected deploy failure payload");
         };
-        assert_eq!(
-            payload.reason,
-            DeployFailureReason::DeployImageAvailabilityMissing
-        );
-        assert_eq!(payload.service.as_deref(), Some("web"));
-        assert_eq!(payload.slot_id.as_deref(), Some("slot-0001"));
-        assert_eq!(payload.machine_id.as_deref(), Some("machine-a"));
-        assert_eq!(
-            payload.digest.as_deref(),
-            Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-        );
-        assert_eq!(payload.state, None);
+        let DeployFailurePayload::DeployImageAvailabilityMissing {
+            service,
+            slot_id,
+            machine_id,
+            digest,
+            ..
+        } = payload
+        else {
+            panic!("expected image availability missing payload, got {payload:?}");
+        };
+        assert_eq!(service, "web");
+        assert_eq!(slot_id, "slot-0001");
+        assert_eq!(machine_id, "machine-a");
+        assert_eq!(digest, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     }
 
     #[test]
@@ -3820,11 +3836,10 @@ mod tests {
         let Some(DaemonPayload::DeployFailure(payload)) = not_present.payload else {
             panic!("expected deploy failure payload");
         };
-        assert_eq!(
-            payload.reason,
-            DeployFailureReason::DeployImageAvailabilityNotPresent
-        );
-        assert_eq!(payload.state.as_deref(), Some("absent"));
+        let DeployFailurePayload::DeployImageAvailabilityNotPresent { state, .. } = payload else {
+            panic!("expected image availability not-present payload, got {payload:?}");
+        };
+        assert_eq!(state, "absent");
     }
 
     #[test]

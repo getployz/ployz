@@ -298,18 +298,59 @@ pub struct ImagePlatform {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ImageRef {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repository: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tag: Option<String>,
-    pub digest: ImageDigest,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ImageRef {
+    Digest {
+        digest: ImageDigest,
+    },
+    RepositoryDigest {
+        repository: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tag: Option<String>,
+        digest: ImageDigest,
+    },
 }
 
 impl ImageRef {
     #[must_use]
+    pub fn digest_only(digest: ImageDigest) -> Self {
+        Self::Digest { digest }
+    }
+
+    #[must_use]
+    pub fn repository_digest(
+        repository: impl Into<String>,
+        tag: Option<String>,
+        digest: ImageDigest,
+    ) -> Self {
+        Self::RepositoryDigest {
+            repository: repository.into(),
+            tag,
+            digest,
+        }
+    }
+
+    #[must_use]
     pub fn digest(&self) -> &ImageDigest {
-        &self.digest
+        match self {
+            Self::Digest { digest } | Self::RepositoryDigest { digest, .. } => digest,
+        }
+    }
+
+    #[must_use]
+    pub fn repository(&self) -> Option<&str> {
+        match self {
+            Self::Digest { .. } => None,
+            Self::RepositoryDigest { repository, .. } => Some(repository.as_str()),
+        }
+    }
+
+    #[must_use]
+    pub fn tag(&self) -> Option<&str> {
+        match self {
+            Self::Digest { .. } => None,
+            Self::RepositoryDigest { tag, .. } => tag.as_deref(),
+        }
     }
 }
 
@@ -756,56 +797,62 @@ impl fmt::Display for AuthorityNodeRole {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct AuthorityNodePosture {
-    pub role: AuthorityNodeRole,
-    pub data_bucket: ControlPlaneDataBucket,
-    pub loss_impact: ControlPlaneLossImpact,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AuthorityNodePosture {
+    AuthorityStorage { authority_id: AuthorityId },
+    StorageCandidate,
+    Compute,
 }
 
 impl AuthorityNodePosture {
     #[must_use]
     pub fn from_storage_participation(storage: bool, participation: &StorageParticipation) -> Self {
         match participation {
-            StorageParticipation::Authority { authority_id } => Self {
-                role: AuthorityNodeRole::AuthorityStorage {
-                    authority_id: authority_id.clone(),
-                },
-                data_bucket: ControlPlaneDataBucket::StoredIntent,
-                loss_impact: ControlPlaneLossImpact::StoredTruthLost,
+            StorageParticipation::Authority { authority_id } => Self::AuthorityStorage {
+                authority_id: authority_id.clone(),
             },
-            StorageParticipation::Candidate if storage => Self {
-                role: AuthorityNodeRole::StorageCandidate,
-                data_bucket: ControlPlaneDataBucket::StoredIntent,
-                loss_impact: ControlPlaneLossImpact::NoStoredTruthLost,
-            },
-            StorageParticipation::Candidate => Self {
-                role: AuthorityNodeRole::Compute,
-                data_bucket: ControlPlaneDataBucket::LiveFacts,
-                loss_impact: ControlPlaneLossImpact::NoStoredTruthLost,
-            },
+            StorageParticipation::Candidate if storage => Self::StorageCandidate,
+            StorageParticipation::Candidate => Self::Compute,
         }
     }
 
     #[must_use]
     pub fn from_machine_membership(machine: &MachineMembership) -> Self {
         match &machine.storage_role {
-            MachineStorageRole::Authority { authority_id } => Self {
-                role: AuthorityNodeRole::AuthorityStorage {
-                    authority_id: authority_id.clone(),
-                },
-                data_bucket: ControlPlaneDataBucket::StoredIntent,
-                loss_impact: ControlPlaneLossImpact::StoredTruthLost,
+            MachineStorageRole::Authority { authority_id } => Self::AuthorityStorage {
+                authority_id: authority_id.clone(),
             },
-            MachineStorageRole::Candidate => Self {
-                role: AuthorityNodeRole::StorageCandidate,
-                data_bucket: ControlPlaneDataBucket::StoredIntent,
-                loss_impact: ControlPlaneLossImpact::NoStoredTruthLost,
+            MachineStorageRole::Candidate => Self::StorageCandidate,
+            MachineStorageRole::Compute => Self::Compute,
+        }
+    }
+
+    #[must_use]
+    pub fn role(&self) -> AuthorityNodeRole {
+        match self {
+            Self::AuthorityStorage { authority_id } => AuthorityNodeRole::AuthorityStorage {
+                authority_id: authority_id.clone(),
             },
-            MachineStorageRole::Compute => Self {
-                role: AuthorityNodeRole::Compute,
-                data_bucket: ControlPlaneDataBucket::LiveFacts,
-                loss_impact: ControlPlaneLossImpact::NoStoredTruthLost,
-            },
+            Self::StorageCandidate => AuthorityNodeRole::StorageCandidate,
+            Self::Compute => AuthorityNodeRole::Compute,
+        }
+    }
+
+    #[must_use]
+    pub fn data_bucket(&self) -> ControlPlaneDataBucket {
+        match self {
+            Self::AuthorityStorage { .. } | Self::StorageCandidate => {
+                ControlPlaneDataBucket::StoredIntent
+            }
+            Self::Compute => ControlPlaneDataBucket::LiveFacts,
+        }
+    }
+
+    #[must_use]
+    pub fn loss_impact(&self) -> ControlPlaneLossImpact {
+        match self {
+            Self::AuthorityStorage { .. } => ControlPlaneLossImpact::StoredTruthLost,
+            Self::StorageCandidate | Self::Compute => ControlPlaneLossImpact::NoStoredTruthLost,
         }
     }
 }
@@ -3655,11 +3702,11 @@ mod tests {
     #[test]
     fn image_artifact_preserves_digest_identity_through_json() {
         let artifact = ImageArtifact {
-            image: ImageRef {
-                repository: Some("registry.example/api".into()),
-                tag: Some("latest".into()),
-                digest: ImageDigest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
-            },
+            image: ImageRef::repository_digest(
+                "registry.example/api",
+                Some("latest".into()),
+                ImageDigest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            ),
             platform: Some(ImagePlatform {
                 os: "linux".into(),
                 architecture: "amd64".into(),
@@ -3770,13 +3817,16 @@ mod tests {
         );
 
         assert_eq!(
-            posture.role,
+            posture.role(),
             AuthorityNodeRole::AuthorityStorage {
                 authority_id: AuthorityId::default_authority(),
             }
         );
-        assert_eq!(posture.data_bucket, ControlPlaneDataBucket::StoredIntent);
-        assert_eq!(posture.loss_impact, ControlPlaneLossImpact::StoredTruthLost);
+        assert_eq!(posture.data_bucket(), ControlPlaneDataBucket::StoredIntent);
+        assert_eq!(
+            posture.loss_impact(),
+            ControlPlaneLossImpact::StoredTruthLost
+        );
     }
 
     #[test]
@@ -3786,10 +3836,10 @@ mod tests {
             &StorageParticipation::Candidate,
         );
 
-        assert_eq!(posture.role, AuthorityNodeRole::StorageCandidate);
-        assert_eq!(posture.data_bucket, ControlPlaneDataBucket::StoredIntent);
+        assert_eq!(posture.role(), AuthorityNodeRole::StorageCandidate);
+        assert_eq!(posture.data_bucket(), ControlPlaneDataBucket::StoredIntent);
         assert_eq!(
-            posture.loss_impact,
+            posture.loss_impact(),
             ControlPlaneLossImpact::NoStoredTruthLost
         );
     }
@@ -3801,16 +3851,16 @@ mod tests {
             &StorageParticipation::Candidate,
         );
 
-        assert_eq!(posture.role, AuthorityNodeRole::Compute);
-        assert_eq!(posture.data_bucket, ControlPlaneDataBucket::LiveFacts);
+        assert_eq!(posture.role(), AuthorityNodeRole::Compute);
+        assert_eq!(posture.data_bucket(), ControlPlaneDataBucket::LiveFacts);
         assert_eq!(
-            posture.loss_impact,
+            posture.loss_impact(),
             ControlPlaneLossImpact::NoStoredTruthLost
         );
     }
 
     #[test]
-    fn authority_posture_serializes_with_typed_role_and_impact() {
+    fn authority_posture_serializes_as_single_variant_with_derived_impact() {
         let posture = AuthorityNodePosture::from_storage_participation(
             true,
             &StorageParticipation::default_authority(),
@@ -3821,17 +3871,18 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "role": {
-                    "kind": "authority_storage",
-                    "authority_id": "auth-default"
-                },
-                "data_bucket": "stored_intent",
-                "loss_impact": "stored_truth_lost"
+                "kind": "authority_storage",
+                "authority_id": "auth-default"
             })
         );
         let decoded: AuthorityNodePosture =
             serde_json::from_value(json).expect("deserialize posture");
         assert_eq!(decoded, posture);
+        assert_eq!(decoded.data_bucket(), ControlPlaneDataBucket::StoredIntent);
+        assert_eq!(
+            decoded.loss_impact(),
+            ControlPlaneLossImpact::StoredTruthLost
+        );
     }
 
     #[test]

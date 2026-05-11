@@ -633,12 +633,8 @@ mod tests {
                     "network_lifecycle": "Running",
                     "local_machine_lifecycle": "Active",
                     "local_authority": {
-                        "role": {
-                            "kind": "authority_storage",
-                            "authority_id": "auth-default"
-                        },
-                        "data_bucket": "stored_intent",
-                        "loss_impact": "stored_truth_lost"
+                        "kind": "authority_storage",
+                        "authority_id": "auth-default"
                     },
                     "mesh_phase": "Running",
                     "edge_sync": [{

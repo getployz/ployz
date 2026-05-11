@@ -175,11 +175,7 @@ fn present_image_record(
         digest: digest.clone(),
         presence: ImagePresence::Present {
             artifact: ImageArtifact {
-                image: ImageRef {
-                    repository: Some(image.reference),
-                    tag: None,
-                    digest,
-                },
+                image: ImageRef::repository_digest(image.reference, None, digest),
                 platform: image.platform,
                 provenance: ImageArtifactProvenance::External {
                     source: Some(reference.into()),
@@ -424,10 +420,7 @@ mod tests {
         else {
             panic!("expected present record");
         };
-        assert_eq!(
-            artifact.image.repository.as_deref(),
-            Some("example/app:latest")
-        );
+        assert_eq!(artifact.image.repository(), Some("example/app:latest"));
         assert_eq!(artifact.platform.expect("platform").architecture, "amd64");
         assert_eq!(source_operation_id.as_deref(), Some("op-1"));
     }

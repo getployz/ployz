@@ -688,7 +688,7 @@ mod tests {
             method: BuildMethod::Railpack,
             context_path: ".".into(),
             image_name: "api".into(),
-            machine_id: MachineId("builder-a".into()),
+            machine_id: MachineId::new("builder-a"),
             platform: None,
             inputs: BuildInputs {
                 env: BTreeMap::from([
@@ -761,7 +761,7 @@ mod tests {
                 method: BuildMethod::Railpack,
                 context_path: "/work/app".into(),
                 image_name: "example/app:latest".into(),
-                machine_id: MachineId("builder-a".into()),
+                machine_id: MachineId::new("builder-a"),
                 platform: None,
                 inputs: BuildInputs {
                     env: BTreeMap::from([(
@@ -789,7 +789,7 @@ mod tests {
             panic!("expected build machine request");
         };
         assert_eq!(request.method, BuildMethod::Railpack);
-        assert_eq!(request.machine_id, MachineId("builder-a".into()));
+        assert_eq!(request.machine_id, MachineId::new("builder-a"));
         assert!(request.inputs.docker_build_args.is_empty());
     }
 
