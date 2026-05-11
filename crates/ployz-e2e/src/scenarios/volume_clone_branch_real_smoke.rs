@@ -1,12 +1,12 @@
 use crate::error::{Error, Result};
 use crate::runner::{MachineExpectation, ScenarioRun, SubnetExpectation};
-use crate::support::parse_daemon_json_response;
+use crate::support::{DaemonJsonPayload, parse_daemon_json_response};
 use serde_json::Value;
 
 use super::zfs_support::{
     assert_real_zfs_dataset, assert_real_zfs_dataset_in_namespace, deploy_volume_manifest,
     wait_for_container_bind, wait_for_container_bind_in_namespace, wait_for_volume_value,
-    wait_for_volume_value_in_namespace, zfs_context,
+    wait_for_volume_value_in_namespace, write_volume_manifest, zfs_context,
 };
 
 const BRANCH_NAMESPACE: &str = "pr-39";
@@ -52,12 +52,20 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     )?;
     assert_volume_clone(&output.stdout, "deploy preview")?;
 
-    run.log_progress("apply branch command clone");
+    run.log_progress("prepare branch command clone");
     let output = run.ssh_expect_ok_name(
         "founder",
-        "ployzd --json branch apply default pr-39 --volume data=branch",
+        "ployzd --json branch prepare default pr-39 --volume data=branch",
     )?;
-    assert_volume_clone(&output.stdout, "deploy apply")?;
+    let prepared_deploy_id =
+        prepared_deploy_id_with_volume_clone(&output.stdout, "branch prepare")?;
+
+    run.log_progress("apply prepared branch command clone");
+    let output = run.ssh_expect_ok_name(
+        "founder",
+        &format!("ployzd --json branch apply-prepared {prepared_deploy_id}"),
+    )?;
+    assert_volume_clone(&output.stdout, "branch apply-prepared")?;
 
     run.log_progress("verify cloned namespace has source snapshot data");
     wait_for_volume_value_in_namespace(run, "founder", &zfs, BRANCH_NAMESPACE, "data", "v2")?;
@@ -78,20 +86,88 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     wait_for_volume_value(run, "founder", &zfs.volume_source(), "v3")?;
     wait_for_volume_value_in_namespace(run, "founder", &zfs, BRANCH_NAMESPACE, "data", "v2")?;
 
-    run.log_progress("reapply branch command clone");
+    run.log_progress("prepare branch command clone reapply");
     let output = run.ssh_expect_ok_name(
         "founder",
-        "ployzd --json branch apply default pr-39 --volume data=branch",
+        "ployzd --json branch prepare default pr-39 --volume data=branch",
+    )?;
+    let prepared_deploy_id = extract_prepared_deploy_id(&output.stdout, "branch reapply prepare")?;
+
+    run.log_progress("reapply prepared branch command clone");
+    let output = run.ssh_expect_ok_name(
+        "founder",
+        &format!("ployzd --json branch apply-prepared {prepared_deploy_id}"),
     )?;
     assert_no_volume_clone(&output.stdout, "branch clone reapply")?;
     wait_for_volume_value_in_namespace(run, "founder", &zfs, BRANCH_NAMESPACE, "data", "v2")?;
 
+    run.log_progress("prepare branch command before source drift");
+    let output = run.ssh_expect_ok_name(
+        "founder",
+        "ployzd --json branch prepare default pr-drift --volume data=branch",
+    )?;
+    let prepared_deploy_id =
+        prepared_deploy_id_with_volume_clone(&output.stdout, "source drift branch prepare")?;
+
+    run.log_progress("mutate source service after branch prepare");
+    write_volume_manifest(run, "founder", "v4")?;
+    run.ssh_expect_ok_name("founder", "ployzd deploy -f /tmp/ployz-volume-smoke.json")?;
+
+    run.log_progress("verify prepared branch apply rejects source drift");
+    let output = run.ssh_run_name(
+        "founder",
+        &format!("ployzd --json branch apply-prepared {prepared_deploy_id}"),
+    )?;
+    if output.status.success() {
+        return Err(Error::Message(
+            "branch apply-prepared unexpectedly succeeded after source drift".into(),
+        ));
+    }
+    assert_apply_prepared_rejects_source_drift(&output.stdout, "source drift apply-prepared")?;
+
     Ok(())
+}
+
+fn prepared_deploy_id_with_volume_clone(output: &str, context: &str) -> Result<String> {
+    let response = parse_daemon_json_response(output)?;
+    if !response.ok {
+        return Err(Error::Message(format!(
+            "{context} failed [{}]: {}",
+            response.code, response.message
+        )));
+    }
+    let Some(DaemonJsonPayload::DeployPrepare(payload)) = response.payload else {
+        return Err(Error::Message(format!(
+            "{context} did not include deploy prepare payload"
+        )));
+    };
+    assert_volume_clone_preview(&payload.prepared.preview, context)?;
+    Ok(payload.prepared.prepared_deploy_id)
+}
+
+fn extract_prepared_deploy_id(output: &str, context: &str) -> Result<String> {
+    let response = parse_daemon_json_response(output)?;
+    if !response.ok {
+        return Err(Error::Message(format!(
+            "{context} failed [{}]: {}",
+            response.code, response.message
+        )));
+    }
+    let Some(DaemonJsonPayload::DeployPrepare(payload)) = response.payload else {
+        return Err(Error::Message(format!(
+            "{context} did not include deploy prepare payload"
+        )));
+    };
+    Ok(payload.prepared.prepared_deploy_id)
 }
 
 fn assert_volume_clone(output: &str, context: &str) -> Result<()> {
     let preview = deploy_preview(output, context)?;
-    assert_service_branch(&preview, context)?;
+    assert_volume_clone_preview(&preview, context)
+}
+
+fn assert_volume_clone_preview(preview: &Value, context: &str) -> Result<()> {
+    assert_service_branch(preview, context)?;
     let Some(volume_clones) = preview.get("volume_clones").and_then(Value::as_array) else {
         return Err(Error::Message(format!(
             "{context} did not include preview.volume_clones: {preview}"
@@ -147,6 +223,23 @@ fn assert_no_volume_clone(output: &str, context: &str) -> Result<()> {
     Err(Error::Message(format!(
         "{context} unexpectedly planned volume clones: {preview}"
     )))
+}
+
+fn assert_apply_prepared_rejects_source_drift(output: &str, context: &str) -> Result<()> {
+    let response = parse_daemon_json_response(output)?;
+    if response.ok {
+        return Err(Error::Message(format!(
+            "{context} unexpectedly succeeded: {}",
+            response.message
+        )));
+    }
+    match response.code.as_str() {
+        "BRANCH_SOURCE_REVISION_CHANGED" | "DEPLOY_BASELINE_CHANGED" => Ok(()),
+        code => Err(Error::Message(format!(
+            "{context} failed with unexpected code '{code}': {}",
+            response.message
+        ))),
+    }
 }
 
 fn deploy_preview(output: &str, context: &str) -> Result<Value> {

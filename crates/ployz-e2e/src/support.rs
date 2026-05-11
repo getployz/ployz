@@ -61,12 +61,24 @@ pub(crate) struct DaemonJsonResponse {
 pub(crate) enum DaemonJsonPayload {
     Doctor(DoctorPayload),
     MachineList(MachineListPayload),
+    DeployPrepare(DeployPreparePayload),
     DeployFailure {
         #[serde(flatten)]
         _ignored: std::collections::BTreeMap<String, serde_json::Value>,
     },
     BuildResult(BuildResultPayload),
     ImageStatus(ImageStatusPayload),
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DeployPreparePayload {
+    pub(crate) prepared: PreparedDeployPayload,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PreparedDeployPayload {
+    pub(crate) prepared_deploy_id: String,
+    pub(crate) preview: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
