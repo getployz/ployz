@@ -11,8 +11,7 @@ use crate::model::{
 };
 use crate::runtime::labels::{self, WorkloadMeta, build_workload_labels, extract_workload_labels};
 use crate::runtime::{
-    ContainerEngine, PortBinding, PortMap, Probe, PullPolicy, RestartPolicy, RestartPolicyName,
-    RuntimeContainerSpec,
+    ContainerEngine, PortBinding, PortMap, Probe, PullPolicy, RestartPolicy, RuntimeContainerSpec,
 };
 use crate::spec::{
     ContainerSpec, MountSource, Namespace, NetworkMode, PortProtocol, ServicePort, ServiceSpec,
@@ -539,15 +538,13 @@ fn workload_dns_servers(
 }
 
 fn build_restart_policy(policy: &crate::spec::RestartPolicy) -> RestartPolicy {
-    let name = match policy {
-        crate::spec::RestartPolicy::No => RestartPolicyName::No,
-        crate::spec::RestartPolicy::Always => RestartPolicyName::Always,
-        crate::spec::RestartPolicy::OnFailure => RestartPolicyName::OnFailure,
-        crate::spec::RestartPolicy::UnlessStopped => RestartPolicyName::UnlessStopped,
-    };
-    RestartPolicy {
-        name: Some(name),
-        maximum_retry_count: Some(0),
+    match policy {
+        crate::spec::RestartPolicy::No => RestartPolicy::No,
+        crate::spec::RestartPolicy::Always => RestartPolicy::Always,
+        crate::spec::RestartPolicy::OnFailure => RestartPolicy::OnFailure {
+            maximum_retry_count: 0,
+        },
+        crate::spec::RestartPolicy::UnlessStopped => RestartPolicy::UnlessStopped,
     }
 }
 

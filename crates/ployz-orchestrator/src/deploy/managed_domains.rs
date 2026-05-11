@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use ployz_store_api::{CertificateStore, RoutingStateStore, StoreDriver};
 use ployz_types::model::{
-    CertificateRecord, CertificateState, RoutingState, ServiceRelease, ServiceReleaseRecord,
-    ServiceRevisionRecord, ServiceRoutingPolicy,
+    CertificateLifecycle, CertificateRecord, CertificateState, RoutingState, ServiceRelease,
+    ServiceReleaseRecord, ServiceRevisionRecord, ServiceRoutingPolicy,
 };
 use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
 
@@ -40,14 +40,10 @@ pub(super) async fn ensure_certificate_intents(
                 hostname: hostname.clone(),
                 issuer_url: issuer_url.to_string(),
                 account_id: account_id_for_issuer_url(issuer_url),
-                state: CertificateState::Pending,
-                active_version_id: None,
+                lifecycle: CertificateLifecycle::Pending { last_error: None },
                 versions: Vec::new(),
-                order_url: None,
-                last_error: None,
                 requested_at: now,
                 updated_at: now,
-                next_renewal_at: None,
             })
             .await?;
     }
@@ -233,19 +229,16 @@ fn tls_warnings_for_domain(domain: &str, certificates: &[CertificateRecord]) -> 
         )];
     };
 
-    match record.state {
+    match record.state() {
         CertificateState::Active => Vec::new(),
         CertificateState::Pending | CertificateState::Issuing | CertificateState::RenewalDue => {
             vec![format!(
                 "TLS for {domain} is {}; HTTPS will activate when the certificate is ready",
-                record.state
+                record.state()
             )]
         }
         CertificateState::Failed => {
-            let detail = record
-                .last_error
-                .as_deref()
-                .unwrap_or("certificate issuance failed");
+            let detail = record.last_error().unwrap_or("certificate issuance failed");
             vec![format!("TLS for {domain} failed: {detail}")]
         }
     }
@@ -258,7 +251,7 @@ fn normalize_hostname(hostname: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{build_domain_warnings, normalize_hostname};
-    use ployz_types::model::{CertificateRecord, CertificateState};
+    use ployz_types::model::{CertificateLifecycle, CertificateRecord, CertificateState};
 
     #[test]
     fn domain_warnings_are_quiet_for_active_certificates() {
@@ -317,14 +310,31 @@ mod tests {
             hostname: hostname.into(),
             issuer_url: "https://acme.example/directory".into(),
             account_id: "acct".into(),
-            state,
-            active_version_id: None,
+            lifecycle: match state {
+                CertificateState::Pending => CertificateLifecycle::Pending {
+                    last_error: last_error.map(String::from),
+                },
+                CertificateState::Issuing => CertificateLifecycle::Issuing {
+                    order_url: "https://acme.example/order/test".into(),
+                    active_version_id: None,
+                    last_error: last_error.map(String::from),
+                },
+                CertificateState::Active => CertificateLifecycle::Active {
+                    active_version_id: "v1".into(),
+                    next_renewal_at: None,
+                },
+                CertificateState::RenewalDue => CertificateLifecycle::RenewalDue {
+                    active_version_id: "v1".into(),
+                    next_renewal_at: None,
+                },
+                CertificateState::Failed => CertificateLifecycle::Failed {
+                    last_error: last_error.unwrap_or("certificate issuance failed").into(),
+                    active_version_id: None,
+                },
+            },
             versions: Vec::new(),
-            order_url: None,
-            last_error: last_error.map(String::from),
             requested_at: 1,
             updated_at: 1,
-            next_renewal_at: None,
         }
     }
 }

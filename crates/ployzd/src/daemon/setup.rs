@@ -259,14 +259,14 @@ async fn renewal_job_is_complete(
     let Some(record) = store.get_certificate(hostname).await? else {
         return Ok(());
     };
-    if record.state == CertificateState::Active {
+    if record.state() == CertificateState::Active {
         return Ok(());
     }
     Err(PloyzError::operation(
         "certificate_renewal_incomplete",
         format!(
             "certificate {hostname} remains {} after renewal job",
-            record.state
+            record.state()
         ),
     ))
 }
