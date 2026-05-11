@@ -148,9 +148,9 @@ fn certificate_is_active(response_json: &str) -> bool {
         return false;
     };
     response
-        .pointer("/payload/certificate/state")
+        .pointer("/payload/certificate/lifecycle/state")
         .and_then(serde_json::Value::as_str)
-        == Some("Active")
+        == Some("active")
 }
 
 fn wait_for_gateway_https(run: &ScenarioRun, node_name: &str) -> Result<()> {
