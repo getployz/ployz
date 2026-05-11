@@ -1280,7 +1280,7 @@ mod tests {
     use ployz_types::model::{
         CertificateLifecycle, DeployId, DrainState, InstanceStatusRecord, MachineLifecycle,
         OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
-        ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, StorageParticipation,
+        ServiceRevisionRecord, SlotId, StorageParticipation,
     };
     use ployz_types::spec::{
         ContainerSpec, NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy,
