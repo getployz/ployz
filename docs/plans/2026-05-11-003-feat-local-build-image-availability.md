@@ -132,6 +132,9 @@ Out of scope:
   so long builds do not block read-only daemon requests, while concurrent
   builds cannot race on the same mutable Docker tag. Untagged image names are
   normalized to `:latest` before locking and building.
+- Run build commands with `current_dir` set to the context directory and pass
+  `.` as the build context so relative request paths build the intended
+  directory.
 
 **Test Scenarios:**
 

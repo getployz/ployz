@@ -209,7 +209,7 @@ impl DaemonState {
                 message,
             );
         };
-        let command = build_command(&request, &context_dir);
+        let command = build_command(&request);
         if let Err(error) = operation_store.update_stage(&mut operation, "running build command") {
             return self.fail_build_local_operation(
                 &operation_store,
@@ -388,8 +388,7 @@ impl DaemonState {
     }
 }
 
-fn build_command(request: &BuildLocalRequest, context_dir: &Path) -> BuildCommand {
-    let context = context_dir.display().to_string();
+fn build_command(request: &BuildLocalRequest) -> BuildCommand {
     let mut args = match request.method {
         BuildMethod::Dockerfile => vec!["build".into(), "-t".into(), request.image_name.clone()],
         BuildMethod::Railpack => vec!["build".into(), "--name".into(), request.image_name.clone()],
@@ -398,7 +397,7 @@ fn build_command(request: &BuildLocalRequest, context_dir: &Path) -> BuildComman
         args.push("--platform".into());
         args.push(format_platform(platform));
     }
-    args.push(context);
+    args.push(".".into());
     let program = match request.method {
         BuildMethod::Dockerfile => "docker",
         BuildMethod::Railpack => "railpack",
@@ -683,7 +682,7 @@ mod tests {
             distribute_targets: Vec::new(),
         };
 
-        let command = build_command(&request, Path::new("/tmp/context"));
+        let command = build_command(&request);
 
         assert_eq!(command.program, "docker");
         assert_eq!(
@@ -694,7 +693,7 @@ mod tests {
                 "example/app:latest",
                 "--platform",
                 "linux/amd64",
-                "/tmp/context"
+                "."
             ]
         );
     }
@@ -714,7 +713,7 @@ mod tests {
             distribute_targets: Vec::new(),
         };
 
-        let command = build_command(&request, Path::new("/tmp/context"));
+        let command = build_command(&request);
 
         assert_eq!(command.program, "railpack");
         assert_eq!(
@@ -725,7 +724,7 @@ mod tests {
                 "example/app:latest",
                 "--platform",
                 "linux/arm64/v8",
-                "/tmp/context"
+                "."
             ]
         );
     }
