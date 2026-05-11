@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -113,6 +114,12 @@ struct DeployApplyRuntime {
     nats_locks: NatsLocks,
     deploy_lock: NatsDeployLock,
 }
+
+type DeployApplyFuture<'a> = Pin<
+    Box<
+        dyn Future<Output = ployz_types::Result<ployz_types::model::DeployApplyResult>> + Send + 'a,
+    >,
+>;
 
 #[async_trait::async_trait]
 trait DeployMoveRpcClient: Clone + Send + Sync {
@@ -402,7 +409,7 @@ impl DaemonState {
         );
 
         let deploy_id = new_deploy_id();
-        let apply = apply_with_deploy_id_and_preconditions(
+        let apply = Box::pin(apply_with_deploy_id_and_preconditions(
             &active.mesh.store,
             &participant_client,
             &self.identity.machine_id,
@@ -414,7 +421,7 @@ impl DaemonState {
             issuer_factory,
             &prober,
             preconditions,
-        );
+        ));
         self.run_locked_deploy_apply(
             active,
             deploy_id,
@@ -458,7 +465,7 @@ impl DaemonState {
         );
 
         let deploy_id = prepared_deploy_id.clone();
-        let apply = apply_prepared_with_certificate_coordination(
+        let apply = Box::pin(apply_prepared_with_certificate_coordination(
             &active.mesh.store,
             &participant_client,
             &self.identity.machine_id,
@@ -468,7 +475,7 @@ impl DaemonState {
             challenge_readiness,
             issuer_factory,
             &prober,
-        );
+        ));
         self.run_locked_deploy_apply(
             active,
             deploy_id,
@@ -481,20 +488,16 @@ impl DaemonState {
         .await
     }
 
-    async fn run_locked_deploy_apply<F>(
+    async fn run_locked_deploy_apply(
         &self,
         active: &ActiveMesh,
         deploy_id: DeployId,
         runtime: DeployApplyRuntime,
-        apply: F,
+        mut apply: DeployApplyFuture<'_>,
         operation: &'static str,
         error_code: &'static str,
         encode_code: &'static str,
-    ) -> DaemonResponse
-    where
-        F: Future<Output = ployz_types::Result<ployz_types::model::DeployApplyResult>>,
-    {
-        tokio::pin!(apply);
+    ) -> DaemonResponse {
         let mut deploy_lock_renewer = tokio::spawn(renew_deploy_lock(
             runtime.deploy_lock.clone(),
             DEPLOY_LOCK_TTL,
