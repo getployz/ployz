@@ -642,6 +642,7 @@ async fn resume_prepared_apply_after_durable_commit(
         })?;
     let mut final_deploy_record = commit.deploy.clone();
     store.write_deploy_status(&final_deploy_record).await?;
+    repair_phase_records_from_durable_commit(store, &commit, &mut events).await;
     mark_prepared_applied_after_terminal_status(store, Some(prepared), &mut events).await;
 
     let plan = match resolve_plan(store, local_machine_id, manifest).await {
@@ -870,6 +871,80 @@ async fn recovered_commit_result_with_post_commit_warning(
         state: DeployState::CleanupPending,
         events,
     })
+}
+
+async fn repair_phase_records_from_durable_commit(
+    store: &StoreDriver,
+    commit: &DeployCommit,
+    events: &mut Vec<DeployEvent>,
+) {
+    if commit.phase_commits.is_empty() {
+        return;
+    }
+
+    let phase_commits = commit
+        .phase_commits
+        .iter()
+        .map(|phase_commit| (phase_commit.phase_id.clone(), phase_commit))
+        .collect::<BTreeMap<_, _>>();
+    let phases = match store
+        .list_deploy_phases(&commit.namespace, &commit.deploy.deploy_id)
+        .await
+    {
+        Ok(phases) => phases,
+        Err(error) => {
+            let message =
+                format!("could not list deploy phases for durable commit recovery: {error}");
+            warn!(
+                ?error,
+                deploy_id = %commit.deploy.deploy_id,
+                "failed to list deploy phases for durable commit recovery"
+            );
+            events.push(DeployEvent {
+                step: "phase".into(),
+                message,
+            });
+            return;
+        }
+    };
+
+    let mut repaired_count = 0usize;
+    for mut phase in phases {
+        let Some(phase_commit) = phase_commits.get(&phase.phase_id) else {
+            continue;
+        };
+        phase.commit_deploy_id = Some(phase_commit.commit_deploy_id.clone());
+        phase.state = DeployPhaseState::Succeeded {
+            completed_at: phase_commit.committed_at,
+        };
+        match store.upsert_deploy_phase(&phase).await {
+            Ok(()) => repaired_count += 1,
+            Err(error) => {
+                warn!(
+                    ?error,
+                    deploy_id = %commit.deploy.deploy_id,
+                    phase_id = %phase.phase_id,
+                    "failed to repair deploy phase from durable commit"
+                );
+                events.push(DeployEvent {
+                    step: "phase".into(),
+                    message: format!(
+                        "could not repair deploy phase '{}' from durable commit: {error}",
+                        phase.phase_id
+                    ),
+                });
+            }
+        }
+    }
+
+    if repaired_count > 0 {
+        events.push(DeployEvent {
+            step: "phase".into(),
+            message: format!(
+                "repaired {repaired_count} deploy phase records from durable commit log"
+            ),
+        });
+    }
 }
 
 async fn mark_prepared_applied_after_terminal_status(

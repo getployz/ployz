@@ -5531,6 +5531,7 @@ async fn apply_prepared_repairs_terminal_status_from_durable_commit() {
     .expect("prepare deploy");
     backend.reset_counts();
     backend.fail_committed_status_writes(true);
+    backend.fail_succeeded_phase_upsert(true);
 
     let participant_client = FakeParticipantClient::new(FakeController::default());
     let error = apply_prepared_with_certificate_coordination(
@@ -5572,6 +5573,7 @@ async fn apply_prepared_repairs_terminal_status_from_durable_commit() {
     ));
 
     backend.fail_committed_status_writes(false);
+    backend.fail_succeeded_phase_upsert(false);
     backend.reset_counts();
     let retry_controller = FakeController::default();
     let retry_participant_client = FakeParticipantClient::new(retry_controller.clone());
@@ -5593,6 +5595,10 @@ async fn apply_prepared_repairs_terminal_status_from_durable_commit() {
     assert_eq!(retry.state, DeployState::Committed);
     assert_eq!(retry_controller.start_count(), 0);
     assert_eq!(backend.commit_count(), 0);
+    assert!(
+        backend.succeeded_phase_upsert_count() > 0,
+        "retry should repair phase records from durable phase commits"
+    );
     assert_eq!(
         store
             .get_deploy(&prepared.prepared_deploy_id)
@@ -8592,6 +8598,7 @@ struct CountingBackend {
     fail_committed_status_writes_after_first: AtomicBool,
     fail_succeeded_phase_upsert: AtomicBool,
     fail_running_phase_upsert: AtomicBool,
+    succeeded_phase_upserts: AtomicUsize,
     pending_phase_upserts: AtomicUsize,
     fail_pending_phase_upsert_on: AtomicUsize,
     deploy_status_records: Mutex<Vec<DeployRecord>>,
@@ -8610,6 +8617,7 @@ impl CountingBackend {
             fail_committed_status_writes_after_first: AtomicBool::new(false),
             fail_succeeded_phase_upsert: AtomicBool::new(false),
             fail_running_phase_upsert: AtomicBool::new(false),
+            succeeded_phase_upserts: AtomicUsize::new(0),
             pending_phase_upserts: AtomicUsize::new(0),
             fail_pending_phase_upsert_on: AtomicUsize::new(0),
             deploy_status_records: Mutex::new(Vec::new()),
@@ -8628,6 +8636,7 @@ impl CountingBackend {
         self.commit_calls.store(0, Ordering::SeqCst);
         self.deploy_status_writes.store(0, Ordering::SeqCst);
         self.committed_status_writes.store(0, Ordering::SeqCst);
+        self.succeeded_phase_upserts.store(0, Ordering::SeqCst);
     }
 
     fn fail_committed_status_writes_after_first(&self, fail: bool) {
@@ -8647,6 +8656,10 @@ impl CountingBackend {
     fn fail_succeeded_phase_upsert(&self, fail: bool) {
         self.fail_succeeded_phase_upsert
             .store(fail, Ordering::SeqCst);
+    }
+
+    fn succeeded_phase_upsert_count(&self) -> usize {
+        self.succeeded_phase_upserts.load(Ordering::SeqCst)
     }
 
     fn fail_running_phase_upsert(&self, fail: bool) {
@@ -8987,10 +9000,14 @@ impl DeployStore for CountingBackend {
         if matches!(phase.state, DeployPhaseState::Succeeded { .. })
             && self.fail_succeeded_phase_upsert.load(Ordering::SeqCst)
         {
+            self.succeeded_phase_upserts.fetch_add(1, Ordering::SeqCst);
             return Err(Error::operation(
                 "counting_upsert_deploy_phase",
                 "injected succeeded phase failure",
             ));
+        }
+        if matches!(phase.state, DeployPhaseState::Succeeded { .. }) {
+            self.succeeded_phase_upserts.fetch_add(1, Ordering::SeqCst);
         }
         self.store.upsert_deploy_phase(phase).await
     }
