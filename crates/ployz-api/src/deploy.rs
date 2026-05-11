@@ -67,6 +67,18 @@ pub struct DeployFailurePayload {
     pub prepared_deploy_state: Option<PreparedDeployState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepared_deploy_expires_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +90,9 @@ pub enum DeployFailureReason {
     PreparedDeployNotApplicable,
     PreparedDeployExpired,
     PreparedDeployInvalid,
+    DeployImageDigestRequired,
+    DeployImageAvailabilityMissing,
+    DeployImageAvailabilityNotPresent,
 }
 
 #[cfg(test)]
@@ -130,6 +145,12 @@ mod tests {
             prepared_deploy_id: None,
             prepared_deploy_state: None,
             prepared_deploy_expires_at: None,
+            service: None,
+            slot_id: None,
+            machine_id: None,
+            image: None,
+            digest: None,
+            state: None,
         };
 
         let json = serde_json::to_value(&payload).expect("serialize deploy failure");
@@ -162,6 +183,7 @@ mod tests {
             service_sources: Vec::new(),
             service_source_fingerprint: String::new(),
             service_branch_sources: Vec::new(),
+            image_availability: Vec::new(),
             volume_moves: Vec::new(),
             volume_clones: Vec::new(),
             volume_clone_preflights: Vec::new(),
@@ -207,5 +229,36 @@ mod tests {
             request_roundtrip.prepared_deploy_id,
             DeployId("prepare-1".into())
         );
+    }
+
+    #[test]
+    fn deploy_failure_payload_serializes_image_availability_details() {
+        let payload = DeployFailurePayload {
+            reason: DeployFailureReason::DeployImageAvailabilityMissing,
+            expected_baseline: None,
+            actual_baseline: None,
+            baseline_changed_components: Vec::new(),
+            prepared_deploy_id: None,
+            prepared_deploy_state: None,
+            prepared_deploy_expires_at: None,
+            service: Some("web".into()),
+            slot_id: Some("slot-0001".into()),
+            machine_id: Some("machine-a".into()),
+            image: Some("sha256:abc".into()),
+            digest: Some("sha256:abc".into()),
+            state: None,
+        };
+
+        let json = serde_json::to_value(&payload).expect("serialize deploy failure");
+
+        assert_eq!(
+            json["reason"],
+            serde_json::json!("deploy_image_availability_missing")
+        );
+        assert_eq!(json["service"], serde_json::json!("web"));
+        assert_eq!(json["slot_id"], serde_json::json!("slot-0001"));
+        assert_eq!(json["machine_id"], serde_json::json!("machine-a"));
+        assert_eq!(json["digest"], serde_json::json!("sha256:abc"));
+        assert!(json.get("state").is_none());
     }
 }

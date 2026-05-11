@@ -21,13 +21,15 @@ use crate::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
     DeployBaselineComponent, DeployChangeKind, DeployId, DeployPhaseAdvancePolicy,
     DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord, DeployPhaseRollbackPolicy,
-    DeployPhaseState, DeployPhaseWork, DeployPreviewBaseline, DeployPreviewBaselineComponents,
-    DeployRecord, DeployState, DrainState, InstanceId, InstancePhase, InstanceStatusRecord,
-    MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp,
-    PreparedDeployRecord, PreparedDeployState, PublicKey, ServiceBranchLineageRecord,
-    ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord,
-    ServiceRoutingPolicy, ServiceSourceMode, SlotId, VolumeBranchLineageRecord,
-    VolumeClonePreflightAction, VolumeClonePreflightScope, VolumeMovementRecord, VolumeRecord,
+    DeployPhaseState, DeployPhaseWork, DeployPreview, DeployPreviewBaseline,
+    DeployPreviewBaselineComponents, DeployRecord, DeployState, DrainState, ImageArtifact,
+    ImageArtifactProvenance, ImageAvailabilityRecord, ImageDigest, ImagePresence, ImageRef,
+    InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle,
+    MachineMembership, MachineTopology, OverlayIp, PreparedDeployRecord, PreparedDeployState,
+    PublicKey, ServiceBranchLineageRecord, ServiceRelease, ServiceReleaseRecord,
+    ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, ServiceSourceMode, SlotId,
+    VolumeBranchLineageRecord, VolumeClonePreflightAction, VolumeClonePreflightScope,
+    VolumeMovementRecord, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -188,6 +190,321 @@ async fn resolve_plan_preview_includes_default_phase_for_basic_manifest() {
             if service == "api" && *action == DeployChangeKind::Create
     ));
     assert!(preview.volume_clone_preflights.is_empty());
+}
+
+#[tokio::test]
+async fn preview_includes_present_pull_never_image_availability() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let digest = test_image_digest('a');
+    store
+        .upsert_image_availability(&present_image_record("machine-a", digest.clone()))
+        .await
+        .expect("seed image availability");
+    let mut service = test_service_spec("api", Placement::Replicated { count: 1 }, digest.as_str());
+    service.template.pull_policy = PullPolicy::Never;
+    let manifest = test_manifest(vec![service]);
+
+    let preview = preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
+        .await
+        .expect("preview");
+
+    let [availability] = preview.image_availability.as_slice() else {
+        panic!(
+            "expected one image availability check: {:?}",
+            preview.image_availability
+        );
+    };
+    assert_eq!(availability.service, "api");
+    assert_eq!(availability.slot_id, SlotId("slot-0001".into()));
+    assert_eq!(availability.machine_id, MachineId("machine-a".into()));
+    assert_eq!(availability.digest, digest);
+}
+
+#[tokio::test]
+async fn preview_skips_unchanged_pull_never_tagged_service() {
+    let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut existing = test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "example/api:already-running",
+    );
+    existing.template.pull_policy = PullPolicy::Never;
+    let revision_hash = existing.revision_hash().expect("revision hash");
+    store
+        .upsert_service_release(&test_release(
+            &Namespace("test".into()),
+            "api",
+            &revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-a",
+                "inst-existing",
+                &revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+    let manifest = test_manifest(vec![existing]);
+
+    let preview = preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
+        .await
+        .expect("unchanged pull-never tag should not need a new image check");
+
+    let [service] = preview.services.as_slice() else {
+        panic!("expected one service");
+    };
+    assert_eq!(service.action, DeployChangeKind::Unchanged);
+    assert!(preview.image_availability.is_empty());
+}
+
+#[tokio::test]
+async fn preview_checks_pull_never_image_availability_for_replace_slots() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let old_digest = test_image_digest('a');
+    let new_digest = test_image_digest('b');
+    let mut old_service = test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        old_digest.as_str(),
+    );
+    old_service.template.pull_policy = PullPolicy::Never;
+    let old_revision_hash = old_service.revision_hash().expect("old revision hash");
+    store
+        .upsert_service_release(&test_release(
+            &Namespace("test".into()),
+            "api",
+            &old_revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-a",
+                "inst-existing",
+                &old_revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed old release");
+    store
+        .upsert_image_availability(&present_image_record("machine-a", new_digest.clone()))
+        .await
+        .expect("seed image availability");
+    let mut new_service = test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        new_digest.as_str(),
+    );
+    new_service.template.pull_policy = PullPolicy::Never;
+    let manifest = test_manifest(vec![new_service]);
+
+    let preview = preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
+        .await
+        .expect("replace preview");
+
+    let [service] = preview.services.as_slice() else {
+        panic!("expected one service");
+    };
+    assert_eq!(service.action, DeployChangeKind::Replace);
+    let [availability] = preview.image_availability.as_slice() else {
+        panic!(
+            "expected replace slot image availability: {:?}",
+            preview.image_availability
+        );
+    };
+    assert_eq!(availability.slot_id, SlotId("slot-0001".into()));
+    assert_eq!(availability.machine_id, MachineId("machine-a".into()));
+    assert_eq!(availability.digest, new_digest);
+}
+
+#[tokio::test]
+async fn apply_success_persists_pull_never_image_availability_summary() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let digest = test_image_digest('a');
+    store
+        .upsert_image_availability(&present_image_record("machine-a", digest.clone()))
+        .await
+        .expect("seed image availability");
+    let mut service = test_service_spec("api", Placement::Replicated { count: 1 }, digest.as_str());
+    service.template.pull_policy = PullPolicy::Never;
+    let manifest = test_manifest(vec![service]);
+    let deploy_id = DeployId("deploy-image-availability".into());
+    let participant_client = FakeParticipantClient::new(FakeController::default());
+
+    let result = apply_with_deploy_id_and_preconditions(
+        &store,
+        &participant_client,
+        &local_machine_id,
+        &manifest,
+        deploy_id.clone(),
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+        DeployApplyPreconditions::default(),
+    )
+    .await
+    .expect("apply");
+
+    assert_eq!(result.state, DeployState::Committed);
+    let [availability] = result.preview.image_availability.as_slice() else {
+        panic!(
+            "expected apply result image availability: {:?}",
+            result.preview.image_availability
+        );
+    };
+    assert_eq!(availability.service, "api");
+    assert_eq!(availability.machine_id, MachineId("machine-a".into()));
+    assert_eq!(availability.digest, digest);
+    let record = store
+        .get_deploy(&deploy_id)
+        .await
+        .expect("get deploy")
+        .expect("deploy record");
+    let summary: DeployPreview =
+        serde_json::from_str(&record.summary_json).expect("summary preview");
+    assert_eq!(
+        summary.image_availability,
+        result.preview.image_availability
+    );
+}
+
+#[tokio::test]
+async fn preview_rejects_pull_never_without_digest_reference() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut service = test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "example/api:latest",
+    );
+    service.template.pull_policy = PullPolicy::Never;
+    let manifest = test_manifest(vec![service]);
+
+    let error = preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
+        .await
+        .expect_err("mutable pull-never image should fail preview");
+
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::DeployImageDigestRequired {
+            service: "api".into(),
+            image: "example/api:latest".into(),
+        })
+    );
+}
+
+#[tokio::test]
+async fn preview_rejects_missing_pull_never_image_availability() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let digest = test_image_digest('a');
+    let mut service = test_service_spec("api", Placement::Replicated { count: 1 }, digest.as_str());
+    service.template.pull_policy = PullPolicy::Never;
+    let manifest = test_manifest(vec![service]);
+
+    let error = preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
+        .await
+        .expect_err("missing image availability should fail preview");
+
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::DeployImageAvailabilityMissing {
+            service: "api".into(),
+            slot_id: "slot-0001".into(),
+            machine_id: "machine-a".into(),
+            image: digest.as_str().into(),
+            digest: digest.as_str().into(),
+        })
+    );
+}
+
+#[tokio::test]
+async fn preview_rejects_non_present_pull_never_image_availability() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let digest = test_image_digest('a');
+    store
+        .upsert_image_availability(&absent_image_record("machine-a", digest.clone()))
+        .await
+        .expect("seed image availability");
+    let mut service = test_service_spec("api", Placement::Replicated { count: 1 }, digest.as_str());
+    service.template.pull_policy = PullPolicy::Never;
+    let manifest = test_manifest(vec![service]);
+
+    let error = preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
+        .await
+        .expect_err("absent image availability should fail preview");
+
+    assert_eq!(
+        error,
+        Error::Deploy(DeployError::DeployImageAvailabilityNotPresent {
+            service: "api".into(),
+            slot_id: "slot-0001".into(),
+            machine_id: "machine-a".into(),
+            image: digest.as_str().into(),
+            digest: digest.as_str().into(),
+            state: "absent".into(),
+        })
+    );
+}
+
+#[tokio::test]
+async fn preview_does_not_require_availability_for_registry_pull_policies() {
+    let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut if_not_present = test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "example/api:latest",
+    );
+    if_not_present.template.pull_policy = PullPolicy::IfNotPresent;
+    let mut always = test_service_spec(
+        "worker",
+        Placement::Replicated { count: 1 },
+        "example/worker:latest",
+    );
+    always.template.pull_policy = PullPolicy::Always;
+    let manifest = test_manifest(vec![if_not_present, always]);
+
+    let preview = preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
+        .await
+        .expect("registry pull policies should not require availability records");
+
+    assert!(preview.image_availability.is_empty());
+}
+
+#[tokio::test]
+async fn apply_rejects_missing_pull_never_image_before_participant_inspect() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let digest = test_image_digest('a');
+    let mut service = test_service_spec("api", Placement::Replicated { count: 1 }, digest.as_str());
+    service.template.pull_policy = PullPolicy::Never;
+    let manifest = test_manifest(vec![service]);
+    let participant = UnsupportedParticipantClient::default();
+
+    let error = apply_with_certificate_coordination(
+        &store,
+        &participant,
+        &local_machine_id,
+        &manifest,
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+    .expect_err("missing image should fail before participant inspect");
+
+    assert!(matches!(
+        error,
+        Error::Deploy(DeployError::DeployImageAvailabilityMissing { .. })
+    ));
+    assert_eq!(participant.inspect_count(), 0);
 }
 
 #[tokio::test]
@@ -7289,6 +7606,7 @@ async fn prepared_deploy_builds_applying_record_and_revisions() {
         10,
         local_machine_id.clone(),
         plan,
+        Vec::new(),
     )
     .expect("prepared deploy");
 
@@ -7318,8 +7636,14 @@ async fn started_candidates_rejects_missing_started_create_slot() {
     let plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("resolve plan");
-    let prepared = PreparedDeploy::new(DeployId("deploy-1".into()), 10, local_machine_id, plan)
-        .expect("prepared deploy");
+    let prepared = PreparedDeploy::new(
+        DeployId("deploy-1".into()),
+        10,
+        local_machine_id,
+        plan,
+        Vec::new(),
+    )
+    .expect("prepared deploy");
 
     let error = prepared
         .into_started(HashMap::new())
@@ -7364,8 +7688,14 @@ async fn commit_plan_contains_removed_services() {
         .and_then(|service| service.slots.first().map(|slot| slot.slot_id.clone()))
         .expect("worker slot");
     let worker_revision_hash = manifest.services[0].revision_hash().expect("revision hash");
-    let prepared = PreparedDeploy::new(DeployId("deploy-1".into()), 10, local_machine_id, plan)
-        .expect("prepared deploy");
+    let prepared = PreparedDeploy::new(
+        DeployId("deploy-1".into()),
+        10,
+        local_machine_id,
+        plan,
+        Vec::new(),
+    )
+    .expect("prepared deploy");
     let started = HashMap::from([(
         (String::from("worker"), worker_slot.0.clone()),
         test_instance_status(
@@ -7434,9 +7764,14 @@ async fn commit_plan_contains_branch_lineage() {
         .find(|service| service.service == "web")
         .and_then(|service| service.slots.first().map(|slot| slot.slot_id.clone()))
         .expect("web slot");
-    let prepared =
-        PreparedDeploy::new(DeployId("deploy-branch".into()), 10, local_machine_id, plan)
-            .expect("prepared deploy");
+    let prepared = PreparedDeploy::new(
+        DeployId("deploy-branch".into()),
+        10,
+        local_machine_id,
+        plan,
+        Vec::new(),
+    )
+    .expect("prepared deploy");
     let started = HashMap::from([(
         (String::from("web"), slot.0.clone()),
         test_instance_status(
@@ -8385,6 +8720,41 @@ fn test_service_spec(name: &str, placement: Placement, image: &str) -> ServiceSp
         rollout: RolloutStrategy::Recreate,
         labels: BTreeMap::new(),
         restart: RestartPolicy::UnlessStopped,
+    }
+}
+
+fn test_image_digest(hex: char) -> ImageDigest {
+    ImageDigest::try_new(format!("sha256:{}", hex.to_string().repeat(64))).expect("valid digest")
+}
+
+fn present_image_record(machine_id: &str, digest: ImageDigest) -> ImageAvailabilityRecord {
+    ImageAvailabilityRecord {
+        machine_id: MachineId(machine_id.into()),
+        digest: digest.clone(),
+        presence: ImagePresence::Present {
+            artifact: ImageArtifact {
+                image: ImageRef {
+                    repository: None,
+                    tag: None,
+                    digest,
+                },
+                platform: None,
+                provenance: ImageArtifactProvenance::External { source: None },
+                created_at: 10,
+            },
+            recorded_at: 10,
+            source_operation_id: None,
+        },
+        updated_at: 10,
+    }
+}
+
+fn absent_image_record(machine_id: &str, digest: ImageDigest) -> ImageAvailabilityRecord {
+    ImageAvailabilityRecord {
+        machine_id: MachineId(machine_id.into()),
+        digest,
+        presence: ImagePresence::Absent { observed_at: 10 },
+        updated_at: 10,
     }
 }
 

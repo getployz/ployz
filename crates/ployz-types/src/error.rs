@@ -159,6 +159,29 @@ pub enum DeployError {
     ParticipantSetChanged,
     #[error("resolved execution plan changed after lock acquisition; retry deploy")]
     ExecutionPlanChanged,
+    #[error("service '{service}' uses pull_policy=never with non-digest image reference '{image}'")]
+    DeployImageDigestRequired { service: String, image: String },
+    #[error(
+        "service '{service}' slot '{slot_id}' requires image '{digest}' on machine '{machine_id}', but no availability record exists"
+    )]
+    DeployImageAvailabilityMissing {
+        service: String,
+        slot_id: String,
+        machine_id: String,
+        image: String,
+        digest: String,
+    },
+    #[error(
+        "service '{service}' slot '{slot_id}' requires image '{digest}' on machine '{machine_id}', but availability is {state}"
+    )]
+    DeployImageAvailabilityNotPresent {
+        service: String,
+        slot_id: String,
+        machine_id: String,
+        image: String,
+        digest: String,
+        state: String,
+    },
     #[error("invalid deploy option '{field}': {message}")]
     DeployOptionInvalid { field: String, message: String },
     #[error("{diff}")]
