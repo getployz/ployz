@@ -2482,18 +2482,14 @@ mod tests {
         let operation = state
             .build_operation_store()
             .load(&payload.operation_id)
-            .expect("load operation");
-        let Some(operation) = operation else {
-            panic!("expected operation");
-        };
-        assert_eq!(operation.status, OperationStatus::Succeeded);
-        let Some(artifact) = operation.artifact else {
-            panic!("expected artifact");
-        };
-        assert_eq!(artifact.digest(), &image_digest);
-        let Some(active) = state.active.as_ref() else {
-            panic!("expected active daemon state");
-        };
+            .expect("load operation")
+            .expect("operation exists");
+        assert_eq!(operation.status(), OperationStatus::Succeeded);
+        assert_eq!(
+            operation.artifact().expect("artifact").digest(),
+            &image_digest
+        );
+        let active = state.active.as_ref().expect("active daemon state");
         let record = active
             .mesh
             .store
@@ -2641,10 +2637,8 @@ mod tests {
         let Some(DaemonPayload::BuildOperation(payload)) = response.payload else {
             panic!("expected build operation payload");
         };
-        assert_eq!(payload.operation.status, OperationStatus::Failed);
-        let Some(active) = state.active.as_ref() else {
-            panic!("expected active daemon state");
-        };
+        assert_eq!(payload.operation.status(), OperationStatus::Failed);
+        let active = state.active.as_ref().expect("active daemon state");
         assert!(
             active
                 .mesh
@@ -2706,8 +2700,7 @@ mod tests {
         assert!(
             !payload
                 .operation
-                .last_error
-                .as_deref()
+                .last_error()
                 .expect("last error")
                 .contains("super-secret-token")
         );
@@ -3044,6 +3037,6 @@ mod tests {
         let Some(DaemonPayload::BuildOperation(payload)) = response.payload else {
             panic!("expected build operation payload");
         };
-        assert_eq!(payload.operation.status, OperationStatus::Failed);
+        assert_eq!(payload.operation.status(), OperationStatus::Failed);
     }
 }

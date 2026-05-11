@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ployz_api::{BuildOperationListPayload, BuildOperationPayload, DaemonPayload};
 use ployz_types::model::{
     BuildInputSummary, BuildLocation, BuildMethod, BuildOperationKind, BuildOperationRecord,
-    ImageArtifact, OperationStatus,
+    BuildOperationState, ImageArtifact, OperationStatus,
 };
 use ployz_types::time::now_unix_secs;
 
@@ -50,11 +50,9 @@ impl BuildOperationStore {
             kind,
             method,
             location,
-            status: OperationStatus::Running,
             stage: stage.into(),
             inputs,
-            artifact: None,
-            last_error: None,
+            state: BuildOperationState::Running { last_error: None },
             started_at: now,
             updated_at: now,
         };
@@ -78,11 +76,9 @@ impl BuildOperationStore {
             kind,
             method,
             location,
-            status: OperationStatus::Running,
             stage: stage.into(),
             inputs: BuildInputSummary::default(),
-            artifact: None,
-            last_error: None,
+            state: BuildOperationState::Running { last_error: None },
             started_at: now,
             updated_at: now,
         };
@@ -107,7 +103,7 @@ impl BuildOperationStore {
         record: &mut BuildOperationRecord,
         artifact: ImageArtifact,
     ) -> Result<(), String> {
-        record.artifact = Some(artifact);
+        record.state = BuildOperationState::Succeeded { artifact };
         record.updated_at = now_unix_secs();
         self.save(record)
     }
@@ -118,13 +114,7 @@ impl BuildOperationStore {
         status: OperationStatus,
         last_error: Option<String>,
     ) -> Result<(), String> {
-        apply_status_transition(
-            &mut record.status,
-            &mut record.last_error,
-            &mut record.updated_at,
-            status,
-            last_error,
-        );
+        apply_status_transition(record, status, last_error);
         self.save(record)
     }
 
@@ -220,7 +210,11 @@ impl DaemonState {
             .map(|record| {
                 format!(
                     "{}  {}  {}  {}  {}",
-                    record.id, record.kind, record.method, record.status, record.stage
+                    record.id,
+                    record.kind,
+                    record.method,
+                    record.status(),
+                    record.stage
                 )
             })
             .collect::<Vec<_>>()
@@ -269,7 +263,7 @@ impl DaemonState {
         };
 
         for mut record in records {
-            if record.status != OperationStatus::Running {
+            if record.status() != OperationStatus::Running {
                 continue;
             }
             if let Err(err) = store.update_status(
@@ -287,22 +281,27 @@ impl DaemonState {
 }
 
 fn apply_status_transition(
-    current_status: &mut OperationStatus,
-    current_error: &mut Option<String>,
-    updated_at: &mut u64,
+    record: &mut BuildOperationRecord,
     status: OperationStatus,
     last_error: Option<String>,
 ) {
-    *current_status = status;
-    match status {
-        OperationStatus::Succeeded => *current_error = None,
-        OperationStatus::Failed | OperationStatus::Interrupted | OperationStatus::Running => {
-            if let Some(last_error) = last_error {
-                *current_error = Some(last_error);
-            }
+    record.state = match status {
+        OperationStatus::Running => BuildOperationState::Running {
+            last_error: last_error.or_else(|| record.last_error().map(str::to_string)),
+        },
+        OperationStatus::Succeeded => {
+            let Some(artifact) = record.artifact().cloned() else {
+                record.updated_at = now_unix_secs();
+                return;
+            };
+            BuildOperationState::Succeeded { artifact }
         }
-    }
-    *updated_at = now_unix_secs();
+        OperationStatus::Failed => BuildOperationState::Failed {
+            last_error: last_error.unwrap_or_else(|| "build operation failed".into()),
+        },
+        OperationStatus::Interrupted => BuildOperationState::Interrupted { last_error },
+    };
+    record.updated_at = now_unix_secs();
 }
 
 #[allow(dead_code)]
@@ -368,7 +367,8 @@ mod tests {
     use crate::daemon::DaemonState;
     use ployz_runtime_api::Identity;
     use ployz_types::model::{
-        BuildLocation, BuildMethod, BuildOperationKind, MachineId, OperationStatus,
+        BuildLocation, BuildMethod, BuildOperationKind, ImageArtifact, ImageArtifactProvenance,
+        ImageDigest, ImageRef, MachineId, OperationStatus,
     };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -397,6 +397,17 @@ mod tests {
             None,
             1,
         )
+    }
+
+    fn artifact() -> ImageArtifact {
+        ImageArtifact {
+            image: ImageRef::digest_only(
+                ImageDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest"),
+            ),
+            platform: None,
+            provenance: ImageArtifactProvenance::External { source: None },
+            created_at: 1,
+        }
     }
 
     #[test]
@@ -463,9 +474,12 @@ mod tests {
             .load("build-visible-failure")
             .expect("load running operation")
             .expect("operation exists");
-        assert_eq!(running.status, OperationStatus::Running);
-        assert_eq!(running.last_error.as_deref(), Some("build failed"));
+        assert_eq!(running.status(), OperationStatus::Running);
+        assert_eq!(running.last_error(), Some("build failed"));
 
+        store
+            .update_artifact(&mut record, artifact())
+            .expect("record artifact");
         store
             .update_status(&mut record, OperationStatus::Succeeded, None)
             .expect("mark succeeded");
@@ -473,8 +487,8 @@ mod tests {
             .load("build-visible-failure")
             .expect("load succeeded operation")
             .expect("operation exists");
-        assert_eq!(succeeded.status, OperationStatus::Succeeded);
-        assert_eq!(succeeded.last_error, None);
+        assert_eq!(succeeded.status(), OperationStatus::Succeeded);
+        assert_eq!(succeeded.last_error(), None);
     }
 
     #[test]
@@ -535,11 +549,10 @@ mod tests {
             .load(&operation.id)
             .expect("load operation")
             .expect("operation exists");
-        assert_eq!(recovered.status, OperationStatus::Interrupted);
+        assert_eq!(recovered.status(), OperationStatus::Interrupted);
         assert!(
             recovered
-                .last_error
-                .as_deref()
+                .last_error()
                 .expect("last error")
                 .contains("daemon restarted")
         );

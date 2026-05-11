@@ -603,21 +603,84 @@ pub struct BuildSecretSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildOperationState {
+    Running {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+    Succeeded {
+        artifact: ImageArtifact,
+    },
+    Failed {
+        last_error: String,
+    },
+    Interrupted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+}
+
+impl BuildOperationState {
+    #[must_use]
+    pub fn status(&self) -> OperationStatus {
+        match self {
+            Self::Running { .. } => OperationStatus::Running,
+            Self::Succeeded { .. } => OperationStatus::Succeeded,
+            Self::Failed { .. } => OperationStatus::Failed,
+            Self::Interrupted { .. } => OperationStatus::Interrupted,
+        }
+    }
+
+    #[must_use]
+    pub fn artifact(&self) -> Option<&ImageArtifact> {
+        match self {
+            Self::Succeeded { artifact } => Some(artifact),
+            Self::Running { .. } | Self::Failed { .. } | Self::Interrupted { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        match self {
+            Self::Failed { last_error } => Some(last_error.as_str()),
+            Self::Running { last_error } | Self::Interrupted { last_error } => {
+                last_error.as_deref()
+            }
+            Self::Succeeded { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BuildOperationRecord {
     pub id: String,
     pub kind: BuildOperationKind,
     pub method: BuildMethod,
     pub location: BuildLocation,
-    pub status: OperationStatus,
     pub stage: String,
     #[serde(default, skip_serializing_if = "BuildInputSummary::is_empty")]
     pub inputs: BuildInputSummary,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact: Option<ImageArtifact>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
+    pub state: BuildOperationState,
     pub started_at: u64,
     pub updated_at: u64,
+}
+
+impl BuildOperationRecord {
+    #[must_use]
+    pub fn status(&self) -> OperationStatus {
+        self.state.status()
+    }
+
+    #[must_use]
+    pub fn artifact(&self) -> Option<&ImageArtifact> {
+        self.state.artifact()
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        self.state.last_error()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display, JsonSchema)]
@@ -3845,6 +3908,27 @@ mod tests {
 
         serde_json::from_value::<ImageOperationTargetOutcome>(json)
             .expect_err("failed target cannot carry success bytes");
+    }
+
+    #[test]
+    fn build_operation_state_rejects_failed_artifact() {
+        let json = serde_json::json!({
+            "status": "failed",
+            "last_error": "build failed",
+            "artifact": {
+                "image": {
+                    "kind": "digest",
+                    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "provenance": {
+                    "kind": "external"
+                },
+                "created_at": 42
+            }
+        });
+
+        serde_json::from_value::<BuildOperationState>(json)
+            .expect_err("failed build operation cannot carry success artifact");
     }
 
     #[test]
