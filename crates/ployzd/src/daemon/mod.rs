@@ -7,6 +7,7 @@ mod setup;
 pub mod ssh;
 mod subnet_coordination;
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,7 +28,7 @@ use ployz_runtime_api::Identity;
 use ployz_runtime_api::RuntimeHandle;
 use ployz_types::model::MachineTopology;
 use serde::Serialize;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeRestartMode {
@@ -108,6 +109,7 @@ pub struct DaemonState {
     pub dns_metrics_listen_addr: Option<String>,
     pub gateway_metrics_listen_addr: Option<String>,
     pub image_registry: ImageRegistry,
+    local_build_locks: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
     pub active: Option<ActiveMesh>,
     pub subnet_coord: Arc<dyn SubnetReservationCoordinator>,
     pub command_tx: Option<mpsc::Sender<IncomingCommand>>,
@@ -225,6 +227,7 @@ impl DaemonState {
             dns_metrics_listen_addr,
             gateway_metrics_listen_addr,
             image_registry: ImageRegistry::new(data_dir.join("image-registry")),
+            local_build_locks: Arc::new(Mutex::new(BTreeMap::new())),
             active: None,
             subnet_coord: Arc::new(MemorySubnetCoordinator::new()),
             command_tx: None,
@@ -281,6 +284,14 @@ impl DaemonState {
         self.active
             .as_ref()
             .ok_or_else(|| Box::new(self.err(code, message)))
+    }
+
+    pub(crate) async fn local_build_lock(&self, image_name: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.local_build_locks.lock().await;
+        locks
+            .entry(image_name.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     pub fn ok_json_pretty<T: Serialize>(
