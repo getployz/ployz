@@ -121,6 +121,7 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::DeployApply { .. } => "deploy_apply",
         ployz_api::DaemonRequest::DeployApplyPrepared { .. } => "deploy_apply_prepared",
         ployz_api::DaemonRequest::DeployExport { .. } => "deploy_export",
+        ployz_api::DaemonRequest::BranchNamespace { .. } => "branch_namespace",
         ployz_api::DaemonRequest::MigrateService { .. } => "migrate_service",
         ployz_api::DaemonRequest::ImageStatus { .. } => "image_status",
         ployz_api::DaemonRequest::ImageInspect { .. } => "image_inspect",

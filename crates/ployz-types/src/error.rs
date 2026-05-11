@@ -143,6 +143,16 @@ pub enum DeployError {
     VolumeCloneSourceMachineIneligible { volume: String, machine_id: String },
     #[error("volume '{volume}' clone source machine '{machine_id}' is not storage-capable")]
     VolumeCloneSourceMachineNotStorageCapable { volume: String, machine_id: String },
+    #[error(
+        "volume '{volume}' clone source {source_namespace}/{source_volume} changed from fingerprint '{expected_source_record_fingerprint}' to '{actual_source_record_fingerprint}'"
+    )]
+    VolumeCloneSourceChanged {
+        volume: String,
+        source_namespace: String,
+        source_volume: String,
+        expected_source_record_fingerprint: String,
+        actual_source_record_fingerprint: String,
+    },
     #[error("volume '{volume}' clone execution is not supported yet")]
     VolumeCloneExecutionUnsupported { volume: String },
     #[error("participant '{machine_id}' is missing from machine inventory")]
@@ -246,6 +256,15 @@ pub enum DeployError {
         namespace: String,
         service: String,
         revision_hash: String,
+    },
+    #[error(
+        "branch source {namespace}/{service} changed from revision '{expected_revision_hash}' to '{actual_revision_hash}'"
+    )]
+    BranchSourceRevisionChanged {
+        namespace: String,
+        service: String,
+        expected_revision_hash: String,
+        actual_revision_hash: String,
     },
     #[error("could not decode branch source spec for {namespace}/{service}: {message}")]
     BranchSourceSpecDecode {
