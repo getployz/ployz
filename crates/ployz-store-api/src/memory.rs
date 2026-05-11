@@ -1671,7 +1671,7 @@ mod tests {
             .expect("list deploy releases");
         assert_eq!(releases.len(), 1);
         assert_eq!(releases[0].service, "api");
-        assert_eq!(releases[0].release.primary_revision_hash, "rev-new");
+        assert_eq!(releases[0].release.primary_revision_hash(), "rev-new");
     }
 
     #[tokio::test]
@@ -2164,7 +2164,7 @@ mod tests {
 
         match event {
             RoutingEvent::ReleaseUpsert(new) => {
-                assert_eq!(new.release.primary_revision_hash, "rev-new");
+                assert_eq!(new.release.primary_revision_hash(), "rev-new");
             }
             other => panic!("redeploy must emit release upsert fact, got {other:?}"),
         }
@@ -2661,16 +2661,12 @@ mod tests {
         ServiceReleaseRecord {
             namespace: namespace.clone(),
             service: service.into(),
-            release: ployz_types::model::ServiceRelease {
-                primary_revision_hash: revision_hash.into(),
-                referenced_revision_hashes: vec![revision_hash.into()],
-                routing: ployz_types::model::ServiceRoutingPolicy::Direct {
-                    revision_hash: revision_hash.into(),
-                },
-                slots: Vec::new(),
-                updated_by_deploy_id: DeployId::new(deploy_id),
-                updated_at: 1,
-            },
+            release: ployz_types::model::ServiceRelease::direct(
+                revision_hash,
+                Vec::new(),
+                DeployId::new(deploy_id),
+                1,
+            ),
         }
     }
 

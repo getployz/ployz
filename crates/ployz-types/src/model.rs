@@ -1782,12 +1782,103 @@ pub struct ServiceReleaseRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceRelease {
-    pub primary_revision_hash: String,
-    pub referenced_revision_hashes: Vec<String>,
-    pub routing: ServiceRoutingPolicy,
+    pub target: ServiceReleaseTarget,
     pub slots: Vec<ServiceReleaseSlot>,
     pub updated_by_deploy_id: DeployId,
     pub updated_at: u64,
+}
+
+impl ServiceRelease {
+    #[must_use]
+    pub fn direct(
+        revision_hash: impl Into<String>,
+        slots: Vec<ServiceReleaseSlot>,
+        updated_by_deploy_id: DeployId,
+        updated_at: u64,
+    ) -> Self {
+        Self {
+            target: ServiceReleaseTarget::Direct {
+                revision_hash: revision_hash.into(),
+            },
+            slots,
+            updated_by_deploy_id,
+            updated_at,
+        }
+    }
+
+    #[must_use]
+    pub fn split(
+        primary_revision_hash: impl Into<String>,
+        allocations: Vec<ServiceTrafficAllocation>,
+        slots: Vec<ServiceReleaseSlot>,
+        updated_by_deploy_id: DeployId,
+        updated_at: u64,
+    ) -> Self {
+        Self {
+            target: ServiceReleaseTarget::Split {
+                primary_revision_hash: primary_revision_hash.into(),
+                allocations,
+            },
+            slots,
+            updated_by_deploy_id,
+            updated_at,
+        }
+    }
+
+    #[must_use]
+    pub fn primary_revision_hash(&self) -> &str {
+        match &self.target {
+            ServiceReleaseTarget::Direct { revision_hash } => revision_hash,
+            ServiceReleaseTarget::Split {
+                primary_revision_hash,
+                ..
+            } => primary_revision_hash,
+        }
+    }
+
+    #[must_use]
+    pub fn referenced_revision_hashes(&self) -> Vec<String> {
+        match &self.target {
+            ServiceReleaseTarget::Direct { revision_hash } => vec![revision_hash.clone()],
+            ServiceReleaseTarget::Split {
+                primary_revision_hash,
+                allocations,
+            } => {
+                let mut revisions = Vec::with_capacity(allocations.len() + 1);
+                revisions.push(primary_revision_hash.clone());
+                for allocation in allocations {
+                    if !revisions.contains(&allocation.revision_hash) {
+                        revisions.push(allocation.revision_hash.clone());
+                    }
+                }
+                revisions
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn routing_policy(&self) -> ServiceRoutingPolicy {
+        match &self.target {
+            ServiceReleaseTarget::Direct { revision_hash } => ServiceRoutingPolicy::Direct {
+                revision_hash: revision_hash.clone(),
+            },
+            ServiceReleaseTarget::Split { allocations, .. } => ServiceRoutingPolicy::Split {
+                allocations: allocations.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ServiceReleaseTarget {
+    Direct {
+        revision_hash: String,
+    },
+    Split {
+        primary_revision_hash: String,
+        allocations: Vec<ServiceTrafficAllocation>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

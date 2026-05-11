@@ -241,7 +241,12 @@ mod tests {
         let mut new_revision = revision_record("prod", "api", "rev-1");
         new_revision.spec_json = r#"{"image":"api:2"}"#.into();
         let mut new_release = release_record("prod", "api");
-        new_release.release.primary_revision_hash = "rev-2".into();
+        new_release.release = ServiceRelease::direct(
+            "rev-2",
+            new_release.release.slots,
+            new_release.release.updated_by_deploy_id,
+            new_release.release.updated_at,
+        );
 
         let cases = [
             (
@@ -719,21 +724,17 @@ mod tests {
         ServiceReleaseRecord {
             namespace: Namespace::new(namespace),
             service: service.into(),
-            release: ServiceRelease {
-                primary_revision_hash: String::from("rev-1"),
-                referenced_revision_hashes: vec![String::from("rev-1")],
-                routing: ServiceRoutingPolicy::Direct {
-                    revision_hash: String::from("rev-1"),
-                },
-                slots: vec![ServiceReleaseSlot {
+            release: ServiceRelease::direct(
+                "rev-1",
+                vec![ServiceReleaseSlot {
                     slot_id: SlotId::new(String::from("slot-1")),
                     machine_id: MachineId::new(String::from("machine-1")),
                     active_instance_id: InstanceId::new(String::from("instance-1")),
                     revision_hash: String::from("rev-1"),
                 }],
-                updated_by_deploy_id: DeployId::new(String::from("deploy-1")),
-                updated_at: 1,
-            },
+                DeployId::new(String::from("deploy-1")),
+                1,
+            ),
         }
     }
 

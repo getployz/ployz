@@ -10,7 +10,7 @@ use pingora::tls::x509::X509;
 use ployz_types::model::{
     AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent, CertificateRecord, InstanceId,
     InstancePhase, InstanceStatusRecord, MachineId, MachineMembership, MachineTopology,
-    RoutingEvent, RoutingState, ServiceRelease, ServiceReleaseSlot, ServiceRoutingPolicy,
+    RoutingEvent, RoutingState, ServiceRelease, ServiceReleaseSlot, ServiceReleaseTarget,
 };
 use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
 use serde::{Deserialize, Serialize};
@@ -927,7 +927,7 @@ impl GatewayProjector {
                     && service.service == revision.service
                     && release
                         .release
-                        .referenced_revision_hashes
+                        .referenced_revision_hashes()
                         .iter()
                         .any(|hash| hash == &revision.revision_hash)
                 {
@@ -1168,22 +1168,19 @@ fn is_routable_instance(
 }
 
 fn routing_revision_hash(release: &ServiceRelease) -> String {
-    match &release.routing {
-        ServiceRoutingPolicy::Direct { revision_hash } => revision_hash.clone(),
-        ServiceRoutingPolicy::Split { .. } => release.primary_revision_hash.clone(),
-    }
+    release.primary_revision_hash().to_string()
 }
 
 fn allowed_revision_hashes(release: &ServiceRelease) -> HashSet<String> {
-    match &release.routing {
-        ServiceRoutingPolicy::Direct { revision_hash } => HashSet::from([revision_hash.clone()]),
-        ServiceRoutingPolicy::Split { allocations } => {
+    match &release.target {
+        ServiceReleaseTarget::Direct { revision_hash } => HashSet::from([revision_hash.clone()]),
+        ServiceReleaseTarget::Split { allocations, .. } => {
             let hashes = allocations
                 .iter()
                 .map(|allocation| allocation.revision_hash.clone())
                 .collect::<HashSet<_>>();
             if hashes.is_empty() {
-                release.referenced_revision_hashes.iter().cloned().collect()
+                release.referenced_revision_hashes().into_iter().collect()
             } else {
                 hashes
             }
@@ -1356,30 +1353,27 @@ mod tests {
             releases: vec![ServiceReleaseRecord {
                 namespace: namespace.clone(),
                 service: String::from("api"),
-                release: ServiceRelease {
-                    primary_revision_hash: stable_hash.clone(),
-                    referenced_revision_hashes: vec![stable_hash.clone(), canary_hash.clone()],
-                    routing: ServiceRoutingPolicy::Split {
-                        allocations: vec![
-                            ployz_types::model::ServiceTrafficAllocation {
-                                revision_hash: stable_hash.clone(),
-                                percent: 90,
-                                label: Some(String::from("stable")),
-                            },
-                            ployz_types::model::ServiceTrafficAllocation {
-                                revision_hash: canary_hash.clone(),
-                                percent: 10,
-                                label: Some(String::from("canary")),
-                            },
-                        ],
-                    },
-                    slots: vec![
+                release: ServiceRelease::split(
+                    stable_hash.clone(),
+                    vec![
+                        ployz_types::model::ServiceTrafficAllocation {
+                            revision_hash: stable_hash.clone(),
+                            percent: 90,
+                            label: Some(String::from("stable")),
+                        },
+                        ployz_types::model::ServiceTrafficAllocation {
+                            revision_hash: canary_hash.clone(),
+                            percent: 10,
+                            label: Some(String::from("canary")),
+                        },
+                    ],
+                    vec![
                         slot_record("slot-stable", "inst-stable", &stable),
                         slot_record("slot-canary", "inst-canary", &canary),
                     ],
-                    updated_by_deploy_id: DeployId::new(String::from("dep-1")),
-                    updated_at: 1,
-                },
+                    DeployId::new(String::from("dep-1")),
+                    1,
+                ),
             }],
             instances: vec![
                 instance_record(
@@ -1951,16 +1945,7 @@ mod tests {
         ServiceReleaseRecord {
             namespace: namespace.clone(),
             service: service.into(),
-            release: ServiceRelease {
-                primary_revision_hash: revision_hash.into(),
-                referenced_revision_hashes: vec![revision_hash.into()],
-                routing: ServiceRoutingPolicy::Direct {
-                    revision_hash: revision_hash.into(),
-                },
-                slots,
-                updated_by_deploy_id: DeployId::new("dep-1"),
-                updated_at: 1,
-            },
+            release: ServiceRelease::direct(revision_hash, slots, DeployId::new("dep-1"), 1),
         }
     }
 

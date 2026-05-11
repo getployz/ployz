@@ -28,9 +28,9 @@ use crate::model::{
     ImageRef, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle,
     MachineMembership, MachineStorageRole, MachineTopology, OverlayIp, PreparedDeployRecord,
     PreparedDeployState, PublicKey, ServiceBranchLineageRecord, ServiceRelease,
-    ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy,
-    ServiceSourceMode, SlotId, StorageParticipation, VolumeBranchLineageRecord,
-    VolumeClonePreflightAction, VolumeClonePreflightScope, VolumeMovementRecord, VolumeRecord,
+    ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord, ServiceSourceMode, SlotId,
+    StorageParticipation, VolumeBranchLineageRecord, VolumeClonePreflightAction,
+    VolumeClonePreflightScope, VolumeMovementRecord, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -9034,16 +9034,7 @@ fn test_release(
     ServiceReleaseRecord {
         namespace: namespace.clone(),
         service: service.into(),
-        release: ServiceRelease {
-            primary_revision_hash: revision_hash.into(),
-            referenced_revision_hashes: vec![revision_hash.into()],
-            routing: ServiceRoutingPolicy::Direct {
-                revision_hash: revision_hash.into(),
-            },
-            slots,
-            updated_by_deploy_id: DeployId::new("deploy-1"),
-            updated_at: 0,
-        },
+        release: ServiceRelease::direct(revision_hash, slots, DeployId::new("deploy-1"), 0),
     }
 }
 

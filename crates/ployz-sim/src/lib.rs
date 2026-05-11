@@ -22,7 +22,7 @@ use ployz_store_api::{
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    DeployId, DeployRecord, DeployState, DrainState, InstanceId, InstancePhase,
+    DeployId, DeployRecord, DrainState, InstanceId, InstancePhase,
     InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, OverlayIp, PublicKey,
     RoutingState, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord, WireGuardPeerSpec,
 };
@@ -1216,8 +1216,8 @@ pub fn check_deploy_graph(state: &RoutingState) -> Vec<InvariantViolation> {
         .collect::<HashMap<_, _>>();
 
     for release in &state.releases {
-        match &release.release.routing {
-            ployz_types::model::ServiceRoutingPolicy::Direct { revision_hash } => {
+        match &release.release.target {
+            ployz_types::model::ServiceReleaseTarget::Direct { revision_hash } => {
                 let key = (
                     release.namespace.clone(),
                     release.service.clone(),
@@ -1233,7 +1233,7 @@ pub fn check_deploy_graph(state: &RoutingState) -> Vec<InvariantViolation> {
                     ));
                 }
             }
-            ployz_types::model::ServiceRoutingPolicy::Split { allocations } => {
+            ployz_types::model::ServiceReleaseTarget::Split { allocations, .. } => {
                 let mut percent_total = 0u16;
                 for allocation in allocations {
                     percent_total += u16::from(allocation.percent);
@@ -1698,7 +1698,7 @@ fn ready_service_keys(state: &RoutingState) -> HashSet<(Namespace, String)> {
 pub mod fixture {
     use super::*;
     use ployz_types::model::{
-        DeployId, ServiceRelease, ServiceReleaseSlot, ServiceRoutingPolicy, SlotId,
+        DeployId, DeployRecordState, ServiceRelease, ServiceReleaseSlot, SlotId,
         StorageParticipation,
     };
 
@@ -1812,21 +1812,17 @@ pub mod fixture {
         ServiceReleaseRecord {
             namespace,
             service: "web".into(),
-            release: ServiceRelease {
-                primary_revision_hash: "rev-a".into(),
-                referenced_revision_hashes: vec!["rev-a".into()],
-                routing: ServiceRoutingPolicy::Direct {
-                    revision_hash: "rev-a".into(),
-                },
-                slots: vec![ServiceReleaseSlot {
+            release: ServiceRelease::direct(
+                "rev-a",
+                vec![ServiceReleaseSlot {
                     slot_id: SlotId::new("slot-1"),
                     machine_id: MachineId::new("machine-1"),
                     active_instance_id: InstanceId::new("inst-web-1"),
                     revision_hash: "rev-a".into(),
                 }],
-                updated_by_deploy_id: DeployId::new("deploy-1"),
-                updated_at: 1,
-            },
+                DeployId::new("deploy-1"),
+                1,
+            ),
         }
     }
 
@@ -1837,11 +1833,12 @@ pub mod fixture {
             namespace,
             coordinator_machine_id: MachineId::new("machine-1"),
             manifest_hash: "manifest-a".into(),
-            state: DeployState::Committed,
+            state: DeployRecordState::Committed {
+                committed_at: 1,
+                finished_at: 1,
+                summary_json: "{}".into(),
+            },
             started_at: 1,
-            committed_at: Some(1),
-            finished_at: Some(1),
-            summary_json: "{}".into(),
         }
     }
 
@@ -2654,6 +2651,6 @@ mod tests {
     fn fixture_deploy_record_uses_committed_state_without_default() {
         let deploy = fixture::deploy(Namespace::default_ns());
         assert_eq!(deploy.deploy_id, DeployId::new("deploy-1"));
-        assert_eq!(deploy.state, DeployState::Committed);
+        assert_eq!(deploy.state(), ployz_types::model::DeployState::Committed);
     }
 }

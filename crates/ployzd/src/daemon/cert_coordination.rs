@@ -14,7 +14,7 @@ use ployz_store_api::{CertificateStore, RoutingStateStore, StoreDriver};
 use ployz_types::error::{CertificateError, Error, Result};
 use ployz_types::model::{
     MachineId, MachineLifecycle, MachineMembership, RoutingState, ServiceReleaseRecord,
-    ServiceRevisionRecord, ServiceRoutingPolicy,
+    ServiceRevisionRecord,
 };
 use ployz_types::spec::{RouteSpec, ServiceSpec};
 use ployz_types::time::now_unix_secs;
@@ -249,9 +249,11 @@ fn hostname_is_advertised(routing: &RoutingState, hostname: &str) -> Result<bool
 }
 
 fn active_release_revisions(release: &ServiceReleaseRecord) -> Vec<&str> {
-    match &release.release.routing {
-        ServiceRoutingPolicy::Direct { revision_hash } => vec![revision_hash.as_str()],
-        ServiceRoutingPolicy::Split { allocations } => allocations
+    match &release.release.target {
+        ployz_types::model::ServiceReleaseTarget::Direct { revision_hash } => {
+            vec![revision_hash.as_str()]
+        }
+        ployz_types::model::ServiceReleaseTarget::Split { allocations, .. } => allocations
             .iter()
             .filter(|allocation| allocation.percent > 0)
             .map(|allocation| allocation.revision_hash.as_str())
@@ -421,16 +423,12 @@ mod tests {
         ServiceReleaseRecord {
             namespace: Namespace::new("prod"),
             service: service.into(),
-            release: ServiceRelease {
-                primary_revision_hash: revision_hash.into(),
-                referenced_revision_hashes: vec![revision_hash.into()],
-                routing: ServiceRoutingPolicy::Direct {
-                    revision_hash: revision_hash.into(),
-                },
-                slots: Vec::new(),
-                updated_by_deploy_id: DeployId::new("deploy-1"),
-                updated_at: 1,
-            },
+            release: ServiceRelease::direct(
+                revision_hash,
+                Vec::new(),
+                DeployId::new("deploy-1"),
+                1,
+            ),
         }
     }
 }

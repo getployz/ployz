@@ -3,7 +3,7 @@ use crate::error::{DeployError, Error, Result};
 use crate::model::{
     DeployChangeKind, DeployId, DeployImageAvailabilityPlan, DeployPreview, DeployRecord,
     DeployRecordState, InstanceStatusRecord, MachineId, ServiceRelease, ServiceReleaseRecord,
-    ServiceRevisionRecord, ServiceRoutingPolicy,
+    ServiceRevisionRecord,
 };
 #[cfg(test)]
 use crate::model::{
@@ -282,16 +282,12 @@ pub(super) fn build_committed_releases_for_services(
         releases.push(ServiceReleaseRecord {
             namespace: plan.namespace().clone(),
             service: service.service.clone(),
-            release: ServiceRelease {
-                primary_revision_hash: revision_hash.to_string(),
-                referenced_revision_hashes: vec![revision_hash.to_string()],
-                routing: ServiceRoutingPolicy::Direct {
-                    revision_hash: revision_hash.to_string(),
-                },
-                slots: next_slots,
-                updated_by_deploy_id: deploy_id.clone(),
+            release: ServiceRelease::direct(
+                revision_hash.to_string(),
+                next_slots,
+                deploy_id.clone(),
                 updated_at,
-            },
+            ),
         });
     }
     Ok(releases)

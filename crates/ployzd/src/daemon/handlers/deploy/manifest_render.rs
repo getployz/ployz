@@ -143,15 +143,13 @@ pub(super) async fn export_manifest_with_evidence(
     let mut services = Vec::with_capacity(releases.len());
     let mut service_revision_hashes = BTreeMap::new();
     for release in releases {
-        let key = (
-            release.service.clone(),
-            release.release.primary_revision_hash.clone(),
-        );
+        let primary_revision_hash = release.release.primary_revision_hash().to_string();
+        let key = (release.service.clone(), primary_revision_hash.clone());
         let Some(spec_json) = revisions_by_key.get(&key) else {
             return Err(PloyzError::Deploy(
                 DeployError::StoredReleaseMissingRevision {
                     service: release.service,
-                    revision_hash: release.release.primary_revision_hash,
+                    revision_hash: primary_revision_hash,
                 },
             ));
         };
@@ -168,10 +166,7 @@ pub(super) async fn export_manifest_with_evidence(
                 release_service: release.service,
             }));
         }
-        service_revision_hashes.insert(
-            release.service.clone(),
-            release.release.primary_revision_hash.clone(),
-        );
+        service_revision_hashes.insert(release.service.clone(), primary_revision_hash);
         services.push(spec);
     }
     services.sort_by(|left, right| left.name.cmp(&right.name));
