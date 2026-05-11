@@ -1451,7 +1451,7 @@ mod tests {
     use crate::mesh_state::network::NetworkConfig;
     use ployz_api::{
         BranchResourceMode, DaemonRequest, DeployFailurePayload, VolumeZfsTransferInfo,
-        VolumeZfsTransferPayload,
+        VolumeZfsTransferPayload, VolumeZfsTransferState,
     };
     use ployz_nats::{NodeCommandSubject, RpcFailure, RpcFailureKind, RpcPolicy};
     use ployz_orchestrator::deploy::participant::MoveVolumeRequest;
@@ -3264,25 +3264,41 @@ mod tests {
 
     #[test]
     fn volume_move_result_requires_success_evidence() {
-        let missing_guid =
-            volume_move_result_from_transfer(transfer_payload("succeeded", None, Some(4096), None))
-                .expect_err("missing guid should fail");
-        assert_eq!(
-            missing_guid,
-            PloyzError::Deploy(DeployError::MissingNodePayload {
-                payload: "volume zfs transfer snapshot guid",
-            })
-        );
+        let missing_guid = serde_json::json!({
+            "id": "transfer-1",
+            "namespace": "prod",
+            "volume": "data",
+            "source_machine": "machine-a",
+            "target_machine": "machine-b",
+            "snapshot_name": "ployz-move-manifest-data",
+            "started_at": 1,
+            "updated_at": 2,
+            "state": {
+                "status": "succeeded",
+                "stage": "finished",
+                "bytes_transferred": 4096
+            }
+        });
+        serde_json::from_value::<VolumeZfsTransferInfo>(missing_guid)
+            .expect_err("success state requires snapshot guid");
 
-        let missing_bytes =
-            volume_move_result_from_transfer(transfer_payload("succeeded", Some(42), None, None))
-                .expect_err("missing bytes should fail");
-        assert_eq!(
-            missing_bytes,
-            PloyzError::Deploy(DeployError::MissingNodePayload {
-                payload: "volume zfs transfer bytes",
-            })
-        );
+        let missing_bytes = serde_json::json!({
+            "id": "transfer-1",
+            "namespace": "prod",
+            "volume": "data",
+            "source_machine": "machine-a",
+            "target_machine": "machine-b",
+            "snapshot_name": "ployz-move-manifest-data",
+            "started_at": 1,
+            "updated_at": 2,
+            "state": {
+                "status": "succeeded",
+                "stage": "finished",
+                "snapshot_guid": 42
+            }
+        });
+        serde_json::from_value::<VolumeZfsTransferInfo>(missing_bytes)
+            .expect_err("success state requires bytes");
     }
 
     #[tokio::test]
@@ -4548,16 +4564,40 @@ mod tests {
                 volume: "data".into(),
                 source_machine: MachineId::new("machine-a"),
                 target_machine: MachineId::new("machine-b"),
-                status: status.into(),
-                stage: "finished".into(),
                 snapshot_name: "ployz-move-manifest-data".into(),
-                snapshot_guid,
                 from_snapshot_name: None,
-                from_snapshot_guid: None,
-                bytes_transferred,
                 started_at: 1,
                 updated_at: 2,
-                last_error,
+                state: match status {
+                    "succeeded" => VolumeZfsTransferState::Succeeded {
+                        stage: "finished".into(),
+                        snapshot_guid: snapshot_guid.expect("test success snapshot guid"),
+                        from_snapshot_guid: None,
+                        bytes_transferred: bytes_transferred.expect("test success bytes"),
+                    },
+                    "failed" => VolumeZfsTransferState::Failed {
+                        stage: "finished".into(),
+                        last_error: last_error.unwrap_or_else(|| "transfer failed".into()),
+                        snapshot_guid,
+                        from_snapshot_guid: None,
+                        bytes_transferred,
+                    },
+                    "interrupted" => VolumeZfsTransferState::Interrupted {
+                        stage: "finished".into(),
+                        last_error,
+                        snapshot_guid,
+                        from_snapshot_guid: None,
+                        bytes_transferred,
+                    },
+                    "running" => VolumeZfsTransferState::Running {
+                        stage: "finished".into(),
+                        snapshot_guid,
+                        from_snapshot_guid: None,
+                        bytes_transferred,
+                        last_error,
+                    },
+                    other => panic!("unknown test transfer status {other}"),
+                },
             },
         }
     }

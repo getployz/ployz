@@ -60,25 +60,60 @@ pub struct VolumeZfsTransferListPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum VolumeZfsTransferState {
+    Running {
+        stage: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_transferred: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+    Succeeded {
+        stage: String,
+        snapshot_guid: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_snapshot_guid: Option<u64>,
+        bytes_transferred: u64,
+    },
+    Failed {
+        stage: String,
+        last_error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_transferred: Option<u64>,
+    },
+    Interrupted {
+        stage: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_transferred: Option<u64>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VolumeZfsTransferInfo {
     pub id: String,
     pub namespace: String,
     pub volume: String,
     pub source_machine: MachineId,
     pub target_machine: MachineId,
-    pub status: String,
-    pub stage: String,
     pub snapshot_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub snapshot_guid: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_snapshot_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from_snapshot_guid: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bytes_transferred: Option<u64>,
     pub started_at: u64,
     pub updated_at: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
+    pub state: VolumeZfsTransferState,
 }

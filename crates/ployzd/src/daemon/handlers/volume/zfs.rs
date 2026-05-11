@@ -5,6 +5,7 @@ use ployz_api::{
     DaemonPayload, DaemonResponse, VolumeZfsClonePayload, VolumeZfsInspectPayload,
     VolumeZfsPeerSendPayload, VolumeZfsSnapshotInfo, VolumeZfsSnapshotPayload,
     VolumeZfsTransferInfo, VolumeZfsTransferListPayload, VolumeZfsTransferPayload,
+    VolumeZfsTransferState,
 };
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
 use ployz_runtime_backends::storage::{CloneMetadata, DatasetSpec, TokioShellRunner, ZfsDriver};
@@ -41,17 +42,6 @@ enum TransferStatus {
     Interrupted,
 }
 
-impl TransferStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Succeeded => "succeeded",
-            Self::Failed => "failed",
-            Self::Interrupted => "interrupted",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TransferTransition {
     status: TransferStatus,
@@ -86,30 +76,275 @@ impl TransferTransition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+enum TransferState {
+    Running {
+        stage: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_transferred: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+    Succeeded {
+        stage: String,
+        snapshot_guid: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_snapshot_guid: Option<u64>,
+        bytes_transferred: u64,
+    },
+    Failed {
+        stage: String,
+        last_error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_transferred: Option<u64>,
+    },
+    Interrupted {
+        stage: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_transferred: Option<u64>,
+    },
+}
+
+impl TransferState {
+    fn running(stage: impl Into<String>) -> Self {
+        Self::Running {
+            stage: stage.into(),
+            snapshot_guid: None,
+            from_snapshot_guid: None,
+            bytes_transferred: None,
+            last_error: None,
+        }
+    }
+
+    fn status(&self) -> TransferStatus {
+        match self {
+            Self::Running { .. } => TransferStatus::Running,
+            Self::Succeeded { .. } => TransferStatus::Succeeded,
+            Self::Failed { .. } => TransferStatus::Failed,
+            Self::Interrupted { .. } => TransferStatus::Interrupted,
+        }
+    }
+
+    fn stage(&self) -> &str {
+        match self {
+            Self::Running { stage, .. }
+            | Self::Succeeded { stage, .. }
+            | Self::Failed { stage, .. }
+            | Self::Interrupted { stage, .. } => stage,
+        }
+    }
+
+    fn set_stage(&mut self, next_stage: String) {
+        match self {
+            Self::Running { stage, .. }
+            | Self::Succeeded { stage, .. }
+            | Self::Failed { stage, .. }
+            | Self::Interrupted { stage, .. } => *stage = next_stage,
+        }
+    }
+
+    fn snapshot_guid(&self) -> Option<u64> {
+        match self {
+            Self::Running { snapshot_guid, .. }
+            | Self::Failed { snapshot_guid, .. }
+            | Self::Interrupted { snapshot_guid, .. } => *snapshot_guid,
+            Self::Succeeded { snapshot_guid, .. } => Some(*snapshot_guid),
+        }
+    }
+
+    fn from_snapshot_guid(&self) -> Option<u64> {
+        match self {
+            Self::Running {
+                from_snapshot_guid, ..
+            }
+            | Self::Succeeded {
+                from_snapshot_guid, ..
+            }
+            | Self::Failed {
+                from_snapshot_guid, ..
+            }
+            | Self::Interrupted {
+                from_snapshot_guid, ..
+            } => *from_snapshot_guid,
+        }
+    }
+
+    fn bytes_transferred(&self) -> Option<u64> {
+        match self {
+            Self::Running {
+                bytes_transferred, ..
+            }
+            | Self::Failed {
+                bytes_transferred, ..
+            }
+            | Self::Interrupted {
+                bytes_transferred, ..
+            } => *bytes_transferred,
+            Self::Succeeded {
+                bytes_transferred, ..
+            } => Some(*bytes_transferred),
+        }
+    }
+
+    fn last_error(&self) -> Option<&str> {
+        match self {
+            Self::Running { last_error, .. } | Self::Interrupted { last_error, .. } => {
+                last_error.as_deref()
+            }
+            Self::Failed { last_error, .. } => Some(last_error.as_str()),
+            Self::Succeeded { .. } => None,
+        }
+    }
+
+    fn with_snapshot_guid(&mut self, guid: u64) {
+        match self {
+            Self::Running { snapshot_guid, .. }
+            | Self::Failed { snapshot_guid, .. }
+            | Self::Interrupted { snapshot_guid, .. } => *snapshot_guid = Some(guid),
+            Self::Succeeded { snapshot_guid, .. } => *snapshot_guid = guid,
+        }
+    }
+
+    fn with_from_snapshot_guid(&mut self, guid: u64) {
+        match self {
+            Self::Running {
+                from_snapshot_guid, ..
+            }
+            | Self::Succeeded {
+                from_snapshot_guid, ..
+            }
+            | Self::Failed {
+                from_snapshot_guid, ..
+            }
+            | Self::Interrupted {
+                from_snapshot_guid, ..
+            } => *from_snapshot_guid = Some(guid),
+        }
+    }
+
+    fn with_bytes_transferred(&mut self, bytes: u64) {
+        match self {
+            Self::Running {
+                bytes_transferred, ..
+            }
+            | Self::Failed {
+                bytes_transferred, ..
+            }
+            | Self::Interrupted {
+                bytes_transferred, ..
+            } => *bytes_transferred = Some(bytes),
+            Self::Succeeded {
+                bytes_transferred, ..
+            } => *bytes_transferred = bytes,
+        }
+    }
+
+    fn api_state(&self) -> VolumeZfsTransferState {
+        match self {
+            Self::Running {
+                stage,
+                snapshot_guid,
+                from_snapshot_guid,
+                bytes_transferred,
+                last_error,
+            } => VolumeZfsTransferState::Running {
+                stage: stage.clone(),
+                snapshot_guid: *snapshot_guid,
+                from_snapshot_guid: *from_snapshot_guid,
+                bytes_transferred: *bytes_transferred,
+                last_error: last_error.clone(),
+            },
+            Self::Succeeded {
+                stage,
+                snapshot_guid,
+                from_snapshot_guid,
+                bytes_transferred,
+            } => VolumeZfsTransferState::Succeeded {
+                stage: stage.clone(),
+                snapshot_guid: *snapshot_guid,
+                from_snapshot_guid: *from_snapshot_guid,
+                bytes_transferred: *bytes_transferred,
+            },
+            Self::Failed {
+                stage,
+                last_error,
+                snapshot_guid,
+                from_snapshot_guid,
+                bytes_transferred,
+            } => VolumeZfsTransferState::Failed {
+                stage: stage.clone(),
+                last_error: last_error.clone(),
+                snapshot_guid: *snapshot_guid,
+                from_snapshot_guid: *from_snapshot_guid,
+                bytes_transferred: *bytes_transferred,
+            },
+            Self::Interrupted {
+                stage,
+                last_error,
+                snapshot_guid,
+                from_snapshot_guid,
+                bytes_transferred,
+            } => VolumeZfsTransferState::Interrupted {
+                stage: stage.clone(),
+                last_error: last_error.clone(),
+                snapshot_guid: *snapshot_guid,
+                from_snapshot_guid: *from_snapshot_guid,
+                bytes_transferred: *bytes_transferred,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TransferRecord {
     id: String,
     namespace: String,
     volume: String,
     source_machine: MachineId,
     target_machine: MachineId,
-    status: TransferStatus,
-    stage: String,
     snapshot_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    snapshot_guid: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     from_snapshot_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    from_snapshot_guid: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    bytes_transferred: Option<u64>,
     started_at: u64,
     updated_at: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    last_error: Option<String>,
+    state: TransferState,
 }
 
 impl TransferRecord {
+    fn status(&self) -> TransferStatus {
+        self.state.status()
+    }
+
+    fn stage(&self) -> &str {
+        self.state.stage()
+    }
+
+    fn snapshot_guid(&self) -> Option<u64> {
+        self.state.snapshot_guid()
+    }
+
+    fn from_snapshot_guid(&self) -> Option<u64> {
+        self.state.from_snapshot_guid()
+    }
+
+    fn last_error(&self) -> Option<&str> {
+        self.state.last_error()
+    }
+
     fn info(&self) -> VolumeZfsTransferInfo {
         VolumeZfsTransferInfo {
             id: self.id.clone(),
@@ -117,16 +352,11 @@ impl TransferRecord {
             volume: self.volume.clone(),
             source_machine: self.source_machine.clone(),
             target_machine: self.target_machine.clone(),
-            status: self.status.as_str().to_string(),
-            stage: self.stage.clone(),
             snapshot_name: self.snapshot_name.clone(),
-            snapshot_guid: self.snapshot_guid,
             from_snapshot_name: self.from_snapshot_name.clone(),
-            from_snapshot_guid: self.from_snapshot_guid,
-            bytes_transferred: self.bytes_transferred,
             started_at: self.started_at,
             updated_at: self.updated_at,
-            last_error: self.last_error.clone(),
+            state: self.state.api_state(),
         }
     }
 
@@ -136,15 +366,40 @@ impl TransferRecord {
             last_error,
             at_unix_secs,
         } = transition;
-        self.status = status;
-        match status {
-            TransferStatus::Succeeded => self.last_error = None,
-            TransferStatus::Failed | TransferStatus::Interrupted | TransferStatus::Running => {
-                if let Some(last_error) = last_error {
-                    self.last_error = Some(last_error);
-                }
-            }
-        }
+        let stage = self.stage().to_string();
+        let snapshot_guid = self.snapshot_guid();
+        let from_snapshot_guid = self.from_snapshot_guid();
+        let bytes_transferred = self.state.bytes_transferred();
+        let current_error = self.last_error().map(str::to_string);
+        self.state = match status {
+            TransferStatus::Running => TransferState::Running {
+                stage,
+                snapshot_guid,
+                from_snapshot_guid,
+                bytes_transferred,
+                last_error: last_error.or(current_error),
+            },
+            TransferStatus::Succeeded => TransferState::Succeeded {
+                stage,
+                snapshot_guid: snapshot_guid.unwrap_or_default(),
+                from_snapshot_guid,
+                bytes_transferred: bytes_transferred.unwrap_or_default(),
+            },
+            TransferStatus::Failed => TransferState::Failed {
+                stage,
+                last_error: last_error.unwrap_or_else(|| "zfs transfer failed".into()),
+                snapshot_guid,
+                from_snapshot_guid,
+                bytes_transferred,
+            },
+            TransferStatus::Interrupted => TransferState::Interrupted {
+                stage,
+                last_error: last_error.or(current_error),
+                snapshot_guid,
+                from_snapshot_guid,
+                bytes_transferred,
+            },
+        };
         self.updated_at = at_unix_secs;
     }
 }
@@ -199,16 +454,11 @@ impl TransferStore {
             volume: volume.to_string(),
             source_machine,
             target_machine,
-            status: TransferStatus::Running,
-            stage: "preflight".into(),
             snapshot_name,
-            snapshot_guid: None,
             from_snapshot_name,
-            from_snapshot_guid: None,
-            bytes_transferred: None,
             started_at: now,
             updated_at: now,
-            last_error: None,
+            state: TransferState::running("preflight"),
         };
         self.save(&record)?;
         Ok(record)
@@ -234,7 +484,7 @@ impl TransferStore {
                 && record.target_machine == *target_machine
                 && record.snapshot_name == snapshot_name
                 && record.from_snapshot_name.as_deref() == from_snapshot_name
-                && record.status == TransferStatus::Running
+                && record.status() == TransferStatus::Running
         }))
     }
 
@@ -326,7 +576,7 @@ impl TransferStore {
         record: &mut TransferRecord,
         stage: impl Into<String>,
     ) -> Result<(), String> {
-        record.stage = stage.into();
+        record.state.set_stage(stage.into());
         record.updated_at = now_unix_secs();
         self.save(record)
     }
@@ -402,7 +652,7 @@ impl TransferStore {
     fn recover_startup(&self) -> Result<usize, String> {
         let mut count = 0;
         for mut record in self.list()? {
-            if record.status == TransferStatus::Running {
+            if record.status() == TransferStatus::Running {
                 self.update_status(&mut record, TransferStatus::Interrupted, None)?;
                 self.delete_claim_for(&record);
                 count += 1;
@@ -471,7 +721,7 @@ async fn wait_for_claimed_transfer_record(
 ) -> Result<ClaimedTransfer, String> {
     for attempt in 0..MOVE_CLAIM_RECORD_WAIT_ATTEMPTS {
         match store.load(transfer_id)? {
-            Some(record) if record.status == TransferStatus::Running => {
+            Some(record) if record.status() == TransferStatus::Running => {
                 return Ok(ClaimedTransfer::Running(record));
             }
             Some(record) => return Ok(ClaimedTransfer::Terminal(record)),
@@ -824,7 +1074,7 @@ impl DaemonState {
                             Ok(ClaimedTransfer::Terminal(existing)) => {
                                 tracing::warn!(
                                     transfer_id = %existing.id,
-                                    status = ?existing.status,
+                                    status = ?existing.status(),
                                     "deleting stale zfs transfer claim for terminal transfer"
                                 );
                                 store.delete_move_claim(
@@ -1451,7 +1701,7 @@ async fn run_coordinated_zfs_transfer_inner(
         snapshot,
     )
     .await?;
-    transfer.snapshot_guid = Some(snap_info.guid);
+    transfer.state.with_snapshot_guid(snap_info.guid);
     store.save(transfer)?;
 
     if let Some(from_snapshot) = from_snapshot {
@@ -1482,7 +1732,7 @@ async fn run_coordinated_zfs_transfer_inner(
                 target_from_guid.guid, from_guid.guid
             ));
         }
-        transfer.from_snapshot_guid = Some(from_guid.guid);
+        transfer.state.with_from_snapshot_guid(from_guid.guid);
         store.save(transfer)?;
     }
 
@@ -1498,10 +1748,12 @@ async fn run_coordinated_zfs_transfer_inner(
         snapshot,
         snap_info.guid,
         from_snapshot,
-        transfer.from_snapshot_guid,
+        transfer.from_snapshot_guid(),
     )
     .await?;
-    transfer.bytes_transferred = Some(result.bytes_transferred);
+    transfer
+        .state
+        .with_bytes_transferred(result.bytes_transferred);
     store.save(transfer)?;
 
     store.update_stage(transfer, "verify")?;
@@ -1838,6 +2090,7 @@ fn finalize_zfs_transfer(
 #[cfg(test)]
 mod tests {
     use super::{MoveClaimOutcome, TransferStatus, TransferStore, finalize_zfs_transfer};
+    use ployz_api::VolumeZfsTransferState;
     use ployz_types::model::MachineId;
     use ployz_types::spec::Namespace;
     use std::path::PathBuf;
@@ -1896,7 +2149,7 @@ mod tests {
             create_claim(&store, &transfer.id),
             MoveClaimOutcome::Created
         ));
-        assert_eq!(transfer.status, TransferStatus::Running);
+        assert_eq!(transfer.status(), TransferStatus::Running);
 
         let count = store.recover_startup().expect("recover startup");
         assert_eq!(count, 1);
@@ -1904,7 +2157,7 @@ mod tests {
             .load(&transfer.id)
             .expect("load")
             .expect("record exists");
-        assert_eq!(loaded.status, TransferStatus::Interrupted);
+        assert_eq!(loaded.status(), TransferStatus::Interrupted);
         assert!(
             !claim_path(&store).exists(),
             "startup recovery should delete the interrupted transfer claim"
@@ -2014,7 +2267,7 @@ mod tests {
         {
             super::ClaimedTransfer::Running(record) => assert_eq!(record.id, "transfer-a"),
             super::ClaimedTransfer::Terminal(record) => {
-                panic!("expected running transfer, got {:?}", record.status)
+                panic!("expected running transfer, got {:?}", record.status())
             }
             super::ClaimedTransfer::MissingAfterWait => {
                 panic!("claim should wait for newly created transfer record")
@@ -2125,9 +2378,9 @@ mod tests {
             .load(&transfer.id)
             .expect("load")
             .expect("record exists");
-        assert_eq!(loaded.status, TransferStatus::Succeeded);
-        assert_eq!(loaded.stage, "complete");
-        assert!(loaded.last_error.is_none());
+        assert_eq!(loaded.status(), TransferStatus::Succeeded);
+        assert_eq!(loaded.stage(), "complete");
+        assert!(loaded.last_error().is_none());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2147,8 +2400,8 @@ mod tests {
             .load(&transfer.id)
             .expect("load")
             .expect("record exists");
-        assert_eq!(loaded.status, TransferStatus::Failed);
-        assert_eq!(loaded.last_error.as_deref(), Some("boom"));
+        assert_eq!(loaded.status(), TransferStatus::Failed);
+        assert_eq!(loaded.last_error(), Some("boom"));
         assert!(
             !claim_path(&store).exists(),
             "failed transfer should delete its move claim"
@@ -2177,11 +2430,16 @@ mod tests {
             .load(&transfer.id)
             .expect("load")
             .expect("record exists");
-        assert_eq!(loaded.status, TransferStatus::Interrupted);
-        assert_eq!(loaded.last_error.as_deref(), Some("send failed"));
-        assert_eq!(
-            loaded.info().last_error.as_deref(),
-            Some("send failed"),
+        assert_eq!(loaded.status(), TransferStatus::Interrupted);
+        assert_eq!(loaded.last_error(), Some("send failed"));
+        assert!(
+            matches!(
+                loaded.info().state,
+                VolumeZfsTransferState::Interrupted {
+                    last_error: Some(ref error),
+                    ..
+                } if error == "send failed"
+            ),
             "operator-facing payload should preserve the failure audience"
         );
         let _ = std::fs::remove_dir_all(root);
