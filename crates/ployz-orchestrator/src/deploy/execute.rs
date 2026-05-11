@@ -17,8 +17,8 @@ use crate::error::{DeployError, Error, Result, StoreError};
 use crate::model::{
     DeployApplyResult, DeployBaselineDiff, DeployChangeKind, DeployEvent, DeployId,
     DeployPhaseCommitPolicy, DeployPhaseCommitRecord, DeployPhaseFailure, DeployPhaseId,
-    DeployPhasePlan, DeployPhaseRecord, DeployPhaseState, DeployPhaseWork, DeployPreview,
-    DeployPreviewBaseline, DeployRecord, DeployState, InstanceId, InstancePhase,
+    DeployPhasePlan, DeployPhaseRecord, DeployPhaseRecordState, DeployPhaseState, DeployPhaseWork,
+    DeployPreview, DeployPreviewBaseline, DeployRecord, DeployState, InstanceId, InstancePhase,
     InstanceStatusRecord, MachineId, MachineMembership, PreparedDeployRecord, PreparedDeployState,
     VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
@@ -936,10 +936,18 @@ async fn repair_phase_records_from_durable_commit(
         let Some(phase_commit) = phase_commits.get(&phase.phase_id) else {
             continue;
         };
-        phase.commit_deploy_id = Some(phase_commit.commit_deploy_id.clone());
-        phase.state = DeployPhaseState::Succeeded {
-            completed_at: phase_commit.committed_at,
-        };
+        if let Err(error) = phase.mark_succeeded(
+            Some(phase_commit.commit_deploy_id.clone()),
+            phase_commit.committed_at,
+        ) {
+            warn!(
+                deploy_id = %phase.deploy_id,
+                phase_id = %phase.phase_id,
+                error = %error,
+                "phase commit fact did not match deploy phase commit policy"
+            );
+            continue;
+        }
         match store.upsert_deploy_phase(&phase).await {
             Ok(()) => repaired_count += 1,
             Err(error) => {
@@ -1797,10 +1805,9 @@ async fn mark_phase_succeeded(
     let Some(mut phase) = running_phase else {
         return Ok(());
     };
-    phase.commit_deploy_id = commit_deploy_id;
-    phase.state = DeployPhaseState::Succeeded {
-        completed_at: now_unix_secs(),
-    };
+    phase
+        .mark_succeeded(commit_deploy_id, now_unix_secs())
+        .map_err(|error| Error::operation("deploy_phase", error))?;
     store.upsert_deploy_phase(&phase).await
 }
 
@@ -1842,10 +1849,7 @@ async fn mark_phase_failed(
     error: &Error,
     completed_at: u64,
 ) -> Result<()> {
-    phase.state = DeployPhaseState::Failed {
-        completed_at,
-        failure: deploy_phase_failure(error),
-    };
+    phase.mark_failed(completed_at, deploy_phase_failure(error));
     store.upsert_deploy_phase(&phase).await
 }
 
@@ -1949,15 +1953,20 @@ fn deploy_phase_record(
     state: DeployPhaseState,
     started_at: u64,
 ) -> DeployPhaseRecord {
+    let state = match state {
+        DeployPhaseState::Pending => DeployPhaseRecordState::pending(phase.commit_policy),
+        DeployPhaseState::Running => DeployPhaseRecordState::running(phase.commit_policy),
+        DeployPhaseState::Succeeded { .. } | DeployPhaseState::Failed { .. } => {
+            unreachable!("deploy phase records start pending or running")
+        }
+    };
     DeployPhaseRecord {
         namespace: prepared.plan().namespace().clone(),
         deploy_id: prepared.deploy_id().clone(),
         phase_id: phase.phase_id.clone(),
-        commit_deploy_id: None,
         name: phase.name.clone(),
         order: phase.order,
         state,
-        commit_policy: phase.commit_policy,
         rollback_policy: phase.rollback_policy,
         advance_policy: phase.advance_policy,
         after: phase.after.clone(),

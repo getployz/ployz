@@ -6936,7 +6936,7 @@ async fn apply_records_committed_status_when_phase_success_evidence_fails() {
         .await
         .expect("get phase")
         .expect("phase");
-    assert_eq!(phase.commit_deploy_id, Some(result.deploy_id));
+    assert_eq!(phase.commit_deploy_id(), Some(result.deploy_id));
 }
 
 #[tokio::test]
@@ -7120,7 +7120,7 @@ async fn apply_checkpoint_phase_commits_before_final_phase() {
         .expect("get db phase")
         .expect("db phase");
     assert_eq!(
-        db_phase.commit_deploy_id,
+        db_phase.commit_deploy_id(),
         Some(DeployId::new(format!(
             "{}:phase:db",
             result.deploy_id.as_str()
@@ -7135,7 +7135,7 @@ async fn apply_checkpoint_phase_commits_before_final_phase() {
         .await
         .expect("get web phase")
         .expect("web phase");
-    assert_eq!(web_phase.commit_deploy_id, Some(result.deploy_id));
+    assert_eq!(web_phase.commit_deploy_id(), Some(result.deploy_id));
 }
 
 #[tokio::test]
@@ -7207,7 +7207,7 @@ async fn apply_failure_after_checkpoint_preserves_committed_phase_facts() {
         .expect("get db phase")
         .expect("db phase");
     assert_eq!(
-        db_phase.commit_deploy_id,
+        db_phase.commit_deploy_id(),
         Some(DeployId::new(format!(
             "{}:phase:db",
             last_update.deploy_id.as_str()
@@ -7222,7 +7222,7 @@ async fn apply_failure_after_checkpoint_preserves_committed_phase_facts() {
         .await
         .expect("get web phase")
         .expect("web phase");
-    assert_eq!(web_phase.commit_deploy_id, None);
+    assert_eq!(web_phase.commit_deploy_id(), None);
 }
 
 #[tokio::test]
@@ -8499,12 +8499,12 @@ async fn assert_default_phase_record(
     assert_eq!(phase.phase_id, DeployPhaseId::new("deploy"));
     assert_eq!(phase.name, "Deploy");
     assert_eq!(phase.order, 0);
-    assert_eq!(phase.commit_policy, DeployPhaseCommitPolicy::EndOfDeploy);
+    assert_eq!(phase.commit_policy(), DeployPhaseCommitPolicy::EndOfDeploy);
     assert_eq!(phase.rollback_policy, DeployPhaseRollbackPolicy::Reversible);
-    match (&phase.state, expected_state) {
+    match (phase.lifecycle_state(), expected_state) {
         (DeployPhaseState::Running, "running") => {}
         (DeployPhaseState::Succeeded { completed_at }, "succeeded") => {
-            assert!(*completed_at >= phase.started_at);
+            assert!(completed_at >= phase.started_at);
         }
         (
             DeployPhaseState::Failed {
@@ -8513,7 +8513,7 @@ async fn assert_default_phase_record(
             },
             "failed",
         ) => {
-            assert!(*completed_at >= phase.started_at);
+            assert!(completed_at >= phase.started_at);
             let Some(expected) = failure_contains else {
                 panic!("failed phase assertion requires expected failure text");
             };
@@ -8541,10 +8541,10 @@ async fn assert_phase_record_state(
         .await
         .expect("get deploy phase")
         .unwrap_or_else(|| panic!("expected deploy phase {phase_id}"));
-    match (&phase.state, expected_state) {
+    match (phase.lifecycle_state(), expected_state) {
         (DeployPhaseState::Running, "running") => {}
         (DeployPhaseState::Succeeded { completed_at }, "succeeded") => {
-            assert!(*completed_at >= phase.started_at);
+            assert!(completed_at >= phase.started_at);
         }
         (
             DeployPhaseState::Failed {
@@ -8553,7 +8553,7 @@ async fn assert_phase_record_state(
             },
             "failed",
         ) => {
-            assert!(*completed_at >= phase.started_at);
+            assert!(completed_at >= phase.started_at);
             let Some(expected) = failure_contains else {
                 panic!("failed phase assertion requires expected failure text");
             };
@@ -9577,7 +9577,7 @@ impl DeployStore for CountingBackend {
     }
 
     async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> PloyzResult<()> {
-        if matches!(phase.state, DeployPhaseState::Pending) {
+        if matches!(phase.lifecycle_state(), DeployPhaseState::Pending) {
             let call = self.pending_phase_upserts.fetch_add(1, Ordering::SeqCst) + 1;
             if call == self.fail_pending_phase_upsert_on.load(Ordering::SeqCst) {
                 return Err(Error::operation(
@@ -9586,7 +9586,7 @@ impl DeployStore for CountingBackend {
                 ));
             }
         }
-        if matches!(phase.state, DeployPhaseState::Running)
+        if matches!(phase.lifecycle_state(), DeployPhaseState::Running)
             && self.fail_running_phase_upsert.load(Ordering::SeqCst)
         {
             return Err(Error::operation(
@@ -9594,7 +9594,7 @@ impl DeployStore for CountingBackend {
                 "injected running phase failure",
             ));
         }
-        if matches!(phase.state, DeployPhaseState::Succeeded { .. })
+        if matches!(phase.lifecycle_state(), DeployPhaseState::Succeeded { .. })
             && self.fail_succeeded_phase_upsert.load(Ordering::SeqCst)
         {
             self.succeeded_phase_upserts.fetch_add(1, Ordering::SeqCst);
@@ -9603,7 +9603,7 @@ impl DeployStore for CountingBackend {
                 "injected succeeded phase failure",
             ));
         }
-        if matches!(phase.state, DeployPhaseState::Succeeded { .. }) {
+        if matches!(phase.lifecycle_state(), DeployPhaseState::Succeeded { .. }) {
             self.succeeded_phase_upserts.fetch_add(1, Ordering::SeqCst);
         }
         self.store.upsert_deploy_phase(phase).await

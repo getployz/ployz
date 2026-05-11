@@ -1077,10 +1077,16 @@ fn apply_phase_commit_fact(
     let Some(commit) = commit else {
         return;
     };
-    phase.commit_deploy_id = Some(commit.commit_deploy_id.clone());
-    phase.state = DeployPhaseState::Succeeded {
-        completed_at: commit.committed_at,
-    };
+    if let Err(error) =
+        phase.mark_succeeded(Some(commit.commit_deploy_id.clone()), commit.committed_at)
+    {
+        tracing::warn!(
+            deploy_id = %phase.deploy_id,
+            phase_id = %phase.phase_id,
+            error = %error,
+            "phase commit fact did not match deploy phase commit policy"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1308,22 +1314,22 @@ mod tests {
             committed_at: 42,
         };
         let mut phase = deploy_phase("prod", "deploy-a", "db", 0);
-        phase.state = DeployPhaseState::Failed {
-            completed_at: 40,
-            failure: ployz_types::model::DeployPhaseFailure {
+        phase.mark_failed(
+            40,
+            ployz_types::model::DeployPhaseFailure {
                 code: String::from("COMMIT_PUBLISH_FAILED"),
                 message: String::from("routing publish failed after durable commit"),
             },
-        };
+        );
 
         apply_phase_commit_fact(&mut phase, Some(&commit));
 
         assert_eq!(
-            phase.commit_deploy_id,
+            phase.commit_deploy_id(),
             Some(DeployId::new(String::from("deploy-a-db-commit")))
         );
         assert_eq!(
-            phase.state,
+            phase.lifecycle_state(),
             DeployPhaseState::Succeeded { completed_at: 42 }
         );
     }
@@ -1385,14 +1391,14 @@ mod tests {
             namespace: Namespace::new(namespace),
             deploy_id: DeployId::new(deploy_id),
             phase_id: DeployPhaseId::new(phase_id),
-            commit_deploy_id: None,
             name: phase_id.into(),
             order,
             after: Vec::new(),
             participants: Vec::new(),
             work: Vec::new(),
-            state: DeployPhaseState::Running,
-            commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+            state: ployz_types::model::DeployPhaseRecordState::running(
+                DeployPhaseCommitPolicy::EndOfDeploy,
+            ),
             rollback_policy: DeployPhaseRollbackPolicy::Reversible,
             advance_policy: ployz_types::model::DeployPhaseAdvancePolicy::Immediate,
             started_at: 1,
