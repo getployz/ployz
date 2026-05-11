@@ -496,6 +496,7 @@ impl DaemonState {
 pub(super) struct BuildInvocationPlan {
     pub(super) summary: BuildInputSummary,
     env: Vec<(String, String)>,
+    plain_env: Vec<(String, String)>,
     secret_env: Vec<(String, String)>,
     docker_build_args: Vec<(String, String)>,
     buildkit_secret_env: Vec<String>,
@@ -507,6 +508,11 @@ impl std::fmt::Debug for BuildInvocationPlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let env = self
             .env
+            .iter()
+            .map(|(key, _value)| (key, "<redacted>"))
+            .collect::<Vec<_>>();
+        let plain_env = self
+            .plain_env
             .iter()
             .map(|(key, _value)| (key, "<redacted>"))
             .collect::<Vec<_>>();
@@ -523,6 +529,7 @@ impl std::fmt::Debug for BuildInvocationPlan {
         f.debug_struct("BuildInvocationPlan")
             .field("summary", &self.summary)
             .field("env", &env)
+            .field("plain_env", &plain_env)
             .field("secret_env", &secret_env)
             .field("docker_build_args", &docker_build_args)
             .field("buildkit_secret_env", &self.buildkit_secret_env)
@@ -544,6 +551,7 @@ pub(super) fn plan_build_invocation(
 ) -> Result<BuildInvocationPlan, String> {
     let mut summary = BuildInputSummary::default();
     let mut env = Vec::new();
+    let mut plain_env = Vec::new();
     let mut secret_env = Vec::new();
     let mut secret_material = Vec::new();
     let mut secret_names = Vec::new();
@@ -554,6 +562,7 @@ pub(super) fn plan_build_invocation(
             BuildEnvValue::Plain { value } => {
                 summary.env.push(key.clone());
                 env.push((key.clone(), value.clone()));
+                plain_env.push((key.clone(), value.clone()));
             }
             BuildEnvValue::Secret { value, fingerprint } => {
                 if let Some(fingerprint) = fingerprint {
@@ -574,6 +583,11 @@ pub(super) fn plan_build_invocation(
     let mut docker_build_args = Vec::new();
     for (key, value) in &inputs.docker_build_args {
         validate_build_input_key(key)?;
+        if inputs.env.contains_key(key) {
+            return Err(format!(
+                "docker build arg '{key}' duplicates a build env key; use one input source for each key"
+            ));
+        }
         if secret_like_build_arg_name(key) {
             return Err(format!(
                 "docker build arg '{key}' looks secret-bearing; pass it as build env secret instead"
@@ -593,6 +607,7 @@ pub(super) fn plan_build_invocation(
         .sort_by(|left, right| left.name.cmp(&right.name));
     summary.docker_build_args.sort();
     env.sort_by(|left, right| left.0.cmp(&right.0));
+    plain_env.sort_by(|left, right| left.0.cmp(&right.0));
     secret_env.sort_by(|left, right| left.0.cmp(&right.0));
     secret_names.sort();
     docker_build_args.sort_by(|left, right| left.0.cmp(&right.0));
@@ -608,6 +623,7 @@ pub(super) fn plan_build_invocation(
     Ok(BuildInvocationPlan {
         summary,
         env,
+        plain_env,
         secret_env,
         docker_build_args,
         buildkit_secret_env: secret_names,
@@ -719,6 +735,10 @@ fn build_command(
     }
     match request.method {
         BuildMethod::Dockerfile => {
+            for (key, value) in &invocation.plain_env {
+                args.push("--build-arg".into());
+                args.push(format!("{key}={value}"));
+            }
             for (key, value) in &invocation.docker_build_args {
                 args.push("--build-arg".into());
                 args.push(format!("{key}={value}"));
@@ -1158,6 +1178,8 @@ mod tests {
                 "-t",
                 "example/app:latest",
                 "--build-arg",
+                "NODE_ENV=production",
+                "--build-arg",
                 "PUBLIC_COMMIT=abc123",
                 "--secret",
                 "id=SENTRY_AUTH_TOKEN,env=SENTRY_AUTH_TOKEN",
@@ -1271,6 +1293,25 @@ mod tests {
         .expect_err("secret-like build arg should fail");
 
         assert!(error.contains("looks secret-bearing"));
+    }
+
+    #[test]
+    fn docker_build_args_reject_duplicate_env_keys() {
+        let error = plan_build_invocation(
+            BuildMethod::Dockerfile,
+            &BuildInputs {
+                env: BTreeMap::from([(
+                    "PUBLIC_COMMIT".into(),
+                    BuildEnvValue::Plain {
+                        value: "abc123".into(),
+                    },
+                )]),
+                docker_build_args: BTreeMap::from([("PUBLIC_COMMIT".into(), "def456".into())]),
+            },
+        )
+        .expect_err("duplicate build arg should fail");
+
+        assert!(error.contains("duplicates a build env key"));
     }
 
     #[test]
