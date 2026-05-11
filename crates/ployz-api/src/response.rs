@@ -1,5 +1,5 @@
 use crate::acme::AcmeHttp01StatusPayload;
-use crate::build::{BuildOperationListPayload, BuildOperationPayload};
+use crate::build::{BuildOperationListPayload, BuildOperationPayload, BuildResultPayload};
 use crate::deploy::{
     DeployCandidateStartedPayload, DeployFailurePayload, DeployNamespaceSnapshotPayload,
     DeployPreparePayload,
@@ -54,6 +54,7 @@ pub enum DaemonPayload {
     ImageReceivedImport(ImageReceivedImportPayload),
     ImageOperation(ImageOperationPayload),
     ImageOperationList(ImageOperationListPayload),
+    BuildResult(BuildResultPayload),
     BuildOperation(BuildOperationPayload),
     BuildOperationList(BuildOperationListPayload),
     VolumeZfsInspect(VolumeZfsInspectPayload),

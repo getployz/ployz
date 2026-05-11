@@ -8,10 +8,11 @@ use clap::Parser;
 #[cfg(test)]
 pub(crate) use cli::DebugTickTaskArg;
 pub(crate) use cli::{
-    Cli, CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
-    DeployServiceArgs, ImageAction, ImageOperationAction, InstallSourceArg, MachineAction,
-    MachineInviteAction, MachineOperationAction, MachineStorageAction, MeshAction, MigrateAction,
-    MigrateServiceArgs, RuntimeAction, RuntimeTargetArg, ServiceModeArg,
+    BuildAction, BuildMethodArg, BuildOperationAction, Cli, CliError, Command, DebugAction,
+    DeployAction, DeployCommand, DeployManifestArgs, DeployServiceArgs, ImageAction,
+    ImageOperationAction, InstallSourceArg, MachineAction, MachineInviteAction,
+    MachineOperationAction, MachineStorageAction, MeshAction, MigrateAction, MigrateServiceArgs,
+    RuntimeAction, RuntimeTargetArg, ServiceModeArg,
 };
 use cli_io::{cmd_rpc_stdio, cmd_runtime_stream, render_response, request_daemon};
 #[cfg(test)]
@@ -30,8 +31,8 @@ use ployzd::{BuiltInImages, HostPlatform, init_tracing, run_daemon, validate_run
 use request_builder::build_request;
 #[cfg(test)]
 use request_builder::{
-    build_debug_request, build_image_request, build_machine_request, build_migrate_service_request,
-    build_service_spec, upsert_service_in_manifest,
+    build_build_request, build_debug_request, build_image_request, build_machine_request,
+    build_migrate_service_request, build_service_spec, upsert_service_in_manifest,
 };
 use std::process;
 
@@ -109,6 +110,7 @@ async fn run() -> Result<i32> {
         | other @ Command::Mesh { .. }
         | other @ Command::Machine { .. }
         | other @ Command::Image { .. }
+        | other @ Command::Build { .. }
         | other @ Command::Volume { .. }
         | other @ Command::RpcStdio => {
             let platform = HostPlatform::detect();
@@ -765,6 +767,77 @@ mod tests {
             panic!("expected image operation get request");
         };
         assert_eq!(id, "op-1");
+    }
+
+    #[test]
+    fn parse_build_local_command() {
+        let cli = Cli::try_parse_from([
+            "ployzd",
+            "build",
+            "local",
+            "--method",
+            "dockerfile",
+            "--image",
+            "example/app:latest",
+            "--platform",
+            "linux/amd64",
+            ".",
+        ])
+        .expect("build local args should parse");
+
+        let Command::Build {
+            action:
+                BuildAction::Local {
+                    method,
+                    image,
+                    platform,
+                    context,
+                },
+        } = cli.command
+        else {
+            panic!("expected build local command");
+        };
+        assert!(matches!(method, BuildMethodArg::Dockerfile));
+        assert_eq!(image, "example/app:latest");
+        assert_eq!(platform.as_deref(), Some("linux/amd64"));
+        assert_eq!(context, std::path::PathBuf::from("."));
+    }
+
+    #[test]
+    fn build_local_request_canonicalizes_context_and_platform() {
+        let request = build_build_request(BuildAction::Local {
+            method: BuildMethodArg::Railpack,
+            image: "example/app:latest".into(),
+            platform: Some("linux/arm64/v8".into()),
+            context: std::env::current_dir().expect("current dir"),
+        })
+        .expect("build local request");
+
+        let DaemonRequest::BuildLocal { request } = request else {
+            panic!("expected build local request");
+        };
+        assert_eq!(request.method, ployz_types::model::BuildMethod::Railpack);
+        assert_eq!(request.image_name, "example/app:latest");
+        assert!(std::path::Path::new(&request.context_dir).is_absolute());
+        let platform = request.platform.expect("platform");
+        assert_eq!(platform.os, "linux");
+        assert_eq!(platform.architecture, "arm64");
+        assert_eq!(platform.variant.as_deref(), Some("v8"));
+    }
+
+    #[test]
+    fn build_operation_get_request() {
+        let request = build_build_request(BuildAction::Operation {
+            action: BuildOperationAction::Get {
+                id: "build-1".into(),
+            },
+        })
+        .expect("build operation request");
+
+        let DaemonRequest::BuildOperationGet { id } = request else {
+            panic!("expected build operation get request");
+        };
+        assert_eq!(id, "build-1");
     }
 
     #[test]

@@ -65,7 +65,24 @@ pub(crate) enum DaemonJsonPayload {
         #[serde(flatten)]
         _ignored: std::collections::BTreeMap<String, serde_json::Value>,
     },
+    BuildResult(BuildResultPayload),
     ImageStatus(ImageStatusPayload),
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct BuildResultPayload {
+    pub(crate) operation_id: String,
+    pub(crate) artifact: ImageArtifact,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ImageArtifact {
+    pub(crate) image: ImageRef,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ImageRef {
+    pub(crate) digest: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,9 +100,14 @@ pub(crate) struct ImageAvailabilityRecord {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub(crate) enum ImagePresence {
-    Present {},
+    Present {
+        #[serde(default)]
+        source_operation_id: Option<String>,
+    },
     Absent {},
-    Failed { reason: String },
+    Failed {
+        reason: String,
+    },
     Transferring {},
 }
 

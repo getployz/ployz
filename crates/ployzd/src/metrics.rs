@@ -130,6 +130,7 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::ImageReceivedImport { .. } => "image_received_import",
         ployz_api::DaemonRequest::ImageOperationGet { .. } => "image_operation_get",
         ployz_api::DaemonRequest::ImageOperationList => "image_operation_list",
+        ployz_api::DaemonRequest::BuildLocal { .. } => "build_local",
         ployz_api::DaemonRequest::BuildOperationGet { .. } => "build_operation_get",
         ployz_api::DaemonRequest::BuildOperationList => "build_operation_list",
         ployz_api::DaemonRequest::DeployNodeInspectNamespace { .. } => {

@@ -1,6 +1,6 @@
 use crate::{CliError, Result};
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, DoctorPayload, DoctorPeer,
+    BuildResultPayload, DaemonPayload, DaemonRequest, DaemonResponse, DoctorPayload, DoctorPeer,
     MachineInviteListPayload, MachineListPayload, MachineOperationInfo,
     MachineOperationListPayload, MachineOperationPayload, MachineRttPayload,
     MachineStoragePromotionPayload, MeshListPayload, MeshReadyPayload, MeshSelfRecordPayload,
@@ -178,8 +178,31 @@ fn render_plain_success(response: &DaemonResponse) -> String {
         Some(DaemonPayload::MachineStoragePromotion(payload)) => {
             render_plain_machine_storage_promotion(payload)
         }
+        Some(DaemonPayload::BuildResult(payload)) => render_plain_build_result(payload),
         Some(DaemonPayload::ImagePush(payload)) => render_plain_image_push(payload),
         _ => response.message.clone(),
+    }
+}
+
+fn render_plain_build_result(payload: &BuildResultPayload) -> String {
+    let mut line = format!(
+        "operation={} image={} digest={}",
+        payload.operation_id,
+        render_build_image_ref(payload),
+        payload.artifact.digest().as_str()
+    );
+    if let Some(record) = &payload.availability {
+        line.push_str(&format!(" machine={}", record.machine_id));
+    }
+    line
+}
+
+fn render_build_image_ref(payload: &BuildResultPayload) -> String {
+    let image = &payload.artifact.image;
+    match (&image.repository, &image.tag) {
+        (Some(repository), Some(tag)) => format!("{repository}:{tag}"),
+        (Some(repository), None) => repository.clone(),
+        (None, _) => image.digest.as_str().into(),
     }
 }
 
@@ -609,9 +632,9 @@ pub(crate) fn read_optional_text_file(
 mod tests {
     use super::*;
     use ployz_api::{
-        DoctorLocal, DoctorOverall, DoctorPayload, DoctorPeer, MachineListPayload, MachineListRow,
-        MachineRttPayload, MachineRttRow, MachineStoragePromotionPayload, MeshListEntry,
-        MeshListPayload, StatusPayload,
+        BuildResultPayload, DoctorLocal, DoctorOverall, DoctorPayload, DoctorPeer,
+        MachineListPayload, MachineListRow, MachineRttPayload, MachineRttRow,
+        MachineStoragePromotionPayload, MeshListEntry, MeshListPayload, StatusPayload,
     };
 
     #[test]
@@ -664,6 +687,45 @@ mod tests {
         assert_eq!(
             render_plain_success(&response),
             "machine=machine-1 peer=machine-2 median=140ms stddev=±19.4ms\nwarning=machine 'machine-3' RTT snapshot unreachable"
+        );
+    }
+
+    #[test]
+    fn plain_build_result_renders_operation_image_digest_and_machine() {
+        let digest = ployz_types::model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
+            .expect("digest");
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("built"),
+            payload: Some(DaemonPayload::BuildResult(BuildResultPayload {
+                operation_id: String::from("build-local-1"),
+                artifact: ployz_types::model::ImageArtifact {
+                    image: ployz_types::model::ImageRef {
+                        repository: Some(String::from("example/app")),
+                        tag: Some(String::from("latest")),
+                        digest: digest.clone(),
+                    },
+                    platform: None,
+                    provenance: ployz_types::model::ImageArtifactProvenance::Build {
+                        method: ployz_types::model::BuildMethod::Dockerfile,
+                        location: ployz_types::model::BuildLocation::Local,
+                        source_digest: None,
+                    },
+                    created_at: 1,
+                },
+                availability: Some(ployz_types::model::ImageAvailabilityRecord {
+                    machine_id: ployz_types::model::MachineId(String::from("founder")),
+                    digest,
+                    presence: ployz_types::model::ImagePresence::Absent { observed_at: 1 },
+                    updated_at: 1,
+                }),
+            })),
+        };
+
+        assert_eq!(
+            render_plain_success(&response),
+            "operation=build-local-1 image=example/app:latest digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa machine=founder"
         );
     }
 
