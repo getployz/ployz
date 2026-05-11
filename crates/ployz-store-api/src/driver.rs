@@ -10,9 +10,9 @@ use ployz_types::Result;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
     DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord, ImageAvailabilityRecord, ImageDigest,
-    InstanceId, InstanceStatusRecord, InviteRecord, MachineId, MachineMembership, RoutingState,
-    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
-    VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
+    InstanceId, InstanceStatusRecord, InviteRecord, MachineId, MachineMembership,
+    PreparedDeployRecord, RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord,
+    ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::sync::Arc;
@@ -240,12 +240,61 @@ impl DeployStore for StoreDriver {
         self.deploys.commit_deploy(command).await
     }
 
+    async fn get_deploy_commit(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+    ) -> Result<Option<DeployCommit>> {
+        self.deploys.get_deploy_commit(namespace, deploy_id).await
+    }
+
     async fn write_deploy_status(&self, deploy: &DeployRecord) -> Result<()> {
         self.deploys.write_deploy_status(deploy).await
     }
 
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
         self.deploys.get_deploy(deploy_id).await
+    }
+
+    async fn write_prepared_deploy(&self, prepared: &PreparedDeployRecord) -> Result<()> {
+        self.deploys.write_prepared_deploy(prepared).await
+    }
+
+    async fn get_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+    ) -> Result<Option<PreparedDeployRecord>> {
+        self.deploys.get_prepared_deploy(prepared_deploy_id).await
+    }
+
+    async fn mark_prepared_deploy_applied(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord> {
+        self.deploys
+            .mark_prepared_deploy_applied(prepared_deploy_id, updated_at)
+            .await
+    }
+
+    async fn expire_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord> {
+        self.deploys
+            .expire_prepared_deploy(prepared_deploy_id, updated_at)
+            .await
+    }
+
+    async fn supersede_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord> {
+        self.deploys
+            .supersede_prepared_deploy(prepared_deploy_id, updated_at)
+            .await
     }
 
     async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> Result<()> {

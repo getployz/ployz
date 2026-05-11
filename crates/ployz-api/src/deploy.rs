@@ -1,4 +1,7 @@
-use ployz_types::model::{DeployBaselineComponent, DeployPreviewBaseline, InstanceStatusRecord};
+use ployz_types::model::{
+    DeployBaselineComponent, DeployId, DeployPreviewBaseline, InstanceStatusRecord,
+    PreparedDeployRecord, PreparedDeployState,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +38,16 @@ pub struct DeployNamespaceSnapshotPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployPreparePayload {
+    pub prepared: PreparedDeployRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployApplyPreparedRequest {
+    pub prepared_deploy_id: DeployId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeployCandidateStartedPayload {
     pub status: InstanceStatusRecord,
 }
@@ -48,6 +61,12 @@ pub struct DeployFailurePayload {
     pub actual_baseline: Option<DeployPreviewBaseline>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub baseline_changed_components: Vec<DeployBaselineComponent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_deploy_id: Option<DeployId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_deploy_state: Option<PreparedDeployState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_deploy_expires_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,6 +86,10 @@ pub struct DeployFailurePayload {
 pub enum DeployFailureReason {
     NoEligiblePlacementTargets,
     DeployBaselineChanged,
+    PreparedDeployMissing,
+    PreparedDeployNotApplicable,
+    PreparedDeployExpired,
+    PreparedDeployInvalid,
     DeployImageDigestRequired,
     DeployImageAvailabilityMissing,
     DeployImageAvailabilityNotPresent,
@@ -75,7 +98,8 @@ pub enum DeployFailureReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::DeployPreviewBaselineComponents;
+    use ployz_types::model::{DeployPreview, DeployPreviewBaselineComponents, PreparedDeployState};
+    use ployz_types::spec::Namespace;
 
     fn test_baseline(service_sources: &str) -> DeployPreviewBaseline {
         DeployPreviewBaseline::new(DeployPreviewBaselineComponents {
@@ -118,6 +142,9 @@ mod tests {
             expected_baseline: Some(expected.clone()),
             actual_baseline: Some(actual.clone()),
             baseline_changed_components: vec![DeployBaselineComponent::ServiceSources],
+            prepared_deploy_id: None,
+            prepared_deploy_state: None,
+            prepared_deploy_expires_at: None,
             service: None,
             slot_id: None,
             machine_id: None,
@@ -144,12 +171,76 @@ mod tests {
     }
 
     #[test]
+    fn deploy_prepare_and_apply_prepared_payloads_roundtrip() {
+        let baseline = test_baseline("sources");
+        let preview = DeployPreview {
+            namespace: Namespace("prod".into()),
+            manifest_hash: "manifest".into(),
+            baseline: Some(baseline.clone()),
+            participants: Vec::new(),
+            phases: Vec::new(),
+            services: Vec::new(),
+            service_sources: Vec::new(),
+            service_source_fingerprint: String::new(),
+            service_branch_sources: Vec::new(),
+            image_availability: Vec::new(),
+            volume_moves: Vec::new(),
+            volume_clones: Vec::new(),
+            volume_clone_preflights: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let prepared = PreparedDeployRecord {
+            prepared_deploy_id: DeployId("prepare-1".into()),
+            namespace: Namespace("prod".into()),
+            manifest_hash: "manifest".into(),
+            manifest_json: "{}".into(),
+            preview,
+            baseline,
+            coordinator_machine_id: ployz_types::model::MachineId("machine-a".into()),
+            state: PreparedDeployState::Prepared,
+            created_at: 1,
+            expires_at: 2,
+            updated_at: 1,
+        };
+        let payload = DeployPreparePayload {
+            prepared: prepared.clone(),
+        };
+        let request = DeployApplyPreparedRequest {
+            prepared_deploy_id: prepared.prepared_deploy_id.clone(),
+        };
+
+        let payload_json = serde_json::to_value(&payload).expect("serialize prepare payload");
+        let request_json = serde_json::to_value(&request).expect("serialize apply prepared");
+
+        assert_eq!(
+            payload_json["prepared"]["prepared_deploy_id"],
+            serde_json::json!("prepare-1")
+        );
+        assert_eq!(
+            request_json["prepared_deploy_id"],
+            serde_json::json!("prepare-1")
+        );
+        let payload_roundtrip: DeployPreparePayload =
+            serde_json::from_value(payload_json).expect("deserialize prepare payload");
+        let request_roundtrip: DeployApplyPreparedRequest =
+            serde_json::from_value(request_json).expect("deserialize apply prepared");
+        assert_eq!(payload_roundtrip.prepared, prepared);
+        assert_eq!(
+            request_roundtrip.prepared_deploy_id,
+            DeployId("prepare-1".into())
+        );
+    }
+
+    #[test]
     fn deploy_failure_payload_serializes_image_availability_details() {
         let payload = DeployFailurePayload {
             reason: DeployFailureReason::DeployImageAvailabilityMissing,
             expected_baseline: None,
             actual_baseline: None,
             baseline_changed_components: Vec::new(),
+            prepared_deploy_id: None,
+            prepared_deploy_state: None,
+            prepared_deploy_expires_at: None,
             service: Some("web".into()),
             slot_id: Some("slot-0001".into()),
             machine_id: Some("machine-a".into()),

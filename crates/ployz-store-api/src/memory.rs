@@ -6,13 +6,14 @@ use crate::{
     SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
-use ployz_types::error::{Error, Result, SubscriptionStream};
+use ployz_types::error::{DeployError, Error, Result, SubscriptionStream};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     CertificateEvent, CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord,
     DeployPhaseState, DeployRecord, ImageAvailabilityRecord, ImageDigest, InstanceId,
-    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership, RoutingEvent,
-    RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
+    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership,
+    PreparedDeployRecord, PreparedDeployState, RoutingEvent, RoutingState,
+    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
     VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
@@ -34,7 +35,9 @@ struct StoreInner {
     routing_events: broadcast::Sender<MemoryRoutingEvent>,
     invites: BTreeMap<String, InviteRecord>,
     deploy_commit_facts: DeployCommitFacts,
+    deploy_commits: HashMap<(Namespace, DeployId), DeployCommit>,
     deploy_records: HashMap<DeployId, DeployRecord>,
+    prepared_deploy_records: HashMap<DeployId, PreparedDeployRecord>,
     deploy_phase_records: HashMap<(Namespace, DeployId, DeployPhaseId), DeployPhaseRecord>,
     image_availability: BTreeMap<(MachineId, ImageDigest), ImageAvailabilityRecord>,
     instance_status: HashMap<InstanceId, InstanceStatusRecord>,
@@ -70,7 +73,9 @@ impl MemoryStore {
                 routing_events: broadcast::channel(MEMORY_SUBSCRIPTION_CAPACITY).0,
                 invites: BTreeMap::new(),
                 deploy_commit_facts: DeployCommitFacts::new(),
+                deploy_commits: HashMap::new(),
                 deploy_records: HashMap::new(),
+                prepared_deploy_records: HashMap::new(),
                 deploy_phase_records: HashMap::new(),
                 image_availability: BTreeMap::new(),
                 instance_status: HashMap::new(),
@@ -93,6 +98,30 @@ impl MemoryStore {
         self.inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn transition_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+        state: PreparedDeployState,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord> {
+        let mut inner = self.lock_inner();
+        let Some(record) = inner.prepared_deploy_records.get_mut(prepared_deploy_id) else {
+            return Err(Error::operation(
+                "memory_prepared_deploy_state",
+                format!("prepared deploy '{prepared_deploy_id}' not found"),
+            ));
+        };
+        if record.state != PreparedDeployState::Prepared {
+            return Err(Error::Deploy(DeployError::PreparedDeployNotApplicable {
+                prepared_deploy_id: prepared_deploy_id.0.clone(),
+                state: record.state,
+            }));
+        }
+        record.state = state;
+        record.updated_at = updated_at;
+        Ok(record.clone())
     }
 
     fn broadcast_machine(inner: &mut StoreInner, event: MachineEvent) {
@@ -484,8 +513,13 @@ impl DeployStore for MemoryStore {
     }
 
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
+        command.validate_identity(&command.namespace, &command.deploy.deploy_id)?;
         let mut inner = self.lock_inner();
         let events = inner.deploy_commit_facts.apply_commit_events(command);
+        inner.deploy_commits.insert(
+            (command.namespace.clone(), command.deploy.deploy_id.clone()),
+            command.clone(),
+        );
         Self::broadcast_routing_events(
             &mut inner,
             format!("memory:deploy:{}", command.deploy.deploy_id),
@@ -493,6 +527,23 @@ impl DeployStore for MemoryStore {
             events,
         );
         Ok(())
+    }
+
+    async fn get_deploy_commit(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+    ) -> Result<Option<DeployCommit>> {
+        let inner = self.lock_inner();
+        let Some(commit) = inner
+            .deploy_commits
+            .get(&(namespace.clone(), deploy_id.clone()))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        commit.validate_identity(namespace, deploy_id)?;
+        Ok(Some(commit))
     }
 
     async fn write_deploy_status(&self, deploy: &DeployRecord) -> Result<()> {
@@ -506,6 +557,61 @@ impl DeployStore for MemoryStore {
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
         let inner = self.lock_inner();
         Ok(inner.deploy_records.get(deploy_id).cloned())
+    }
+
+    async fn write_prepared_deploy(&self, prepared: &PreparedDeployRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner
+            .prepared_deploy_records
+            .insert(prepared.prepared_deploy_id.clone(), prepared.clone());
+        Ok(())
+    }
+
+    async fn get_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+    ) -> Result<Option<PreparedDeployRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner
+            .prepared_deploy_records
+            .get(prepared_deploy_id)
+            .cloned())
+    }
+
+    async fn mark_prepared_deploy_applied(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord> {
+        self.transition_prepared_deploy(
+            prepared_deploy_id,
+            PreparedDeployState::Applied,
+            updated_at,
+        )
+    }
+
+    async fn expire_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord> {
+        self.transition_prepared_deploy(
+            prepared_deploy_id,
+            PreparedDeployState::Expired,
+            updated_at,
+        )
+    }
+
+    async fn supersede_prepared_deploy(
+        &self,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<PreparedDeployRecord> {
+        self.transition_prepared_deploy(
+            prepared_deploy_id,
+            PreparedDeployState::Superseded,
+            updated_at,
+        )
     }
 
     async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> Result<()> {
@@ -796,11 +902,14 @@ impl MemoryStore {
         let removed_deploy_commit_facts = std::mem::take(&mut inner.deploy_commit_facts);
         let removed_revisions = removed_deploy_commit_facts.all_revisions();
         let removed_releases = removed_deploy_commit_facts.all_releases();
+        inner.deploy_commits.clear();
+        inner.deploy_records.clear();
         let removed_instances = inner
             .instance_status
             .drain()
             .map(|(_, record)| record)
             .collect::<Vec<_>>();
+        inner.prepared_deploy_records.clear();
         inner.deploy_phase_records.clear();
         inner.invites.clear();
         inner.acme_accounts.clear();
@@ -915,9 +1024,10 @@ mod tests {
     use super::*;
     use ployz_types::model::{
         DeployPhaseCommitPolicy, DeployPhaseFailure, DeployPhaseRollbackPolicy, DeployPhaseState,
-        ImageArtifact, ImageArtifactProvenance, ImagePlatform, ImagePresence, ImageRef,
-        ServiceBranchLineageRecord, ServiceRevisionRecord, VolumeBranchLineageRecord,
-        VolumeMovementRecord,
+        DeployPreview, DeployPreviewBaseline, DeployPreviewBaselineComponents, ImageArtifact,
+        ImageArtifactProvenance, ImagePlatform, ImagePresence, ImageRef, PreparedDeployRecord,
+        PreparedDeployState, ServiceBranchLineageRecord, ServiceRevisionRecord,
+        VolumeBranchLineageRecord, VolumeMovementRecord,
     };
 
     fn test_machine(id: impl Into<String>) -> MachineMembership {
@@ -1420,6 +1530,94 @@ mod tests {
                 .await
                 .expect("get deploy"),
             Some(deploy)
+        );
+    }
+
+    #[tokio::test]
+    async fn deploy_commit_is_recoverable_without_status_record() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let deploy = test_deploy(&namespace, "deploy-new");
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: Vec::new(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
+                volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
+                phase_commits: Vec::new(),
+                releases: Vec::new(),
+                volumes: Vec::new(),
+                deploy: deploy.clone(),
+            })
+            .await
+            .expect("commit deploy");
+
+        assert!(
+            store
+                .get_deploy(&deploy.deploy_id)
+                .await
+                .expect("get deploy status")
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .get_deploy_commit(&namespace, &deploy.deploy_id)
+                .await
+                .expect("get deploy commit")
+                .map(|commit| commit.deploy),
+            Some(deploy)
+        );
+    }
+
+    #[tokio::test]
+    async fn prepared_deploy_records_are_written_and_transitioned_explicitly() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let prepared = test_prepared_deploy(&namespace, "prepare-1");
+
+        store
+            .write_prepared_deploy(&prepared)
+            .await
+            .expect("write prepared deploy");
+        let stored = store
+            .get_prepared_deploy(&prepared.prepared_deploy_id)
+            .await
+            .expect("get prepared deploy")
+            .expect("prepared deploy exists");
+
+        assert_eq!(stored, prepared);
+
+        let marked = store
+            .mark_prepared_deploy_applied(&prepared.prepared_deploy_id, 20)
+            .await
+            .expect("mark prepared deploy");
+
+        assert_eq!(marked.state, PreparedDeployState::Applied);
+        assert_eq!(marked.updated_at, 20);
+        assert_eq!(
+            store
+                .get_prepared_deploy(&prepared.prepared_deploy_id)
+                .await
+                .expect("get marked deploy")
+                .expect("marked deploy exists")
+                .state,
+            PreparedDeployState::Applied
+        );
+        assert!(
+            store
+                .expire_prepared_deploy(&DeployId("missing".into()), 21)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .supersede_prepared_deploy(&prepared.prepared_deploy_id, 22)
+                .await
+                .is_err()
         );
     }
 
@@ -2145,6 +2343,50 @@ mod tests {
         }
     }
 
+    fn test_prepared_deploy(
+        namespace: &Namespace,
+        prepared_deploy_id: &str,
+    ) -> PreparedDeployRecord {
+        let baseline = DeployPreviewBaseline::new(DeployPreviewBaselineComponents {
+            manifest: "manifest".into(),
+            participants: "participants".into(),
+            phases: "phases".into(),
+            services: "services".into(),
+            service_sources: "sources".into(),
+            volumes: "volumes".into(),
+            volume_moves: "moves".into(),
+            volume_clones: "clones".into(),
+        });
+        PreparedDeployRecord {
+            prepared_deploy_id: DeployId(prepared_deploy_id.into()),
+            namespace: namespace.clone(),
+            manifest_hash: "manifest".into(),
+            manifest_json: "{}".into(),
+            preview: DeployPreview {
+                namespace: namespace.clone(),
+                manifest_hash: "manifest".into(),
+                baseline: Some(baseline.clone()),
+                participants: Vec::new(),
+                phases: Vec::new(),
+                services: Vec::new(),
+                service_sources: Vec::new(),
+                service_source_fingerprint: String::new(),
+                service_branch_sources: Vec::new(),
+                image_availability: Vec::new(),
+                volume_moves: Vec::new(),
+                volume_clones: Vec::new(),
+                volume_clone_preflights: Vec::new(),
+                warnings: Vec::new(),
+            },
+            baseline,
+            coordinator_machine_id: MachineId("machine-1".into()),
+            state: PreparedDeployState::Prepared,
+            created_at: 1,
+            expires_at: 100,
+            updated_at: 1,
+        }
+    }
+
     fn test_volume_movement(
         namespace: &Namespace,
         volume_name: &str,
@@ -2560,10 +2802,14 @@ mod tests {
                 phase_commits: Vec::new(),
                 releases: Vec::new(),
                 volumes: vec![volume],
-                deploy,
+                deploy: deploy.clone(),
             })
             .await
             .expect("commit volume");
+        store
+            .write_deploy_status(&deploy)
+            .await
+            .expect("write deploy status before wipe");
         assert_eq!(
             store
                 .list_volumes(&namespace)
@@ -2597,6 +2843,20 @@ mod tests {
                 .await
                 .expect("list phases after wipe")
                 .is_empty()
+        );
+        assert!(
+            store
+                .get_deploy_commit(&namespace, &DeployId("dep-1".into()))
+                .await
+                .expect("get deploy commit after wipe")
+                .is_none()
+        );
+        assert!(
+            store
+                .get_deploy(&DeployId("dep-1".into()))
+                .await
+                .expect("get deploy status after wipe")
+                .is_none()
         );
     }
 }
