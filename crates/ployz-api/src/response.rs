@@ -6,8 +6,9 @@ use crate::deploy::{
 };
 use crate::doctor::DoctorPayload;
 use crate::image::{
-    ImageDistributePayload, ImageInspectPayload, ImageOperationListPayload, ImageOperationPayload,
-    ImagePushPayload, ImageReceiveSessionPayload, ImageReceivedImportPayload, ImageStatusPayload,
+    ImageDistributePayload, ImageDistributeValidationPayload, ImageInspectPayload,
+    ImageOperationListPayload, ImageOperationPayload, ImagePushPayload, ImageReceiveSessionPayload,
+    ImageReceivedImportPayload, ImageStatusPayload,
 };
 use crate::machine::{
     MachineAddPayload, MachineInviteListPayload, MachineListPayload, MachineOperationListPayload,
@@ -50,6 +51,7 @@ pub enum DaemonPayload {
     ImageInspect(ImageInspectPayload),
     ImagePush(ImagePushPayload),
     ImageDistribute(ImageDistributePayload),
+    ImageDistributeValidation(ImageDistributeValidationPayload),
     ImageReceiveSession(ImageReceiveSessionPayload),
     ImageReceivedImport(ImageReceivedImportPayload),
     ImageOperation(ImageOperationPayload),
@@ -78,8 +80,11 @@ pub struct DaemonResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::image::ImageReceiveSessionPayload;
-    use ployz_types::model::MachineId;
+    use crate::image::{
+        ImageDistributeValidationFailure, ImageDistributeValidationPayload, ImageTransferFailure,
+        ImageTransferFailureStage, ImageTransferTargetResult, ImageTransferTargetStatus,
+    };
+    use ployz_types::model::{ImageDigest, MachineId};
     use std::collections::BTreeMap;
 
     #[test]
@@ -118,6 +123,85 @@ mod tests {
                     "x-ployz-source-machine": "machine-a",
                     "x-ployz-image-session": "token-1"
                 }
+            })
+        );
+    }
+
+    #[test]
+    fn image_distribute_validation_payload_serializes_branchable_context() {
+        let digest =
+            ImageDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("valid digest");
+        let response = DaemonResponse {
+            ok: false,
+            code: "IMAGE_DISTRIBUTE_DUPLICATE_TARGET".into(),
+            message: "duplicate".into(),
+            payload: Some(DaemonPayload::ImageDistributeValidation(
+                ImageDistributeValidationPayload {
+                    request: crate::image::ImageDistributeRequest {
+                        digest: digest.clone(),
+                        source_machine: MachineId("founder".into()),
+                        target_machines: vec![MachineId("peer".into()), MachineId("peer".into())],
+                        platform: None,
+                    },
+                    failure: ImageDistributeValidationFailure::DuplicateTarget {
+                        duplicate_target: MachineId("peer".into()),
+                    },
+                },
+            )),
+        };
+
+        let json = serde_json::to_value(&response).expect("serialize response");
+
+        assert_eq!(
+            json["payload"],
+            serde_json::json!({
+                "kind": "image-distribute-validation",
+                "digest": digest.as_str(),
+                "source_machine": "founder",
+                "target_machines": ["peer", "peer"],
+                "failure": {
+                    "type": "duplicate_target",
+                    "duplicate_target": "peer"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn image_distribute_payload_serializes_target_failure_context() {
+        let digest =
+            ImageDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("valid digest");
+        let response = DaemonResponse {
+            ok: false,
+            code: "IMAGE_DISTRIBUTE_FAILED".into(),
+            message: "failed".into(),
+            payload: Some(DaemonPayload::ImageDistribute(
+                crate::image::ImageDistributePayload {
+                    operation_id: "image-distribute-1".into(),
+                    digest: digest.clone(),
+                    source_machine: MachineId("founder".into()),
+                    targets: vec![ImageTransferTargetResult {
+                        machine_id: MachineId("peer".into()),
+                        status: ImageTransferTargetStatus::Failed,
+                        record: None,
+                        failure: Some(ImageTransferFailure {
+                            code: "IMAGE_DISTRIBUTE_SOURCE_EXPORT_FAILED".into(),
+                            stage: ImageTransferFailureStage::SourceExport,
+                            message: "export failed".into(),
+                        }),
+                    }],
+                },
+            )),
+        };
+
+        let json = serde_json::to_value(&response).expect("serialize response");
+
+        assert_eq!(
+            json["payload"]["targets"][0]["failure"],
+            serde_json::json!({
+                "code": "IMAGE_DISTRIBUTE_SOURCE_EXPORT_FAILED",
+                "stage": "source_export",
+                "message": "export failed"
             })
         );
     }
