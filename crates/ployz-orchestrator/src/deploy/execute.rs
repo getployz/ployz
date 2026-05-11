@@ -499,11 +499,8 @@ async fn existing_prepared_apply_replay(
 ) -> Result<Option<PreparedApplyReplay>> {
     let status_record = store.get_deploy(&prepared.prepared_deploy_id).await?;
     if let Some(record) = status_record.as_ref()
-        && matches!(
-            record.state,
-            DeployState::Committed | DeployState::CleanupPending
-        )
-        && let Some(result) = prepared_apply_result_from_terminal_record(
+        && record.state == DeployState::Committed
+        && let Some(mut result) = prepared_apply_result_from_terminal_record(
             store,
             prepared,
             record.clone(),
@@ -511,6 +508,12 @@ async fn existing_prepared_apply_replay(
         )
         .await?
     {
+        if let Some(commit) = store
+            .get_deploy_commit(&prepared.namespace, &prepared.prepared_deploy_id)
+            .await?
+        {
+            repair_phase_records_from_durable_commit(store, &commit, &mut result.events).await;
+        }
         return Ok(Some(PreparedApplyReplay::Complete(result)));
     }
     if let Some(commit) = store
@@ -530,6 +533,13 @@ async fn existing_prepared_apply_replay(
         .map(|result| result.map(PreparedApplyReplay::Complete));
     }
     Ok(None)
+}
+
+fn post_commit_pending_deploy_record(record: &DeployRecord) -> DeployRecord {
+    let mut pending = record.clone();
+    pending.state = DeployState::CleanupPending;
+    pending.finished_at = Some(now_unix_secs());
+    pending
 }
 
 async fn prepared_apply_result_from_terminal_record(
@@ -644,7 +654,9 @@ async fn resume_prepared_apply_after_durable_commit(
             )
         })?;
     let mut final_deploy_record = commit.deploy.clone();
-    store.write_deploy_status(&final_deploy_record).await?;
+    store
+        .write_deploy_status(&post_commit_pending_deploy_record(&final_deploy_record))
+        .await?;
     repair_phase_records_from_durable_commit(store, &commit, &mut events).await;
     mark_prepared_applied_after_terminal_status(store, Some(prepared), &mut events).await;
 
@@ -1272,6 +1284,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         if let Err(error) = store.commit_deploy(&final_commit).await {
             if is_post_commit_routing_publish_failure(&error) {
                 durable_final_commit_record = Some(final_commit.deploy.clone());
+                let pending_record = post_commit_pending_deploy_record(&final_commit.deploy);
                 record_phases_succeeded_after_commit(
                     store,
                     &deploy_id,
@@ -1279,12 +1292,8 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                     Some(final_commit.deploy.deploy_id.clone()),
                 )
                 .await;
-                if store
-                    .write_deploy_status(&final_commit.deploy)
-                    .await
-                    .is_ok()
-                {
-                    last_written_deploy_record = Some(final_commit.deploy.clone());
+                if store.write_deploy_status(&pending_record).await.is_ok() {
+                    last_written_deploy_record = Some(pending_record);
                     mark_prepared_applied_after_terminal_status(
                         store,
                         prepared_record,
@@ -1305,7 +1314,8 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             return Err(error);
         }
         durable_final_commit_record = Some(final_commit.deploy.clone());
-        let committed_status_result = store.write_deploy_status(&final_commit.deploy).await;
+        let pending_record = post_commit_pending_deploy_record(&final_commit.deploy);
+        let committed_status_result = store.write_deploy_status(&pending_record).await;
         record_phases_succeeded_after_commit(
             store,
             &deploy_id,
@@ -1314,7 +1324,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         )
         .await;
         if committed_status_result.is_ok() {
-            last_written_deploy_record = Some(final_commit.deploy.clone());
+            last_written_deploy_record = Some(pending_record);
             mark_prepared_applied_after_terminal_status(store, prepared_record, &mut events).await;
         }
         committed_status_result?;
@@ -1354,8 +1364,11 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             serde_json::to_string(&final_preview).map_err(|error| {
                 Error::operation("deploy_apply", format!("serialize preview: {error}"))
             })?;
-        store.write_deploy_status(&final_deploy_record).await?;
-        last_written_deploy_record = Some(final_deploy_record.clone());
+        let post_warning_pending_record = post_commit_pending_deploy_record(&final_deploy_record);
+        store
+            .write_deploy_status(&post_warning_pending_record)
+            .await?;
+        last_written_deploy_record = Some(post_warning_pending_record);
         spawn_certificate_finalization_with_coordination(
             store.clone(),
             issuer_factory.clone(),
@@ -1386,6 +1399,8 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         events.extend(cleanup.events);
 
         let final_state = if cleanup.errors.is_empty() {
+            store.write_deploy_status(&final_deploy_record).await?;
+            last_written_deploy_record = Some(final_deploy_record.clone());
             DeployState::Committed
         } else {
             let mut cleanup_pending_record = final_deploy_record.clone();
@@ -1432,7 +1447,8 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                     .map(|record| record.state),
                 Some(DeployState::Committed | DeployState::CleanupPending)
             ) {
-                match store.write_deploy_status(&committed_record).await {
+                let pending_record = post_commit_pending_deploy_record(&committed_record);
+                match store.write_deploy_status(&pending_record).await {
                     Ok(()) => {
                         if let Some(prepared) = prepared_record
                             && let Err(update_error) = store

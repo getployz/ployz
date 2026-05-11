@@ -3649,16 +3649,16 @@ async fn apply_does_not_mark_committed_volume_move_failed_after_post_commit_stat
             .count(),
         0
     );
-    let committed_attempt = writes
+    let post_commit_attempt = writes
         .last()
-        .expect("committed status write should have been attempted");
-    assert_eq!(committed_attempt.state, DeployState::Committed);
+        .expect("post-commit status write should have been attempted");
+    assert_eq!(post_commit_attempt.state, DeployState::CleanupPending);
     let committed_record = store
-        .get_deploy(&committed_attempt.deploy_id)
+        .get_deploy(&post_commit_attempt.deploy_id)
         .await
         .expect("get deploy")
-        .expect("committed deploy record");
-    assert_eq!(committed_record.state, DeployState::Committed);
+        .expect("post-commit deploy record");
+    assert_eq!(committed_record.state, DeployState::CleanupPending);
     let records = store
         .list_volumes(&manifest.namespace)
         .await
@@ -6035,6 +6035,70 @@ async fn apply_prepared_recovers_final_commit_over_stale_checkpoint_status() {
     );
 }
 
+#[tokio::test]
+async fn apply_prepared_repairs_phases_before_replaying_committed_status() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "web",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    let prepared = prepare(
+        &store,
+        &local_machine_id,
+        &manifest,
+        &NoopParticipantProbe,
+        DeployId("prepare-committed-phase-repair".into()),
+        60,
+    )
+    .await
+    .expect("prepare deploy");
+    backend.fail_succeeded_phase_upsert(true);
+
+    let participant_client = FakeParticipantClient::new(FakeController::default());
+    let first = apply_prepared_with_certificate_coordination(
+        &store,
+        &participant_client,
+        &local_machine_id,
+        prepared.prepared_deploy_id.clone(),
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+    .expect("first apply should commit despite best-effort phase projection failure");
+
+    assert_eq!(first.state, DeployState::Committed);
+    backend.fail_succeeded_phase_upsert(false);
+    backend.reset_counts();
+    let retry_controller = FakeController::default();
+    let retry_participant_client = FakeParticipantClient::new(retry_controller.clone());
+    let retry = apply_prepared_with_certificate_coordination(
+        &store,
+        &retry_participant_client,
+        &local_machine_id,
+        prepared.prepared_deploy_id.clone(),
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+    .expect("retry should replay committed status");
+
+    assert_eq!(retry.state, DeployState::Committed);
+    assert_eq!(retry_controller.start_count(), 0);
+    assert_eq!(backend.commit_count(), 0);
+    assert!(
+        backend.succeeded_phase_upsert_count() > 0,
+        "committed fast-path replay should repair phase records from durable phase commits"
+    );
+}
+
 fn prepared_deploy_status(
     prepared: &PreparedDeployRecord,
     state: DeployState,
@@ -6814,14 +6878,14 @@ async fn apply_marks_phase_succeeded_when_first_committed_status_write_fails() {
             .all(|record| record.state != DeployState::Failed),
         "post-commit status failure must not mark committed deploy failed"
     );
-    let committed_attempt = writes
+    let post_commit_attempt = writes
         .iter()
-        .find(|record| record.state == DeployState::Committed)
-        .expect("committed status write should have been attempted");
+        .find(|record| record.state == DeployState::CleanupPending)
+        .expect("post-commit status write should have been attempted");
     assert_default_phase_record(
         &store,
         &manifest.namespace,
-        &committed_attempt.deploy_id,
+        &post_commit_attempt.deploy_id,
         "succeeded",
         None,
     )
@@ -7511,8 +7575,15 @@ async fn apply_with_initial_plan_sets_cleanup_pending_after_cleanup_failure() {
 
     assert_eq!(result.state, crate::model::DeployState::CleanupPending);
     assert_eq!(backend.commit_count(), 1);
-    // deploying -> committed point-of-no-return -> post-cert warning refresh -> cleanup_pending
+    // applying -> post-commit pending -> post-warning pending -> cleanup_pending
     assert_eq!(backend.deploy_status_write_count(), 4);
+    let status_writes = backend.deploy_status_writes().await;
+    assert!(
+        status_writes
+            .iter()
+            .all(|record| record.state != DeployState::Committed),
+        "committed status must not be visible until post-commit cleanup succeeds: {status_writes:?}"
+    );
     let commit_index = result
         .events
         .iter()
@@ -9265,7 +9336,10 @@ impl DeployStore for CountingBackend {
     async fn write_deploy_status(&self, deploy: &DeployRecord) -> PloyzResult<()> {
         self.deploy_status_writes.fetch_add(1, Ordering::SeqCst);
         self.deploy_status_records.lock().await.push(deploy.clone());
-        if deploy.state == DeployState::Committed {
+        if matches!(
+            deploy.state,
+            DeployState::Committed | DeployState::CleanupPending
+        ) {
             let committed_writes = self.committed_status_writes.fetch_add(1, Ordering::SeqCst) + 1;
             if self.fail_committed_status_writes.load(Ordering::SeqCst)
                 || (committed_writes > 1
