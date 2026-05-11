@@ -53,6 +53,7 @@ impl DaemonState {
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployApplyPrepared { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::BranchNamespace { .. }
             | DaemonRequest::MigrateService { .. }
             | DaemonRequest::ImageStatus { .. }
             | DaemonRequest::ImageInspect { .. }
@@ -162,6 +163,9 @@ impl DaemonState {
             }
             DaemonRequest::DeployExport { namespace } => {
                 self.handle_deploy_export(&namespace).await
+            }
+            DaemonRequest::BranchNamespace { request } => {
+                self.handle_branch_namespace(request).await
             }
             DaemonRequest::MigrateService { request } => self.handle_migrate_service(request).await,
             DaemonRequest::ImageStatus { request } => self.handle_image_status(&request).await,
@@ -496,6 +500,7 @@ impl DaemonState {
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployApplyPrepared { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::BranchNamespace { .. }
             | DaemonRequest::MigrateService { .. }
             | DaemonRequest::ImageStatus { .. }
             | DaemonRequest::ImageInspect { .. }

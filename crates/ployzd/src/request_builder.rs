@@ -1,14 +1,16 @@
 use crate::cli::{
-    BuildAction, BuildOperationAction, VolumeAction, VolumeZfsAction, VolumeZfsTransferAction,
+    BranchResourceModeArg, BuildAction, BuildOperationAction, VolumeAction, VolumeZfsAction,
+    VolumeZfsTransferAction,
 };
 use crate::cli_io::{read_optional_text_file, read_stdin_string, read_text_source, request_daemon};
 use crate::{
-    CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
-    DeployServiceArgs, ImageAction, ImageOperationAction, InstallSourceArg, MachineAction,
-    MachineInviteAction, MachineOperationAction, MachineStorageAction, MeshAction, MigrateAction,
-    MigrateServiceArgs, Result, RuntimeTargetArg, ServiceModeArg,
+    BranchAction, BranchNamespaceArgs, CliError, Command, DebugAction, DeployAction, DeployCommand,
+    DeployManifestArgs, DeployServiceArgs, ImageAction, ImageOperationAction, InstallSourceArg,
+    MachineAction, MachineInviteAction, MachineOperationAction, MachineStorageAction, MeshAction,
+    MigrateAction, MigrateServiceArgs, Result, RuntimeTargetArg, ServiceModeArg,
 };
 use ployz_api::{
+    BranchNamespaceMode, BranchNamespaceRequest, BranchResourceMode, BranchResourceModeOverride,
     BuildLocalRequest, DaemonRequest, DeployOptions, ImageDistributeRequest, ImageInspectRequest,
     ImagePushRequest, ImageStatusRequest, InstallSource as MachineInstallSource, MachineAddOptions,
     MachineInstallOptions, MachineStoragePromoteRequest, MigrateServiceMode, MigrateServiceRequest,
@@ -18,7 +20,7 @@ use ployz_types::model::{ImageDigest, ImagePlatform, MachineId, StorageReplicaPo
 use ployz_types::spec::{
     ContainerSpec, DeployManifest, Mount, MountSource, Namespace, NetworkMode, Placement,
     PortProtocol, PublishedPort, PullPolicy, Resources, RestartPolicy, RolloutStrategy,
-    ServicePort, ServiceSpec,
+    ServicePort, ServiceSpec, valid_storage_segment,
 };
 use std::collections::BTreeMap;
 
@@ -33,6 +35,7 @@ pub(crate) async fn build_request<T: Transport>(
         Command::Debug { action } => build_debug_request(action),
         Command::Deploy(command) => build_deploy_request(*command, transport, socket).await,
         Command::Migrate { action } => build_migrate_request(action),
+        Command::Branch { action } => build_branch_request(action),
         Command::Runtime { .. } => Err(CliError::Usage(
             "internal error: runtime stream is handled directly".into(),
         )),
@@ -287,6 +290,88 @@ pub(crate) fn build_migrate_service_request(
             mode,
         },
     })
+}
+
+pub(crate) fn build_branch_request(action: BranchAction) -> Result<DaemonRequest> {
+    match action {
+        BranchAction::Apply(args) => {
+            build_branch_namespace_request(args, BranchNamespaceMode::Apply)
+        }
+        BranchAction::Preview(args) => {
+            build_branch_namespace_request(args, BranchNamespaceMode::Preview)
+        }
+        BranchAction::RenderManifest(args) => {
+            build_branch_namespace_request(args, BranchNamespaceMode::RenderManifest)
+        }
+    }
+}
+
+fn build_branch_namespace_request(
+    args: BranchNamespaceArgs,
+    mode: BranchNamespaceMode,
+) -> Result<DaemonRequest> {
+    if !valid_storage_segment(&args.source_namespace) {
+        return Err(CliError::Usage(
+            "branch source namespace must be 1-63 chars of [a-z0-9_-], starting with a letter or digit".into(),
+        ));
+    }
+    if !valid_storage_segment(&args.target_namespace) {
+        return Err(CliError::Usage(
+            "branch target namespace must be 1-63 chars of [a-z0-9_-], starting with a letter or digit".into(),
+        ));
+    }
+    Ok(DaemonRequest::BranchNamespace {
+        request: BranchNamespaceRequest {
+            source_namespace: args.source_namespace,
+            target_namespace: args.target_namespace,
+            mode,
+            default_service_mode: branch_resource_mode(args.service_mode),
+            default_volume_mode: branch_resource_mode(args.volume_mode),
+            services: parse_branch_overrides(args.service, "service")?,
+            volumes: parse_branch_overrides(args.volume, "volume")?,
+        },
+    })
+}
+
+fn branch_resource_mode(mode: BranchResourceModeArg) -> BranchResourceMode {
+    match mode {
+        BranchResourceModeArg::Fresh => BranchResourceMode::Fresh,
+        BranchResourceModeArg::Branch => BranchResourceMode::Branch,
+    }
+}
+
+fn parse_branch_overrides(
+    values: Vec<String>,
+    label: &'static str,
+) -> Result<Vec<BranchResourceModeOverride>> {
+    values
+        .into_iter()
+        .map(|value| {
+            let Some((name, mode)) = value.split_once('=') else {
+                return Err(CliError::Usage(format!(
+                    "branch {label} override must be NAME=fresh or NAME=branch"
+                )));
+            };
+            if !valid_storage_segment(name) {
+                return Err(CliError::Usage(format!(
+                    "branch {label} override name must be 1-63 chars of [a-z0-9_-], starting with a letter or digit"
+                )));
+            }
+            let mode = match mode {
+                "fresh" => BranchResourceMode::Fresh,
+                "branch" => BranchResourceMode::Branch,
+                _ => {
+                    return Err(CliError::Usage(format!(
+                        "branch {label} override mode must be fresh or branch"
+                    )));
+                }
+            };
+            Ok(BranchResourceModeOverride {
+                name: name.to_string(),
+                mode,
+            })
+        })
+        .collect()
 }
 
 fn parse_namespace_service(value: &str) -> Result<(String, String)> {

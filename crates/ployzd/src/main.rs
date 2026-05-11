@@ -8,11 +8,11 @@ use clap::Parser;
 #[cfg(test)]
 pub(crate) use cli::DebugTickTaskArg;
 pub(crate) use cli::{
-    BuildAction, BuildMethodArg, BuildOperationAction, Cli, CliError, Command, DebugAction,
-    DeployAction, DeployCommand, DeployManifestArgs, DeployServiceArgs, ImageAction,
-    ImageOperationAction, InstallSourceArg, MachineAction, MachineInviteAction,
-    MachineOperationAction, MachineStorageAction, MeshAction, MigrateAction, MigrateServiceArgs,
-    RuntimeAction, RuntimeTargetArg, ServiceModeArg,
+    BranchAction, BranchNamespaceArgs, BranchResourceModeArg, BuildAction, BuildMethodArg,
+    BuildOperationAction, Cli, CliError, Command, DebugAction, DeployAction, DeployCommand,
+    DeployManifestArgs, DeployServiceArgs, ImageAction, ImageOperationAction, InstallSourceArg,
+    MachineAction, MachineInviteAction, MachineOperationAction, MachineStorageAction, MeshAction,
+    MigrateAction, MigrateServiceArgs, RuntimeAction, RuntimeTargetArg, ServiceModeArg,
 };
 use cli_io::{cmd_rpc_stdio, cmd_runtime_stream, render_response, request_daemon};
 #[cfg(test)]
@@ -31,8 +31,9 @@ use ployzd::{BuiltInImages, HostPlatform, init_tracing, run_daemon, validate_run
 use request_builder::build_request;
 #[cfg(test)]
 use request_builder::{
-    build_build_request, build_debug_request, build_image_request, build_machine_request,
-    build_migrate_service_request, build_service_spec, upsert_service_in_manifest,
+    build_branch_request, build_build_request, build_debug_request, build_image_request,
+    build_machine_request, build_migrate_service_request, build_service_spec,
+    upsert_service_in_manifest,
 };
 use std::process;
 
@@ -106,6 +107,7 @@ async fn run() -> Result<i32> {
         | other @ Command::Debug { .. }
         | other @ Command::Deploy(_)
         | other @ Command::Migrate { .. }
+        | other @ Command::Branch { .. }
         | other @ Command::Runtime { .. }
         | other @ Command::Mesh { .. }
         | other @ Command::Machine { .. }
@@ -248,6 +250,170 @@ mod tests {
         assert!(
             Cli::try_parse_from(["ployzd", "migrate", "prod/db", "--to", "machine-b"]).is_err()
         );
+    }
+
+    #[test]
+    fn parse_branch_preview_command() {
+        let cli = Cli::try_parse_from([
+            "ployzd",
+            "branch",
+            "preview",
+            "prod",
+            "pr-39",
+            "--volume",
+            "data=branch",
+            "--service",
+            "worker=fresh",
+        ])
+        .expect("branch preview args should parse");
+
+        let Command::Branch {
+            action: BranchAction::Preview(args),
+        } = cli.command
+        else {
+            panic!("expected branch preview command");
+        };
+        assert_eq!(args.source_namespace, "prod");
+        assert_eq!(args.target_namespace, "pr-39");
+        assert_eq!(args.volume, vec!["data=branch"]);
+        assert_eq!(args.service, vec!["worker=fresh"]);
+    }
+
+    #[test]
+    fn parse_branch_render_manifest_and_apply_commands() {
+        for action in ["render-manifest", "apply"] {
+            let cli = Cli::try_parse_from(["ployzd", "branch", action, "prod", "pr-39"])
+                .expect("branch args should parse");
+            match (action, cli.command) {
+                (
+                    "render-manifest",
+                    Command::Branch {
+                        action: BranchAction::RenderManifest(args),
+                    },
+                )
+                | (
+                    "apply",
+                    Command::Branch {
+                        action: BranchAction::Apply(args),
+                    },
+                ) => {
+                    assert_eq!(args.source_namespace, "prod");
+                    assert_eq!(args.target_namespace, "pr-39");
+                }
+                _ => panic!("unexpected branch command parse for {action}"),
+            }
+        }
+    }
+
+    #[test]
+    fn build_branch_request_encodes_modes_and_overrides() {
+        let request = build_branch_request(BranchAction::RenderManifest(BranchNamespaceArgs {
+            source_namespace: "prod".into(),
+            target_namespace: "pr-39".into(),
+            service_mode: BranchResourceModeArg::Branch,
+            volume_mode: BranchResourceModeArg::Fresh,
+            service: vec!["worker=fresh".into()],
+            volume: vec!["data=branch".into()],
+        }))
+        .expect("branch request");
+
+        let DaemonRequest::BranchNamespace { request } = request else {
+            panic!("expected branch namespace request");
+        };
+        assert_eq!(request.source_namespace, "prod");
+        assert_eq!(request.target_namespace, "pr-39");
+        assert_eq!(request.mode, ployz_api::BranchNamespaceMode::RenderManifest);
+        assert_eq!(
+            request.default_service_mode,
+            ployz_api::BranchResourceMode::Branch
+        );
+        assert_eq!(
+            request.default_volume_mode,
+            ployz_api::BranchResourceMode::Fresh
+        );
+        assert_eq!(request.services[0].name, "worker");
+        assert_eq!(
+            request.services[0].mode,
+            ployz_api::BranchResourceMode::Fresh
+        );
+        assert_eq!(request.volumes[0].name, "data");
+        assert_eq!(
+            request.volumes[0].mode,
+            ployz_api::BranchResourceMode::Branch
+        );
+    }
+
+    #[test]
+    fn build_branch_request_rejects_invalid_override_syntax() {
+        let error = build_branch_request(BranchAction::Preview(BranchNamespaceArgs {
+            source_namespace: "prod".into(),
+            target_namespace: "pr-39".into(),
+            service_mode: BranchResourceModeArg::Branch,
+            volume_mode: BranchResourceModeArg::Fresh,
+            service: vec!["worker".into()],
+            volume: Vec::new(),
+        }))
+        .expect_err("invalid override should fail");
+
+        let CliError::Usage(message) = error else {
+            panic!("expected usage error");
+        };
+        assert!(message.contains("NAME=fresh"));
+    }
+
+    #[test]
+    fn build_branch_request_encodes_all_action_modes() {
+        let cases = [
+            (
+                BranchAction::RenderManifest(branch_args()),
+                ployz_api::BranchNamespaceMode::RenderManifest,
+            ),
+            (
+                BranchAction::Preview(branch_args()),
+                ployz_api::BranchNamespaceMode::Preview,
+            ),
+            (
+                BranchAction::Apply(branch_args()),
+                ployz_api::BranchNamespaceMode::Apply,
+            ),
+        ];
+
+        for (action, expected_mode) in cases {
+            let request = build_branch_request(action).expect("branch request");
+            let DaemonRequest::BranchNamespace { request } = request else {
+                panic!("expected branch namespace request");
+            };
+            assert_eq!(request.mode, expected_mode);
+        }
+    }
+
+    #[test]
+    fn build_branch_request_rejects_invalid_storage_names() {
+        let error = build_branch_request(BranchAction::Preview(BranchNamespaceArgs {
+            source_namespace: "Prod".into(),
+            target_namespace: "pr-39".into(),
+            service_mode: BranchResourceModeArg::Branch,
+            volume_mode: BranchResourceModeArg::Fresh,
+            service: Vec::new(),
+            volume: Vec::new(),
+        }))
+        .expect_err("invalid namespace should fail");
+
+        let CliError::Usage(message) = error else {
+            panic!("expected usage error");
+        };
+        assert!(message.contains("[a-z0-9_-]"));
+    }
+
+    fn branch_args() -> BranchNamespaceArgs {
+        BranchNamespaceArgs {
+            source_namespace: "prod".into(),
+            target_namespace: "pr-39".into(),
+            service_mode: BranchResourceModeArg::Branch,
+            volume_mode: BranchResourceModeArg::Fresh,
+            service: Vec::new(),
+            volume: Vec::new(),
+        }
     }
 
     #[test]

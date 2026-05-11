@@ -1,5 +1,7 @@
 use crate::build::BuildLocalRequest;
-use crate::deploy::{DeployApplyPreparedRequest, DeployOptions, MigrateServiceRequest};
+use crate::deploy::{
+    BranchNamespaceRequest, DeployApplyPreparedRequest, DeployOptions, MigrateServiceRequest,
+};
 use crate::image::{
     ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageReceiveSessionRequest,
     ImageReceivedImportRequest, ImageStatusRequest,
@@ -177,6 +179,9 @@ pub enum DaemonRequest {
     DeployExport {
         namespace: String,
     },
+    BranchNamespace {
+        request: BranchNamespaceRequest,
+    },
     MigrateService {
         request: MigrateServiceRequest,
     },
@@ -298,7 +303,9 @@ pub enum DaemonRequest {
 mod tests {
     use super::*;
     use crate::build::{BuildLocalRequest, BuildMachineRequest};
-    use crate::deploy::MigrateServiceMode;
+    use crate::deploy::{
+        BranchNamespaceMode, BranchResourceMode, BranchResourceModeOverride, MigrateServiceMode,
+    };
     use crate::image::{
         ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageReceiveSessionRequest,
         ImageReceivedImportRequest,
@@ -337,6 +344,60 @@ mod tests {
             DaemonRequest::MigrateService {
                 request: MigrateServiceRequest {
                     mode: MigrateServiceMode::RenderManifest,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn branch_namespace_request_serializes_stable_wire_shape() {
+        let request = DaemonRequest::BranchNamespace {
+            request: BranchNamespaceRequest {
+                source_namespace: "prod".into(),
+                target_namespace: "pr-39".into(),
+                mode: BranchNamespaceMode::RenderManifest,
+                default_service_mode: BranchResourceMode::Branch,
+                default_volume_mode: BranchResourceMode::Fresh,
+                services: vec![BranchResourceModeOverride {
+                    name: "worker".into(),
+                    mode: BranchResourceMode::Fresh,
+                }],
+                volumes: vec![BranchResourceModeOverride {
+                    name: "data".into(),
+                    mode: BranchResourceMode::Branch,
+                }],
+            },
+        };
+
+        let json = serde_json::to_value(&request).expect("serialize request");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "BranchNamespace": {
+                    "request": {
+                        "source_namespace": "prod",
+                        "target_namespace": "pr-39",
+                        "mode": "render_manifest",
+                        "default_service_mode": "branch",
+                        "default_volume_mode": "fresh",
+                        "services": [
+                            {"name": "worker", "mode": "fresh"}
+                        ],
+                        "volumes": [
+                            {"name": "data", "mode": "branch"}
+                        ]
+                    }
+                }
+            })
+        );
+        let roundtrip: DaemonRequest = serde_json::from_value(json).expect("deserialize request");
+        assert!(matches!(
+            roundtrip,
+            DaemonRequest::BranchNamespace {
+                request: BranchNamespaceRequest {
+                    mode: BranchNamespaceMode::RenderManifest,
                     ..
                 }
             }

@@ -4,9 +4,9 @@ use crate::support::parse_daemon_json_response;
 use serde_json::Value;
 
 use super::zfs_support::{
-    VOLUME_TARGET, assert_real_zfs_dataset, assert_real_zfs_dataset_in_namespace,
-    deploy_volume_manifest, wait_for_container_bind, wait_for_container_bind_in_namespace,
-    wait_for_volume_value, wait_for_volume_value_in_namespace, zfs_context,
+    assert_real_zfs_dataset, assert_real_zfs_dataset_in_namespace, deploy_volume_manifest,
+    wait_for_container_bind, wait_for_container_bind_in_namespace, wait_for_volume_value,
+    wait_for_volume_value_in_namespace, zfs_context,
 };
 
 const BRANCH_NAMESPACE: &str = "pr-39";
@@ -45,20 +45,17 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     )?;
     wait_for_volume_value(run, "founder", &zfs.volume_source(), "v2")?;
 
-    run.log_progress("write branch clone manifest");
-    write_branch_clone_manifest(run)?;
-
-    run.log_progress("preview branch clone");
+    run.log_progress("preview branch command clone");
     let output = run.ssh_expect_ok_name(
         "founder",
-        "ployzd --json deploy preview -f /tmp/ployz-volume-branch.json",
+        "ployzd --json branch preview default pr-39 --volume data=branch",
     )?;
     assert_volume_clone(&output.stdout, "deploy preview")?;
 
-    run.log_progress("apply branch clone");
+    run.log_progress("apply branch command clone");
     let output = run.ssh_expect_ok_name(
         "founder",
-        "ployzd --json deploy -f /tmp/ployz-volume-branch.json",
+        "ployzd --json branch apply default pr-39 --volume data=branch",
     )?;
     assert_volume_clone(&output.stdout, "deploy apply")?;
 
@@ -81,10 +78,10 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     wait_for_volume_value(run, "founder", &zfs.volume_source(), "v3")?;
     wait_for_volume_value_in_namespace(run, "founder", &zfs, BRANCH_NAMESPACE, "data", "v2")?;
 
-    run.log_progress("reapply branch clone manifest");
+    run.log_progress("reapply branch command clone");
     let output = run.ssh_expect_ok_name(
         "founder",
-        "ployzd --json deploy -f /tmp/ployz-volume-branch.json",
+        "ployzd --json branch apply default pr-39 --volume data=branch",
     )?;
     assert_no_volume_clone(&output.stdout, "branch clone reapply")?;
     wait_for_volume_value_in_namespace(run, "founder", &zfs, BRANCH_NAMESPACE, "data", "v2")?;
@@ -92,60 +89,9 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     Ok(())
 }
 
-fn write_branch_clone_manifest(run: &ScenarioRun) -> Result<()> {
-    let manifest = format!(
-        r#"{{
-  "namespace": "{BRANCH_NAMESPACE}",
-  "intent": {{
-    "volumes": [
-      {{
-        "volume": "data",
-        "intent": {{
-          "clone": {{
-            "source_namespace": "default",
-            "source_volume": "data",
-            "data_policy": "raw",
-            "consistency": "crash_consistent"
-          }}
-        }}
-      }}
-    ]
-  }},
-  "volumes": [
-    {{
-      "name": "data",
-      "scope": "single",
-      "quota": "1G",
-      "mode": "0750",
-      "owner": "999:999"
-    }}
-  ],
-  "services": [
-    {{
-      "name": "db",
-      "placement": {{"replicated": {{"count": 1}}}},
-      "template": {{
-        "image": "ployz-e2e-preload/http-smoke:latest",
-        "command": ["sh", "-c", "test -f {VOLUME_TARGET}/value || printf 'branch\\n' >{VOLUME_TARGET}/value; sleep 3600"],
-        "mounts": [
-          {{
-            "source": {{"volume": "data"}},
-            "target": "{VOLUME_TARGET}"
-          }}
-        ]
-      }},
-      "network": "overlay"
-    }}
-  ]
-}}"#
-    );
-    let command = format!("cat >/tmp/ployz-volume-branch.json <<'EOF'\n{manifest}\nEOF");
-    run.ssh_expect_ok_name("founder", &command)?;
-    Ok(())
-}
-
 fn assert_volume_clone(output: &str, context: &str) -> Result<()> {
     let preview = deploy_preview(output, context)?;
+    assert_service_branch(&preview, context)?;
     let Some(volume_clones) = preview.get("volume_clones").and_then(Value::as_array) else {
         return Err(Error::Message(format!(
             "{context} did not include preview.volume_clones: {preview}"
@@ -162,6 +108,31 @@ fn assert_volume_clone(output: &str, context: &str) -> Result<()> {
     }
     Err(Error::Message(format!(
         "{context} did not plan default/data clone on founder: {preview}"
+    )))
+}
+
+fn assert_service_branch(preview: &Value, context: &str) -> Result<()> {
+    let Some(service_sources) = preview
+        .get("service_branch_sources")
+        .and_then(Value::as_array)
+    else {
+        return Err(Error::Message(format!(
+            "{context} did not include preview.service_branch_sources: {preview}"
+        )));
+    };
+    if service_sources.iter().any(|source| {
+        source.get("service").and_then(Value::as_str) == Some("db")
+            && source.get("source_namespace").and_then(Value::as_str) == Some("default")
+            && source.get("source_service").and_then(Value::as_str) == Some("db")
+            && source
+                .get("source_revision_hash")
+                .and_then(Value::as_str)
+                .is_some_and(|hash| !hash.is_empty())
+    }) {
+        return Ok(());
+    }
+    Err(Error::Message(format!(
+        "{context} did not plan default/db service branch: {preview}"
     )))
 }
 
