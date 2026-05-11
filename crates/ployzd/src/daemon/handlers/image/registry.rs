@@ -1,17 +1,14 @@
-#![allow(dead_code)]
 //! Ephemeral OCI Distribution receiver used by image push/distribute orchestration.
 //!
-//! Later orchestration mounts this into daemon lifecycle and target pulls. This
-//! module is compile-tested now so streaming upload and CAS semantics are fixed
-//! before Docker/Railpack plumbing lands.
-//! The module-level dead-code allowance is temporary: until the source proxy and
-//! daemon listener mount this router, the compiler sees the whole receiver as
-//! unused even though the unit tests exercise it end to end.
+//! The receiver is daemon-owned and session-gated. It stores transfer cache for
+//! later image placement orchestration, but it is not durable deploy truth.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -21,13 +18,17 @@ use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use futures_util::StreamExt;
+use ployz_runtime_api::RuntimeHandle;
 use ployz_types::model::MachineId;
 use serde::Serialize;
 use sha2::{Digest as ShaDigest, Sha256};
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 use tokio_util::io::ReaderStream;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub(crate) const REGISTRY_OPERATION_HEADER: &str = "x-ployz-image-operation";
@@ -42,6 +43,96 @@ const RANGE_HEADER: &str = "range";
 const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_MANIFEST_CONTENT_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 const SESSION_TTL_SECS: u64 = 60 * 60;
+#[cfg(not(test))]
+const LISTENER_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const LISTENER_SHUTDOWN_GRACE: Duration = Duration::from_millis(50);
+
+pub(crate) struct ImageRegistryListenerHandle {
+    #[cfg(test)]
+    bind_addr: SocketAddr,
+    cancel: CancellationToken,
+    task: JoinHandle<()>,
+}
+
+impl ImageRegistryListenerHandle {
+    #[must_use]
+    pub(crate) fn noop() -> Self {
+        Self {
+            #[cfg(test)]
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            cancel: CancellationToken::new(),
+            task: tokio::spawn(async {}),
+        }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn bind_addr(&self) -> SocketAddr {
+        self.bind_addr
+    }
+
+    pub(crate) async fn shutdown(self) {
+        self.cancel.cancel();
+        let mut task = self.task;
+        tokio::select! {
+            result = &mut task => {
+                if let Err(error) = result {
+                    if !error.is_cancelled() {
+                        tracing::warn!(?error, "image registry listener join failed");
+                    }
+                }
+            }
+            () = tokio::time::sleep(LISTENER_SHUTDOWN_GRACE) => {
+                task.abort();
+                if let Err(error) = task.await {
+                    if error.is_cancelled() {
+                        tracing::warn!("image registry listener aborted after graceful shutdown timeout");
+                    } else {
+                        tracing::warn!(?error, "image registry listener join failed after abort");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RuntimeHandle for ImageRegistryListenerHandle {
+    async fn shutdown(self: Box<Self>) -> std::result::Result<(), String> {
+        ImageRegistryListenerHandle::shutdown(*self).await;
+        Ok(())
+    }
+}
+
+pub(crate) async fn serve(
+    bind_addr: SocketAddr,
+    registry: ImageRegistry,
+) -> Result<ImageRegistryListenerHandle, String> {
+    let listener = TcpListener::bind(bind_addr)
+        .await
+        .map_err(|error| format!("bind image registry listener {bind_addr}: {error}"))?;
+    let bind_addr = listener
+        .local_addr()
+        .map_err(|error| format!("read image registry listener address: {error}"))?;
+    tracing::info!(listen = %bind_addr, "image registry listener running");
+    let cancel = CancellationToken::new();
+    let shutdown = cancel.clone();
+    let task = tokio::spawn(async move {
+        if let Err(error) = axum::serve(listener, registry.router())
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
+        {
+            tracing::warn!(%error, "image registry listener failed");
+        }
+    });
+    Ok(ImageRegistryListenerHandle {
+        #[cfg(test)]
+        bind_addr,
+        cancel,
+        task,
+    })
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImageRegistry {
@@ -54,6 +145,7 @@ pub(crate) struct ImageRegistry {
 pub(crate) struct ImageRegistrySession {
     pub(crate) operation_id: String,
     pub(crate) source_machine: MachineId,
+    pub(crate) repository: String,
     pub(crate) token: String,
     pub(crate) expires_at_unix_secs: u64,
 }
@@ -75,6 +167,13 @@ pub(crate) struct BlobStored {
 pub(crate) struct ManifestStored {
     pub(crate) digest: String,
     pub(crate) bytes: u64,
+    pub(crate) media_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ReceivedManifest {
+    pub(crate) body: Bytes,
+    pub(crate) digest: String,
     pub(crate) media_type: String,
 }
 
@@ -151,11 +250,13 @@ impl ImageRegistry {
         &self,
         operation_id: impl Into<String>,
         source_machine: MachineId,
+        repository: impl Into<String>,
     ) -> ImageRegistrySession {
         self.cleanup_expired_sessions().await;
         let session = ImageRegistrySession {
             operation_id: operation_id.into(),
             source_machine,
+            repository: repository.into(),
             token: Uuid::new_v4().to_string(),
             expires_at_unix_secs: current_unix_secs().saturating_add(SESSION_TTL_SECS),
         };
@@ -184,6 +285,58 @@ impl ImageRegistry {
         Ok(())
     }
 
+    pub(crate) async fn revoke_all_sessions(&self) -> Result<(), ImageRegistryError> {
+        let tokens = self
+            .sessions
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for token in tokens {
+            self.revoke_session(&token).await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn blob_path_for_digest(
+        &self,
+        digest: &str,
+    ) -> Result<Option<PathBuf>, ImageRegistryError> {
+        let digest = validate_sha256_digest(digest)?;
+        let path = self.blob_path(&digest)?;
+        match std::fs::metadata(&path) {
+            Ok(_) => Ok(Some(path)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(ImageRegistryError::io("stat registry blob", error)),
+        }
+    }
+
+    pub(crate) async fn received_manifest(
+        &self,
+        repository: &str,
+        reference: &str,
+    ) -> Result<Option<ReceivedManifest>, ImageRegistryError> {
+        validate_repository(repository)?;
+        validate_reference(reference)?;
+        let path = self.manifest_path(repository, reference)?;
+        let body = match fs::read(&path).await {
+            Ok(body) => Bytes::from(body),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(ImageRegistryError::io("read registry manifest", error)),
+        };
+        let media_type = self
+            .read_manifest_media_type(repository, reference)
+            .await?
+            .unwrap_or_else(|| DEFAULT_MANIFEST_CONTENT_TYPE.into());
+        let digest = sha256_digest(&body);
+        Ok(Some(ReceivedManifest {
+            body,
+            digest,
+            media_type,
+        }))
+    }
+
     async fn cleanup_expired_sessions(&self) {
         let now = current_unix_secs();
         let expired_tokens = self
@@ -205,21 +358,29 @@ impl ImageRegistry {
     async fn validate_session(
         &self,
         headers: &HeaderMap,
+        repository: &str,
     ) -> Result<ImageRegistrySession, ImageRegistryError> {
         let token = header_value(headers, REGISTRY_SESSION_HEADER)?;
         let operation_id = header_value(headers, REGISTRY_OPERATION_HEADER)?;
         let source_machine = header_value(headers, REGISTRY_SOURCE_MACHINE_HEADER)?;
-        let sessions = self.sessions.read().await;
-        let Some(session) = sessions.get(token) else {
-            return Err(ImageRegistryError::Unauthorized);
+        let session = {
+            let sessions = self.sessions.read().await;
+            let Some(session) = sessions.get(token) else {
+                return Err(ImageRegistryError::Unauthorized);
+            };
+            session.clone()
         };
         if session.expires_at_unix_secs <= current_unix_secs() {
+            self.revoke_session(token).await?;
             return Err(ImageRegistryError::Unauthorized);
         }
-        if session.operation_id != operation_id || session.source_machine.0 != source_machine {
+        if session.operation_id != operation_id
+            || session.source_machine.0 != source_machine
+            || session.repository != repository
+        {
             return Err(ImageRegistryError::Unauthorized);
         }
-        Ok(session.clone())
+        Ok(session)
     }
 
     async fn start_upload(
@@ -228,7 +389,7 @@ impl ImageRegistry {
         headers: &HeaderMap,
     ) -> Result<UploadStarted, ImageRegistryError> {
         validate_repository(repository)?;
-        let session = self.validate_session(headers).await?;
+        let session = self.validate_session(headers, repository).await?;
         let uuid = Uuid::new_v4().to_string();
         let upload_path = self.upload_path(&uuid);
         ensure_parent(&upload_path).await?;
@@ -259,7 +420,7 @@ impl ImageRegistry {
         body: Body,
     ) -> Result<u64, ImageRegistryError> {
         validate_repository(repository)?;
-        let session = self.validate_session(headers).await?;
+        let session = self.validate_session(headers, repository).await?;
         let mut upload = self.upload_for_session(uuid, repository, &session).await?;
         let appended = append_body_to_file(&upload.path, body).await?;
         upload.bytes = upload.bytes.saturating_add(appended);
@@ -280,7 +441,7 @@ impl ImageRegistry {
     ) -> Result<BlobStored, ImageRegistryError> {
         validate_repository(repository)?;
         let expected = validate_sha256_digest(digest)?;
-        let session = self.validate_session(headers).await?;
+        let session = self.validate_session(headers, repository).await?;
         let mut upload = self.upload_for_session(uuid, repository, &session).await?;
         let appended = append_body_to_file(&upload.path, body).await?;
         upload.bytes = upload.bytes.saturating_add(appended);
@@ -373,7 +534,7 @@ impl ImageRegistry {
     ) -> Result<ManifestStored, ImageRegistryError> {
         validate_repository(repository)?;
         validate_reference(reference)?;
-        let _session = self.validate_session(headers).await?;
+        let _session = self.validate_session(headers, repository).await?;
         let media_type = manifest_media_type(headers)?;
         let body = read_limited_body(body).await?;
         let digest = sha256_digest(&body);
@@ -402,27 +563,19 @@ impl ImageRegistry {
     ) -> Result<Option<Response>, ImageRegistryError> {
         validate_repository(repository)?;
         validate_reference(reference)?;
-        let path = self.manifest_path(repository, reference)?;
-        let body = match fs::read(&path).await {
-            Ok(body) => body,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(ImageRegistryError::io("read registry manifest", error)),
+        let Some(manifest) = self.received_manifest(repository, reference).await? else {
+            return Ok(None);
         };
-        let media_type = self
-            .read_manifest_media_type(repository, reference)
-            .await?
-            .unwrap_or_else(|| DEFAULT_MANIFEST_CONTENT_TYPE.into());
-        let digest = sha256_digest(&body);
         let mut headers = base_headers();
         insert_header(
             &mut headers,
             CONTENT_LENGTH.as_str(),
-            &body.len().to_string(),
+            &manifest.body.len().to_string(),
         )?;
-        insert_header(&mut headers, CONTENT_DIGEST_HEADER, &digest)?;
-        insert_header(&mut headers, CONTENT_TYPE.as_str(), &media_type)?;
+        insert_header(&mut headers, CONTENT_DIGEST_HEADER, &manifest.digest)?;
+        insert_header(&mut headers, CONTENT_TYPE.as_str(), &manifest.media_type)?;
         Ok(Some(
-            (StatusCode::OK, headers, Body::from(body)).into_response(),
+            (StatusCode::OK, headers, Body::from(manifest.body)).into_response(),
         ))
     }
 
@@ -671,8 +824,8 @@ async fn route_registry_request(
             Ok(manifest_stored_response(repository, reference, manifest))
         }
         Method::GET => {
-            let _session = registry.validate_session(headers).await?;
-            if let Some((_, digest)) = split_blob_path(path) {
+            if let Some((repository, digest)) = split_blob_path(path) {
+                let _session = registry.validate_session(headers, repository).await?;
                 return registry.get_blob(digest).await?.ok_or_else(|| {
                     ImageRegistryError::BlobUnknown {
                         digest: digest.to_string(),
@@ -682,6 +835,7 @@ async fn route_registry_request(
             let Some((repository, reference)) = split_manifest_path(path) else {
                 return Err(ImageRegistryError::UnsupportedPath { path: path.into() });
             };
+            let _session = registry.validate_session(headers, repository).await?;
             registry
                 .get_manifest(repository, reference)
                 .await?
@@ -691,8 +845,8 @@ async fn route_registry_request(
                 })
         }
         Method::HEAD => {
-            let _session = registry.validate_session(headers).await?;
-            if let Some((_, digest)) = split_blob_path(path) {
+            if let Some((repository, digest)) = split_blob_path(path) {
+                let _session = registry.validate_session(headers, repository).await?;
                 let Some(blob) = registry.has_blob(digest).await? else {
                     return Err(ImageRegistryError::BlobUnknown {
                         digest: digest.to_string(),
@@ -710,6 +864,7 @@ async fn route_registry_request(
             let Some((repository, reference)) = split_manifest_path(path) else {
                 return Err(ImageRegistryError::UnsupportedPath { path: path.into() });
             };
+            let _session = registry.validate_session(headers, repository).await?;
             let Some(response) = registry.get_manifest(repository, reference).await? else {
                 return Err(ImageRegistryError::ManifestUnknown {
                     repository: repository.to_string(),
@@ -824,7 +979,7 @@ fn split_manifest_path(path: &str) -> Option<(&str, &str)> {
     Some((repository, reference))
 }
 
-fn validate_repository(value: &str) -> Result<(), ImageRegistryError> {
+pub(crate) fn validate_repository(value: &str) -> Result<(), ImageRegistryError> {
     if value.is_empty()
         || value
             .split('/')
@@ -944,6 +1099,13 @@ fn manifest_stored_response(
     )
     .ok();
     insert_header(&mut headers, CONTENT_DIGEST_HEADER, &manifest.digest).ok();
+    insert_header(
+        &mut headers,
+        CONTENT_LENGTH.as_str(),
+        &manifest.bytes.to_string(),
+    )
+    .ok();
+    insert_header(&mut headers, CONTENT_TYPE.as_str(), &manifest.media_type).ok();
     (StatusCode::CREATED, headers).into_response()
 }
 
@@ -1003,7 +1165,7 @@ mod tests {
         let registry = ImageRegistry::new(root);
         let headers = session_headers(
             registry
-                .register_session("image-push-1", MachineId("machine-a".into()))
+                .register_session("image-push-1", MachineId("machine-a".into()), "apps/web")
                 .await,
         );
         let digest = sha256_digest(b"hello world");
@@ -1043,7 +1205,7 @@ mod tests {
         let registry = ImageRegistry::new(root);
         let headers = session_headers(
             registry
-                .register_session("image-push-2", MachineId("machine-a".into()))
+                .register_session("image-push-2", MachineId("machine-a".into()), "apps/web")
                 .await,
         );
         let upload = registry
@@ -1097,7 +1259,7 @@ mod tests {
         let registry = ImageRegistry::new(root);
         let headers = session_headers(
             registry
-                .register_session("image-push-3", MachineId("machine-a".into()))
+                .register_session("image-push-3", MachineId("machine-a".into()), "apps/web")
                 .await,
         );
 
@@ -1136,7 +1298,7 @@ mod tests {
         let registry = ImageRegistry::new(root);
         let headers = session_headers(
             registry
-                .register_session("image-push-4", MachineId("machine-a".into()))
+                .register_session("image-push-4", MachineId("machine-a".into()), "apps/web")
                 .await,
         );
         let digest = sha256_digest(b"hello world");
@@ -1212,7 +1374,7 @@ mod tests {
         let registry = ImageRegistry::new(root);
         let mut headers = session_headers(
             registry
-                .register_session("image-push-5", MachineId("machine-a".into()))
+                .register_session("image-push-5", MachineId("machine-a".into()), "apps/web")
                 .await,
         );
         headers.insert(
@@ -1279,7 +1441,7 @@ mod tests {
         let registry = ImageRegistry::new(root);
         let headers = session_headers(
             registry
-                .register_session("image-push-6", MachineId("machine-a".into()))
+                .register_session("image-push-6", MachineId("machine-a".into()), "apps/web")
                 .await,
         );
         let digest = sha256_digest(b"hello");
@@ -1307,7 +1469,7 @@ mod tests {
         let registry = ImageRegistry::new(root);
         let headers = session_headers(
             registry
-                .register_session("image-push-7", MachineId("machine-a".into()))
+                .register_session("image-push-7", MachineId("machine-a".into()), "apps/web")
                 .await,
         );
         let router = registry.router();
@@ -1346,7 +1508,7 @@ mod tests {
         let root = unique_temp_dir("ployz-image-registry-revoke");
         let registry = ImageRegistry::new(root);
         let session = registry
-            .register_session("image-push-8", MachineId("machine-a".into()))
+            .register_session("image-push-8", MachineId("machine-a".into()), "apps/web")
             .await;
         let headers = session_headers(session.clone());
         let upload = registry
@@ -1393,6 +1555,46 @@ mod tests {
                 name: REGISTRY_SESSION_HEADER
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn listener_serves_registry_root() {
+        let root = unique_temp_dir("ployz-image-registry-listener");
+        let registry = ImageRegistry::new(root);
+        let handle = serve("127.0.0.1:0".parse().expect("bind addr"), registry)
+            .await
+            .expect("start listener");
+        let mut stream = tokio::net::TcpStream::connect(handle.bind_addr())
+            .await
+            .expect("connect listener");
+        stream
+            .write_all(b"GET /v2/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("write request");
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
+
+        handle.shutdown().await;
+
+        let response = String::from_utf8(response).expect("utf8 response");
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert!(response.contains("docker-distribution-api-version"));
+    }
+
+    #[tokio::test]
+    async fn listener_shutdown_aborts_after_grace_period() {
+        let handle = ImageRegistryListenerHandle {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            cancel: CancellationToken::new(),
+            task: tokio::spawn(std::future::pending()),
+        };
+
+        tokio::time::timeout(LISTENER_SHUTDOWN_GRACE * 3, handle.shutdown())
+            .await
+            .expect("shutdown should be bounded");
     }
 
     fn session_headers(session: ImageRegistrySession) -> HeaderMap {
