@@ -627,6 +627,13 @@ impl DaemonState {
             BranchNamespaceMode::RenderManifest => {
                 self.ok_json_pretty(&manifest, "ENCODE_MANIFEST", "encode branch manifest")
             }
+            BranchNamespaceMode::Prepare => {
+                let manifest_json = match encode_branch_manifest_json(&manifest) {
+                    Ok(manifest_json) => manifest_json,
+                    Err(error) => return self.err(error.code(), error.to_string()),
+                };
+                self.handle_deploy_prepare(&manifest_json).await
+            }
             BranchNamespaceMode::Preview => {
                 let manifest_json = match encode_branch_manifest_json(&manifest) {
                     Ok(manifest_json) => manifest_json,
@@ -2129,13 +2136,13 @@ mod tests {
     use ployz_api::{DaemonRequest, VolumeZfsTransferInfo};
     use ployz_nats::{RpcFailureKind, RpcPolicy};
     use ployz_runtime_api::Identity;
-    use ployz_store_api::{DeployCommit, DeployStore};
+    use ployz_store_api::{DeployCommit, DeployStore, MachineMembershipStore};
     use ployz_types::model::{
         DeployBaselineComponent, DeployBaselineDiff, DeployId, DeployPhaseCommitPolicy,
         DeployPhaseId, DeployPhaseRecord, DeployPhaseRollbackPolicy, DeployPreview,
         DeployPreviewBaseline, DeployPreviewBaselineComponents, DeployRecord, DeployState,
-        MachineId, ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord,
-        ServiceRoutingPolicy, VolumeRecord,
+        MachineId, MachineLifecycle, OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord,
+        ServiceRevisionRecord, ServiceRoutingPolicy, VolumeRecord,
     };
     use ployz_types::spec::{
         ContainerSpec, Mount, MountSource, NetworkMode, Placement, PullPolicy, Resources,
@@ -2845,6 +2852,114 @@ mod tests {
 
         assert!(!response.ok);
         assert_eq!(response.code, "BRANCH_INVALID_REQUEST");
+    }
+
+    #[tokio::test]
+    async fn handle_branch_namespace_prepare_requires_active_mesh() {
+        let state = test_daemon_state();
+
+        let response = state
+            .handle_branch_namespace(BranchNamespaceRequest {
+                source_namespace: "prod".into(),
+                target_namespace: "pr-39".into(),
+                mode: BranchNamespaceMode::Prepare,
+                default_service_mode: BranchResourceMode::Branch,
+                default_volume_mode: BranchResourceMode::Fresh,
+                services: Vec::new(),
+                volumes: Vec::new(),
+            })
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "NO_MESH");
+    }
+
+    #[tokio::test]
+    async fn branch_prepare_record_preserves_compiled_source_evidence() {
+        let store = StoreDriver::memory();
+        let mut machine = MachineMembership::seed(
+            MachineId("founder".into()),
+            PublicKey([42; 32]),
+            OverlayIp("fd00::42".parse().expect("valid overlay")),
+            None,
+            Vec::new(),
+        );
+        machine.lifecycle = MachineLifecycle::Active;
+        store
+            .upsert_self_machine(&machine)
+            .await
+            .expect("seed active machine");
+        let source = Namespace("prod".into());
+        let source_volume = test_volume_record(&source, "data", "founder");
+        let expected_source_record_fingerprint = stable_fingerprint(&source_volume);
+        seed_committed_service(&store, &source, test_service(), vec![source_volume]).await;
+        let manifest = render_branch_namespace_manifest(
+            &store,
+            &BranchNamespaceRequest {
+                source_namespace: "prod".into(),
+                target_namespace: "pr-39".into(),
+                mode: BranchNamespaceMode::Prepare,
+                default_service_mode: BranchResourceMode::Branch,
+                default_volume_mode: BranchResourceMode::Fresh,
+                services: Vec::new(),
+                volumes: vec![ployz_api::BranchResourceModeOverride {
+                    name: "data".into(),
+                    mode: BranchResourceMode::Branch,
+                }],
+            },
+        )
+        .await
+        .expect("render branch manifest");
+
+        let prepared = prepare(
+            &store,
+            &MachineId("founder".into()),
+            &manifest,
+            &ployz_orchestrator::deploy::NoopParticipantProbe,
+            DeployId("prepare-branch".into()),
+            DEPLOY_PREPARE_TTL_SECS,
+        )
+        .await
+        .expect("prepare compiled branch manifest");
+
+        assert_eq!(prepared.namespace, Namespace("pr-39".into()));
+        let stored_manifest: DeployManifest =
+            serde_json::from_str(&prepared.manifest_json).expect("stored manifest json");
+        assert_eq!(stored_manifest.namespace, Namespace("pr-39".into()));
+        let intent = stored_manifest.intent.expect("stored branch intent");
+        let [service] = intent.services.as_slice() else {
+            panic!(
+                "expected one stored service branch hint, got {:?}",
+                intent.services
+            );
+        };
+        assert_eq!(
+            service.intent,
+            ServiceIntent::Branch {
+                source_namespace: Namespace("prod".into()),
+                source_service: "db".into(),
+                expected_source_revision_hash: Some("rev-db".into()),
+            }
+        );
+        let [volume] = intent.volumes.as_slice() else {
+            panic!(
+                "expected one stored volume clone hint, got {:?}",
+                intent.volumes
+            );
+        };
+        assert_eq!(
+            volume.intent,
+            VolumeIntent::Clone {
+                source_namespace: Namespace("prod".into()),
+                source_volume: "data".into(),
+                data_policy: VolumeCloneDataPolicy::Raw,
+                consistency: VolumeCloneConsistency::CrashConsistent,
+                expected_source_record_fingerprint: Some(expected_source_record_fingerprint),
+            }
+        );
+        assert_eq!(prepared.preview.namespace, Namespace("pr-39".into()));
+        assert_eq!(prepared.preview.service_branch_sources.len(), 1);
+        assert_eq!(prepared.preview.volume_clones.len(), 1);
     }
 
     #[tokio::test]

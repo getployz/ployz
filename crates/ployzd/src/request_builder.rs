@@ -4,19 +4,21 @@ use crate::cli::{
 };
 use crate::cli_io::{read_optional_text_file, read_stdin_string, read_text_source, request_daemon};
 use crate::{
-    BranchAction, BranchNamespaceArgs, CliError, Command, DebugAction, DeployAction, DeployCommand,
-    DeployManifestArgs, DeployServiceArgs, ImageAction, ImageOperationAction, InstallSourceArg,
-    MachineAction, MachineInviteAction, MachineOperationAction, MachineStorageAction, MeshAction,
-    MigrateAction, MigrateServiceArgs, Result, RuntimeTargetArg, ServiceModeArg,
+    BranchAction, BranchApplyPreparedArgs, BranchNamespaceArgs, CliError, Command, DebugAction,
+    DeployAction, DeployCommand, DeployManifestArgs, DeployServiceArgs, ImageAction,
+    ImageOperationAction, InstallSourceArg, MachineAction, MachineInviteAction,
+    MachineOperationAction, MachineStorageAction, MeshAction, MigrateAction, MigrateServiceArgs,
+    Result, RuntimeTargetArg, ServiceModeArg,
 };
 use ployz_api::{
     BranchNamespaceMode, BranchNamespaceRequest, BranchResourceMode, BranchResourceModeOverride,
-    BuildLocalRequest, DaemonRequest, DeployOptions, ImageDistributeRequest, ImageInspectRequest,
-    ImagePushRequest, ImageStatusRequest, InstallSource as MachineInstallSource, MachineAddOptions,
-    MachineInstallOptions, MachineStoragePromoteRequest, MigrateServiceMode, MigrateServiceRequest,
+    BuildLocalRequest, DaemonRequest, DeployApplyPreparedRequest, DeployOptions,
+    ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageStatusRequest,
+    InstallSource as MachineInstallSource, MachineAddOptions, MachineInstallOptions,
+    MachineStoragePromoteRequest, MigrateServiceMode, MigrateServiceRequest,
 };
 use ployz_sdk::Transport;
-use ployz_types::model::{ImageDigest, ImagePlatform, MachineId, StorageReplicaPolicy};
+use ployz_types::model::{DeployId, ImageDigest, ImagePlatform, MachineId, StorageReplicaPolicy};
 use ployz_types::spec::{
     ContainerSpec, DeployManifest, Mount, MountSource, Namespace, NetworkMode, Placement,
     PortProtocol, PublishedPort, PullPolicy, Resources, RestartPolicy, RolloutStrategy,
@@ -297,6 +299,10 @@ pub(crate) fn build_branch_request(action: BranchAction) -> Result<DaemonRequest
         BranchAction::Apply(args) => {
             build_branch_namespace_request(args, BranchNamespaceMode::Apply)
         }
+        BranchAction::ApplyPrepared(args) => build_branch_apply_prepared_request(args),
+        BranchAction::Prepare(args) => {
+            build_branch_namespace_request(args, BranchNamespaceMode::Prepare)
+        }
         BranchAction::Preview(args) => {
             build_branch_namespace_request(args, BranchNamespaceMode::Preview)
         }
@@ -304,6 +310,19 @@ pub(crate) fn build_branch_request(action: BranchAction) -> Result<DaemonRequest
             build_branch_namespace_request(args, BranchNamespaceMode::RenderManifest)
         }
     }
+}
+
+fn build_branch_apply_prepared_request(args: BranchApplyPreparedArgs) -> Result<DaemonRequest> {
+    if args.prepared_deploy_id.trim().is_empty() {
+        return Err(CliError::Usage(
+            "branch apply-prepared requires a prepared deploy id".into(),
+        ));
+    }
+    Ok(DaemonRequest::DeployApplyPrepared {
+        request: DeployApplyPreparedRequest {
+            prepared_deploy_id: DeployId(args.prepared_deploy_id),
+        },
+    })
 }
 
 fn build_branch_namespace_request(
