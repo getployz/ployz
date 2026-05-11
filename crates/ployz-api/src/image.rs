@@ -136,7 +136,7 @@ pub struct ImageOperationListPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ImageTransferTargetResult {
     Present {
         machine_id: MachineId,

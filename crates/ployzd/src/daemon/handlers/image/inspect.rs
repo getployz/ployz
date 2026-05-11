@@ -271,11 +271,16 @@ fn image_operation_target(
     status: OperationStatus,
     last_error: Option<String>,
 ) -> ImageOperationTargetOutcome {
-    ImageOperationTargetOutcome {
-        machine_id,
-        status,
-        bytes_transferred: None,
-        last_error,
+    match status {
+        OperationStatus::Running => ImageOperationTargetOutcome::running(machine_id),
+        OperationStatus::Succeeded => ImageOperationTargetOutcome::succeeded(machine_id, None),
+        OperationStatus::Failed => ImageOperationTargetOutcome::failed(
+            machine_id,
+            last_error.unwrap_or_else(|| "image inspect target failed".into()),
+        ),
+        OperationStatus::Interrupted => {
+            ImageOperationTargetOutcome::interrupted(machine_id, last_error)
+        }
     }
 }
 

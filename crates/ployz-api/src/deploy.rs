@@ -108,7 +108,7 @@ pub struct DeployCandidateStartedPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "reason", rename_all = "snake_case")]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployFailurePayload {
     NoEligiblePlacementTargets,
     DeployBaselineChanged {
@@ -382,5 +382,17 @@ mod tests {
         assert_eq!(json["machine_id"], serde_json::json!("machine-a"));
         assert_eq!(json["digest"], serde_json::json!("sha256:abc"));
         assert!(json.get("state").is_none());
+    }
+
+    #[test]
+    fn deploy_failure_payload_rejects_unrelated_variant_fields() {
+        let json = serde_json::json!({
+            "reason": "prepared_deploy_missing",
+            "prepared_deploy_id": "prepare-1",
+            "state": "absent"
+        });
+
+        serde_json::from_value::<DeployFailurePayload>(json)
+            .expect_err("prepared deploy missing cannot carry image state");
     }
 }
