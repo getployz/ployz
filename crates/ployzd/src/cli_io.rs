@@ -132,29 +132,47 @@ pub(crate) fn render_response(
     quiet: bool,
     response: &DaemonResponse,
 ) -> Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    let mut stderr = std::io::stderr().lock();
+    render_response_to_writers(json, plain, quiet, response, &mut stdout, &mut stderr)
+}
+
+fn render_response_to_writers(
+    json: bool,
+    plain: bool,
+    quiet: bool,
+    response: &DaemonResponse,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
     if json {
         let body = serde_json::to_string_pretty(response).map_err(|error| {
             CliError::Serialize(format!("failed to encode JSON output: {error}"))
         })?;
-        println!("{body}");
+        writeln!(stdout, "{body}")
+            .map_err(|error| CliError::Io(format!("failed to write response: {error}")))?;
         return Ok(());
     }
 
     if response.ok {
         if !quiet {
             if plain {
-                println!("{}", render_plain_success(response));
+                writeln!(stdout, "{}", render_plain_success(response))
+                    .map_err(|error| CliError::Io(format!("failed to write response: {error}")))?;
             } else {
-                println!("{}", response.message);
+                writeln!(stdout, "{}", response.message)
+                    .map_err(|error| CliError::Io(format!("failed to write response: {error}")))?;
             }
         }
         return Ok(());
     }
 
     if plain {
-        eprintln!("{}", response.message);
+        writeln!(stderr, "{}", render_plain_error(response))
+            .map_err(|error| CliError::Io(format!("failed to write response: {error}")))?;
     } else {
-        eprintln!("error [{}]: {}", response.code, response.message);
+        writeln!(stderr, "error [{}]: {}", response.code, response.message)
+            .map_err(|error| CliError::Io(format!("failed to write response: {error}")))?;
     }
     Ok(())
 }
@@ -180,6 +198,22 @@ fn render_plain_success(response: &DaemonResponse) -> String {
         }
         Some(DaemonPayload::BuildResult(payload)) => render_plain_build_result(payload),
         Some(DaemonPayload::ImagePush(payload)) => render_plain_image_push(payload),
+        Some(DaemonPayload::ImageDistribute(payload)) => render_plain_image_distribute(payload),
+        _ => response.message.clone(),
+    }
+}
+
+fn render_plain_error(response: &DaemonResponse) -> String {
+    match response.payload.as_ref() {
+        Some(DaemonPayload::ImageDistribute(payload))
+            if response.code.starts_with("IMAGE_DISTRIBUTE_") =>
+        {
+            format!(
+                "{}\n{}",
+                response.message,
+                render_plain_image_distribute(payload)
+            )
+        }
         _ => response.message.clone(),
     }
 }
@@ -366,19 +400,37 @@ fn render_plain_image_push(payload: &ployz_api::ImagePushPayload) -> String {
         payload.operation_id,
         payload.artifact.digest().as_str()
     )];
-    for target in &payload.targets {
+    append_plain_image_targets(&mut lines, &payload.targets);
+    lines.join("\n")
+}
+
+fn render_plain_image_distribute(payload: &ployz_api::ImageDistributePayload) -> String {
+    let mut lines = vec![format!(
+        "operation={} digest={} source={}",
+        payload.operation_id,
+        payload.digest.as_str(),
+        payload.source_machine
+    )];
+    append_plain_image_targets(&mut lines, &payload.targets);
+    lines.join("\n")
+}
+
+fn append_plain_image_targets(
+    lines: &mut Vec<String>,
+    targets: &[ployz_api::ImageTransferTargetResult],
+) {
+    for target in targets {
         let status = match target.status {
             ployz_api::ImageTransferTargetStatus::Present => "present",
             ployz_api::ImageTransferTargetStatus::SkippedPresent => "skipped_present",
             ployz_api::ImageTransferTargetStatus::Failed => "failed",
         };
         let mut line = format!("target machine={} status={status}", target.machine_id);
-        if let Some(error) = target.error.as_deref() {
-            line.push_str(&format!(" error={error}"));
+        if let Some(failure) = &target.failure {
+            line.push_str(&format!(" error={}", failure.message));
         }
         lines.push(line);
     }
-    lines.join("\n")
 }
 
 fn render_plain_machine_list(payload: &MachineListPayload) -> String {
@@ -782,13 +834,17 @@ mod tests {
                         machine_id: ployz_types::model::MachineId("peer".into()),
                         status: ployz_api::ImageTransferTargetStatus::Present,
                         record: None,
-                        error: None,
+                        failure: None,
                     },
                     ployz_api::ImageTransferTargetResult {
                         machine_id: ployz_types::model::MachineId("other".into()),
                         status: ployz_api::ImageTransferTargetStatus::Failed,
                         record: None,
-                        error: Some("no responders".into()),
+                        failure: Some(ployz_api::ImageTransferFailure {
+                            code: "TEST_FAILED".into(),
+                            stage: ployz_api::ImageTransferFailureStage::SourceVerify,
+                            message: "no responders".into(),
+                        }),
                     },
                 ],
             })),
@@ -798,6 +854,88 @@ mod tests {
             render_plain_success(&response),
             format!(
                 "operation=image-push-1 digest={}\ntarget machine=peer status=present\ntarget machine=other status=failed error=no responders",
+                digest.as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn plain_image_distribute_renders_source_and_targets() {
+        let digest = ployz_types::model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
+            .expect("valid digest");
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("distributed"),
+            payload: Some(DaemonPayload::ImageDistribute(
+                ployz_api::ImageDistributePayload {
+                    operation_id: "image-distribute-1".into(),
+                    digest: digest.clone(),
+                    source_machine: ployz_types::model::MachineId("founder".into()),
+                    targets: vec![
+                        ployz_api::ImageTransferTargetResult {
+                            machine_id: ployz_types::model::MachineId("founder".into()),
+                            status: ployz_api::ImageTransferTargetStatus::SkippedPresent,
+                            record: None,
+                            failure: None,
+                        },
+                        ployz_api::ImageTransferTargetResult {
+                            machine_id: ployz_types::model::MachineId("peer".into()),
+                            status: ployz_api::ImageTransferTargetStatus::Present,
+                            record: None,
+                            failure: None,
+                        },
+                    ],
+                },
+            )),
+        };
+
+        assert_eq!(
+            render_plain_success(&response),
+            format!(
+                "operation=image-distribute-1 digest={} source=founder\ntarget machine=founder status=skipped_present\ntarget machine=peer status=present",
+                digest.as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn plain_image_distribute_partial_failure_renders_payload_on_error_path() {
+        let digest = ployz_types::model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
+            .expect("valid digest");
+        let response = DaemonResponse {
+            ok: false,
+            code: String::from("IMAGE_DISTRIBUTE_PARTIAL_FAILED"),
+            message: String::from("distributed with failures"),
+            payload: Some(DaemonPayload::ImageDistribute(
+                ployz_api::ImageDistributePayload {
+                    operation_id: "image-distribute-1".into(),
+                    digest: digest.clone(),
+                    source_machine: ployz_types::model::MachineId("founder".into()),
+                    targets: vec![ployz_api::ImageTransferTargetResult {
+                        machine_id: ployz_types::model::MachineId("peer".into()),
+                        status: ployz_api::ImageTransferTargetStatus::Failed,
+                        record: None,
+                        failure: Some(ployz_api::ImageTransferFailure {
+                            code: "TEST_FAILED".into(),
+                            stage: ployz_api::ImageTransferFailureStage::ReceiveSession,
+                            message: "no responders".into(),
+                        }),
+                    }],
+                },
+            )),
+        };
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        render_response_to_writers(false, true, false, &response, &mut stdout, &mut stderr)
+            .expect("render response");
+
+        assert!(stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(stderr).expect("stderr utf8"),
+            format!(
+                "distributed with failures\noperation=image-distribute-1 digest={} source=founder\ntarget machine=peer status=failed error=no responders\n",
                 digest.as_str()
             )
         );

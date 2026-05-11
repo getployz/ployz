@@ -914,6 +914,8 @@ mod tests {
             "machine-a",
             "--to",
             "machine-b",
+            "--to",
+            "machine-c",
             "--platform",
             "linux/arm64/v8",
         ])
@@ -933,7 +935,7 @@ mod tests {
         };
         assert_eq!(parsed_digest, digest);
         assert_eq!(source, "machine-a");
-        assert_eq!(targets, vec!["machine-b"]);
+        assert_eq!(targets, vec!["machine-b", "machine-c"]);
         assert_eq!(platform.as_deref(), Some("linux/arm64/v8"));
     }
 
@@ -943,7 +945,7 @@ mod tests {
         let request = build_image_request(ImageAction::Distribute {
             digest: digest.clone(),
             source: "machine-a".into(),
-            targets: vec!["machine-b".into()],
+            targets: vec!["machine-b".into(), "machine-c".into()],
             platform: Some("linux/arm64/v8".into()),
         })
         .expect("image distribute request");
@@ -955,7 +957,10 @@ mod tests {
         assert_eq!(request.source_machine.0, "machine-a");
         assert_eq!(
             request.target_machines,
-            vec![ployz_types::model::MachineId("machine-b".into())]
+            vec![
+                ployz_types::model::MachineId("machine-b".into()),
+                ployz_types::model::MachineId("machine-c".into())
+            ]
         );
         let platform = request.platform.expect("platform");
         assert_eq!(platform.os, "linux");
