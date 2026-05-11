@@ -309,6 +309,8 @@ mod tests {
             mesh,
             nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            image_receiver: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            image_receiver_bind_addr: None,
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,

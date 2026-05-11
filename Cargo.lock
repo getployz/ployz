@@ -1355,6 +1355,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "filetime"
+version = "0.2.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d5b2eef6fafbf69f877e55509ce5b11a760690ac9700a2921be067aa6afaef6"
+dependencies = [
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3132,7 +3142,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "ployz-api"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "ipnet",
  "ployz-types",
@@ -3143,7 +3153,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-bpfctl"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "aya",
  "ipnet",
@@ -3153,7 +3163,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-cert-backends"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-trait",
  "instant-acme",
@@ -3168,7 +3178,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-config"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "directories",
  "figment",
@@ -3179,7 +3189,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-dns"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-trait",
  "backon",
@@ -3200,7 +3210,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-dns-config"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "ployz-config",
  "ployz-types",
@@ -3209,7 +3219,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-e2e"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "backon",
  "clap",
@@ -3222,11 +3232,11 @@ dependencies = [
 
 [[package]]
 name = "ployz-ebpf-common"
-version = "0.6.0"
+version = "0.6.1"
 
 [[package]]
 name = "ployz-gateway"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-trait",
  "backon",
@@ -3252,7 +3262,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-gateway-config"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "ployz-config",
  "thiserror 2.0.18",
@@ -3260,7 +3270,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-install"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "libc",
  "ployz-config",
@@ -3268,7 +3278,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-metrics"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "axum",
  "prometheus",
@@ -3277,7 +3287,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-nats"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-nats",
  "async-trait",
@@ -3297,7 +3307,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-orchestrator"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-trait",
  "aya",
@@ -3322,7 +3332,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-runtime-api"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-trait",
  "hostname",
@@ -3337,7 +3347,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-runtime-backends"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-trait",
  "backon",
@@ -3374,7 +3384,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-sdk"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "ployz-api",
  "ployz-config",
@@ -3385,7 +3395,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-sim"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "ployz-dns",
  "ployz-gateway",
@@ -3398,7 +3408,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-store-api"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-trait",
  "ployz-types",
@@ -3409,7 +3419,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-types"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "base64",
  "derive_more",
@@ -3425,7 +3435,7 @@ dependencies = [
 
 [[package]]
 name = "ployzctl"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "clap",
  "ployz-config",
@@ -3434,7 +3444,7 @@ dependencies = [
 
 [[package]]
 name = "ployzd"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-nats",
  "async-trait",
@@ -3462,9 +3472,11 @@ dependencies = [
  "ployz-types",
  "prometheus",
  "rand 0.10.0",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
+ "tar",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -3820,6 +3832,7 @@ dependencies = [
  "base64",
  "bytes",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",
@@ -3839,12 +3852,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
  "webpki-roots 1.0.6",
 ]
@@ -4460,6 +4475,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "tar"
+version = "0.4.45"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22692a6476a21fa75fdfc11d452fda482af402c008cdbaf3476414e122040973"
+dependencies = [
+ "filetime",
+ "libc",
+ "xattr",
 ]
 
 [[package]]
@@ -5239,6 +5265,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-streams"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "wasmparser"
 version = "0.244.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5831,6 +5870,16 @@ dependencies = [
  "rusticata-macros",
  "thiserror 2.0.18",
  "time",
+]
+
+[[package]]
+name = "xattr"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
+dependencies = [
+ "libc",
+ "rustix",
 ]
 
 [[package]]

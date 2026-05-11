@@ -2,7 +2,7 @@ mod build;
 mod debug;
 mod deploy;
 mod doctor;
-mod image;
+pub(crate) mod image;
 mod invite;
 pub(crate) mod machine;
 mod mesh;
@@ -58,6 +58,8 @@ impl DaemonState {
             | DaemonRequest::ImageInspect { .. }
             | DaemonRequest::ImagePush { .. }
             | DaemonRequest::ImageDistribute { .. }
+            | DaemonRequest::ImageReceiveSession { .. }
+            | DaemonRequest::ImageReceivedImport { .. }
             | DaemonRequest::ImageOperationGet { .. }
             | DaemonRequest::ImageOperationList
             | DaemonRequest::BuildOperationGet { .. }
@@ -166,6 +168,12 @@ impl DaemonState {
             DaemonRequest::ImagePush { request } => self.handle_image_push(&request).await,
             DaemonRequest::ImageDistribute { request } => {
                 self.handle_image_distribute(&request).await
+            }
+            DaemonRequest::ImageReceiveSession { request } => {
+                self.handle_image_receive_session(&request).await
+            }
+            DaemonRequest::ImageReceivedImport { request } => {
+                self.handle_image_received_import(&request).await
             }
             DaemonRequest::ImageOperationGet { id } => self.handle_image_operation_get(&id).await,
             DaemonRequest::ImageOperationList => self.handle_image_operation_list().await,
@@ -491,6 +499,8 @@ impl DaemonState {
             | DaemonRequest::ImageInspect { .. }
             | DaemonRequest::ImagePush { .. }
             | DaemonRequest::ImageDistribute { .. }
+            | DaemonRequest::ImageReceiveSession { .. }
+            | DaemonRequest::ImageReceivedImport { .. }
             | DaemonRequest::ImageOperationGet { .. }
             | DaemonRequest::ImageOperationList
             | DaemonRequest::BuildOperationGet { .. }
@@ -541,7 +551,7 @@ mod tests {
     use crate::daemon::DaemonState;
     use ployz_api::{
         DaemonRequest, DebugTickTask, DeployApplyPreparedRequest, ImageDistributeRequest,
-        ImagePushRequest,
+        ImagePushRequest, ImageReceiveSessionRequest, ImageReceivedImportRequest,
     };
     use ployz_types::model::{DeployId, ImageDigest, MachineId};
 
@@ -626,6 +636,28 @@ mod tests {
             },
         });
         assert_eq!(distribute_lane, RequestLane::Shared);
+
+        let receive_session_lane = DaemonState::request_lane(&DaemonRequest::ImageReceiveSession {
+            request: ImageReceiveSessionRequest {
+                operation_id: "image-push-1".into(),
+                source_machine: MachineId("machine-a".into()),
+                repository: Some("ployz/image-push-1".into()),
+            },
+        });
+        assert_eq!(receive_session_lane, RequestLane::Shared);
+
+        let received_import_lane = DaemonState::request_lane(&DaemonRequest::ImageReceivedImport {
+            request: ImageReceivedImportRequest {
+                operation_id: "image-distribute-1".into(),
+                source_machine: MachineId("machine-a".into()),
+                repository: "ployz/image-distribute-1".into(),
+                reference: "image-distribute-1".into(),
+                expected_digest: digest(),
+                platform: None,
+                repo_tags: vec!["example/app:latest".into()],
+            },
+        });
+        assert_eq!(received_import_lane, RequestLane::Shared);
     }
 
     fn digest() -> ImageDigest {

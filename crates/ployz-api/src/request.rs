@@ -1,6 +1,7 @@
 use crate::deploy::{DeployApplyPreparedRequest, DeployOptions, MigrateServiceRequest};
 use crate::image::{
-    ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageStatusRequest,
+    ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageReceiveSessionRequest,
+    ImageReceivedImportRequest, ImageStatusRequest,
 };
 use crate::machine::{
     MachineAddOptions, MachineInstallOptions, MachineStorageAuthorityPeer,
@@ -190,6 +191,12 @@ pub enum DaemonRequest {
     ImageDistribute {
         request: ImageDistributeRequest,
     },
+    ImageReceiveSession {
+        request: ImageReceiveSessionRequest,
+    },
+    ImageReceivedImport {
+        request: ImageReceivedImportRequest,
+    },
     ImageOperationGet {
         id: String,
     },
@@ -288,7 +295,10 @@ mod tests {
     use super::*;
     use crate::build::BuildMachineRequest;
     use crate::deploy::MigrateServiceMode;
-    use crate::image::{ImageDistributeRequest, ImageInspectRequest, ImagePushRequest};
+    use crate::image::{
+        ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageReceiveSessionRequest,
+        ImageReceivedImportRequest,
+    };
     use ployz_types::model::{BuildMethod, ImageDigest};
 
     #[test]
@@ -476,6 +486,81 @@ mod tests {
         assert_eq!(request.source_machine, MachineId("machine-a".into()));
         assert_eq!(request.target_machines, vec![MachineId("machine-b".into())]);
         assert_eq!(request.platform.expect("platform").architecture, "amd64");
+    }
+
+    #[test]
+    fn image_receive_session_request_round_trips_operation_source_and_repository() {
+        let request = DaemonRequest::ImageReceiveSession {
+            request: ImageReceiveSessionRequest {
+                operation_id: "image-push-1".into(),
+                source_machine: MachineId("machine-a".into()),
+                repository: Some("ployz/image-push-1".into()),
+            },
+        };
+
+        let json = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "ImageReceiveSession": {
+                    "request": {
+                        "operation_id": "image-push-1",
+                        "source_machine": "machine-a",
+                        "repository": "ployz/image-push-1"
+                    }
+                }
+            })
+        );
+        let roundtrip: DaemonRequest = serde_json::from_value(json).expect("deserialize request");
+
+        let DaemonRequest::ImageReceiveSession { request } = roundtrip else {
+            panic!("expected image receive session request");
+        };
+        assert_eq!(request.operation_id, "image-push-1");
+        assert_eq!(request.source_machine, MachineId("machine-a".into()));
+        assert_eq!(request.repository.as_deref(), Some("ployz/image-push-1"));
+    }
+
+    #[test]
+    fn image_received_import_request_round_trips_import_coordinates() {
+        let request = DaemonRequest::ImageReceivedImport {
+            request: ImageReceivedImportRequest {
+                operation_id: "image-distribute-1".into(),
+                source_machine: MachineId("machine-a".into()),
+                repository: "ployz/image-distribute-1".into(),
+                reference: "image-distribute-1".into(),
+                expected_digest: digest(),
+                platform: None,
+                repo_tags: vec!["example/app:latest".into()],
+            },
+        };
+
+        let json = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "ImageReceivedImport": {
+                    "request": {
+                        "operation_id": "image-distribute-1",
+                        "source_machine": "machine-a",
+                        "repository": "ployz/image-distribute-1",
+                        "reference": "image-distribute-1",
+                        "expected_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "repo_tags": ["example/app:latest"]
+                    }
+                }
+            })
+        );
+        let roundtrip: DaemonRequest = serde_json::from_value(json).expect("deserialize request");
+
+        let DaemonRequest::ImageReceivedImport { request } = roundtrip else {
+            panic!("expected image received import request");
+        };
+        assert_eq!(request.operation_id, "image-distribute-1");
+        assert_eq!(request.source_machine, MachineId("machine-a".into()));
+        assert_eq!(request.repository, "ployz/image-distribute-1");
+        assert_eq!(request.reference, "image-distribute-1");
+        assert_eq!(request.repo_tags, vec!["example/app:latest"]);
     }
 
     #[test]

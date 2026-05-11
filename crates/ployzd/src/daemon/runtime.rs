@@ -32,6 +32,16 @@ impl DaemonState {
             .zfs_transfer_bind_addr(zfs_transfer_port, overlay_ip)
     }
 
+    #[must_use]
+    pub(crate) fn image_receiver_bind_addr(
+        &self,
+        zfs_transfer_port: u16,
+        overlay_ip: OverlayIp,
+    ) -> Option<SocketAddr> {
+        self.runtime_profile
+            .image_receiver_bind_addr(zfs_transfer_port, overlay_ip)
+    }
+
     pub(crate) async fn start_runtime_gateway(
         &self,
         config: GatewayConfig,

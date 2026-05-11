@@ -49,7 +49,7 @@ default-members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 rust-version = "1.88"
 
@@ -83,6 +83,7 @@ backon = "1.6"
 axum = "0.8"
 xshell = "0.3.0-pre.2"
 humantime-serde = "1.1"
+tar = "0.4"
 
 [workspace.lints.clippy]
 indexing_slicing = "warn"
