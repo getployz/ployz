@@ -117,11 +117,11 @@ impl ImageOperationStore {
         record: &mut ImageOperationRecord,
         outcome: ImageOperationTargetOutcome,
     ) -> Result<(), String> {
-        let machine_id = outcome.machine_id.clone();
+        let machine_id = outcome.machine_id().clone();
         match record
             .targets
             .iter_mut()
-            .find(|target| target.machine_id == machine_id)
+            .find(|target| target.machine_id() == &machine_id)
         {
             Some(existing) => *existing = outcome,
             None => record.targets.push(outcome),
@@ -295,12 +295,7 @@ impl DaemonState {
 
 #[allow(dead_code)]
 fn running_target_outcome(machine_id: MachineId) -> ImageOperationTargetOutcome {
-    ImageOperationTargetOutcome {
-        machine_id,
-        status: OperationStatus::Running,
-        bytes_transferred: None,
-        last_error: None,
-    }
+    ImageOperationTargetOutcome::running(machine_id)
 }
 
 fn apply_status_transition(
@@ -469,12 +464,7 @@ mod tests {
         store
             .update_target(
                 &mut record,
-                ImageOperationTargetOutcome {
-                    machine_id: MachineId::new("target-a"),
-                    status: OperationStatus::Failed,
-                    bytes_transferred: Some(128),
-                    last_error: Some("disk full".into()),
-                },
+                ImageOperationTargetOutcome::failed(MachineId::new("target-a"), "disk full"),
             )
             .expect("update target");
 
@@ -483,9 +473,9 @@ mod tests {
             .expect("load operation")
             .expect("operation exists");
         assert_eq!(loaded.targets.len(), 1);
-        assert_eq!(loaded.targets[0].status, OperationStatus::Failed);
-        assert_eq!(loaded.targets[0].bytes_transferred, Some(128));
-        assert_eq!(loaded.targets[0].last_error.as_deref(), Some("disk full"));
+        assert_eq!(loaded.targets[0].status(), OperationStatus::Failed);
+        assert_eq!(loaded.targets[0].bytes_transferred(), None);
+        assert_eq!(loaded.targets[0].last_error(), Some("disk full"));
     }
 
     #[test]

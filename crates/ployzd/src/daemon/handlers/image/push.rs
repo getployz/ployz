@@ -171,12 +171,10 @@ impl DaemonState {
         )];
         if let Err(error) = operation_store.update_target(
             &mut operation,
-            ImageOperationTargetOutcome {
-                machine_id: first_target.clone(),
-                status: OperationStatus::Succeeded,
-                bytes_transferred: Some(first_upload.bytes_uploaded),
-                last_error: None,
-            },
+            ImageOperationTargetOutcome::succeeded(
+                first_target.clone(),
+                Some(first_upload.bytes_uploaded),
+            ),
         ) {
             return self.err("IMAGE_PUSH_OPERATION_FAILED", error);
         }
@@ -204,12 +202,7 @@ impl DaemonState {
                 ImageTransferTargetStatus::Present | ImageTransferTargetStatus::SkippedPresent => {
                     if let Err(error) = operation_store.update_target(
                         &mut operation,
-                        ImageOperationTargetOutcome {
-                            machine_id: target.clone(),
-                            status: OperationStatus::Succeeded,
-                            bytes_transferred: None,
-                            last_error: None,
-                        },
+                        ImageOperationTargetOutcome::succeeded(target.clone(), None),
                     ) {
                         return self.err("IMAGE_PUSH_OPERATION_FAILED", error);
                     }
@@ -219,12 +212,7 @@ impl DaemonState {
                         .unwrap_or_else(|| format!("image distribute to target '{target}' failed"));
                     if let Err(error) = operation_store.update_target(
                         &mut operation,
-                        ImageOperationTargetOutcome {
-                            machine_id: target.clone(),
-                            status: OperationStatus::Failed,
-                            bytes_transferred: None,
-                            last_error: Some(message.clone()),
-                        },
+                        ImageOperationTargetOutcome::failed(target.clone(), message.clone()),
                     ) {
                         return self.err(
                             "IMAGE_PUSH_OPERATION_FAILED",
@@ -382,12 +370,7 @@ impl DaemonState {
                 };
                 if let Err(error) = operation_store.update_target(
                     &mut operation,
-                    ImageOperationTargetOutcome {
-                        machine_id: target_machine.clone(),
-                        status: OperationStatus::Succeeded,
-                        bytes_transferred: None,
-                        last_error: None,
-                    },
+                    ImageOperationTargetOutcome::succeeded(target_machine.clone(), None),
                 ) {
                     return self.err("IMAGE_DISTRIBUTE_OPERATION_FAILED", error);
                 }
@@ -593,21 +576,21 @@ impl DaemonState {
                 )
                 .await
             };
-            let operation_status = match target_result.status() {
+            let outcome = match target_result.status() {
                 ImageTransferTargetStatus::Present | ImageTransferTargetStatus::SkippedPresent => {
-                    OperationStatus::Succeeded
+                    ImageOperationTargetOutcome::succeeded(
+                        target_machine.clone(),
+                        bytes_transferred,
+                    )
                 }
-                ImageTransferTargetStatus::Failed => OperationStatus::Failed,
+                ImageTransferTargetStatus::Failed => ImageOperationTargetOutcome::failed(
+                    target_machine.clone(),
+                    image_transfer_target_failure_message(&target_result).unwrap_or_else(|| {
+                        format!("image distribute to target '{target_machine}' failed")
+                    }),
+                ),
             };
-            if let Err(error) = operation_store.update_target(
-                &mut operation,
-                ImageOperationTargetOutcome {
-                    machine_id: target_machine.clone(),
-                    status: operation_status,
-                    bytes_transferred,
-                    last_error: image_transfer_target_failure_message(&target_result),
-                },
-            ) {
+            if let Err(error) = operation_store.update_target(&mut operation, outcome) {
                 if let Some(work_dir) = work_dir.as_deref() {
                     cleanup_image_work_dir(work_dir).await;
                 }
@@ -903,12 +886,7 @@ impl DaemonState {
     ) -> ployz_api::DaemonResponse {
         if let Err(error) = operation_store.update_target(
             operation,
-            ImageOperationTargetOutcome {
-                machine_id: target_machine,
-                status: OperationStatus::Failed,
-                bytes_transferred: None,
-                last_error: Some(message.clone()),
-            },
+            ImageOperationTargetOutcome::failed(target_machine, message.clone()),
         ) {
             return self.err(
                 "IMAGE_DISTRIBUTE_OPERATION_FAILED",
@@ -979,11 +957,20 @@ impl DaemonState {
                         Some(message.clone()),
                     )
                 };
-            let outcome = ImageOperationTargetOutcome {
-                machine_id: target_machine.clone(),
-                status,
-                bytes_transferred: None,
-                last_error,
+            let outcome = match status {
+                OperationStatus::Succeeded => {
+                    ImageOperationTargetOutcome::succeeded(target_machine.clone(), None)
+                }
+                OperationStatus::Failed => ImageOperationTargetOutcome::failed(
+                    target_machine.clone(),
+                    last_error.unwrap_or_else(|| message.clone()),
+                ),
+                OperationStatus::Interrupted => {
+                    ImageOperationTargetOutcome::interrupted(target_machine.clone(), last_error)
+                }
+                OperationStatus::Running => {
+                    ImageOperationTargetOutcome::running(target_machine.clone())
+                }
             };
             if let Err(error) = operation_store.update_target(operation, outcome.clone()) {
                 return self.err(
@@ -1084,12 +1071,7 @@ impl DaemonState {
     ) -> ployz_api::DaemonResponse {
         if let Err(error) = operation_store.update_target(
             operation,
-            ImageOperationTargetOutcome {
-                machine_id: target_machine,
-                status: OperationStatus::Failed,
-                bytes_transferred: None,
-                last_error: Some(message.clone()),
-            },
+            ImageOperationTargetOutcome::failed(target_machine, message.clone()),
         ) {
             return self.err(
                 "IMAGE_PUSH_OPERATION_FAILED",
@@ -1817,7 +1799,7 @@ mod tests {
         assert_eq!(operations.len(), 1);
         assert_eq!(operations[0].kind, ImageOperationKind::Push);
         assert_eq!(operations[0].status, OperationStatus::Failed);
-        assert_eq!(operations[0].targets[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].targets[0].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]
@@ -2043,7 +2025,7 @@ mod tests {
             .expect("list operations");
         assert_eq!(operations.len(), 1);
         assert_eq!(operations[0].status, OperationStatus::Failed);
-        assert_eq!(operations[0].targets[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].targets[0].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]
@@ -2121,14 +2103,14 @@ mod tests {
         assert!(
             push.targets
                 .iter()
-                .any(|target| target.machine_id == MachineId::new("founder")
-                    && target.status == OperationStatus::Succeeded)
+                .any(|target| target.machine_id() == &MachineId::new("founder")
+                    && target.status() == OperationStatus::Succeeded)
         );
         assert!(
             push.targets
                 .iter()
-                .any(|target| target.machine_id == MachineId::new("machine-a")
-                    && target.status == OperationStatus::Failed)
+                .any(|target| target.machine_id() == &MachineId::new("machine-a")
+                    && target.status() == OperationStatus::Failed)
         );
         listener.shutdown().await;
     }
@@ -2370,7 +2352,7 @@ mod tests {
             operations[0]
                 .targets
                 .iter()
-                .all(|target| target.status == OperationStatus::Succeeded)
+                .all(|target| target.status() == OperationStatus::Succeeded)
         );
     }
 
@@ -2433,8 +2415,11 @@ mod tests {
             .list()
             .expect("list operations");
         assert_eq!(operations[0].status, OperationStatus::Failed);
-        assert_eq!(operations[0].targets[0].status, OperationStatus::Succeeded);
-        assert_eq!(operations[0].targets[1].status, OperationStatus::Failed);
+        assert_eq!(
+            operations[0].targets[0].status(),
+            OperationStatus::Succeeded
+        );
+        assert_eq!(operations[0].targets[1].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]
@@ -2536,7 +2521,7 @@ mod tests {
             operations[0]
                 .targets
                 .iter()
-                .all(|target| target.status == OperationStatus::Failed)
+                .all(|target| target.status() == OperationStatus::Failed)
         );
     }
 
@@ -2588,8 +2573,11 @@ mod tests {
             .image_operation_store()
             .list()
             .expect("list operations");
-        assert_eq!(operations[0].targets[0].status, OperationStatus::Succeeded);
-        assert_eq!(operations[0].targets[1].status, OperationStatus::Failed);
+        assert_eq!(
+            operations[0].targets[0].status(),
+            OperationStatus::Succeeded
+        );
+        assert_eq!(operations[0].targets[1].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]
@@ -2640,8 +2628,11 @@ mod tests {
             .image_operation_store()
             .list()
             .expect("list operations");
-        assert_eq!(operations[0].targets[0].status, OperationStatus::Succeeded);
-        assert_eq!(operations[0].targets[1].status, OperationStatus::Failed);
+        assert_eq!(
+            operations[0].targets[0].status(),
+            OperationStatus::Succeeded
+        );
+        assert_eq!(operations[0].targets[1].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]
@@ -2684,7 +2675,7 @@ mod tests {
             .image_operation_store()
             .list()
             .expect("list operations");
-        assert_eq!(operations[0].targets[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].targets[0].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]
@@ -2730,7 +2721,7 @@ mod tests {
             operations[0]
                 .targets
                 .iter()
-                .all(|target| target.status == OperationStatus::Failed)
+                .all(|target| target.status() == OperationStatus::Failed)
         );
     }
 
@@ -2766,7 +2757,7 @@ mod tests {
             .expect("list operations");
         assert_eq!(operations.len(), 1);
         assert_eq!(operations[0].status, OperationStatus::Failed);
-        assert_eq!(operations[0].targets[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].targets[0].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]

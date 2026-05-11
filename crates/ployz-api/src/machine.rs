@@ -89,7 +89,7 @@ pub enum InstallServiceMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum InstallSource {
     Release {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -318,5 +318,17 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn install_source_rejects_git_fields_on_release() {
+        let json = serde_json::json!({
+            "kind": "release",
+            "version": "0.6.1",
+            "git_url": "https://example.invalid/ployz.git"
+        });
+
+        serde_json::from_value::<InstallSource>(json)
+            .expect_err("release install source cannot carry git url");
     }
 }

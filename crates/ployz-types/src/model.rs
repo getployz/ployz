@@ -298,7 +298,7 @@ pub struct ImagePlatform {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ImageRef {
     Digest {
         digest: ImageDigest,
@@ -469,13 +469,95 @@ pub enum BuildOperationKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ImageOperationTargetOutcome {
-    pub machine_id: MachineId,
-    pub status: OperationStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bytes_transferred: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageOperationTargetOutcome {
+    Running {
+        machine_id: MachineId,
+    },
+    Succeeded {
+        machine_id: MachineId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_transferred: Option<u64>,
+    },
+    Failed {
+        machine_id: MachineId,
+        last_error: String,
+    },
+    Interrupted {
+        machine_id: MachineId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+}
+
+impl ImageOperationTargetOutcome {
+    #[must_use]
+    pub fn running(machine_id: MachineId) -> Self {
+        Self::Running { machine_id }
+    }
+
+    #[must_use]
+    pub fn succeeded(machine_id: MachineId, bytes_transferred: Option<u64>) -> Self {
+        Self::Succeeded {
+            machine_id,
+            bytes_transferred,
+        }
+    }
+
+    #[must_use]
+    pub fn failed(machine_id: MachineId, last_error: impl Into<String>) -> Self {
+        Self::Failed {
+            machine_id,
+            last_error: last_error.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn interrupted(machine_id: MachineId, last_error: Option<String>) -> Self {
+        Self::Interrupted {
+            machine_id,
+            last_error,
+        }
+    }
+
+    #[must_use]
+    pub fn machine_id(&self) -> &MachineId {
+        match self {
+            Self::Running { machine_id }
+            | Self::Succeeded { machine_id, .. }
+            | Self::Failed { machine_id, .. }
+            | Self::Interrupted { machine_id, .. } => machine_id,
+        }
+    }
+
+    #[must_use]
+    pub fn status(&self) -> OperationStatus {
+        match self {
+            Self::Running { .. } => OperationStatus::Running,
+            Self::Succeeded { .. } => OperationStatus::Succeeded,
+            Self::Failed { .. } => OperationStatus::Failed,
+            Self::Interrupted { .. } => OperationStatus::Interrupted,
+        }
+    }
+
+    #[must_use]
+    pub fn bytes_transferred(&self) -> Option<u64> {
+        match self {
+            Self::Succeeded {
+                bytes_transferred, ..
+            } => *bytes_transferred,
+            Self::Running { .. } | Self::Failed { .. } | Self::Interrupted { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        match self {
+            Self::Failed { last_error, .. } => Some(last_error.as_str()),
+            Self::Interrupted { last_error, .. } => last_error.as_deref(),
+            Self::Running { .. } | Self::Succeeded { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -797,7 +879,7 @@ impl fmt::Display for AuthorityNodeRole {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorityNodePosture {
     AuthorityStorage { authority_id: AuthorityId },
     StorageCandidate,
@@ -3739,6 +3821,30 @@ mod tests {
                 source_digest: Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()),
             }
         );
+    }
+
+    #[test]
+    fn image_ref_rejects_tag_without_repository_variant() {
+        let json = serde_json::json!({
+            "kind": "digest",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tag": "latest"
+        });
+
+        serde_json::from_value::<ImageRef>(json).expect_err("digest-only image cannot carry tag");
+    }
+
+    #[test]
+    fn image_operation_target_outcome_rejects_failed_success_facts() {
+        let json = serde_json::json!({
+            "status": "failed",
+            "machine_id": "machine-a",
+            "bytes_transferred": 128,
+            "last_error": "disk full"
+        });
+
+        serde_json::from_value::<ImageOperationTargetOutcome>(json)
+            .expect_err("failed target cannot carry success bytes");
     }
 
     #[test]
