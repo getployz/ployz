@@ -165,12 +165,10 @@ impl DaemonState {
         };
         cleanup_image_work_dir(&work_dir).await;
 
-        let mut targets = vec![ImageTransferTargetResult {
-            machine_id: first_target.clone(),
-            status: ImageTransferTargetStatus::Present,
-            record: Some(first_record),
-            failure: None,
-        }];
+        let mut targets = vec![ImageTransferTargetResult::present(
+            first_target.clone(),
+            first_record,
+        )];
         if let Err(error) = operation_store.update_target(
             &mut operation,
             ImageOperationTargetOutcome {
@@ -202,7 +200,7 @@ impl DaemonState {
                     backend,
                 )
                 .await;
-            match target_result.status {
+            match target_result.status() {
                 ImageTransferTargetStatus::Present | ImageTransferTargetStatus::SkippedPresent => {
                     if let Err(error) = operation_store.update_target(
                         &mut operation,
@@ -256,7 +254,7 @@ impl DaemonState {
         let failed_targets = payload
             .targets
             .iter()
-            .filter(|target| target.status == ImageTransferTargetStatus::Failed)
+            .filter(|target| target.status() == ImageTransferTargetStatus::Failed)
             .count();
         if failed_targets > 0 {
             let message = format!(
@@ -393,12 +391,10 @@ impl DaemonState {
                 ) {
                     return self.err("IMAGE_DISTRIBUTE_OPERATION_FAILED", error);
                 }
-                targets.push(ImageTransferTargetResult {
-                    machine_id: target_machine.clone(),
-                    status: ImageTransferTargetStatus::SkippedPresent,
-                    record: Some(record),
-                    failure: None,
-                });
+                targets.push(ImageTransferTargetResult::skipped_present(
+                    target_machine.clone(),
+                    record,
+                ));
             }
             if let Err(error) =
                 operation_store.update_status(&mut operation, OperationStatus::Succeeded, None)
@@ -538,22 +534,12 @@ impl DaemonState {
                 skipped_present.get(target_machine).cloned()
             {
                 (
-                    ImageTransferTargetResult {
-                        machine_id: target_machine.clone(),
-                        status: ImageTransferTargetStatus::SkippedPresent,
-                        record: Some(record),
-                        failure: None,
-                    },
+                    ImageTransferTargetResult::skipped_present(target_machine.clone(), record),
                     None,
                 )
             } else if let Some(record) = local_present.get(target_machine).cloned() {
                 (
-                    ImageTransferTargetResult {
-                        machine_id: target_machine.clone(),
-                        status: ImageTransferTargetStatus::Present,
-                        record: Some(record),
-                        failure: None,
-                    },
+                    ImageTransferTargetResult::present(target_machine.clone(), record),
                     None,
                 )
             } else if let Some(message) = local_failures.get(target_machine).cloned() {
@@ -577,12 +563,7 @@ impl DaemonState {
                     .await
                 {
                     Ok(record) => (
-                        ImageTransferTargetResult {
-                            machine_id: target_machine.clone(),
-                            status: ImageTransferTargetStatus::Present,
-                            record: Some(record),
-                            failure: None,
-                        },
+                        ImageTransferTargetResult::present(target_machine.clone(), record),
                         None,
                     ),
                     Err(message) => (
@@ -612,7 +593,7 @@ impl DaemonState {
                 )
                 .await
             };
-            let operation_status = match target_result.status {
+            let operation_status = match target_result.status() {
                 ImageTransferTargetStatus::Present | ImageTransferTargetStatus::SkippedPresent => {
                     OperationStatus::Succeeded
                 }
@@ -647,7 +628,7 @@ impl DaemonState {
         let failed_targets = payload
             .targets
             .iter()
-            .filter(|target| target.status == ImageTransferTargetStatus::Failed)
+            .filter(|target| target.status() == ImageTransferTargetStatus::Failed)
             .count();
         if failed_targets > 0 {
             let message = format!(
@@ -962,23 +943,16 @@ impl DaemonState {
             let (result, status, last_error) =
                 if let Some(record) = skipped_present.get(target_machine) {
                     (
-                        ImageTransferTargetResult {
-                            machine_id: target_machine.clone(),
-                            status: ImageTransferTargetStatus::SkippedPresent,
-                            record: Some(record.clone()),
-                            failure: None,
-                        },
+                        ImageTransferTargetResult::skipped_present(
+                            target_machine.clone(),
+                            record.clone(),
+                        ),
                         OperationStatus::Succeeded,
                         None,
                     )
                 } else if let Some(record) = local_present.get(target_machine) {
                     (
-                        ImageTransferTargetResult {
-                            machine_id: target_machine.clone(),
-                            status: ImageTransferTargetStatus::Present,
-                            record: Some(record.clone()),
-                            failure: None,
-                        },
+                        ImageTransferTargetResult::present(target_machine.clone(), record.clone()),
                         OperationStatus::Succeeded,
                         None,
                     )
@@ -1343,12 +1317,7 @@ impl DaemonState {
         };
 
         (
-            ImageTransferTargetResult {
-                machine_id: target_machine.clone(),
-                status: ImageTransferTargetStatus::Present,
-                record: Some(record),
-                failure: None,
-            },
+            ImageTransferTargetResult::present(target_machine.clone(), record),
             Some(upload.bytes_uploaded),
         )
     }
@@ -1657,23 +1626,18 @@ fn failed_image_transfer_target(
     message: String,
 ) -> ImageTransferTargetResult {
     let code = code.into();
-    ImageTransferTargetResult {
+    ImageTransferTargetResult::failed(
         machine_id,
-        status: ImageTransferTargetStatus::Failed,
-        record: None,
-        failure: Some(ImageTransferFailure {
+        ImageTransferFailure {
             code,
             stage,
             message,
-        }),
-    }
+        },
+    )
 }
 
 fn image_transfer_target_failure_message(target: &ImageTransferTargetResult) -> Option<String> {
-    target
-        .failure
-        .as_ref()
-        .map(|failure| failure.message.clone())
+    target.failure().map(|failure| failure.message.clone())
 }
 
 fn image_distribute_validation_payload(
@@ -1795,10 +1759,10 @@ mod tests {
         assert_eq!(payload.artifact.digest(), &digest);
         assert_eq!(payload.targets.len(), 1);
         assert_eq!(
-            payload.targets[0].status,
+            payload.targets[0].status(),
             ImageTransferTargetStatus::Present
         );
-        assert!(payload.targets[0].record.is_some());
+        assert!(payload.targets[0].record().is_some());
         assert!(*backend.imported.lock().expect("imported lock"));
         let stored = state
             .active
@@ -2123,14 +2087,20 @@ mod tests {
             panic!("expected push payload");
         };
         assert_eq!(payload.targets.len(), 2);
-        assert_eq!(payload.targets[0].machine_id, MachineId::new("founder"));
+        assert_eq!(payload.targets[0].machine_id(), &MachineId::new("founder"));
         assert_eq!(
-            payload.targets[0].status,
+            payload.targets[0].status(),
             ImageTransferTargetStatus::Present
         );
-        assert_eq!(payload.targets[1].machine_id, MachineId::new("machine-a"));
-        assert_eq!(payload.targets[1].status, ImageTransferTargetStatus::Failed);
-        let failure = payload.targets[1].failure.as_ref().expect("target failure");
+        assert_eq!(
+            payload.targets[1].machine_id(),
+            &MachineId::new("machine-a")
+        );
+        assert_eq!(
+            payload.targets[1].status(),
+            ImageTransferTargetStatus::Failed
+        );
+        let failure = payload.targets[1].failure().expect("target failure");
         assert_eq!(failure.code, "IMAGE_DISTRIBUTE_RECEIVE_SESSION_FAILED");
         assert_eq!(failure.stage, ImageTransferFailureStage::ReceiveSession);
         let stored = state
@@ -2251,10 +2221,10 @@ mod tests {
         assert_eq!(payload.digest, digest);
         assert_eq!(payload.targets.len(), 1);
         assert_eq!(
-            payload.targets[0].status,
+            payload.targets[0].status(),
             ImageTransferTargetStatus::Present
         );
-        assert!(payload.targets[0].record.is_some());
+        assert!(payload.targets[0].record().is_some());
         assert!(!*backend.imported.lock().expect("imported lock"));
         assert_eq!(backend.export_count(), 0);
         let stored = state
@@ -2393,7 +2363,7 @@ mod tests {
             payload
                 .targets
                 .iter()
-                .all(|target| target.status == ImageTransferTargetStatus::SkippedPresent)
+                .all(|target| target.status() == ImageTransferTargetStatus::SkippedPresent)
         );
         assert_eq!(backend.export_count(), 0);
         let operations = state
@@ -2434,19 +2404,21 @@ mod tests {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 2);
-        assert_eq!(payload.targets[0].machine_id, MachineId::new("founder"));
+        assert_eq!(payload.targets[0].machine_id(), &MachineId::new("founder"));
         assert_eq!(
-            payload.targets[0].status,
+            payload.targets[0].status(),
             ImageTransferTargetStatus::Present
         );
-        assert_eq!(payload.targets[1].machine_id, MachineId::new("machine-a"));
-        assert_eq!(payload.targets[1].status, ImageTransferTargetStatus::Failed);
         assert_eq!(
-            payload.targets[1]
-                .failure
-                .as_ref()
-                .expect("target failure")
-                .stage,
+            payload.targets[1].machine_id(),
+            &MachineId::new("machine-a")
+        );
+        assert_eq!(
+            payload.targets[1].status(),
+            ImageTransferTargetStatus::Failed
+        );
+        assert_eq!(
+            payload.targets[1].failure().expect("target failure").stage,
             ImageTransferFailureStage::ReceiveSession
         );
         assert_eq!(backend.export_count(), 1);
@@ -2495,11 +2467,17 @@ mod tests {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 2);
-        assert_eq!(payload.targets[0].machine_id, MachineId::new("machine-a"));
-        assert_eq!(payload.targets[0].status, ImageTransferTargetStatus::Failed);
-        assert_eq!(payload.targets[1].machine_id, MachineId::new("founder"));
         assert_eq!(
-            payload.targets[1].status,
+            payload.targets[0].machine_id(),
+            &MachineId::new("machine-a")
+        );
+        assert_eq!(
+            payload.targets[0].status(),
+            ImageTransferTargetStatus::Failed
+        );
+        assert_eq!(payload.targets[1].machine_id(), &MachineId::new("founder"));
+        assert_eq!(
+            payload.targets[1].status(),
             ImageTransferTargetStatus::Present
         );
         let stored = state
@@ -2543,7 +2521,7 @@ mod tests {
             payload
                 .targets
                 .iter()
-                .map(|target| target.machine_id.clone())
+                .map(|target| target.machine_id().clone())
                 .collect::<Vec<_>>(),
             vec![MachineId::new("machine-a"), MachineId::new("machine-b")]
         );
@@ -2551,7 +2529,7 @@ mod tests {
             payload
                 .targets
                 .iter()
-                .all(|target| target.status == ImageTransferTargetStatus::Failed)
+                .all(|target| target.status() == ImageTransferTargetStatus::Failed)
         );
         assert_eq!(backend.export_count(), 1);
         let operations = state
@@ -2604,10 +2582,13 @@ mod tests {
             panic!("expected distribute payload");
         };
         assert_eq!(
-            payload.targets[0].status,
+            payload.targets[0].status(),
             ImageTransferTargetStatus::SkippedPresent
         );
-        assert_eq!(payload.targets[1].status, ImageTransferTargetStatus::Failed);
+        assert_eq!(
+            payload.targets[1].status(),
+            ImageTransferTargetStatus::Failed
+        );
         let operations = state
             .image_operation_store()
             .list()
@@ -2642,10 +2623,13 @@ mod tests {
             panic!("expected distribute payload");
         };
         assert_eq!(
-            payload.targets[0].status,
+            payload.targets[0].status(),
             ImageTransferTargetStatus::Present
         );
-        assert_eq!(payload.targets[1].status, ImageTransferTargetStatus::Failed);
+        assert_eq!(
+            payload.targets[1].status(),
+            ImageTransferTargetStatus::Failed
+        );
         let stored = state
             .active
             .as_ref()
@@ -2690,7 +2674,10 @@ mod tests {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 1);
-        assert_eq!(payload.targets[0].status, ImageTransferTargetStatus::Failed);
+        assert_eq!(
+            payload.targets[0].status(),
+            ImageTransferTargetStatus::Failed
+        );
         assert!(
             !state
                 .data_dir
@@ -2735,7 +2722,7 @@ mod tests {
             payload
                 .targets
                 .iter()
-                .all(|target| target.status == ImageTransferTargetStatus::Failed)
+                .all(|target| target.status() == ImageTransferTargetStatus::Failed)
         );
         assert_eq!(backend.export_count(), 0);
         assert_no_availability(&state, &expected).await;
@@ -2848,7 +2835,7 @@ mod tests {
         };
         assert_eq!(payload.targets.len(), 1);
         assert_eq!(
-            payload.targets[0].status,
+            payload.targets[0].status(),
             ImageTransferTargetStatus::SkippedPresent
         );
         assert_eq!(backend.export_count(), 0);

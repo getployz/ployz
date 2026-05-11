@@ -461,13 +461,13 @@ fn append_plain_image_targets(
     targets: &[ployz_api::ImageTransferTargetResult],
 ) {
     for target in targets {
-        let status = match target.status {
+        let status = match target.status() {
             ployz_api::ImageTransferTargetStatus::Present => "present",
             ployz_api::ImageTransferTargetStatus::SkippedPresent => "skipped_present",
             ployz_api::ImageTransferTargetStatus::Failed => "failed",
         };
-        let mut line = format!("target machine={} status={status}", target.machine_id);
-        if let Some(failure) = &target.failure {
+        let mut line = format!("target machine={} status={status}", target.machine_id());
+        if let Some(failure) = target.failure() {
             line.push_str(&format!(" error={}", failure.message));
         }
         lines.push(line);
@@ -730,6 +730,18 @@ mod tests {
         MachineStoragePromotionPayload, MeshListEntry, MeshListPayload, StatusPayload,
     };
 
+    fn test_image_availability(
+        machine_id: &str,
+        digest: &ployz_types::model::ImageDigest,
+    ) -> ployz_types::model::ImageAvailabilityRecord {
+        ployz_types::model::ImageAvailabilityRecord {
+            machine_id: ployz_types::model::MachineId::new(machine_id),
+            digest: digest.clone(),
+            presence: ployz_types::model::ImagePresence::Absent { observed_at: 1 },
+            updated_at: 1,
+        }
+    }
+
     #[test]
     fn plain_machine_list_renders_stable_lines() {
         let response = DaemonResponse {
@@ -871,22 +883,18 @@ mod tests {
                     created_at: 1,
                 },
                 targets: vec![
-                    ployz_api::ImageTransferTargetResult {
-                        machine_id: ployz_types::model::MachineId::new("peer"),
-                        status: ployz_api::ImageTransferTargetStatus::Present,
-                        record: None,
-                        failure: None,
-                    },
-                    ployz_api::ImageTransferTargetResult {
-                        machine_id: ployz_types::model::MachineId::new("other"),
-                        status: ployz_api::ImageTransferTargetStatus::Failed,
-                        record: None,
-                        failure: Some(ployz_api::ImageTransferFailure {
+                    ployz_api::ImageTransferTargetResult::present(
+                        ployz_types::model::MachineId::new("peer"),
+                        test_image_availability("peer", &digest),
+                    ),
+                    ployz_api::ImageTransferTargetResult::failed(
+                        ployz_types::model::MachineId::new("other"),
+                        ployz_api::ImageTransferFailure {
                             code: "TEST_FAILED".into(),
                             stage: ployz_api::ImageTransferFailureStage::SourceVerify,
                             message: "no responders".into(),
-                        }),
-                    },
+                        },
+                    ),
                 ],
             })),
         };
@@ -914,18 +922,14 @@ mod tests {
                     digest: digest.clone(),
                     source_machine: ployz_types::model::MachineId::new("founder"),
                     targets: vec![
-                        ployz_api::ImageTransferTargetResult {
-                            machine_id: ployz_types::model::MachineId::new("founder"),
-                            status: ployz_api::ImageTransferTargetStatus::SkippedPresent,
-                            record: None,
-                            failure: None,
-                        },
-                        ployz_api::ImageTransferTargetResult {
-                            machine_id: ployz_types::model::MachineId::new("peer"),
-                            status: ployz_api::ImageTransferTargetStatus::Present,
-                            record: None,
-                            failure: None,
-                        },
+                        ployz_api::ImageTransferTargetResult::skipped_present(
+                            ployz_types::model::MachineId::new("founder"),
+                            test_image_availability("founder", &digest),
+                        ),
+                        ployz_api::ImageTransferTargetResult::present(
+                            ployz_types::model::MachineId::new("peer"),
+                            test_image_availability("peer", &digest),
+                        ),
                     ],
                 },
             )),
@@ -953,16 +957,14 @@ mod tests {
                     operation_id: "image-distribute-1".into(),
                     digest: digest.clone(),
                     source_machine: ployz_types::model::MachineId::new("founder"),
-                    targets: vec![ployz_api::ImageTransferTargetResult {
-                        machine_id: ployz_types::model::MachineId::new("peer"),
-                        status: ployz_api::ImageTransferTargetStatus::Failed,
-                        record: None,
-                        failure: Some(ployz_api::ImageTransferFailure {
+                    targets: vec![ployz_api::ImageTransferTargetResult::failed(
+                        ployz_types::model::MachineId::new("peer"),
+                        ployz_api::ImageTransferFailure {
                             code: "TEST_FAILED".into(),
                             stage: ployz_api::ImageTransferFailureStage::ReceiveSession,
                             message: "no responders".into(),
-                        }),
-                    }],
+                        },
+                    )],
                 },
             )),
         };
