@@ -1379,7 +1379,7 @@ impl NetworkLifecycle {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct MachineMembership {
     pub id: MachineId,
     pub public_key: PublicKey,
@@ -1396,6 +1396,64 @@ pub struct MachineMembership {
     pub created_at: u64,
     pub updated_at: u64,
     pub labels: BTreeMap<String, String>,
+}
+
+impl<'de> Deserialize<'de> for MachineMembership {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawMachineMembership {
+            id: MachineId,
+            public_key: PublicKey,
+            overlay_ip: OverlayIp,
+            topology: MachineTopology,
+            region_role: RegionRole,
+            subnet: Option<Ipv4Net>,
+            bridge_ip: Option<OverlayIp>,
+            endpoints: Vec<String>,
+            #[serde(default)]
+            lifecycle: MachineLifecycle,
+            storage_role: MachineStorageRole,
+            created_at: u64,
+            updated_at: u64,
+            labels: BTreeMap<String, String>,
+        }
+
+        let raw = RawMachineMembership::deserialize(deserializer)?;
+        match (raw.lifecycle, raw.subnet) {
+            (MachineLifecycle::Active | MachineLifecycle::Draining, None) => {
+                return Err(de::Error::custom(format!(
+                    "{} machine '{}' must carry an assigned subnet",
+                    raw.lifecycle, raw.id
+                )));
+            }
+            (MachineLifecycle::Standby, Some(_)) => {
+                return Err(de::Error::custom(format!(
+                    "standby machine '{}' cannot carry an assigned subnet",
+                    raw.id
+                )));
+            }
+            _ => {}
+        }
+
+        Ok(Self {
+            id: raw.id,
+            public_key: raw.public_key,
+            overlay_ip: raw.overlay_ip,
+            topology: raw.topology,
+            region_role: raw.region_role,
+            subnet: raw.subnet,
+            bridge_ip: raw.bridge_ip,
+            endpoints: raw.endpoints,
+            lifecycle: raw.lifecycle,
+            storage_role: raw.storage_role,
+            created_at: raw.created_at,
+            updated_at: raw.updated_at,
+            labels: raw.labels,
+        })
+    }
 }
 
 impl MachineMembership {
@@ -2511,7 +2569,7 @@ pub enum DrainState {
     Complete,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct InstanceStatusRecord {
     pub instance_id: InstanceId,
     pub namespace: Namespace,
@@ -2529,6 +2587,88 @@ pub struct InstanceStatusRecord {
     pub error: Option<String>,
     pub started_at: u64,
     pub updated_at: u64,
+}
+
+impl<'de> Deserialize<'de> for InstanceStatusRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawInstanceStatusRecord {
+            instance_id: InstanceId,
+            namespace: Namespace,
+            service: String,
+            slot_id: SlotId,
+            machine_id: MachineId,
+            revision_hash: String,
+            deploy_id: DeployId,
+            docker_container_id: String,
+            overlay_ip: Option<Ipv4Addr>,
+            backend_ports: BTreeMap<String, u16>,
+            phase: InstancePhase,
+            ready: bool,
+            drain_state: DrainState,
+            error: Option<String>,
+            started_at: u64,
+            updated_at: u64,
+        }
+
+        let raw = RawInstanceStatusRecord::deserialize(deserializer)?;
+        match raw.phase {
+            InstancePhase::Ready if !raw.ready => {
+                return Err(de::Error::custom(format!(
+                    "ready instance '{}' must set ready=true",
+                    raw.instance_id
+                )));
+            }
+            InstancePhase::Failed if raw.error.is_none() => {
+                return Err(de::Error::custom(format!(
+                    "failed instance '{}' must carry an error",
+                    raw.instance_id
+                )));
+            }
+            InstancePhase::Draining
+                if raw.ready || raw.drain_state == DrainState::None || raw.error.is_some() =>
+            {
+                return Err(de::Error::custom(format!(
+                    "draining instance '{}' must be not-ready, have drain evidence, and no error",
+                    raw.instance_id
+                )));
+            }
+            InstancePhase::Pending
+            | InstancePhase::Starting
+            | InstancePhase::Ready
+            | InstancePhase::Removed
+                if raw.error.is_some() =>
+            {
+                return Err(de::Error::custom(format!(
+                    "{} instance '{}' cannot carry failure error",
+                    raw.phase, raw.instance_id
+                )));
+            }
+            _ => {}
+        }
+
+        Ok(Self {
+            instance_id: raw.instance_id,
+            namespace: raw.namespace,
+            service: raw.service,
+            slot_id: raw.slot_id,
+            machine_id: raw.machine_id,
+            revision_hash: raw.revision_hash,
+            deploy_id: raw.deploy_id,
+            docker_container_id: raw.docker_container_id,
+            overlay_ip: raw.overlay_ip,
+            backend_ports: raw.backend_ports,
+            phase: raw.phase,
+            ready: raw.ready,
+            drain_state: raw.drain_state,
+            error: raw.error,
+            started_at: raw.started_at,
+            updated_at: raw.updated_at,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
