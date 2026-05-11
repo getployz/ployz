@@ -64,6 +64,7 @@ impl DaemonState {
             | DaemonRequest::ImageOperationGet { .. }
             | DaemonRequest::ImageOperationList
             | DaemonRequest::BuildLocal { .. }
+            | DaemonRequest::BuildMachine { .. }
             | DaemonRequest::BuildOperationGet { .. }
             | DaemonRequest::BuildOperationList
             | DaemonRequest::DeployNodeInspectNamespace { .. }
@@ -183,6 +184,7 @@ impl DaemonState {
             DaemonRequest::ImageOperationGet { id } => self.handle_image_operation_get(&id).await,
             DaemonRequest::ImageOperationList => self.handle_image_operation_list().await,
             DaemonRequest::BuildLocal { request } => self.handle_build_local(&request).await,
+            DaemonRequest::BuildMachine { request } => self.handle_build_machine(&request).await,
             DaemonRequest::BuildOperationGet { id } => self.handle_build_operation_get(&id).await,
             DaemonRequest::BuildOperationList => self.handle_build_operation_list().await,
             DaemonRequest::DeployNodeInspectNamespace {
@@ -511,6 +513,7 @@ impl DaemonState {
             | DaemonRequest::ImageOperationGet { .. }
             | DaemonRequest::ImageOperationList
             | DaemonRequest::BuildLocal { .. }
+            | DaemonRequest::BuildMachine { .. }
             | DaemonRequest::BuildOperationGet { .. }
             | DaemonRequest::BuildOperationList
             | DaemonRequest::DeployNodeInspectNamespace { .. }
@@ -558,9 +561,9 @@ mod tests {
     use super::RequestLane;
     use crate::daemon::DaemonState;
     use ployz_api::{
-        BuildLocalRequest, DaemonRequest, DebugTickTask, DeployApplyPreparedRequest,
-        ImageDistributeRequest, ImagePushRequest, ImageReceiveSessionRequest,
-        ImageReceivedImportRequest,
+        BuildInputs, BuildLocalRequest, BuildMachineRequest, DaemonRequest, DebugTickTask,
+        DeployApplyPreparedRequest, ImageDistributeRequest, ImagePushRequest,
+        ImageReceiveSessionRequest, ImageReceivedImportRequest,
     };
     use ployz_types::model::{BuildMethod, DeployId, ImageDigest, MachineId};
 
@@ -592,6 +595,23 @@ mod tests {
                 platform: None,
                 push_target: None,
                 distribute_targets: Vec::new(),
+                inputs: BuildInputs::default(),
+            },
+        });
+
+        assert_eq!(lane, RequestLane::Shared);
+    }
+
+    #[test]
+    fn build_machine_routes_to_shared_lane() {
+        let lane = DaemonState::request_lane(&DaemonRequest::BuildMachine {
+            request: BuildMachineRequest {
+                method: BuildMethod::Dockerfile,
+                context_path: "/tmp/context".into(),
+                image_name: "example/app:latest".into(),
+                machine_id: MachineId("builder-a".into()),
+                platform: None,
+                inputs: BuildInputs::default(),
             },
         });
 
