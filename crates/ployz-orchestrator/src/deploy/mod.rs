@@ -15,7 +15,7 @@ use crate::certificates::{
 use crate::deploy::participant::DeployParticipantClient;
 use crate::error::Result;
 use crate::model::{DeployApplyResult, DeployPreview, MachineId};
-use plan::resolve_plan;
+use plan::{preflight_image_availability, resolve_plan};
 use ployz_store_api::StoreDriver;
 use ployz_types::spec::DeployManifest;
 use probe::{probe_participants, warnings_from_reachability};
@@ -36,10 +36,11 @@ pub async fn preview(
 ) -> Result<DeployPreview> {
     let plan = resolve_plan(store, local_machine_id, manifest).await?;
     managed_domains::validate_hostname_ownership(store, &plan).await?;
+    let image_availability = preflight_image_availability(store, &plan).await?;
     let reachability = probe_participants(prober, plan.participants(), plan.machine_map()).await;
     let mut warnings = warnings_from_reachability(&reachability);
     warnings.extend(managed_domains::warnings_for_plan(store, &plan).await?);
-    Ok(plan.to_preview(warnings))
+    Ok(plan.to_preview_with_image_availability(warnings, image_availability))
 }
 
 pub async fn apply(
