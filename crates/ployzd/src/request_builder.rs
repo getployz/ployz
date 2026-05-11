@@ -12,7 +12,7 @@ use crate::{
 };
 use ployz_api::{
     BranchNamespaceMode, BranchNamespaceRequest, BranchResourceMode, BranchResourceModeOverride,
-    BuildLocalRequest, DaemonRequest, DeployApplyPreparedRequest, DeployOptions,
+    BuildInputs, BuildLocalRequest, DaemonRequest, DeployApplyPreparedRequest, DeployOptions,
     ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageStatusRequest,
     InstallSource as MachineInstallSource, MachineAddOptions, MachineInstallOptions,
     MachineStoragePromoteRequest, MigrateServiceMode, MigrateServiceRequest,
@@ -77,6 +77,7 @@ pub(crate) fn build_build_request(action: BuildAction) -> Result<DaemonRequest> 
                     platform: platform.map(parse_image_platform).transpose()?,
                     push_target: None,
                     distribute_targets: Vec::new(),
+                    inputs: BuildInputs::default(),
                 },
             })
         }

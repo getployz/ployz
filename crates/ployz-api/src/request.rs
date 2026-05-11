@@ -1,4 +1,4 @@
-use crate::build::BuildLocalRequest;
+use crate::build::{BuildLocalRequest, BuildMachineRequest};
 use crate::deploy::{
     BranchNamespaceRequest, DeployApplyPreparedRequest, DeployOptions, MigrateServiceRequest,
 };
@@ -210,6 +210,9 @@ pub enum DaemonRequest {
     BuildLocal {
         request: BuildLocalRequest,
     },
+    BuildMachine {
+        request: BuildMachineRequest,
+    },
     BuildOperationGet {
         id: String,
     },
@@ -302,7 +305,7 @@ pub enum DaemonRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{BuildLocalRequest, BuildMachineRequest};
+    use crate::build::{BuildEnvValue, BuildInputs, BuildLocalRequest, BuildMachineRequest};
     use crate::deploy::{
         BranchNamespaceMode, BranchResourceMode, BranchResourceModeOverride, MigrateServiceMode,
     };
@@ -311,6 +314,7 @@ mod tests {
         ImageReceivedImportRequest,
     };
     use ployz_types::model::{BuildMethod, ImageDigest};
+    use std::collections::BTreeMap;
 
     #[test]
     fn migrate_service_request_serializes_stable_wire_shape() {
@@ -666,12 +670,136 @@ mod tests {
             image_name: "api".into(),
             machine_id: MachineId("builder-a".into()),
             platform: None,
-            build_args: Default::default(),
+            inputs: BuildInputs::default(),
         };
 
         let json = serde_json::to_value(&request).expect("serialize build request");
 
         assert_eq!(json["method"], "railpack");
+    }
+
+    #[test]
+    fn build_machine_request_serializes_secret_aware_inputs() {
+        let request = BuildMachineRequest {
+            method: BuildMethod::Railpack,
+            context_path: ".".into(),
+            image_name: "api".into(),
+            machine_id: MachineId("builder-a".into()),
+            platform: None,
+            inputs: BuildInputs {
+                env: BTreeMap::from([
+                    (
+                        "NODE_ENV".into(),
+                        BuildEnvValue::Plain {
+                            value: "production".into(),
+                        },
+                    ),
+                    (
+                        "SENTRY_AUTH_TOKEN".into(),
+                        BuildEnvValue::Secret {
+                            value: "super-secret-token".into(),
+                            fingerprint: Some("sentry-v1".into()),
+                        },
+                    ),
+                ]),
+                docker_build_args: BTreeMap::new(),
+            },
+        };
+
+        let json = serde_json::to_value(&request).expect("serialize build request");
+
+        assert_eq!(json["inputs"]["env"]["NODE_ENV"]["kind"], "plain");
+        assert_eq!(json["inputs"]["env"]["NODE_ENV"]["value"], "production");
+        assert_eq!(json["inputs"]["env"]["SENTRY_AUTH_TOKEN"]["kind"], "secret");
+        assert_eq!(
+            json["inputs"]["env"]["SENTRY_AUTH_TOKEN"]["fingerprint"],
+            "sentry-v1"
+        );
+        assert!(format!("{:?}", request.inputs).contains("<redacted>"));
+        assert!(!format!("{:?}", request.inputs).contains("super-secret-token"));
+    }
+
+    #[test]
+    fn build_request_debug_redacts_input_values() {
+        let request = DaemonRequest::BuildLocal {
+            request: BuildLocalRequest {
+                method: BuildMethod::Dockerfile,
+                context_dir: "/work/app".into(),
+                image_name: "example/app:latest".into(),
+                platform: None,
+                push_target: None,
+                distribute_targets: Vec::new(),
+                inputs: BuildInputs {
+                    env: BTreeMap::from([(
+                        "SENTRY_AUTH_TOKEN".into(),
+                        BuildEnvValue::Secret {
+                            value: "super-secret-token".into(),
+                            fingerprint: None,
+                        },
+                    )]),
+                    docker_build_args: BTreeMap::from([("PUBLIC_COMMIT".into(), "abc123".into())]),
+                },
+            },
+        };
+
+        let debug = format!("{request:?}");
+
+        assert!(debug.contains("SENTRY_AUTH_TOKEN"));
+        assert!(debug.contains("PUBLIC_COMMIT"));
+        assert!(!debug.contains("super-secret-token"));
+        assert!(!debug.contains("abc123"));
+    }
+
+    #[test]
+    fn build_machine_request_roundtrips_as_daemon_request() {
+        let request = DaemonRequest::BuildMachine {
+            request: BuildMachineRequest {
+                method: BuildMethod::Railpack,
+                context_path: "/work/app".into(),
+                image_name: "example/app:latest".into(),
+                machine_id: MachineId("builder-a".into()),
+                platform: None,
+                inputs: BuildInputs {
+                    env: BTreeMap::from([(
+                        "SENTRY_AUTH_TOKEN".into(),
+                        BuildEnvValue::Secret {
+                            value: "super-secret-token".into(),
+                            fingerprint: Some("sentry-v1".into()),
+                        },
+                    )]),
+                    docker_build_args: BTreeMap::new(),
+                },
+            },
+        };
+
+        let json = serde_json::to_value(&request).expect("serialize build machine request");
+
+        assert_eq!(json["BuildMachine"]["request"]["method"], "railpack");
+        assert_eq!(
+            json["BuildMachine"]["request"]["inputs"]["env"]["SENTRY_AUTH_TOKEN"]["kind"],
+            "secret"
+        );
+        let roundtrip: DaemonRequest =
+            serde_json::from_value(json).expect("deserialize build machine request");
+        let DaemonRequest::BuildMachine { request } = roundtrip else {
+            panic!("expected build machine request");
+        };
+        assert_eq!(request.method, BuildMethod::Railpack);
+        assert_eq!(request.machine_id, MachineId("builder-a".into()));
+        assert!(request.inputs.docker_build_args.is_empty());
+    }
+
+    #[test]
+    fn build_env_unknown_variant_fails_deserialization() {
+        let json = serde_json::json!({
+            "kind": "opaque",
+            "value": "x"
+        });
+
+        let error = serde_json::from_value::<BuildEnvValue>(json)
+            .expect_err("unknown build env variant should fail");
+
+        assert!(error.to_string().contains("unknown variant"));
     }
 
     #[test]
@@ -684,6 +812,7 @@ mod tests {
                 platform: None,
                 push_target: None,
                 distribute_targets: Vec::new(),
+                inputs: BuildInputs::default(),
             },
         };
 
