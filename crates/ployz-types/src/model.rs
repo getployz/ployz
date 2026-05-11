@@ -2361,6 +2361,22 @@ pub struct VolumeClonePreflightPlan {
     pub scope: VolumeClonePreflightScope,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployImageAvailabilityStatus {
+    Present,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployImageAvailabilityPlan {
+    pub service: String,
+    pub slot_id: SlotId,
+    pub machine_id: MachineId,
+    pub image: String,
+    pub digest: ImageDigest,
+    pub status: DeployImageAvailabilityStatus,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployPreview {
     pub namespace: Namespace,
@@ -2382,6 +2398,8 @@ pub struct DeployPreview {
     pub volume_clones: Vec<VolumeClonePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volume_clone_preflights: Vec<VolumeClonePreflightPlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_availability: Vec<DeployImageAvailabilityPlan>,
     pub warnings: Vec<String>,
 }
 
@@ -2465,6 +2483,7 @@ mod tests {
                 action: VolumeClonePreflightAction::DrainAndRemoveBeforeCloneReplacement,
                 scope: VolumeClonePreflightScope::UncommittedNamespaceInstances,
             }],
+            image_availability: Vec::new(),
             warnings: Vec::new(),
         };
 
@@ -2514,6 +2533,50 @@ mod tests {
         assert!(preview.baseline.is_none());
         assert!(preview.service_sources.is_empty());
         assert!(preview.service_source_fingerprint.is_empty());
+        assert!(preview.image_availability.is_empty());
+    }
+
+    #[test]
+    fn deploy_preview_serializes_image_availability_contract() {
+        let digest =
+            ImageDigest::try_new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("valid digest");
+        let preview = DeployPreview {
+            namespace: Namespace("default".into()),
+            manifest_hash: "manifest".into(),
+            baseline: None,
+            participants: vec![MachineId("machine-a".into())],
+            phases: Vec::new(),
+            services: Vec::new(),
+            service_sources: Vec::new(),
+            service_source_fingerprint: String::new(),
+            service_branch_sources: Vec::new(),
+            volume_moves: Vec::new(),
+            volume_clones: Vec::new(),
+            volume_clone_preflights: Vec::new(),
+            image_availability: vec![DeployImageAvailabilityPlan {
+                service: "web".into(),
+                slot_id: SlotId("web-0".into()),
+                machine_id: MachineId("machine-a".into()),
+                image: digest.as_str().into(),
+                digest: digest.clone(),
+                status: DeployImageAvailabilityStatus::Present,
+            }],
+            warnings: Vec::new(),
+        };
+
+        let json = serde_json::to_value(&preview).expect("serialize deploy preview");
+
+        assert_eq!(
+            json["image_availability"][0]["status"],
+            serde_json::json!("present")
+        );
+        assert_eq!(
+            json["image_availability"][0]["digest"],
+            serde_json::json!(digest.as_str())
+        );
+        let roundtrip: DeployPreview =
+            serde_json::from_value(json).expect("deserialize deploy preview");
+        assert_eq!(roundtrip.image_availability, preview.image_availability);
     }
 
     #[test]
@@ -2545,6 +2608,7 @@ mod tests {
             volume_moves: Vec::new(),
             volume_clones: Vec::new(),
             volume_clone_preflights: Vec::new(),
+            image_availability: Vec::new(),
             warnings: Vec::new(),
         };
 
@@ -2651,6 +2715,7 @@ mod tests {
             volume_moves: Vec::new(),
             volume_clones: Vec::new(),
             volume_clone_preflights: Vec::new(),
+            image_availability: Vec::new(),
             warnings: Vec::new(),
         };
 

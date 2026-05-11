@@ -48,6 +48,18 @@ pub struct DeployFailurePayload {
     pub actual_baseline: Option<DeployPreviewBaseline>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub baseline_changed_components: Vec<DeployBaselineComponent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +67,9 @@ pub struct DeployFailurePayload {
 pub enum DeployFailureReason {
     NoEligiblePlacementTargets,
     DeployBaselineChanged,
+    DeployImageDigestRequired,
+    DeployImageAvailabilityMissing,
+    DeployImageAvailabilityNotPresent,
 }
 
 #[cfg(test)]
@@ -103,6 +118,12 @@ mod tests {
             expected_baseline: Some(expected.clone()),
             actual_baseline: Some(actual.clone()),
             baseline_changed_components: vec![DeployBaselineComponent::ServiceSources],
+            service: None,
+            slot_id: None,
+            machine_id: None,
+            image: None,
+            digest: None,
+            state: None,
         };
 
         let json = serde_json::to_value(&payload).expect("serialize deploy failure");
@@ -120,5 +141,33 @@ mod tests {
             json["baseline_changed_components"],
             serde_json::json!(["service_sources"])
         );
+    }
+
+    #[test]
+    fn deploy_failure_payload_serializes_image_availability_details() {
+        let payload = DeployFailurePayload {
+            reason: DeployFailureReason::DeployImageAvailabilityMissing,
+            expected_baseline: None,
+            actual_baseline: None,
+            baseline_changed_components: Vec::new(),
+            service: Some("web".into()),
+            slot_id: Some("slot-0001".into()),
+            machine_id: Some("machine-a".into()),
+            image: Some("sha256:abc".into()),
+            digest: Some("sha256:abc".into()),
+            state: None,
+        };
+
+        let json = serde_json::to_value(&payload).expect("serialize deploy failure");
+
+        assert_eq!(
+            json["reason"],
+            serde_json::json!("deploy_image_availability_missing")
+        );
+        assert_eq!(json["service"], serde_json::json!("web"));
+        assert_eq!(json["slot_id"], serde_json::json!("slot-0001"));
+        assert_eq!(json["machine_id"], serde_json::json!("machine-a"));
+        assert_eq!(json["digest"], serde_json::json!("sha256:abc"));
+        assert!(json.get("state").is_none());
     }
 }
