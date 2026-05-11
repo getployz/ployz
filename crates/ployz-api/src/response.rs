@@ -84,7 +84,7 @@ mod tests {
     use super::*;
     use crate::image::{
         ImageDistributeValidationFailure, ImageDistributeValidationPayload, ImageTransferFailure,
-        ImageTransferFailureStage, ImageTransferTargetResult, ImageTransferTargetStatus,
+        ImageTransferFailureStage, ImageTransferTargetResult,
     };
     use ployz_types::model::{ImageDigest, MachineId};
     use std::collections::BTreeMap;
@@ -182,16 +182,14 @@ mod tests {
                     operation_id: "image-distribute-1".into(),
                     digest: digest.clone(),
                     source_machine: MachineId::new("founder"),
-                    targets: vec![ImageTransferTargetResult {
-                        machine_id: MachineId::new("peer"),
-                        status: ImageTransferTargetStatus::Failed,
-                        record: None,
-                        failure: Some(ImageTransferFailure {
+                    targets: vec![ImageTransferTargetResult::failed(
+                        MachineId::new("peer"),
+                        ImageTransferFailure {
                             code: "IMAGE_DISTRIBUTE_SOURCE_EXPORT_FAILED".into(),
                             stage: ImageTransferFailureStage::SourceExport,
                             message: "export failed".into(),
-                        }),
-                    }],
+                        },
+                    )],
                 },
             )),
         };
