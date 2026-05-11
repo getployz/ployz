@@ -188,7 +188,18 @@ impl DaemonState {
         };
 
         let build_lock = self.local_build_lock(&request.image_name).await;
-        let _build_guard = build_lock.lock().await;
+        let Ok(_build_guard) = build_lock.try_lock() else {
+            let message = format!(
+                "another local build for image '{}' is already running",
+                request.image_name
+            );
+            return self.fail_build_local_operation(
+                &operation_store,
+                &mut operation,
+                "BUILD_LOCAL_IMAGE_BUSY",
+                message,
+            );
+        };
         let command = build_command(request, &context_dir);
         if let Err(error) = operation_store.update_stage(&mut operation, "running build command") {
             return self.fail_build_local_operation(
@@ -876,5 +887,37 @@ mod tests {
                 .expect("list availability")
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn build_local_rejects_overlapping_build_for_same_image() {
+        let state = active_state().await;
+        let context_dir = temp_dir("ployz-build-local-context");
+        std::fs::create_dir_all(&context_dir).expect("create context");
+        let request = build_request(&context_dir);
+        let build_lock = state.local_build_lock(&request.image_name).await;
+        let _build_guard = build_lock.lock().await;
+
+        let response = state
+            .handle_build_local_with_runner_and_backend(
+                &request,
+                &FakeRunner {
+                    output: BuildCommandOutput {
+                        status_success: true,
+                        timed_out: false,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    },
+                },
+                Some(Ok(Arc::new(FakeBackend { image: None }))),
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "BUILD_LOCAL_IMAGE_BUSY");
+        let Some(DaemonPayload::BuildOperation(payload)) = response.payload else {
+            panic!("expected build operation payload");
+        };
+        assert_eq!(payload.operation.status, OperationStatus::Failed);
     }
 }

@@ -128,9 +128,9 @@ Out of scope:
   images automatically.
 - Extend request-lane and request dispatch to route local build through the
   shared lane.
-- Serialize same-image local builds with a per-daemon image-name lock so long
-  builds do not block read-only daemon requests, while concurrent builds cannot
-  race on the same mutable Docker tag.
+- Reject overlapping same-image local builds with a per-daemon image-name lock
+  so long builds do not block read-only daemon requests, while concurrent
+  builds cannot race on the same mutable Docker tag.
 
 **Test Scenarios:**
 
