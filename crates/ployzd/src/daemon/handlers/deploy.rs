@@ -1405,6 +1405,15 @@ async fn mark_running_deploy_phases_failed_after_lock_loss(
 fn deploy_error_code<'a>(default_code: &'a str, error: &PloyzError) -> &'a str {
     match error {
         PloyzError::Deploy(DeployError::DeployBaselineChanged { .. }) => "DEPLOY_BASELINE_CHANGED",
+        PloyzError::Deploy(DeployError::DeployImageDigestRequired { .. }) => {
+            "DEPLOY_IMAGE_DIGEST_REQUIRED"
+        }
+        PloyzError::Deploy(DeployError::DeployImageAvailabilityMissing { .. }) => {
+            "DEPLOY_IMAGE_AVAILABILITY_MISSING"
+        }
+        PloyzError::Deploy(DeployError::DeployImageAvailabilityNotPresent { .. }) => {
+            "DEPLOY_IMAGE_AVAILABILITY_NOT_PRESENT"
+        }
         PloyzError::Deploy(DeployError::DeployOptionInvalid { .. }) => "INVALID_DEPLOY_OPTIONS",
         PloyzError::Deploy(DeployError::PreparedDeployMissing { .. }) => "PREPARED_DEPLOY_MISSING",
         PloyzError::Deploy(DeployError::PreparedDeployNotApplicable { .. }) => {
@@ -1449,6 +1458,12 @@ fn deploy_failure_payload_for_error(error: &PloyzError) -> Option<DeployFailureP
             prepared_deploy_id: None,
             prepared_deploy_state: None,
             prepared_deploy_expires_at: None,
+            service: None,
+            slot_id: None,
+            machine_id: None,
+            image: None,
+            digest: None,
+            state: None,
         }),
         PloyzError::Deploy(DeployError::DeployBaselineChanged { diff }) => {
             Some(DeployFailurePayload {
@@ -1459,6 +1474,12 @@ fn deploy_failure_payload_for_error(error: &PloyzError) -> Option<DeployFailureP
                 prepared_deploy_id: None,
                 prepared_deploy_state: None,
                 prepared_deploy_expires_at: None,
+                service: None,
+                slot_id: None,
+                machine_id: None,
+                image: None,
+                digest: None,
+                state: None,
             })
         }
         PloyzError::Deploy(DeployError::PreparedDeployMissing { prepared_deploy_id }) => {
@@ -1470,6 +1491,12 @@ fn deploy_failure_payload_for_error(error: &PloyzError) -> Option<DeployFailureP
                 prepared_deploy_id: Some(DeployId(prepared_deploy_id.clone())),
                 prepared_deploy_state: None,
                 prepared_deploy_expires_at: None,
+                service: None,
+                slot_id: None,
+                machine_id: None,
+                image: None,
+                digest: None,
+                state: None,
             })
         }
         PloyzError::Deploy(DeployError::PreparedDeployNotApplicable {
@@ -1483,6 +1510,12 @@ fn deploy_failure_payload_for_error(error: &PloyzError) -> Option<DeployFailureP
             prepared_deploy_id: Some(DeployId(prepared_deploy_id.clone())),
             prepared_deploy_state: Some(*state),
             prepared_deploy_expires_at: None,
+            service: None,
+            slot_id: None,
+            machine_id: None,
+            image: None,
+            digest: None,
+            state: None,
         }),
         PloyzError::Deploy(DeployError::PreparedDeployExpired {
             prepared_deploy_id,
@@ -1495,6 +1528,12 @@ fn deploy_failure_payload_for_error(error: &PloyzError) -> Option<DeployFailureP
             prepared_deploy_id: Some(DeployId(prepared_deploy_id.clone())),
             prepared_deploy_state: Some(PreparedDeployState::Expired),
             prepared_deploy_expires_at: Some(*expires_at),
+            service: None,
+            slot_id: None,
+            machine_id: None,
+            image: None,
+            digest: None,
+            state: None,
         }),
         PloyzError::Deploy(DeployError::PreparedDeployInvalid {
             prepared_deploy_id, ..
@@ -1506,6 +1545,72 @@ fn deploy_failure_payload_for_error(error: &PloyzError) -> Option<DeployFailureP
             prepared_deploy_id: Some(DeployId(prepared_deploy_id.clone())),
             prepared_deploy_state: None,
             prepared_deploy_expires_at: None,
+            service: None,
+            slot_id: None,
+            machine_id: None,
+            image: None,
+            digest: None,
+            state: None,
+        }),
+        PloyzError::Deploy(DeployError::DeployImageDigestRequired { service, image }) => {
+            Some(DeployFailurePayload {
+                reason: DeployFailureReason::DeployImageDigestRequired,
+                expected_baseline: None,
+                actual_baseline: None,
+                baseline_changed_components: Vec::new(),
+                prepared_deploy_id: None,
+                prepared_deploy_state: None,
+                prepared_deploy_expires_at: None,
+                service: Some(service.clone()),
+                slot_id: None,
+                machine_id: None,
+                image: Some(image.clone()),
+                digest: None,
+                state: None,
+            })
+        }
+        PloyzError::Deploy(DeployError::DeployImageAvailabilityMissing {
+            service,
+            slot_id,
+            machine_id,
+            image,
+            digest,
+        }) => Some(DeployFailurePayload {
+            reason: DeployFailureReason::DeployImageAvailabilityMissing,
+            expected_baseline: None,
+            actual_baseline: None,
+            baseline_changed_components: Vec::new(),
+            prepared_deploy_id: None,
+            prepared_deploy_state: None,
+            prepared_deploy_expires_at: None,
+            service: Some(service.clone()),
+            slot_id: Some(slot_id.clone()),
+            machine_id: Some(machine_id.clone()),
+            image: Some(image.clone()),
+            digest: Some(digest.clone()),
+            state: None,
+        }),
+        PloyzError::Deploy(DeployError::DeployImageAvailabilityNotPresent {
+            service,
+            slot_id,
+            machine_id,
+            image,
+            digest,
+            state,
+        }) => Some(DeployFailurePayload {
+            reason: DeployFailureReason::DeployImageAvailabilityNotPresent,
+            expected_baseline: None,
+            actual_baseline: None,
+            baseline_changed_components: Vec::new(),
+            prepared_deploy_id: None,
+            prepared_deploy_state: None,
+            prepared_deploy_expires_at: None,
+            service: Some(service.clone()),
+            slot_id: Some(slot_id.clone()),
+            machine_id: Some(machine_id.clone()),
+            image: Some(image.clone()),
+            digest: Some(digest.clone()),
+            state: Some(state.clone()),
         }),
         _ => None,
     }
@@ -2835,6 +2940,73 @@ mod tests {
     }
 
     #[test]
+    fn deploy_error_response_wraps_image_availability_payload() {
+        let response = test_daemon_state().deploy_error_response(
+            "DEPLOY_APPLY_FAILED",
+            PloyzError::Deploy(DeployError::DeployImageAvailabilityMissing {
+                service: "web".into(),
+                slot_id: "slot-0001".into(),
+                machine_id: "machine-a".into(),
+                image: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            }),
+        );
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "DEPLOY_IMAGE_AVAILABILITY_MISSING");
+        let Some(DaemonPayload::DeployFailure(payload)) = response.payload else {
+            panic!("expected deploy failure payload");
+        };
+        assert_eq!(
+            payload.reason,
+            DeployFailureReason::DeployImageAvailabilityMissing
+        );
+        assert_eq!(payload.service.as_deref(), Some("web"));
+        assert_eq!(payload.slot_id.as_deref(), Some("slot-0001"));
+        assert_eq!(payload.machine_id.as_deref(), Some("machine-a"));
+        assert_eq!(
+            payload.digest.as_deref(),
+            Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(payload.state, None);
+    }
+
+    #[test]
+    fn deploy_error_response_uses_stable_image_preflight_codes() {
+        let state = test_daemon_state();
+
+        let digest_required = state.deploy_error_response(
+            "DEPLOY_PREVIEW_FAILED",
+            PloyzError::Deploy(DeployError::DeployImageDigestRequired {
+                service: "web".into(),
+                image: "web:latest".into(),
+            }),
+        );
+        assert_eq!(digest_required.code, "DEPLOY_IMAGE_DIGEST_REQUIRED");
+
+        let not_present = state.deploy_error_response(
+            "DEPLOY_PREVIEW_FAILED",
+            PloyzError::Deploy(DeployError::DeployImageAvailabilityNotPresent {
+                service: "web".into(),
+                slot_id: "slot-0001".into(),
+                machine_id: "machine-a".into(),
+                image: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                state: "absent".into(),
+            }),
+        );
+        assert_eq!(not_present.code, "DEPLOY_IMAGE_AVAILABILITY_NOT_PRESENT");
+        let Some(DaemonPayload::DeployFailure(payload)) = not_present.payload else {
+            panic!("expected deploy failure payload");
+        };
+        assert_eq!(
+            payload.reason,
+            DeployFailureReason::DeployImageAvailabilityNotPresent
+        );
+        assert_eq!(payload.state.as_deref(), Some("absent"));
+    }
+
+    #[test]
     fn expected_baseline_rejects_empty_baseline() {
         let no_baseline = DeployOptions::default();
         assert_eq!(expected_baseline(&no_baseline).expect("no baseline"), None);
@@ -2955,6 +3127,7 @@ mod tests {
             service_sources: Vec::new(),
             service_source_fingerprint: String::new(),
             service_branch_sources: Vec::new(),
+            image_availability: Vec::new(),
             volume_moves: Vec::new(),
             volume_clones: Vec::new(),
             volume_clone_preflights: Vec::new(),
@@ -3020,6 +3193,7 @@ mod tests {
                     service_sources: Vec::new(),
                     service_source_fingerprint: String::new(),
                     service_branch_sources: Vec::new(),
+                    image_availability: Vec::new(),
                     volume_moves: Vec::new(),
                     volume_clones: Vec::new(),
                     volume_clone_preflights: Vec::new(),
@@ -3155,6 +3329,7 @@ mod tests {
                     service_sources: Vec::new(),
                     service_source_fingerprint: String::new(),
                     service_branch_sources: Vec::new(),
+                    image_availability: Vec::new(),
                     volume_moves: Vec::new(),
                     volume_clones: Vec::new(),
                     volume_clone_preflights: Vec::new(),

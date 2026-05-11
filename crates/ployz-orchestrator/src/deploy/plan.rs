@@ -1,19 +1,20 @@
 use crate::error::{DeployError, Error, Result};
 use crate::machine_policy::{can_keep_existing_slot, is_new_placement_candidate};
 use crate::model::{
-    DeployChangeKind, DeployId, DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseId,
-    DeployPhasePlan, DeployPhaseRollbackPolicy, DeployPhaseWork, DeployPreview,
-    DeployPreviewBaseline, DeployPreviewBaselineComponents, MachineId, MachineLifecycle,
+    DeployChangeKind, DeployId, DeployImageAvailabilityPlan, DeployImageAvailabilityStatus,
+    DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseId, DeployPhasePlan,
+    DeployPhaseRollbackPolicy, DeployPhaseWork, DeployPreview, DeployPreviewBaseline,
+    DeployPreviewBaselineComponents, ImageDigest, ImagePresence, MachineId, MachineLifecycle,
     MachineMembership, ServiceBranchLineageRecord, ServiceBranchSourcePlan, ServicePlan,
     ServiceReleaseRecord, ServiceReleaseSlot, ServiceSourceMode, ServiceSourcePlan, SlotId,
     SlotPlan, VolumeClonePlan, VolumeClonePreflightAction, VolumeClonePreflightPlan,
     VolumeClonePreflightScope, VolumeMovePlan, VolumeRecord, service_source_fingerprint,
 };
-use ployz_store_api::{DeployStore, MachineMembershipStore, StoreDriver};
+use ployz_store_api::{DeployStore, ImageAvailabilityStore, MachineMembershipStore, StoreDriver};
 use ployz_types::spec::{
-    DeployManifest, DeployPhaseIntent, MountSource, Namespace, Placement, ServiceIntent,
-    ServiceSpec, VolumeCloneConsistency, VolumeCloneDataPolicy, VolumeDeclaration, VolumeIntent,
-    VolumeScope, parse_quota_bytes, stable_hash_hex,
+    DeployManifest, DeployPhaseIntent, MountSource, Namespace, Placement, PullPolicy,
+    ServiceIntent, ServiceSpec, VolumeCloneConsistency, VolumeCloneDataPolicy, VolumeDeclaration,
+    VolumeIntent, VolumeScope, parse_quota_bytes, stable_hash_hex,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -336,7 +337,16 @@ impl ResolvedPlan {
             .collect()
     }
 
+    #[cfg(test)]
     pub(super) fn to_preview(&self, warnings: Vec<String>) -> DeployPreview {
+        self.to_preview_with_image_availability(warnings, Vec::new())
+    }
+
+    pub(super) fn to_preview_with_image_availability(
+        &self,
+        warnings: Vec<String>,
+        image_availability: Vec<DeployImageAvailabilityPlan>,
+    ) -> DeployPreview {
         let parts = self.preview_parts();
         let baseline = self.baseline_from_parts(&parts);
         let service_source_fingerprint = baseline.components.service_sources.clone();
@@ -378,6 +388,7 @@ impl ResolvedPlan {
                     })
                 })
                 .collect(),
+            image_availability,
             warnings,
         }
     }
@@ -426,6 +437,94 @@ fn service_branch_sources_from_sources(
             }),
         })
         .collect()
+}
+
+pub(super) async fn preflight_image_availability(
+    store: &StoreDriver,
+    plan: &ResolvedPlan,
+) -> Result<Vec<DeployImageAvailabilityPlan>> {
+    let mut checks = Vec::new();
+    for service in &plan.services {
+        let Some(spec) = &service.spec else {
+            continue;
+        };
+        if spec.template.pull_policy != PullPolicy::Never {
+            continue;
+        }
+        if !service.slots.iter().any(|slot| {
+            matches!(
+                slot.action,
+                DeployChangeKind::Create | DeployChangeKind::Replace
+            )
+        }) {
+            continue;
+        }
+        let image = spec.template.image.clone();
+        let digest = parse_required_image_digest(&service.service, &image)?;
+        for slot in &service.slots {
+            if !matches!(
+                slot.action,
+                DeployChangeKind::Create | DeployChangeKind::Replace
+            ) {
+                continue;
+            }
+            let record = store
+                .get_image_availability(&slot.machine_id, &digest)
+                .await?;
+            match record.as_ref().map(|record| &record.presence) {
+                Some(ImagePresence::Present { .. }) => {
+                    checks.push(DeployImageAvailabilityPlan {
+                        service: service.service.clone(),
+                        slot_id: slot.slot_id.clone(),
+                        machine_id: slot.machine_id.clone(),
+                        image: image.clone(),
+                        digest: digest.clone(),
+                        status: DeployImageAvailabilityStatus::Present,
+                    });
+                }
+                Some(presence) => {
+                    return Err(Error::Deploy(
+                        DeployError::DeployImageAvailabilityNotPresent {
+                            service: service.service.clone(),
+                            slot_id: slot.slot_id.0.clone(),
+                            machine_id: slot.machine_id.0.clone(),
+                            image,
+                            digest: digest.as_str().into(),
+                            state: image_presence_state(presence).into(),
+                        },
+                    ));
+                }
+                None => {
+                    return Err(Error::Deploy(DeployError::DeployImageAvailabilityMissing {
+                        service: service.service.clone(),
+                        slot_id: slot.slot_id.0.clone(),
+                        machine_id: slot.machine_id.0.clone(),
+                        image,
+                        digest: digest.as_str().into(),
+                    }));
+                }
+            }
+        }
+    }
+    Ok(checks)
+}
+
+fn parse_required_image_digest(service: &str, image: &str) -> Result<ImageDigest> {
+    ImageDigest::try_new(image).map_err(|_| {
+        Error::Deploy(DeployError::DeployImageDigestRequired {
+            service: service.into(),
+            image: image.into(),
+        })
+    })
+}
+
+fn image_presence_state(presence: &ImagePresence) -> &'static str {
+    match presence {
+        ImagePresence::Present { .. } => "present",
+        ImagePresence::Absent { .. } => "absent",
+        ImagePresence::Transferring { .. } => "transferring",
+        ImagePresence::Failed { .. } => "failed",
+    }
 }
 
 struct ResolvedPreviewParts {

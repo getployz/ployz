@@ -2372,6 +2372,7 @@ mod tests {
                 service_sources: Vec::new(),
                 service_source_fingerprint: String::new(),
                 service_branch_sources: Vec::new(),
+                image_availability: Vec::new(),
                 volume_moves: Vec::new(),
                 volume_clones: Vec::new(),
                 volume_clone_preflights: Vec::new(),
