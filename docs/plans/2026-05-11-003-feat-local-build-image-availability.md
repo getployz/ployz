@@ -130,7 +130,8 @@ Out of scope:
   shared lane.
 - Reject overlapping same-image local builds with a per-daemon image-name lock
   so long builds do not block read-only daemon requests, while concurrent
-  builds cannot race on the same mutable Docker tag.
+  builds cannot race on the same mutable Docker tag. Untagged image names are
+  normalized to `:latest` before locking and building.
 
 **Test Scenarios:**
 
