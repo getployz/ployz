@@ -8,11 +8,12 @@ use clap::Parser;
 #[cfg(test)]
 pub(crate) use cli::DebugTickTaskArg;
 pub(crate) use cli::{
-    BranchAction, BranchNamespaceArgs, BranchResourceModeArg, BuildAction, BuildMethodArg,
-    BuildOperationAction, Cli, CliError, Command, DebugAction, DeployAction, DeployCommand,
-    DeployManifestArgs, DeployServiceArgs, ImageAction, ImageOperationAction, InstallSourceArg,
-    MachineAction, MachineInviteAction, MachineOperationAction, MachineStorageAction, MeshAction,
-    MigrateAction, MigrateServiceArgs, RuntimeAction, RuntimeTargetArg, ServiceModeArg,
+    BranchAction, BranchApplyPreparedArgs, BranchNamespaceArgs, BranchResourceModeArg, BuildAction,
+    BuildMethodArg, BuildOperationAction, Cli, CliError, Command, DebugAction, DeployAction,
+    DeployCommand, DeployManifestArgs, DeployServiceArgs, ImageAction, ImageOperationAction,
+    InstallSourceArg, MachineAction, MachineInviteAction, MachineOperationAction,
+    MachineStorageAction, MeshAction, MigrateAction, MigrateServiceArgs, RuntimeAction,
+    RuntimeTargetArg, ServiceModeArg,
 };
 use cli_io::{cmd_rpc_stdio, cmd_runtime_stream, render_response, request_daemon};
 #[cfg(test)]
@@ -280,8 +281,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_branch_render_manifest_and_apply_commands() {
-        for action in ["render-manifest", "apply"] {
+    fn parse_branch_render_manifest_prepare_and_apply_commands() {
+        for action in ["render-manifest", "prepare", "apply"] {
             let cli = Cli::try_parse_from(["ployzd", "branch", action, "prod", "pr-39"])
                 .expect("branch args should parse");
             match (action, cli.command) {
@@ -289,6 +290,12 @@ mod tests {
                     "render-manifest",
                     Command::Branch {
                         action: BranchAction::RenderManifest(args),
+                    },
+                )
+                | (
+                    "prepare",
+                    Command::Branch {
+                        action: BranchAction::Prepare(args),
                     },
                 )
                 | (
@@ -306,8 +313,22 @@ mod tests {
     }
 
     #[test]
+    fn parse_branch_apply_prepared_command() {
+        let cli = Cli::try_parse_from(["ployzd", "branch", "apply-prepared", "prepare-1"])
+            .expect("branch apply-prepared args should parse");
+
+        let Command::Branch {
+            action: BranchAction::ApplyPrepared(args),
+        } = cli.command
+        else {
+            panic!("expected branch apply-prepared command");
+        };
+        assert_eq!(args.prepared_deploy_id, "prepare-1");
+    }
+
+    #[test]
     fn build_branch_request_encodes_modes_and_overrides() {
-        let request = build_branch_request(BranchAction::RenderManifest(BranchNamespaceArgs {
+        let request = build_branch_request(BranchAction::Prepare(BranchNamespaceArgs {
             source_namespace: "prod".into(),
             target_namespace: "pr-39".into(),
             service_mode: BranchResourceModeArg::Branch,
@@ -322,7 +343,7 @@ mod tests {
         };
         assert_eq!(request.source_namespace, "prod");
         assert_eq!(request.target_namespace, "pr-39");
-        assert_eq!(request.mode, ployz_api::BranchNamespaceMode::RenderManifest);
+        assert_eq!(request.mode, ployz_api::BranchNamespaceMode::Prepare);
         assert_eq!(
             request.default_service_mode,
             ployz_api::BranchResourceMode::Branch
@@ -373,6 +394,10 @@ mod tests {
                 ployz_api::BranchNamespaceMode::Preview,
             ),
             (
+                BranchAction::Prepare(branch_args()),
+                ployz_api::BranchNamespaceMode::Prepare,
+            ),
+            (
                 BranchAction::Apply(branch_args()),
                 ployz_api::BranchNamespaceMode::Apply,
             ),
@@ -385,6 +410,22 @@ mod tests {
             };
             assert_eq!(request.mode, expected_mode);
         }
+    }
+
+    #[test]
+    fn build_branch_apply_prepared_reuses_deploy_apply_prepared_request() {
+        let request = build_branch_request(BranchAction::ApplyPrepared(BranchApplyPreparedArgs {
+            prepared_deploy_id: "prepare-1".into(),
+        }))
+        .expect("branch apply-prepared request");
+
+        let DaemonRequest::DeployApplyPrepared { request } = request else {
+            panic!("expected deploy apply-prepared request");
+        };
+        assert_eq!(
+            request.prepared_deploy_id,
+            ployz_types::model::DeployId("prepare-1".into())
+        );
     }
 
     #[test]
