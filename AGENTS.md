@@ -24,6 +24,63 @@ in documented areas.
 - Dependencies flow inward toward contracts and domain logic.
 - Prefer testable seams, narrow public surfaces, and policy out of binaries.
 
+# AI Architecture Guardrails
+
+- AI is allowed to implement features only inside established boundaries. It
+  must not invent architecture by accreting fields, enum variants, or branches
+  onto existing global paths.
+- Adding a capability must not add variants to one global control-plane enum
+  unless the capability is truly public API. Internal node RPC must have its own
+  typed protocol, separate from external CLI/API requests.
+- `DaemonState` must stay a router and lifecycle owner. Do not add
+  feature-specific state to it. Feature state belongs in the subsystem that owns
+  the feature.
+- No handler file may own transport, authorization, orchestration, storage, and
+  presentation at once. Split by responsibility before adding behavior.
+- The daemon command router must not become a feature registry. If adding a
+  command requires touching unrelated handlers or existing feature state, stop
+  and create a smaller protocol/dispatch boundary first.
+- Backends must not depend upward on daemon, API presentation, or orchestration
+  convenience types. Move shared contracts down instead of importing up.
+- Store capabilities must be requested by the narrow trait a subsystem needs,
+  not by a whole-store facade when the operation only needs one domain.
+- Adding a feature must include the ownership rule for its state: who owns it,
+  who may mutate it, which messages/events cross the boundary, and who observes
+  failures.
+
+# State And Data Representation
+
+- Never use sparse option bags for variant-specific data. Use enums with data
+  carried by the relevant variant.
+- Never flatten structured domain data into `Vec<String>`, positional arrays,
+  or index-based rows except at the final rendering boundary.
+- Domain identity must use newtypes or typed fields, not raw strings, when the
+  value participates in storage keys, routing, placement, authorization, or
+  state transitions.
+- Sort, placement, routing, cleanup, and authorization logic must operate on
+  typed fields, not display strings or positional columns.
+- Stringly fallback errors are allowed only at backend wrappers, transport
+  wrappers, serialization/hash fallbacks, test fakes, or presentation edges.
+
+# Control Plane Boundaries
+
+- All privileged operations must pass through an authorization boundary before
+  reaching handlers. Local IPC, NATS RPC, HTTP endpoints, and background tasks
+  are separate trust boundaries.
+- NATS node RPC must not deserialize directly into public daemon API requests.
+  Internal peer commands need a smaller typed protocol with explicit allowed
+  operations.
+- Background tasks must not silently rewrite durable control-plane truth. They
+  may publish observations or send typed commands to an owner that applies a
+  checked state transition.
+- Background tasks must have a supervisor, shutdown path, health surface, and
+  bounded retry policy with backoff/jitter where many nodes may retry together.
+- No external control-plane I/O may await indefinitely. Docker, NATS, SSH, HTTP,
+  filesystem locks, process waits, and publish/flush paths need explicit
+  operation timeouts.
+- If lock renewal, lease refresh, or coordination publish can stall, the caller
+  must treat that as lock loss within a bounded deadline.
+
 # Operations
 
 - Durable state records operator intent and explicit lifecycle events.
