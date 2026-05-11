@@ -587,7 +587,7 @@ pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonReque
                 install_version,
                 install_git_url,
                 install_git_ref,
-            ),
+            )?,
         }),
         MachineAction::Add {
             identity,
@@ -606,7 +606,7 @@ pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonReque
                 install_version,
                 install_git_url,
                 install_git_ref,
-            );
+            )?;
             let options = MachineAddOptions {
                 ssh_identity_private_key: read_optional_text_file(
                     "machine add identity",
@@ -671,23 +671,59 @@ fn build_machine_install_options(
     install_version: Option<String>,
     install_git_url: Option<String>,
     install_git_ref: Option<String>,
-) -> MachineInstallOptions {
-    let has_version = install_version.is_some();
-    let has_git = install_git_url.is_some() || install_git_ref.is_some();
-    let resolved_source = match install_source {
-        Some(source) => Some(source.into()),
-        None if has_version && !has_git => Some(MachineInstallSource::Release),
-        None if !has_version && has_git => Some(MachineInstallSource::Git),
-        None => None,
+) -> Result<MachineInstallOptions> {
+    let resolved_source = match (
+        install_source,
+        install_version,
+        install_git_url,
+        install_git_ref,
+    ) {
+        (Some(InstallSourceArg::Release), version, None, None) => {
+            Some(MachineInstallSource::Release { version })
+        }
+        (Some(InstallSourceArg::Release), _, Some(_), _)
+        | (Some(InstallSourceArg::Release), _, _, Some(_)) => {
+            return Err(CliError::Usage(
+                "release install source cannot include --install-git-url or --install-git-ref"
+                    .into(),
+            ));
+        }
+        (Some(InstallSourceArg::Git), None, Some(git_url), git_ref) => {
+            Some(MachineInstallSource::Git { git_url, git_ref })
+        }
+        (Some(InstallSourceArg::Git), Some(_), _, _) => {
+            return Err(CliError::Usage(
+                "git install source cannot include --install-version".into(),
+            ));
+        }
+        (Some(InstallSourceArg::Git), None, None, _) => {
+            return Err(CliError::Usage(
+                "git install source requires --install-git-url".into(),
+            ));
+        }
+        (None, Some(version), None, None) => Some(MachineInstallSource::Release {
+            version: Some(version),
+        }),
+        (None, None, Some(git_url), git_ref) => {
+            Some(MachineInstallSource::Git { git_url, git_ref })
+        }
+        (None, Some(_), Some(_), _) | (None, Some(_), None, Some(_)) => {
+            return Err(CliError::Usage(
+                "install options cannot mix --install-version with git install options".into(),
+            ));
+        }
+        (None, None, None, Some(_)) => {
+            return Err(CliError::Usage(
+                "--install-git-ref requires --install-git-url".into(),
+            ));
+        }
+        (None, None, None, None) => None,
     };
-    MachineInstallOptions {
+    Ok(MachineInstallOptions {
         runtime_target: runtime.map(Into::into),
         service_mode: service_mode.map(Into::into),
         source: resolved_source,
-        version: install_version,
-        git_url: install_git_url,
-        git_ref: install_git_ref,
-    }
+    })
 }
 
 fn required_value<T>(value: Option<T>, message: &str) -> Result<T> {

@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use ployz_api::{
     DebugTickTask as ProtocolDebugTickTask, InstallRuntimeTarget as ApiInstallRuntimeTarget,
-    InstallServiceMode as ApiInstallServiceMode, InstallSource as MachineInstallSource,
+    InstallServiceMode as ApiInstallServiceMode,
 };
 use ployz_config::{RuntimeTarget, ServiceMode};
 use ployz_types::model::BuildMethod;
@@ -59,15 +59,6 @@ impl From<ServiceModeArg> for ServiceMode {
         match value {
             ServiceModeArg::User => ServiceMode::User,
             ServiceModeArg::System => ServiceMode::System,
-        }
-    }
-}
-
-impl From<InstallSourceArg> for MachineInstallSource {
-    fn from(value: InstallSourceArg) -> Self {
-        match value {
-            InstallSourceArg::Release => MachineInstallSource::Release,
-            InstallSourceArg::Git => MachineInstallSource::Git,
         }
     }
 }
