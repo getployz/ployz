@@ -1023,11 +1023,12 @@ impl StoreRuntimeControl for MemoryService {
 mod tests {
     use super::*;
     use ployz_types::model::{
-        DeployPhaseCommitPolicy, DeployPhaseFailure, DeployPhaseRollbackPolicy, DeployPhaseState,
-        DeployPreview, DeployPreviewBaseline, DeployPreviewBaselineComponents, ImageArtifact,
-        ImageArtifactProvenance, ImagePlatform, ImagePresence, ImageRef, PreparedDeployRecord,
-        PreparedDeployState, ServiceBranchLineageRecord, ServiceRevisionRecord,
-        VolumeBranchLineageRecord, VolumeMovementRecord,
+        CertificateLifecycle, DeployPhaseCommitPolicy, DeployPhaseFailure,
+        DeployPhaseRollbackPolicy, DeployPhaseState, DeployPreview, DeployPreviewBaseline,
+        DeployPreviewBaselineComponents, ImageArtifact, ImageArtifactProvenance, ImagePlatform,
+        ImagePresence, ImageRef, PreparedDeployRecord, PreparedDeployState,
+        ServiceBranchLineageRecord, ServiceRevisionRecord, VolumeBranchLineageRecord,
+        VolumeMovementRecord,
     };
 
     fn test_machine(id: impl Into<String>) -> MachineMembership {
@@ -2196,7 +2197,10 @@ mod tests {
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].hostname, "example.com");
 
-        certificate.last_error = Some("renewal failed".into());
+        certificate.lifecycle = CertificateLifecycle::Failed {
+            last_error: "renewal failed".into(),
+            active_version_id: None,
+        };
         store
             .upsert_certificate(&certificate)
             .await
@@ -2211,7 +2215,7 @@ mod tests {
             panic!("expected certificate update event, got {event:?}");
         };
         assert_eq!(updated.hostname, "example.com");
-        assert_eq!(updated.last_error.as_deref(), Some("renewal failed"));
+        assert_eq!(updated.last_error(), Some("renewal failed"));
     }
 
     #[tokio::test]
@@ -2477,14 +2481,10 @@ mod tests {
             hostname: hostname.into(),
             issuer_url: "https://acme.example/directory".into(),
             account_id: "account-1".into(),
-            state: ployz_types::model::CertificateState::Pending,
-            active_version_id: None,
+            lifecycle: CertificateLifecycle::Pending { last_error: None },
             versions: Vec::new(),
-            order_url: None,
-            last_error: None,
             requested_at: 1,
             updated_at: 1,
-            next_renewal_at: None,
         }
     }
 

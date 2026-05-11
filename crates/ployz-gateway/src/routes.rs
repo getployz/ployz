@@ -1281,9 +1281,9 @@ pub(crate) fn normalize_path_prefix(path_prefix: &str) -> String {
 mod tests {
     use super::*;
     use ployz_types::model::{
-        CertificateState, DeployId, DrainState, InstanceStatusRecord, MachineLifecycle, OverlayIp,
-        PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord,
-        ServiceRoutingPolicy, SlotId, StorageParticipation,
+        CertificateLifecycle, DeployId, DrainState, InstanceStatusRecord, MachineLifecycle,
+        OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
+        ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, StorageParticipation,
     };
     use ployz_types::spec::{
         ContainerSpec, NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy,
@@ -2060,8 +2060,10 @@ mod tests {
             hostname: hostname.into(),
             issuer_url: "https://acme.test/directory".into(),
             account_id: "acct-test".into(),
-            state: CertificateState::Active,
-            active_version_id: Some(version_id.into()),
+            lifecycle: CertificateLifecycle::Active {
+                active_version_id: version_id.into(),
+                next_renewal_at: None,
+            },
             versions: vec![CertificateVersion {
                 version_id: version_id.into(),
                 fullchain_pem,
@@ -2070,11 +2072,8 @@ mod tests {
                 not_after: Some(100),
                 issued_at: 0,
             }],
-            order_url: None,
-            last_error: None,
             requested_at: 0,
             updated_at: 0,
-            next_renewal_at: None,
         }
     }
 
@@ -2188,16 +2187,25 @@ mod tests {
         // those states must remain serviceable. Only `Pending` with no prior
         // issuance — i.e. `active_version_id == None` — should drop out.
         let mut pending_no_version = active_cert("pending.example.com", "v1");
-        pending_no_version.state = CertificateState::Pending;
-        pending_no_version.active_version_id = None;
+        pending_no_version.lifecycle = CertificateLifecycle::Pending { last_error: None };
         pending_no_version.versions.clear();
 
         let mut issuing_renewal = active_cert("issuing.example.com", "v1");
-        issuing_renewal.state = CertificateState::Issuing;
+        issuing_renewal.lifecycle = CertificateLifecycle::Issuing {
+            order_url: "https://acme.test/orders/issuing".into(),
+            active_version_id: Some("v1".into()),
+            last_error: None,
+        };
         let mut renewal_due = active_cert("renewal.example.com", "v1");
-        renewal_due.state = CertificateState::RenewalDue;
+        renewal_due.lifecycle = CertificateLifecycle::RenewalDue {
+            active_version_id: "v1".into(),
+            next_renewal_at: None,
+        };
         let mut failed_with_fallback = active_cert("failed.example.com", "v1");
-        failed_with_fallback.state = CertificateState::Failed;
+        failed_with_fallback.lifecycle = CertificateLifecycle::Failed {
+            last_error: "failed".into(),
+            active_version_id: Some("v1".into()),
+        };
 
         let snapshot = with_managed_tls(
             GatewaySnapshot::empty(),
@@ -2227,8 +2235,11 @@ mod tests {
         // keep handing out v1 — not blackhole TLS for the duration of the
         // ACME round trip.
         let mut renewing = active_cert("api.example.com", "v1");
-        renewing.state = CertificateState::Issuing;
-        renewing.order_url = Some("https://acme.test/orders/42".into());
+        renewing.lifecycle = CertificateLifecycle::Issuing {
+            order_url: "https://acme.test/orders/42".into(),
+            active_version_id: Some("v1".into()),
+            last_error: None,
+        };
 
         let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[renewing]);
         let entry = snapshot
@@ -2253,8 +2264,10 @@ mod tests {
         // gateway can keep using the prior leaf until the next reconcile pass
         // retries. The projection must respect that fallback contract.
         let mut failed = active_cert("api.example.com", "v1");
-        failed.state = CertificateState::Failed;
-        failed.last_error = Some("orderInvalid: rateLimited".into());
+        failed.lifecycle = CertificateLifecycle::Failed {
+            last_error: "orderInvalid: rateLimited".into(),
+            active_version_id: Some("v1".into()),
+        };
 
         let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[failed]);
         let entry = snapshot
@@ -2312,7 +2325,7 @@ mod tests {
     #[test]
     fn with_managed_tls_skips_active_cert_without_active_version_id() {
         let mut record = active_cert("api.example.com", "v1");
-        record.active_version_id = None;
+        record.lifecycle = CertificateLifecycle::Pending { last_error: None };
         let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[record]);
         assert!(snapshot.certificates.is_empty());
     }
@@ -2320,7 +2333,10 @@ mod tests {
     #[test]
     fn with_managed_tls_skips_when_active_version_id_points_at_missing_version() {
         let mut record = active_cert("api.example.com", "v1");
-        record.active_version_id = Some("vmissing".into());
+        record.lifecycle = CertificateLifecycle::Active {
+            active_version_id: "vmissing".into(),
+            next_renewal_at: None,
+        };
         let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[record]);
         assert!(snapshot.certificates.is_empty());
     }

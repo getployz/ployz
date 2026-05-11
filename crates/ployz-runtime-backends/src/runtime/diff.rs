@@ -1,7 +1,5 @@
 use super::labels::{LABEL_KEY, LABEL_KIND, LABEL_MANAGED, LABEL_PARENT_ID};
-use super::spec::{
-    Observation, ObservedContainer, RestartPolicy, RestartPolicyName, RuntimeContainerSpec,
-};
+use super::spec::{Observation, ObservedContainer, RestartPolicy, RuntimeContainerSpec};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChangedField {
@@ -258,12 +256,12 @@ fn restart_policy_equal(observed: Option<&RestartPolicy>, desired: Option<&Resta
 fn normalize_restart_policy(policy: Option<&RestartPolicy>) -> Option<RestartPolicy> {
     let policy = policy?;
 
-    let maximum_retry_count = policy.maximum_retry_count;
-    if policy.name == Some(RestartPolicyName::No) && maximum_retry_count.unwrap_or(0) == 0 {
-        return None;
+    match policy {
+        RestartPolicy::No => None,
+        RestartPolicy::Always | RestartPolicy::UnlessStopped | RestartPolicy::OnFailure { .. } => {
+            Some(policy.clone())
+        }
     }
-
-    Some(policy.clone())
 }
 
 fn pid_mode_equal(observed: Option<&str>, desired: Option<&str>) -> bool {
@@ -580,10 +578,7 @@ mod tests {
     #[test]
     fn default_restart_policy_is_equivalent_to_none() {
         let mut observed = base_observed();
-        observed.restart_policy = Observation::Observed(Some(RestartPolicy {
-            name: Some(RestartPolicyName::No),
-            maximum_retry_count: Some(0),
-        }));
+        observed.restart_policy = Observation::Observed(Some(RestartPolicy::No));
         let desired = base_spec();
         let change = eval_spec_change(Some(&observed), &desired);
         assert!(change.is_in_sync());
@@ -592,10 +587,7 @@ mod tests {
     #[test]
     fn explicit_restart_policy_mismatch_is_drifted() {
         let mut observed = base_observed();
-        observed.restart_policy = Observation::Observed(Some(RestartPolicy {
-            name: Some(RestartPolicyName::Always),
-            maximum_retry_count: None,
-        }));
+        observed.restart_policy = Observation::Observed(Some(RestartPolicy::Always));
         let desired = base_spec();
         let change = eval_spec_change(Some(&observed), &desired);
         let SpecChange::Drifted { fields } = change else {
