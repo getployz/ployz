@@ -263,6 +263,30 @@ pub struct ImageOperationRecord {
     pub last_error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct BuildInputSummary {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<BuildSecretSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub docker_build_args: Vec<String>,
+}
+
+impl BuildInputSummary {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.env.is_empty() && self.secrets.is_empty() && self.docker_build_args.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BuildSecretSummary {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BuildOperationRecord {
     pub id: String,
@@ -271,6 +295,8 @@ pub struct BuildOperationRecord {
     pub location: BuildLocation,
     pub status: OperationStatus,
     pub stage: String,
+    #[serde(default, skip_serializing_if = "BuildInputSummary::is_empty")]
+    pub inputs: BuildInputSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact: Option<ImageArtifact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
