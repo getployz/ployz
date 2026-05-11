@@ -904,15 +904,12 @@ impl DockerNats {
     fn to_runtime_spec(&self) -> RuntimeContainerSpec {
         let key = "system/nats".to_string();
         RuntimeContainerSpec {
-            key: key.clone(),
-            container_name: self.container_name.clone(),
-            image: self.image.clone(),
             pull_policy: PullPolicy::IfNotPresent,
             cmd: self.cmd.clone(),
             labels: build_system_labels(&key, None, Some(env!("CARGO_PKG_VERSION"))),
             binds: self.volumes.clone(),
             network_mode: self.network_mode.clone(),
-            ..Default::default()
+            ..RuntimeContainerSpec::new(key, self.container_name.clone(), self.image.clone())
         }
     }
 }

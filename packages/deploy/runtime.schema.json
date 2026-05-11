@@ -23,39 +23,35 @@
     {
       "type": "object",
       "required": [
-        "collection",
         "key",
         "kind",
         "record"
       ],
       "properties": {
-        "collection": {
-          "$ref": "#/definitions/RuntimeCollection"
-        },
         "key": {
           "type": "string"
         },
         "kind": {
           "type": "string",
           "enum": [
-            "upsert"
+            "machine_upsert"
           ]
         },
         "record": {
-          "$ref": "#/definitions/RuntimeRecord"
+          "$ref": "#/definitions/MachineMembership"
         }
       }
     },
     {
       "type": "object",
       "required": [
-        "collection",
+        "id",
         "key",
         "kind"
       ],
       "properties": {
-        "collection": {
-          "$ref": "#/definitions/RuntimeCollection"
+        "id": {
+          "$ref": "#/definitions/MachineId"
         },
         "key": {
           "type": "string"
@@ -63,7 +59,151 @@
         "kind": {
           "type": "string",
           "enum": [
-            "remove"
+            "machine_remove"
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "key",
+        "kind",
+        "record"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "revision_upsert"
+          ]
+        },
+        "record": {
+          "$ref": "#/definitions/ServiceRevisionRecord"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "key",
+        "kind",
+        "namespace",
+        "revision_hash",
+        "service"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "revision_remove"
+          ]
+        },
+        "namespace": {
+          "$ref": "#/definitions/Namespace"
+        },
+        "revision_hash": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "key",
+        "kind",
+        "record"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "release_upsert"
+          ]
+        },
+        "record": {
+          "$ref": "#/definitions/ServiceReleaseRecord"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "key",
+        "kind",
+        "namespace",
+        "service"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "release_remove"
+          ]
+        },
+        "namespace": {
+          "$ref": "#/definitions/Namespace"
+        },
+        "service": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "key",
+        "kind",
+        "record"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "instance_upsert"
+          ]
+        },
+        "record": {
+          "$ref": "#/definitions/InstanceStatusRecord"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "instance_id",
+        "key",
+        "kind"
+      ],
+      "properties": {
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "instance_remove"
           ]
         }
       }
@@ -243,8 +383,7 @@
         "overlay_ip",
         "public_key",
         "region_role",
-        "storage",
-        "storage_participation",
+        "storage_role",
         "topology",
         "updated_at"
       ],
@@ -296,11 +435,8 @@
         "region_role": {
           "$ref": "#/definitions/RegionRole"
         },
-        "storage": {
-          "type": "boolean"
-        },
-        "storage_participation": {
-          "$ref": "#/definitions/StorageParticipation"
+        "storage_role": {
+          "$ref": "#/definitions/MachineStorageRole"
         },
         "subnet": {
           "type": [
@@ -317,6 +453,56 @@
           "minimum": 0.0
         }
       }
+    },
+    "MachineStorageRole": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "compute"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "candidate"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "authority_id",
+            "kind"
+          ],
+          "properties": {
+            "authority_id": {
+              "$ref": "#/definitions/AuthorityId"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "authority"
+              ]
+            }
+          }
+        }
+      ]
     },
     "MachineTopology": {
       "type": "object",
@@ -402,31 +588,6 @@
           }
         }
       }
-    },
-    "RuntimeCollection": {
-      "type": "string",
-      "enum": [
-        "machine",
-        "revision",
-        "release",
-        "instance"
-      ]
-    },
-    "RuntimeRecord": {
-      "anyOf": [
-        {
-          "$ref": "#/definitions/MachineMembership"
-        },
-        {
-          "$ref": "#/definitions/ServiceRevisionRecord"
-        },
-        {
-          "$ref": "#/definitions/ServiceReleaseRecord"
-        },
-        {
-          "$ref": "#/definitions/InstanceStatusRecord"
-        }
-      ]
     },
     "ServiceRelease": {
       "type": "object",
@@ -610,42 +771,6 @@
     },
     "SlotId": {
       "type": "string"
-    },
-    "StorageParticipation": {
-      "oneOf": [
-        {
-          "type": "object",
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
-              "type": "string",
-              "enum": [
-                "candidate"
-              ]
-            }
-          }
-        },
-        {
-          "type": "object",
-          "required": [
-            "authority_id",
-            "kind"
-          ],
-          "properties": {
-            "authority_id": {
-              "$ref": "#/definitions/AuthorityId"
-            },
-            "kind": {
-              "type": "string",
-              "enum": [
-                "authority"
-              ]
-            }
-          }
-        }
-      ]
     }
   }
 }

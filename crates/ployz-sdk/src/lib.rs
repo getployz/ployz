@@ -15,7 +15,7 @@ pub use ployz_api::{
     MachineListPayload, MachineListRow, MachineOperationInfo, MachineOperationListPayload,
     MachineOperationPayload, MachineRemovePayload, MachineUpdatePayload, MachineUpdateRow,
     MeshListEntry, MeshListPayload, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload,
-    RuntimeCollection, RuntimeRecord, RuntimeStatePayload, RuntimeWatchFrame, StatusPayload,
+    RuntimeStatePayload, RuntimeWatchFrame, StatusPayload,
 };
 pub use ployz_types::{Error, Result};
 pub use ployz_types::{error, model, spec};

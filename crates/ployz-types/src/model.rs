@@ -1444,10 +1444,46 @@ pub struct InviteRecord {
     pub issuer_machine_id: MachineId,
     pub issuer_verify_key: String,
     pub expires_at: u64,
-    pub consumed_by: Option<MachineId>,
-    pub consumed_at: Option<u64>,
-    pub revoked_at: Option<u64>,
+    pub status: InviteStatus,
     pub signature: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InviteStatus {
+    Active,
+    Consumed {
+        consumed_by: MachineId,
+        consumed_at: u64,
+    },
+    Revoked {
+        revoked_at: u64,
+    },
+}
+
+impl InviteStatus {
+    #[must_use]
+    pub fn consumed_by(&self) -> Option<&MachineId> {
+        match self {
+            Self::Consumed { consumed_by, .. } => Some(consumed_by),
+            Self::Active | Self::Revoked { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn is_consumed_by(&self, machine_id: &MachineId) -> bool {
+        self.consumed_by() == Some(machine_id)
+    }
+
+    #[must_use]
+    pub fn is_consumed(&self) -> bool {
+        matches!(self, Self::Consumed { .. })
+    }
+
+    #[must_use]
+    pub fn is_revoked(&self) -> bool {
+        matches!(self, Self::Revoked { .. })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2604,10 +2640,33 @@ impl DeployPreviewBaselineComponents {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeployPreviewBaseline {
     pub fingerprint: String,
     pub components: DeployPreviewBaselineComponents,
+}
+
+impl<'de> Deserialize<'de> for DeployPreviewBaseline {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawDeployPreviewBaseline {
+            fingerprint: String,
+            components: DeployPreviewBaselineComponents,
+        }
+
+        let raw = RawDeployPreviewBaseline::deserialize(deserializer)?;
+        let baseline = Self::new(raw.components);
+        if baseline.fingerprint != raw.fingerprint {
+            return Err(de::Error::custom(format!(
+                "deploy preview baseline fingerprint '{}' does not match canonical fingerprint '{}'",
+                raw.fingerprint, baseline.fingerprint
+            )));
+        }
+        Ok(baseline)
+    }
 }
 
 impl DeployPreviewBaseline {
@@ -3340,16 +3399,32 @@ mod tests {
         );
         assert!(baseline.changed_components(&baseline).is_empty());
         assert!(baseline.is_canonical());
-        assert!(
-            !DeployPreviewBaseline {
-                fingerprint: "bogus".into(),
-                components: baseline.components.clone(),
-            }
-            .is_canonical()
-        );
         let roundtrip: DeployPreview =
             serde_json::from_value(json).expect("deserialize deploy preview");
         assert_eq!(roundtrip.baseline, Some(baseline));
+    }
+
+    #[test]
+    fn deploy_preview_baseline_rejects_noncanonical_fingerprint() {
+        let baseline = DeployPreviewBaseline::new(DeployPreviewBaselineComponents {
+            manifest: "manifest".into(),
+            participants: "participants".into(),
+            phases: "phases".into(),
+            services: "services".into(),
+            service_sources: "sources".into(),
+            volumes: "volumes".into(),
+            volume_moves: "moves".into(),
+            volume_clones: "clones".into(),
+        });
+        let mut json = serde_json::to_value(&baseline).expect("serialize baseline");
+        json["fingerprint"] = serde_json::json!("bogus");
+
+        let error = serde_json::from_value::<DeployPreviewBaseline>(json)
+            .expect_err("mismatched fingerprint should fail");
+        assert!(
+            error.to_string().contains("canonical fingerprint"),
+            "got: {error}"
+        );
     }
 
     #[test]

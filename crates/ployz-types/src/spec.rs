@@ -967,9 +967,9 @@ pub enum VolumeScope {
 pub struct VolumeDeclaration {
     pub name: String,
     pub scope: VolumeScope,
-    pub quota: String,
-    pub mode: String,
-    pub owner: String,
+    pub quota: VolumeQuota,
+    pub mode: VolumeMode,
+    pub owner: VolumeOwner,
 }
 
 impl VolumeDeclaration {
@@ -980,25 +980,230 @@ impl VolumeDeclaration {
                 self.name
             ));
         }
-        if !valid_quota(&self.quota) {
-            return Err(format!(
-                "volume '{}' quota must be an integer with optional K, M, G, or T suffix",
-                self.name
-            ));
-        }
-        if !valid_mode(&self.mode) {
-            return Err(format!(
-                "volume '{}' mode must be octal like 0750",
-                self.name
-            ));
-        }
-        if !valid_owner(&self.owner) {
-            return Err(format!(
-                "volume '{}' owner must be numeric uid:gid",
-                self.name
-            ));
-        }
         Ok(())
+    }
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(try_from = "String", into = "String")]
+pub struct VolumeQuota(String);
+
+impl VolumeQuota {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self::try_new(value).expect("valid volume quota")
+    }
+
+    pub fn try_new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        parse_quota_bytes(&value)?;
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl AsRef<str> for VolumeQuota {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for VolumeQuota {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<VolumeQuota> for String {
+    fn from(value: VolumeQuota) -> Self {
+        value.into_string()
+    }
+}
+
+impl From<&str> for VolumeQuota {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<String> for VolumeQuota {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl PartialEq<&str> for VolumeQuota {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for VolumeQuota {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(try_from = "String", into = "String")]
+pub struct VolumeMode(String);
+
+impl VolumeMode {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self::try_new(value).expect("valid volume mode")
+    }
+
+    pub fn try_new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        if !valid_mode(&value) {
+            return Err(format!("volume mode '{value}' must be octal like 0750"));
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl AsRef<str> for VolumeMode {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for VolumeMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<VolumeMode> for String {
+    fn from(value: VolumeMode) -> Self {
+        value.into_string()
+    }
+}
+
+impl From<&str> for VolumeMode {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<String> for VolumeMode {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl PartialEq<&str> for VolumeMode {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for VolumeMode {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(try_from = "String", into = "String")]
+pub struct VolumeOwner(String);
+
+impl VolumeOwner {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self::try_new(value).expect("valid volume owner")
+    }
+
+    pub fn try_new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        if !valid_owner(&value) {
+            return Err(format!("volume owner '{value}' must be numeric uid:gid"));
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl AsRef<str> for VolumeOwner {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for VolumeOwner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<VolumeOwner> for String {
+    fn from(value: VolumeOwner) -> Self {
+        value.into_string()
+    }
+}
+
+impl From<&str> for VolumeOwner {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<String> for VolumeOwner {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl PartialEq<&str> for VolumeOwner {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for VolumeOwner {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
     }
 }
 
@@ -1025,15 +1230,12 @@ pub fn valid_storage_segment(value: &str) -> bool {
         .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
 }
 
-fn valid_quota(value: &str) -> bool {
-    parse_quota_bytes(value).is_ok()
-}
-
 /// Parse a ZFS-style quota string (`"20G"`, `"512M"`, `"1024"`) into bytes.
 ///
 /// Suffixes use base-2 multipliers (K=1024, M=1024², G=1024³, T=1024⁴), matching
 /// ZFS conventions. A bare integer is interpreted as bytes.
-pub fn parse_quota_bytes(value: &str) -> Result<u64, String> {
+pub fn parse_quota_bytes(value: impl AsRef<str>) -> Result<u64, String> {
+    let value = value.as_ref();
     let Some(last) = value.chars().last() else {
         return Err("quota cannot be empty".into());
     };

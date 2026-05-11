@@ -16,6 +16,8 @@ pub enum IdentityError {
     },
     #[error("parsing identity JSON")]
     Parse(#[source] serde_json::Error),
+    #[error("identity public key does not match private key")]
+    KeyMismatch,
     #[error("creating directory {path}")]
     CreateDirectory {
         path: PathBuf,
@@ -32,11 +34,39 @@ pub enum IdentityError {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize)]
 pub struct Identity {
     pub machine_id: MachineId,
     pub private_key: PrivateKey,
     pub public_key: PublicKey,
+}
+
+impl std::fmt::Debug for Identity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Identity")
+            .field("machine_id", &self.machine_id)
+            .field("private_key", &"<redacted>")
+            .field("public_key", &self.public_key)
+            .finish()
+    }
+}
+
+impl<'de> Deserialize<'de> for Identity {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawIdentity {
+            machine_id: MachineId,
+            private_key: PrivateKey,
+            public_key: PublicKey,
+        }
+
+        let raw = RawIdentity::deserialize(deserializer)?;
+        Identity::from_parts(raw.machine_id, raw.private_key, raw.public_key)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl Identity {
@@ -55,6 +85,21 @@ impl Identity {
             private_key,
             public_key,
         }
+    }
+
+    pub fn from_parts(
+        machine_id: MachineId,
+        private_key: PrivateKey,
+        public_key: PublicKey,
+    ) -> Result<Self> {
+        if Self::derive_public_key(&private_key) != public_key {
+            return Err(IdentityError::KeyMismatch);
+        }
+        Ok(Self {
+            machine_id,
+            private_key,
+            public_key,
+        })
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -122,5 +167,26 @@ mod tests {
     #[test]
     fn load_missing_file_errors() {
         assert!(Identity::load(Path::new("/tmp/ployz-nonexistent-identity.json")).is_err());
+    }
+
+    #[test]
+    fn load_rejects_mismatched_key_material() {
+        let dir = std::env::temp_dir().join("ployz-test-identity-mismatch");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("identity.json");
+
+        let identity = Identity::generate(MachineId::new("test-1"), [0x42; 32]);
+        let json = serde_json::json!({
+            "machine_id": identity.machine_id,
+            "private_key": identity.private_key,
+            "public_key": PublicKey([9; 32])
+        });
+        std::fs::write(&path, serde_json::to_vec(&json).expect("json")).expect("write identity");
+
+        let error = Identity::load(&path).expect_err("mismatched key should fail");
+        assert!(matches!(error, IdentityError::Parse(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

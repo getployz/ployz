@@ -327,14 +327,11 @@ mod tests {
 
     fn base_spec() -> RuntimeContainerSpec {
         RuntimeContainerSpec {
-            key: "system/test".into(),
-            container_name: "test".into(),
-            image: "myimage:latest".into(),
             cmd: Some(vec!["run".into()]),
             env: vec![("FOO".into(), "bar".into())],
             binds: vec!["/host:/container".into()],
             dns_servers: Vec::new(),
-            ..Default::default()
+            ..RuntimeContainerSpec::new("system/test", "test", "myimage:latest")
         }
     }
 

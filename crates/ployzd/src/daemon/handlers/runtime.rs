@@ -113,7 +113,7 @@ pub async fn stream_runtime_frames(
 #[cfg(test)]
 mod tests {
     use super::{relay_runtime_events, stream_runtime_frames};
-    use ployz_api::{RuntimeCollection, RuntimeRecord, RuntimeWatchFrame};
+    use ployz_api::RuntimeWatchFrame;
     use ployz_store_api::RoutingEventEnvelope;
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
@@ -166,10 +166,9 @@ mod tests {
         let second = frame_rx.recv().await.expect("event frame");
         assert_eq!(
             second,
-            RuntimeWatchFrame::Upsert {
-                collection: RuntimeCollection::Instance,
+            RuntimeWatchFrame::InstanceUpsert {
                 key: String::from("instance-c"),
-                record: RuntimeRecord::Instance(instance_record("instance-c", "prod", "worker")),
+                record: instance_record("instance-c", "prod", "worker"),
             }
         );
     }
