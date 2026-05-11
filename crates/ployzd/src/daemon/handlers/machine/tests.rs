@@ -112,13 +112,13 @@ async fn machine_list_json_payload_contains_rows() {
     assert_eq!(founder.id, "founder");
     assert_eq!(founder.region_role, "home_data");
     assert_eq!(
-        founder.authority.role,
+        founder.authority.role(),
         ployz_types::model::AuthorityNodeRole::AuthorityStorage {
             authority_id: ployz_types::model::AuthorityId::default_authority(),
         }
     );
     assert_eq!(
-        founder.authority.loss_impact,
+        founder.authority.loss_impact(),
         ployz_types::model::ControlPlaneLossImpact::StoredTruthLost
     );
     let candidate = payload
@@ -127,15 +127,15 @@ async fn machine_list_json_payload_contains_rows() {
         .find(|row| row.id == "peer-candidate")
         .expect("candidate row");
     assert_eq!(
-        candidate.authority.role,
+        candidate.authority.role(),
         ployz_types::model::AuthorityNodeRole::StorageCandidate
     );
     assert_eq!(
-        candidate.authority.data_bucket,
+        candidate.authority.data_bucket(),
         ployz_types::model::ControlPlaneDataBucket::StoredIntent
     );
     assert_eq!(
-        candidate.authority.loss_impact,
+        candidate.authority.loss_impact(),
         ployz_types::model::ControlPlaneLossImpact::NoStoredTruthLost
     );
     assert_eq!(candidate.region_role, "home_data");
@@ -145,15 +145,15 @@ async fn machine_list_json_payload_contains_rows() {
         .find(|row| row.id == "peer-compute")
         .expect("compute row");
     assert_eq!(
-        compute.authority.role,
+        compute.authority.role(),
         ployz_types::model::AuthorityNodeRole::Compute
     );
     assert_eq!(
-        compute.authority.data_bucket,
+        compute.authority.data_bucket(),
         ployz_types::model::ControlPlaneDataBucket::LiveFacts
     );
     assert_eq!(
-        compute.authority.loss_impact,
+        compute.authority.loss_impact(),
         ployz_types::model::ControlPlaneLossImpact::NoStoredTruthLost
     );
     assert_eq!(compute.region_role, "home_data");

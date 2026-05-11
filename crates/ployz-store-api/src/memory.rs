@@ -1285,11 +1285,11 @@ mod tests {
         updated_at: u64,
     ) -> ImageAvailabilityRecord {
         let artifact = ImageArtifact {
-            image: ImageRef {
-                repository: Some("registry.example/api".into()),
-                tag: Some("sha".into()),
-                digest: digest.clone(),
-            },
+            image: ImageRef::repository_digest(
+                "registry.example/api",
+                Some("sha".into()),
+                digest.clone(),
+            ),
             platform: Some(ImagePlatform {
                 os: "linux".into(),
                 architecture: "amd64".into(),

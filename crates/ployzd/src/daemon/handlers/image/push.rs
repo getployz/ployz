@@ -1651,20 +1651,15 @@ fn image_distribute_validation_payload(
 }
 
 fn image_ref_from_tag(reference: &str, digest: ployz_types::model::ImageDigest) -> ImageRef {
-    let (repository, tag) = if reference.starts_with("sha256:") {
-        (None, None)
-    } else {
-        match reference.rsplit_once(':') {
-            Some((repository, tag)) if !repository.is_empty() && !tag.is_empty() => {
-                (Some(repository.to_string()), Some(tag.to_string()))
-            }
-            _ => (None, None),
+    if reference.starts_with("sha256:") {
+        return ImageRef::digest_only(digest);
+    }
+
+    match reference.rsplit_once(':') {
+        Some((repository, tag)) if !repository.is_empty() && !tag.is_empty() => {
+            ImageRef::repository_digest(repository, Some(tag.to_string()), digest)
         }
-    };
-    ImageRef {
-        repository,
-        tag,
-        digest,
+        _ => ImageRef::repository_digest(reference, None, digest),
     }
 }
 

@@ -40,7 +40,7 @@ mod tests {
 
     fn state() -> DaemonState {
         let data_dir = temp_dir("ployz-build-machine-test");
-        let identity = Identity::generate(MachineId("founder".into()), [12; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [12; 32]);
         DaemonState::new_for_tests(
             &data_dir,
             identity,
@@ -58,7 +58,7 @@ mod tests {
             method: BuildMethod::Dockerfile,
             context_path: ".".into(),
             image_name: "example/app:latest".into(),
-            machine_id: MachineId("builder-a".into()),
+            machine_id: MachineId::new("builder-a"),
             platform: None,
             inputs,
         }

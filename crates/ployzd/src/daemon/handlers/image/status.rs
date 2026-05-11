@@ -110,11 +110,11 @@ mod tests {
             digest: digest.clone(),
             presence: ImagePresence::Present {
                 artifact: ImageArtifact {
-                    image: ImageRef {
-                        repository: Some("example/app".into()),
-                        tag: Some("latest".into()),
+                    image: ImageRef::repository_digest(
+                        "example/app",
+                        Some("latest".into()),
                         digest,
-                    },
+                    ),
                     platform: None,
                     provenance: ImageArtifactProvenance::Build {
                         method: BuildMethod::Dockerfile,

@@ -617,7 +617,7 @@ mod tests {
                 method: BuildMethod::Dockerfile,
                 context_path: "/tmp/context".into(),
                 image_name: "example/app:latest".into(),
-                machine_id: MachineId("builder-a".into()),
+                machine_id: MachineId::new("builder-a"),
                 platform: None,
                 inputs: BuildInputs::default(),
             },
