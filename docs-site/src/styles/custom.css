@@ -1,0 +1,115 @@
+:root {
+  --sl-color-accent-low: #d8f0e7;
+  --sl-color-accent: #0f766e;
+  --sl-color-accent-high: #073f3b;
+  --sl-color-white: #fffdf8;
+  --sl-color-gray-1: #f7f5ef;
+  --sl-color-gray-2: #ebe7dc;
+  --sl-color-gray-3: #d8d5c9;
+  --sl-color-gray-4: #9f9b90;
+  --sl-color-gray-5: #656b62;
+  --sl-color-gray-6: #343a35;
+  --sl-color-black: #1f2320;
+  --sl-font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --sl-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+:root[data-theme="dark"] {
+  --sl-color-accent-low: #073f3b;
+  --sl-color-accent: #2dd4bf;
+  --sl-color-accent-high: #ccfbf1;
+  --sl-color-white: #f8faf8;
+  --sl-color-gray-1: #e7ece7;
+  --sl-color-gray-2: #c6d0c8;
+  --sl-color-gray-3: #8b9a8f;
+  --sl-color-gray-4: #56645b;
+  --sl-color-gray-5: #303b35;
+  --sl-color-gray-6: #1f2924;
+  --sl-color-black: #111714;
+}
+
+.hero img {
+  border: 1px solid var(--sl-color-gray-3);
+  border-radius: 0.5rem;
+}
+
+@media (max-width: 50rem) {
+  html,
+  body {
+    overflow-x: hidden;
+  }
+
+  main,
+  .page,
+  .main-frame,
+  .main-pane,
+  .content-panel,
+  .sl-container,
+  .sl-markdown-content {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    overflow-x: hidden !important;
+  }
+
+  .sl-markdown-content p,
+  .sl-markdown-content li {
+    max-width: 22rem;
+    overflow-wrap: break-word;
+  }
+
+  html[data-has-hero] .hero {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    overflow-x: hidden !important;
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  html[data-has-hero] .hero .stack,
+  html[data-has-hero] .hero .copy,
+  html[data-has-hero] .hero .actions {
+    width: 100%;
+    max-width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  html[data-has-hero] .hero h1 {
+    max-width: 18rem !important;
+    font-size: clamp(2rem, 10vw, 2.7rem) !important;
+    line-height: 1.08 !important;
+  }
+
+  html[data-has-hero] .hero .tagline {
+    max-width: 18rem !important;
+  }
+
+  html[data-has-hero] .hero img {
+    width: min(18rem, 100%) !important;
+    max-width: min(18rem, 100%) !important;
+    height: auto;
+    margin-inline: auto;
+  }
+
+  html[data-has-hero] .hero .actions {
+    align-items: center;
+    flex-direction: column;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  html[data-has-hero] .hero .actions a {
+    max-width: 18rem;
+  }
+}
+
+.sl-markdown-content .operator-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 1rem;
+}
+
+.sl-markdown-content .operator-grid > * {
+  margin-top: 0;
+}
