@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use ployz_types::Result;
-use ployz_types::error::Error;
+use ployz_types::error::{Error, StoreRecordKind};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     CertificateEvent, CertificateRecord, DeployId, DeployPhaseCommitRecord, DeployPhaseId,
@@ -568,6 +568,97 @@ pub struct DeployCommit {
     pub deploy: DeployRecord,
 }
 
+impl DeployCommit {
+    pub fn validate_identity(&self, namespace: &Namespace, deploy_id: &DeployId) -> Result<()> {
+        let expected = format!("{}/{}", namespace.0, deploy_id.0);
+        if &self.namespace != namespace {
+            return Err(Error::store_key_mismatch(
+                StoreRecordKind::DeployCommit,
+                expected,
+                format!("{}/{}", self.namespace.0, self.deploy.deploy_id.0),
+            ));
+        }
+        if &self.deploy.deploy_id != deploy_id {
+            return Err(Error::store_key_mismatch(
+                StoreRecordKind::DeployCommit,
+                expected,
+                format!("{}/{}", self.namespace.0, self.deploy.deploy_id.0),
+            ));
+        }
+        if self.deploy.namespace != self.namespace {
+            return Err(Error::store_key_mismatch(
+                StoreRecordKind::DeployCommit,
+                format!("commit namespace {}", self.namespace.0),
+                format!("deploy namespace {}", self.deploy.namespace.0),
+            ));
+        }
+        for revision in &self.revisions {
+            self.validate_embedded_namespace("revision", &revision.namespace)?;
+        }
+        for release in &self.releases {
+            self.validate_embedded_namespace("release", &release.namespace)?;
+        }
+        for lineage in &self.branch_lineage {
+            self.validate_embedded_namespace("branch lineage", &lineage.namespace)?;
+        }
+        for movement in &self.volume_movements {
+            self.validate_embedded_namespace("volume movement", &movement.namespace)?;
+            self.validate_embedded_commit_deploy_id(
+                "volume movement",
+                &movement.commit_deploy_id,
+                deploy_id,
+            )?;
+        }
+        for branch in &self.volume_branches {
+            self.validate_embedded_namespace("volume branch", &branch.namespace)?;
+            self.validate_embedded_commit_deploy_id(
+                "volume branch",
+                &branch.commit_deploy_id,
+                deploy_id,
+            )?;
+        }
+        for phase_commit in &self.phase_commits {
+            self.validate_embedded_namespace("phase commit", &phase_commit.namespace)?;
+            self.validate_embedded_commit_deploy_id(
+                "phase commit",
+                &phase_commit.commit_deploy_id,
+                deploy_id,
+            )?;
+        }
+        for volume in &self.volumes {
+            self.validate_embedded_namespace("volume", &volume.namespace)?;
+        }
+        Ok(())
+    }
+
+    fn validate_embedded_namespace(&self, label: &str, namespace: &Namespace) -> Result<()> {
+        if namespace == &self.namespace {
+            return Ok(());
+        }
+        Err(Error::store_key_mismatch(
+            StoreRecordKind::DeployCommit,
+            format!("{label} namespace {}", self.namespace.0),
+            namespace.0.clone(),
+        ))
+    }
+
+    fn validate_embedded_commit_deploy_id(
+        &self,
+        label: &str,
+        actual: &DeployId,
+        expected: &DeployId,
+    ) -> Result<()> {
+        if actual == expected {
+            return Ok(());
+        }
+        Err(Error::store_key_mismatch(
+            StoreRecordKind::DeployCommit,
+            format!("{label} commit deploy {}", expected.0),
+            actual.0.clone(),
+        ))
+    }
+}
+
 #[async_trait]
 pub trait MachineMembershipStore: Send + Sync {
     async fn init(&self) -> Result<()> {
@@ -657,6 +748,12 @@ pub trait DeployStore: Send + Sync {
     ) -> Result<Option<VolumeRecord>>;
 
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()>;
+
+    async fn get_deploy_commit(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+    ) -> Result<Option<DeployCommit>>;
 
     async fn write_deploy_status(&self, deploy: &DeployRecord) -> Result<()>;
 

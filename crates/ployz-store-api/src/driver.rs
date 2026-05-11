@@ -240,6 +240,14 @@ impl DeployStore for StoreDriver {
         self.deploys.commit_deploy(command).await
     }
 
+    async fn get_deploy_commit(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+    ) -> Result<Option<DeployCommit>> {
+        self.deploys.get_deploy_commit(namespace, deploy_id).await
+    }
+
     async fn write_deploy_status(&self, deploy: &DeployRecord) -> Result<()> {
         self.deploys.write_deploy_status(deploy).await
     }

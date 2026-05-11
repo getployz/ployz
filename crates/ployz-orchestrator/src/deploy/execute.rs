@@ -21,7 +21,9 @@ use crate::model::{
     VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use futures_util::stream::{self, FuturesUnordered, StreamExt, TryStreamExt};
-use ployz_store_api::{DeployCommit, DeployStore, InstanceStatusStore, StoreDriver};
+use ployz_store_api::{
+    DeployCommit, DeployStore, InstanceStatusStore, MachineMembershipStore, StoreDriver,
+};
 use ployz_types::spec::{VolumeCloneConsistency, VolumeCloneDataPolicy};
 use ployz_types::time::now_unix_secs;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -34,6 +36,11 @@ const PHASE_MACHINE_CONCURRENCY: usize = 64;
 
 pub(super) fn new_deploy_id() -> DeployId {
     DeployId(Uuid::new_v4().to_string())
+}
+
+enum PreparedApplyReplay {
+    Complete(DeployApplyResult),
+    DurableCommit(DeployCommit),
 }
 
 #[derive(Debug, Clone)]
@@ -105,11 +112,30 @@ impl ParticipantSet {
         local_machine_id: &MachineId,
         deploy_id: &DeployId,
     ) -> Result<(Self, Vec<DeployEvent>)> {
-        let sorted_participants = plan.participants().iter().cloned().collect::<Vec<_>>();
         let namespace = plan.namespace().clone();
+        Self::inspect_participants(
+            participant_client,
+            namespace,
+            plan.machine_map().clone(),
+            plan.participants().clone(),
+            local_machine_id,
+            deploy_id,
+        )
+        .await
+    }
+
+    async fn inspect_participants(
+        participant_client: &dyn DeployParticipantClient,
+        namespace: ployz_types::spec::Namespace,
+        machine_map: HashMap<MachineId, MachineMembership>,
+        participant_ids: BTreeSet<MachineId>,
+        local_machine_id: &MachineId,
+        deploy_id: &DeployId,
+    ) -> Result<(Self, Vec<DeployEvent>)> {
+        let sorted_participants = participant_ids.iter().cloned().collect::<Vec<_>>();
         let inspected: Vec<InspectedParticipant> = stream::iter(sorted_participants.into_iter())
             .map(|participant| {
-                let machine = plan.machine_map().get(&participant).cloned();
+                let machine = machine_map.get(&participant).cloned();
                 let namespace = namespace.clone();
                 let deploy_id = deploy_id.clone();
                 async move {
@@ -134,11 +160,10 @@ impl ParticipantSet {
         let mut inspected = inspected;
         inspected.sort_by(|left, right| left.participant.0.cmp(&right.participant.0));
 
-        let machines = plan
-            .participants()
+        let machines = participant_ids
             .iter()
             .map(|machine_id| {
-                let machine = plan.machine_map().get(machine_id).cloned().ok_or_else(|| {
+                let machine = machine_map.get(machine_id).cloned().ok_or_else(|| {
                     Error::Deploy(DeployError::ParticipantMissing {
                         machine_id: machine_id.0.clone(),
                     })
@@ -382,8 +407,25 @@ pub(super) async fn apply_prepared_with_certificate_coordination(
 ) -> Result<DeployApplyResult> {
     let prepared = load_applicable_prepared_deploy(store, &prepared_deploy_id).await?;
     let manifest = super::validated_prepared_manifest(&prepared)?;
-    if let Some(result) = existing_terminal_prepared_apply_result(store, &prepared).await? {
-        return Ok(result);
+    if let Some(replay) = existing_prepared_apply_replay(store, &prepared).await? {
+        return match replay {
+            PreparedApplyReplay::Complete(result) => Ok(result),
+            PreparedApplyReplay::DurableCommit(commit) => {
+                resume_prepared_apply_after_durable_commit(
+                    store,
+                    participant_client,
+                    local_machine_id,
+                    &manifest,
+                    &prepared,
+                    commit,
+                    certificate_coordinator,
+                    account_coordinator,
+                    challenge_readiness,
+                    issuer_factory,
+                )
+                .await
+            }
+        };
     }
     if prepared.state != PreparedDeployState::Prepared {
         return Err(Error::Deploy(DeployError::PreparedDeployNotApplicable {
@@ -448,18 +490,56 @@ async fn ensure_prepared_not_expired(
     }))
 }
 
-async fn existing_terminal_prepared_apply_result(
+async fn existing_prepared_apply_replay(
     store: &StoreDriver,
     prepared: &PreparedDeployRecord,
+) -> Result<Option<PreparedApplyReplay>> {
+    let status_record = store.get_deploy(&prepared.prepared_deploy_id).await?;
+    if let Some(record) = status_record.as_ref()
+        && matches!(
+            record.state,
+            DeployState::Committed | DeployState::CleanupPending
+        )
+        && let Some(result) = prepared_apply_result_from_terminal_record(
+            store,
+            prepared,
+            record.clone(),
+            "prepared deploy already has a terminal committed deploy record",
+        )
+        .await?
+    {
+        return Ok(Some(PreparedApplyReplay::Complete(result)));
+    }
+    if let Some(commit) = store
+        .get_deploy_commit(&prepared.namespace, &prepared.prepared_deploy_id)
+        .await?
+    {
+        return Ok(Some(PreparedApplyReplay::DurableCommit(commit)));
+    }
+    if let Some(record) = status_record {
+        return prepared_apply_result_from_terminal_record(
+            store,
+            prepared,
+            record,
+            "prepared deploy already has a terminal committed deploy record",
+        )
+        .await
+        .map(|result| result.map(PreparedApplyReplay::Complete));
+    }
+    Ok(None)
+}
+
+async fn prepared_apply_result_from_terminal_record(
+    store: &StoreDriver,
+    prepared: &PreparedDeployRecord,
+    record: DeployRecord,
+    message: &str,
 ) -> Result<Option<DeployApplyResult>> {
-    let Some(record) = store.get_deploy(&prepared.prepared_deploy_id).await? else {
-        return Ok(None);
-    };
     match record.state {
         DeployState::Committed | DeployState::CleanupPending => {
             let mut events = vec![DeployEvent {
                 step: "prepared_deploy".into(),
-                message: "prepared deploy already has a terminal committed deploy record".into(),
+                message: message.into(),
             }];
             if prepared.state == PreparedDeployState::Prepared {
                 if let Err(error) = store
@@ -501,7 +581,298 @@ async fn existing_terminal_prepared_apply_result(
     }
 }
 
-async fn mark_prepared_applied_after_durable_commit(
+async fn resume_prepared_apply_after_durable_commit(
+    store: &StoreDriver,
+    participant_client: &dyn DeployParticipantClient,
+    local_machine_id: &MachineId,
+    manifest: &ployz_types::spec::DeployManifest,
+    prepared: &PreparedDeployRecord,
+    commit: DeployCommit,
+    certificate_coordinator: Arc<dyn IssuanceCoordinator>,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
+    issuer_factory: Arc<dyn AcmeIssuerFactory>,
+) -> Result<DeployApplyResult> {
+    match commit.deploy.state {
+        DeployState::Committed | DeployState::CleanupPending => {}
+        DeployState::CheckpointCommitted | DeployState::FailedAfterCheckpoint => {
+            return prepared_apply_result_from_terminal_record(
+                store,
+                prepared,
+                commit.deploy,
+                "prepared deploy already has a terminal checkpoint deploy record",
+            )
+            .await?
+            .ok_or_else(|| {
+                Error::operation(
+                    "prepared_deploy_replay",
+                    "checkpoint deploy record did not produce replay result",
+                )
+            });
+        }
+        DeployState::Planning | DeployState::Applying | DeployState::Failed => {
+            return Ok(DeployApplyResult {
+                deploy_id: commit.deploy.deploy_id,
+                preview: serde_json::from_str(&commit.deploy.summary_json).map_err(|error| {
+                    Error::operation(
+                        "prepared_deploy_replay",
+                        format!("decode committed deploy preview: {error}"),
+                    )
+                })?,
+                state: commit.deploy.state,
+                events: vec![DeployEvent {
+                    step: "prepared_deploy".into(),
+                    message: "prepared deploy commit log is not terminal".into(),
+                }],
+            });
+        }
+    }
+
+    let mut events = vec![DeployEvent {
+        step: "prepared_deploy".into(),
+        message: "prepared deploy recovered replayable terminal status from durable commit log"
+            .into(),
+    }];
+    let mut final_preview: DeployPreview = serde_json::from_str(&commit.deploy.summary_json)
+        .map_err(|error| {
+            Error::operation(
+                "prepared_deploy_replay",
+                format!("decode committed deploy preview: {error}"),
+            )
+        })?;
+    let mut final_deploy_record = commit.deploy.clone();
+    store.write_deploy_status(&final_deploy_record).await?;
+    mark_prepared_applied_after_terminal_status(store, Some(prepared), &mut events).await;
+
+    let plan = match resolve_plan(store, local_machine_id, manifest).await {
+        Ok(plan) => plan,
+        Err(error) => {
+            return recovered_commit_result_with_post_commit_warning(
+                store,
+                prepared,
+                final_deploy_record,
+                final_preview,
+                events,
+                format!("post-commit finalization could not resolve plan: {error}"),
+            )
+            .await;
+        }
+    };
+    let mut cleanup_participants = plan.participants().clone();
+    cleanup_participants.extend(prepared.preview.participants.iter().cloned());
+    let machine_map = match store.list_machines().await {
+        Ok(machines) => machines
+            .into_iter()
+            .map(|machine| (machine.id.clone(), machine))
+            .collect::<HashMap<_, _>>(),
+        Err(error) => {
+            return recovered_commit_result_with_post_commit_warning(
+                store,
+                prepared,
+                final_deploy_record,
+                final_preview,
+                events,
+                format!("post-commit cleanup could not list machines: {error}"),
+            )
+            .await;
+        }
+    };
+    let (participants, inspect_events) = match ParticipantSet::inspect_participants(
+        participant_client,
+        plan.namespace().clone(),
+        machine_map,
+        cleanup_participants.clone(),
+        local_machine_id,
+        &prepared.prepared_deploy_id,
+    )
+    .await
+    {
+        Ok(inspected) => inspected,
+        Err(error) => {
+            return recovered_commit_result_with_post_commit_warning(
+                store,
+                prepared,
+                final_deploy_record,
+                final_preview,
+                events,
+                format!("post-commit cleanup could not inspect participants: {error}"),
+            )
+            .await;
+        }
+    };
+    events.push(DeployEvent {
+        step: "prepared_deploy".into(),
+        message: "prepared deploy resumed post-commit finalization from durable commit log".into(),
+    });
+    events.extend(inspect_events);
+
+    let managed_hostnames = match managed_domains::ensure_certificate_intents(
+        store,
+        &plan,
+        issuer_factory.issuer_url(),
+    )
+    .await
+    {
+        Ok(hostnames) => hostnames,
+        Err(error) => {
+            return recovered_commit_result_with_post_commit_warning(
+                store,
+                prepared,
+                final_deploy_record,
+                final_preview,
+                events,
+                format!("post-commit certificate intent finalization failed: {error}"),
+            )
+            .await;
+        }
+    };
+    let issuer = issuer_factory.create(
+        Arc::new(LocalHttp01ChallengeReadiness),
+        account_coordinator.clone(),
+    );
+    let acme_warnings = start_pending_orders(
+        store,
+        issuer.as_ref(),
+        certificate_coordinator.as_ref(),
+        &managed_hostnames,
+    )
+    .await;
+    let mut managed_warnings = match managed_domains::warnings_for_plan(store, &plan).await {
+        Ok(warnings) => warnings,
+        Err(error) => {
+            return recovered_commit_result_with_post_commit_warning(
+                store,
+                prepared,
+                final_deploy_record,
+                final_preview,
+                events,
+                format!("post-commit warning refresh failed: {error}"),
+            )
+            .await;
+        }
+    };
+    managed_warnings.extend(acme_warnings);
+    final_preview.warnings = managed_warnings;
+
+    spawn_certificate_finalization_with_coordination(
+        store.clone(),
+        issuer_factory.clone(),
+        challenge_readiness,
+        account_coordinator,
+        certificate_coordinator,
+    );
+
+    let active_instance_ids = match store.list_deploy_releases(&commit.namespace).await {
+        Ok(releases) => releases
+            .iter()
+            .flat_map(|release| release.release.slots.iter())
+            .map(|slot| slot.active_instance_id.0.clone())
+            .collect(),
+        Err(error) => {
+            return recovered_commit_result_with_post_commit_warning(
+                store,
+                prepared,
+                final_deploy_record,
+                final_preview,
+                events,
+                format!("post-commit cleanup could not list committed releases: {error}"),
+            )
+            .await;
+        }
+    };
+    let cleanup_plan = CleanupPlan::new(
+        commit.namespace.clone(),
+        cleanup_participants,
+        active_instance_ids,
+    );
+    let cleanup = match cleanup_stale_instances(
+        store,
+        participant_client,
+        &participants,
+        &cleanup_plan,
+    )
+    .await
+    {
+        Ok(cleanup) => cleanup,
+        Err(error) => {
+            return recovered_commit_result_with_post_commit_warning(
+                store,
+                prepared,
+                final_deploy_record,
+                final_preview,
+                events,
+                format!("post-commit cleanup failed: {error}"),
+            )
+            .await;
+        }
+    };
+    events.extend(cleanup.events);
+
+    final_deploy_record.summary_json = serde_json::to_string(&final_preview).map_err(|error| {
+        Error::operation(
+            "prepared_deploy_replay",
+            format!("serialize preview: {error}"),
+        )
+    })?;
+    let final_state = if cleanup.errors.is_empty() {
+        final_deploy_record.state
+    } else {
+        final_deploy_record.state = DeployState::CleanupPending;
+        final_deploy_record.finished_at = Some(now_unix_secs());
+        for error in cleanup.errors {
+            events.push(DeployEvent {
+                step: "cleanup_pending".into(),
+                message: error,
+            });
+        }
+        DeployState::CleanupPending
+    };
+    store.write_deploy_status(&final_deploy_record).await?;
+
+    Ok(DeployApplyResult {
+        deploy_id: prepared.prepared_deploy_id.clone(),
+        preview: final_preview,
+        state: final_state,
+        events,
+    })
+}
+
+async fn recovered_commit_result_with_post_commit_warning(
+    store: &StoreDriver,
+    prepared: &PreparedDeployRecord,
+    mut record: DeployRecord,
+    mut preview: DeployPreview,
+    mut events: Vec<DeployEvent>,
+    warning: String,
+) -> Result<DeployApplyResult> {
+    preview.warnings.push(warning.clone());
+    events.push(DeployEvent {
+        step: "cleanup_pending".into(),
+        message: warning,
+    });
+    record.state = DeployState::CleanupPending;
+    record.finished_at = Some(now_unix_secs());
+    record.summary_json = serde_json::to_string(&preview).map_err(|error| {
+        Error::operation(
+            "prepared_deploy_replay",
+            format!("serialize warning preview: {error}"),
+        )
+    })?;
+    if let Err(update_error) = store.write_deploy_status(&record).await {
+        events.push(DeployEvent {
+            step: "cleanup_pending".into(),
+            message: format!("could not record cleanup-pending recovery status: {update_error}"),
+        });
+    }
+    Ok(DeployApplyResult {
+        deploy_id: prepared.prepared_deploy_id.clone(),
+        preview,
+        state: DeployState::CleanupPending,
+        events,
+    })
+}
+
+async fn mark_prepared_applied_after_terminal_status(
     store: &StoreDriver,
     prepared: Option<&PreparedDeployRecord>,
     events: &mut Vec<DeployEvent>,
@@ -821,8 +1192,6 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         if let Err(error) = store.commit_deploy(&final_commit).await {
             if is_post_commit_routing_publish_failure(&error) {
                 durable_final_commit_record = Some(final_commit.deploy.clone());
-                mark_prepared_applied_after_durable_commit(store, prepared_record, &mut events)
-                    .await;
                 record_phases_succeeded_after_commit(
                     store,
                     &deploy_id,
@@ -836,6 +1205,12 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                     .is_ok()
                 {
                     last_written_deploy_record = Some(final_commit.deploy.clone());
+                    mark_prepared_applied_after_terminal_status(
+                        store,
+                        prepared_record,
+                        &mut events,
+                    )
+                    .await;
                 }
                 return Err(error);
             }
@@ -850,7 +1225,6 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             return Err(error);
         }
         durable_final_commit_record = Some(final_commit.deploy.clone());
-        mark_prepared_applied_after_durable_commit(store, prepared_record, &mut events).await;
         let committed_status_result = store.write_deploy_status(&final_commit.deploy).await;
         record_phases_succeeded_after_commit(
             store,
@@ -861,6 +1235,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         .await;
         if committed_status_result.is_ok() {
             last_written_deploy_record = Some(final_commit.deploy.clone());
+            mark_prepared_applied_after_terminal_status(store, prepared_record, &mut events).await;
         }
         committed_status_result?;
         events.push(DeployEvent {
@@ -977,12 +1352,30 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
                     .map(|record| record.state),
                 Some(DeployState::Committed | DeployState::CleanupPending)
             ) {
-                if let Err(update_error) = store.write_deploy_status(&committed_record).await {
-                    warn!(
-                        ?update_error,
-                        deploy_id = %deploy_id,
-                        "failed to record committed deploy state after durable commit"
-                    );
+                match store.write_deploy_status(&committed_record).await {
+                    Ok(()) => {
+                        if let Some(prepared) = prepared_record
+                            && let Err(update_error) = store
+                                .mark_prepared_deploy_applied(
+                                    &prepared.prepared_deploy_id,
+                                    now_unix_secs(),
+                                )
+                                .await
+                        {
+                            warn!(
+                                ?update_error,
+                                deploy_id = %deploy_id,
+                                "failed to mark prepared deploy applied after committed status repair"
+                            );
+                        }
+                    }
+                    Err(update_error) => {
+                        warn!(
+                            ?update_error,
+                            deploy_id = %deploy_id,
+                            "failed to record committed deploy state after durable commit"
+                        );
+                    }
                 }
             }
         } else if let Some(last_record) = last_written_deploy_record

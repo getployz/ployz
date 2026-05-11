@@ -469,6 +469,14 @@ where
         DeployStore::commit_deploy(self.store().await?.as_ref(), command).await
     }
 
+    async fn get_deploy_commit(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+    ) -> Result<Option<DeployCommit>> {
+        DeployStore::get_deploy_commit(self.store().await?.as_ref(), namespace, deploy_id).await
+    }
+
     async fn write_deploy_status(&self, deploy: &DeployRecord) -> Result<()> {
         DeployStore::write_deploy_status(self.store().await?.as_ref(), deploy).await
     }

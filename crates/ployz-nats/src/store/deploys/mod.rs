@@ -109,6 +109,14 @@ impl DeployStore for NatsStore {
         })
     }
 
+    async fn get_deploy_commit(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+    ) -> Result<Option<DeployCommit>> {
+        read_deploy_commit(self.jetstream(), self.scope(), namespace, deploy_id).await
+    }
+
     async fn write_deploy_status(&self, deploy: &DeployRecord) -> Result<()> {
         write_deploy_status_entry(
             self.jetstream(),
@@ -266,11 +274,40 @@ impl NatsStore {
     }
 }
 
+async fn read_deploy_commit(
+    js: &jetstream::Context,
+    scope: &NatsScope,
+    namespace: &Namespace,
+    deploy_id: &DeployId,
+) -> Result<Option<DeployCommit>> {
+    let stream_name = NatsAssetNames::new(scope).deploy_commits_stream;
+    let stream = js
+        .get_stream(stream_name.as_str())
+        .await
+        .map_err(|error| Error::operation("nats_deploy_stream", format!("{error:?}")))?;
+    let subject = subjects::deploy_commit_in(scope, namespace, deploy_id);
+    let message = match stream.direct_get_last_for_subject(subject).await {
+        Ok(message) => message,
+        Err(error) if error.kind() == DirectGetErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(Error::operation(
+                "nats_deploy_commit_get",
+                format!("{error:?}"),
+            ));
+        }
+    };
+    let commit: DeployCommit = serde_json::from_slice(message.payload.as_ref())
+        .map_err(|error| Error::operation("nats_deploy_commit_decode", error.to_string()))?;
+    commit.validate_identity(namespace, deploy_id)?;
+    Ok(Some(commit))
+}
+
 async fn publish_commit_in(
     js: &jetstream::Context,
     scope: &NatsScope,
     commit: &DeployCommit,
 ) -> Result<DeployCommitPublish> {
+    commit.validate_identity(&commit.namespace, &commit.deploy.deploy_id)?;
     let subject = subjects::deploy_commit_in(scope, &commit.namespace, &commit.deploy.deploy_id);
     let stream = NatsAssetNames::new(scope).deploy_commits_stream;
     let payload = serde_json::to_vec(commit)
@@ -411,6 +448,7 @@ async fn apply_commit_fact_range(
         };
         let commit: DeployCommit = serde_json::from_slice(message.payload.as_ref())
             .map_err(|error| Error::operation("nats_deploy_commit_decode", error.to_string()))?;
+        commit.validate_identity(&commit.namespace, &commit.deploy.deploy_id)?;
         let _events = facts.apply_commit_events(&commit);
     }
     Ok(())
