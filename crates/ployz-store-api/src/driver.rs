@@ -8,11 +8,12 @@ use crate::{
 use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
-    AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
-    DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord, ImageAvailabilityRecord, ImageDigest,
-    InstanceId, InstanceStatusRecord, InviteRecord, MachineId, MachineMembership,
-    PreparedDeployRecord, RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord,
-    ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
+    AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, BranchEnvironmentFailure,
+    BranchEnvironmentRecord, CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord,
+    DeployRecord, ImageAvailabilityRecord, ImageDigest, InstanceId, InstanceStatusRecord,
+    InviteRecord, MachineId, MachineMembership, PreparedDeployRecord, RoutingState,
+    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
+    VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::sync::Arc;
@@ -294,6 +295,55 @@ impl DeployStore for StoreDriver {
     ) -> Result<PreparedDeployRecord> {
         self.deploys
             .supersede_prepared_deploy(prepared_deploy_id, updated_at)
+            .await
+    }
+
+    async fn upsert_branch_environment(&self, record: &BranchEnvironmentRecord) -> Result<()> {
+        self.deploys.upsert_branch_environment(record).await
+    }
+
+    async fn get_branch_environment(
+        &self,
+        target_namespace: &Namespace,
+    ) -> Result<Option<BranchEnvironmentRecord>> {
+        self.deploys.get_branch_environment(target_namespace).await
+    }
+
+    async fn list_branch_environments(&self) -> Result<Vec<BranchEnvironmentRecord>> {
+        self.deploys.list_branch_environments().await
+    }
+
+    async fn mark_branch_environment_active(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        applied_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<BranchEnvironmentRecord> {
+        self.deploys
+            .mark_branch_environment_active(
+                target_namespace,
+                prepared_deploy_id,
+                applied_deploy_id,
+                updated_at,
+            )
+            .await
+    }
+
+    async fn mark_branch_environment_failed(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        failure: &BranchEnvironmentFailure,
+        updated_at: u64,
+    ) -> Result<BranchEnvironmentRecord> {
+        self.deploys
+            .mark_branch_environment_failed(
+                target_namespace,
+                prepared_deploy_id,
+                failure,
+                updated_at,
+            )
             .await
     }
 

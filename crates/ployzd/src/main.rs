@@ -8,12 +8,15 @@ use clap::Parser;
 #[cfg(test)]
 pub(crate) use cli::DebugTickTaskArg;
 pub(crate) use cli::{
-    BranchAction, BranchApplyPreparedArgs, BranchNamespaceArgs, BranchResourceModeArg, BuildAction,
-    BuildMethodArg, BuildOperationAction, Cli, CliError, Command, DebugAction, DeployAction,
-    DeployCommand, DeployManifestArgs, DeployServiceArgs, ImageAction, ImageOperationAction,
-    InstallSourceArg, MachineAction, MachineInviteAction, MachineOperationAction,
-    MachineStorageAction, MeshAction, MigrateAction, MigrateServiceArgs, RuntimeAction,
-    RuntimeTargetArg, ServiceModeArg,
+    BranchAction, BranchApplyPreparedArgs, BranchNamespaceArgs, Cli, CliError, Command,
+    DebugAction, DeployAction, DeployCommand, DeployManifestArgs, DeployServiceArgs, ImageAction,
+    ImageOperationAction, InstallSourceArg, MachineAction, MachineInviteAction,
+    MachineOperationAction, MachineStorageAction, MeshAction, MigrateAction, MigrateServiceArgs,
+    RuntimeAction, RuntimeTargetArg, ServiceModeArg,
+};
+#[cfg(test)]
+use cli::{
+    BranchResourceModeArg, BranchStatusArgs, BuildAction, BuildMethodArg, BuildOperationAction,
 };
 use cli_io::{cmd_rpc_stdio, cmd_runtime_stream, render_response, request_daemon};
 #[cfg(test)]
@@ -327,6 +330,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_branch_status_and_list_commands() {
+        let status = Cli::try_parse_from(["ployzd", "branch", "status", "pr-39"])
+            .expect("branch status args should parse");
+        let Command::Branch {
+            action: BranchAction::Status(args),
+        } = status.command
+        else {
+            panic!("expected branch status command");
+        };
+        assert_eq!(args.target_namespace, "pr-39");
+
+        let list = Cli::try_parse_from(["ployzd", "branch", "list"])
+            .expect("branch list args should parse");
+        let Command::Branch {
+            action: BranchAction::List,
+        } = list.command
+        else {
+            panic!("expected branch list command");
+        };
+    }
+
+    #[test]
     fn build_branch_request_encodes_modes_and_overrides() {
         let request = build_branch_request(BranchAction::Prepare(BranchNamespaceArgs {
             source_namespace: "prod".into(),
@@ -413,19 +438,34 @@ mod tests {
     }
 
     #[test]
-    fn build_branch_apply_prepared_reuses_deploy_apply_prepared_request() {
+    fn build_branch_apply_prepared_uses_branch_lifecycle_request() {
         let request = build_branch_request(BranchAction::ApplyPrepared(BranchApplyPreparedArgs {
             prepared_deploy_id: "prepare-1".into(),
         }))
         .expect("branch apply-prepared request");
 
-        let DaemonRequest::DeployApplyPrepared { request } = request else {
-            panic!("expected deploy apply-prepared request");
+        let DaemonRequest::BranchApplyPrepared { request } = request else {
+            panic!("expected branch apply-prepared request");
         };
         assert_eq!(
             request.prepared_deploy_id,
             ployz_types::model::DeployId("prepare-1".into())
         );
+    }
+
+    #[test]
+    fn build_branch_status_and_list_requests() {
+        let status = build_branch_request(BranchAction::Status(BranchStatusArgs {
+            target_namespace: "pr-39".into(),
+        }))
+        .expect("branch status request");
+        let DaemonRequest::BranchEnvironmentStatus { request } = status else {
+            panic!("expected branch status request");
+        };
+        assert_eq!(request.target_namespace, "pr-39");
+
+        let list = build_branch_request(BranchAction::List).expect("branch list request");
+        assert!(matches!(list, DaemonRequest::BranchEnvironmentList));
     }
 
     #[test]

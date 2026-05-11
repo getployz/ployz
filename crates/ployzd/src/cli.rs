@@ -273,14 +273,21 @@ pub(crate) enum MigrateAction {
 pub(crate) enum BranchAction {
     Apply(BranchNamespaceArgs),
     ApplyPrepared(BranchApplyPreparedArgs),
+    List,
     Prepare(BranchNamespaceArgs),
     Preview(BranchNamespaceArgs),
     RenderManifest(BranchNamespaceArgs),
+    Status(BranchStatusArgs),
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct BranchApplyPreparedArgs {
     pub(crate) prepared_deploy_id: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct BranchStatusArgs {
+    pub(crate) target_namespace: String,
 }
 
 #[derive(Debug, Args)]

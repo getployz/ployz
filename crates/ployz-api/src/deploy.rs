@@ -1,6 +1,6 @@
 use ployz_types::model::{
-    DeployBaselineComponent, DeployId, DeployPreviewBaseline, InstanceStatusRecord,
-    PreparedDeployRecord, PreparedDeployState,
+    BranchEnvironmentRecord, DeployBaselineComponent, DeployId, DeployPreviewBaseline,
+    InstanceStatusRecord, PreparedDeployRecord, PreparedDeployState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -80,6 +80,26 @@ pub struct DeployPreparePayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeployApplyPreparedRequest {
     pub prepared_deploy_id: DeployId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchApplyPreparedRequest {
+    pub prepared_deploy_id: DeployId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchEnvironmentStatusRequest {
+    pub target_namespace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchEnvironmentPayload {
+    pub environment: BranchEnvironmentRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchEnvironmentListPayload {
+    pub environments: Vec<BranchEnvironmentRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -54,6 +54,9 @@ impl DaemonState {
             | DaemonRequest::DeployApplyPrepared { .. }
             | DaemonRequest::DeployExport { .. }
             | DaemonRequest::BranchNamespace { .. }
+            | DaemonRequest::BranchApplyPrepared { .. }
+            | DaemonRequest::BranchEnvironmentStatus { .. }
+            | DaemonRequest::BranchEnvironmentList
             | DaemonRequest::MigrateService { .. }
             | DaemonRequest::ImageStatus { .. }
             | DaemonRequest::ImageInspect { .. }
@@ -168,6 +171,13 @@ impl DaemonState {
             DaemonRequest::BranchNamespace { request } => {
                 self.handle_branch_namespace(request).await
             }
+            DaemonRequest::BranchApplyPrepared { request } => {
+                self.handle_branch_apply_prepared(&request).await
+            }
+            DaemonRequest::BranchEnvironmentStatus { request } => {
+                self.handle_branch_environment_status(&request).await
+            }
+            DaemonRequest::BranchEnvironmentList => self.handle_branch_environment_list().await,
             DaemonRequest::MigrateService { request } => self.handle_migrate_service(request).await,
             DaemonRequest::ImageStatus { request } => self.handle_image_status(&request).await,
             DaemonRequest::ImageInspect { request } => self.handle_image_inspect(&request).await,
@@ -503,6 +513,9 @@ impl DaemonState {
             | DaemonRequest::DeployApplyPrepared { .. }
             | DaemonRequest::DeployExport { .. }
             | DaemonRequest::BranchNamespace { .. }
+            | DaemonRequest::BranchApplyPrepared { .. }
+            | DaemonRequest::BranchEnvironmentStatus { .. }
+            | DaemonRequest::BranchEnvironmentList
             | DaemonRequest::MigrateService { .. }
             | DaemonRequest::ImageStatus { .. }
             | DaemonRequest::ImageInspect { .. }
