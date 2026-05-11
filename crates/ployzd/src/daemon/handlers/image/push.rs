@@ -4,12 +4,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use ployz_api::{
-    DaemonPayload, DaemonRequest, ImageDistributePayload, ImageDistributeRequest, ImagePushRequest,
-    ImageReceiveSessionPayload, ImageReceiveSessionRequest, ImageReceivedImportPayload,
-    ImageReceivedImportRequest, ImageTransferTargetResult, ImageTransferTargetStatus,
+    DaemonPayload, DaemonRequest, ImageDistributePayload, ImageDistributeRequest, ImagePushPayload,
+    ImagePushRequest, ImageReceiveSessionPayload, ImageReceiveSessionRequest,
+    ImageReceivedImportPayload, ImageReceivedImportRequest, ImageTransferTargetResult,
+    ImageTransferTargetStatus,
 };
 use ployz_nats::{NodeCommandSubject, RpcPolicy};
-use ployz_runtime_api::{ImageArchiveReader, RuntimeImageBackend};
+use ployz_runtime_api::{ImageArchiveReader, RuntimeImage, RuntimeImageBackend, RuntimeImageError};
 use ployz_store_api::{ImageAvailabilityStore, MachineMembershipStore};
 use ployz_types::model::{
     ImageArtifact, ImageArtifactProvenance, ImageAvailabilityRecord, ImageOperationKind,
@@ -29,16 +30,267 @@ use crate::daemon::handlers::image::registry::{
 };
 
 const IMAGE_RECEIVED_IMPORT_RPC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const IMAGE_DISTRIBUTE_RPC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 impl DaemonState {
     pub(crate) async fn handle_image_push(
         &self,
         request: &ImagePushRequest,
     ) -> ployz_api::DaemonResponse {
-        let _ = request;
-        self.err(
-            "IMAGE_PUSH_UNIMPLEMENTED",
-            "image push transport is not implemented yet",
+        let backend = match self.runtime_image_backend().await {
+            Ok(backend) => backend,
+            Err(error) => return self.err("IMAGE_PUSH_RUNTIME_UNAVAILABLE", error),
+        };
+        self.handle_image_push_with_backend(request, backend.as_ref())
+            .await
+    }
+
+    pub(crate) async fn handle_image_push_with_backend(
+        &self,
+        request: &ImagePushRequest,
+        backend: &dyn RuntimeImageBackend,
+    ) -> ployz_api::DaemonResponse {
+        let [first_target, rest_targets @ ..] = request.target_machines.as_slice() else {
+            return self.err(
+                "IMAGE_PUSH_TARGET_REQUIRED",
+                "image push requires at least one target machine",
+            );
+        };
+        if let Err(response) =
+            self.require_active("IMAGE_PUSH_INACTIVE", "image push requires a running mesh")
+        {
+            return *response;
+        }
+
+        let operation_store = self.image_operation_store();
+        let mut operation = match operation_store.begin(
+            ImageOperationKind::Push,
+            "verifying source image",
+            request.expected_digest.clone(),
+            Some(self.identity.machine_id.clone()),
+            request.target_machines.clone(),
+        ) {
+            Ok(operation) => operation,
+            Err(error) => return self.err("IMAGE_PUSH_OPERATION_FAILED", error),
+        };
+
+        let (digest, source_image) = match resolve_push_source_image(
+            backend,
+            &request.source_image,
+            &request.expected_digest,
+        )
+        .await
+        {
+            Ok(source) => source,
+            Err(error) => {
+                return self.fail_image_push_operation(
+                    &operation_store,
+                    &mut operation,
+                    first_target.clone(),
+                    format!("verify source image '{}': {error}", request.source_image),
+                );
+            }
+        };
+        if operation.digest.as_ref() != Some(&digest) {
+            operation.digest = Some(digest.clone());
+            if let Err(error) = operation_store.save(&operation) {
+                return self.fail_image_push_operation(
+                    &operation_store,
+                    &mut operation,
+                    first_target.clone(),
+                    format!(
+                        "persist resolved source image digest '{}': {error}",
+                        digest.as_str()
+                    ),
+                );
+            }
+        }
+
+        if let Err(error) = self.update_image_push_stage(
+            &operation_store,
+            &mut operation,
+            "exporting source image",
+            first_target,
+        ) {
+            return error;
+        }
+        let archive_reader = match backend.export_image_archive(&request.source_image).await {
+            Ok(reader) => reader,
+            Err(error) => {
+                return self.fail_image_push_operation(
+                    &operation_store,
+                    &mut operation,
+                    first_target.clone(),
+                    format!("export source image '{}': {error}", request.source_image),
+                );
+            }
+        };
+        let work_dir = self.data_dir.join("image-push").join(operation.id.clone());
+        let archive = match parse_image_archive(archive_reader, &work_dir).await {
+            Ok(archive) => archive,
+            Err(error) => {
+                cleanup_image_work_dir(&work_dir).await;
+                return self.fail_image_push_operation(
+                    &operation_store,
+                    &mut operation,
+                    first_target.clone(),
+                    error.to_string(),
+                );
+            }
+        };
+
+        let repository = default_receive_repository(&operation.id);
+        let reference = operation.id.clone();
+        let (first_record, first_upload) = match self
+            .push_archive_to_target(
+                &operation_store,
+                &mut operation,
+                first_target,
+                &repository,
+                &reference,
+                &digest,
+                request.platform.clone().or(source_image.platform.clone()),
+                archive.repo_tags.clone(),
+                &archive,
+                backend,
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(response) => {
+                cleanup_image_work_dir(&work_dir).await;
+                return response;
+            }
+        };
+        cleanup_image_work_dir(&work_dir).await;
+
+        let mut targets = vec![ImageTransferTargetResult {
+            machine_id: first_target.clone(),
+            status: ImageTransferTargetStatus::Present,
+            record: Some(first_record),
+            error: None,
+        }];
+        if let Err(error) = operation_store.update_target(
+            &mut operation,
+            ImageOperationTargetOutcome {
+                machine_id: first_target.clone(),
+                status: OperationStatus::Succeeded,
+                bytes_transferred: Some(first_upload.bytes_uploaded),
+                last_error: None,
+            },
+        ) {
+            return self.err("IMAGE_PUSH_OPERATION_FAILED", error);
+        }
+
+        let platform = request.platform.clone().or(source_image.platform);
+        for target in rest_targets {
+            if let Err(error) = self.update_image_push_stage(
+                &operation_store,
+                &mut operation,
+                "distributing pushed image",
+                target,
+            ) {
+                return error;
+            }
+            match self
+                .distribute_pushed_image_from_target(
+                    first_target,
+                    target,
+                    &digest,
+                    platform.clone(),
+                    backend,
+                )
+                .await
+            {
+                Ok(target_result) => {
+                    if let Err(error) = operation_store.update_target(
+                        &mut operation,
+                        ImageOperationTargetOutcome {
+                            machine_id: target.clone(),
+                            status: OperationStatus::Succeeded,
+                            bytes_transferred: None,
+                            last_error: None,
+                        },
+                    ) {
+                        return self.err("IMAGE_PUSH_OPERATION_FAILED", error);
+                    }
+                    targets.push(target_result);
+                }
+                Err(message) => {
+                    if let Err(error) = operation_store.update_target(
+                        &mut operation,
+                        ImageOperationTargetOutcome {
+                            machine_id: target.clone(),
+                            status: OperationStatus::Failed,
+                            bytes_transferred: None,
+                            last_error: Some(message.clone()),
+                        },
+                    ) {
+                        return self.err(
+                            "IMAGE_PUSH_OPERATION_FAILED",
+                            format!(
+                                "image push failed for target '{target}': {message}; also failed to persist target failure: {error}"
+                            ),
+                        );
+                    }
+                    targets.push(ImageTransferTargetResult {
+                        machine_id: target.clone(),
+                        status: ImageTransferTargetStatus::Failed,
+                        record: None,
+                        error: Some(message),
+                    });
+                }
+            }
+        }
+
+        let artifact = ImageArtifact {
+            image: image_ref_from_tag(&request.source_image, digest.clone()),
+            platform,
+            provenance: ImageArtifactProvenance::External {
+                source: Some(format!("image push from {}", self.identity.machine_id)),
+            },
+            created_at: now_unix_secs(),
+        };
+        let payload = ImagePushPayload {
+            operation_id: operation.id.clone(),
+            artifact,
+            targets,
+        };
+        let failed_targets = payload
+            .targets
+            .iter()
+            .filter(|target| target.status == ImageTransferTargetStatus::Failed)
+            .count();
+        if failed_targets > 0 {
+            let message = format!(
+                "image {} pushed with {failed_targets} failed target(s)",
+                digest.as_str()
+            );
+            if let Err(error) = operation_store.update_status(
+                &mut operation,
+                OperationStatus::Failed,
+                Some(message.clone()),
+            ) {
+                return self.err("IMAGE_PUSH_OPERATION_FAILED", error);
+            }
+            return self.err_with_payload(
+                "IMAGE_PUSH_PARTIAL_FAILED",
+                message,
+                Some(DaemonPayload::ImagePush(payload)),
+            );
+        }
+        if let Err(error) =
+            operation_store.update_status(&mut operation, OperationStatus::Succeeded, None)
+        {
+            return self.err("IMAGE_PUSH_OPERATION_FAILED", error);
+        }
+        self.ok_with_payload(
+            format!(
+                "image {} pushed to {} target(s)",
+                digest.as_str(),
+                payload.targets.len()
+            ),
+            Some(DaemonPayload::ImagePush(payload)),
         )
     }
 
@@ -528,6 +780,61 @@ impl DaemonState {
         self.err("IMAGE_DISTRIBUTE_FAILED", message)
     }
 
+    fn fail_image_push_operation(
+        &self,
+        operation_store: &ImageOperationStore,
+        operation: &mut ImageOperationRecord,
+        target_machine: MachineId,
+        message: String,
+    ) -> ployz_api::DaemonResponse {
+        if let Err(error) = operation_store.update_target(
+            operation,
+            ImageOperationTargetOutcome {
+                machine_id: target_machine,
+                status: OperationStatus::Failed,
+                bytes_transferred: None,
+                last_error: Some(message.clone()),
+            },
+        ) {
+            return self.err(
+                "IMAGE_PUSH_OPERATION_FAILED",
+                format!(
+                    "image push failed: {message}; also failed to persist target failure: {error}"
+                ),
+            );
+        }
+        if let Err(error) =
+            operation_store.update_status(operation, OperationStatus::Failed, Some(message.clone()))
+        {
+            return self.err(
+                "IMAGE_PUSH_OPERATION_FAILED",
+                format!(
+                    "image push failed: {message}; also failed to persist operation failure: {error}"
+                ),
+            );
+        }
+        self.err("IMAGE_PUSH_FAILED", message)
+    }
+
+    fn update_image_push_stage(
+        &self,
+        operation_store: &ImageOperationStore,
+        operation: &mut ImageOperationRecord,
+        stage: &str,
+        target_machine: &MachineId,
+    ) -> Result<(), ployz_api::DaemonResponse> {
+        operation_store
+            .update_stage(operation, stage)
+            .map_err(|error| {
+                self.fail_image_push_operation(
+                    operation_store,
+                    operation,
+                    target_machine.clone(),
+                    format!("update image push stage '{stage}': {error}"),
+                )
+            })
+    }
+
     fn update_image_distribute_stage(
         &self,
         operation_store: &ImageOperationStore,
@@ -587,6 +894,145 @@ impl DaemonState {
         Ok(payload)
     }
 
+    async fn push_archive_to_target(
+        &self,
+        operation_store: &ImageOperationStore,
+        operation: &mut ImageOperationRecord,
+        target_machine: &MachineId,
+        repository: &str,
+        reference: &str,
+        digest: &ployz_types::model::ImageDigest,
+        platform: Option<ployz_types::model::ImagePlatform>,
+        repo_tags: Vec<String>,
+        archive: &crate::daemon::handlers::image::archive::ParsedImageArchive,
+        backend: &dyn RuntimeImageBackend,
+    ) -> Result<
+        (
+            ImageAvailabilityRecord,
+            crate::daemon::handlers::image::archive::ReceiverUploadReport,
+        ),
+        ployz_api::DaemonResponse,
+    > {
+        self.update_image_push_stage(
+            operation_store,
+            operation,
+            "opening receive session",
+            target_machine,
+        )?;
+        let session = self
+            .image_receive_session_for_target(target_machine, &operation.id, repository.to_string())
+            .await
+            .map_err(|message| {
+                self.fail_image_push_operation(
+                    operation_store,
+                    operation,
+                    target_machine.clone(),
+                    message,
+                )
+            })?;
+
+        self.update_image_push_stage(
+            operation_store,
+            operation,
+            "uploading image blobs",
+            target_machine,
+        )?;
+        let upload = upload_archive_to_receiver(&session, reference, archive)
+            .await
+            .map_err(|error| {
+                self.fail_image_push_operation(
+                    operation_store,
+                    operation,
+                    target_machine.clone(),
+                    error.to_string(),
+                )
+            })?;
+
+        self.update_image_push_stage(
+            operation_store,
+            operation,
+            "importing target image",
+            target_machine,
+        )?;
+        let record = self
+            .import_received_image_for_target(
+                target_machine,
+                ImageReceivedImportRequest {
+                    operation_id: operation.id.clone(),
+                    source_machine: self.identity.machine_id.clone(),
+                    repository: repository.to_string(),
+                    reference: reference.to_string(),
+                    expected_digest: digest.clone(),
+                    platform,
+                    repo_tags,
+                },
+                backend,
+            )
+            .await
+            .map_err(|message| {
+                self.fail_image_push_operation(
+                    operation_store,
+                    operation,
+                    target_machine.clone(),
+                    message,
+                )
+            })?;
+        Ok((record, upload))
+    }
+
+    async fn distribute_pushed_image_from_target(
+        &self,
+        source_machine: &MachineId,
+        target_machine: &MachineId,
+        digest: &ployz_types::model::ImageDigest,
+        platform: Option<ployz_types::model::ImagePlatform>,
+        backend: &dyn RuntimeImageBackend,
+    ) -> Result<ImageTransferTargetResult, String> {
+        let request = ImageDistributeRequest {
+            digest: digest.clone(),
+            source_machine: source_machine.clone(),
+            target_machines: vec![target_machine.clone()],
+            platform,
+        };
+        let response = if source_machine == &self.identity.machine_id {
+            self.handle_image_distribute_with_backend(&request, backend)
+                .await
+        } else {
+            let client = self
+                .nats_node_rpc_client()
+                .await
+                .map_err(|error| format!("connect node rpc for image distribute: {error}"))?;
+            client
+                .with_policy(RpcPolicy {
+                    timeout: IMAGE_DISTRIBUTE_RPC_TIMEOUT,
+                })
+                .request(
+                    NodeCommandSubject::image_distribute(source_machine),
+                    &DaemonRequest::ImageDistribute { request },
+                )
+                .await
+                .map_err(|error| {
+                    format!("request image distribute from {source_machine}: {error}")
+                })?
+        };
+        if !response.ok {
+            return Err(format!(
+                "target image distribute failed [{}]: {}",
+                response.code, response.message
+            ));
+        }
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+            return Err("target image distribute response did not include a payload".into());
+        };
+        let [target] = payload.targets.as_slice() else {
+            return Err(format!(
+                "target image distribute returned {} target results",
+                payload.targets.len()
+            ));
+        };
+        Ok(target.clone())
+    }
+
     async fn import_received_image_for_target(
         &self,
         target_machine: &MachineId,
@@ -623,6 +1069,41 @@ impl DaemonState {
         };
         Ok(payload.record)
     }
+}
+
+async fn resolve_push_source_image(
+    backend: &dyn RuntimeImageBackend,
+    source_image: &str,
+    expected_digest: &Option<ployz_types::model::ImageDigest>,
+) -> Result<(ployz_types::model::ImageDigest, RuntimeImage), RuntimeImageError> {
+    if let Some(expected_digest) = expected_digest {
+        let image = backend
+            .verify_image_digest(source_image, expected_digest)
+            .await?;
+        let digest = push_runtime_image_identity(source_image, &image)?;
+        return Ok((digest, image));
+    }
+    let Some(image) = backend.inspect_image(source_image).await? else {
+        return Err(RuntimeImageError::NotFound {
+            reference: source_image.into(),
+        });
+    };
+    let digest = push_runtime_image_identity(source_image, &image)?;
+    Ok((digest, image))
+}
+
+fn push_runtime_image_identity(
+    source_image: &str,
+    image: &RuntimeImage,
+) -> Result<ployz_types::model::ImageDigest, RuntimeImageError> {
+    let Some(id) = image.id.as_deref() else {
+        return Err(RuntimeImageError::MissingDigest {
+            reference: source_image.into(),
+        });
+    };
+    ployz_types::model::ImageDigest::try_new(id).map_err(|_| RuntimeImageError::MissingDigest {
+        reference: source_image.into(),
+    })
 }
 
 fn receiver_endpoint(bind_addr: SocketAddr, repository: &str) -> String {
@@ -694,19 +1175,436 @@ mod tests {
     use crate::mesh_state::network::NetworkConfig;
 
     #[tokio::test]
-    async fn image_push_handler_returns_explicit_unimplemented_code() {
+    async fn image_push_rejects_zero_targets_before_operation_side_effects() {
         let state = make_state();
         let response = state
             .handle_image_push(&ImagePushRequest {
                 source_image: "example/app:latest".into(),
-                target_machines: vec![MachineId("machine-a".into())],
+                target_machines: Vec::new(),
                 platform: None,
                 expected_digest: None,
             })
             .await;
 
         assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_PUSH_UNIMPLEMENTED");
+        assert_eq!(response.code, "IMAGE_PUSH_TARGET_REQUIRED");
+        assert!(
+            state
+                .image_operation_store()
+                .list()
+                .expect("list operations")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn image_push_self_target_uploads_imports_and_records_availability() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let listener = crate::daemon::handlers::image::registry::serve(
+            "127.0.0.1:0".parse().expect("bind addr"),
+            state.image_registry.clone(),
+        )
+        .await
+        .expect("serve registry");
+        state
+            .active
+            .as_mut()
+            .expect("active mesh")
+            .image_receiver_bind_addr = Some(listener.bind_addr());
+        let digest = digest('a');
+        let backend = FakeImageBackend::new(digest.clone(), docker_archive_bytes());
+
+        let response = state
+            .handle_image_push_with_backend(
+                &ImagePushRequest {
+                    source_image: "example/app:latest".into(),
+                    target_machines: vec![MachineId("founder".into())],
+                    platform: None,
+                    expected_digest: Some(digest.clone()),
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(response.ok, "{response:?}");
+        let Some(DaemonPayload::ImagePush(payload)) = response.payload else {
+            panic!("expected push payload");
+        };
+        assert_eq!(payload.artifact.digest(), &digest);
+        assert_eq!(payload.targets.len(), 1);
+        assert_eq!(
+            payload.targets[0].status,
+            ImageTransferTargetStatus::Present
+        );
+        assert!(payload.targets[0].record.is_some());
+        assert!(*backend.imported.lock().expect("imported lock"));
+        let stored = state
+            .active
+            .as_ref()
+            .expect("active mesh")
+            .mesh
+            .store
+            .get_image_availability(&MachineId("founder".into()), &digest)
+            .await
+            .expect("get availability")
+            .expect("availability");
+        assert!(matches!(stored.presence, ImagePresence::Present { .. }));
+        let operations = state
+            .image_operation_store()
+            .list()
+            .expect("list operations");
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].kind, ImageOperationKind::Push);
+        assert_eq!(operations[0].status, OperationStatus::Succeeded);
+        assert!(
+            !state
+                .data_dir
+                .join("image-push")
+                .join(&payload.operation_id)
+                .exists()
+        );
+        listener.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn image_push_source_verify_failure_marks_operation_failed() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let actual = digest('a');
+        let expected = digest('b');
+        let backend = FakeImageBackend::new(actual, docker_archive_bytes());
+
+        let response = state
+            .handle_image_push_with_backend(
+                &ImagePushRequest {
+                    source_image: "example/app:latest".into(),
+                    target_machines: vec![MachineId("founder".into())],
+                    platform: None,
+                    expected_digest: Some(expected.clone()),
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        assert_no_availability(&state, &expected).await;
+        let operations = state
+            .image_operation_store()
+            .list()
+            .expect("list operations");
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].kind, ImageOperationKind::Push);
+        assert_eq!(operations[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].targets[0].status, OperationStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn image_push_import_failure_does_not_record_availability() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let listener = crate::daemon::handlers::image::registry::serve(
+            "127.0.0.1:0".parse().expect("bind addr"),
+            state.image_registry.clone(),
+        )
+        .await
+        .expect("serve registry");
+        state
+            .active
+            .as_mut()
+            .expect("active mesh")
+            .image_receiver_bind_addr = Some(listener.bind_addr());
+        let digest = digest('a');
+        let backend =
+            FakeImageBackend::new(digest.clone(), docker_archive_bytes()).with_import_error();
+
+        let response = state
+            .handle_image_push_with_backend(
+                &ImagePushRequest {
+                    source_image: "example/app:latest".into(),
+                    target_machines: vec![MachineId("founder".into())],
+                    platform: None,
+                    expected_digest: Some(digest.clone()),
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        assert_no_availability(&state, &digest).await;
+        listener.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn image_push_without_expected_digest_uses_image_id_when_repo_digest_is_absent() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let listener = crate::daemon::handlers::image::registry::serve(
+            "127.0.0.1:0".parse().expect("bind addr"),
+            state.image_registry.clone(),
+        )
+        .await
+        .expect("serve registry");
+        state
+            .active
+            .as_mut()
+            .expect("active mesh")
+            .image_receiver_bind_addr = Some(listener.bind_addr());
+        let digest = digest('a');
+        let backend =
+            FakeImageBackend::new(digest.clone(), docker_archive_bytes()).without_repo_digests();
+
+        let response = state
+            .handle_image_push_with_backend(
+                &ImagePushRequest {
+                    source_image: "example/app:latest".into(),
+                    target_machines: vec![MachineId("founder".into())],
+                    platform: None,
+                    expected_digest: None,
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(response.ok, "{response:?}");
+        let Some(DaemonPayload::ImagePush(payload)) = response.payload else {
+            panic!("expected push payload");
+        };
+        assert_eq!(payload.artifact.digest(), &digest);
+        let operations = state
+            .image_operation_store()
+            .list()
+            .expect("list operations");
+        assert_eq!(operations[0].digest.as_ref(), Some(&digest));
+        listener.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn image_push_expected_repo_digest_uses_image_id_for_import_identity() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let listener = crate::daemon::handlers::image::registry::serve(
+            "127.0.0.1:0".parse().expect("bind addr"),
+            state.image_registry.clone(),
+        )
+        .await
+        .expect("serve registry");
+        state
+            .active
+            .as_mut()
+            .expect("active mesh")
+            .image_receiver_bind_addr = Some(listener.bind_addr());
+        let repo_digest = digest('a');
+        let image_id = digest('b');
+        let backend = FakeImageBackend::new(repo_digest.clone(), docker_archive_bytes())
+            .with_image_id(image_id.clone());
+
+        let response = state
+            .handle_image_push_with_backend(
+                &ImagePushRequest {
+                    source_image: "example/app:latest".into(),
+                    target_machines: vec![MachineId("founder".into())],
+                    platform: None,
+                    expected_digest: Some(repo_digest.clone()),
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(response.ok, "{response:?}");
+        let Some(DaemonPayload::ImagePush(payload)) = response.payload else {
+            panic!("expected push payload");
+        };
+        assert_eq!(payload.artifact.digest(), &image_id);
+        assert_no_availability(&state, &repo_digest).await;
+        let stored = state
+            .active
+            .as_ref()
+            .expect("active mesh")
+            .mesh
+            .store
+            .get_image_availability(&MachineId("founder".into()), &image_id)
+            .await
+            .expect("get availability")
+            .expect("image id availability");
+        assert!(matches!(stored.presence, ImagePresence::Present { .. }));
+        listener.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn image_push_expected_repo_digest_without_image_id_fails_before_transfer() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let digest = digest('a');
+        let backend =
+            FakeImageBackend::new(digest.clone(), docker_archive_bytes()).without_image_id();
+
+        let response = state
+            .handle_image_push_with_backend(
+                &ImagePushRequest {
+                    source_image: "example/app:latest".into(),
+                    target_machines: vec![MachineId("founder".into())],
+                    platform: None,
+                    expected_digest: Some(digest.clone()),
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        assert!(!*backend.imported.lock().expect("imported lock"));
+        assert_no_availability(&state, &digest).await;
+    }
+
+    #[tokio::test]
+    async fn image_push_without_expected_digest_fails_when_runtime_has_no_digest_identity() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let digest = digest('a');
+        let backend = FakeImageBackend::new(digest, docker_archive_bytes())
+            .without_repo_digests()
+            .without_image_id();
+
+        let response = state
+            .handle_image_push_with_backend(
+                &ImagePushRequest {
+                    source_image: "example/app:latest".into(),
+                    target_machines: vec![MachineId("founder".into())],
+                    platform: None,
+                    expected_digest: None,
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        let operations = state
+            .image_operation_store()
+            .list()
+            .expect("list operations");
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].status, OperationStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn image_push_receive_session_failure_marks_operation_failed() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        state
+            .active
+            .as_mut()
+            .expect("active mesh")
+            .image_receiver_bind_addr = None;
+        let digest = digest('a');
+        let backend = FakeImageBackend::new(digest.clone(), docker_archive_bytes());
+
+        let response = state
+            .handle_image_push_with_backend(
+                &ImagePushRequest {
+                    source_image: "example/app:latest".into(),
+                    target_machines: vec![MachineId("founder".into())],
+                    platform: None,
+                    expected_digest: Some(digest.clone()),
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        assert_no_availability(&state, &digest).await;
+        let operations = state
+            .image_operation_store()
+            .list()
+            .expect("list operations");
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].targets[0].status, OperationStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn image_push_later_target_failure_preserves_first_target_success() {
+        let mut state = make_state();
+        install_active_mesh(&mut state).await;
+        let listener = crate::daemon::handlers::image::registry::serve(
+            "127.0.0.1:0".parse().expect("bind addr"),
+            state.image_registry.clone(),
+        )
+        .await
+        .expect("serve registry");
+        state
+            .active
+            .as_mut()
+            .expect("active mesh")
+            .image_receiver_bind_addr = Some(listener.bind_addr());
+        let digest = digest('a');
+        let backend = FakeImageBackend::new(digest.clone(), docker_archive_bytes());
+
+        let response = state
+            .handle_image_push_with_backend(
+                &ImagePushRequest {
+                    source_image: "example/app:latest".into(),
+                    target_machines: vec![
+                        MachineId("founder".into()),
+                        MachineId("machine-a".into()),
+                    ],
+                    platform: None,
+                    expected_digest: Some(digest.clone()),
+                },
+                &backend,
+            )
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "IMAGE_PUSH_PARTIAL_FAILED");
+        let Some(DaemonPayload::ImagePush(payload)) = response.payload else {
+            panic!("expected push payload");
+        };
+        assert_eq!(payload.targets.len(), 2);
+        assert_eq!(payload.targets[0].machine_id, MachineId("founder".into()));
+        assert_eq!(
+            payload.targets[0].status,
+            ImageTransferTargetStatus::Present
+        );
+        assert_eq!(payload.targets[1].machine_id, MachineId("machine-a".into()));
+        assert_eq!(payload.targets[1].status, ImageTransferTargetStatus::Failed);
+        let stored = state
+            .active
+            .as_ref()
+            .expect("active mesh")
+            .mesh
+            .store
+            .get_image_availability(&MachineId("founder".into()), &digest)
+            .await
+            .expect("get availability")
+            .expect("first target availability");
+        assert!(matches!(stored.presence, ImagePresence::Present { .. }));
+        let operations = state
+            .image_operation_store()
+            .list()
+            .expect("list operations");
+        let push = operations
+            .iter()
+            .find(|operation| operation.kind == ImageOperationKind::Push)
+            .expect("push operation");
+        assert_eq!(push.status, OperationStatus::Failed);
+        assert!(
+            push.targets
+                .iter()
+                .any(|target| target.machine_id == MachineId("founder".into())
+                    && target.status == OperationStatus::Succeeded)
+        );
+        assert!(
+            push.targets
+                .iter()
+                .any(|target| target.machine_id == MachineId("machine-a".into())
+                    && target.status == OperationStatus::Failed)
+        );
+        listener.shutdown().await;
     }
 
     #[tokio::test]
@@ -1197,6 +2095,8 @@ mod tests {
     struct FakeImageBackend {
         digest: ImageDigest,
         archive: Vec<u8>,
+        repo_digests: Vec<ImageDigest>,
+        image_id: Option<String>,
         imported: Arc<Mutex<bool>>,
         import_error: bool,
         import_verify_error: bool,
@@ -1205,6 +2105,8 @@ mod tests {
     impl FakeImageBackend {
         fn new(digest: ImageDigest, archive: Vec<u8>) -> Self {
             Self {
+                repo_digests: vec![digest.clone()],
+                image_id: Some(digest.as_str().into()),
                 digest,
                 archive,
                 imported: Arc::new(Mutex::new(false)),
@@ -1222,6 +2124,21 @@ mod tests {
             self.import_verify_error = true;
             self
         }
+
+        fn without_repo_digests(mut self) -> Self {
+            self.repo_digests.clear();
+            self
+        }
+
+        fn without_image_id(mut self) -> Self {
+            self.image_id = None;
+            self
+        }
+
+        fn with_image_id(mut self, digest: ImageDigest) -> Self {
+            self.image_id = Some(digest.as_str().into());
+            self
+        }
     }
 
     #[async_trait::async_trait]
@@ -1230,14 +2147,15 @@ mod tests {
             &self,
             reference: &str,
         ) -> Result<Option<RuntimeImage>, RuntimeImageError> {
-            let repo_digests = if self.import_verify_error && reference != self.digest.as_str() {
-                Vec::new()
-            } else {
-                vec![self.digest.clone()]
-            };
+            let (repo_digests, id) =
+                if self.import_verify_error && reference != self.digest.as_str() {
+                    (Vec::new(), None)
+                } else {
+                    (self.repo_digests.clone(), self.image_id.clone())
+                };
             Ok(Some(RuntimeImage {
                 reference: reference.into(),
-                id: Some("sha256:config".into()),
+                id,
                 repo_digests,
                 platform: None,
                 size_bytes: None,

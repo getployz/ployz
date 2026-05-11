@@ -167,6 +167,11 @@ impl NodeCommandSubject {
     }
 
     #[must_use]
+    pub fn image_distribute(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "image.distribute")
+    }
+
+    #[must_use]
     pub fn image_received_import(machine_id: &MachineId) -> Self {
         Self::new(machine_id, "image.received_import")
     }
@@ -452,6 +457,10 @@ mod tests {
         assert_eq!(
             NodeCommandSubject::image_receive_session(&machine_id).subject_in(&scope),
             "ployz.v1.local.auth-default.rpc.node.machine%2Ea.image.receive_session"
+        );
+        assert_eq!(
+            NodeCommandSubject::image_distribute(&machine_id).subject_in(&scope),
+            "ployz.v1.local.auth-default.rpc.node.machine%2Ea.image.distribute"
         );
         assert_eq!(
             NodeCommandSubject::image_received_import(&machine_id).subject_in(&scope),

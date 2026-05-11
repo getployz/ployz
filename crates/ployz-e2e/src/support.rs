@@ -61,6 +61,28 @@ pub(crate) struct DaemonJsonResponse {
 pub(crate) enum DaemonJsonPayload {
     Doctor(DoctorPayload),
     MachineList(MachineListPayload),
+    ImageStatus(ImageStatusPayload),
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ImageStatusPayload {
+    pub(crate) records: Vec<ImageAvailabilityRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ImageAvailabilityRecord {
+    pub(crate) machine_id: String,
+    pub(crate) digest: String,
+    pub(crate) presence: ImagePresence,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub(crate) enum ImagePresence {
+    Present {},
+    Absent {},
+    Failed { reason: String },
+    Transferring {},
 }
 
 #[derive(Debug, Deserialize)]
