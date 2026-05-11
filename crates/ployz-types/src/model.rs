@@ -3164,22 +3164,211 @@ pub struct DeployPhaseFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeployPhaseSuccess {
+    EndOfDeploy {
+        completed_at: u64,
+        commit_deploy_id: DeployId,
+    },
+    Checkpoint {
+        completed_at: u64,
+        commit_deploy_id: DeployId,
+    },
+    NoStoreCommit {
+        completed_at: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeployPhaseRecordState {
+    Pending {
+        commit_policy: DeployPhaseCommitPolicy,
+    },
+    Running {
+        commit_policy: DeployPhaseCommitPolicy,
+    },
+    Succeeded {
+        success: DeployPhaseSuccess,
+    },
+    Failed {
+        commit_policy: DeployPhaseCommitPolicy,
+        completed_at: u64,
+        failure: DeployPhaseFailure,
+    },
+}
+
+impl DeployPhaseRecordState {
+    #[must_use]
+    pub fn pending(commit_policy: DeployPhaseCommitPolicy) -> Self {
+        Self::Pending { commit_policy }
+    }
+
+    #[must_use]
+    pub fn running(commit_policy: DeployPhaseCommitPolicy) -> Self {
+        Self::Running { commit_policy }
+    }
+
+    pub fn succeeded(
+        commit_policy: DeployPhaseCommitPolicy,
+        completed_at: u64,
+        commit_deploy_id: Option<DeployId>,
+    ) -> Result<Self, String> {
+        let success = match commit_policy {
+            DeployPhaseCommitPolicy::EndOfDeploy => DeployPhaseSuccess::EndOfDeploy {
+                completed_at,
+                commit_deploy_id: commit_deploy_id.ok_or_else(|| {
+                    "end-of-deploy phase success requires commit deploy id".to_string()
+                })?,
+            },
+            DeployPhaseCommitPolicy::Checkpoint => DeployPhaseSuccess::Checkpoint {
+                completed_at,
+                commit_deploy_id: commit_deploy_id.ok_or_else(|| {
+                    "checkpoint phase success requires commit deploy id".to_string()
+                })?,
+            },
+            DeployPhaseCommitPolicy::NoStoreCommit => {
+                if commit_deploy_id.is_some() {
+                    return Err("no-store phase success cannot carry commit deploy id".into());
+                }
+                DeployPhaseSuccess::NoStoreCommit { completed_at }
+            }
+        };
+        Ok(Self::Succeeded { success })
+    }
+
+    #[must_use]
+    pub fn failed(
+        commit_policy: DeployPhaseCommitPolicy,
+        completed_at: u64,
+        failure: DeployPhaseFailure,
+    ) -> Self {
+        Self::Failed {
+            commit_policy,
+            completed_at,
+            failure,
+        }
+    }
+
+    #[must_use]
+    pub fn lifecycle(&self) -> DeployPhaseState {
+        match self {
+            Self::Pending { .. } => DeployPhaseState::Pending,
+            Self::Running { .. } => DeployPhaseState::Running,
+            Self::Succeeded { success } => DeployPhaseState::Succeeded {
+                completed_at: success.completed_at(),
+            },
+            Self::Failed {
+                completed_at,
+                failure,
+                ..
+            } => DeployPhaseState::Failed {
+                completed_at: *completed_at,
+                failure: failure.clone(),
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn commit_policy(&self) -> DeployPhaseCommitPolicy {
+        match self {
+            Self::Pending { commit_policy }
+            | Self::Running { commit_policy }
+            | Self::Failed { commit_policy, .. } => *commit_policy,
+            Self::Succeeded { success } => success.commit_policy(),
+        }
+    }
+
+    #[must_use]
+    pub fn commit_deploy_id(&self) -> Option<DeployId> {
+        match self {
+            Self::Succeeded { success } => success.commit_deploy_id(),
+            Self::Pending { .. } | Self::Running { .. } | Self::Failed { .. } => None,
+        }
+    }
+}
+
+impl DeployPhaseSuccess {
+    #[must_use]
+    pub fn completed_at(&self) -> u64 {
+        match self {
+            Self::EndOfDeploy { completed_at, .. }
+            | Self::Checkpoint { completed_at, .. }
+            | Self::NoStoreCommit { completed_at } => *completed_at,
+        }
+    }
+
+    #[must_use]
+    pub fn commit_policy(&self) -> DeployPhaseCommitPolicy {
+        match self {
+            Self::EndOfDeploy { .. } => DeployPhaseCommitPolicy::EndOfDeploy,
+            Self::Checkpoint { .. } => DeployPhaseCommitPolicy::Checkpoint,
+            Self::NoStoreCommit { .. } => DeployPhaseCommitPolicy::NoStoreCommit,
+        }
+    }
+
+    #[must_use]
+    pub fn commit_deploy_id(&self) -> Option<DeployId> {
+        match self {
+            Self::EndOfDeploy {
+                commit_deploy_id, ..
+            }
+            | Self::Checkpoint {
+                commit_deploy_id, ..
+            } => Some(commit_deploy_id.clone()),
+            Self::NoStoreCommit { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployPhaseRecord {
     pub namespace: Namespace,
     pub deploy_id: DeployId,
     pub phase_id: DeployPhaseId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit_deploy_id: Option<DeployId>,
     pub name: String,
     pub order: u32,
     pub after: Vec<DeployPhaseId>,
     pub participants: Vec<MachineId>,
     pub work: Vec<DeployPhaseWork>,
-    pub state: DeployPhaseState,
-    pub commit_policy: DeployPhaseCommitPolicy,
+    pub state: DeployPhaseRecordState,
     pub rollback_policy: DeployPhaseRollbackPolicy,
     pub advance_policy: DeployPhaseAdvancePolicy,
     pub started_at: u64,
+}
+
+impl DeployPhaseRecord {
+    #[must_use]
+    pub fn lifecycle_state(&self) -> DeployPhaseState {
+        self.state.lifecycle()
+    }
+
+    #[must_use]
+    pub fn commit_policy(&self) -> DeployPhaseCommitPolicy {
+        self.state.commit_policy()
+    }
+
+    #[must_use]
+    pub fn commit_deploy_id(&self) -> Option<DeployId> {
+        self.state.commit_deploy_id()
+    }
+
+    pub fn mark_succeeded(
+        &mut self,
+        commit_deploy_id: Option<DeployId>,
+        completed_at: u64,
+    ) -> Result<(), String> {
+        self.state = DeployPhaseRecordState::succeeded(
+            self.commit_policy(),
+            completed_at,
+            commit_deploy_id,
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_failed(&mut self, completed_at: u64, failure: DeployPhaseFailure) {
+        self.state = DeployPhaseRecordState::failed(self.commit_policy(), completed_at, failure);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4727,6 +4916,87 @@ mod tests {
         assert_eq!(record.committed_at(), Some(42));
         assert_eq!(record.finished_at(), Some(42));
         assert_eq!(record.summary_json(), "{}");
+    }
+
+    #[test]
+    fn deploy_phase_success_evidence_matches_commit_policy() {
+        let end_commit = DeployId::new("deploy-1");
+        let end_state = DeployPhaseRecordState::succeeded(
+            DeployPhaseCommitPolicy::EndOfDeploy,
+            42,
+            Some(end_commit.clone()),
+        )
+        .expect("end-of-deploy success has commit id");
+        assert_eq!(
+            end_state.commit_policy(),
+            DeployPhaseCommitPolicy::EndOfDeploy
+        );
+        assert_eq!(end_state.commit_deploy_id(), Some(end_commit));
+        assert_eq!(
+            end_state.lifecycle(),
+            DeployPhaseState::Succeeded { completed_at: 42 }
+        );
+
+        let checkpoint_commit = DeployId::new("deploy-1:phase:db");
+        let checkpoint_state = DeployPhaseRecordState::succeeded(
+            DeployPhaseCommitPolicy::Checkpoint,
+            43,
+            Some(checkpoint_commit.clone()),
+        )
+        .expect("checkpoint success has commit id");
+        assert_eq!(
+            checkpoint_state.commit_policy(),
+            DeployPhaseCommitPolicy::Checkpoint
+        );
+        assert_eq!(checkpoint_state.commit_deploy_id(), Some(checkpoint_commit));
+
+        let no_store_state =
+            DeployPhaseRecordState::succeeded(DeployPhaseCommitPolicy::NoStoreCommit, 44, None)
+                .expect("no-store success omits commit id");
+        assert_eq!(
+            no_store_state.commit_policy(),
+            DeployPhaseCommitPolicy::NoStoreCommit
+        );
+        assert_eq!(no_store_state.commit_deploy_id(), None);
+
+        assert!(
+            DeployPhaseRecordState::succeeded(DeployPhaseCommitPolicy::Checkpoint, 45, None)
+                .is_err()
+        );
+        assert!(
+            DeployPhaseRecordState::succeeded(
+                DeployPhaseCommitPolicy::NoStoreCommit,
+                46,
+                Some(DeployId::new("deploy-1:phase:no-store")),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn deploy_phase_record_rejects_old_parallel_commit_fields() {
+        let old_shape = serde_json::json!({
+            "namespace": "prod",
+            "deploy_id": "deploy-1",
+            "phase_id": "deploy",
+            "commit_deploy_id": "deploy-1",
+            "name": "Deploy",
+            "order": 0,
+            "after": [],
+            "participants": [],
+            "work": [],
+            "state": {
+                "succeeded": {
+                    "completed_at": 42
+                }
+            },
+            "commit_policy": "end_of_deploy",
+            "rollback_policy": "reversible",
+            "advance_policy": "immediate",
+            "started_at": 1
+        });
+
+        assert!(serde_json::from_value::<DeployPhaseRecord>(old_shape).is_err());
     }
 
     #[test]

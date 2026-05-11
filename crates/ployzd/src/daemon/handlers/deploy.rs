@@ -38,7 +38,7 @@ use ployz_store_api::{DeployStore, StoreDriver, StoreRuntimeControl};
 use ployz_types::Error as PloyzError;
 use ployz_types::error::DeployError;
 #[cfg(test)]
-use ployz_types::model::DeployRecordState;
+use ployz_types::model::{DeployPhaseRecordState, DeployRecordState};
 use ployz_types::model::{
     BranchEnvironmentFailure, BranchEnvironmentRecord, BranchEnvironmentResourceMode,
     BranchEnvironmentResourceOverride, BranchEnvironmentState, DeployId, DeployPhaseCommitPolicy,
@@ -1333,7 +1333,7 @@ async fn deploy_has_checkpoint_commit_point(
     };
     let checkpoint_phase_ids = phases
         .iter()
-        .filter(|phase| phase.commit_policy == DeployPhaseCommitPolicy::Checkpoint)
+        .filter(|phase| phase.commit_policy() == DeployPhaseCommitPolicy::Checkpoint)
         .map(|phase| {
             DeployId::new(format!(
                 "{}:phase:{}",
@@ -1346,8 +1346,8 @@ async fn deploy_has_checkpoint_commit_point(
         return false;
     }
     if phases.iter().any(|phase| {
-        phase.commit_policy == DeployPhaseCommitPolicy::Checkpoint
-            && matches!(phase.state, DeployPhaseState::Succeeded { .. })
+        phase.commit_policy() == DeployPhaseCommitPolicy::Checkpoint
+            && matches!(phase.lifecycle_state(), DeployPhaseState::Succeeded { .. })
     }) {
         return true;
     }
@@ -1394,18 +1394,18 @@ async fn mark_running_deploy_phases_failed_after_lock_loss(
     let completed_at = ployz_types::time::now_unix_secs();
     for mut phase in phases {
         if !matches!(
-            phase.state,
+            phase.lifecycle_state(),
             DeployPhaseState::Pending | DeployPhaseState::Running
         ) {
             continue;
         }
-        phase.state = DeployPhaseState::Failed {
+        phase.mark_failed(
             completed_at,
-            failure: DeployPhaseFailure {
+            DeployPhaseFailure {
                 code: "DEPLOY_LOCK_LOST".into(),
                 message: format!("deploy lock lost during apply: {message}"),
             },
-        };
+        );
         store.upsert_deploy_phase(&phase).await?;
     }
     Ok(())
@@ -4060,14 +4060,12 @@ mod tests {
                 namespace: namespace.clone(),
                 deploy_id: deploy_id.clone(),
                 phase_id: DeployPhaseId::new("deploy"),
-                commit_deploy_id: None,
                 name: "Deploy".into(),
                 order: 0,
                 after: Vec::new(),
                 participants: Vec::new(),
                 work: Vec::new(),
-                state: DeployPhaseState::Running,
-                commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+                state: DeployPhaseRecordState::running(DeployPhaseCommitPolicy::EndOfDeploy),
                 rollback_policy: DeployPhaseRollbackPolicy::Reversible,
                 advance_policy: ployz_types::model::DeployPhaseAdvancePolicy::Immediate,
                 started_at: 1,
@@ -4085,7 +4083,7 @@ mod tests {
         let [phase] = phases.as_slice() else {
             panic!("expected one phase, got {phases:?}");
         };
-        let DeployPhaseState::Failed { failure, .. } = &phase.state else {
+        let DeployPhaseState::Failed { failure, .. } = phase.lifecycle_state() else {
             panic!("expected failed phase, got {:?}", phase.state);
         };
         assert_eq!(failure.code, "DEPLOY_LOCK_LOST");
@@ -4204,12 +4202,10 @@ mod tests {
                 after: Vec::new(),
                 participants: Vec::new(),
                 work: Vec::new(),
-                state: DeployPhaseState::Running,
-                commit_policy: DeployPhaseCommitPolicy::Checkpoint,
+                state: DeployPhaseRecordState::running(DeployPhaseCommitPolicy::Checkpoint),
                 rollback_policy: DeployPhaseRollbackPolicy::Reversible,
                 advance_policy: ployz_types::model::DeployPhaseAdvancePolicy::Immediate,
                 started_at: 1,
-                commit_deploy_id: None,
             })
             .await
             .expect("seed running checkpoint phase");
@@ -4269,7 +4265,7 @@ mod tests {
             .await
             .expect("get phase")
             .expect("phase");
-        assert!(matches!(phase.state, DeployPhaseState::Running));
+        assert!(matches!(phase.lifecycle_state(), DeployPhaseState::Running));
     }
 
     #[tokio::test]

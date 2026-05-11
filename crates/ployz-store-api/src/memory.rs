@@ -870,10 +870,16 @@ fn apply_phase_commit_fact(
     let Some(commit) = commit else {
         return;
     };
-    phase.commit_deploy_id = Some(commit.commit_deploy_id.clone());
-    phase.state = DeployPhaseState::Succeeded {
-        completed_at: commit.committed_at,
-    };
+    if let Err(error) =
+        phase.mark_succeeded(Some(commit.commit_deploy_id.clone()), commit.committed_at)
+    {
+        tracing::warn!(
+            deploy_id = %phase.deploy_id,
+            phase_id = %phase.phase_id,
+            error = %error,
+            "phase commit fact did not match deploy phase commit policy"
+        );
+    }
 }
 
 #[async_trait]
@@ -1410,13 +1416,13 @@ mod tests {
             .await
             .expect("write running phase");
 
-        phase.state = DeployPhaseState::Failed {
-            completed_at: 20,
-            failure: DeployPhaseFailure {
+        phase.mark_failed(
+            20,
+            DeployPhaseFailure {
                 code: "START_FAILED".into(),
                 message: "start failed".into(),
             },
-        };
+        );
         store
             .upsert_deploy_phase(&phase)
             .await
@@ -1438,13 +1444,13 @@ mod tests {
         let deploy_id = DeployId::new("deploy-1");
         let phase_id = DeployPhaseId::new("db");
         let mut phase = test_deploy_phase(&namespace, &deploy_id, "db", 0);
-        phase.state = DeployPhaseState::Failed {
-            completed_at: 20,
-            failure: DeployPhaseFailure {
+        phase.mark_failed(
+            20,
+            DeployPhaseFailure {
                 code: "COMMIT_PUBLISH_FAILED".into(),
                 message: "routing publish failed after durable commit".into(),
             },
-        };
+        );
         store
             .upsert_deploy_phase(&phase)
             .await
@@ -1479,8 +1485,11 @@ mod tests {
             .await
             .expect("read phase")
             .expect("phase exists");
-        assert_eq!(read.commit_deploy_id, Some(commit_deploy_id));
-        assert_eq!(read.state, DeployPhaseState::Succeeded { completed_at: 30 });
+        assert_eq!(read.commit_deploy_id(), Some(commit_deploy_id));
+        assert_eq!(
+            read.lifecycle_state(),
+            DeployPhaseState::Succeeded { completed_at: 30 }
+        );
     }
 
     #[tokio::test]
@@ -2680,14 +2689,14 @@ mod tests {
             namespace: namespace.clone(),
             deploy_id: deploy_id.clone(),
             phase_id: ployz_types::model::DeployPhaseId::new(phase_id),
-            commit_deploy_id: None,
             name: phase_id.into(),
             order,
             after: Vec::new(),
             participants: Vec::new(),
             work: Vec::new(),
-            state: DeployPhaseState::Running,
-            commit_policy: DeployPhaseCommitPolicy::EndOfDeploy,
+            state: ployz_types::model::DeployPhaseRecordState::running(
+                DeployPhaseCommitPolicy::EndOfDeploy,
+            ),
             rollback_policy: DeployPhaseRollbackPolicy::Reversible,
             advance_policy: ployz_types::model::DeployPhaseAdvancePolicy::Immediate,
             started_at: 10,
