@@ -23,6 +23,7 @@ use crate::model::{
     DeployId, DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord,
     DeployPhaseRollbackPolicy, DeployPhaseState, DeployPhaseWork, DeployPreview,
     DeployPreviewBaseline, DeployPreviewBaselineComponents, DeployRecord, DeployState, DrainState,
+    DeployRecordState,
     ImageArtifact, ImageArtifactProvenance, ImageAvailabilityRecord, ImageDigest, ImagePresence,
     ImageRef, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle,
     MachineMembership, MachineStorageRole, MachineTopology, OverlayIp, PreparedDeployRecord,
@@ -356,7 +357,7 @@ async fn apply_success_persists_pull_never_image_availability_summary() {
         .expect("get deploy")
         .expect("deploy record");
     let summary: DeployPreview =
-        serde_json::from_str(&record.summary_json).expect("summary preview");
+        serde_json::from_str(&record.summary_json()).expect("summary preview");
     assert_eq!(
         summary.image_availability,
         result.preview.image_availability
@@ -3390,13 +3391,13 @@ async fn apply_fails_volume_move_before_startup_or_commit() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert!(
         last_update
-            .summary_json
+            .summary_json()
             .contains("injected move failure for 'data'"),
         "failed deploy summary should mention the move error: {}",
-        last_update.summary_json
+        last_update.summary_json()
     );
     assert_default_phase_record(
         &store,
@@ -3665,20 +3666,20 @@ async fn apply_does_not_mark_committed_volume_move_failed_after_post_commit_stat
     assert_eq!(
         writes
             .iter()
-            .filter(|record| record.state == DeployState::Failed)
+            .filter(|record| record.state() == DeployState::Failed)
             .count(),
         0
     );
     let post_commit_attempt = writes
         .last()
         .expect("post-commit status write should have been attempted");
-    assert_eq!(post_commit_attempt.state, DeployState::CleanupPending);
+    assert_eq!(post_commit_attempt.state(), DeployState::CleanupPending);
     let committed_record = store
         .get_deploy(&post_commit_attempt.deploy_id)
         .await
         .expect("get deploy")
         .expect("post-commit deploy record");
-    assert_eq!(committed_record.state, DeployState::CleanupPending);
+    assert_eq!(committed_record.state(), DeployState::CleanupPending);
     let records = store
         .list_volumes(&manifest.namespace)
         .await
@@ -5951,7 +5952,7 @@ async fn apply_prepared_repairs_terminal_status_from_durable_commit() {
             .get_deploy(&prepared.prepared_deploy_id)
             .await
             .expect("get deploy")
-            .map(|record| record.state),
+            .map(|record| record.state()),
         Some(DeployState::Committed | DeployState::CleanupPending)
     ));
 
@@ -5988,7 +5989,7 @@ async fn apply_prepared_repairs_terminal_status_from_durable_commit() {
             .await
             .expect("get repaired deploy")
             .expect("deploy status repaired")
-            .state,
+            .state(),
         DeployState::Committed
     );
     assert_eq!(
@@ -6046,7 +6047,7 @@ async fn apply_prepared_recovers_final_commit_over_stale_checkpoint_status() {
             .await
             .expect("get checkpoint deploy")
             .expect("checkpoint status remains")
-            .state,
+            .state(),
         DeployState::CheckpointCommitted
     );
     assert_eq!(
@@ -6087,7 +6088,7 @@ async fn apply_prepared_recovers_final_commit_over_stale_checkpoint_status() {
             .await
             .expect("get repaired deploy")
             .expect("deploy status repaired")
-            .state,
+            .state(),
         DeployState::Committed
     );
     assert_eq!(
@@ -6174,11 +6175,36 @@ fn prepared_deploy_status(
         namespace: prepared.namespace.clone(),
         coordinator_machine_id: prepared.coordinator_machine_id.clone(),
         manifest_hash: prepared.manifest_hash.clone(),
-        state,
         started_at: prepared.created_at,
-        committed_at: Some(prepared.updated_at),
-        finished_at: Some(prepared.updated_at),
-        summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+        state: match state {
+            DeployState::Committed => DeployRecordState::Committed {
+                committed_at: prepared.updated_at,
+                finished_at: prepared.updated_at,
+                summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+            },
+            DeployState::CleanupPending => DeployRecordState::CleanupPending {
+                committed_at: prepared.updated_at,
+                finished_at: prepared.updated_at,
+                summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+            },
+            DeployState::CheckpointCommitted => DeployRecordState::CheckpointCommitted {
+                summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+            },
+            DeployState::FailedAfterCheckpoint => DeployRecordState::FailedAfterCheckpoint {
+                finished_at: prepared.updated_at,
+                summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+            },
+            DeployState::Failed => DeployRecordState::Failed {
+                finished_at: prepared.updated_at,
+                summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+            },
+            DeployState::Planning => DeployRecordState::Planning {
+                summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+            },
+            DeployState::Applying => DeployRecordState::Applying {
+                summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+            },
+        },
     }
 }
 
@@ -6796,14 +6822,14 @@ async fn apply_with_initial_plan_does_not_commit_when_start_candidate_fails() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
-    assert!(last_update.finished_at.is_some());
+    assert_eq!(last_update.state(), DeployState::Failed);
+    assert!(last_update.finished_at().is_some());
     assert!(
         last_update
-            .summary_json
+            .summary_json()
             .contains("injected start failure for 'api'"),
         "failed deploy summary should mention the apply error: {}",
-        last_update.summary_json
+        last_update.summary_json()
     );
     assert_default_phase_record(
         &store,
@@ -6841,7 +6867,7 @@ async fn apply_marks_default_phase_failed_when_commit_fails_after_phase_work() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert_default_phase_record(
         &store,
         &manifest.namespace,
@@ -6878,13 +6904,13 @@ async fn apply_records_committed_status_when_phase_success_evidence_fails() {
     assert!(
         writes
             .iter()
-            .any(|record| record.state == DeployState::Committed),
+            .any(|record| record.state() == DeployState::Committed),
         "committed deploy status should be written even when phase evidence fails"
     );
     assert!(
         writes
             .iter()
-            .all(|record| record.state != DeployState::Failed),
+            .all(|record| record.state() != DeployState::Failed),
         "phase evidence failure must not mark committed deploy failed"
     );
     let committed_record = store
@@ -6892,7 +6918,7 @@ async fn apply_records_committed_status_when_phase_success_evidence_fails() {
         .await
         .expect("get deploy")
         .expect("committed deploy record");
-    assert_eq!(committed_record.state, DeployState::Committed);
+    assert_eq!(committed_record.state(), DeployState::Committed);
     assert_default_phase_record(
         &store,
         &manifest.namespace,
@@ -6943,12 +6969,12 @@ async fn apply_marks_phase_succeeded_when_first_committed_status_write_fails() {
     assert!(
         writes
             .iter()
-            .all(|record| record.state != DeployState::Failed),
+            .all(|record| record.state() != DeployState::Failed),
         "post-commit status failure must not mark committed deploy failed"
     );
     let post_commit_attempt = writes
         .iter()
-        .find(|record| record.state == DeployState::CleanupPending)
+        .find(|record| record.state() == DeployState::CleanupPending)
         .expect("post-commit status write should have been attempted");
     assert_default_phase_record(
         &store,
@@ -7051,7 +7077,7 @@ async fn apply_checkpoint_phase_commits_before_final_phase() {
         writes
             .iter()
             .any(|record| record.deploy_id == result.deploy_id
-                && record.state == DeployState::CheckpointCommitted),
+                && record.state() == DeployState::CheckpointCommitted),
         "checkpoint should write status against the original deploy id"
     );
     let releases = store
@@ -7140,7 +7166,7 @@ async fn apply_failure_after_checkpoint_preserves_committed_phase_facts() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::FailedAfterCheckpoint);
+    assert_eq!(last_update.state(), DeployState::FailedAfterCheckpoint);
     let releases = store
         .list_service_releases(&manifest.namespace)
         .await
@@ -7227,7 +7253,7 @@ async fn apply_failure_after_end_of_deploy_phase_fails_pending_phase() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert_phase_record_state(
         &store,
         &manifest.namespace,
@@ -7305,7 +7331,7 @@ async fn apply_failure_after_end_of_deploy_phase_fails_prior_pending_phases() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert_phase_record_state(
         &store,
         &manifest.namespace,
@@ -7394,7 +7420,7 @@ async fn apply_failure_marks_unstarted_later_phases_failed() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert_phase_record_state(
         &store,
         &manifest.namespace,
@@ -7446,7 +7472,7 @@ async fn apply_running_phase_record_failure_marks_current_and_unstarted_phases_f
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert_phase_record_state(
         &store,
         &manifest.namespace,
@@ -7489,7 +7515,7 @@ async fn apply_pending_phase_seed_failure_marks_already_written_phases_failed() 
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert_phase_record_state(
         &store,
         &manifest.namespace,
@@ -7535,7 +7561,7 @@ async fn apply_checkpoint_commit_failure_fails_prior_end_of_deploy_phase() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert_phase_record_state(
         &store,
         &manifest.namespace,
@@ -7655,7 +7681,7 @@ async fn apply_with_initial_plan_sets_cleanup_pending_after_cleanup_failure() {
     assert!(
         status_writes
             .iter()
-            .all(|record| record.state != DeployState::Committed),
+            .all(|record| record.state() != DeployState::Committed),
         "committed status must not be visible until post-commit cleanup succeeds: {status_writes:?}"
     );
     let commit_index = result
@@ -7756,11 +7782,11 @@ async fn prepared_deploy_builds_applying_record_and_revisions() {
     .expect("prepared deploy");
 
     assert_eq!(
-        prepared.applying_record().state,
+        prepared.applying_record().state(),
         crate::model::DeployState::Applying
     );
     assert_eq!(prepared.applying_record().started_at, 10);
-    assert_eq!(prepared.applying_record().committed_at, None);
+    assert_eq!(prepared.applying_record().committed_at(), None);
     assert_eq!(prepared.revisions().len(), 1);
     let [revision] = prepared.revisions() else {
         panic!("expected one revision");
@@ -7861,13 +7887,13 @@ async fn commit_plan_contains_removed_services() {
     assert_eq!(commit_plan.commit().removed_services, vec!["api"]);
     assert_eq!(commit_plan.commit().releases.len(), 1);
     assert_eq!(
-        commit_plan.commit().deploy.state,
+        commit_plan.commit().deploy.state(),
         crate::model::DeployState::Committed
     );
-    assert!(commit_plan.commit().deploy.committed_at.is_some());
+    assert!(commit_plan.commit().deploy.committed_at().is_some());
     assert_eq!(
-        commit_plan.commit().deploy.committed_at,
-        commit_plan.commit().deploy.finished_at
+        commit_plan.commit().deploy.committed_at(),
+        commit_plan.commit().deploy.finished_at()
     );
 }
 
@@ -8818,11 +8844,12 @@ async fn seed_volume_with_scope_and_attached_services(
         namespace: namespace.clone(),
         coordinator_machine_id: MachineId::new("local"),
         manifest_hash: "seed".into(),
-        state: DeployState::Committed,
         started_at: 1,
-        committed_at: Some(1),
-        finished_at: Some(1),
-        summary_json: "{}".into(),
+        state: DeployRecordState::Committed {
+            committed_at: 1,
+            finished_at: 1,
+            summary_json: "{}".into(),
+        },
     };
     store
         .commit_deploy(&DeployCommit {
@@ -9026,11 +9053,12 @@ fn test_deploy_record(namespace: &Namespace, deploy_id: &str) -> DeployRecord {
         namespace: namespace.clone(),
         coordinator_machine_id: MachineId::new("local"),
         manifest_hash: "manifest".into(),
-        state: DeployState::Committed,
         started_at: 0,
-        committed_at: Some(0),
-        finished_at: Some(0),
-        summary_json: "{}".into(),
+        state: DeployRecordState::Committed {
+            committed_at: 0,
+            finished_at: 0,
+            summary_json: "{}".into(),
+        },
     }
 }
 
@@ -9411,7 +9439,7 @@ impl DeployStore for CountingBackend {
         self.deploy_status_writes.fetch_add(1, Ordering::SeqCst);
         self.deploy_status_records.lock().await.push(deploy.clone());
         if matches!(
-            deploy.state,
+            deploy.state(),
             DeployState::Committed | DeployState::CleanupPending
         ) {
             let committed_writes = self.committed_status_writes.fetch_add(1, Ordering::SeqCst) + 1;

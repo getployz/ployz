@@ -1090,7 +1090,7 @@ mod tests {
     use ployz_types::model::{
         DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord, DeployPhaseRollbackPolicy,
         DeployPhaseState, DeployPreview, DeployPreviewBaseline, DeployPreviewBaselineComponents,
-        DeployState, MachineId, PreparedDeployRecord, PreparedDeployState, ServiceRelease,
+        DeployRecordState, MachineId, PreparedDeployRecord, PreparedDeployState, ServiceRelease,
         ServiceRevisionRecord, ServiceRoutingPolicy,
     };
     use ployz_types::spec::Namespace;
@@ -1431,11 +1431,12 @@ mod tests {
                 namespace: namespace.clone(),
                 coordinator_machine_id: MachineId::new(String::from("founder")),
                 manifest_hash: String::from("manifest"),
-                state: DeployState::Committed,
                 started_at: 1,
-                committed_at: Some(2),
-                finished_at: Some(2),
-                summary_json: String::from("{}"),
+                state: DeployRecordState::Committed {
+                    committed_at: 2,
+                    finished_at: 2,
+                    summary_json: String::from("{}"),
+                },
             },
         }
     }

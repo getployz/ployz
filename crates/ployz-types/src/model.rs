@@ -2605,19 +2605,186 @@ impl DeployTransitionError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployRecordState {
+    Planning {
+        summary_json: String,
+    },
+    Applying {
+        summary_json: String,
+    },
+    Committed {
+        committed_at: u64,
+        finished_at: u64,
+        summary_json: String,
+    },
+    CheckpointCommitted {
+        summary_json: String,
+    },
+    CleanupPending {
+        committed_at: u64,
+        finished_at: u64,
+        summary_json: String,
+    },
+    FailedAfterCheckpoint {
+        finished_at: u64,
+        summary_json: String,
+    },
+    Failed {
+        finished_at: u64,
+        summary_json: String,
+    },
+}
+
+impl DeployRecordState {
+    #[must_use]
+    pub fn state(&self) -> DeployState {
+        match self {
+            Self::Planning { .. } => DeployState::Planning,
+            Self::Applying { .. } => DeployState::Applying,
+            Self::Committed { .. } => DeployState::Committed,
+            Self::CheckpointCommitted { .. } => DeployState::CheckpointCommitted,
+            Self::CleanupPending { .. } => DeployState::CleanupPending,
+            Self::FailedAfterCheckpoint { .. } => DeployState::FailedAfterCheckpoint,
+            Self::Failed { .. } => DeployState::Failed,
+        }
+    }
+
+    #[must_use]
+    pub fn committed_at(&self) -> Option<u64> {
+        match self {
+            Self::Committed { committed_at, .. } | Self::CleanupPending { committed_at, .. } => {
+                Some(*committed_at)
+            }
+            Self::Planning { .. }
+            | Self::Applying { .. }
+            | Self::CheckpointCommitted { .. }
+            | Self::FailedAfterCheckpoint { .. }
+            | Self::Failed { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn finished_at(&self) -> Option<u64> {
+        match self {
+            Self::Committed { finished_at, .. }
+            | Self::CleanupPending { finished_at, .. }
+            | Self::FailedAfterCheckpoint { finished_at, .. }
+            | Self::Failed { finished_at, .. } => Some(*finished_at),
+            Self::Planning { .. } | Self::Applying { .. } | Self::CheckpointCommitted { .. } => {
+                None
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn summary_json(&self) -> &str {
+        match self {
+            Self::Planning { summary_json }
+            | Self::Applying { summary_json }
+            | Self::Committed { summary_json, .. }
+            | Self::CheckpointCommitted { summary_json }
+            | Self::CleanupPending { summary_json, .. }
+            | Self::FailedAfterCheckpoint { summary_json, .. }
+            | Self::Failed { summary_json, .. } => summary_json,
+        }
+    }
+
+    pub fn set_summary_json(&mut self, next_summary_json: String) {
+        match self {
+            Self::Planning { summary_json }
+            | Self::Applying { summary_json }
+            | Self::Committed { summary_json, .. }
+            | Self::CheckpointCommitted { summary_json }
+            | Self::CleanupPending { summary_json, .. }
+            | Self::FailedAfterCheckpoint { summary_json, .. }
+            | Self::Failed { summary_json, .. } => *summary_json = next_summary_json,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployRecord {
     pub deploy_id: DeployId,
     pub namespace: Namespace,
     pub coordinator_machine_id: MachineId,
     pub manifest_hash: String,
-    pub state: DeployState,
     pub started_at: u64,
-    pub committed_at: Option<u64>,
-    pub finished_at: Option<u64>,
-    pub summary_json: String,
+    pub state: DeployRecordState,
 }
 
 impl DeployRecord {
+    #[must_use]
+    pub fn state(&self) -> DeployState {
+        self.state.state()
+    }
+
+    #[must_use]
+    pub fn committed_at(&self) -> Option<u64> {
+        self.state.committed_at()
+    }
+
+    #[must_use]
+    pub fn finished_at(&self) -> Option<u64> {
+        self.state.finished_at()
+    }
+
+    #[must_use]
+    pub fn summary_json(&self) -> &str {
+        self.state.summary_json()
+    }
+
+    pub fn set_summary_json(&mut self, summary_json: String) {
+        self.state.set_summary_json(summary_json);
+    }
+
+    pub fn mark_checkpoint_committed(&mut self, summary_json: String) {
+        self.state = DeployRecordState::CheckpointCommitted { summary_json };
+    }
+
+    pub fn mark_committed(&mut self, committed_at: u64, finished_at: u64, summary_json: String) {
+        self.state = DeployRecordState::Committed {
+            committed_at,
+            finished_at,
+            summary_json,
+        };
+    }
+
+    pub fn mark_cleanup_pending(&mut self, finished_at: u64) -> Result<(), DeployTransitionError> {
+        let DeployRecordState::Committed {
+            committed_at,
+            summary_json,
+            ..
+        } = self.state.clone()
+        else {
+            return Err(DeployTransitionError::invalid(format!(
+                "deploy '{}' must be committed before cleanup pending; current state is {}",
+                self.deploy_id,
+                self.state()
+            )));
+        };
+        self.state = DeployRecordState::CleanupPending {
+            committed_at,
+            finished_at,
+            summary_json,
+        };
+        Ok(())
+    }
+
+    pub fn mark_failed(&mut self, finished_at: u64, summary_json: String) {
+        self.state = DeployRecordState::Failed {
+            finished_at,
+            summary_json,
+        };
+    }
+
+    pub fn mark_failed_after_checkpoint(&mut self, finished_at: u64, summary_json: String) {
+        self.state = DeployRecordState::FailedAfterCheckpoint {
+            finished_at,
+            summary_json,
+        };
+    }
+
     pub fn apply_state_transition(
         &mut self,
         transition: DeployStateTransition,
@@ -2629,32 +2796,23 @@ impl DeployRecord {
         } = transition;
         match goal {
             DeployStateGoal::Commit { summary_json } => {
-                if self.state == DeployState::Committed {
+                if self.state() == DeployState::Committed {
                     return Ok(DeployTransitionOutcome::AlreadyInState);
                 }
-                if self.state != DeployState::Applying {
+                if self.state() != DeployState::Applying {
                     return Err(DeployTransitionError::invalid(format!(
                         "deploy '{}' must be applying before commit; current state is {}",
-                        self.deploy_id, self.state
+                        self.deploy_id,
+                        self.state()
                     )));
                 }
-                self.state = DeployState::Committed;
-                self.committed_at = Some(at_unix_secs);
-                self.finished_at = Some(at_unix_secs);
-                self.summary_json = summary_json;
+                self.mark_committed(at_unix_secs, at_unix_secs, summary_json);
             }
             DeployStateGoal::MarkCleanupPending => {
-                if self.state == DeployState::CleanupPending {
+                if self.state() == DeployState::CleanupPending {
                     return Ok(DeployTransitionOutcome::AlreadyInState);
                 }
-                if self.state != DeployState::Committed {
-                    return Err(DeployTransitionError::invalid(format!(
-                        "deploy '{}' must be committed before cleanup pending; current state is {}",
-                        self.deploy_id, self.state
-                    )));
-                }
-                self.state = DeployState::CleanupPending;
-                self.finished_at = Some(at_unix_secs);
+                self.mark_cleanup_pending(at_unix_secs)?;
             }
         }
         Ok(DeployTransitionOutcome::Applied)
@@ -4334,18 +4492,16 @@ mod tests {
             .expect("commit is valid");
 
         assert_eq!(outcome, DeployTransitionOutcome::Applied);
-        assert_eq!(record.state, DeployState::Committed);
-        assert_eq!(record.committed_at, Some(42));
-        assert_eq!(record.finished_at, Some(42));
-        assert_eq!(record.summary_json, "{}");
+        assert_eq!(record.state(), DeployState::Committed);
+        assert_eq!(record.committed_at(), Some(42));
+        assert_eq!(record.finished_at(), Some(42));
+        assert_eq!(record.summary_json(), "{}");
     }
 
     #[test]
     fn deploy_transition_idempotent_commit_preserves_original_completion() {
         let mut record = deploy_record(DeployState::Committed);
-        record.committed_at = Some(42);
-        record.finished_at = Some(42);
-        record.summary_json = r#"{"started":1}"#.into();
+        record.mark_committed(42, 42, r#"{"started":1}"#.into());
 
         let outcome = record
             .apply_state_transition(DeployStateTransition {
@@ -4360,18 +4516,17 @@ mod tests {
             .expect("committed deploy commit is idempotent");
 
         assert_eq!(outcome, DeployTransitionOutcome::AlreadyInState);
-        assert_eq!(record.state, DeployState::Committed);
-        assert_eq!(record.committed_at, Some(42));
-        assert_eq!(record.finished_at, Some(42));
-        assert_eq!(record.summary_json, r#"{"started":1}"#);
+        assert_eq!(record.state(), DeployState::Committed);
+        assert_eq!(record.committed_at(), Some(42));
+        assert_eq!(record.finished_at(), Some(42));
+        assert_eq!(record.summary_json(), r#"{"started":1}"#);
     }
 
     #[test]
     fn deploy_transition_idempotent_cleanup_pending_preserves_original_timestamp() {
         let mut record = deploy_record(DeployState::CleanupPending);
-        record.committed_at = Some(42);
-        record.finished_at = Some(50);
-        record.summary_json = "{}".into();
+        record.mark_committed(42, 42, "{}".into());
+        record.mark_cleanup_pending(50).expect("cleanup pending");
 
         let outcome = record
             .apply_state_transition(DeployStateTransition {
@@ -4384,10 +4539,10 @@ mod tests {
             .expect("cleanup-pending deploy cleanup transition is idempotent");
 
         assert_eq!(outcome, DeployTransitionOutcome::AlreadyInState);
-        assert_eq!(record.state, DeployState::CleanupPending);
-        assert_eq!(record.committed_at, Some(42));
-        assert_eq!(record.finished_at, Some(50));
-        assert_eq!(record.summary_json, "{}");
+        assert_eq!(record.state(), DeployState::CleanupPending);
+        assert_eq!(record.committed_at(), Some(42));
+        assert_eq!(record.finished_at(), Some(50));
+        assert_eq!(record.summary_json(), "{}");
     }
 
     #[test]
@@ -4405,7 +4560,7 @@ mod tests {
             .expect_err("cleanup pending requires committed");
 
         assert_eq!(error.code(), "INVALID_TRANSITION");
-        assert_eq!(record.state, DeployState::Applying);
+        assert_eq!(record.state(), DeployState::Applying);
     }
 
     #[test]
@@ -4835,16 +4990,42 @@ mod tests {
     }
 
     fn deploy_record(state: DeployState) -> DeployRecord {
+        let record_state = match state {
+            DeployState::Planning => DeployRecordState::Planning {
+                summary_json: "null".into(),
+            },
+            DeployState::Applying => DeployRecordState::Applying {
+                summary_json: "null".into(),
+            },
+            DeployState::Committed => DeployRecordState::Committed {
+                committed_at: 1,
+                finished_at: 1,
+                summary_json: "null".into(),
+            },
+            DeployState::CheckpointCommitted => DeployRecordState::CheckpointCommitted {
+                summary_json: "null".into(),
+            },
+            DeployState::CleanupPending => DeployRecordState::CleanupPending {
+                committed_at: 1,
+                finished_at: 1,
+                summary_json: "null".into(),
+            },
+            DeployState::FailedAfterCheckpoint => DeployRecordState::FailedAfterCheckpoint {
+                finished_at: 1,
+                summary_json: "null".into(),
+            },
+            DeployState::Failed => DeployRecordState::Failed {
+                finished_at: 1,
+                summary_json: "null".into(),
+            },
+        };
         DeployRecord {
             deploy_id: DeployId::new("deploy-1"),
             namespace: Namespace::new("default"),
             coordinator_machine_id: MachineId::new("m1"),
             manifest_hash: "hash".into(),
-            state,
             started_at: 1,
-            committed_at: None,
-            finished_at: None,
-            summary_json: "null".into(),
+            state: record_state,
         }
     }
 

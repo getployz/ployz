@@ -37,6 +37,8 @@ use ployz_orchestrator::deploy::{
 use ployz_store_api::{DeployStore, StoreDriver, StoreRuntimeControl};
 use ployz_types::Error as PloyzError;
 use ployz_types::error::DeployError;
+#[cfg(test)]
+use ployz_types::model::DeployRecordState;
 use ployz_types::model::{
     BranchEnvironmentFailure, BranchEnvironmentRecord, BranchEnvironmentResourceMode,
     BranchEnvironmentResourceOverride, BranchEnvironmentState, DeployId, DeployPhaseCommitPolicy,
@@ -1255,7 +1257,7 @@ async fn mark_deploy_failed_after_lock_loss(
 ) -> DeployLockLossOutcome {
     let deploy = match store.get_deploy(deploy_id).await {
         Ok(Some(mut deploy)) => {
-            match deploy.state {
+            match deploy.state() {
                 ployz_types::model::DeployState::Committed
                 | ployz_types::model::DeployState::CleanupPending
                 | ployz_types::model::DeployState::CheckpointCommitted => {
@@ -1271,18 +1273,19 @@ async fn mark_deploy_failed_after_lock_loss(
             if deploy_has_checkpoint_commit_point(store, &deploy.namespace, deploy_id).await {
                 return DeployLockLossOutcome::PastCommit;
             }
-            deploy.state = ployz_types::model::DeployState::Failed;
-            deploy.finished_at = Some(ployz_types::time::now_unix_secs());
+            let finished_at = ployz_types::time::now_unix_secs();
+            let mut summary_json = deploy.summary_json().to_string();
             if let Ok(mut preview) =
-                serde_json::from_str::<ployz_types::model::DeployPreview>(&deploy.summary_json)
+                serde_json::from_str::<ployz_types::model::DeployPreview>(deploy.summary_json())
             {
                 preview
                     .warnings
                     .push(format!("deploy lock lost during apply: {message}"));
-                if let Ok(summary_json) = serde_json::to_string(&preview) {
-                    deploy.summary_json = summary_json;
+                if let Ok(next_summary_json) = serde_json::to_string(&preview) {
+                    summary_json = next_summary_json;
                 }
             }
+            deploy.mark_failed(finished_at, summary_json);
             deploy
         }
         Ok(None) => return DeployLockLossOutcome::NotApplying,
@@ -1700,11 +1703,12 @@ mod tests {
                     namespace: namespace.clone(),
                     coordinator_machine_id: MachineId::new("local"),
                     manifest_hash: "manifest".into(),
-                    state: DeployState::Committed,
+                    state: DeployRecordState::Committed {
+                        committed_at: 1,
+                        finished_at: 1,
+                        summary_json: "{}".into(),
+                    },
                     started_at: 1,
-                    committed_at: Some(1),
-                    finished_at: Some(1),
-                    summary_json: "{}".into(),
                 },
             })
             .await
@@ -3991,11 +3995,10 @@ mod tests {
                 namespace: Namespace::new("prod"),
                 coordinator_machine_id: MachineId::new("local"),
                 manifest_hash: "manifest".into(),
-                state: DeployState::Applying,
+                state: DeployRecordState::Applying {
+                    summary_json: serde_json::to_string(&preview).expect("preview json"),
+                },
                 started_at: 1,
-                committed_at: None,
-                finished_at: None,
-                summary_json: serde_json::to_string(&preview).expect("preview json"),
             })
             .await
             .expect("seed applying deploy");
@@ -4008,10 +4011,10 @@ mod tests {
             .await
             .expect("get deploy")
             .expect("deploy");
-        assert_eq!(record.state, DeployState::Failed);
-        assert!(record.finished_at.is_some());
+        assert_eq!(record.state(), DeployState::Failed);
+        assert!(record.finished_at().is_some());
         let preview: DeployPreview =
-            serde_json::from_str(&record.summary_json).expect("preview json");
+            serde_json::from_str(record.summary_json()).expect("preview json");
         assert!(
             preview
                 .warnings
@@ -4031,27 +4034,26 @@ mod tests {
                 namespace: namespace.clone(),
                 coordinator_machine_id: MachineId::new("local"),
                 manifest_hash: "manifest".into(),
-                state: DeployState::Applying,
+                state: DeployRecordState::Applying {
+                    summary_json: serde_json::to_string(&DeployPreview {
+                        namespace: namespace.clone(),
+                        manifest_hash: "manifest".into(),
+                        baseline: None,
+                        participants: Vec::new(),
+                        phases: Vec::new(),
+                        services: Vec::new(),
+                        service_sources: Vec::new(),
+                        service_source_fingerprint: String::new(),
+                        service_branch_sources: Vec::new(),
+                        image_availability: Vec::new(),
+                        volume_moves: Vec::new(),
+                        volume_clones: Vec::new(),
+                        volume_clone_preflights: Vec::new(),
+                        warnings: Vec::new(),
+                    })
+                    .expect("preview json"),
+                },
                 started_at: 1,
-                committed_at: None,
-                finished_at: None,
-                summary_json: serde_json::to_string(&DeployPreview {
-                    namespace: namespace.clone(),
-                    manifest_hash: "manifest".into(),
-                    baseline: None,
-                    participants: Vec::new(),
-                    phases: Vec::new(),
-                    services: Vec::new(),
-                    service_sources: Vec::new(),
-                    service_source_fingerprint: String::new(),
-                    service_branch_sources: Vec::new(),
-                    image_availability: Vec::new(),
-                    volume_moves: Vec::new(),
-                    volume_clones: Vec::new(),
-                    volume_clone_preflights: Vec::new(),
-                    warnings: Vec::new(),
-                })
-                .expect("preview json"),
             })
             .await
             .expect("seed applying deploy");
@@ -4102,11 +4104,12 @@ mod tests {
                 namespace: Namespace::new("prod"),
                 coordinator_machine_id: MachineId::new("local"),
                 manifest_hash: "manifest".into(),
-                state: DeployState::Committed,
+                state: DeployRecordState::Committed {
+                    committed_at: 2,
+                    finished_at: 2,
+                    summary_json: "{}".into(),
+                },
                 started_at: 1,
-                committed_at: Some(2),
-                finished_at: Some(2),
-                summary_json: "{}".into(),
             })
             .await
             .expect("seed committed deploy");
@@ -4119,7 +4122,7 @@ mod tests {
             .await
             .expect("get deploy")
             .expect("deploy");
-        assert_eq!(record.state, DeployState::Committed);
+        assert_eq!(record.state(), DeployState::Committed);
     }
 
     #[tokio::test]
@@ -4132,11 +4135,10 @@ mod tests {
                 namespace: Namespace::new("prod"),
                 coordinator_machine_id: MachineId::new("local"),
                 manifest_hash: "manifest".into(),
-                state: DeployState::CheckpointCommitted,
+                state: DeployRecordState::CheckpointCommitted {
+                    summary_json: "{}".into(),
+                },
                 started_at: 1,
-                committed_at: Some(2),
-                finished_at: None,
-                summary_json: "{}".into(),
             })
             .await
             .expect("seed checkpoint committed deploy");
@@ -4149,7 +4151,7 @@ mod tests {
             .await
             .expect("get deploy")
             .expect("deploy");
-        assert_eq!(record.state, DeployState::CheckpointCommitted);
+        assert_eq!(record.state(), DeployState::CheckpointCommitted);
     }
 
     #[tokio::test]
@@ -4171,27 +4173,26 @@ mod tests {
                 namespace: namespace.clone(),
                 coordinator_machine_id: MachineId::new("local"),
                 manifest_hash: "manifest".into(),
-                state: DeployState::Applying,
+                state: DeployRecordState::Applying {
+                    summary_json: serde_json::to_string(&DeployPreview {
+                        namespace: namespace.clone(),
+                        manifest_hash: "manifest".into(),
+                        baseline: None,
+                        participants: Vec::new(),
+                        phases: Vec::new(),
+                        services: Vec::new(),
+                        service_sources: Vec::new(),
+                        service_source_fingerprint: String::new(),
+                        service_branch_sources: Vec::new(),
+                        image_availability: Vec::new(),
+                        volume_moves: Vec::new(),
+                        volume_clones: Vec::new(),
+                        volume_clone_preflights: Vec::new(),
+                        warnings: Vec::new(),
+                    })
+                    .expect("preview json"),
+                },
                 started_at: 1,
-                committed_at: None,
-                finished_at: None,
-                summary_json: serde_json::to_string(&DeployPreview {
-                    namespace: namespace.clone(),
-                    manifest_hash: "manifest".into(),
-                    baseline: None,
-                    participants: Vec::new(),
-                    phases: Vec::new(),
-                    services: Vec::new(),
-                    service_sources: Vec::new(),
-                    service_source_fingerprint: String::new(),
-                    service_branch_sources: Vec::new(),
-                    image_availability: Vec::new(),
-                    volume_moves: Vec::new(),
-                    volume_clones: Vec::new(),
-                    volume_clone_preflights: Vec::new(),
-                    warnings: Vec::new(),
-                })
-                .expect("preview json"),
             })
             .await
             .expect("seed applying deploy");
@@ -4249,11 +4250,10 @@ mod tests {
                     namespace: namespace.clone(),
                     coordinator_machine_id: MachineId::new("local"),
                     manifest_hash: "manifest".into(),
-                    state: DeployState::CheckpointCommitted,
+                    state: DeployRecordState::CheckpointCommitted {
+                        summary_json: "{}".into(),
+                    },
                     started_at: 1,
-                    committed_at: Some(2),
-                    finished_at: None,
-                    summary_json: "{}".into(),
                 },
             })
             .await
@@ -4267,7 +4267,7 @@ mod tests {
             .await
             .expect("get deploy")
             .expect("deploy");
-        assert_eq!(record.state, DeployState::Applying);
+        assert_eq!(record.state(), DeployState::Applying);
         let phase = store
             .get_deploy_phase(&namespace, &deploy_id, &phase_id)
             .await
@@ -4332,11 +4332,12 @@ mod tests {
                     namespace: namespace.clone(),
                     coordinator_machine_id: MachineId::new("local"),
                     manifest_hash: "manifest".into(),
-                    state: DeployState::Committed,
+                    state: DeployRecordState::Committed {
+                        committed_at: 1,
+                        finished_at: 1,
+                        summary_json: "{}".into(),
+                    },
                     started_at: 1,
-                    committed_at: Some(1),
-                    finished_at: Some(1),
-                    summary_json: "{}".into(),
                 },
             })
             .await
@@ -4393,11 +4394,12 @@ mod tests {
                     namespace: namespace.clone(),
                     coordinator_machine_id: MachineId::new("local"),
                     manifest_hash: "manifest".into(),
-                    state: DeployState::Committed,
+                    state: DeployRecordState::Committed {
+                        committed_at: 1,
+                        finished_at: 1,
+                        summary_json: "{}".into(),
+                    },
                     started_at: 1,
-                    committed_at: Some(1),
-                    finished_at: Some(1),
-                    summary_json: "{}".into(),
                 },
             })
             .await
@@ -4460,11 +4462,12 @@ mod tests {
                     namespace: namespace.clone(),
                     coordinator_machine_id: MachineId::new("local"),
                     manifest_hash: "manifest".into(),
-                    state: DeployState::Committed,
+                    state: DeployRecordState::Committed {
+                        committed_at: 1,
+                        finished_at: 1,
+                        summary_json: "{}".into(),
+                    },
                     started_at: 1,
-                    committed_at: Some(1),
-                    finished_at: Some(1),
-                    summary_json: "{}".into(),
                 },
             })
             .await

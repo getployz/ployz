@@ -610,7 +610,7 @@ mod tests {
     use ployz_store_api::{DeployCommit, DeployStore, MachineMembershipStore, StoreDriver};
     use ployz_types::error::{Error, Result};
     use ployz_types::model::{
-        DeployId, DeployRecord, DeployState, MachineId, MachineLifecycle, MachineMembership,
+        DeployId, DeployRecord, DeployRecordState, MachineId, MachineLifecycle, MachineMembership,
         MachineTopology, OverlayIp, PublicKey, StorageParticipation, VolumeRecord,
     };
     use ployz_types::spec::{Namespace, VolumeScope};
@@ -894,11 +894,12 @@ mod tests {
             namespace: namespace.clone(),
             coordinator_machine_id: MachineId::new(owner.to_string()),
             manifest_hash: "test".into(),
-            state: DeployState::Committed,
+            state: DeployRecordState::Committed {
+                committed_at: 0,
+                finished_at: 0,
+                summary_json: "{}".into(),
+            },
             started_at: 0,
-            committed_at: Some(0),
-            finished_at: Some(0),
-            summary_json: "{}".into(),
         };
         store
             .commit_deploy(&DeployCommit {
