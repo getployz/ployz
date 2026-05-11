@@ -137,9 +137,12 @@ mod tests {
             message: "duplicate".into(),
             payload: Some(DaemonPayload::ImageDistributeValidation(
                 ImageDistributeValidationPayload {
-                    digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![MachineId("peer".into()), MachineId("peer".into())],
+                    request: crate::image::ImageDistributeRequest {
+                        digest: digest.clone(),
+                        source_machine: MachineId("founder".into()),
+                        target_machines: vec![MachineId("peer".into()), MachineId("peer".into())],
+                        platform: None,
+                    },
                     failure: ImageDistributeValidationFailure::DuplicateTarget {
                         duplicate_target: MachineId("peer".into()),
                     },
@@ -186,7 +189,6 @@ mod tests {
                             stage: ImageTransferFailureStage::SourceExport,
                             message: "export failed".into(),
                         }),
-                        error: Some("export failed".into()),
                     }],
                 },
             )),

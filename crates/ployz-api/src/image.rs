@@ -90,9 +90,8 @@ pub struct ImageDistributePayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageDistributeValidationPayload {
-    pub digest: ImageDigest,
-    pub source_machine: MachineId,
-    pub target_machines: Vec<MachineId>,
+    #[serde(flatten)]
+    pub request: ImageDistributeRequest,
     pub failure: ImageDistributeValidationFailure,
 }
 
@@ -144,8 +143,6 @@ pub struct ImageTransferTargetResult {
     pub record: Option<ImageAvailabilityRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<ImageTransferFailure>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

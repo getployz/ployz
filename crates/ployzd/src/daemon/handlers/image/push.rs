@@ -170,7 +170,6 @@ impl DaemonState {
             status: ImageTransferTargetStatus::Present,
             record: Some(first_record),
             failure: None,
-            error: None,
         }];
         if let Err(error) = operation_store.update_target(
             &mut operation,
@@ -194,7 +193,7 @@ impl DaemonState {
             ) {
                 return error;
             }
-            match self
+            let target_result = self
                 .distribute_pushed_image_from_target(
                     first_target,
                     target,
@@ -202,9 +201,9 @@ impl DaemonState {
                     platform.clone(),
                     backend,
                 )
-                .await
-            {
-                Ok(target_result) => {
+                .await;
+            match target_result.status {
+                ImageTransferTargetStatus::Present | ImageTransferTargetStatus::SkippedPresent => {
                     if let Err(error) = operation_store.update_target(
                         &mut operation,
                         ImageOperationTargetOutcome {
@@ -216,14 +215,9 @@ impl DaemonState {
                     ) {
                         return self.err("IMAGE_PUSH_OPERATION_FAILED", error);
                     }
-                    targets.push(target_result);
                 }
-                Err(target_result) => {
-                    let message = target_result
-                        .failure
-                        .as_ref()
-                        .map(|failure| failure.message.clone())
-                        .or_else(|| target_result.error.clone())
+                ImageTransferTargetStatus::Failed => {
+                    let message = image_transfer_target_failure_message(&target_result)
                         .unwrap_or_else(|| format!("image distribute to target '{target}' failed"));
                     if let Err(error) = operation_store.update_target(
                         &mut operation,
@@ -241,9 +235,9 @@ impl DaemonState {
                             ),
                         );
                     }
-                    targets.push(target_result);
                 }
             }
+            targets.push(target_result);
         }
 
         let artifact = ImageArtifact {
@@ -308,7 +302,7 @@ impl DaemonState {
             Ok(backend) => backend,
             Err(error) => return self.err("IMAGE_DISTRIBUTE_RUNTIME_UNAVAILABLE", error),
         };
-        self.handle_image_distribute_with_backend(request, backend.as_ref())
+        self.handle_validated_image_distribute_with_backend(request, backend.as_ref())
             .await
     }
 
@@ -320,6 +314,15 @@ impl DaemonState {
         if let Err(response) = self.validate_image_distribute_request(request) {
             return response;
         }
+        self.handle_validated_image_distribute_with_backend(request, backend)
+            .await
+    }
+
+    async fn handle_validated_image_distribute_with_backend(
+        &self,
+        request: &ImageDistributeRequest,
+        backend: &dyn RuntimeImageBackend,
+    ) -> ployz_api::DaemonResponse {
         let active = match self.require_active(
             "IMAGE_DISTRIBUTE_INACTIVE",
             "image distribute requires a running mesh",
@@ -361,6 +364,7 @@ impl DaemonState {
                         request,
                         &skipped_present,
                         &BTreeMap::new(),
+                        &BTreeMap::new(),
                         ImageTransferFailureStage::AvailabilityRead,
                         "IMAGE_DISTRIBUTE_AVAILABILITY_READ_FAILED",
                         message,
@@ -394,7 +398,6 @@ impl DaemonState {
                     status: ImageTransferTargetStatus::SkippedPresent,
                     record: Some(record),
                     failure: None,
-                    error: None,
                 });
             }
             if let Err(error) =
@@ -431,6 +434,7 @@ impl DaemonState {
                     request,
                     &skipped_present,
                     &BTreeMap::new(),
+                    &BTreeMap::new(),
                     ImageTransferFailureStage::SourceVerify,
                     "IMAGE_DISTRIBUTE_SOURCE_VERIFY_FAILED",
                     message,
@@ -439,11 +443,12 @@ impl DaemonState {
         };
 
         let mut local_present = BTreeMap::new();
+        let mut local_failures = BTreeMap::new();
         if missing_targets
             .iter()
             .any(|target_machine| target_machine == &self.identity.machine_id)
         {
-            if let Ok(record) = self
+            match self
                 .record_local_distributed_image_availability(
                     &image_store,
                     request,
@@ -452,7 +457,12 @@ impl DaemonState {
                 )
                 .await
             {
-                local_present.insert(self.identity.machine_id.clone(), record);
+                Ok(record) => {
+                    local_present.insert(self.identity.machine_id.clone(), record);
+                }
+                Err(message) => {
+                    local_failures.insert(self.identity.machine_id.clone(), message);
+                }
             }
         }
 
@@ -473,6 +483,7 @@ impl DaemonState {
                     request,
                     &skipped_present,
                     &local_present,
+                    &local_failures,
                     ImageTransferFailureStage::SourceExport,
                     "IMAGE_DISTRIBUTE_STAGE_UPDATE_FAILED",
                     format!("update image distribute stage 'exporting source image': {error}"),
@@ -488,6 +499,7 @@ impl DaemonState {
                         request,
                         &skipped_present,
                         &local_present,
+                        &local_failures,
                         ImageTransferFailureStage::SourceExport,
                         "IMAGE_DISTRIBUTE_SOURCE_EXPORT_FAILED",
                         message,
@@ -511,6 +523,7 @@ impl DaemonState {
                         request,
                         &skipped_present,
                         &local_present,
+                        &local_failures,
                         ImageTransferFailureStage::ArchiveParse,
                         "IMAGE_DISTRIBUTE_ARCHIVE_PARSE_FAILED",
                         error.to_string(),
@@ -530,7 +543,6 @@ impl DaemonState {
                         status: ImageTransferTargetStatus::SkippedPresent,
                         record: Some(record),
                         failure: None,
-                        error: None,
                     },
                     None,
                 )
@@ -541,8 +553,17 @@ impl DaemonState {
                         status: ImageTransferTargetStatus::Present,
                         record: Some(record),
                         failure: None,
-                        error: None,
                     },
+                    None,
+                )
+            } else if let Some(message) = local_failures.get(target_machine).cloned() {
+                (
+                    failed_image_transfer_target(
+                        target_machine.clone(),
+                        ImageTransferFailureStage::LocalAvailability,
+                        "IMAGE_DISTRIBUTE_LOCAL_AVAILABILITY_FAILED",
+                        message,
+                    ),
                     None,
                 )
             } else if target_machine == &self.identity.machine_id {
@@ -561,7 +582,6 @@ impl DaemonState {
                             status: ImageTransferTargetStatus::Present,
                             record: Some(record),
                             failure: None,
-                            error: None,
                         },
                         None,
                     ),
@@ -604,7 +624,7 @@ impl DaemonState {
                     machine_id: target_machine.clone(),
                     status: operation_status,
                     bytes_transferred,
-                    last_error: target_result.error.clone(),
+                    last_error: image_transfer_target_failure_message(&target_result),
                 },
             ) {
                 if let Some(work_dir) = work_dir.as_deref() {
@@ -932,61 +952,65 @@ impl DaemonState {
         request: &ImageDistributeRequest,
         skipped_present: &BTreeMap<MachineId, ImageAvailabilityRecord>,
         local_present: &BTreeMap<MachineId, ImageAvailabilityRecord>,
+        local_failures: &BTreeMap<MachineId, String>,
         stage: ImageTransferFailureStage,
         code: &'static str,
         message: String,
     ) -> ployz_api::DaemonResponse {
-        let targets = request
-            .target_machines
-            .iter()
-            .map(|target_machine| {
-                let (result, status, last_error) =
-                    if let Some(record) = skipped_present.get(target_machine) {
-                        (
-                            ImageTransferTargetResult {
-                                machine_id: target_machine.clone(),
-                                status: ImageTransferTargetStatus::SkippedPresent,
-                                record: Some(record.clone()),
-                                failure: None,
-                                error: None,
-                            },
-                            OperationStatus::Succeeded,
-                            None,
-                        )
-                    } else if let Some(record) = local_present.get(target_machine) {
-                        (
-                            ImageTransferTargetResult {
-                                machine_id: target_machine.clone(),
-                                status: ImageTransferTargetStatus::Present,
-                                record: Some(record.clone()),
-                                failure: None,
-                                error: None,
-                            },
-                            OperationStatus::Succeeded,
-                            None,
-                        )
-                    } else {
-                        (
-                            failed_image_transfer_target(
-                                target_machine.clone(),
-                                stage,
-                                code,
-                                message.clone(),
-                            ),
-                            OperationStatus::Failed,
-                            Some(message.clone()),
-                        )
-                    };
-                let outcome = ImageOperationTargetOutcome {
-                    machine_id: target_machine.clone(),
-                    status,
-                    bytes_transferred: None,
-                    last_error,
+        let mut targets = Vec::with_capacity(request.target_machines.len());
+        for target_machine in &request.target_machines {
+            let (result, status, last_error) =
+                if let Some(record) = skipped_present.get(target_machine) {
+                    (
+                        ImageTransferTargetResult {
+                            machine_id: target_machine.clone(),
+                            status: ImageTransferTargetStatus::SkippedPresent,
+                            record: Some(record.clone()),
+                            failure: None,
+                        },
+                        OperationStatus::Succeeded,
+                        None,
+                    )
+                } else if let Some(record) = local_present.get(target_machine) {
+                    (
+                        ImageTransferTargetResult {
+                            machine_id: target_machine.clone(),
+                            status: ImageTransferTargetStatus::Present,
+                            record: Some(record.clone()),
+                            failure: None,
+                        },
+                        OperationStatus::Succeeded,
+                        None,
+                    )
+                } else if let Some(local_message) = local_failures.get(target_machine) {
+                    (
+                        failed_image_transfer_target(
+                            target_machine.clone(),
+                            ImageTransferFailureStage::LocalAvailability,
+                            "IMAGE_DISTRIBUTE_LOCAL_AVAILABILITY_FAILED",
+                            local_message.clone(),
+                        ),
+                        OperationStatus::Failed,
+                        Some(local_message.clone()),
+                    )
+                } else {
+                    (
+                        failed_image_transfer_target(
+                            target_machine.clone(),
+                            stage,
+                            code,
+                            message.clone(),
+                        ),
+                        OperationStatus::Failed,
+                        Some(message.clone()),
+                    )
                 };
-                (result, outcome)
-            })
-            .collect::<Vec<_>>();
-        for (_, outcome) in &targets {
+            let outcome = ImageOperationTargetOutcome {
+                machine_id: target_machine.clone(),
+                status,
+                bytes_transferred: None,
+                last_error,
+            };
             if let Err(error) = operation_store.update_target(operation, outcome.clone()) {
                 return self.err(
                     "IMAGE_DISTRIBUTE_OPERATION_FAILED",
@@ -995,6 +1019,7 @@ impl DaemonState {
                     ),
                 );
             }
+            targets.push(result);
         }
         if let Err(error) =
             operation_store.update_status(operation, OperationStatus::Failed, Some(message.clone()))
@@ -1018,10 +1043,7 @@ impl DaemonState {
                 operation_id: operation.id.clone(),
                 digest: request.digest.clone(),
                 source_machine: request.source_machine.clone(),
-                targets: targets
-                    .into_iter()
-                    .map(|(target_result, _)| target_result)
-                    .collect(),
+                targets,
             })),
         )
     }
@@ -1326,7 +1348,6 @@ impl DaemonState {
                 status: ImageTransferTargetStatus::Present,
                 record: Some(record),
                 failure: None,
-                error: None,
             },
             Some(upload.bytes_uploaded),
         )
@@ -1457,7 +1478,7 @@ impl DaemonState {
         digest: &ployz_types::model::ImageDigest,
         platform: Option<ployz_types::model::ImagePlatform>,
         backend: &dyn RuntimeImageBackend,
-    ) -> Result<ImageTransferTargetResult, ImageTransferTargetResult> {
+    ) -> ImageTransferTargetResult {
         let failure = |message: String| {
             failed_image_transfer_target(
                 target_machine.clone(),
@@ -1476,10 +1497,13 @@ impl DaemonState {
             self.handle_image_distribute_with_backend(&request, backend)
                 .await
         } else {
-            let client = self.nats_node_rpc_client().await.map_err(|error| {
-                failure(format!("connect node rpc for image distribute: {error}"))
-            })?;
-            client
+            let client = match self.nats_node_rpc_client().await {
+                Ok(client) => client,
+                Err(error) => {
+                    return failure(format!("connect node rpc for image distribute: {error}"));
+                }
+            };
+            match client
                 .with_policy(RpcPolicy {
                     timeout: IMAGE_DISTRIBUTE_RPC_TIMEOUT,
                 })
@@ -1488,41 +1512,42 @@ impl DaemonState {
                     &DaemonRequest::ImageDistribute { request },
                 )
                 .await
-                .map_err(|error| {
-                    failure(format!(
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    return failure(format!(
                         "request image distribute from {source_machine}: {error}"
-                    ))
-                })?
+                    ));
+                }
+            }
         };
         if !response.ok {
             if let Some(DaemonPayload::ImageDistribute(payload)) = response.payload {
                 let [target] = payload.targets.as_slice() else {
-                    return Err(failure(format!(
+                    return failure(format!(
                         "target image distribute failed [{}] with {} target results: {}",
                         response.code,
                         payload.targets.len(),
                         response.message
-                    )));
+                    ));
                 };
-                return Err(target.clone());
+                return target.clone();
             }
-            return Err(failure(format!(
+            return failure(format!(
                 "target image distribute failed [{}]: {}",
                 response.code, response.message
-            )));
+            ));
         }
         let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
-            return Err(failure(
-                "target image distribute response did not include a payload".into(),
-            ));
+            return failure("target image distribute response did not include a payload".into());
         };
         let [target] = payload.targets.as_slice() else {
-            return Err(failure(format!(
+            return failure(format!(
                 "target image distribute returned {} target results",
                 payload.targets.len()
-            )));
+            ));
         };
-        Ok(target.clone())
+        target.clone()
     }
 
     async fn import_received_image_for_target(
@@ -1639,10 +1664,16 @@ fn failed_image_transfer_target(
         failure: Some(ImageTransferFailure {
             code,
             stage,
-            message: message.clone(),
+            message,
         }),
-        error: Some(message),
     }
+}
+
+fn image_transfer_target_failure_message(target: &ImageTransferTargetResult) -> Option<String> {
+    target
+        .failure
+        .as_ref()
+        .map(|failure| failure.message.clone())
 }
 
 fn image_distribute_validation_payload(
@@ -1650,9 +1681,7 @@ fn image_distribute_validation_payload(
     failure: ImageDistributeValidationFailure,
 ) -> ImageDistributeValidationPayload {
     ImageDistributeValidationPayload {
-        digest: request.digest.clone(),
-        source_machine: request.source_machine.clone(),
-        target_machines: request.target_machines.clone(),
+        request: request.clone(),
         failure,
     }
 }

@@ -204,8 +204,10 @@ fn render_plain_success(response: &DaemonResponse) -> String {
 }
 
 fn render_plain_error(response: &DaemonResponse) -> String {
-    match (&response.code[..], response.payload.as_ref()) {
-        ("IMAGE_DISTRIBUTE_PARTIAL_FAILED", Some(DaemonPayload::ImageDistribute(payload))) => {
+    match response.payload.as_ref() {
+        Some(DaemonPayload::ImageDistribute(payload))
+            if response.code.starts_with("IMAGE_DISTRIBUTE_") =>
+        {
             format!(
                 "{}\n{}",
                 response.message,
@@ -424,8 +426,8 @@ fn append_plain_image_targets(
             ployz_api::ImageTransferTargetStatus::Failed => "failed",
         };
         let mut line = format!("target machine={} status={status}", target.machine_id);
-        if let Some(error) = target.error.as_deref() {
-            line.push_str(&format!(" error={error}"));
+        if let Some(failure) = &target.failure {
+            line.push_str(&format!(" error={}", failure.message));
         }
         lines.push(line);
     }
@@ -833,7 +835,6 @@ mod tests {
                         status: ployz_api::ImageTransferTargetStatus::Present,
                         record: None,
                         failure: None,
-                        error: None,
                     },
                     ployz_api::ImageTransferTargetResult {
                         machine_id: ployz_types::model::MachineId("other".into()),
@@ -844,7 +845,6 @@ mod tests {
                             stage: ployz_api::ImageTransferFailureStage::SourceVerify,
                             message: "no responders".into(),
                         }),
-                        error: Some("no responders".into()),
                     },
                 ],
             })),
@@ -878,14 +878,12 @@ mod tests {
                             status: ployz_api::ImageTransferTargetStatus::SkippedPresent,
                             record: None,
                             failure: None,
-                            error: None,
                         },
                         ployz_api::ImageTransferTargetResult {
                             machine_id: ployz_types::model::MachineId("peer".into()),
                             status: ployz_api::ImageTransferTargetStatus::Present,
                             record: None,
                             failure: None,
-                            error: None,
                         },
                     ],
                 },
@@ -923,7 +921,6 @@ mod tests {
                             stage: ployz_api::ImageTransferFailureStage::ReceiveSession,
                             message: "no responders".into(),
                         }),
-                        error: Some("no responders".into()),
                     }],
                 },
             )),
