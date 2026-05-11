@@ -16,5 +16,5 @@ pub use image_ref::{
 pub use probe::{Probe, ProbeRunner};
 pub use spec::{
     Observation, ObservedContainer, PortBinding, PortMap, PullPolicy, RestartPolicy,
-    RestartPolicyName, RuntimeContainerSpec,
+    RuntimeContainerSpec,
 };

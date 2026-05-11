@@ -213,10 +213,10 @@ impl CertificateStore for NatsStore {
 }
 
 fn certificate_renewal_job_schedule(record: &CertificateRecord) -> Option<JobSchedule> {
-    if record.state != CertificateState::Active {
+    if record.state() != CertificateState::Active {
         return None;
     }
-    record.next_renewal_at.map(JobSchedule::AtUnixSecs)
+    record.next_renewal_at().map(JobSchedule::AtUnixSecs)
 }
 
 async fn certificates_bucket(store: &NatsStore) -> Result<kv::Store> {
@@ -398,7 +398,7 @@ fn decode_acme_account(key: &str, bytes: &[u8]) -> Result<AcmeAccountRecord> {
 mod tests {
     use super::*;
     use ployz_types::error::{Error, StoreRecordKind};
-    use ployz_types::model::CertificateState;
+    use ployz_types::model::CertificateLifecycle;
 
     #[test]
     fn acme_challenge_readiness_key_is_collision_safe() {
@@ -432,8 +432,10 @@ mod tests {
     #[test]
     fn active_certificate_schedules_next_renewal_job() {
         let mut record = certificate("example.com");
-        record.state = CertificateState::Active;
-        record.next_renewal_at = Some(1_803_619_200);
+        record.lifecycle = CertificateLifecycle::Active {
+            active_version_id: "v1".into(),
+            next_renewal_at: Some(1_803_619_200),
+        };
 
         let schedule = certificate_renewal_job_schedule(&record);
 
@@ -443,8 +445,10 @@ mod tests {
     #[test]
     fn non_active_certificate_does_not_schedule_renewal_job() {
         let mut record = certificate("example.com");
-        record.state = CertificateState::RenewalDue;
-        record.next_renewal_at = Some(1_803_619_200);
+        record.lifecycle = CertificateLifecycle::RenewalDue {
+            active_version_id: "v1".into(),
+            next_renewal_at: Some(1_803_619_200),
+        };
 
         assert_eq!(certificate_renewal_job_schedule(&record), None);
     }
@@ -490,14 +494,10 @@ mod tests {
             hostname: hostname.into(),
             issuer_url: "https://issuer.example/acme".into(),
             account_id: "account-1".into(),
-            state: CertificateState::Pending,
-            active_version_id: None,
+            lifecycle: CertificateLifecycle::Pending { last_error: None },
             versions: Vec::new(),
-            order_url: None,
-            last_error: None,
             requested_at: 1,
             updated_at: 1,
-            next_renewal_at: None,
         }
     }
 

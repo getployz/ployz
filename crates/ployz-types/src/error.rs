@@ -1,3 +1,5 @@
+use std::fmt;
+
 use thiserror::Error;
 
 use crate::model::{DeployBaselineDiff, PreparedDeployState};
@@ -395,6 +397,52 @@ pub enum CoordinationError {
     CertRenewalInvalidSchedule { timestamp: String, message: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcmeAuthorizationStatus {
+    Pending,
+    Valid,
+    Invalid,
+    Revoked,
+    Expired,
+    Deactivated,
+}
+
+impl fmt::Display for AcmeAuthorizationStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let status = match self {
+            Self::Pending => "pending",
+            Self::Valid => "valid",
+            Self::Invalid => "invalid",
+            Self::Revoked => "revoked",
+            Self::Expired => "expired",
+            Self::Deactivated => "deactivated",
+        };
+        f.write_str(status)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcmeOrderStatus {
+    Pending,
+    Ready,
+    Processing,
+    Valid,
+    Invalid,
+}
+
+impl fmt::Display for AcmeOrderStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let status = match self {
+            Self::Pending => "pending",
+            Self::Ready => "ready",
+            Self::Processing => "processing",
+            Self::Valid => "valid",
+            Self::Invalid => "invalid",
+        };
+        f.write_str(status)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum CertificateError {
     #[error("no ACME issuer is configured for this orchestrator")]
@@ -402,9 +450,15 @@ pub enum CertificateError {
     #[error("no HTTP-01 challenge found for {hostname}")]
     AcmeHttp01ChallengeMissing { hostname: String },
     #[error("authorization for {hostname} reached unexpected status {status}")]
-    AcmeAuthorizationUnexpectedStatus { hostname: String, status: String },
+    AcmeAuthorizationUnexpectedStatus {
+        hostname: String,
+        status: AcmeAuthorizationStatus,
+    },
     #[error("order for {hostname} reached unexpected status {status}")]
-    AcmeOrderUnexpectedStatus { hostname: String, status: String },
+    AcmeOrderUnexpectedStatus {
+        hostname: String,
+        status: AcmeOrderStatus,
+    },
     #[error("ACME order URL {order_url} does not share an origin with directory {directory_url}")]
     AcmeOrderUrlOriginMismatch {
         directory_url: String,
