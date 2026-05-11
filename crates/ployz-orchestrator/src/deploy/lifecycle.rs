@@ -2,7 +2,7 @@ use crate::deploy::plan::ResolvedPlan;
 use crate::error::{DeployError, Error, Result};
 use crate::model::{
     DeployChangeKind, DeployId, DeployImageAvailabilityPlan, DeployPreview, DeployRecord,
-    DeployState, InstanceStatusRecord, MachineId, ServiceRelease, ServiceReleaseRecord,
+    DeployRecordState, InstanceStatusRecord, MachineId, ServiceRelease, ServiceReleaseRecord,
     ServiceRevisionRecord, ServiceRoutingPolicy,
 };
 #[cfg(test)]
@@ -59,13 +59,12 @@ impl PreparedDeploy {
             namespace: plan.namespace().clone(),
             coordinator_machine_id: coordinator_machine_id.clone(),
             manifest_hash: plan.manifest_hash().to_string(),
-            state: DeployState::Applying,
             started_at,
-            committed_at: None,
-            finished_at: None,
-            summary_json: serde_json::to_string(&preview).map_err(|error| {
-                Error::operation("deploy_apply", format!("serialize preview: {error}"))
-            })?,
+            state: DeployRecordState::Applying {
+                summary_json: serde_json::to_string(&preview).map_err(|error| {
+                    Error::operation("deploy_apply", format!("serialize preview: {error}"))
+                })?,
+            },
         };
 
         let mut revisions = Vec::new();

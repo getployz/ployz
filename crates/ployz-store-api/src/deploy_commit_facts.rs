@@ -352,8 +352,9 @@ fn phase_commit_deploy_id(deploy_id: &DeployId, phase_id: &DeployPhaseId) -> Dep
 mod tests {
     use super::*;
     use ployz_types::model::{
-        DeployId, DeployPhaseCommitRecord, DeployPhaseId, DeployRecord, DeployState, MachineId,
-        ServiceBranchLineageRecord, ServiceRelease, ServiceRoutingPolicy, VolumeMovementRecord,
+        DeployId, DeployPhaseCommitRecord, DeployPhaseId, DeployRecord, DeployRecordState,
+        MachineId, ServiceBranchLineageRecord, ServiceRelease, ServiceRoutingPolicy,
+        VolumeMovementRecord,
     };
     use ployz_types::spec::VolumeScope;
 
@@ -719,11 +720,12 @@ mod tests {
                 namespace: namespace.clone(),
                 coordinator_machine_id: MachineId::new("machine-1"),
                 manifest_hash: "manifest".into(),
-                state: DeployState::Committed,
                 started_at: 1,
-                committed_at: Some(2),
-                finished_at: Some(2),
-                summary_json: "{}".into(),
+                state: DeployRecordState::Committed {
+                    committed_at: 2,
+                    finished_at: 2,
+                    summary_json: "{}".into(),
+                },
             },
         }
     }

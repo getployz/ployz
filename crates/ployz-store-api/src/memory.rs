@@ -1198,8 +1198,8 @@ mod tests {
         BranchEnvironmentRecord, BranchEnvironmentResourceMode, BranchEnvironmentState,
         CertificateLifecycle, DeployPhaseCommitPolicy, DeployPhaseFailure,
         DeployPhaseRollbackPolicy, DeployPhaseState, DeployPreview, DeployPreviewBaseline,
-        DeployPreviewBaselineComponents, ImageArtifact, ImageArtifactProvenance, ImagePlatform,
-        ImagePresence, ImageRef, PreparedDeployRecord, PreparedDeployState,
+        DeployPreviewBaselineComponents, DeployRecordState, ImageArtifact, ImageArtifactProvenance,
+        ImagePlatform, ImagePresence, ImageRef, PreparedDeployRecord, PreparedDeployState,
         ServiceBranchLineageRecord, ServiceRevisionRecord, VolumeBranchLineageRecord,
         VolumeMovementRecord,
     };
@@ -2719,11 +2719,12 @@ mod tests {
             namespace: namespace.clone(),
             coordinator_machine_id: MachineId::new("machine-1"),
             manifest_hash: "manifest".into(),
-            state: ployz_types::model::DeployState::Committed,
             started_at: 1,
-            committed_at: Some(2),
-            finished_at: Some(2),
-            summary_json: "{}".into(),
+            state: DeployRecordState::Committed {
+                committed_at: 2,
+                finished_at: 2,
+                summary_json: "{}".into(),
+            },
         }
     }
 
@@ -3187,11 +3188,12 @@ mod tests {
             namespace: namespace.clone(),
             coordinator_machine_id: MachineId::new("local"),
             manifest_hash: "hash".into(),
-            state: ployz_types::model::DeployState::Committed,
             started_at: 1,
-            committed_at: Some(1),
-            finished_at: Some(1),
-            summary_json: "{}".into(),
+            state: DeployRecordState::Committed {
+                committed_at: 1,
+                finished_at: 1,
+                summary_json: "{}".into(),
+            },
         };
 
         store

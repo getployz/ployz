@@ -499,7 +499,7 @@ async fn existing_prepared_apply_replay(
 ) -> Result<Option<PreparedApplyReplay>> {
     let status_record = store.get_deploy(&prepared.prepared_deploy_id).await?;
     if let Some(record) = status_record.as_ref()
-        && record.state == DeployState::Committed
+        && record.state() == DeployState::Committed
         && let Some(mut result) = prepared_apply_result_from_terminal_record(
             store,
             prepared,
@@ -537,8 +537,9 @@ async fn existing_prepared_apply_replay(
 
 fn post_commit_pending_deploy_record(record: &DeployRecord) -> DeployRecord {
     let mut pending = record.clone();
-    pending.state = DeployState::CleanupPending;
-    pending.finished_at = Some(now_unix_secs());
+    pending
+        .mark_cleanup_pending(now_unix_secs())
+        .expect("committed deploy can become cleanup pending");
     pending
 }
 
@@ -548,7 +549,7 @@ async fn prepared_apply_result_from_terminal_record(
     record: DeployRecord,
     message: &str,
 ) -> Result<Option<DeployApplyResult>> {
-    match record.state {
+    match record.state() {
         DeployState::Committed | DeployState::CleanupPending => {
             let mut events = vec![DeployEvent {
                 step: "prepared_deploy".into(),
@@ -568,16 +569,17 @@ async fn prepared_apply_result_from_terminal_record(
                 }
             }
             let preview: DeployPreview =
-                serde_json::from_str(&record.summary_json).map_err(|error| {
+                serde_json::from_str(&record.summary_json()).map_err(|error| {
                     Error::operation(
                         "prepared_deploy_replay",
                         format!("decode committed deploy preview: {error}"),
                     )
                 })?;
+            let state = record.state();
             Ok(Some(DeployApplyResult {
                 deploy_id: record.deploy_id,
                 preview,
-                state: record.state,
+                state,
                 events,
             }))
         }
@@ -606,7 +608,7 @@ async fn resume_prepared_apply_after_durable_commit(
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
 ) -> Result<DeployApplyResult> {
-    match commit.deploy.state {
+    match commit.deploy.state() {
         DeployState::Committed | DeployState::CleanupPending => {}
         DeployState::CheckpointCommitted | DeployState::FailedAfterCheckpoint => {
             return prepared_apply_result_from_terminal_record(
@@ -624,15 +626,17 @@ async fn resume_prepared_apply_after_durable_commit(
             });
         }
         DeployState::Planning | DeployState::Applying | DeployState::Failed => {
+            let preview = serde_json::from_str(commit.deploy.summary_json()).map_err(|error| {
+                Error::operation(
+                    "prepared_deploy_replay",
+                    format!("decode committed deploy preview: {error}"),
+                )
+            })?;
+            let state = commit.deploy.state();
             return Ok(DeployApplyResult {
                 deploy_id: commit.deploy.deploy_id,
-                preview: serde_json::from_str(&commit.deploy.summary_json).map_err(|error| {
-                    Error::operation(
-                        "prepared_deploy_replay",
-                        format!("decode committed deploy preview: {error}"),
-                    )
-                })?,
-                state: commit.deploy.state,
+                preview,
+                state,
                 events: vec![DeployEvent {
                     step: "prepared_deploy".into(),
                     message: "prepared deploy commit log is not terminal".into(),
@@ -646,7 +650,7 @@ async fn resume_prepared_apply_after_durable_commit(
         message: "prepared deploy recovered replayable terminal status from durable commit log"
             .into(),
     }];
-    let mut final_preview: DeployPreview = serde_json::from_str(&commit.deploy.summary_json)
+    let mut final_preview: DeployPreview = serde_json::from_str(&commit.deploy.summary_json())
         .map_err(|error| {
             Error::operation(
                 "prepared_deploy_replay",
@@ -824,17 +828,19 @@ async fn resume_prepared_apply_after_durable_commit(
     };
     events.extend(cleanup.events);
 
-    final_deploy_record.summary_json = serde_json::to_string(&final_preview).map_err(|error| {
+    let final_summary_json = serde_json::to_string(&final_preview).map_err(|error| {
         Error::operation(
             "prepared_deploy_replay",
             format!("serialize preview: {error}"),
         )
     })?;
+    final_deploy_record.set_summary_json(final_summary_json);
     let final_state = if cleanup.errors.is_empty() {
-        final_deploy_record.state
+        final_deploy_record.state()
     } else {
-        final_deploy_record.state = DeployState::CleanupPending;
-        final_deploy_record.finished_at = Some(now_unix_secs());
+        final_deploy_record
+            .mark_cleanup_pending(now_unix_secs())
+            .expect("committed deploy can become cleanup pending");
         for error in cleanup.errors {
             events.push(DeployEvent {
                 step: "cleanup_pending".into(),
@@ -866,14 +872,16 @@ async fn recovered_commit_result_with_post_commit_warning(
         step: "cleanup_pending".into(),
         message: warning,
     });
-    record.state = DeployState::CleanupPending;
-    record.finished_at = Some(now_unix_secs());
-    record.summary_json = serde_json::to_string(&preview).map_err(|error| {
+    let summary_json = serde_json::to_string(&preview).map_err(|error| {
         Error::operation(
             "prepared_deploy_replay",
             format!("serialize warning preview: {error}"),
         )
     })?;
+    record.set_summary_json(summary_json);
+    record
+        .mark_cleanup_pending(now_unix_secs())
+        .expect("committed deploy can become cleanup pending");
     if let Err(update_error) = store.write_deploy_status(&record).await {
         events.push(DeployEvent {
             step: "cleanup_pending".into(),
@@ -1360,10 +1368,9 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         let mut final_deploy_record = final_commit.deploy.clone();
         let mut final_preview = prepared.preview().clone();
         final_preview.warnings = managed_warnings;
-        final_deploy_record.summary_json =
-            serde_json::to_string(&final_preview).map_err(|error| {
-                Error::operation("deploy_apply", format!("serialize preview: {error}"))
-            })?;
+        final_deploy_record.set_summary_json(serde_json::to_string(&final_preview).map_err(
+            |error| Error::operation("deploy_apply", format!("serialize preview: {error}")),
+        )?);
         let post_warning_pending_record = post_commit_pending_deploy_record(&final_deploy_record);
         store
             .write_deploy_status(&post_warning_pending_record)
@@ -1404,8 +1411,9 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             DeployState::Committed
         } else {
             let mut cleanup_pending_record = final_deploy_record.clone();
-            cleanup_pending_record.state = DeployState::CleanupPending;
-            cleanup_pending_record.finished_at = Some(now_unix_secs());
+            cleanup_pending_record
+                .mark_cleanup_pending(now_unix_secs())
+                .expect("committed deploy can become cleanup pending");
             store.write_deploy_status(&cleanup_pending_record).await?;
             for error in cleanup.errors {
                 events.push(DeployEvent {
@@ -1442,9 +1450,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
         };
         if let Some(committed_record) = durable_final_commit_record {
             if !matches!(
-                last_written_deploy_record
-                    .as_ref()
-                    .map(|record| record.state),
+                last_written_deploy_record.as_ref().map(DeployRecord::state),
                 Some(DeployState::Committed | DeployState::CleanupPending)
             ) {
                 let pending_record = post_commit_pending_deploy_record(&committed_record);
@@ -1476,11 +1482,11 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
             }
         } else if let Some(last_record) = last_written_deploy_record
             && matches!(
-                last_record.state,
+                last_record.state(),
                 DeployState::Applying | DeployState::CheckpointCommitted
             )
         {
-            let failed_record = if last_record.state == DeployState::CheckpointCommitted {
+            let failed_record = if last_record.state() == DeployState::CheckpointCommitted {
                 failed_after_checkpoint_deploy_record(last_record, &status_error)
             } else {
                 failed_deploy_record(last_record, &status_error)
@@ -1963,11 +1969,9 @@ fn deploy_phase_record(
 
 fn checkpoint_deploy_record(prepared: &PreparedDeploy) -> Result<DeployRecord> {
     let mut record = prepared.applying_record().clone();
-    record.state = DeployState::CheckpointCommitted;
-    record.committed_at = None;
-    record.finished_at = None;
-    record.summary_json = serde_json::to_string(prepared.preview())
+    let summary_json = serde_json::to_string(prepared.preview())
         .map_err(|error| Error::operation("deploy_apply", format!("serialize preview: {error}")))?;
+    record.mark_checkpoint_committed(summary_json);
     Ok(record)
 }
 
@@ -1979,37 +1983,55 @@ fn committed_deploy_record(
 ) -> Result<DeployRecord> {
     let mut record = prepared.applying_record().clone();
     record.deploy_id = deploy_record_id;
-    record.state = state;
-    record.committed_at = Some(committed_at);
-    record.finished_at = Some(committed_at);
-    record.summary_json = serde_json::to_string(prepared.preview())
+    let summary_json = serde_json::to_string(prepared.preview())
         .map_err(|error| Error::operation("deploy_apply", format!("serialize preview: {error}")))?;
+    match state {
+        DeployState::Committed => record.mark_committed(committed_at, committed_at, summary_json),
+        DeployState::CleanupPending => {
+            record.mark_committed(committed_at, committed_at, summary_json);
+            record
+                .mark_cleanup_pending(committed_at)
+                .expect("committed deploy can become cleanup pending");
+        }
+        DeployState::Planning
+        | DeployState::Applying
+        | DeployState::CheckpointCommitted
+        | DeployState::FailedAfterCheckpoint
+        | DeployState::Failed => {
+            return Err(Error::operation(
+                "deploy_apply",
+                format!("invalid committed deploy terminal state {state}"),
+            ));
+        }
+    }
     Ok(record)
 }
 
 fn failed_deploy_record(mut record: DeployRecord, error: &Error) -> DeployRecord {
-    record.state = DeployState::Failed;
-    record.finished_at = Some(now_unix_secs());
-    if let Ok(mut preview) = serde_json::from_str::<DeployPreview>(&record.summary_json) {
+    let finished_at = now_unix_secs();
+    let mut summary_json = record.summary_json().to_string();
+    if let Ok(mut preview) = serde_json::from_str::<DeployPreview>(&record.summary_json()) {
         preview.warnings.push(format!("deploy failed: {error}"));
-        if let Ok(summary_json) = serde_json::to_string(&preview) {
-            record.summary_json = summary_json;
+        if let Ok(next_summary_json) = serde_json::to_string(&preview) {
+            summary_json = next_summary_json;
         }
     }
+    record.mark_failed(finished_at, summary_json);
     record
 }
 
 fn failed_after_checkpoint_deploy_record(mut record: DeployRecord, error: &Error) -> DeployRecord {
-    record.state = DeployState::FailedAfterCheckpoint;
-    record.finished_at = Some(now_unix_secs());
-    if let Ok(mut preview) = serde_json::from_str::<DeployPreview>(&record.summary_json) {
+    let finished_at = now_unix_secs();
+    let mut summary_json = record.summary_json().to_string();
+    if let Ok(mut preview) = serde_json::from_str::<DeployPreview>(&record.summary_json()) {
         preview
             .warnings
             .push(format!("deploy failed after checkpoint: {error}"));
-        if let Ok(summary_json) = serde_json::to_string(&preview) {
-            record.summary_json = summary_json;
+        if let Ok(next_summary_json) = serde_json::to_string(&preview) {
+            summary_json = next_summary_json;
         }
     }
+    record.mark_failed_after_checkpoint(finished_at, summary_json);
     record
 }
 
