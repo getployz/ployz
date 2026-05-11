@@ -215,10 +215,7 @@ impl DeployIntent {
     fn validate_planning_support(&self) -> Result<(), String> {
         for hint in &self.services {
             match &hint.intent {
-                ServiceIntent::Branch {
-                    source_namespace: _,
-                    source_service: _,
-                } => {}
+                ServiceIntent::Branch { .. } => {}
                 ServiceIntent::Move { to_machine: _ } => {
                     return Err(format!(
                         "deploy intent move for service '{}' is not supported by deploy planning yet",
@@ -243,12 +240,7 @@ impl DeployIntent {
                     from_machine: _,
                     to_machine: _,
                 }
-                | VolumeIntent::Clone {
-                    source_namespace: _,
-                    source_volume: _,
-                    data_policy: _,
-                    consistency: _,
-                } => {}
+                | VolumeIntent::Clone { .. } => {}
             }
         }
 
@@ -468,6 +460,8 @@ pub enum ServiceIntent {
     Branch {
         source_namespace: Namespace,
         source_service: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_source_revision_hash: Option<String>,
     },
     Move {
         to_machine: String,
@@ -484,7 +478,19 @@ impl ServiceIntent {
             Self::Branch {
                 source_namespace,
                 source_service,
-            } => validate_service_source("branch", service, source_namespace, source_service),
+                expected_source_revision_hash,
+            } => {
+                validate_service_source("branch", service, source_namespace, source_service)?;
+                if expected_source_revision_hash
+                    .as_ref()
+                    .is_some_and(|hash| hash.trim().is_empty())
+                {
+                    return Err(format!(
+                        "deploy intent branch for service '{service}' cannot have an empty expected_source_revision_hash"
+                    ));
+                }
+                Ok(())
+            }
             Self::Move { to_machine } => validate_machine_hint("move", service, to_machine),
             Self::Portal {
                 source_namespace,
@@ -532,6 +538,8 @@ pub enum VolumeIntent {
         source_volume: String,
         data_policy: VolumeCloneDataPolicy,
         consistency: VolumeCloneConsistency,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_source_record_fingerprint: Option<String>,
     },
 }
 
@@ -571,8 +579,17 @@ impl VolumeIntent {
                 source_volume,
                 data_policy,
                 consistency,
+                expected_source_record_fingerprint,
             } => {
                 validate_volume_source("clone", volume, source_namespace, source_volume)?;
+                if expected_source_record_fingerprint
+                    .as_ref()
+                    .is_some_and(|fingerprint| fingerprint.trim().is_empty())
+                {
+                    return Err(format!(
+                        "deploy intent clone for volume '{volume}' cannot have an empty expected_source_record_fingerprint"
+                    ));
+                }
                 if source_namespace == target_namespace && source_volume == volume {
                     return Err(format!(
                         "deploy intent clone for volume '{volume}' cannot reference the target volume itself"
@@ -945,7 +962,7 @@ fn valid_namespace_name(value: &str) -> bool {
     valid_storage_segment(value)
 }
 
-fn valid_storage_segment(value: &str) -> bool {
+pub fn valid_storage_segment(value: &str) -> bool {
     if value.is_empty() || value.len() > 63 {
         return false;
     }
@@ -1375,6 +1392,7 @@ mod tests {
                     intent: ServiceIntent::Branch {
                         source_namespace: Namespace("prod".into()),
                         source_service: "api".into(),
+                        expected_source_revision_hash: None,
                     },
                 }],
                 volumes: vec![VolumeIntentHint {
@@ -1416,6 +1434,7 @@ mod tests {
                     intent: ServiceIntent::Branch {
                         source_namespace: Namespace("prod".into()),
                         source_service: "api".into(),
+                        expected_source_revision_hash: None,
                     },
                 }],
                 volumes: Vec::new(),
@@ -1496,6 +1515,7 @@ mod tests {
                     intent: ServiceIntent::Branch {
                         source_namespace: Namespace("Prod".into()),
                         source_service: "api".into(),
+                        expected_source_revision_hash: None,
                     },
                 }],
                 volumes: Vec::new(),

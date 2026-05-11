@@ -977,6 +977,7 @@ pub(super) async fn resolve_plan(
 struct BranchIntent {
     source_namespace: Namespace,
     source_service: String,
+    expected_source_revision_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -991,6 +992,7 @@ struct VolumeCloneIntent {
     source_volume: String,
     data_policy: VolumeCloneDataPolicy,
     consistency: VolumeCloneConsistency,
+    expected_source_record_fingerprint: Option<String>,
 }
 
 const SYNTHETIC_DEPLOY_PHASE_ID: &str = "deploy";
@@ -1294,12 +1296,14 @@ fn branch_intents(manifest: &DeployManifest) -> HashMap<String, BranchIntent> {
             ServiceIntent::Branch {
                 source_namespace,
                 source_service,
+                expected_source_revision_hash,
             } => {
                 intents.insert(
                     hint.service.clone(),
                     BranchIntent {
                         source_namespace: source_namespace.clone(),
                         source_service: source_service.clone(),
+                        expected_source_revision_hash: expected_source_revision_hash.clone(),
                     },
                 );
             }
@@ -1334,12 +1338,7 @@ fn volume_move_intents(manifest: &DeployManifest) -> HashMap<String, VolumeMoveI
                     },
                 );
             }
-            VolumeIntent::Clone {
-                source_namespace: _,
-                source_volume: _,
-                data_policy: _,
-                consistency: _,
-            } => {}
+            VolumeIntent::Clone { .. } => {}
         }
     }
 
@@ -1359,6 +1358,7 @@ fn volume_clone_intents(manifest: &DeployManifest) -> HashMap<String, VolumeClon
                 source_volume,
                 data_policy,
                 consistency,
+                expected_source_record_fingerprint,
             } => {
                 intents.insert(
                     hint.volume.clone(),
@@ -1367,6 +1367,8 @@ fn volume_clone_intents(manifest: &DeployManifest) -> HashMap<String, VolumeClon
                         source_volume: source_volume.clone(),
                         data_policy: *data_policy,
                         consistency: *consistency,
+                        expected_source_record_fingerprint: expected_source_record_fingerprint
+                            .clone(),
                     },
                 );
             }
@@ -1404,6 +1406,16 @@ async fn resolve_branch_source(
         }));
     };
     let source_revision_hash = source_release.release.primary_revision_hash.clone();
+    if let Some(expected_revision_hash) = &intent.expected_source_revision_hash
+        && expected_revision_hash != &source_revision_hash
+    {
+        return Err(Error::Deploy(DeployError::BranchSourceRevisionChanged {
+            namespace: intent.source_namespace.0.clone(),
+            service: intent.source_service.clone(),
+            expected_revision_hash: expected_revision_hash.clone(),
+            actual_revision_hash: source_revision_hash,
+        }));
+    }
 
     let source_revisions = store
         .list_deploy_revisions(&intent.source_namespace)
@@ -1457,6 +1469,18 @@ async fn resolve_volume_clone(
             source_volume: intent.source_volume.clone(),
         }));
     };
+    let actual_source_record_fingerprint = stable_hash_json(&source_record);
+    if let Some(expected_source_record_fingerprint) = &intent.expected_source_record_fingerprint
+        && expected_source_record_fingerprint != &actual_source_record_fingerprint
+    {
+        return Err(Error::Deploy(DeployError::VolumeCloneSourceChanged {
+            volume: declaration.name.clone(),
+            source_namespace: intent.source_namespace.0.clone(),
+            source_volume: intent.source_volume.clone(),
+            expected_source_record_fingerprint: expected_source_record_fingerprint.clone(),
+            actual_source_record_fingerprint,
+        }));
+    }
 
     if declaration.scope != VolumeScope::Single || source_record.scope != VolumeScope::Single {
         return Err(Error::Deploy(DeployError::VolumeCloneRequiresSingleScope {
