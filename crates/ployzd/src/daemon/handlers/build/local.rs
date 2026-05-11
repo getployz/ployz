@@ -175,6 +175,15 @@ impl DaemonState {
                 ),
             );
         }
+        let image_name = normalize_build_image_name(&request.image_name);
+        let request = if image_name == request.image_name {
+            request.clone()
+        } else {
+            BuildLocalRequest {
+                image_name,
+                ..request.clone()
+            }
+        };
 
         let operation_store = self.build_operation_store();
         let mut operation = match operation_store.begin(
@@ -200,7 +209,7 @@ impl DaemonState {
                 message,
             );
         };
-        let command = build_command(request, &context_dir);
+        let command = build_command(&request, &context_dir);
         if let Err(error) = operation_store.update_stage(&mut operation, "running build command") {
             return self.fail_build_local_operation(
                 &operation_store,
@@ -273,7 +282,7 @@ impl DaemonState {
                 );
             }
         };
-        let artifact = match build_image_artifact(request, &image) {
+        let artifact = match build_image_artifact(&request, &image) {
             Ok(artifact) => artifact,
             Err(error) => {
                 return self.fail_build_local_operation(
@@ -395,6 +404,21 @@ fn build_command(request: &BuildLocalRequest, context_dir: &Path) -> BuildComman
         BuildMethod::Railpack => "railpack",
     };
     BuildCommand { program, args }
+}
+
+fn normalize_build_image_name(reference: &str) -> String {
+    if reference.starts_with("sha256:") || image_reference_has_tag(reference) {
+        reference.into()
+    } else {
+        format!("{reference}:latest")
+    }
+}
+
+fn image_reference_has_tag(reference: &str) -> bool {
+    let last_slash = reference.rfind('/');
+    reference.rfind(':').is_some_and(|index| {
+        index + 1 < reference.len() && last_slash.is_none_or(|slash| index > slash)
+    })
 }
 
 fn format_platform(platform: &ImagePlatform) -> String {
@@ -793,6 +817,22 @@ mod tests {
         assert_eq!(untagged.tag, None);
     }
 
+    #[test]
+    fn normalize_build_image_name_defaults_missing_tag_to_latest() {
+        assert_eq!(
+            normalize_build_image_name("example/app"),
+            "example/app:latest"
+        );
+        assert_eq!(
+            normalize_build_image_name("localhost:5000/example/app"),
+            "localhost:5000/example/app:latest"
+        );
+        assert_eq!(
+            normalize_build_image_name("localhost:5000/example/app:v1"),
+            "localhost:5000/example/app:v1"
+        );
+    }
+
     #[tokio::test]
     async fn build_local_success_persists_operation_and_local_availability() {
         let state = active_state().await;
@@ -894,8 +934,9 @@ mod tests {
         let state = active_state().await;
         let context_dir = temp_dir("ployz-build-local-context");
         std::fs::create_dir_all(&context_dir).expect("create context");
-        let request = build_request(&context_dir);
-        let build_lock = state.local_build_lock(&request.image_name).await;
+        let mut request = build_request(&context_dir);
+        request.image_name = "example/app".into();
+        let build_lock = state.local_build_lock("example/app:latest").await;
         let _build_guard = build_lock.lock().await;
 
         let response = state
