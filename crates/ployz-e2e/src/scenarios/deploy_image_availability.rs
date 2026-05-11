@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::runner::{MachineExpectation, ScenarioRun, SubnetExpectation};
-use crate::support::parse_daemon_json_response;
+use crate::support::{DaemonJsonPayload, ImagePresence, parse_daemon_json_response};
 
 const SOURCE_IMAGE: &str = "ployz-e2e-preload/http-smoke:latest";
 const NAMESPACE: &str = "image-preflight";
@@ -63,8 +63,10 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
 
     run.ssh_expect_ok_name(
         "founder",
-        &format!("ployzd --plain image push {SOURCE_IMAGE} --to peer"),
+        &format!("ployzd --plain image distribute --digest {digest} --from founder --to founder --to peer"),
     )?;
+    assert_image_present_on(run, &digest, "founder")?;
+    assert_image_present_on(run, &digest, "peer")?;
     run.ssh_expect_ok_name(
         "founder",
         "ployzd --json deploy -f /tmp/ployz-image-never.json",
@@ -126,4 +128,41 @@ fn assert_missing_image_preflight_fails(run: &ScenarioRun, digest: &str) -> Resu
         )));
     }
     Ok(())
+}
+
+fn assert_image_present_on(run: &ScenarioRun, digest: &str, machine_id: &str) -> Result<()> {
+    let status = run.ssh_expect_ok_name(
+        "founder",
+        &format!("ployzd --json image status --digest {digest} --machine {machine_id}"),
+    )?;
+    let response = parse_daemon_json_response(&status.stdout)?;
+    if !response.ok {
+        return Err(Error::Message(format!(
+            "image status failed [{}]: {}",
+            response.code, response.message
+        )));
+    }
+    let Some(DaemonJsonPayload::ImageStatus(payload)) = response.payload else {
+        return Err(Error::Message(
+            "image status response did not include image-status payload".into(),
+        ));
+    };
+    let Some(record) = payload
+        .records
+        .iter()
+        .find(|record| record.machine_id == machine_id && record.digest == digest)
+    else {
+        return Err(Error::Message(format!(
+            "image status did not include {machine_id} availability for {digest}"
+        )));
+    };
+    match &record.presence {
+        ImagePresence::Present { .. } => Ok(()),
+        ImagePresence::Failed { reason } => Err(Error::Message(format!(
+            "{machine_id} image availability for {digest} failed: {reason}"
+        ))),
+        ImagePresence::Absent {} | ImagePresence::Transferring {} => Err(Error::Message(format!(
+            "{machine_id} image availability for {digest} was not present"
+        ))),
+    }
 }
