@@ -37,13 +37,13 @@ use ployz_orchestrator::deploy::{
 use ployz_store_api::{DeployStore, StoreDriver, StoreRuntimeControl};
 use ployz_types::Error as PloyzError;
 use ployz_types::error::DeployError;
-#[cfg(test)]
-use ployz_types::model::{DeployPhaseRecordState, DeployRecordState};
 use ployz_types::model::{
     BranchEnvironmentFailure, BranchEnvironmentRecord, BranchEnvironmentResourceMode,
     BranchEnvironmentResourceOverride, BranchEnvironmentState, DeployId, DeployPhaseCommitPolicy,
     DeployPhaseFailure, DeployPhaseState, DeployState, PreparedDeployRecord, PreparedDeployState,
 };
+#[cfg(test)]
+use ployz_types::model::{DeployPhaseRecordState, DeployRecordState};
 use ployz_types::spec::{DeployManifest, Namespace, valid_storage_segment};
 
 #[cfg(test)]
