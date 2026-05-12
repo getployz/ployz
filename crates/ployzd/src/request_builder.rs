@@ -707,12 +707,12 @@ fn build_machine_install_options(
                     .into(),
             ));
         }
-        (Some(InstallSourceArg::Git), None, Some(git_url), git_ref) => Some(
-            MachineInstallSource::Git {
+        (Some(InstallSourceArg::Git), None, Some(git_url), git_ref) => {
+            Some(MachineInstallSource::Git {
                 git_url: parse_install_git_url(git_url)?,
                 git_ref,
-            },
-        ),
+            })
+        }
         (Some(InstallSourceArg::Git), Some(_), _, _) => {
             return Err(CliError::Usage(
                 "git install source cannot include --install-version".into(),
