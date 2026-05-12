@@ -886,10 +886,10 @@ async fn restore_remote_storage(
         )
         .await
         .map_err(|error| error.to_string())?;
-    if response.ok {
+    if response.is_ok() {
         Ok(())
     } else {
-        Err(format!("{}: {}", response.code, response.message))
+        Err(format!("{}: {}", response.code(), response.message()))
     }
 }
 
@@ -912,10 +912,10 @@ async fn promote_remote_storage(
         )
         .await
         .map_err(|error| error.to_string())?;
-    if response.ok {
+    if response.is_ok() {
         Ok(())
     } else {
-        Err(format!("{}: {}", response.code, response.message))
+        Err(format!("{}: {}", response.code(), response.message()))
     }
 }
 
@@ -964,10 +964,10 @@ async fn remote_status(
         )
         .await
         .map_err(|error| error.to_string())?;
-    if !response.ok {
-        return Err(format!("{}: {}", response.code, response.message));
+    if !response.is_ok() {
+        return Err(format!("{}: {}", response.code(), response.message()));
     }
-    match response.payload {
+    match response.payload() {
         Some(DaemonPayload::Status(status)) if status.machine_id == target.id.as_str() => {
             Ok(status)
         }

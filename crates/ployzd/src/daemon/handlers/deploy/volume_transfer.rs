@@ -73,14 +73,14 @@ pub(super) async fn run_volume_move_rpc<R: DeployMoveRpcClient>(
         )
         .await
         .map_err(|error| volume_move_rpc_error("volume_zfs_send", error))?;
-    if !response.ok {
+    if !response.is_ok() {
         return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
             operation: "volume_zfs_send",
-            code: response.code,
-            message: response.message,
+            code: response.code().to_string(),
+            message: response.message().to_string(),
         }));
     }
-    let Some(DaemonPayload::VolumeZfsTransfer(payload)) = response.payload else {
+    let Some(DaemonPayload::VolumeZfsTransfer(payload)) = response.payload() else {
         return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
             payload: "volume zfs transfer",
         }));
@@ -150,14 +150,14 @@ async fn wait_for_volume_transfer<R: DeployMoveRpcClient>(
             }
         };
         retry_delay = poll_interval;
-        if !response.ok {
+        if !response.is_ok() {
             return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
                 operation: "volume_zfs_transfer_get",
-                code: response.code,
-                message: response.message,
+                code: response.code().to_string(),
+                message: response.message().to_string(),
             }));
         }
-        let Some(DaemonPayload::VolumeZfsTransfer(payload)) = response.payload else {
+        let Some(DaemonPayload::VolumeZfsTransfer(payload)) = response.payload() else {
             return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
                 payload: "volume zfs transfer",
             }));

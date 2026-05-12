@@ -159,13 +159,13 @@ impl DaemonState {
                 )
                 .await;
             match response {
-                Ok(response) if response.ok => {}
+                Ok(response) if response.is_ok() => {}
                 Ok(response) => {
                     return self.err(
                         "MACHINE_REMOVE_PEER_REJECTED",
                         format!(
                             "machine '{id}' rejected coordinated removal [{}]: {}; resolve the remote failure or rerun with --force only if you intend membership-record-only removal",
-                            response.code, response.message
+                            response.code(), response.message()
                         ),
                     );
                 }

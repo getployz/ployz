@@ -455,8 +455,8 @@ mod tests {
         }]);
 
         let response = state.handle_doctor().await;
-        assert!(response.ok, "{}", response.message);
-        let Some(DaemonPayload::Doctor(payload)) = response.payload.as_ref() else {
+        assert!(response.is_ok(), "{}", response.message());
+        let Some(DaemonPayload::Doctor(payload)) = response.payload() else {
             panic!("expected doctor payload");
         };
         assert_eq!(payload.overall.lifecycle, "blocked");
@@ -474,22 +474,22 @@ mod tests {
                 .iter()
                 .any(|peer| { peer.machine_id == "stale-peer" && peer.wg_state == "stale" })
         );
-        assert!(response.message.contains("lifecycle: blocked"));
-        assert!(response.message.contains("blocking peers:"));
-        assert!(response.message.lines().any(|line| {
+        assert!(response.message().contains("lifecycle: blocked"));
+        assert!(response.message().contains("blocking peers:"));
+        assert!(response.message().lines().any(|line| {
             line.contains("peer")
                 && line.contains("store=active")
                 && line.contains("wg=absent")
                 && line.contains("rtt=none")
                 && line.contains("cause=no direct peer is configured")
         }));
-        assert!(response.message.contains("all peers:"));
-        assert!(response.message.lines().any(|line| {
+        assert!(response.message().contains("all peers:"));
+        assert!(response.message().lines().any(|line| {
             line.contains("stale-peer")
                 && line.contains("store=active")
                 && line.contains("wg=stale")
         }));
-        assert!(!response.message.contains("probe="));
+        assert!(!response.message().contains("probe="));
     }
 
     #[tokio::test]
@@ -513,8 +513,8 @@ mod tests {
         }]);
 
         let response = state.handle_doctor().await;
-        assert!(response.ok, "{}", response.message);
-        let Some(DaemonPayload::Doctor(payload)) = response.payload.as_ref() else {
+        assert!(response.is_ok(), "{}", response.message());
+        let Some(DaemonPayload::Doctor(payload)) = response.payload() else {
             panic!("expected doctor payload");
         };
         assert_eq!(payload.overall.lifecycle, "healthy");
@@ -524,16 +524,16 @@ mod tests {
                 && peer.wg_state == "fresh"
                 && peer.cause_code == "fresh-wireguard-handshake"
         }));
-        assert!(response.message.contains("lifecycle: healthy"));
-        assert!(!response.message.contains("blocking peers:"));
-        assert!(response.message.contains("all peers:"));
-        assert!(response.message.lines().any(|line| {
+        assert!(response.message().contains("lifecycle: healthy"));
+        assert!(!response.message().contains("blocking peers:"));
+        assert!(response.message().contains("all peers:"));
+        assert!(response.message().lines().any(|line| {
             line.contains("peer")
                 && line.contains("store=active")
                 && line.contains("wg=fresh")
                 && line.contains("rtt=none")
         }));
-        assert!(!response.message.contains("probe="));
+        assert!(!response.message().contains("probe="));
     }
 
     #[tokio::test]

@@ -30,7 +30,7 @@ impl DaemonState {
     ) -> ployz_api::DaemonResponse {
         match self.transition_local_machine(transition).await {
             Ok(message) => self.ok(message),
-            Err(error) => self.err(error.code, error.message),
+            Err(error) => self.err(&error.code, error.message),
         }
     }
 

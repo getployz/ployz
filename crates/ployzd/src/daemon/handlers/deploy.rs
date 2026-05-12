@@ -1436,12 +1436,11 @@ fn expected_baseline(
 
 fn decode_manifest(manifest_json: &str) -> Result<DeployManifest, Box<DaemonResponse>> {
     let manifest: DeployManifest = serde_json::from_str(manifest_json).map_err(|err| {
-        Box::new(DaemonResponse {
-            ok: false,
-            code: "INVALID_MANIFEST".into(),
-            message: format!("invalid deploy manifest: {err}"),
-            payload: None,
-        })
+        Box::new(DaemonResponse::error(
+            "INVALID_MANIFEST",
+            format!("invalid deploy manifest: {err}"),
+            None,
+        ))
     })?;
 
     Ok(manifest)
@@ -1734,10 +1733,10 @@ mod tests {
         let error = decode_manifest("{not-json")
             .expect_err("invalid manifest json should return daemon error");
 
-        assert!(!error.ok);
-        assert_eq!(error.code, "INVALID_MANIFEST");
-        assert!(error.message.starts_with("invalid deploy manifest:"));
-        assert!(error.payload.is_none());
+        assert!(!error.is_ok());
+        assert_eq!(error.code(), "INVALID_MANIFEST");
+        assert!(error.message().starts_with("invalid deploy manifest:"));
+        assert!(error.payload().is_none());
     }
 
     #[test]
@@ -2252,8 +2251,8 @@ mod tests {
             })
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "BRANCH_INVALID_REQUEST");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "BRANCH_INVALID_REQUEST");
     }
 
     #[tokio::test]
@@ -2272,8 +2271,8 @@ mod tests {
             })
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "NO_MESH");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "NO_MESH");
     }
 
     #[tokio::test]
@@ -3439,12 +3438,11 @@ mod tests {
 
     #[tokio::test]
     async fn volume_move_rpc_surfaces_start_response_failure() {
-        let client = FakeMoveRpcClient::with_responses(vec![Ok(DaemonResponse {
-            ok: false,
-            code: "START_FAILED".into(),
-            message: "cannot snapshot".into(),
-            payload: None,
-        })]);
+        let client = FakeMoveRpcClient::with_responses(vec![Ok(DaemonResponse::error(
+            "START_FAILED",
+            "cannot snapshot",
+            None,
+        ))]);
 
         let error = run_volume_move_rpc(
             &client,
@@ -3476,12 +3474,8 @@ mod tests {
 
     #[tokio::test]
     async fn volume_move_rpc_requires_start_payload() {
-        let client = FakeMoveRpcClient::with_responses(vec![Ok(DaemonResponse {
-            ok: true,
-            code: "OK".into(),
-            message: "ok".into(),
-            payload: None,
-        })]);
+        let client =
+            FakeMoveRpcClient::with_responses(vec![Ok(DaemonResponse::success("ok", None))]);
 
         let error = run_volume_move_rpc(
             &client,
@@ -3546,12 +3540,11 @@ mod tests {
     async fn volume_move_rpc_surfaces_terminal_poll_response_failure() {
         let client = FakeMoveRpcClient::with_responses(vec![
             Ok(transfer_response("running", None, None, None)),
-            Ok(DaemonResponse {
-                ok: false,
-                code: "TRANSFER_FAILED".into(),
-                message: "receiver disconnected".into(),
-                payload: None,
-            }),
+            Ok(DaemonResponse::error(
+                "TRANSFER_FAILED",
+                "receiver disconnected",
+                None,
+            )),
         ]);
 
         let error = run_volume_move_rpc(
@@ -3586,12 +3579,7 @@ mod tests {
     async fn volume_move_rpc_requires_poll_payload() {
         let client = FakeMoveRpcClient::with_responses(vec![
             Ok(transfer_response("running", None, None, None)),
-            Ok(DaemonResponse {
-                ok: true,
-                code: "OK".into(),
-                message: "ok".into(),
-                payload: None,
-            }),
+            Ok(DaemonResponse::success("ok", None)),
         ]);
 
         let error = run_volume_move_rpc(
@@ -3692,10 +3680,10 @@ mod tests {
             }),
         );
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "DEPLOY_BASELINE_CHANGED");
-        assert!(response.message.contains("deploy baseline changed"));
-        let Some(DaemonPayload::DeployFailure(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "DEPLOY_BASELINE_CHANGED");
+        assert!(response.message().contains("deploy baseline changed"));
+        let Some(DaemonPayload::DeployFailure(payload)) = response.payload() else {
             panic!("expected deploy failure payload");
         };
         let DeployFailurePayload::DeployBaselineChanged {
@@ -3722,8 +3710,8 @@ mod tests {
                 prepared_deploy_id: "prepare-missing".into(),
             }),
         );
-        assert_eq!(missing.code, "PREPARED_DEPLOY_MISSING");
-        let Some(DaemonPayload::DeployFailure(payload)) = missing.payload else {
+        assert_eq!(missing.code(), "PREPARED_DEPLOY_MISSING");
+        let Some(DaemonPayload::DeployFailure(payload)) = missing.payload() else {
             panic!("expected missing payload");
         };
         let DeployFailurePayload::PreparedDeployMissing { prepared_deploy_id } = payload else {
@@ -3738,8 +3726,8 @@ mod tests {
                 state: PreparedDeployState::Applied,
             }),
         );
-        assert_eq!(not_applicable.code, "PREPARED_DEPLOY_NOT_APPLICABLE");
-        let Some(DaemonPayload::DeployFailure(payload)) = not_applicable.payload else {
+        assert_eq!(not_applicable.code(), "PREPARED_DEPLOY_NOT_APPLICABLE");
+        let Some(DaemonPayload::DeployFailure(payload)) = not_applicable.payload() else {
             panic!("expected not-applicable payload");
         };
         let DeployFailurePayload::PreparedDeployNotApplicable {
@@ -3759,8 +3747,8 @@ mod tests {
                 expires_at: 42,
             }),
         );
-        assert_eq!(expired.code, "PREPARED_DEPLOY_EXPIRED");
-        let Some(DaemonPayload::DeployFailure(payload)) = expired.payload else {
+        assert_eq!(expired.code(), "PREPARED_DEPLOY_EXPIRED");
+        let Some(DaemonPayload::DeployFailure(payload)) = expired.payload() else {
             panic!("expected expired payload");
         };
         let DeployFailurePayload::PreparedDeployExpired {
@@ -3782,8 +3770,8 @@ mod tests {
                 message: "bad manifest".into(),
             }),
         );
-        assert_eq!(invalid.code, "PREPARED_DEPLOY_INVALID");
-        let Some(DaemonPayload::DeployFailure(payload)) = invalid.payload else {
+        assert_eq!(invalid.code(), "PREPARED_DEPLOY_INVALID");
+        let Some(DaemonPayload::DeployFailure(payload)) = invalid.payload() else {
             panic!("expected invalid payload");
         };
         let DeployFailurePayload::PreparedDeployInvalid { prepared_deploy_id } = payload else {
@@ -3805,9 +3793,9 @@ mod tests {
             }),
         );
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "DEPLOY_IMAGE_AVAILABILITY_MISSING");
-        let Some(DaemonPayload::DeployFailure(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "DEPLOY_IMAGE_AVAILABILITY_MISSING");
+        let Some(DaemonPayload::DeployFailure(payload)) = response.payload() else {
             panic!("expected deploy failure payload");
         };
         let DeployFailurePayload::DeployImageAvailabilityMissing {
@@ -3837,7 +3825,7 @@ mod tests {
                 image: "web:latest".into(),
             }),
         );
-        assert_eq!(digest_required.code, "DEPLOY_IMAGE_DIGEST_REQUIRED");
+        assert_eq!(digest_required.code(), "DEPLOY_IMAGE_DIGEST_REQUIRED");
 
         let not_present = state.deploy_error_response(
             "DEPLOY_PREVIEW_FAILED",
@@ -3850,8 +3838,8 @@ mod tests {
                 state: "absent".into(),
             }),
         );
-        assert_eq!(not_present.code, "DEPLOY_IMAGE_AVAILABILITY_NOT_PRESENT");
-        let Some(DaemonPayload::DeployFailure(payload)) = not_present.payload else {
+        assert_eq!(not_present.code(), "DEPLOY_IMAGE_AVAILABILITY_NOT_PRESENT");
+        let Some(DaemonPayload::DeployFailure(payload)) = not_present.payload() else {
             panic!("expected deploy failure payload");
         };
         let DeployFailurePayload::DeployImageAvailabilityNotPresent { state, .. } = payload else {
@@ -3922,10 +3910,10 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "INVALID_DEPLOY_OPTIONS");
-        assert!(response.message.contains("expected_baseline"));
-        assert!(response.payload.is_none());
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "INVALID_DEPLOY_OPTIONS");
+        assert!(response.message().contains("expected_baseline"));
+        assert!(response.payload().is_none());
     }
 
     #[tokio::test]
@@ -3957,14 +3945,14 @@ mod tests {
             })
             .await;
 
-        assert!(!prepare.ok);
-        assert_eq!(prepare.code, "NO_MESH");
-        assert!(!apply.ok);
-        assert_eq!(apply.code, "NO_MESH");
-        assert!(!prepare_via_shared.ok);
-        assert_eq!(prepare_via_shared.code, "NO_MESH");
-        assert!(!apply_via_shared.ok);
-        assert_eq!(apply_via_shared.code, "NO_MESH");
+        assert!(!prepare.is_ok());
+        assert_eq!(prepare.code(), "NO_MESH");
+        assert!(!apply.is_ok());
+        assert_eq!(apply.code(), "NO_MESH");
+        assert!(!prepare_via_shared.is_ok());
+        assert_eq!(prepare_via_shared.code(), "NO_MESH");
+        assert!(!apply_via_shared.is_ok());
+        assert_eq!(apply_via_shared.code(), "NO_MESH");
     }
 
     #[tokio::test]
@@ -4525,17 +4513,15 @@ mod tests {
         bytes_transferred: Option<u64>,
         last_error: Option<String>,
     ) -> DaemonResponse {
-        DaemonResponse {
-            ok: true,
-            code: "OK".into(),
-            message: "ok".into(),
-            payload: Some(DaemonPayload::VolumeZfsTransfer(transfer_payload(
+        DaemonResponse::success(
+            "ok",
+            Some(DaemonPayload::VolumeZfsTransfer(transfer_payload(
                 status,
                 snapshot_guid,
                 bytes_transferred,
                 last_error,
             ))),
-        }
+        )
     }
 
     fn transfer_payload(

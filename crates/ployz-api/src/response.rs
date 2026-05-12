@@ -71,12 +71,77 @@ pub enum DaemonPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DaemonResponse {
-    pub ok: bool,
-    pub code: String,
-    pub message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<DaemonPayload>,
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum DaemonResponse {
+    Success {
+        code: String,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload: Option<DaemonPayload>,
+    },
+    Error {
+        code: String,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload: Option<DaemonPayload>,
+    },
+}
+
+impl DaemonResponse {
+    #[must_use]
+    pub fn success(message: impl Into<String>, payload: Option<DaemonPayload>) -> Self {
+        Self::Success {
+            code: "OK".into(),
+            message: message.into(),
+            payload,
+        }
+    }
+
+    #[must_use]
+    pub fn error(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        payload: Option<DaemonPayload>,
+    ) -> Self {
+        Self::Error {
+            code: code.into(),
+            message: message.into(),
+            payload,
+        }
+    }
+
+    #[must_use]
+    pub fn is_ok(&self) -> bool {
+        matches!(self, Self::Success { .. })
+    }
+
+    #[must_use]
+    pub fn code(&self) -> &str {
+        match self {
+            Self::Success { code, .. } | Self::Error { code, .. } => code,
+        }
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Success { message, .. } | Self::Error { message, .. } => message,
+        }
+    }
+
+    #[must_use]
+    pub fn payload(&self) -> Option<DaemonPayload> {
+        match self {
+            Self::Success { payload, .. } | Self::Error { payload, .. } => payload.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn into_payload(self) -> Option<DaemonPayload> {
+        match self {
+            Self::Success { payload, .. } | Self::Error { payload, .. } => payload,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -95,11 +160,9 @@ mod tests {
         headers.insert("x-ployz-image-operation".into(), "image-push-1".into());
         headers.insert("x-ployz-source-machine".into(), "machine-a".into());
         headers.insert("x-ployz-image-session".into(), "token-1".into());
-        let response = DaemonResponse {
-            ok: true,
-            code: "OK".into(),
-            message: "created".into(),
-            payload: Some(DaemonPayload::ImageReceiveSession(
+        let response = DaemonResponse::success(
+            "created",
+            Some(DaemonPayload::ImageReceiveSession(
                 ImageReceiveSessionPayload {
                     target_machine: MachineId::new("machine-b"),
                     endpoint: "http://127.0.0.1:4320/v2/ployz/image-push-1".into(),
@@ -108,7 +171,7 @@ mod tests {
                     headers,
                 },
             )),
-        };
+        );
 
         let json = serde_json::to_value(&response).expect("serialize response");
 
@@ -133,11 +196,10 @@ mod tests {
     fn image_distribute_validation_payload_serializes_branchable_context() {
         let digest =
             ImageDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("valid digest");
-        let response = DaemonResponse {
-            ok: false,
-            code: "IMAGE_DISTRIBUTE_DUPLICATE_TARGET".into(),
-            message: "duplicate".into(),
-            payload: Some(DaemonPayload::ImageDistributeValidation(
+        let response = DaemonResponse::error(
+            "IMAGE_DISTRIBUTE_DUPLICATE_TARGET",
+            "duplicate",
+            Some(DaemonPayload::ImageDistributeValidation(
                 ImageDistributeValidationPayload {
                     request: crate::image::ImageDistributeRequest {
                         digest: digest.clone(),
@@ -150,7 +212,7 @@ mod tests {
                     },
                 },
             )),
-        };
+        );
 
         let json = serde_json::to_value(&response).expect("serialize response");
 
@@ -173,11 +235,10 @@ mod tests {
     fn image_distribute_payload_serializes_target_failure_context() {
         let digest =
             ImageDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("valid digest");
-        let response = DaemonResponse {
-            ok: false,
-            code: "IMAGE_DISTRIBUTE_FAILED".into(),
-            message: "failed".into(),
-            payload: Some(DaemonPayload::ImageDistribute(
+        let response = DaemonResponse::error(
+            "IMAGE_DISTRIBUTE_FAILED",
+            "failed",
+            Some(DaemonPayload::ImageDistribute(
                 crate::image::ImageDistributePayload {
                     operation_id: "image-distribute-1".into(),
                     digest: digest.clone(),
@@ -192,7 +253,7 @@ mod tests {
                     )],
                 },
             )),
-        };
+        );
 
         let json = serde_json::to_value(&response).expect("serialize response");
 

@@ -1362,7 +1362,7 @@ mod tests {
     fn machine_rows_parse_machine_list_payload() {
         let rows = machine_rows(
             r#"{
-  "ok": true,
+  "status": "success",
   "code": "OK",
   "message": "peer table",
   "payload": {

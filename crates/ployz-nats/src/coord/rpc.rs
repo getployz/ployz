@@ -331,14 +331,15 @@ impl NatsNodeRpcClient {
         request: &DaemonRequest,
     ) -> std::result::Result<(), RpcFailure> {
         let response = self.request(subject, request).await?;
-        if response.ok {
+        if response.is_ok() {
             return Ok(());
         }
         Err(RpcFailure::new(
             RpcFailureKind::Transport,
             format!(
                 "remote daemon error [{}]: {}",
-                response.code, response.message
+                response.code(),
+                response.message()
             ),
         ))
     }

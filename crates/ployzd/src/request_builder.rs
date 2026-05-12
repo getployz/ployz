@@ -499,14 +499,14 @@ async fn export_namespace_manifest<T: Transport>(
     )
     .await?;
 
-    if !response.ok {
+    if !response.is_ok() {
         return Err(CliError::Daemon {
-            code: response.code,
-            message: response.message,
+            code: response.code().to_string(),
+            message: response.message().to_string(),
         });
     }
 
-    serde_json::from_str(&response.message).map_err(|error| {
+    serde_json::from_str(response.message()).map_err(|error| {
         CliError::Serialize(format!(
             "failed to decode exported namespace manifest: {error}"
         ))

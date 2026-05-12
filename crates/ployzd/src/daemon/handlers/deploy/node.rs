@@ -199,14 +199,14 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             )
             .await
             .map_err(PloyzError::from)?;
-        if !response.ok {
+        if !response.is_ok() {
             return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
                 operation: "deploy_node_inspect",
-                code: response.code,
-                message: response.message,
+                code: response.code().to_string(),
+                message: response.message().to_string(),
             }));
         }
-        let Some(DaemonPayload::DeployNamespaceSnapshot(payload)) = response.payload else {
+        let Some(DaemonPayload::DeployNamespaceSnapshot(payload)) = response.payload() else {
             return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
                 payload: "namespace snapshot",
             }));
@@ -237,14 +237,14 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             )
             .await
             .map_err(PloyzError::from)?;
-        if !response.ok {
+        if !response.is_ok() {
             return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
                 operation: "deploy_node_start_candidate",
-                code: response.code,
-                message: response.message,
+                code: response.code().to_string(),
+                message: response.message().to_string(),
             }));
         }
-        let Some(DaemonPayload::DeployCandidateStarted(payload)) = response.payload else {
+        let Some(DaemonPayload::DeployCandidateStarted(payload)) = response.payload() else {
             return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
                 payload: "candidate",
             }));
@@ -301,14 +301,14 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             )
             .await
             .map_err(PloyzError::from)?;
-        if !response.ok {
+        if !response.is_ok() {
             return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
                 operation: "deploy_node_clone_volume",
-                code: response.code,
-                message: response.message,
+                code: response.code().to_string(),
+                message: response.message().to_string(),
             }));
         }
-        let Some(DaemonPayload::VolumeZfsClone(payload)) = response.payload else {
+        let Some(DaemonPayload::VolumeZfsClone(payload)) = response.payload() else {
             return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
                 payload: "volume zfs clone",
             }));
@@ -346,13 +346,13 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             )
             .await
             .map_err(PloyzError::from)?;
-        if response.ok {
+        if response.is_ok() {
             return Ok(());
         }
         Err(PloyzError::Deploy(DeployError::RemoteNodeError {
             operation: "deploy_node_cleanup_uncommitted_volume_clone",
-            code: response.code,
-            message: response.message,
+            code: response.code().to_string(),
+            message: response.message().to_string(),
         }))
     }
 
@@ -407,13 +407,13 @@ impl NatsDeployParticipantClient {
             .request(subject, &request)
             .await
             .map_err(PloyzError::from)?;
-        if response.ok {
+        if response.is_ok() {
             return Ok(());
         }
         Err(PloyzError::Deploy(DeployError::RemoteNodeError {
             operation,
-            code: response.code,
-            message: response.message,
+            code: response.code().to_string(),
+            message: response.message().to_string(),
         }))
     }
 }

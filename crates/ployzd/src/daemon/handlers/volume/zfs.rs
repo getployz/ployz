@@ -2030,13 +2030,14 @@ async fn start_send_on_machine(
         )
         .await
         .map_err(|error| error.to_string())?;
-    if !response.ok {
+    if !response.is_ok() {
         return Err(format!(
             "remote peer start-send failed [{}]: {}",
-            response.code, response.message
+            response.code(),
+            response.message()
         ));
     }
-    let Some(DaemonPayload::VolumeZfsPeerSend(payload)) = response.payload else {
+    let Some(DaemonPayload::VolumeZfsPeerSend(payload)) = response.payload() else {
         return Err("remote peer start-send response missing payload".to_string());
     };
     Ok(SendResult {
@@ -2049,13 +2050,14 @@ fn expect_snapshot_payload(
     response: DaemonResponse,
     operation: &str,
 ) -> Result<VolumeZfsSnapshotPayload, String> {
-    if !response.ok {
+    if !response.is_ok() {
         return Err(format!(
             "{operation} failed [{}]: {}",
-            response.code, response.message
+            response.code(),
+            response.message()
         ));
     }
-    let Some(DaemonPayload::VolumeZfsSnapshot(payload)) = response.payload else {
+    let Some(DaemonPayload::VolumeZfsSnapshot(payload)) = response.payload() else {
         return Err(format!("{operation} response missing payload"));
     };
     Ok(payload)

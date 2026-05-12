@@ -1159,13 +1159,14 @@ impl DaemonState {
                     format!("request image receive session from {target_machine}: {error}")
                 })?
         };
-        if !response.ok {
+        if !response.is_ok() {
             return Err(format!(
                 "target receive session failed [{}]: {}",
-                response.code, response.message
+                response.code(),
+                response.message().to_string()
             ));
         }
-        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload else {
+        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload() else {
             return Err("target receive session response did not include a session payload".into());
         };
         Ok(payload)
@@ -1190,8 +1191,8 @@ impl DaemonState {
                 failed_image_transfer_target(
                     target_machine.clone(),
                     ImageTransferFailureStage::ReceiveSession,
-                    response.code,
-                    response.message,
+                    response.code(),
+                    response.message().to_string(),
                 ),
                 None,
             );
@@ -1225,8 +1226,8 @@ impl DaemonState {
                 failed_image_transfer_target(
                     target_machine.clone(),
                     ImageTransferFailureStage::Upload,
-                    response.code,
-                    response.message,
+                    response.code(),
+                    response.message().to_string(),
                 ),
                 None,
             );
@@ -1262,8 +1263,8 @@ impl DaemonState {
                 failed_image_transfer_target(
                     target_machine.clone(),
                     ImageTransferFailureStage::Import,
-                    response.code,
-                    response.message,
+                    response.code(),
+                    response.message().to_string(),
                 ),
                 None,
             );
@@ -1472,24 +1473,25 @@ impl DaemonState {
                 }
             }
         };
-        if !response.ok {
-            if let Some(DaemonPayload::ImageDistribute(payload)) = response.payload {
+        if !response.is_ok() {
+            if let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() {
                 let [target] = payload.targets.as_slice() else {
                     return failure(format!(
                         "target image distribute failed [{}] with {} target results: {}",
-                        response.code,
+                        response.code(),
                         payload.targets.len(),
-                        response.message
+                        response.message().to_string()
                     ));
                 };
                 return target.clone();
             }
             return failure(format!(
                 "target image distribute failed [{}]: {}",
-                response.code, response.message
+                response.code(),
+                response.message().to_string()
             ));
         }
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             return failure("target image distribute response did not include a payload".into());
         };
         let [target] = payload.targets.as_slice() else {
@@ -1526,13 +1528,14 @@ impl DaemonState {
                 .await
                 .map_err(|error| format!("request image import from {target_machine}: {error}"))?
         };
-        if !response.ok {
+        if !response.is_ok() {
             return Err(format!(
                 "target image import failed [{}]: {}",
-                response.code, response.message
+                response.code(),
+                response.message().to_string()
             ));
         }
-        let Some(DaemonPayload::ImageReceivedImport(payload)) = response.payload else {
+        let Some(DaemonPayload::ImageReceivedImport(payload)) = response.payload() else {
             return Err("target image import response did not include an import payload".into());
         };
         Ok(payload.record)
@@ -1688,8 +1691,8 @@ mod tests {
             })
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_PUSH_TARGET_REQUIRED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_PUSH_TARGET_REQUIRED");
         assert!(
             state
                 .image_operation_store()
@@ -1729,8 +1732,8 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::ImagePush(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::ImagePush(payload)) = response.payload() else {
             panic!("expected push payload");
         };
         assert_eq!(payload.artifact.digest(), &digest);
@@ -1789,8 +1792,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_PUSH_FAILED");
         assert_no_availability(&state, &expected).await;
         let operations = state
             .image_operation_store()
@@ -1833,8 +1836,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_PUSH_FAILED");
         assert_no_availability(&state, &digest).await;
         listener.shutdown().await;
     }
@@ -1870,8 +1873,8 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::ImagePush(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::ImagePush(payload)) = response.payload() else {
             panic!("expected push payload");
         };
         assert_eq!(payload.artifact.digest(), &digest);
@@ -1915,8 +1918,8 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::ImagePush(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::ImagePush(payload)) = response.payload() else {
             panic!("expected push payload");
         };
         assert_eq!(payload.artifact.digest(), &image_id);
@@ -1955,8 +1958,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_PUSH_FAILED");
         assert!(!*backend.imported.lock().expect("imported lock"));
         assert_no_availability(&state, &digest).await;
     }
@@ -1982,8 +1985,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_PUSH_FAILED");
         let operations = state
             .image_operation_store()
             .list()
@@ -2016,8 +2019,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_PUSH_FAILED");
         assert_no_availability(&state, &digest).await;
         let operations = state
             .image_operation_store()
@@ -2058,9 +2061,9 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_PUSH_PARTIAL_FAILED");
-        let Some(DaemonPayload::ImagePush(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_PUSH_PARTIAL_FAILED");
+        let Some(DaemonPayload::ImagePush(payload)) = response.payload() else {
             panic!("expected push payload");
         };
         assert_eq!(payload.targets.len(), 2);
@@ -2128,9 +2131,9 @@ mod tests {
             })
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_SOURCE_NOT_LOCAL");
-        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_SOURCE_NOT_LOCAL");
+        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload() else {
             panic!("expected validation payload");
         };
         assert_eq!(
@@ -2161,8 +2164,8 @@ mod tests {
             })
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_TARGET_REQUIRED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_TARGET_REQUIRED");
         assert!(
             state
                 .image_operation_store()
@@ -2191,8 +2194,8 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.digest, digest);
@@ -2255,9 +2258,9 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_TARGET_REQUIRED");
-        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_TARGET_REQUIRED");
+        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload() else {
             panic!("expected validation payload");
         };
         assert_eq!(
@@ -2277,9 +2280,9 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_DUPLICATE_TARGET");
-        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_DUPLICATE_TARGET");
+        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload() else {
             panic!("expected validation payload");
         };
         assert_eq!(
@@ -2331,8 +2334,8 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 2);
@@ -2375,9 +2378,9 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 2);
@@ -2441,9 +2444,9 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 2);
@@ -2492,9 +2495,9 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_FAILED");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(
@@ -2556,9 +2559,9 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(
@@ -2600,9 +2603,9 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(
@@ -2654,9 +2657,9 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_FAILED");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 1);
@@ -2698,9 +2701,9 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_FAILED");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 2);
@@ -2749,8 +2752,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_FAILED");
         let operations = state
             .image_operation_store()
             .list()
@@ -2779,8 +2782,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_FAILED");
         assert_no_availability_on(&state, "machine-a", &digest).await;
     }
 
@@ -2815,8 +2818,8 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 1);
@@ -2855,8 +2858,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_RECEIVED_IMPORT_RECONSTRUCT_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_RECEIVED_IMPORT_RECONSTRUCT_FAILED");
         assert!(
             state
                 .active
@@ -2893,8 +2896,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_RECEIVED_IMPORT_INVALID_OPERATION");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_RECEIVED_IMPORT_INVALID_OPERATION");
         assert!(!state.data_dir.join("outside").exists());
     }
 
@@ -2909,8 +2912,8 @@ mod tests {
             })
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_RECEIVER_INACTIVE");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_RECEIVER_INACTIVE");
     }
 
     #[tokio::test]
@@ -2926,8 +2929,8 @@ mod tests {
             })
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload() else {
             panic!("expected image receive session payload");
         };
         assert_eq!(payload.target_machine, MachineId::new("founder"));
@@ -2972,8 +2975,8 @@ mod tests {
             })
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_RECEIVER_SOURCE_UNKNOWN");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_RECEIVER_SOURCE_UNKNOWN");
     }
 
     #[tokio::test]
@@ -2989,8 +2992,8 @@ mod tests {
             })
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_RECEIVER_SOURCE_NOT_LOCAL");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_RECEIVER_SOURCE_NOT_LOCAL");
     }
 
     #[tokio::test]
@@ -3004,7 +3007,7 @@ mod tests {
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
-        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload else {
+        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload() else {
             panic!("expected image receive session payload");
         };
         let digest = test_sha256_digest(b"hello");
@@ -3045,7 +3048,7 @@ mod tests {
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
-        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload else {
+        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload() else {
             panic!("expected image receive session payload");
         };
         let digest = test_sha256_digest(b"hello");

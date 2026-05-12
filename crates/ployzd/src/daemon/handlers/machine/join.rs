@@ -313,7 +313,7 @@ impl DaemonState {
             .handle_machine_activate_remote(&machine_id, &record, &nats_client, subnet_claim)
             .await;
 
-        if result.ok {
+        if result.is_ok() {
             match wait_for_machine_record(
                 &active.mesh.store,
                 &machine_id,
@@ -443,7 +443,7 @@ impl DaemonState {
             )
             .await;
         match transition {
-            Ok(response) if response.ok => {}
+            Ok(response) if response.is_ok() => {}
             Ok(response) => {
                 return self.err("REMOTE_DRAIN_FAILED", remote_response_error(&response));
             }
@@ -548,7 +548,7 @@ impl DaemonState {
             )
             .await;
         match transition {
-            Ok(response) if response.ok => {}
+            Ok(response) if response.is_ok() => {}
             Ok(response) => {
                 return self.err("REMOTE_STANDBY_FAILED", remote_response_error(&response));
             }

@@ -140,15 +140,15 @@ mod tests {
     async fn stdio_transport_round_trip_reads_and_writes_line_protocol() {
         let transport = StdioTransport::new("/bin/sh").args([
             "-c",
-            "read line\ncase \"$line\" in\n  *Status*) printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"pong\",\"payload\":null}\\n' ;;\n  *) printf '{\"ok\":false,\"code\":\"BAD\",\"message\":\"unexpected\",\"payload\":null}\\n' ;;\nesac\n",
+            "read line\ncase \"$line\" in\n  *Status*) printf '{\"status\":\"success\",\"code\":\"OK\",\"message\":\"pong\"}\\n' ;;\n  *) printf '{\"status\":\"error\",\"code\":\"BAD\",\"message\":\"unexpected\"}\\n' ;;\nesac\n",
         ]);
 
         let response = transport
             .request(DaemonRequest::Status)
             .await
             .expect("request over stdio");
-        assert!(response.ok);
-        assert_eq!(response.message, "pong");
+        assert!(response.is_ok());
+        assert_eq!(response.message(), "pong");
     }
 
     #[tokio::test]
