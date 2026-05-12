@@ -741,10 +741,7 @@ async fn write_branch_environment_entry(
             }
         }
         let existing = decode_branch_environment(&record.target_namespace.0, entry.value.as_ref())?;
-        if matches!(
-            existing.state,
-            BranchEnvironmentState::Applying | BranchEnvironmentState::Active
-        ) {
+        if matches!(existing.state, BranchEnvironmentState::Applying) {
             return Err(Error::operation(
                 "nats_branch_environment_upsert",
                 format!(

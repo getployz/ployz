@@ -819,10 +819,7 @@ impl DaemonState {
                 .await
             {
                 Ok(Some(environment))
-                    if matches!(
-                        environment.state,
-                        BranchEnvironmentState::Applying | BranchEnvironmentState::Active
-                    ) =>
+                    if matches!(environment.state, BranchEnvironmentState::Applying) =>
                 {
                     return self.err(
                         "BRANCH_ENVIRONMENT_BUSY",
@@ -2377,6 +2374,60 @@ mod tests {
         assert_eq!(prepared.preview.namespace, Namespace("pr-39".into()));
         assert_eq!(prepared.preview.service_branch_sources.len(), 1);
         assert_eq!(prepared.preview.volume_clones.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn handle_branch_namespace_prepare_allows_active_branch_environment_past_busy_guard() {
+        let mut state = test_daemon_state();
+        let store = StoreDriver::memory();
+        let mut machine = MachineMembership::seed(
+            MachineId("founder".into()),
+            PublicKey([42; 32]),
+            OverlayIp("fd00::42".parse().expect("valid overlay")),
+            None,
+            Vec::new(),
+        );
+        machine.lifecycle = MachineLifecycle::Active;
+        store
+            .upsert_self_machine(&machine)
+            .await
+            .expect("seed active machine");
+        seed_committed_service(
+            &store,
+            &Namespace("prod".into()),
+            test_service_with_mounts("web", Vec::new()),
+            Vec::new(),
+        )
+        .await;
+        let active_prepared_deploy_id = DeployId("prepare-old".into());
+        let baseline = test_baseline("sources");
+        let mut active_record = test_branch_environment_record(
+            &Namespace("pr-39".into()),
+            &active_prepared_deploy_id,
+            BranchEnvironmentState::Prepared,
+            baseline,
+        );
+        active_record.state = BranchEnvironmentState::Active;
+        active_record.applied_deploy_id = Some(active_prepared_deploy_id.clone());
+        store
+            .upsert_branch_environment(&active_record)
+            .await
+            .expect("seed active branch environment");
+        install_active_mesh(&mut state, store.clone());
+
+        let response = state
+            .handle_branch_namespace(BranchNamespaceRequest {
+                source_namespace: "prod".into(),
+                target_namespace: "pr-39".into(),
+                mode: BranchNamespaceMode::Prepare,
+                default_service_mode: BranchResourceMode::Branch,
+                default_volume_mode: BranchResourceMode::Fresh,
+                services: Vec::new(),
+                volumes: Vec::new(),
+            })
+            .await;
+
+        assert_ne!(response.code, "BRANCH_ENVIRONMENT_BUSY", "{response:?}");
     }
 
     #[tokio::test]
