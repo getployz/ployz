@@ -34,6 +34,7 @@ const RAILPACK_FRONTEND: &str = "ghcr.io/railwayapp/railpack-frontend";
 const RAILPACK_SECRET_PLACEHOLDER: &str = "__PLOYZ_BUILDKIT_SECRET__";
 const BUILD_CACHE_KEY_RETRY_ATTEMPTS: usize = 20;
 const BUILD_CACHE_KEY_RETRY_DELAY: Duration = Duration::from_millis(10);
+const BUILD_CACHE_KEY_REPAIR_LOCK_STALE: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BuildCommandStepKind {
@@ -1110,15 +1111,21 @@ fn create_private_dir(path: &Path) -> Result<(), String> {
 }
 
 fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), String> {
+    write_private_file_io(path, contents).map_err(|error| match error.kind() {
+        std::io::ErrorKind::AlreadyExists => {
+            format!("create private build secret '{}': {error}", path.display())
+        }
+        _ => format!("write private build secret '{}': {error}", path.display()),
+    })
+}
+
+fn write_private_file_io(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     options.mode(0o600);
-    let mut file = options
-        .open(path)
-        .map_err(|error| format!("create private build secret '{}': {error}", path.display()))?;
+    let mut file = options.open(path)?;
     file.write_all(contents)
-        .map_err(|error| format!("write private build secret '{}': {error}", path.display()))
 }
 
 fn load_or_create_build_cache_key(data_dir: &Path) -> Result<[u8; 32], String> {
@@ -1160,6 +1167,18 @@ fn load_or_create_build_cache_key(data_dir: &Path) -> Result<[u8; 32], String> {
     let reason = last_retryable_error
         .map(|error| error.to_string())
         .unwrap_or_else(|| "retry attempts exhausted".into());
+    match read_build_cache_key(&key_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+            return repair_build_cache_key(&key_path).map_err(|error| {
+                format!(
+                    "repair build cache token key '{}': {error}",
+                    key_path.display()
+                )
+            });
+        }
+        Ok(key) => return Ok(key),
+        Err(_error) => {}
+    }
     Err(format!(
         "read build cache token key '{}' after {BUILD_CACHE_KEY_RETRY_ATTEMPTS} attempts: {reason}",
         key_path.display()
@@ -1167,6 +1186,13 @@ fn load_or_create_build_cache_key(data_dir: &Path) -> Result<[u8; 32], String> {
 }
 
 fn read_build_cache_key(key_path: &Path) -> std::io::Result<[u8; 32]> {
+    let len = std::fs::metadata(key_path)?.len();
+    if len != 32 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!("expected 32 byte build cache token key, found {len} bytes"),
+        ));
+    }
     let mut key = [0_u8; 32];
     let mut file = OpenOptions::new().read(true).open(key_path)?;
     file.read_exact(&mut key)?;
@@ -1180,6 +1206,165 @@ fn write_build_cache_key(key_path: &Path, key: &[u8; 32]) -> std::io::Result<()>
     options.mode(0o600);
     let mut file = options.open(key_path)?;
     file.write_all(key)
+}
+
+fn repair_build_cache_key(key_path: &Path) -> std::io::Result<[u8; 32]> {
+    let lock_dir = key_path.with_file_name("cache-token-key.repair-lock");
+    let mut last_retryable_error = None;
+    for _attempt in 0..BUILD_CACHE_KEY_RETRY_ATTEMPTS {
+        match try_acquire_repair_lock(&lock_dir)? {
+            Some(_guard) => {
+                return match read_build_cache_key(key_path) {
+                    Ok(key) => Ok(key),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::NotFound | std::io::ErrorKind::UnexpectedEof
+                        ) =>
+                    {
+                        replace_build_cache_key(key_path)
+                    }
+                    Err(error) => Err(error),
+                };
+            }
+            None => match read_build_cache_key(key_path) {
+                Ok(key) => return Ok(key),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::UnexpectedEof
+                    ) =>
+                {
+                    last_retryable_error = Some(error);
+                }
+                Err(error) => return Err(error),
+            },
+        }
+        std::thread::sleep(BUILD_CACHE_KEY_RETRY_DELAY);
+    }
+    match read_build_cache_key(key_path) {
+        Ok(key) => Ok(key),
+        Err(error) => Err(last_retryable_error.unwrap_or(error)),
+    }
+}
+
+struct RepairLockGuard {
+    path: PathBuf,
+    token: String,
+}
+
+impl Drop for RepairLockGuard {
+    fn drop(&mut self) {
+        if repair_lock_token_matches(&self.path, &self.token).unwrap_or(false) {
+            let _ = std::fs::remove_file(repair_lock_token_path(&self.path));
+            let _ = std::fs::remove_dir(&self.path);
+        }
+    }
+}
+
+fn try_acquire_repair_lock(lock_dir: &Path) -> std::io::Result<Option<RepairLockGuard>> {
+    let token = new_repair_lock_token();
+    match std::fs::create_dir(lock_dir) {
+        Ok(()) => {
+            write_repair_lock_token(lock_dir, &token)?;
+            Ok(Some(RepairLockGuard {
+                path: lock_dir.to_path_buf(),
+                token,
+            }))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if repair_lock_is_stale(lock_dir)? {
+                let observed_token = read_repair_lock_token(lock_dir)?;
+                if repair_lock_is_stale(lock_dir)?
+                    && repair_lock_observed_token_matches(lock_dir, observed_token.as_deref())?
+                {
+                    let _ = std::fs::remove_dir_all(lock_dir);
+                }
+                return match std::fs::create_dir(lock_dir) {
+                    Ok(()) => {
+                        write_repair_lock_token(lock_dir, &token)?;
+                        Ok(Some(RepairLockGuard {
+                            path: lock_dir.to_path_buf(),
+                            token,
+                        }))
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+                    Err(error) => Err(error),
+                };
+            }
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn new_repair_lock_token() -> String {
+    let mut bytes = [0_u8; 16];
+    rand::fill(&mut bytes);
+    hex_lower(&bytes)
+}
+
+fn write_repair_lock_token(lock_dir: &Path, token: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    std::fs::set_permissions(lock_dir, std::fs::Permissions::from_mode(0o700))?;
+    write_private_file_io(&repair_lock_token_path(lock_dir), token.as_bytes())
+}
+
+fn repair_lock_token_path(lock_dir: &Path) -> PathBuf {
+    lock_dir.join("owner")
+}
+
+fn read_repair_lock_token(lock_dir: &Path) -> std::io::Result<Option<String>> {
+    match std::fs::read_to_string(repair_lock_token_path(lock_dir)) {
+        Ok(token) => Ok(Some(token)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn repair_lock_token_matches(lock_dir: &Path, token: &str) -> std::io::Result<bool> {
+    Ok(read_repair_lock_token(lock_dir)?.as_deref() == Some(token))
+}
+
+fn repair_lock_observed_token_matches(
+    lock_dir: &Path,
+    observed_token: Option<&str>,
+) -> std::io::Result<bool> {
+    Ok(read_repair_lock_token(lock_dir)?.as_deref() == observed_token)
+}
+
+fn repair_lock_is_stale(lock_dir: &Path) -> std::io::Result<bool> {
+    let modified = std::fs::metadata(lock_dir)?.modified()?;
+    Ok(modified
+        .elapsed()
+        .is_ok_and(|age| age >= BUILD_CACHE_KEY_REPAIR_LOCK_STALE))
+}
+
+fn replace_build_cache_key(key_path: &Path) -> std::io::Result<[u8; 32]> {
+    let mut key = [0_u8; 32];
+    rand::fill(&mut key);
+    let mut suffix = [0_u8; 8];
+    rand::fill(&mut suffix);
+    let temp_path =
+        key_path.with_file_name(format!("cache-token-key.repair-{}", hex_lower(&suffix)));
+    write_build_cache_key(&temp_path, &key)?;
+    let result = replace_build_cache_key_from_temp(&temp_path, key_path);
+    let _ = std::fs::remove_file(&temp_path);
+    result.map(|()| key)
+}
+
+#[cfg(unix)]
+fn replace_build_cache_key_from_temp(temp_path: &Path, key_path: &Path) -> std::io::Result<()> {
+    std::fs::rename(temp_path, key_path)
+}
+
+#[cfg(not(unix))]
+fn replace_build_cache_key_from_temp(temp_path: &Path, key_path: &Path) -> std::io::Result<()> {
+    let key = std::fs::read(temp_path)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    let mut file = options.open(key_path)?;
+    file.write_all(&key)
 }
 
 fn normalize_build_image_name(reference: &str) -> String {
@@ -2046,6 +2231,95 @@ mod tests {
         handle.join().expect("writer should not panic");
 
         assert_eq!(key, expected_key);
+    }
+
+    #[test]
+    fn railpack_secret_cache_key_repairs_stale_short_key() {
+        let data_dir = temp_dir("ployz-build-cache-key-repair");
+        let key_dir = data_dir.join("build-work");
+        create_private_dir(&key_dir).expect("create key dir");
+        let key_path = key_dir.join("cache-token-key");
+        write_private_file(&key_path, b"short").expect("create incomplete key file");
+
+        let key = load_or_create_build_cache_key(&data_dir).expect("repair stale cache key");
+        let repaired = std::fs::read(&key_path).expect("read repaired key");
+
+        assert_eq!(repaired, key);
+        assert_eq!(repaired.len(), 32);
+    }
+
+    #[test]
+    fn railpack_secret_cache_key_repairs_oversized_key() {
+        let data_dir = temp_dir("ployz-build-cache-key-oversized-repair");
+        let key_dir = data_dir.join("build-work");
+        create_private_dir(&key_dir).expect("create key dir");
+        let key_path = key_dir.join("cache-token-key");
+        write_private_file(&key_path, &[7_u8; 33]).expect("create oversized key file");
+
+        let key = load_or_create_build_cache_key(&data_dir).expect("repair oversized cache key");
+        let repaired = std::fs::read(&key_path).expect("read repaired key");
+
+        assert_eq!(repaired, key);
+        assert_eq!(repaired.len(), 32);
+    }
+
+    #[test]
+    fn railpack_secret_cache_key_repair_is_serialized() {
+        let data_dir = temp_dir("ployz-build-cache-key-concurrent-repair");
+        let key_dir = data_dir.join("build-work");
+        create_private_dir(&key_dir).expect("create key dir");
+        let key_path = key_dir.join("cache-token-key");
+        write_private_file(&key_path, b"short").expect("create incomplete key file");
+        let workers = 16;
+        let barrier = Arc::new(Barrier::new(workers));
+        let handles = (0..workers)
+            .map(|_| {
+                let data_dir = data_dir.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    load_or_create_build_cache_key(&data_dir)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut keys = Vec::new();
+        for handle in handles {
+            keys.push(
+                handle
+                    .join()
+                    .expect("worker should not panic")
+                    .expect("repair should succeed"),
+            );
+        }
+        let final_key = std::fs::read(&key_path).expect("read repaired key");
+
+        assert_eq!(final_key.len(), 32);
+        assert!(keys.iter().all(|key| key.as_slice() == final_key));
+    }
+
+    #[test]
+    fn repair_lock_guard_preserves_successor_lock() {
+        let lock_dir = temp_dir("ployz-build-cache-key-repair-lock");
+        std::fs::create_dir(&lock_dir).expect("create first lock");
+        write_repair_lock_token(&lock_dir, "first").expect("write first token");
+        let first = RepairLockGuard {
+            path: lock_dir.clone(),
+            token: "first".into(),
+        };
+        std::fs::remove_dir_all(&lock_dir).expect("remove stale lock");
+        std::fs::create_dir(&lock_dir).expect("create successor lock");
+        write_repair_lock_token(&lock_dir, "second").expect("write second token");
+        let second = RepairLockGuard {
+            path: lock_dir.clone(),
+            token: "second".into(),
+        };
+
+        drop(first);
+        assert!(repair_lock_token_matches(&lock_dir, "second").expect("read second token"));
+
+        drop(second);
+        assert!(!lock_dir.exists());
     }
 
     #[test]
