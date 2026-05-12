@@ -1168,7 +1168,10 @@ impl DaemonState {
         volume: &str,
         snapshot: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace::new(namespace.to_string());
+        let namespace = match Namespace::try_new(namespace) {
+            Ok(namespace) => namespace,
+            Err(error) => return self.err("VOLUME_ZFS_PEER_SNAPSHOT_FAILED", error),
+        };
         match self
             .snapshot_local_source_volume_zfs(&namespace, volume, snapshot)
             .await
@@ -1187,7 +1190,10 @@ impl DaemonState {
         volume: &str,
         snapshot: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace::new(namespace.to_string());
+        let namespace = match Namespace::try_new(namespace) {
+            Ok(namespace) => namespace,
+            Err(error) => return self.err("VOLUME_ZFS_PEER_SNAPSHOT_GUID_FAILED", error),
+        };
         match self
             .snapshot_guid_local_volume_zfs(&namespace, volume, snapshot)
             .await
@@ -1210,7 +1216,10 @@ impl DaemonState {
         from_snapshot: Option<&str>,
         from_snapshot_guid: Option<u64>,
     ) -> DaemonResponse {
-        let namespace = Namespace::new(namespace.to_string());
+        let namespace = match Namespace::try_new(namespace) {
+            Ok(namespace) => namespace,
+            Err(error) => return self.err("VOLUME_ZFS_PEER_START_SEND_FAILED", error),
+        };
         let record = match self.volume_record(&namespace, volume).await {
             Ok(record) => record,
             Err(error) => return self.err("VOLUME_ZFS_PEER_START_SEND_FAILED", error),
@@ -2101,7 +2110,9 @@ fn finalize_zfs_transfer(
 #[cfg(test)]
 mod tests {
     use super::{MoveClaimOutcome, TransferStatus, TransferStore, finalize_zfs_transfer};
+    use crate::daemon::DaemonState;
     use ployz_api::VolumeZfsTransferState;
+    use ployz_runtime_api::Identity;
     use ployz_types::model::MachineId;
     use ployz_types::spec::Namespace;
     use std::path::PathBuf;
@@ -2149,6 +2160,72 @@ mod tests {
             None,
         );
         store.claim_path(&key)
+    }
+
+    fn make_state(label: &str) -> DaemonState {
+        let data_dir = tmp_root(label);
+        let identity = Identity::generate(MachineId::new("founder"), [42; 32]);
+        DaemonState::new_for_tests(
+            &data_dir,
+            identity,
+            "10.210.0.0/16".into(),
+            24,
+            4319,
+            "127.0.0.1:0".into(),
+            None,
+            1,
+        )
+    }
+
+    #[tokio::test]
+    async fn peer_snapshot_rejects_invalid_namespace() {
+        let state = make_state("peer-snapshot-invalid-namespace");
+
+        let response = state
+            .handle_volume_zfs_peer_snapshot("Prod", "data", "snap")
+            .await;
+
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "VOLUME_ZFS_PEER_SNAPSHOT_FAILED");
+        assert!(
+            response.message().contains("namespace"),
+            "got: {}",
+            response.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_snapshot_guid_rejects_invalid_namespace() {
+        let state = make_state("peer-snapshot-guid-invalid-namespace");
+
+        let response = state
+            .handle_volume_zfs_peer_snapshot_guid("bad ns", "data", "snap")
+            .await;
+
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "VOLUME_ZFS_PEER_SNAPSHOT_GUID_FAILED");
+        assert!(
+            response.message().contains("namespace"),
+            "got: {}",
+            response.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_start_send_rejects_invalid_namespace() {
+        let state = make_state("peer-start-send-invalid-namespace");
+
+        let response = state
+            .handle_volume_zfs_peer_start_send("bad ns", "data", "snap", "target", 1, None, None)
+            .await;
+
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "VOLUME_ZFS_PEER_START_SEND_FAILED");
+        assert!(
+            response.message().contains("namespace"),
+            "got: {}",
+            response.message()
+        );
     }
 
     #[test]
