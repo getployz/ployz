@@ -642,7 +642,7 @@ mod tests {
                 .as_ref()
                 .and_then(|install| install.source.as_ref()),
             Some(&ApiInstallSource::Git {
-                git_url: "https://example.invalid/ployz.git".into(),
+                git_url: ployz_api::InstallGitUrl::new("https://example.invalid/ployz.git"),
                 git_ref: Some("main".into())
             })
         );
