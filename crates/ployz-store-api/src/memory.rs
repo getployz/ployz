@@ -10,7 +10,7 @@ use ployz_types::error::{DeployError, Error, Result, SubscriptionStream};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     BranchEnvironmentFailure, BranchEnvironmentRecord, BranchEnvironmentState, CertificateEvent,
-    CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord, DeployPhaseState, DeployRecord,
+    CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord,
     ImageAvailabilityRecord, ImageDigest, InstanceId, InstanceStatusRecord, InviteRecord,
     InviteStatus, MachineEvent, MachineId, MachineMembership, PreparedDeployRecord,
     PreparedDeployState, RoutingEvent, RoutingState, ServiceBranchLineageRecord,

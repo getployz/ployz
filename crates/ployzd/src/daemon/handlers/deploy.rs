@@ -37,13 +37,14 @@ use ployz_orchestrator::deploy::{
 use ployz_store_api::{DeployStore, StoreDriver, StoreRuntimeControl};
 use ployz_types::Error as PloyzError;
 use ployz_types::error::DeployError;
+#[cfg(test)]
+use ployz_types::model::DeployPhaseRecordState;
 use ployz_types::model::{
     BranchEnvironmentFailure, BranchEnvironmentRecord, BranchEnvironmentResourceMode,
     BranchEnvironmentResourceOverride, BranchEnvironmentState, DeployId, DeployPhaseCommitPolicy,
-    DeployPhaseFailure, DeployPhaseState, DeployState, PreparedDeployRecord, PreparedDeployState,
+    DeployPhaseFailure, DeployPhaseState, DeployRecordState, PreparedDeployRecord,
+    PreparedDeployState,
 };
-#[cfg(test)]
-use ployz_types::model::{DeployPhaseRecordState, DeployRecordState};
 use ployz_types::spec::{DeployManifest, Namespace, valid_storage_segment};
 
 #[cfg(test)]
@@ -553,7 +554,7 @@ impl DaemonState {
                 "BRANCH_ENVIRONMENT_RECORD_FAILED",
                 format!(
                     "failed to record branch apply-prepared outcome: {error}; deploy response was {}: {}",
-                    response.code, response.message
+                    response.code(), response.message()
                 ),
             ),
         }
@@ -816,7 +817,7 @@ impl DaemonState {
             Err(response) => return *response,
         };
         if matches!(request.mode, BranchNamespaceMode::Prepare) {
-            let target_namespace = Namespace(request.target_namespace.clone());
+            let target_namespace = Namespace::new(request.target_namespace.clone());
             match active
                 .mesh
                 .store
@@ -854,9 +855,9 @@ impl DaemonState {
                     Err(error) => return self.err(error.code(), error.to_string()),
                 };
                 let response = self.handle_deploy_prepare(&manifest_json).await;
-                if response.ok {
-                    if let Some(DaemonPayload::DeployPrepare(payload)) = response.payload.as_ref() {
-                        let record = branch_environment_record_from_prepare(&request, payload);
+                if response.is_ok() {
+                    if let Some(DaemonPayload::DeployPrepare(payload)) = response.payload() {
+                        let record = branch_environment_record_from_prepare(&request, &payload);
                         if let Err(error) =
                             active.mesh.store.upsert_branch_environment(&record).await
                         {
@@ -912,7 +913,7 @@ impl DaemonState {
             Ok(active) => active,
             Err(response) => return *response,
         };
-        let target_namespace = Namespace(request.target_namespace.clone());
+        let target_namespace = Namespace::new(request.target_namespace.clone());
         let environment = match active
             .mesh
             .store
@@ -1023,8 +1024,8 @@ fn branch_environment_record_from_prepare(
     payload: &DeployPreparePayload,
 ) -> BranchEnvironmentRecord {
     BranchEnvironmentRecord {
-        source_namespace: Namespace(request.source_namespace.clone()),
-        target_namespace: Namespace(request.target_namespace.clone()),
+        source_namespace: Namespace::new(request.source_namespace.clone()),
+        target_namespace: Namespace::new(request.target_namespace.clone()),
         state: BranchEnvironmentState::Prepared,
         default_service_mode: branch_environment_mode(request.default_service_mode),
         default_volume_mode: branch_environment_mode(request.default_volume_mode),
@@ -1074,7 +1075,7 @@ async fn record_branch_apply_prepared_outcome(
     {
         return Ok(environment);
     }
-    if response.ok {
+    if response.is_ok() {
         match store
             .mark_branch_environment_active(
                 target_namespace,
@@ -1106,8 +1107,8 @@ async fn record_branch_apply_prepared_outcome(
             return Ok(environment);
         }
         let failure = BranchEnvironmentFailure {
-            code: response.code.clone(),
-            message: response.message.clone(),
+            code: response.code().to_string(),
+            message: response.message().to_string(),
             deploy_id: None,
         };
         match store
@@ -1192,7 +1193,7 @@ async fn branch_applying_replay_action(
         .is_some_and(|commit| {
             matches!(
                 commit.deploy.state,
-                DeployState::Committed | DeployState::CleanupPending
+                DeployRecordState::Committed { .. } | DeployRecordState::CleanupPending { .. }
             )
         })
         || store
@@ -1201,7 +1202,7 @@ async fn branch_applying_replay_action(
             .is_some_and(|record| {
                 matches!(
                     record.state,
-                    DeployState::Committed | DeployState::CleanupPending
+                    DeployRecordState::Committed { .. } | DeployRecordState::CleanupPending { .. }
                 )
             })
     {
@@ -1574,7 +1575,7 @@ mod tests {
         baseline: DeployPreviewBaseline,
     ) -> BranchEnvironmentRecord {
         BranchEnvironmentRecord {
-            source_namespace: Namespace("prod".into()),
+            source_namespace: Namespace::new("prod"),
             target_namespace: target_namespace.clone(),
             state,
             default_service_mode: BranchEnvironmentResourceMode::Branch,
@@ -2294,8 +2295,8 @@ mod tests {
             })
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "BRANCH_DIRECT_APPLY_UNSUPPORTED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "BRANCH_DIRECT_APPLY_UNSUPPORTED");
     }
 
     #[tokio::test]
@@ -2404,7 +2405,7 @@ mod tests {
             .expect("seed active machine");
         seed_committed_service(
             &store,
-            &Namespace("prod".into()),
+            &Namespace::new("prod"),
             test_service_with_mounts("web", Vec::new()),
             Vec::new(),
         )
@@ -2412,7 +2413,7 @@ mod tests {
         let active_prepared_deploy_id = DeployId("prepare-old".into());
         let baseline = test_baseline("sources");
         let mut active_record = test_branch_environment_record(
-            &Namespace("pr-39".into()),
+            &Namespace::new("pr-39"),
             &active_prepared_deploy_id,
             BranchEnvironmentState::Prepared,
             baseline,
@@ -2437,7 +2438,7 @@ mod tests {
             })
             .await;
 
-        assert_ne!(response.code, "BRANCH_ENVIRONMENT_BUSY", "{response:?}");
+        assert_ne!(response.code(), "BRANCH_ENVIRONMENT_BUSY", "{response:?}");
     }
 
     #[tokio::test]
@@ -2445,8 +2446,8 @@ mod tests {
         let store = StoreDriver::memory();
         let baseline = test_baseline("sources");
         let record = BranchEnvironmentRecord {
-            source_namespace: Namespace("prod".into()),
-            target_namespace: Namespace("pr-39".into()),
+            source_namespace: Namespace::new("prod"),
+            target_namespace: Namespace::new("pr-39"),
             state: BranchEnvironmentState::Prepared,
             default_service_mode: BranchEnvironmentResourceMode::Branch,
             default_volume_mode: BranchEnvironmentResourceMode::Fresh,
@@ -2470,7 +2471,7 @@ mod tests {
 
         record_branch_apply_prepared_outcome(
             &store,
-            &Namespace("pr-39".into()),
+            &Namespace::new("pr-39"),
             &DeployId("prepare-old".into()),
             &DaemonResponse {
                 ok: true,
@@ -2483,7 +2484,7 @@ mod tests {
         .expect_err("stale prepared id should not transition branch environment");
         assert_eq!(
             store
-                .get_branch_environment(&Namespace("pr-39".into()))
+                .get_branch_environment(&Namespace::new("pr-39"))
                 .await
                 .expect("get branch environment")
                 .expect("branch environment exists")
@@ -2493,7 +2494,7 @@ mod tests {
 
         store
             .mark_branch_environment_applying(
-                &Namespace("pr-39".into()),
+                &Namespace::new("pr-39"),
                 &DeployId("prepare-new".into()),
                 2,
             )
@@ -2501,7 +2502,7 @@ mod tests {
             .expect("claim branch environment apply");
         record_branch_apply_prepared_outcome(
             &store,
-            &Namespace("pr-39".into()),
+            &Namespace::new("pr-39"),
             &DeployId("prepare-new".into()),
             &DaemonResponse {
                 ok: true,
@@ -2513,7 +2514,7 @@ mod tests {
         .await
         .expect("matching prepared id should transition branch environment");
         let stored = store
-            .get_branch_environment(&Namespace("pr-39".into()))
+            .get_branch_environment(&Namespace::new("pr-39"))
             .await
             .expect("get branch environment")
             .expect("branch environment exists");
@@ -2529,8 +2530,8 @@ mod tests {
         let store = StoreDriver::memory();
         let baseline = test_baseline("sources");
         let record = BranchEnvironmentRecord {
-            source_namespace: Namespace("prod".into()),
-            target_namespace: Namespace("pr-39".into()),
+            source_namespace: Namespace::new("prod"),
+            target_namespace: Namespace::new("pr-39"),
             state: BranchEnvironmentState::Prepared,
             default_service_mode: BranchEnvironmentResourceMode::Branch,
             default_volume_mode: BranchEnvironmentResourceMode::Fresh,
@@ -2554,7 +2555,7 @@ mod tests {
 
         store
             .mark_branch_environment_applying(
-                &Namespace("pr-39".into()),
+                &Namespace::new("pr-39"),
                 &DeployId("prepare-1".into()),
                 2,
             )
@@ -2562,7 +2563,7 @@ mod tests {
             .expect("claim branch environment apply");
         record_branch_apply_prepared_outcome(
             &store,
-            &Namespace("pr-39".into()),
+            &Namespace::new("pr-39"),
             &DeployId("prepare-1".into()),
             &DaemonResponse {
                 ok: false,
@@ -2575,7 +2576,7 @@ mod tests {
         .expect("failure should mark branch environment failed");
         assert_eq!(
             store
-                .get_branch_environment(&Namespace("pr-39".into()))
+                .get_branch_environment(&Namespace::new("pr-39"))
                 .await
                 .expect("get branch environment")
                 .expect("branch environment exists")
@@ -2585,7 +2586,7 @@ mod tests {
 
         store
             .mark_branch_environment_applying(
-                &Namespace("pr-39".into()),
+                &Namespace::new("pr-39"),
                 &DeployId("prepare-1".into()),
                 21,
             )
@@ -2593,7 +2594,7 @@ mod tests {
             .expect("reclaim failed branch environment apply");
         record_branch_apply_prepared_outcome(
             &store,
-            &Namespace("pr-39".into()),
+            &Namespace::new("pr-39"),
             &DeployId("prepare-1".into()),
             &DaemonResponse {
                 ok: true,
@@ -2605,7 +2606,7 @@ mod tests {
         .await
         .expect("same prepared id retry should activate branch environment");
         let stored = store
-            .get_branch_environment(&Namespace("pr-39".into()))
+            .get_branch_environment(&Namespace::new("pr-39"))
             .await
             .expect("get branch environment")
             .expect("branch environment exists");
@@ -2618,8 +2619,8 @@ mod tests {
         let store = StoreDriver::memory();
         let baseline = test_baseline("sources");
         let record = BranchEnvironmentRecord {
-            source_namespace: Namespace("prod".into()),
-            target_namespace: Namespace("pr-39".into()),
+            source_namespace: Namespace::new("prod"),
+            target_namespace: Namespace::new("pr-39"),
             state: BranchEnvironmentState::Active,
             default_service_mode: BranchEnvironmentResourceMode::Branch,
             default_volume_mode: BranchEnvironmentResourceMode::Fresh,
@@ -2643,7 +2644,7 @@ mod tests {
 
         let stored = record_branch_apply_prepared_outcome(
             &store,
-            &Namespace("pr-39".into()),
+            &Namespace::new("pr-39"),
             &DeployId("prepare-1".into()),
             &DaemonResponse {
                 ok: true,
@@ -2658,7 +2659,7 @@ mod tests {
         assert_eq!(stored, record);
         assert_eq!(
             store
-                .get_branch_environment(&Namespace("pr-39".into()))
+                .get_branch_environment(&Namespace::new("pr-39"))
                 .await
                 .expect("get branch environment")
                 .expect("branch environment exists"),
@@ -2670,7 +2671,7 @@ mod tests {
     async fn handle_branch_apply_prepared_replays_active_environment_before_runtime_setup() {
         let mut state = test_daemon_state();
         let store = StoreDriver::memory();
-        let namespace = Namespace("pr-39".into());
+        let namespace = Namespace::new("pr-39");
         let prepared_deploy_id = DeployId("prepare-1".into());
         let baseline = test_baseline("sources");
         let preview = DeployPreview {
@@ -2707,7 +2708,7 @@ mod tests {
             .expect("write prepared deploy");
         store
             .upsert_branch_environment(&BranchEnvironmentRecord {
-                source_namespace: Namespace("prod".into()),
+                source_namespace: Namespace::new("prod"),
                 target_namespace: namespace.clone(),
                 state: BranchEnvironmentState::Active,
                 default_service_mode: BranchEnvironmentResourceMode::Branch,
@@ -2735,8 +2736,8 @@ mod tests {
             })
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::BranchEnvironment(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::BranchEnvironment(payload)) = response.payload() else {
             panic!("expected branch environment replay payload: {response:?}");
         };
         assert_eq!(payload.environment.target_namespace, namespace);
@@ -2751,7 +2752,7 @@ mod tests {
     async fn handle_branch_apply_prepared_marks_applying_before_manifest_validation_failure() {
         let mut state = test_daemon_state();
         let store = StoreDriver::memory();
-        let namespace = Namespace("pr-39".into());
+        let namespace = Namespace::new("pr-39");
         let prepared_deploy_id = DeployId("prepare-1".into());
         let baseline = test_baseline("sources");
         store
@@ -2787,8 +2788,8 @@ mod tests {
             })
             .await;
 
-        assert!(!response.ok, "{response:?}");
-        assert_eq!(response.code, "PREPARED_DEPLOY_INVALID");
+        assert!(!response.is_ok(), "{response:?}");
+        assert_eq!(response.code(), "PREPARED_DEPLOY_INVALID");
         let stored = store
             .get_branch_environment(&namespace)
             .await
@@ -2806,7 +2807,7 @@ mod tests {
     async fn deploy_apply_prepared_best_effort_ignores_stale_branch_environment() {
         let mut state = test_daemon_state();
         let store = StoreDriver::memory();
-        let namespace = Namespace("pr-39".into());
+        let namespace = Namespace::new("pr-39");
         let prepared_deploy_id = DeployId("prepare-new".into());
         let stale_prepared_deploy_id = DeployId("prepare-old".into());
         let baseline = test_baseline("sources");
@@ -2842,8 +2843,8 @@ mod tests {
             .handle_deploy_apply_prepared(&DeployApplyPreparedRequest { prepared_deploy_id })
             .await;
 
-        assert!(!response.ok, "{response:?}");
-        assert_eq!(response.code, "PREPARED_DEPLOY_INVALID");
+        assert!(!response.is_ok(), "{response:?}");
+        assert_eq!(response.code(), "PREPARED_DEPLOY_INVALID");
         assert_eq!(
             store
                 .get_branch_environment(&namespace)
@@ -2857,7 +2858,7 @@ mod tests {
     async fn branch_apply_prepared_rejects_existing_applying_before_runtime_work() {
         let mut state = test_daemon_state();
         let store = StoreDriver::memory();
-        let namespace = Namespace("pr-39".into());
+        let namespace = Namespace::new("pr-39");
         let prepared_deploy_id = DeployId("prepare-1".into());
         let baseline = test_baseline("sources");
         store
@@ -2897,8 +2898,8 @@ mod tests {
             })
             .await;
 
-        assert!(!response.ok, "{response:?}");
-        assert_eq!(response.code, "BRANCH_ENVIRONMENT_BUSY");
+        assert!(!response.is_ok(), "{response:?}");
+        assert_eq!(response.code(), "BRANCH_ENVIRONMENT_BUSY");
         let stored = store
             .get_branch_environment(&namespace)
             .await
@@ -2912,7 +2913,7 @@ mod tests {
     async fn branch_apply_prepared_repairs_applying_environment_after_durable_apply() {
         let mut state = test_daemon_state();
         let store = StoreDriver::memory();
-        let namespace = Namespace("pr-39".into());
+        let namespace = Namespace::new("pr-39");
         let prepared_deploy_id = DeployId("prepare-1".into());
         let baseline = test_baseline("sources");
         store
@@ -2952,8 +2953,8 @@ mod tests {
             })
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::BranchEnvironment(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::BranchEnvironment(payload)) = response.payload() else {
             panic!("expected branch environment replay payload: {response:?}");
         };
         assert_eq!(payload.environment.state, BranchEnvironmentState::Active);
@@ -2973,7 +2974,7 @@ mod tests {
     #[tokio::test]
     async fn branch_applying_durable_commit_resumes_prepared_apply_repair_path() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("pr-39".into());
+        let namespace = Namespace::new("pr-39");
         let prepared_deploy_id = DeployId("prepare-1".into());
         let baseline = test_baseline("sources");
         let preview = test_empty_preview(&namespace, baseline.clone());
@@ -3049,7 +3050,7 @@ mod tests {
     #[tokio::test]
     async fn branch_applying_replay_action_prefers_active_replay_after_race() {
         let store = StoreDriver::memory();
-        let namespace = Namespace("pr-39".into());
+        let namespace = Namespace::new("pr-39");
         let prepared_deploy_id = DeployId("prepare-1".into());
         let baseline = test_baseline("sources");
         store
