@@ -22,15 +22,14 @@ use crate::model::{
     BranchEnvironmentRecord, CertificateRecord, DeployBaselineComponent, DeployChangeKind,
     DeployId, DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord,
     DeployPhaseRollbackPolicy, DeployPhaseState, DeployPhaseWork, DeployPreview,
-    DeployPreviewBaseline, DeployPreviewBaselineComponents, DeployRecord, DeployState, DrainState,
-    DeployRecordState,
-    ImageArtifact, ImageArtifactProvenance, ImageAvailabilityRecord, ImageDigest, ImagePresence,
-    ImageRef, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle,
-    MachineMembership, MachineStorageRole, MachineTopology, OverlayIp, PreparedDeployRecord,
-    PreparedDeployState, PublicKey, ServiceBranchLineageRecord, ServiceRelease,
-    ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord, ServiceSourceMode, SlotId,
-    StorageParticipation, VolumeBranchLineageRecord, VolumeClonePreflightAction,
-    VolumeClonePreflightScope, VolumeMovementRecord, VolumeRecord,
+    DeployPreviewBaseline, DeployPreviewBaselineComponents, DeployRecord, DeployRecordState,
+    DeployState, DrainState, ImageArtifact, ImageArtifactProvenance, ImageAvailabilityRecord,
+    ImageDigest, ImagePresence, ImageRef, InstanceId, InstancePhase, InstanceStatusRecord,
+    MachineId, MachineLifecycle, MachineMembership, MachineStorageRole, MachineTopology, OverlayIp,
+    PreparedDeployRecord, PreparedDeployState, PublicKey, ServiceBranchLineageRecord,
+    ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord,
+    ServiceSourceMode, SlotId, StorageParticipation, VolumeBranchLineageRecord,
+    VolumeClonePreflightAction, VolumeClonePreflightScope, VolumeMovementRecord, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
