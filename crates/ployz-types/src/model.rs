@@ -4031,7 +4031,7 @@ mod tests {
                 mode: BranchEnvironmentResourceMode::Fresh,
             }],
             volumes: Vec::new(),
-            prepared_deploy_id: Some(DeployId("prepare-1".into())),
+            prepared_deploy_id: Some(DeployId::new("prepare-1")),
             applied_deploy_id: None,
             manifest_hash: "manifest-hash".into(),
             baseline,
