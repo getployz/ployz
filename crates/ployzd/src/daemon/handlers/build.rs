@@ -77,8 +77,8 @@ mod tests {
             }))
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "BUILD_MACHINE_INPUT_INVALID");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "BUILD_MACHINE_INPUT_INVALID");
         assert!(
             state
                 .build_operation_store()
@@ -95,8 +95,8 @@ mod tests {
             .handle_build_machine(&machine_request(BuildInputs::default()))
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "BUILD_MACHINE_UNSUPPORTED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "BUILD_MACHINE_UNSUPPORTED");
         assert!(
             state
                 .build_operation_store()

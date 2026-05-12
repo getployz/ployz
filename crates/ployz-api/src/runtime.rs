@@ -422,11 +422,10 @@ mod tests {
 
     #[test]
     fn daemon_error_response_preserves_structured_payload() {
-        let response = DaemonResponse {
-            ok: false,
-            code: String::from("MACHINE_UPDATE_FAILED"),
-            message: String::from("machine 'peer-1' update failed: refused"),
-            payload: Some(DaemonPayload::MachineUpdate(MachineUpdatePayload {
+        let response = DaemonResponse::error(
+            "MACHINE_UPDATE_FAILED",
+            "machine 'peer-1' update failed: refused",
+            Some(DaemonPayload::MachineUpdate(MachineUpdatePayload {
                 operation_id: String::from("update-1"),
                 updated: Vec::new(),
                 failed: vec![MachineUpdateRow {
@@ -435,14 +434,14 @@ mod tests {
                     message: String::from("refused"),
                 }],
             })),
-        };
+        );
 
         let json = serde_json::to_value(&response).expect("serialize response");
 
         assert_eq!(
             json,
             serde_json::json!({
-                "ok": false,
+                "status": "error",
                 "code": "MACHINE_UPDATE_FAILED",
                 "message": "machine 'peer-1' update failed: refused",
                 "payload": {
@@ -457,9 +456,9 @@ mod tests {
             })
         );
         let decoded: DaemonResponse = serde_json::from_value(json).expect("deserialize response");
-        assert!(!decoded.ok);
-        assert_eq!(decoded.code, "MACHINE_UPDATE_FAILED");
-        let Some(DaemonPayload::MachineUpdate(payload)) = decoded.payload else {
+        assert!(!decoded.is_ok());
+        assert_eq!(decoded.code(), "MACHINE_UPDATE_FAILED");
+        let Some(DaemonPayload::MachineUpdate(payload)) = decoded.payload() else {
             panic!("expected machine update payload");
         };
         assert_eq!(payload.operation_id, "update-1");
@@ -472,11 +471,9 @@ mod tests {
 
     #[test]
     fn daemon_storage_promotion_response_preserves_structured_payload() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("storage promotion complete"),
-            payload: Some(DaemonPayload::MachineStoragePromotion(
+        let response = DaemonResponse::success(
+            "storage promotion complete",
+            Some(DaemonPayload::MachineStoragePromotion(
                 MachineStoragePromotionPayload {
                     operation_id: String::from("storage-promote-1"),
                     replicas: StorageReplicaPolicy::R3,
@@ -488,14 +485,14 @@ mod tests {
                     }],
                 },
             )),
-        };
+        );
 
         let json = serde_json::to_value(&response).expect("serialize response");
 
         assert_eq!(
             json,
             serde_json::json!({
-                "ok": true,
+                "status": "success",
                 "code": "OK",
                 "message": "storage promotion complete",
                 "payload": {
@@ -512,7 +509,7 @@ mod tests {
             })
         );
         let decoded: DaemonResponse = serde_json::from_value(json).expect("deserialize response");
-        let Some(DaemonPayload::MachineStoragePromotion(payload)) = decoded.payload else {
+        let Some(DaemonPayload::MachineStoragePromotion(payload)) = decoded.payload() else {
             panic!("expected machine storage promotion payload");
         };
         assert_eq!(payload.replicas, StorageReplicaPolicy::R3);
@@ -521,11 +518,9 @@ mod tests {
 
     #[test]
     fn daemon_operation_response_preserves_structured_failure_status() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("operation details"),
-            payload: Some(DaemonPayload::MachineOperation(MachineOperationPayload {
+        let response = DaemonResponse::success(
+            "operation details",
+            Some(DaemonPayload::MachineOperation(MachineOperationPayload {
                 operation: MachineOperationInfo {
                     id: String::from("machine-add-1"),
                     kind: String::from("add"),
@@ -541,14 +536,14 @@ mod tests {
                     allocated_subnet: Some(String::from("10.210.1.0/24")),
                 },
             })),
-        };
+        );
 
         let json = serde_json::to_value(&response).expect("serialize operation response");
 
         assert_eq!(
             json,
             serde_json::json!({
-                "ok": true,
+                "status": "success",
                 "code": "OK",
                 "message": "operation details",
                 "payload": {
@@ -573,7 +568,7 @@ mod tests {
 
         let decoded: DaemonResponse =
             serde_json::from_value(json).expect("deserialize operation response");
-        let Some(DaemonPayload::MachineOperation(payload)) = decoded.payload else {
+        let Some(DaemonPayload::MachineOperation(payload)) = decoded.payload() else {
             panic!("expected machine operation payload");
         };
         assert_eq!(payload.operation.status, "interrupted");
@@ -585,11 +580,9 @@ mod tests {
 
     #[test]
     fn daemon_status_response_preserves_edge_and_control_plane_uncertainty() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("status"),
-            payload: Some(DaemonPayload::Status(StatusPayload {
+        let response = DaemonResponse::success(
+            "status",
+            Some(DaemonPayload::Status(StatusPayload {
                 machine_id: String::from("founder"),
                 public_key: PublicKey([1; 32]),
                 version: String::from("0.5.5"),
@@ -618,14 +611,14 @@ mod tests {
                     },
                 }],
             })),
-        };
+        );
 
         let json = serde_json::to_value(&response).expect("serialize status response");
 
         assert_eq!(
             json,
             serde_json::json!({
-                "ok": true,
+                "status": "success",
                 "code": "OK",
                 "message": "status",
                 "payload": {
@@ -660,7 +653,7 @@ mod tests {
 
         let decoded: DaemonResponse =
             serde_json::from_value(json).expect("deserialize status response");
-        let Some(DaemonPayload::Status(payload)) = decoded.payload else {
+        let Some(DaemonPayload::Status(payload)) = decoded.payload() else {
             panic!("expected status payload");
         };
         let [edge] = payload.edge_sync.as_slice() else {

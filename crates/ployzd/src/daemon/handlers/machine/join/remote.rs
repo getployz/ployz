@@ -56,10 +56,10 @@ pub(super) async fn remote_daemon_identity(
     ssh_options: &SshOptions,
 ) -> Result<RemoteDaemonIdentity, String> {
     let response = remote_rpc(target, DaemonRequest::Status, ssh_options).await?;
-    if !response.ok {
+    if !response.is_ok() {
         return Err(remote_response_error(&response));
     }
-    match response.payload {
+    match response.payload() {
         Some(DaemonPayload::Status(StatusPayload {
             machine_id,
             public_key,
@@ -101,7 +101,7 @@ pub(super) async fn wait_for_remote_ready(
                         return Ok(());
                     }
                     tracing::debug!(%target, attempt, ?payload, "remote mesh not ready yet");
-                    format!("mesh reported not ready yet: {}", response.message)
+                    format!("mesh reported not ready yet: {}", response.message())
                 }
                 Err(err) => {
                     tracing::debug!(%target, attempt, error = %err, "remote readiness payload parse failed");
@@ -138,10 +138,10 @@ pub(super) async fn remote_self_record(
     ssh_options: &SshOptions,
 ) -> Result<MachineMembership, String> {
     let response = remote_rpc(target, DaemonRequest::MeshSelfRecord, ssh_options).await?;
-    if !response.ok {
+    if !response.is_ok() {
         return Err(remote_response_error(&response));
     }
-    match response.payload {
+    match response.payload() {
         Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record })) => Ok(record),
         Some(payload) => Err(format!("unexpected self-record payload: {payload:?}")),
         None => Err("self-record response missing structured payload".to_string()),
@@ -159,10 +159,10 @@ pub(super) async fn nats_self_record(
         )
         .await
         .map_err(|error| error.to_string())?;
-    if !response.ok {
+    if !response.is_ok() {
         return Err(remote_response_error(&response));
     }
-    match response.payload {
+    match response.payload() {
         Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record })) => Ok(record),
         Some(payload) => Err(format!("unexpected self-record payload: {payload:?}")),
         None => Err("self-record response missing structured payload".to_string()),
@@ -178,7 +178,7 @@ pub(super) async fn nats_rpc_expect_ok(
         .request(subject, &request)
         .await
         .map_err(|error| error.to_string())?;
-    if response.ok {
+    if response.is_ok() {
         return Ok(());
     }
     Err(remote_response_error(&response))
@@ -199,7 +199,7 @@ pub(super) async fn wait_for_nats_command_responder(
         )
         .await
         {
-            Ok(Ok(response)) if response.ok => {
+            Ok(Ok(response)) if response.is_ok() => {
                 tracing::debug!(machine = %machine.id, attempt, "NATS command responder confirmed");
                 return Ok(());
             }
@@ -223,10 +223,10 @@ pub(super) async fn wait_for_nats_command_responder(
 }
 
 fn mesh_ready_payload(response: &DaemonResponse) -> Result<MeshReadyPayload, String> {
-    match &response.payload {
+    match &response.payload() {
         Some(DaemonPayload::MeshReady(payload)) => Ok(payload.clone()),
         Some(payload) => Err(format!("unexpected readiness payload: {payload:?}")),
-        None => parse_remote_ready_payload(&response.message),
+        None => parse_remote_ready_payload(&response.message()),
     }
 }
 
@@ -298,7 +298,7 @@ pub(super) async fn wait_for_nats_ready(
                         tracing::debug!(machine = %machine.id, attempt, "NATS mesh ready confirmed");
                         return Ok(());
                     }
-                    format!("mesh reported not ready yet: {}", response.message)
+                    format!("mesh reported not ready yet: {}", response.message())
                 }
                 Err(err) => err,
             },
@@ -433,7 +433,7 @@ pub(super) async fn remote_rpc_expect_ok(
     ssh_options: &SshOptions,
 ) -> Result<(), String> {
     let response = remote_rpc(target, request, ssh_options).await?;
-    if response.ok {
+    if response.is_ok() {
         return Ok(());
     }
     Err(remote_response_error(&response))
@@ -442,6 +442,7 @@ pub(super) async fn remote_rpc_expect_ok(
 pub(super) fn remote_response_error(response: &DaemonResponse) -> String {
     format!(
         "remote daemon error [{}]: {}",
-        response.code, response.message
+        response.code(),
+        response.message()
     )
 }

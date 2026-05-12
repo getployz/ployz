@@ -146,7 +146,7 @@ impl StartedCandidates {
         let removed_services = plan
             .services()
             .iter()
-            .filter(|service| service.action == DeployChangeKind::Remove)
+            .filter(|service| service.action() == DeployChangeKind::Remove)
             .map(|service| service.service.clone())
             .collect::<Vec<_>>();
         let summary_json = serde_json::to_string(&preview).map_err(|error| {
@@ -249,22 +249,22 @@ pub(super) fn build_committed_releases_for_services(
 
         let mut next_slots = Vec::new();
         for slot in &service.slots {
-            let active_instance_id = match slot.action {
+            let active_instance_id = match slot.action() {
                 DeployChangeKind::Unchanged => {
-                    let Some(current) = &slot.current else {
+                    let Some(current) = slot.current() else {
                         return Err(Error::Deploy(DeployError::MissingCurrentSlot {
                             service: service.service.clone(),
-                            slot: slot.slot_id.as_str().to_string(),
+                            slot: slot.slot_id().as_str().to_string(),
                         }));
                     };
                     current.active_instance_id.clone()
                 }
                 DeployChangeKind::Create | DeployChangeKind::Replace => {
-                    let key = (service.service.clone(), slot.slot_id.as_str().to_string());
+                    let key = (service.service.clone(), slot.slot_id().as_str().to_string());
                     let Some(status) = started.get(&key) else {
                         return Err(Error::Deploy(DeployError::MissingStartedInstance {
                             service: service.service.clone(),
-                            slot: slot.slot_id.as_str().to_string(),
+                            slot: slot.slot_id().as_str().to_string(),
                         }));
                     };
                     status.instance_id.clone()
@@ -272,8 +272,8 @@ pub(super) fn build_committed_releases_for_services(
                 DeployChangeKind::Remove => continue,
             };
             next_slots.push(crate::model::ServiceReleaseSlot {
-                slot_id: slot.slot_id.clone(),
-                machine_id: slot.machine_id.clone(),
+                slot_id: slot.slot_id().clone(),
+                machine_id: slot.machine_id().clone(),
                 active_instance_id,
                 revision_hash: revision_hash.to_string(),
             });

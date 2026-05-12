@@ -96,8 +96,8 @@ mod tests {
         );
 
         let response = state.handle_mesh_join(&token).await;
-        assert!(!response.ok);
-        assert_eq!(response.code, "UNSUPPORTED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "UNSUPPORTED");
     }
 
     #[tokio::test]
@@ -252,8 +252,8 @@ mod tests {
                 bootstrap_peers: Vec::new(),
             })
             .await;
-        assert!(!response.ok);
-        assert_eq!(response.code, "NETWORK_ALREADY_EXISTS");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "NETWORK_ALREADY_EXISTS");
 
         let persisted = NetworkConfig::load(&config_path).expect("load existing config");
         assert_eq!(persisted.id, existing.id);

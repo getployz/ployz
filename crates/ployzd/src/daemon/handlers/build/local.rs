@@ -2474,8 +2474,8 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{}", response.message);
-        let Some(DaemonPayload::BuildResult(payload)) = response.payload else {
+        assert!(response.is_ok(), "{}", response.message());
+        let Some(DaemonPayload::BuildResult(payload)) = response.payload() else {
             panic!("expected build result payload");
         };
         assert_eq!(payload.artifact.digest(), &image_digest);
@@ -2549,8 +2549,8 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{}", response.message);
-        let Some(DaemonPayload::BuildResult(payload)) = response.payload else {
+        assert!(response.is_ok(), "{}", response.message());
+        let Some(DaemonPayload::BuildResult(payload)) = response.payload() else {
             panic!("expected build result payload");
         };
         let operation = state
@@ -2602,8 +2602,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "BUILD_LOCAL_INPUT_INVALID");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "BUILD_LOCAL_INPUT_INVALID");
         assert!(
             state
                 .build_operation_store()
@@ -2633,8 +2633,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        let Some(DaemonPayload::BuildOperation(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        let Some(DaemonPayload::BuildOperation(payload)) = response.payload() else {
             panic!("expected build operation payload");
         };
         assert_eq!(payload.operation.status(), OperationStatus::Failed);
@@ -2690,11 +2690,11 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert!(!response.message.contains("production"));
-        assert!(!response.message.contains("abc123"));
-        assert!(!response.message.contains("super-secret-token"));
-        let Some(DaemonPayload::BuildOperation(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert!(!response.message().contains("production"));
+        assert!(!response.message().contains("abc123"));
+        assert!(!response.message().contains("super-secret-token"));
+        let Some(DaemonPayload::BuildOperation(payload)) = response.payload() else {
             panic!("expected build operation payload");
         };
         assert!(
@@ -2744,10 +2744,10 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert!(!response.message.contains("super-secret-token"));
-        assert!(!response.message.contains("abc123"));
-        let Some(DaemonPayload::BuildOperation(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert!(!response.message().contains("super-secret-token"));
+        assert!(!response.message().contains("abc123"));
+        let Some(DaemonPayload::BuildOperation(payload)) = response.payload() else {
             panic!("expected build operation payload");
         };
         let operation_json = serde_json::to_string(&payload.operation).expect("serialize");
@@ -2804,10 +2804,10 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{}", response.message);
-        assert!(!response.message.contains("production"));
-        assert!(!response.message.contains("abc123"));
-        assert!(!response.message.contains("super-secret-token"));
+        assert!(response.is_ok(), "{}", response.message());
+        assert!(!response.message().contains("production"));
+        assert!(!response.message().contains("abc123"));
+        assert!(!response.message().contains("super-secret-token"));
     }
 
     #[tokio::test]
@@ -2903,8 +2903,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "BUILD_LOCAL_COMMAND_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "BUILD_LOCAL_COMMAND_FAILED");
         assert_eq!(runner.programs(), vec!["railpack"]);
         assert!(
             {
@@ -3032,9 +3032,9 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "BUILD_LOCAL_IMAGE_BUSY");
-        let Some(DaemonPayload::BuildOperation(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "BUILD_LOCAL_IMAGE_BUSY");
+        let Some(DaemonPayload::BuildOperation(payload)) = response.payload() else {
             panic!("expected build operation payload");
         };
         assert_eq!(payload.operation.status(), OperationStatus::Failed);

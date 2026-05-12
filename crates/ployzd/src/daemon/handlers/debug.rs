@@ -112,8 +112,8 @@ mod tests {
         );
 
         let response = state.handle_debug_tick(DebugTickTask::All, 1).await;
-        assert!(!response.ok);
-        assert_eq!(response.code, "NO_RUNNING_NETWORK");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "NO_RUNNING_NETWORK");
     }
 
     #[tokio::test]
@@ -130,7 +130,7 @@ mod tests {
         );
 
         let response = state.handle_debug_tick(DebugTickTask::Endpoints, 1).await;
-        assert!(!response.ok);
-        assert_eq!(response.code, "NO_RUNNING_NETWORK");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "NO_RUNNING_NETWORK");
     }
 }

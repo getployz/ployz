@@ -680,7 +680,7 @@ async fn resolve_plan_marks_matching_release_unchanged() {
         panic!("expected one service plan");
     };
     assert_eq!(
-        service_plan.action,
+        service_plan.action(),
         crate::model::DeployChangeKind::Unchanged
     );
     assert_eq!(service_plan.service, "api");
@@ -731,8 +731,11 @@ async fn resolve_plan_reuses_slot_machine_when_revision_changes() {
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(service_plan.action, crate::model::DeployChangeKind::Replace);
-    assert_eq!(slot_plan.machine_id, MachineId::new("machine-b"));
+    assert_eq!(
+        service_plan.action(),
+        crate::model::DeployChangeKind::Replace
+    );
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("machine-b"));
 }
 
 #[tokio::test]
@@ -788,8 +791,8 @@ async fn resolve_plan_moves_replacement_off_region_draining_machine() {
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(slot_plan.action, DeployChangeKind::Replace);
-    assert_eq!(slot_plan.machine_id, MachineId::new("compute"));
+    assert_eq!(slot_plan.action(), DeployChangeKind::Replace);
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("compute"));
 }
 
 #[tokio::test]
@@ -846,7 +849,7 @@ async fn resolve_plan_pins_new_volume_to_existing_slot_machine() {
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(slot_plan.machine_id, MachineId::new("machine-b"));
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("machine-b"));
 }
 
 #[tokio::test]
@@ -916,7 +919,7 @@ async fn resolve_plan_keeps_existing_volume_on_region_draining_machine() {
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(slot_plan.machine_id, MachineId::new("region-draining"));
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("region-draining"));
 }
 
 #[tokio::test]
@@ -982,8 +985,7 @@ async fn resolve_plan_moves_volume_backed_service_from_draining_machine() {
     assert_eq!(volume.machine_id, MachineId::new("machine-b"));
     assert_eq!(
         volume
-            .movement
-            .as_ref()
+            .movement()
             .map(|movement| (&movement.from_machine, &movement.to_machine)),
         Some((&MachineId::new("machine-a"), &MachineId::new("machine-b")))
     );
@@ -994,9 +996,9 @@ async fn resolve_plan_moves_volume_backed_service_from_draining_machine() {
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(service_plan.action, DeployChangeKind::Replace);
-    assert_eq!(slot_plan.action, DeployChangeKind::Replace);
-    assert_eq!(slot_plan.machine_id, MachineId::new("machine-b"));
+    assert_eq!(service_plan.action(), DeployChangeKind::Replace);
+    assert_eq!(slot_plan.action(), DeployChangeKind::Replace);
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("machine-b"));
 }
 
 #[tokio::test]
@@ -1072,7 +1074,7 @@ async fn resolve_plan_moves_draining_volume_only_to_storage_capable_target() {
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(slot_plan.machine_id, MachineId::new("machine-c"));
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("machine-c"));
 }
 
 #[tokio::test]
@@ -1105,8 +1107,7 @@ async fn resolve_plan_moves_unattached_declared_volume_from_draining_machine() {
     assert!(volume.attached_services.is_empty());
     assert_eq!(
         volume
-            .movement
-            .as_ref()
+            .movement()
             .map(|movement| (&movement.from_machine, &movement.to_machine)),
         Some((&MachineId::new("machine-a"), &MachineId::new("machine-b")))
     );
@@ -1205,8 +1206,7 @@ async fn resolve_plan_moves_draining_volume_to_existing_service_volume_pin() {
         .expect("data volume");
     assert_eq!(data.machine_id, MachineId::new("machine-c"));
     assert_eq!(
-        data.movement
-            .as_ref()
+        data.movement()
             .map(|movement| (&movement.from_machine, &movement.to_machine)),
         Some((&MachineId::new("machine-a"), &MachineId::new("machine-c")))
     );
@@ -1216,14 +1216,14 @@ async fn resolve_plan_moves_draining_volume_to_existing_service_volume_pin() {
         .find(|volume| volume.declaration.name == "wal")
         .expect("wal volume");
     assert_eq!(wal.machine_id, MachineId::new("machine-c"));
-    assert!(wal.movement.is_none());
+    assert!(wal.movement().is_none());
     let [service_plan] = plan.services() else {
         panic!("expected one service plan");
     };
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(slot_plan.machine_id, MachineId::new("machine-c"));
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("machine-c"));
 }
 
 #[tokio::test]
@@ -1328,8 +1328,7 @@ async fn resolve_plan_moves_draining_volume_to_pending_sibling_move_target() {
         .expect("data volume");
     assert_eq!(data.machine_id, MachineId::new("machine-c"));
     assert_eq!(
-        data.movement
-            .as_ref()
+        data.movement()
             .map(|movement| (&movement.from_machine, &movement.to_machine)),
         Some((&MachineId::new("machine-a"), &MachineId::new("machine-c")))
     );
@@ -1340,8 +1339,7 @@ async fn resolve_plan_moves_draining_volume_to_pending_sibling_move_target() {
         .expect("wal volume");
     assert_eq!(wal.machine_id, MachineId::new("machine-c"));
     assert_eq!(
-        wal.movement
-            .as_ref()
+        wal.movement()
             .map(|movement| (&movement.from_machine, &movement.to_machine)),
         Some((&MachineId::new("machine-d"), &MachineId::new("machine-c")))
     );
@@ -1351,7 +1349,7 @@ async fn resolve_plan_moves_draining_volume_to_pending_sibling_move_target() {
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(slot_plan.machine_id, MachineId::new("machine-c"));
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("machine-c"));
 }
 
 #[tokio::test]
@@ -1497,8 +1495,7 @@ async fn resolve_plan_moves_existing_volume_and_attached_service_to_target_machi
     assert_eq!(volume.machine_id, MachineId::new("machine-b"));
     assert_eq!(
         volume
-            .movement
-            .as_ref()
+            .movement()
             .map(|movement| (&movement.from_machine, &movement.to_machine)),
         Some((&MachineId::new("machine-a"), &MachineId::new("machine-b")))
     );
@@ -1511,9 +1508,9 @@ async fn resolve_plan_moves_existing_volume_and_attached_service_to_target_machi
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(service_plan.action, DeployChangeKind::Replace);
-    assert_eq!(slot_plan.action, DeployChangeKind::Replace);
-    assert_eq!(slot_plan.machine_id, MachineId::new("machine-b"));
+    assert_eq!(service_plan.action(), DeployChangeKind::Replace);
+    assert_eq!(slot_plan.action(), DeployChangeKind::Replace);
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("machine-b"));
 
     let preview = plan.to_preview(Vec::new());
     let [volume_move] = preview.volume_moves.as_slice() else {
@@ -1614,12 +1611,12 @@ async fn resolve_plan_treats_volume_move_to_same_machine_as_noop() {
         panic!("expected one planned volume");
     };
     assert_eq!(volume.machine_id, MachineId::new("machine-a"));
-    assert_eq!(volume.movement, None);
+    assert_eq!(volume.movement(), None);
     assert!(plan.to_preview(Vec::new()).volume_moves.is_empty());
     let [service_plan] = plan.services() else {
         panic!("expected one service plan");
     };
-    assert_eq!(service_plan.action, DeployChangeKind::Unchanged);
+    assert_eq!(service_plan.action(), DeployChangeKind::Unchanged);
 }
 
 #[tokio::test]
@@ -3006,7 +3003,7 @@ async fn apply_restarts_attached_service_before_committing_volume_quota_change()
     let [service] = quota_plan.services() else {
         panic!("expected one planned service");
     };
-    assert_eq!(service.action, crate::model::DeployChangeKind::Replace);
+    assert_eq!(service.action(), crate::model::DeployChangeKind::Replace);
 
     let second = apply_with_initial_plan(
         &store,
@@ -4188,7 +4185,7 @@ async fn resolve_plan_global_service_targets_enabled_machines_in_order() {
     let desired = resolution
         .slots
         .iter()
-        .map(|slot| (slot.slot_id.clone(), slot.machine_id.clone()))
+        .map(|slot| (slot.slot_id().clone(), slot.machine_id().clone()))
         .collect::<Vec<_>>();
 
     assert_eq!(
@@ -4240,7 +4237,7 @@ async fn resolve_plan_global_service_targets_home_and_compute_regions_only() {
     let desired = resolution
         .slots
         .iter()
-        .map(|slot| slot.machine_id.clone())
+        .map(|slot| slot.machine_id().clone())
         .collect::<Vec<_>>();
 
     assert_eq!(
@@ -4365,7 +4362,7 @@ async fn resolve_plan_allows_removal_only_when_no_new_placement_target_exists() 
         panic!("expected one removed service");
     };
     assert_eq!(removed.service, "old-api");
-    assert_eq!(removed.action, DeployChangeKind::Remove);
+    assert_eq!(removed.action(), DeployChangeKind::Remove);
     let preview = plan.to_preview(Vec::new());
     assert!(preview.baseline.is_some());
     assert!(preview.service_sources.is_empty());
@@ -4765,8 +4762,7 @@ async fn resolve_plan_includes_branch_source_preview_evidence() {
     ));
     assert_eq!(
         plan.fingerprint().services[0]
-            .branch_source
-            .as_ref()
+            .branch_source()
             .map(|source| source.source_revision_hash.as_str()),
         Some(source_revision_hash.as_str())
     );
@@ -6259,7 +6255,7 @@ async fn apply_commits_branch_lineage_when_only_source_revision_changes() {
     let [service] = plan.services() else {
         panic!("expected one service");
     };
-    assert_eq!(service.action, DeployChangeKind::Unchanged);
+    assert_eq!(service.action(), DeployChangeKind::Unchanged);
     let expected_baseline = plan.baseline();
     let controller = FakeController::default();
     let participant_client = FakeParticipantClient::new(controller.clone());
@@ -6492,8 +6488,8 @@ async fn run_phase_startup_waits_for_previous_phase_before_next_phase() {
     let [first, second] = plan.services_mut() else {
         panic!("expected two planned services");
     };
-    first.phase = Some(0);
-    second.phase = Some(1);
+    first.set_phase_for_test(0);
+    second.set_phase_for_test(1);
 
     let controller = FakeController {
         start_delay: Duration::from_millis(20),
@@ -7856,7 +7852,7 @@ async fn commit_plan_contains_removed_services() {
         .services()
         .iter()
         .find(|service| service.service == "worker")
-        .and_then(|service| service.slots.first().map(|slot| slot.slot_id.clone()))
+        .and_then(|service| service.slots.first().map(|slot| slot.slot_id().clone()))
         .expect("worker slot");
     let worker_revision_hash = manifest.services[0].revision_hash().expect("revision hash");
     let prepared = PreparedDeploy::new(
@@ -7934,7 +7930,7 @@ async fn commit_plan_contains_branch_lineage() {
         .services()
         .iter()
         .find(|service| service.service == "web")
-        .and_then(|service| service.slots.first().map(|slot| slot.slot_id.clone()))
+        .and_then(|service| service.slots.first().map(|slot| slot.slot_id().clone()))
         .expect("web slot");
     let prepared = PreparedDeploy::new(
         DeployId::new("deploy-branch"),

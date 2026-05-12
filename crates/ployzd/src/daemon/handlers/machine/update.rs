@@ -266,7 +266,7 @@ impl DaemonState {
                 return Err(update_row(
                     &MachineId::new(target.to_string()),
                     version,
-                    response.message,
+                    response.message(),
                 ));
             }
         };
@@ -392,8 +392,8 @@ async fn wait_for_remote_update(
             )
             .await
         {
-            Ok(response) if response.ok => {
-                let Some(DaemonPayload::MachineOperation(payload)) = response.payload else {
+            Ok(response) if response.is_ok() => {
+                let Some(DaemonPayload::MachineOperation(payload)) = response.payload() else {
                     last_error =
                         "remote operation response did not include machine operation payload"
                             .into();
@@ -424,7 +424,8 @@ async fn wait_for_remote_update(
             Ok(response) => {
                 last_error = format!(
                     "remote status failed [{}]: {}",
-                    response.code, response.message
+                    response.code(),
+                    response.message()
                 );
             }
             Err(error) => {
@@ -448,13 +449,14 @@ async fn verify_remote_version(
         )
         .await
         .map_err(|error| error.to_string())?;
-    if !response.ok {
+    if !response.is_ok() {
         return Err(format!(
             "remote status failed [{}]: {}",
-            response.code, response.message
+            response.code(),
+            response.message()
         ));
     }
-    let Some(DaemonPayload::Status(status)) = response.payload else {
+    let Some(DaemonPayload::Status(status)) = response.payload() else {
         return Err("remote status response did not include status payload".into());
     };
     if status.version == version {

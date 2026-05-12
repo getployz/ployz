@@ -697,7 +697,7 @@ mod tests {
             .storage_participation = StorageParticipation::Candidate;
 
         let response = state.handle_status().await;
-        let Some(DaemonPayload::Status(payload)) = response.payload else {
+        let Some(DaemonPayload::Status(payload)) = response.payload() else {
             panic!("expected status payload");
         };
         let authority = payload.local_authority.expect("local authority posture");
@@ -724,7 +724,7 @@ mod tests {
         let mut state = make_status_state(false).await;
 
         let response = state.handle_status().await;
-        let Some(DaemonPayload::Status(payload)) = response.payload else {
+        let Some(DaemonPayload::Status(payload)) = response.payload() else {
             panic!("expected status payload");
         };
 

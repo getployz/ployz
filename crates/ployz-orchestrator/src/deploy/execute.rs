@@ -2075,7 +2075,7 @@ fn ensure_volume_clone_execution_supported(
         return Ok(());
     }
     if let Some(volume) = plan.volumes().iter().find(|volume| {
-        volume.clone_source.is_some()
+        volume.clone_source().is_some()
             && matches!(volume_record_change(volume), VolumeChange::Create)
     }) {
         return Err(Error::Deploy(
@@ -2121,19 +2121,19 @@ async fn run_phase_startup_for_services(
         };
         for slot in service.slots.iter().filter(|slot| {
             matches!(
-                slot.action,
+                slot.action(),
                 DeployChangeKind::Create | DeployChangeKind::Replace
             )
         }) {
             phase_queues
                 .entry(phase)
                 .or_default()
-                .entry(slot.machine_id.clone())
+                .entry(slot.machine_id().clone())
                 .or_default()
                 .push(StartTask {
                     service: service.service.clone(),
-                    slot_id: slot.slot_id.clone(),
-                    machine_id: slot.machine_id.clone(),
+                    slot_id: slot.slot_id().clone(),
+                    machine_id: slot.machine_id().clone(),
                     instance_id: InstanceId::new(Uuid::new_v4().to_string()),
                     spec_json: spec_json.to_string(),
                     volumes_json: plan.volumes_json().to_string(),
@@ -2308,7 +2308,7 @@ async fn execute_volume_moves(
         {
             continue;
         }
-        let Some(movement) = &volume.movement else {
+        let Some(movement) = volume.movement() else {
             continue;
         };
         participants.get(&movement.from_machine)?;
@@ -2381,7 +2381,7 @@ async fn execute_volume_clones(
         .volumes()
         .iter()
         .filter(|volume| {
-            volume.clone_source.is_some()
+            volume.clone_source().is_some()
                 && matches!(volume_record_change(volume), VolumeChange::Create)
         })
         .filter(|volume| {
@@ -2415,7 +2415,7 @@ async fn execute_volume_clones(
     }
 
     for volume in clone_volumes {
-        let Some(clone_source) = &volume.clone_source else {
+        let Some(clone_source) = volume.clone_source() else {
             continue;
         };
         participants.get(&clone_source.source_machine)?;
@@ -2597,8 +2597,7 @@ async fn stop_volume_writers(
         .iter()
         .chain(
             moving_volume
-                .current
-                .as_ref()
+                .current()
                 .into_iter()
                 .flat_map(|record| record.attached_services.iter()),
         )
@@ -2679,7 +2678,7 @@ async fn stop_uncommitted_namespace_instances_before_volume_clones(
         .services()
         .iter()
         .flat_map(|service| service.slots.iter())
-        .filter_map(|slot| slot.current.as_ref())
+        .filter_map(|slot| slot.current())
         .map(|slot| slot.active_instance_id.as_str())
         .collect::<BTreeSet<_>>();
     let mut current_instances = BTreeMap::new();
@@ -2898,7 +2897,7 @@ fn changed_services(
 ) -> impl Iterator<Item = &crate::deploy::plan::PlannedService> {
     plan.services()
         .iter()
-        .filter(|service| service.action != DeployChangeKind::Unchanged)
+        .filter(|service| service.action() != DeployChangeKind::Unchanged)
 }
 
 fn remaining_changed_services(
@@ -2917,7 +2916,7 @@ fn remaining_branch_lineage_services(
 ) -> BTreeSet<String> {
     plan.services()
         .iter()
-        .filter(|service| service.branch_source.is_some())
+        .filter(|service| service.branch_source().is_some())
         .filter(|service| !checkpointed_services.contains(&service.service))
         .map(|service| service.service.clone())
         .collect()
@@ -2940,7 +2939,7 @@ fn removed_services_for_phase(
     phase_services: &BTreeSet<String>,
 ) -> Vec<String> {
     changed_services(plan)
-        .filter(|service| service.action == DeployChangeKind::Remove)
+        .filter(|service| service.action() == DeployChangeKind::Remove)
         .filter(|service| phase_services.contains(&service.service))
         .map(|service| service.service.clone())
         .collect()
@@ -2951,7 +2950,7 @@ fn removed_services_for_final_commit(
     checkpointed_services: &BTreeSet<String>,
 ) -> Vec<String> {
     changed_services(plan)
-        .filter(|service| service.action == DeployChangeKind::Remove)
+        .filter(|service| service.action() == DeployChangeKind::Remove)
         .filter(|service| !checkpointed_services.contains(&service.service))
         .map(|service| service.service.clone())
         .collect()
@@ -3132,13 +3131,11 @@ fn build_committed_volumes_for_names(
         }
 
         let created_at = planned
-            .current
-            .as_ref()
+            .current()
             .map(|record| record.created_at)
             .unwrap_or(now);
         let created_by_deploy_id = planned
-            .current
-            .as_ref()
+            .current()
             .map(|record| record.created_by_deploy_id.clone())
             .unwrap_or_else(|| deploy_id.clone());
         volumes.push(VolumeRecord {

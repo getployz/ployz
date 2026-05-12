@@ -47,10 +47,10 @@ async fn machine_list_shows_disabled_explicitly() {
         .expect("upsert disabled peer");
 
     let response = state.handle_machine_list().await;
-    assert!(response.ok);
-    assert!(!response.message.contains("LIVENESS"));
-    assert!(response.message.contains("peer-disabled"));
-    assert!(response.message.contains("disabled"));
+    assert!(response.is_ok());
+    assert!(!response.message().contains("LIVENESS"));
+    assert!(response.message().contains("peer-disabled"));
+    assert!(response.message().contains("disabled"));
 }
 
 #[tokio::test]
@@ -68,9 +68,9 @@ async fn machine_list_shows_active_lifecycle() {
         .expect("upsert active peer");
 
     let response = state.handle_machine_list().await;
-    assert!(response.ok);
-    assert!(response.message.contains("peer-active"));
-    assert!(response.message.contains("active"));
+    assert!(response.is_ok());
+    assert!(response.message().contains("peer-active"));
+    assert!(response.message().contains("active"));
 }
 
 #[tokio::test]
@@ -100,7 +100,7 @@ async fn machine_list_json_payload_contains_rows() {
         .expect("upsert compute");
 
     let response = state.handle_machine_list().await;
-    let Some(DaemonPayload::MachineList(payload)) = response.payload else {
+    let Some(DaemonPayload::MachineList(payload)) = response.payload() else {
         panic!("expected machine list payload");
     };
     assert_eq!(payload.rows.len(), 3);
@@ -179,13 +179,13 @@ async fn machine_rtt_does_not_fan_out_to_unreachable_peer() {
 
     let response = state.handle_machine_rtt().await;
 
-    assert!(response.ok);
-    let Some(DaemonPayload::MachineRtt(payload)) = response.payload else {
+    assert!(response.is_ok());
+    let Some(DaemonPayload::MachineRtt(payload)) = response.payload() else {
         panic!("expected machine rtt payload");
     };
     assert!(payload.rows.is_empty());
     assert!(payload.warnings.is_empty());
-    assert_eq!(response.message, "no rtt samples");
+    assert_eq!(response.message(), "no rtt samples");
 
     teardown_state(&mut state).await;
 }
@@ -234,14 +234,12 @@ async fn machine_add_activates_joiner_lifecycle() {
         "PLOYZ_TEST_LOCAL_PLOYZCTL",
         Some(fake_ssh.clone().into_os_string()),
     );
-    let self_record_response = serde_json::to_string(&DaemonResponse {
-        ok: true,
-        code: "OK".into(),
-        message: "self-record".into(),
-        payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
+    let self_record_response = serde_json::to_string(&DaemonResponse::success(
+        "self-record",
+        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
             record: joiner_record.clone(),
         })),
-    })
+    ))
     .expect("encode self-record response");
     let _join_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_SELF_RECORD_RESPONSE",
@@ -254,15 +252,15 @@ async fn machine_add_activates_joiner_lifecycle() {
     let _ready_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_READY_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":true,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":true,\"workload_subnet_present\":true}}".into(),
+            "{\"status\":\"success\",\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":true,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":true,\"workload_subnet_present\":true}}".into(),
         ),
     );
 
     let response = state
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
-    assert!(response.ok, "{}", response.message);
-    assert!(response.message.contains("awaiting_self_publication: 1"));
+    assert!(response.is_ok(), "{}", response.message());
+    assert!(response.message().contains("awaiting_self_publication: 1"));
 
     let joiner = store
         .list_machines()
@@ -324,14 +322,12 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
         "PLOYZ_TEST_LOCAL_PLOYZCTL",
         Some(fake_ssh.clone().into_os_string()),
     );
-    let self_record_response = serde_json::to_string(&DaemonResponse {
-        ok: true,
-        code: "OK".into(),
-        message: "self-record".into(),
-        payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
+    let self_record_response = serde_json::to_string(&DaemonResponse::success(
+        "self-record",
+        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
             record: joiner_record.clone(),
         })),
-    })
+    ))
     .expect("encode self-record response");
     let _join_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_SELF_RECORD_RESPONSE",
@@ -344,19 +340,19 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
     let _ready_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_READY_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":false,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":false,\"workload_subnet_present\":true}}".into(),
+            "{\"status\":\"success\",\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":false,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":false,\"workload_subnet_present\":true}}".into(),
         ),
     );
 
     let response = state
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
-    assert!(!response.ok, "{}", response.message);
-    assert_eq!(response.code, "MACHINE_ADD_FAILED");
-    assert!(response.message.contains("failed_ready: 1"));
+    assert!(!response.is_ok(), "{}", response.message());
+    assert_eq!(response.code(), "MACHINE_ADD_FAILED");
+    assert!(response.message().contains("failed_ready: 1"));
     assert!(
         response
-            .message
+            .message()
             .contains("timed out waiting for remote mesh readiness")
     );
 
@@ -386,9 +382,9 @@ async fn machine_add_releases_reserved_subnet_when_operation_start_fails() {
     let response = state
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
-    assert!(!response.ok);
-    assert_eq!(response.code, "MACHINE_ADD_FAILED");
-    assert!(response.message.contains("create machine operations dir"));
+    assert!(!response.is_ok());
+    assert_eq!(response.code(), "MACHINE_ADD_FAILED");
+    assert!(response.message().contains("create machine operations dir"));
 
     let invites = store.list_invites().await.expect("list invites");
     assert_eq!(invites.len(), 1);
@@ -442,9 +438,9 @@ async fn machine_remove_refuses_offline_peer_without_force() {
         .expect("upsert peer");
 
     let response = state.handle_machine_remove("peer-1", false).await;
-    assert!(!response.ok);
-    assert_eq!(response.code, "MACHINE_REMOVE_PEER_UNREACHABLE");
-    assert!(response.message.contains("--force"));
+    assert!(!response.is_ok());
+    assert_eq!(response.code(), "MACHINE_REMOVE_PEER_UNREACHABLE");
+    assert!(response.message().contains("--force"));
 
     let machines = store.list_machines().await.expect("list machines");
     let peer = machines
@@ -472,7 +468,7 @@ async fn machine_remove_force_deletes_membership_record() {
         .expect("upsert peer");
 
     let response = state.handle_machine_remove("peer-1", true).await;
-    assert!(response.ok, "{}", response.message);
+    assert!(response.is_ok(), "{}", response.message());
 
     let machines = store.list_machines().await.expect("list machines");
     assert!(
@@ -547,7 +543,7 @@ async fn machine_drain_local_target_uses_local_transition() {
     mark_local_machine_active(&mut state).await;
 
     let response = state.handle_machine_drain("founder").await;
-    assert!(response.ok, "{}", response.message);
+    assert!(response.is_ok(), "{}", response.message());
 
     let local = store
         .list_machines()
@@ -675,14 +671,14 @@ async fn machine_transition_self_surfaces_actionable_invalid_transition() {
         .handle_machine_transition_self(MachineSelfTransition::Standby { force: false })
         .await;
 
-    assert!(!response.ok);
-    assert_eq!(response.code, "INVALID_TRANSITION");
+    assert!(!response.is_ok());
+    assert_eq!(response.code(), "INVALID_TRANSITION");
     assert!(
         response
-            .message
+            .message()
             .contains("machine must be draining before standby")
     );
-    assert!(response.message.contains("--force"));
+    assert!(response.message().contains("--force"));
 
     let local = store
         .list_machines()
@@ -724,10 +720,10 @@ async fn mesh_start_reactivates_local_machine_after_stop() {
     assert!(standby.is_ok(), "{standby:?}");
 
     let down = state.handle_mesh_stop(true).await;
-    assert!(down.ok, "{}", down.message);
+    assert!(down.is_ok(), "{}", down.message());
 
     let up = state.handle_mesh_start("alpha").await;
-    assert!(up.ok, "{}", up.message);
+    assert!(up.is_ok(), "{}", up.message());
 
     let local = state
         .active
@@ -757,8 +753,8 @@ async fn mesh_stop_restores_local_record_when_destroy_fails() {
     network.set_fail_down(true);
 
     let response = state.handle_mesh_stop(true).await;
-    assert!(!response.ok);
-    assert_eq!(response.code, "NETWORK_STOP_FAILED");
+    assert!(!response.is_ok());
+    assert_eq!(response.code(), "NETWORK_STOP_FAILED");
     assert!(state.active.is_some(), "active mesh should be restored");
 
     let local = store
@@ -785,11 +781,11 @@ async fn mesh_stop_persists_stopped_lifecycle_before_gateway_shutdown_failure() 
 
     let response = state.handle_mesh_stop(true).await;
 
-    assert!(!response.ok);
-    assert_eq!(response.code, "NETWORK_STOP_FAILED");
+    assert!(!response.is_ok());
+    assert_eq!(response.code(), "NETWORK_STOP_FAILED");
     assert!(
         response
-            .message
+            .message()
             .contains("injected gateway shutdown failure")
     );
     assert!(
@@ -825,8 +821,8 @@ async fn machine_add_releases_reserved_subnet_when_remote_bootstrap_fails() {
     let response = state
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
-    assert!(!response.ok, "{}", response.message);
-    assert_eq!(response.code, "MACHINE_ADD_FAILED");
+    assert!(!response.is_ok(), "{}", response.message());
+    assert_eq!(response.code(), "MACHINE_ADD_FAILED");
 }
 
 #[tokio::test]
@@ -852,14 +848,12 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
         "PLOYZ_TEST_LOCAL_PLOYZCTL",
         Some(fake_ssh.clone().into_os_string()),
     );
-    let self_record_response = serde_json::to_string(&DaemonResponse {
-        ok: true,
-        code: "OK".into(),
-        message: "self-record".into(),
-        payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
+    let self_record_response = serde_json::to_string(&DaemonResponse::success(
+        "self-record",
+        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
             record: joiner_record.clone(),
         })),
-    })
+    ))
     .expect("encode self-record response");
     let _join_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_SELF_RECORD_RESPONSE",
@@ -873,9 +867,9 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
     let response = state
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
-    assert!(!response.ok, "{}", response.message);
-    assert_eq!(response.code, "MACHINE_ADD_FAILED");
-    assert!(response.message.contains("founder reserved"));
+    assert!(!response.is_ok(), "{}", response.message());
+    assert_eq!(response.code(), "MACHINE_ADD_FAILED");
+    assert!(response.message().contains("founder reserved"));
 
     let invites = store.list_invites().await.expect("list invites");
     assert_eq!(invites.len(), 1);
@@ -921,14 +915,12 @@ async fn machine_add_rejects_remote_authority_posture_before_invite_consume() {
         "PLOYZ_TEST_LOCAL_PLOYZCTL",
         Some(fake_ssh.clone().into_os_string()),
     );
-    let self_record_response = serde_json::to_string(&DaemonResponse {
-        ok: true,
-        code: "OK".into(),
-        message: "self-record".into(),
-        payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
+    let self_record_response = serde_json::to_string(&DaemonResponse::success(
+        "self-record",
+        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
             record: joiner_record.clone(),
         })),
-    })
+    ))
     .expect("encode self-record response");
     let _join_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_SELF_RECORD_RESPONSE",
@@ -942,9 +934,9 @@ async fn machine_add_rejects_remote_authority_posture_before_invite_consume() {
     let response = state
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
-    assert!(!response.ok, "{}", response.message);
-    assert_eq!(response.code, "MACHINE_ADD_FAILED");
-    assert!(response.message.contains("reported authority storage"));
+    assert!(!response.is_ok(), "{}", response.message());
+    assert_eq!(response.code(), "MACHINE_ADD_FAILED");
+    assert!(response.message().contains("reported authority storage"));
 
     let invites = store.list_invites().await.expect("list invites");
     assert_eq!(invites.len(), 1);
@@ -1010,8 +1002,8 @@ async fn machine_storage_promote_marks_active_candidates_as_authority_storage() 
         )
         .await;
 
-    assert!(response.ok, "{}", response.message);
-    let Some(DaemonPayload::MachineStoragePromotion(payload)) = response.payload else {
+    assert!(response.is_ok(), "{}", response.message());
+    let Some(DaemonPayload::MachineStoragePromotion(payload)) = response.payload() else {
         panic!("expected storage promotion payload");
     };
     assert_eq!(payload.replicas, StorageReplicaPolicy::R3);
@@ -1070,9 +1062,9 @@ async fn machine_storage_promote_rejects_wrong_final_authority_count() {
         )
         .await;
 
-    assert!(!response.ok, "{}", response.message);
-    assert_eq!(response.code, "MACHINE_STORAGE_PROMOTION_FAILED");
-    assert!(response.message.contains("requires exactly 3 active"));
+    assert!(!response.is_ok(), "{}", response.message());
+    assert_eq!(response.code(), "MACHINE_STORAGE_PROMOTION_FAILED");
+    assert!(response.message().contains("requires exactly 3 active"));
     let machines = store.list_machines().await.expect("list machines");
     let promoted = machines
         .iter()
@@ -1119,9 +1111,9 @@ async fn machine_storage_promote_rejects_duplicate_targets_without_changing_inte
         )
         .await;
 
-    assert!(!response.ok, "{}", response.message);
-    assert_eq!(response.code, "MACHINE_STORAGE_PROMOTION_FAILED");
-    let Some(DaemonPayload::MachineStoragePromotion(payload)) = response.payload else {
+    assert!(!response.is_ok(), "{}", response.message());
+    assert_eq!(response.code(), "MACHINE_STORAGE_PROMOTION_FAILED");
+    let Some(DaemonPayload::MachineStoragePromotion(payload)) = response.payload() else {
         panic!("expected storage promotion payload");
     };
     assert_eq!(payload.promoted, Vec::<String>::new());
@@ -1198,9 +1190,9 @@ async fn machine_storage_promote_rejects_invalid_targets_without_changing_intent
         )
         .await;
 
-    assert!(!response.ok, "{}", response.message);
-    assert_eq!(response.code, "MACHINE_STORAGE_PROMOTION_FAILED");
-    let Some(DaemonPayload::MachineStoragePromotion(payload)) = response.payload else {
+    assert!(!response.is_ok(), "{}", response.message());
+    assert_eq!(response.code(), "MACHINE_STORAGE_PROMOTION_FAILED");
+    let Some(DaemonPayload::MachineStoragePromotion(payload)) = response.payload() else {
         panic!("expected storage promotion payload");
     };
     assert_eq!(payload.promoted, Vec::<String>::new());
@@ -1291,7 +1283,7 @@ async fn machine_storage_promote_self_persists_config_bootstrap_peers_and_self_r
         .handle_machine_storage_promote_self(StorageReplicaPolicy::R3, &authority_peers)
         .await;
 
-    assert!(response.ok, "{}", response.message);
+    assert!(response.is_ok(), "{}", response.message());
     let config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
         .expect("load promoted config");
     assert!(config.storage);
@@ -1352,8 +1344,8 @@ async fn machine_storage_promote_self_rejects_malformed_bootstrap_peers_before_c
         .handle_machine_storage_promote_self(StorageReplicaPolicy::R3, &authority_peers)
         .await;
 
-    assert!(!response.ok);
-    assert_eq!(response.code, "IO_ERROR");
+    assert!(!response.is_ok());
+    assert_eq!(response.code(), "IO_ERROR");
     let restored = NetworkConfig::load(&config_path).expect("load config after failure");
     assert!(!restored.storage);
     assert_eq!(
@@ -1389,8 +1381,8 @@ async fn machine_storage_promote_self_rejects_invalid_authority_peer_payload_bef
         .handle_machine_storage_promote_self(StorageReplicaPolicy::R3, &authority_peers)
         .await;
 
-    assert!(!response.ok);
-    assert_eq!(response.code, "INVALID_AUTHORITY_PEERS");
+    assert!(!response.is_ok());
+    assert_eq!(response.code(), "INVALID_AUTHORITY_PEERS");
     let restored = NetworkConfig::load(&config_path).expect("load config after failure");
     assert!(!restored.storage);
     assert_eq!(
@@ -1453,8 +1445,8 @@ async fn machine_storage_promote_self_rejects_authority_peers_that_do_not_match_
         .handle_machine_storage_promote_self(StorageReplicaPolicy::R3, &authority_peers)
         .await;
 
-    assert!(!response.ok);
-    assert_eq!(response.code, "INVALID_AUTHORITY_PEERS");
+    assert!(!response.is_ok());
+    assert_eq!(response.code(), "INVALID_AUTHORITY_PEERS");
     let restored = NetworkConfig::load(&config_path).expect("load config after failure");
     assert_eq!(
         restored.storage_participation,
@@ -1508,7 +1500,7 @@ async fn machine_storage_promote_self_accepts_unsynced_nonlocal_authority_peers(
         .handle_machine_storage_promote_self(StorageReplicaPolicy::R3, &authority_peers)
         .await;
 
-    assert!(response.ok, "{}", response.message);
+    assert!(response.is_ok(), "{}", response.message());
     let peers = load_bootstrap_peer_records(&state.network_dir("alpha"))
         .expect("load bootstrap peers after self promotion");
     let peer_ids = peers
@@ -1545,7 +1537,7 @@ async fn machine_storage_restore_self_restores_config_bootstrap_peers_and_self_r
         )
         .await;
 
-    assert!(response.ok, "{}", response.message);
+    assert!(response.is_ok(), "{}", response.message());
     let restored_config = NetworkConfig::load(&config_path).expect("load restored config");
     assert_eq!(
         restored_config.storage_participation,
@@ -1978,11 +1970,9 @@ fn unique_temp_dir(label: &str) -> PathBuf {
 }
 
 fn status_response_for_record(record: &MachineMembership) -> String {
-    serde_json::to_string(&DaemonResponse {
-        ok: true,
-        code: "OK".into(),
-        message: "status".into(),
-        payload: Some(DaemonPayload::Status(StatusPayload {
+    serde_json::to_string(&DaemonResponse::success(
+        "status",
+        Some(DaemonPayload::Status(StatusPayload {
             machine_id: record.id.as_str().to_string(),
             public_key: record.public_key.clone(),
             version: "test-version".into(),
@@ -1996,7 +1986,7 @@ fn status_response_for_record(record: &MachineMembership) -> String {
             nats_assets: Vec::new(),
             control_plane: Vec::new(),
         })),
-    })
+    ))
     .expect("encode status response")
 }
 
@@ -2004,7 +1994,7 @@ fn write_fake_ssh(dir: &Path) -> PathBuf {
     let script = dir.join("ssh");
     std::fs::write(
         &script,
-        "#!/bin/sh\nprev=''\nfor arg in \"$@\"; do\n  target=\"$prev\"\n  command=\"$arg\"\n  prev=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployzctl\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"Status\"'*)\n      printf '%s' \"$PLOYZ_TEST_STATUS_RESPONSE\"\n      ;;\n    *'\"MeshBootstrap\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"bootstrapped\",\"payload\":null}'\n      ;;\n    *'\"MeshJoin\"'*)\n      printf '{\"ok\":false,\"code\":\"UNSUPPORTED\",\"message\":\"unsupported\",\"payload\":null}'\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"init\",\"payload\":null}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"destroyed\",\"payload\":null}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"down\",\"payload\":null}'\n      ;;\n    *'\"MeshSelfRecord\"'*)\n      printf '%s' \"$PLOYZ_TEST_SELF_RECORD_RESPONSE\"\n      ;;\n    *'\"MeshReady\"'*)\n      printf '%s' \"$PLOYZ_TEST_READY_RESPONSE\"\n      ;;\n    *)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ok\",\"payload\":null}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployzctl test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    case \",$PLOYZ_TEST_STATUS_FAIL_TARGETS,\" in\n      *\",$target,\"*) exit 1 ;;\n      *) exit 0 ;;\n    esac\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
+        "#!/bin/sh\nprev=''\nfor arg in \"$@\"; do\n  target=\"$prev\"\n  command=\"$arg\"\n  prev=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployzctl\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"Status\"'*)\n      printf '%s' \"$PLOYZ_TEST_STATUS_RESPONSE\"\n      ;;\n    *'\"MeshBootstrap\"'*)\n      printf '{\"status\":\"success\",\"code\":\"OK\",\"message\":\"bootstrapped\"}'\n      ;;\n    *'\"MeshJoin\"'*)\n      printf '{\"status\":\"error\",\"code\":\"UNSUPPORTED\",\"message\":\"unsupported\"}'\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"status\":\"success\",\"code\":\"OK\",\"message\":\"init\"}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"status\":\"success\",\"code\":\"OK\",\"message\":\"destroyed\"}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"status\":\"success\",\"code\":\"OK\",\"message\":\"down\"}'\n      ;;\n    *'\"MeshSelfRecord\"'*)\n      printf '%s' \"$PLOYZ_TEST_SELF_RECORD_RESPONSE\"\n      ;;\n    *'\"MeshReady\"'*)\n      printf '%s' \"$PLOYZ_TEST_READY_RESPONSE\"\n      ;;\n    *)\n      printf '{\"status\":\"success\",\"code\":\"OK\",\"message\":\"ok\"}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployzctl test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    case \",$PLOYZ_TEST_STATUS_FAIL_TARGETS,\" in\n      *\",$target,\"*) exit 1 ;;\n      *) exit 0 ;;\n    esac\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
     )
     .expect("write fake ssh");
 

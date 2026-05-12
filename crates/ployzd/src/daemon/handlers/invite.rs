@@ -252,8 +252,8 @@ mod tests {
 
         let response = state.handle_machine_invite_list().await;
 
-        assert!(response.ok, "invite list should succeed");
-        let Some(DaemonPayload::MachineInviteList(payload)) = response.payload else {
+        assert!(response.is_ok(), "invite list should succeed");
+        let Some(DaemonPayload::MachineInviteList(payload)) = response.payload() else {
             panic!("invite list should include structured payload");
         };
         assert_eq!(

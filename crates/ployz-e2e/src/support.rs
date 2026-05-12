@@ -48,12 +48,42 @@ struct ReadyEnvelope {
     message: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub(crate) struct DaemonJsonResponse {
     pub(crate) ok: bool,
     pub(crate) code: String,
     pub(crate) message: String,
     pub(crate) payload: Option<DaemonJsonPayload>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum DaemonJsonStatus {
+    Success,
+    Error,
+}
+
+#[derive(Debug, Deserialize)]
+struct DaemonJsonResponseWire {
+    status: DaemonJsonStatus,
+    code: String,
+    message: String,
+    payload: Option<DaemonJsonPayload>,
+}
+
+impl<'de> Deserialize<'de> for DaemonJsonResponse {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = DaemonJsonResponseWire::deserialize(deserializer)?;
+        Ok(Self {
+            ok: matches!(wire.status, DaemonJsonStatus::Success),
+            code: wire.code,
+            message: wire.message,
+            payload: wire.payload,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]

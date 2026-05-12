@@ -21,7 +21,7 @@ impl DaemonState {
             return self.err("NO_ACTIVE_MESH", "image inspect requires a running mesh");
         };
         if let Err(error) = inspect_target_machine(&self.identity.machine_id, request) {
-            return self.err(error.code, error.message);
+            return self.err(&error.code, error.message);
         }
 
         self.handle_image_inspect_with_backend(request, self.runtime_image_backend().await)
@@ -38,7 +38,7 @@ impl DaemonState {
         };
         let target_machine = match inspect_target_machine(&self.identity.machine_id, request) {
             Ok(machine_id) => machine_id,
-            Err(error) => return self.err(error.code, error.message),
+            Err(error) => return self.err(&error.code, error.message),
         };
         let reference = image_inspect_reference(request);
         let operation_store = self.image_operation_store();
@@ -553,12 +553,12 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "response: {response:?}");
-        let Some(DaemonPayload::ImageInspect(payload)) = response.payload else {
+        assert!(response.is_ok(), "response: {response:?}");
+        let Some(DaemonPayload::ImageInspect(payload)) = response.payload() else {
             panic!("expected image inspect payload");
         };
         assert!(!payload.operation_id.is_empty());
-        assert!(response.message.contains(&payload.operation_id));
+        assert!(response.message().contains(&payload.operation_id));
         assert_eq!(payload.records.len(), 1);
         assert_eq!(payload.records[0].machine_id, MachineId::new("founder"));
         assert_eq!(payload.records[0].digest, inspected_digest);
@@ -603,8 +603,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_INSPECT_REMOTE_UNSUPPORTED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_INSPECT_REMOTE_UNSUPPORTED");
         assert!(
             store
                 .list_image_availability()
@@ -639,7 +639,10 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "missing image should be an absent observation");
+        assert!(
+            response.is_ok(),
+            "missing image should be an absent observation"
+        );
         assert_eq!(
             inspected_references
                 .lock()
@@ -664,12 +667,12 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_INSPECT_FAILED");
-        let Some(DaemonPayload::ImageInspect(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_INSPECT_FAILED");
+        let Some(DaemonPayload::ImageInspect(payload)) = response.payload() else {
             panic!("expected image inspect payload");
         };
-        assert!(response.message.contains(&payload.operation_id));
+        assert!(response.message().contains(&payload.operation_id));
         let stored = store
             .get_image_availability(&MachineId::new("founder"), &inspected_digest)
             .await

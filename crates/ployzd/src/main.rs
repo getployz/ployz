@@ -141,7 +141,7 @@ async fn run() -> Result<i32> {
             let response = request_daemon(&transport, &socket, request).await?;
 
             render_response(cli.json, cli.plain, cli.quiet, &response)?;
-            if response.ok { Ok(0) } else { Ok(1) }
+            if response.is_ok() { Ok(0) } else { Ok(1) }
         }
     }
 }

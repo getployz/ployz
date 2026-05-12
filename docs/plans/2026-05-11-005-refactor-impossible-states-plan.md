@@ -1,7 +1,7 @@
 ---
 title: "refactor: Make invalid states unrepresentable"
 type: refactor
-status: active
+status: completed
 date: 2026-05-11
 deepened: 2026-05-11
 ---

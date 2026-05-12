@@ -284,10 +284,12 @@ impl DaemonState {
                 )
                 .await;
             match response {
-                Ok(response) if response.ok => prepared.push(peer.clone()),
+                Ok(response) if response.is_ok() => prepared.push(peer.clone()),
                 Ok(response) => failures.push(format!(
                     "{} rejected prepare [{}]: {}",
-                    peer.id, response.code, response.message
+                    peer.id,
+                    response.code(),
+                    response.message()
                 )),
                 Err(error) => failures.push(format!("{} unreachable: {error}", peer.id)),
             }

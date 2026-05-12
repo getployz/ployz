@@ -107,7 +107,7 @@ fn hostname_owners_for_plan(plan: &ResolvedPlan) -> Result<Vec<HostnameOwner>> {
     let mut owners = Vec::new();
     let mut seen: Vec<HostnameOwner> = Vec::new();
     for service in plan.services() {
-        let Some(spec) = &service.spec else {
+        let Some(spec) = service.spec() else {
             continue;
         };
         for hostname in hostnames_for_spec(spec) {
