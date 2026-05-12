@@ -1,50 +1,81 @@
 ---
-title: Ployz Open Core
-description: Documentation for the Ployz CLI, daemon, and self-hosted runtime.
-template: splash
-hero:
-  title: Run small clusters with explicit commands.
-  tagline: "Ployz turns infrastructure work into foreground operations: add machines, deploy workloads, move state, branch environments, promote, roll back, and verify what happened."
-  image:
-    file: ../../assets/operator-loop.svg
-  actions:
-    - text: Start here
-      link: /start/overview/
-      icon: right-arrow
-    - text: Current commands
-      link: /commands/current/
-      variant: secondary
+title: "Ployz: cluster orchestration built on explicit primitives"
+description: "Ployz is a primitive orchestration core for small clusters. Deploy, migrate, branch, and roll back with single commands that complete or fail clearly."
 llms:
-  summary: Product entrypoint and scope boundary.
+  summary: "Ployz is a primitive orchestration core for small clusters. Deploy, migrate, branch, and roll back with single commands that complete or fail clearly."
 ---
+Ployz turns cluster operations into explicit, atomic commands. Instead of writing manifests and waiting for reconcilers, you run `ployzctl deploy`, `ployzctl branch`, or `ployzctl migrate` — each command completes or fails cleanly, every time. Ployz targets clusters in the 1–200 node range: small enough to reason about end-to-end, large enough to matter.
 
-Ployz is the open-core orchestration core for small clusters. These docs cover
-`ployzctl`, `ployzd`, local development, agents, and self-hosted machines.
+### [Quickstart](/quickstart)
 
-Ployz Cloud has separate docs. Dashboard workflows, billing, teams, hosted
-machine pools, and managed web UI behavior stay out of this site.
+  Go from a fresh machine to a running cluster in under five minutes.
 
-## The docs shape
+### [Installation](/installation)
 
-<div class="operator-grid">
+  Install ployzctl and the daemon on Linux or macOS.
 
-- **Get Started**  
-  Install the daemon runtime, inspect the local surface, and run a first safe
-  operation.
+### [Core Concepts](/concepts/primitives)
 
-- **Concepts**  
-  Understand the operator loop, state model, daemon boundary, NATS, and ZFS.
+  Understand what makes Ployz different from Kubernetes and other orchestrators.
 
-- **Commands**  
-  Separate current executable commands from north-star primitive names.
+### [CLI Reference](/cli/overview)
 
-- **Guides**  
-  Task-shaped operator recipes with verification and recovery paths.
+  Every ployzctl command, flag, and option, documented with examples.
 
-- **Security**  
-  Make trust boundaries and store authority explicit.
+## What Ployz does
 
-- **Agents**  
-  Use Ployz from coding agents without guessing from display text.
+Ployz gives you a small set of strong operations — primitives — that compose into any workflow you need. There are no controllers, no autoscalers, and no background reconcilers silently rewriting cluster state.
 
-</div>
+### [Machine operations](/operations/machines)
+
+  Add and remove machines. Drain workloads before removal.
+
+### [Deploy](/operations/deploy)
+
+  Deploy workloads from a manifest or inline flags. Preview before applying.
+
+### [Branch & promote](/operations/branch-and-promote)
+
+  Fork an environment atomically for a PR, then promote it to production.
+
+### [Migrate](/operations/migrate)
+
+  Move a workload and its persistent state to a different machine.
+
+## How it works
+
+### Install ployz
+
+  Run the one-line installer to get `ployzctl` and the `ployzd` daemon on your machine.
+
+  ```bash
+  curl -fsSL https://ployz.sh | bash -s -- install
+  ```
+
+### Create a cluster network
+
+  Initialize a WireGuard mesh network that your machines will join.
+
+  ```bash
+  ployzctl mesh init my-cluster
+  ```
+
+### Add machines
+
+  Provision additional machines into your cluster with a single command.
+
+  ```bash
+  ployzctl machine add --network my-cluster user@192.168.1.10
+  ```
+
+### Deploy your first workload
+
+  Deploy a container image to your cluster.
+
+  ```bash
+  ployzctl deploy -f deploy.toml
+  ```
+
+:::note
+Ployz runs on Linux and macOS. On macOS, the daemon uses the Docker runtime (Docker Desktop or OrbStack required). On Linux, you can use either the Docker or host runtime.
+:::

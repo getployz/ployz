@@ -2,13 +2,10 @@ import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 
 export default defineConfig({
+  site: "https://docs.ployz.org",
   integrations: [
     starlight({
       title: "Ployz",
-      logo: {
-        src: "./public/assets/operator-loop.svg",
-        alt: "Ployz operator loop",
-      },
       customCss: ["./src/styles/custom.css"],
       pagefind: false,
       social: [
@@ -22,65 +19,60 @@ export default defineConfig({
         {
           label: "Get Started",
           items: [
-            { label: "Overview", slug: "start/overview" },
-            { label: "Install", slug: "start/install" },
-            { label: "Daemon Runtime", slug: "start/daemon-runtime" },
-            { label: "First Operation", slug: "start/first-operation" },
+            { label: "Introduction", slug: "introduction" },
+            { label: "Quickstart", slug: "quickstart" },
+            { label: "Installation", slug: "installation" },
           ],
         },
         {
-          label: "Concepts",
+          label: "Core Concepts",
           items: [
-            { label: "Operator Loop", slug: "concepts/operator-loop" },
-            { label: "Primitives, Not Policies", slug: "concepts/primitives-not-policies" },
-            { label: "State Model", slug: "concepts/state-model" },
-            { label: "Daemon and Data Plane", slug: "concepts/daemon-data-plane" },
-            { label: "ZFS Storage", slug: "concepts/zfs-storage" },
+            { label: "Primitives, Not Policies", slug: "concepts/primitives" },
+            { label: "Cluster Model", slug: "concepts/cluster-model" },
+            { label: "Data Plane", slug: "concepts/data-plane" },
+            { label: "Storage", slug: "concepts/storage" },
           ],
         },
         {
-          label: "Commands",
+          label: "Operations",
           items: [
-            { label: "Command Model", slug: "commands/overview" },
+            { label: "Machines", slug: "operations/machines" },
+            { label: "Deploy", slug: "operations/deploy" },
+            { label: "Branch and Promote", slug: "operations/branch-and-promote" },
+            { label: "Migrate", slug: "operations/migrate" },
+            { label: "Rollback", slug: "operations/rollback" },
+          ],
+        },
+        {
+          label: "Configuration",
+          items: [
+            { label: "Daemon", slug: "configuration/daemon" },
+            { label: "Networking", slug: "configuration/networking" },
+            { label: "Runtimes", slug: "configuration/runtimes" },
+          ],
+        },
+        {
+          label: "Architecture",
+          items: [
+            { label: "Overview", slug: "architecture/overview" },
+            { label: "Coordination", slug: "architecture/coordination" },
+            { label: "Routing", slug: "architecture/routing" },
+          ],
+        },
+        {
+          label: "CLI Reference",
+          items: [
             { label: "Current Commands", slug: "commands/current" },
-            { label: "North-Star Primitives", slug: "commands/north-star" },
+            { label: "Overview", slug: "cli/overview" },
+            { label: "Machine", slug: "cli/machine" },
+            { label: "Deploy", slug: "cli/deploy" },
+            { label: "Branch", slug: "cli/branch" },
+            { label: "Migrate", slug: "cli/migrate" },
+            { label: "Mesh", slug: "cli/mesh" },
+            { label: "Image", slug: "cli/image" },
+            { label: "Build", slug: "cli/build" },
           ],
-        },
-        {
-          label: "Guides",
-          items: [
-            { label: "Guide Index", slug: "guides/overview" },
-            { label: "Deploy a Service", slug: "guides/deploy-service" },
-            { label: "Add a Machine", slug: "guides/add-machine" },
-            { label: "Move a Workload", slug: "guides/move-workload" },
-            { label: "Branch an Environment", slug: "guides/branch-environment" },
-            { label: "Promote and Roll Back", slug: "guides/promote-rollback" },
-          ],
-        },
-        {
-          label: "Security",
-          items: [
-            { label: "Trust Model", slug: "security/trust-model" },
-            { label: "Store Secrets", slug: "security/store-secrets" },
-          ],
-        },
-        {
-          label: "Agents",
-          items: [
-            { label: "Agent Contract", slug: "agents/contract" },
-            { label: "Operation Loop", slug: "agents/operation-loop" },
-            { label: "LLM Resources", slug: "agents/llm-resources" },
-          ],
-        },
-        {
-          label: "Reference",
-          items: [
-            { label: "Reference Index", slug: "reference/overview" },
-            { label: "Runtime Modes", slug: "reference/runtime-modes" },
-            { label: "Config and Paths", slug: "reference/config" },
-            { label: "Repo Sources", slug: "reference/repo-sources" },
-          ],
-        },
+        }
       ],
     }),
   ],

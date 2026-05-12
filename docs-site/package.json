@@ -6,14 +6,21 @@
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",
-    "preview": "astro preview"
+    "preview": "npm run build && wrangler dev",
+    "generate-types": "wrangler types",
+    "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
+    "@astrojs/cloudflare": "^13.5.0",
     "@astrojs/starlight": "^0.39.2",
     "astro": "^6.3.1",
     "sharp": "^0.34.5"
   },
   "devDependencies": {
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "wrangler": "^4.90.0"
+  },
+  "overrides": {
+    "vite": "^7"
   }
 }
