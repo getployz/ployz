@@ -1469,6 +1469,11 @@ impl MachineMembership {
         subnet: Option<Ipv4Net>,
         endpoints: Vec<String>,
     ) -> Self {
+        let lifecycle = if subnet.is_some() {
+            MachineLifecycle::Active
+        } else {
+            MachineLifecycle::Standby
+        };
         Self {
             id,
             public_key,
@@ -1478,7 +1483,7 @@ impl MachineMembership {
             subnet,
             bridge_ip: None,
             endpoints,
-            lifecycle: MachineLifecycle::Standby,
+            lifecycle,
             storage_role: MachineStorageRole::Candidate,
             created_at: 0,
             updated_at: 0,
