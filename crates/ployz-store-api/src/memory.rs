@@ -1818,7 +1818,7 @@ mod tests {
         store
             .mark_branch_environment_applying(
                 &Namespace::new("pr-39"),
-                &DeployId("prepare-a".into()),
+                &DeployId::new("prepare-a"),
                 9,
             )
             .await
@@ -1826,8 +1826,8 @@ mod tests {
         store
             .mark_branch_environment_active(
                 &Namespace::new("pr-39"),
-                &DeployId("prepare-a".into()),
-                &DeployId("deploy-a".into()),
+                &DeployId::new("prepare-a"),
+                &DeployId::new("deploy-a"),
                 10,
             )
             .await
@@ -1835,7 +1835,7 @@ mod tests {
 
         let mut record_a_updated = record_a.clone();
         record_a_updated.state = BranchEnvironmentState::Active;
-        record_a_updated.applied_deploy_id = Some(DeployId("deploy-a".into()));
+        record_a_updated.applied_deploy_id = Some(DeployId::new("deploy-a"));
         record_a_updated.updated_at = 10;
 
         assert_eq!(
@@ -1879,13 +1879,13 @@ mod tests {
                 .expect("get branch environment")
                 .expect("branch environment exists")
                 .prepared_deploy_id,
-            Some(DeployId("prepare-b".into()))
+            Some(DeployId::new("prepare-b"))
         );
 
         store
             .mark_branch_environment_applying(
                 &Namespace::new("pr-39"),
-                &DeployId("prepare-b".into()),
+                &DeployId::new("prepare-b"),
                 19,
             )
             .await
@@ -1893,7 +1893,7 @@ mod tests {
         store
             .mark_branch_environment_failed(
                 &Namespace::new("pr-39"),
-                &DeployId("prepare-b".into()),
+                &DeployId::new("prepare-b"),
                 &BranchEnvironmentFailure {
                     code: "DEPLOY_APPLY_PREPARED_FAILED".into(),
                     message: "transient failure".into(),
@@ -1913,10 +1913,7 @@ mod tests {
             .expect("get branch environment")
             .expect("branch environment exists");
         assert_eq!(stored.state, BranchEnvironmentState::Prepared);
-        assert_eq!(
-            stored.prepared_deploy_id,
-            Some(DeployId("prepare-c".into()))
-        );
+        assert_eq!(stored.prepared_deploy_id, Some(DeployId::new("prepare-c")));
         assert_eq!(stored.failure, None);
     }
 
@@ -1935,7 +1932,7 @@ mod tests {
         store
             .mark_branch_environment_applying(
                 &Namespace::new("pr-39"),
-                &DeployId("prepare-a".into()),
+                &DeployId::new("prepare-a"),
                 9,
             )
             .await
@@ -1951,13 +1948,13 @@ mod tests {
                 .expect("get branch environment")
                 .expect("branch environment exists")
                 .prepared_deploy_id,
-            Some(DeployId("prepare-a".into()))
+            Some(DeployId::new("prepare-a"))
         );
         store
             .mark_branch_environment_active(
                 &Namespace::new("pr-39"),
-                &DeployId("prepare-a".into()),
-                &DeployId("deploy-a".into()),
+                &DeployId::new("prepare-a"),
+                &DeployId::new("deploy-a"),
                 10,
             )
             .await
@@ -1974,7 +1971,7 @@ mod tests {
                 .expect("get branch environment")
                 .expect("branch environment exists")
                 .prepared_deploy_id,
-            Some(DeployId("prepare-b".into()))
+            Some(DeployId::new("prepare-b"))
         );
     }
 
@@ -1993,8 +1990,8 @@ mod tests {
             store
                 .mark_branch_environment_active(
                     &Namespace::new("pr-39"),
-                    &DeployId("prepare-old".into()),
-                    &DeployId("deploy-old".into()),
+                    &DeployId::new("prepare-old"),
+                    &DeployId::new("deploy-old"),
                     10,
                 )
                 .await

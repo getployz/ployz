@@ -1496,7 +1496,7 @@ mod tests {
     }
 
     fn install_active_mesh(state: &mut DaemonState, store: StoreDriver) {
-        let identity = Identity::generate(MachineId("founder".into()), [42; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [42; 32]);
         let mut config = NetworkConfig::new(
             NetworkName("alpha".into()),
             &identity.public_key,
@@ -2392,7 +2392,7 @@ mod tests {
         let mut state = test_daemon_state();
         let store = StoreDriver::memory();
         let mut machine = MachineMembership::seed(
-            MachineId("founder".into()),
+            MachineId::new("founder"),
             PublicKey([42; 32]),
             OverlayIp("fd00::42".parse().expect("valid overlay")),
             None,
@@ -2410,7 +2410,7 @@ mod tests {
             Vec::new(),
         )
         .await;
-        let active_prepared_deploy_id = DeployId("prepare-old".into());
+        let active_prepared_deploy_id = DeployId::new("prepare-old");
         let baseline = test_baseline("sources");
         let mut active_record = test_branch_environment_record(
             &Namespace::new("pr-39"),
@@ -2453,7 +2453,7 @@ mod tests {
             default_volume_mode: BranchEnvironmentResourceMode::Fresh,
             services: Vec::new(),
             volumes: Vec::new(),
-            prepared_deploy_id: Some(DeployId("prepare-new".into())),
+            prepared_deploy_id: Some(DeployId::new("prepare-new")),
             applied_deploy_id: None,
             manifest_hash: "manifest".into(),
             baseline,
@@ -2472,7 +2472,7 @@ mod tests {
         record_branch_apply_prepared_outcome(
             &store,
             &Namespace::new("pr-39"),
-            &DeployId("prepare-old".into()),
+            &DeployId::new("prepare-old"),
             &DaemonResponse {
                 ok: true,
                 code: "OK".into(),
@@ -2495,7 +2495,7 @@ mod tests {
         store
             .mark_branch_environment_applying(
                 &Namespace::new("pr-39"),
-                &DeployId("prepare-new".into()),
+                &DeployId::new("prepare-new"),
                 2,
             )
             .await
@@ -2503,7 +2503,7 @@ mod tests {
         record_branch_apply_prepared_outcome(
             &store,
             &Namespace::new("pr-39"),
-            &DeployId("prepare-new".into()),
+            &DeployId::new("prepare-new"),
             &DaemonResponse {
                 ok: true,
                 code: "OK".into(),
@@ -2519,10 +2519,7 @@ mod tests {
             .expect("get branch environment")
             .expect("branch environment exists");
         assert_eq!(stored.state, BranchEnvironmentState::Active);
-        assert_eq!(
-            stored.applied_deploy_id,
-            Some(DeployId("prepare-new".into()))
-        );
+        assert_eq!(stored.applied_deploy_id, Some(DeployId::new("prepare-new")));
     }
 
     #[tokio::test]
@@ -2537,7 +2534,7 @@ mod tests {
             default_volume_mode: BranchEnvironmentResourceMode::Fresh,
             services: Vec::new(),
             volumes: Vec::new(),
-            prepared_deploy_id: Some(DeployId("prepare-1".into())),
+            prepared_deploy_id: Some(DeployId::new("prepare-1")),
             applied_deploy_id: None,
             manifest_hash: "manifest".into(),
             baseline,
@@ -2556,7 +2553,7 @@ mod tests {
         store
             .mark_branch_environment_applying(
                 &Namespace::new("pr-39"),
-                &DeployId("prepare-1".into()),
+                &DeployId::new("prepare-1"),
                 2,
             )
             .await
@@ -2564,7 +2561,7 @@ mod tests {
         record_branch_apply_prepared_outcome(
             &store,
             &Namespace::new("pr-39"),
-            &DeployId("prepare-1".into()),
+            &DeployId::new("prepare-1"),
             &DaemonResponse {
                 ok: false,
                 code: "DEPLOY_APPLY_PREPARED_FAILED".into(),
@@ -2587,7 +2584,7 @@ mod tests {
         store
             .mark_branch_environment_applying(
                 &Namespace::new("pr-39"),
-                &DeployId("prepare-1".into()),
+                &DeployId::new("prepare-1"),
                 21,
             )
             .await
@@ -2595,7 +2592,7 @@ mod tests {
         record_branch_apply_prepared_outcome(
             &store,
             &Namespace::new("pr-39"),
-            &DeployId("prepare-1".into()),
+            &DeployId::new("prepare-1"),
             &DaemonResponse {
                 ok: true,
                 code: "OK".into(),
@@ -2611,7 +2608,7 @@ mod tests {
             .expect("get branch environment")
             .expect("branch environment exists");
         assert_eq!(stored.state, BranchEnvironmentState::Active);
-        assert_eq!(stored.applied_deploy_id, Some(DeployId("prepare-1".into())));
+        assert_eq!(stored.applied_deploy_id, Some(DeployId::new("prepare-1")));
     }
 
     #[tokio::test]
@@ -2626,8 +2623,8 @@ mod tests {
             default_volume_mode: BranchEnvironmentResourceMode::Fresh,
             services: Vec::new(),
             volumes: Vec::new(),
-            prepared_deploy_id: Some(DeployId("prepare-1".into())),
-            applied_deploy_id: Some(DeployId("prepare-1".into())),
+            prepared_deploy_id: Some(DeployId::new("prepare-1")),
+            applied_deploy_id: Some(DeployId::new("prepare-1")),
             manifest_hash: "manifest".into(),
             baseline,
             service_branch_sources: Vec::new(),
@@ -2645,7 +2642,7 @@ mod tests {
         let stored = record_branch_apply_prepared_outcome(
             &store,
             &Namespace::new("pr-39"),
-            &DeployId("prepare-1".into()),
+            &DeployId::new("prepare-1"),
             &DaemonResponse {
                 ok: true,
                 code: "OK".into(),
@@ -2672,7 +2669,7 @@ mod tests {
         let mut state = test_daemon_state();
         let store = StoreDriver::memory();
         let namespace = Namespace::new("pr-39");
-        let prepared_deploy_id = DeployId("prepare-1".into());
+        let prepared_deploy_id = DeployId::new("prepare-1");
         let baseline = test_baseline("sources");
         let preview = DeployPreview {
             namespace: namespace.clone(),
@@ -2698,7 +2695,7 @@ mod tests {
                 manifest_json: "{not-json".into(),
                 preview,
                 baseline: baseline.clone(),
-                coordinator_machine_id: MachineId("founder".into()),
+                coordinator_machine_id: MachineId::new("founder"),
                 state: PreparedDeployState::Applied,
                 created_at: 1,
                 expires_at: 100,
@@ -2753,7 +2750,7 @@ mod tests {
         let mut state = test_daemon_state();
         let store = StoreDriver::memory();
         let namespace = Namespace::new("pr-39");
-        let prepared_deploy_id = DeployId("prepare-1".into());
+        let prepared_deploy_id = DeployId::new("prepare-1");
         let baseline = test_baseline("sources");
         store
             .write_prepared_deploy(&PreparedDeployRecord {
@@ -2763,7 +2760,7 @@ mod tests {
                 manifest_json: "{not-json".into(),
                 preview: test_empty_preview(&namespace, baseline.clone()),
                 baseline: baseline.clone(),
-                coordinator_machine_id: MachineId("founder".into()),
+                coordinator_machine_id: MachineId::new("founder"),
                 state: PreparedDeployState::Prepared,
                 created_at: 1,
                 expires_at: 100,
@@ -2808,8 +2805,8 @@ mod tests {
         let mut state = test_daemon_state();
         let store = StoreDriver::memory();
         let namespace = Namespace::new("pr-39");
-        let prepared_deploy_id = DeployId("prepare-new".into());
-        let stale_prepared_deploy_id = DeployId("prepare-old".into());
+        let prepared_deploy_id = DeployId::new("prepare-new");
+        let stale_prepared_deploy_id = DeployId::new("prepare-old");
         let baseline = test_baseline("sources");
         store
             .write_prepared_deploy(&PreparedDeployRecord {
@@ -2819,7 +2816,7 @@ mod tests {
                 manifest_json: "{not-json".into(),
                 preview: test_empty_preview(&namespace, baseline.clone()),
                 baseline: baseline.clone(),
-                coordinator_machine_id: MachineId("founder".into()),
+                coordinator_machine_id: MachineId::new("founder"),
                 state: PreparedDeployState::Prepared,
                 created_at: 1,
                 expires_at: 100,
@@ -2859,7 +2856,7 @@ mod tests {
         let mut state = test_daemon_state();
         let store = StoreDriver::memory();
         let namespace = Namespace::new("pr-39");
-        let prepared_deploy_id = DeployId("prepare-1".into());
+        let prepared_deploy_id = DeployId::new("prepare-1");
         let baseline = test_baseline("sources");
         store
             .write_prepared_deploy(&PreparedDeployRecord {
@@ -2869,7 +2866,7 @@ mod tests {
                 manifest_json: "{not-json".into(),
                 preview: test_empty_preview(&namespace, baseline.clone()),
                 baseline: baseline.clone(),
-                coordinator_machine_id: MachineId("founder".into()),
+                coordinator_machine_id: MachineId::new("founder"),
                 state: PreparedDeployState::Prepared,
                 created_at: 1,
                 expires_at: 100,
@@ -2914,7 +2911,7 @@ mod tests {
         let mut state = test_daemon_state();
         let store = StoreDriver::memory();
         let namespace = Namespace::new("pr-39");
-        let prepared_deploy_id = DeployId("prepare-1".into());
+        let prepared_deploy_id = DeployId::new("prepare-1");
         let baseline = test_baseline("sources");
         store
             .write_prepared_deploy(&PreparedDeployRecord {
@@ -2924,7 +2921,7 @@ mod tests {
                 manifest_json: "{not-json".into(),
                 preview: test_empty_preview(&namespace, baseline.clone()),
                 baseline: baseline.clone(),
-                coordinator_machine_id: MachineId("founder".into()),
+                coordinator_machine_id: MachineId::new("founder"),
                 state: PreparedDeployState::Applied,
                 created_at: 1,
                 expires_at: 100,
@@ -2975,7 +2972,7 @@ mod tests {
     async fn branch_applying_durable_commit_resumes_prepared_apply_repair_path() {
         let store = StoreDriver::memory();
         let namespace = Namespace::new("pr-39");
-        let prepared_deploy_id = DeployId("prepare-1".into());
+        let prepared_deploy_id = DeployId::new("prepare-1");
         let baseline = test_baseline("sources");
         let preview = test_empty_preview(&namespace, baseline.clone());
         store
@@ -2986,7 +2983,7 @@ mod tests {
                 manifest_json: "{}".into(),
                 preview: preview.clone(),
                 baseline: baseline.clone(),
-                coordinator_machine_id: MachineId("founder".into()),
+                coordinator_machine_id: MachineId::new("founder"),
                 state: PreparedDeployState::Prepared,
                 created_at: 1,
                 expires_at: 100,
@@ -3022,7 +3019,7 @@ mod tests {
                 deploy: DeployRecord {
                     deploy_id: prepared_deploy_id.clone(),
                     namespace: namespace.clone(),
-                    coordinator_machine_id: MachineId("founder".into()),
+                    coordinator_machine_id: MachineId::new("founder"),
                     manifest_hash: "manifest".into(),
                     state: DeployState::Committed,
                     started_at: 1,
@@ -3051,7 +3048,7 @@ mod tests {
     async fn branch_applying_replay_action_prefers_active_replay_after_race() {
         let store = StoreDriver::memory();
         let namespace = Namespace::new("pr-39");
-        let prepared_deploy_id = DeployId("prepare-1".into());
+        let prepared_deploy_id = DeployId::new("prepare-1");
         let baseline = test_baseline("sources");
         store
             .write_prepared_deploy(&PreparedDeployRecord {
@@ -3061,7 +3058,7 @@ mod tests {
                 manifest_json: "{}".into(),
                 preview: test_empty_preview(&namespace, baseline.clone()),
                 baseline: baseline.clone(),
-                coordinator_machine_id: MachineId("founder".into()),
+                coordinator_machine_id: MachineId::new("founder"),
                 state: PreparedDeployState::Prepared,
                 created_at: 1,
                 expires_at: 100,
