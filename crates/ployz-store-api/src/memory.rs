@@ -64,6 +64,7 @@ struct StoreInner {
 }
 
 enum BranchEnvironmentTransition<'a> {
+    Applying,
     Active {
         applied_deploy_id: &'a DeployId,
     },
@@ -168,25 +169,33 @@ impl MemoryStore {
                 ),
             ));
         }
-        if record.state == BranchEnvironmentState::Active {
-            return Err(Error::operation(
-                "memory_branch_environment_state",
-                format!(
-                    "branch environment '{target_namespace}' is already {}",
-                    record.state
-                ),
-            ));
-        }
-        match transition {
-            BranchEnvironmentTransition::Active { applied_deploy_id } => {
+        match (record.state, transition) {
+            (
+                BranchEnvironmentState::Prepared | BranchEnvironmentState::Failed,
+                BranchEnvironmentTransition::Applying,
+            ) => {
+                record.state = BranchEnvironmentState::Applying;
+                record.applied_deploy_id = None;
+                record.failure = None;
+            }
+            (
+                BranchEnvironmentState::Applying,
+                BranchEnvironmentTransition::Active { applied_deploy_id },
+            ) => {
                 record.state = BranchEnvironmentState::Active;
                 record.applied_deploy_id = Some(applied_deploy_id.clone());
                 record.failure = None;
             }
-            BranchEnvironmentTransition::Failed { failure } => {
+            (BranchEnvironmentState::Applying, BranchEnvironmentTransition::Failed { failure }) => {
                 record.state = BranchEnvironmentState::Failed;
                 record.applied_deploy_id = None;
                 record.failure = Some(failure.clone());
+            }
+            (state, _) => {
+                return Err(Error::operation(
+                    "memory_branch_environment_state",
+                    format!("branch environment '{target_namespace}' is {state}"),
+                ));
             }
         }
         record.updated_at = updated_at;
@@ -687,16 +696,19 @@ impl DeployStore for MemoryStore {
     async fn upsert_branch_environment(&self, record: &BranchEnvironmentRecord) -> Result<()> {
         validate_branch_environment(record)?;
         let mut inner = self.lock_inner();
-        if inner
+        if let Some(existing) = inner
             .branch_environment_records
             .get(&record.target_namespace)
-            .is_some_and(|existing| existing.state == BranchEnvironmentState::Active)
+            && matches!(
+                existing.state,
+                BranchEnvironmentState::Applying | BranchEnvironmentState::Active
+            )
         {
             return Err(Error::operation(
                 "memory_branch_environment_upsert",
                 format!(
-                    "branch environment '{}' is already active",
-                    record.target_namespace
+                    "branch environment '{}' is {}",
+                    record.target_namespace, existing.state
                 ),
             ));
         }
@@ -704,6 +716,22 @@ impl DeployStore for MemoryStore {
             .branch_environment_records
             .insert(record.target_namespace.clone(), record.clone());
         Ok(())
+    }
+
+    async fn mark_branch_environment_applying(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<BranchEnvironmentRecord> {
+        let mut inner = self.lock_inner();
+        Self::transition_branch_environment(
+            &mut inner,
+            target_namespace,
+            prepared_deploy_id,
+            updated_at,
+            BranchEnvironmentTransition::Applying,
+        )
     }
 
     async fn get_branch_environment(
@@ -1782,6 +1810,14 @@ mod tests {
             .await
             .expect("upsert first branch environment");
         store
+            .mark_branch_environment_applying(
+                &Namespace("pr-39".into()),
+                &DeployId("prepare-a".into()),
+                9,
+            )
+            .await
+            .expect("mark first branch environment applying");
+        store
             .mark_branch_environment_active(
                 &Namespace("pr-39".into()),
                 &DeployId("prepare-a".into()),
@@ -1841,6 +1877,14 @@ mod tests {
         );
 
         store
+            .mark_branch_environment_applying(
+                &Namespace("pr-39".into()),
+                &DeployId("prepare-b".into()),
+                19,
+            )
+            .await
+            .expect("mark branch environment applying");
+        store
             .mark_branch_environment_failed(
                 &Namespace("pr-39".into()),
                 &DeployId("prepare-b".into()),
@@ -1882,6 +1926,27 @@ mod tests {
             .upsert_branch_environment(&record_a)
             .await
             .expect("create branch environment");
+        store
+            .mark_branch_environment_applying(
+                &Namespace("pr-39".into()),
+                &DeployId("prepare-a".into()),
+                9,
+            )
+            .await
+            .expect("mark branch environment applying");
+        store
+            .upsert_branch_environment(&record_b)
+            .await
+            .expect_err("applying branch environment should not be replaced");
+        assert_eq!(
+            store
+                .get_branch_environment(&Namespace("pr-39".into()))
+                .await
+                .expect("get branch environment")
+                .expect("branch environment exists")
+                .prepared_deploy_id,
+            Some(DeployId("prepare-a".into()))
+        );
         store
             .mark_branch_environment_active(
                 &Namespace("pr-39".into()),

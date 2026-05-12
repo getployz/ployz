@@ -230,6 +230,23 @@ impl DeployStore for NatsStore {
         .await
     }
 
+    async fn mark_branch_environment_applying(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<BranchEnvironmentRecord> {
+        transition_branch_environment_entry(
+            self.jetstream(),
+            self.assets().branch_environments_bucket.as_str(),
+            target_namespace,
+            prepared_deploy_id,
+            updated_at,
+            BranchEnvironmentTransition::Applying,
+        )
+        .await
+    }
+
     async fn mark_branch_environment_active(
         &self,
         target_namespace: &Namespace,
@@ -656,7 +673,9 @@ fn decode_prepared_deploy(key: &str, bytes: &[u8]) -> Result<PreparedDeployRecor
     Ok(record)
 }
 
+#[derive(Clone, Copy)]
 enum BranchEnvironmentTransition<'a> {
+    Applying,
     Active {
         applied_deploy_id: &'a DeployId,
     },
@@ -722,12 +741,15 @@ async fn write_branch_environment_entry(
             }
         }
         let existing = decode_branch_environment(&record.target_namespace.0, entry.value.as_ref())?;
-        if existing.state == BranchEnvironmentState::Active {
+        if matches!(
+            existing.state,
+            BranchEnvironmentState::Applying | BranchEnvironmentState::Active
+        ) {
             return Err(Error::operation(
                 "nats_branch_environment_upsert",
                 format!(
-                    "branch environment '{}' is already active",
-                    record.target_namespace
+                    "branch environment '{}' is {}",
+                    record.target_namespace, existing.state
                 ),
             ));
         }
@@ -838,63 +860,91 @@ async fn transition_branch_environment_entry(
     transition: BranchEnvironmentTransition<'_>,
 ) -> Result<BranchEnvironmentRecord> {
     let bucket = kv_json::get_bucket(js, bucket_name, "nats_branch_environments_bucket").await?;
-    let Some(entry) = bucket
-        .entry(target_namespace.0.as_str())
-        .await
-        .map_err(|error| Error::operation("nats_branch_environment_get", format!("{error:?}")))?
-    else {
-        return Err(Error::operation(
-            "nats_branch_environment_state",
-            format!("branch environment '{target_namespace}' not found"),
-        ));
-    };
-    if entry.operation != kv::Operation::Put {
-        return Err(Error::operation(
-            "nats_branch_environment_state",
-            format!("branch environment '{target_namespace}' not found"),
-        ));
-    }
-    let mut record = decode_branch_environment(&target_namespace.0, entry.value.as_ref())?;
-    if record.prepared_deploy_id.as_ref() != Some(prepared_deploy_id) {
-        return Err(Error::operation(
-            "nats_branch_environment_state",
-            format!(
-                "branch environment '{target_namespace}' is not prepared by '{prepared_deploy_id}'"
-            ),
-        ));
-    }
-    if record.state == BranchEnvironmentState::Active {
-        return Err(Error::operation(
-            "nats_branch_environment_state",
-            format!(
-                "branch environment '{target_namespace}' is already {}",
-                record.state
-            ),
-        ));
-    }
-    match transition {
-        BranchEnvironmentTransition::Active { applied_deploy_id } => {
-            record.state = BranchEnvironmentState::Active;
-            record.applied_deploy_id = Some(applied_deploy_id.clone());
-            record.failure = None;
+    for attempt in 0..BRANCH_ENVIRONMENT_UPSERT_ATTEMPTS {
+        let Some(entry) = bucket
+            .entry(target_namespace.0.as_str())
+            .await
+            .map_err(|error| {
+                Error::operation("nats_branch_environment_get", format!("{error:?}"))
+            })?
+        else {
+            return Err(Error::operation(
+                "nats_branch_environment_state",
+                format!("branch environment '{target_namespace}' not found"),
+            ));
+        };
+        if entry.operation != kv::Operation::Put {
+            return Err(Error::operation(
+                "nats_branch_environment_state",
+                format!("branch environment '{target_namespace}' not found"),
+            ));
         }
-        BranchEnvironmentTransition::Failed { failure } => {
-            record.state = BranchEnvironmentState::Failed;
-            record.applied_deploy_id = None;
-            record.failure = Some(failure.clone());
+        let mut record = decode_branch_environment(&target_namespace.0, entry.value.as_ref())?;
+        if record.prepared_deploy_id.as_ref() != Some(prepared_deploy_id) {
+            return Err(Error::operation(
+                "nats_branch_environment_state",
+                format!(
+                    "branch environment '{target_namespace}' is not prepared by '{prepared_deploy_id}'"
+                ),
+            ));
         }
-    }
-    record.updated_at = updated_at;
-    validate_branch_environment(&record)?;
-    let payload = serde_json::to_vec(&record)
-        .map_err(|error| Error::operation("nats_branch_environment_encode", error.to_string()))?;
-    bucket
-        .update(target_namespace.0.as_str(), payload.into(), entry.revision)
-        .await
-        .map_err(|error| {
-            Error::operation("nats_branch_environment_update", format!("{error:?}"))
+        match (record.state, transition) {
+            (
+                BranchEnvironmentState::Prepared | BranchEnvironmentState::Failed,
+                BranchEnvironmentTransition::Applying,
+            ) => {
+                record.state = BranchEnvironmentState::Applying;
+                record.applied_deploy_id = None;
+                record.failure = None;
+            }
+            (
+                BranchEnvironmentState::Applying,
+                BranchEnvironmentTransition::Active { applied_deploy_id },
+            ) => {
+                record.state = BranchEnvironmentState::Active;
+                record.applied_deploy_id = Some(applied_deploy_id.clone());
+                record.failure = None;
+            }
+            (BranchEnvironmentState::Applying, BranchEnvironmentTransition::Failed { failure }) => {
+                record.state = BranchEnvironmentState::Failed;
+                record.applied_deploy_id = None;
+                record.failure = Some(failure.clone());
+            }
+            (state, _) => {
+                return Err(Error::operation(
+                    "nats_branch_environment_state",
+                    format!("branch environment '{target_namespace}' is {state}"),
+                ));
+            }
+        }
+        record.updated_at = updated_at;
+        validate_branch_environment(&record)?;
+        let payload = serde_json::to_vec(&record).map_err(|error| {
+            Error::operation("nats_branch_environment_encode", error.to_string())
         })?;
-    Ok(record)
+        match bucket
+            .update(target_namespace.0.as_str(), payload.into(), entry.revision)
+            .await
+        {
+            Ok(_) => return Ok(record),
+            Err(error)
+                if branch_environment_update_conflict(&error)
+                    && branch_environment_upsert_can_retry(attempt) =>
+            {
+                continue;
+            }
+            Err(error) => {
+                return Err(Error::operation(
+                    "nats_branch_environment_update",
+                    format!("{error:?}"),
+                ));
+            }
+        }
+    }
+    Err(Error::operation(
+        "nats_branch_environment_update",
+        format!("branch environment '{target_namespace}' update conflicted"),
+    ))
 }
 
 fn validate_branch_environment(record: &BranchEnvironmentRecord) -> Result<()> {

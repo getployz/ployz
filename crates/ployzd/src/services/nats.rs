@@ -550,6 +550,21 @@ where
         DeployStore::list_branch_environments(self.store().await?.as_ref()).await
     }
 
+    async fn mark_branch_environment_applying(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<BranchEnvironmentRecord> {
+        DeployStore::mark_branch_environment_applying(
+            self.store().await?.as_ref(),
+            target_namespace,
+            prepared_deploy_id,
+            updated_at,
+        )
+        .await
+    }
+
     async fn mark_branch_environment_active(
         &self,
         target_namespace: &Namespace,

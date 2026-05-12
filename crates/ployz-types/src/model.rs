@@ -2615,6 +2615,7 @@ pub struct PreparedDeployRecord {
 #[serde(rename_all = "snake_case")]
 pub enum BranchEnvironmentState {
     Prepared,
+    Applying,
     Active,
     Failed,
 }
@@ -2623,6 +2624,7 @@ impl std::fmt::Display for BranchEnvironmentState {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let value = match self {
             Self::Prepared => "prepared",
+            Self::Applying => "applying",
             Self::Active => "active",
             Self::Failed => "failed",
         };
@@ -2695,6 +2697,9 @@ pub enum BranchEnvironmentRecordValidationError {
     PreparedMissingPreparedDeploy,
     PreparedHasAppliedDeploy,
     PreparedHasFailure,
+    ApplyingMissingPreparedDeploy,
+    ApplyingHasAppliedDeploy,
+    ApplyingHasFailure,
     ActiveMissingPreparedDeploy,
     ActiveMissingAppliedDeploy,
     ActiveHasFailure,
@@ -2712,6 +2717,13 @@ impl std::fmt::Display for BranchEnvironmentRecordValidationError {
                 "prepared branch environment cannot have an applied deploy id"
             }
             Self::PreparedHasFailure => "prepared branch environment cannot have a failure",
+            Self::ApplyingMissingPreparedDeploy => {
+                "applying branch environment requires a prepared deploy id"
+            }
+            Self::ApplyingHasAppliedDeploy => {
+                "applying branch environment cannot have an applied deploy id"
+            }
+            Self::ApplyingHasFailure => "applying branch environment cannot have a failure",
             Self::ActiveMissingPreparedDeploy => {
                 "active branch environment requires a prepared deploy id"
             }
@@ -2744,6 +2756,19 @@ impl BranchEnvironmentRecord {
                 }
                 if self.failure.is_some() {
                     return Err(BranchEnvironmentRecordValidationError::PreparedHasFailure);
+                }
+            }
+            BranchEnvironmentState::Applying => {
+                if self.prepared_deploy_id.is_none() {
+                    return Err(
+                        BranchEnvironmentRecordValidationError::ApplyingMissingPreparedDeploy,
+                    );
+                }
+                if self.applied_deploy_id.is_some() {
+                    return Err(BranchEnvironmentRecordValidationError::ApplyingHasAppliedDeploy);
+                }
+                if self.failure.is_some() {
+                    return Err(BranchEnvironmentRecordValidationError::ApplyingHasFailure);
                 }
             }
             BranchEnvironmentState::Active => {

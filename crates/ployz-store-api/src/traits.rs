@@ -793,6 +793,13 @@ pub trait DeployStore: Send + Sync {
 
     async fn list_branch_environments(&self) -> Result<Vec<BranchEnvironmentRecord>>;
 
+    async fn mark_branch_environment_applying(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<BranchEnvironmentRecord>;
+
     async fn mark_branch_environment_active(
         &self,
         target_namespace: &Namespace,
