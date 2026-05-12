@@ -3,9 +3,18 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const SECTION_ORDER = new Map(
-  ["index", "start", "concepts", "commands", "guides", "security", "agents", "reference"].map(
-    (section, index) => [section, index],
-  ),
+  [
+    "index",
+    "introduction",
+    "quickstart",
+    "installation",
+    "concepts",
+    "operations",
+    "configuration",
+    "architecture",
+    "commands",
+    "cli",
+  ].map((section, index) => [section, index]),
 );
 
 export async function docsForLlms() {
@@ -28,9 +37,7 @@ function compareDocIds(left: string, right: string) {
 export async function markdownForDoc(id: string) {
   const path = join(process.cwd(), "src", "content", "docs", `${id}.md`);
   const raw = await readFile(path, "utf8");
-  return stripFrontmatter(raw)
-    .replace(/<\/?div[^>]*>/g, "")
-    .trim();
+  return stripFrontmatter(raw).trim();
 }
 
 export function stripFrontmatter(raw: string) {
