@@ -115,7 +115,10 @@ impl DaemonState {
             Err(response) => return *response,
         };
 
-        let machine_id = MachineId::new(id.to_string());
+        let machine_id = match MachineId::try_new(id) {
+            Ok(machine_id) => machine_id,
+            Err(error) => return self.err("MACHINE_INVALID_TARGET", error),
+        };
         let record = match find_machine_record(&active.mesh.store, &machine_id).await {
             Ok(Some(record)) => record,
             Ok(None) => {
