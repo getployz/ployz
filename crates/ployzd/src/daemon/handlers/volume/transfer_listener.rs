@@ -45,6 +45,8 @@ enum ZfsTransferValidationError {
         expected: IpAddr,
     },
     #[error("{VOLUME_NOT_AUTHORIZED}")]
+    InvalidNamespace { message: String },
+    #[error("{VOLUME_NOT_AUTHORIZED}")]
     VolumeNotAuthorized {
         namespace: Namespace,
         volume: String,
@@ -122,6 +124,11 @@ impl ZfsTransferValidationError {
                     "zfs transfer authorization lookup failed",
                 ),
             }
+        } else if let Self::InvalidNamespace { message } = self {
+            tracing::warn!(
+                error = %message,
+                "zfs transfer rejected: invalid namespace",
+            );
         }
     }
 }
@@ -380,7 +387,8 @@ async fn validate_volume_ownership(
     namespace: &str,
     volume: &str,
 ) -> Result<(), ZfsTransferValidationError> {
-    let namespace = Namespace::new(namespace.to_string());
+    let namespace = Namespace::try_new(namespace)
+        .map_err(|message| ZfsTransferValidationError::InvalidNamespace { message })?;
     match store.get_volume(&namespace, volume).await {
         Ok(Some(record)) if record.machine_id == *source => Ok(()),
         Ok(Some(record)) => Err(ZfsTransferValidationError::VolumeNotAuthorized {
@@ -1039,6 +1047,27 @@ mod tests {
         assert!(
             !rendered.contains("missing"),
             "volume name leaked: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_volume_ownership_rejects_invalid_namespace() {
+        let store = StoreDriver::memory();
+        let err = validate_volume_ownership(&store, &MachineId::new("source"), "Prod", "data")
+            .await
+            .expect_err("invalid namespace rejected");
+        let rendered = err.to_string();
+        assert!(matches!(
+            err,
+            ZfsTransferValidationError::InvalidNamespace { .. }
+        ));
+        assert!(
+            rendered.contains("not authorized"),
+            "unexpected error: {rendered}"
+        );
+        assert!(
+            !rendered.contains("Prod"),
+            "namespace detail leaked: {rendered}"
         );
     }
 
