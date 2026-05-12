@@ -2986,7 +2986,8 @@ mod tests {
         let Some(DaemonPayload::BuildOperation(payload)) = response.payload() else {
             panic!("expected build operation payload");
         };
-        let Some(last_error) = payload.operation.last_error().as_deref() else {
+        let operation_last_error = payload.operation.last_error();
+        let Some(last_error) = operation_last_error.as_deref() else {
             panic!("expected persisted last error");
         };
         assert!(!last_error.contains("production"));
