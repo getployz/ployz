@@ -2611,6 +2611,194 @@ pub struct PreparedDeployRecord {
     pub updated_at: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchEnvironmentState {
+    Prepared,
+    Applying,
+    Active,
+    Failed,
+}
+
+impl std::fmt::Display for BranchEnvironmentState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Prepared => "prepared",
+            Self::Applying => "applying",
+            Self::Active => "active",
+            Self::Failed => "failed",
+        };
+        formatter.write_str(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchEnvironmentResourceMode {
+    Fresh,
+    Branch,
+}
+
+impl std::fmt::Display for BranchEnvironmentResourceMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Fresh => "fresh",
+            Self::Branch => "branch",
+        };
+        formatter.write_str(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchEnvironmentResourceOverride {
+    pub name: String,
+    pub mode: BranchEnvironmentResourceMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchEnvironmentFailure {
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deploy_id: Option<DeployId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchEnvironmentRecord {
+    pub source_namespace: Namespace,
+    pub target_namespace: Namespace,
+    pub state: BranchEnvironmentState,
+    pub default_service_mode: BranchEnvironmentResourceMode,
+    pub default_volume_mode: BranchEnvironmentResourceMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<BranchEnvironmentResourceOverride>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<BranchEnvironmentResourceOverride>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_deploy_id: Option<DeployId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_deploy_id: Option<DeployId>,
+    pub manifest_hash: String,
+    pub baseline: DeployPreviewBaseline,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_branch_sources: Vec<ServiceBranchSourcePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volume_clones: Vec<VolumeClonePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_availability: Vec<DeployImageAvailabilityPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<BranchEnvironmentFailure>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchEnvironmentRecordValidationError {
+    PreparedMissingPreparedDeploy,
+    PreparedHasAppliedDeploy,
+    PreparedHasFailure,
+    ApplyingMissingPreparedDeploy,
+    ApplyingHasAppliedDeploy,
+    ApplyingHasFailure,
+    ActiveMissingPreparedDeploy,
+    ActiveMissingAppliedDeploy,
+    ActiveHasFailure,
+    FailedMissingPreparedDeploy,
+    FailedMissingFailure,
+}
+
+impl std::fmt::Display for BranchEnvironmentRecordValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::PreparedMissingPreparedDeploy => {
+                "prepared branch environment requires a prepared deploy id"
+            }
+            Self::PreparedHasAppliedDeploy => {
+                "prepared branch environment cannot have an applied deploy id"
+            }
+            Self::PreparedHasFailure => "prepared branch environment cannot have a failure",
+            Self::ApplyingMissingPreparedDeploy => {
+                "applying branch environment requires a prepared deploy id"
+            }
+            Self::ApplyingHasAppliedDeploy => {
+                "applying branch environment cannot have an applied deploy id"
+            }
+            Self::ApplyingHasFailure => "applying branch environment cannot have a failure",
+            Self::ActiveMissingPreparedDeploy => {
+                "active branch environment requires a prepared deploy id"
+            }
+            Self::ActiveMissingAppliedDeploy => {
+                "active branch environment requires an applied deploy id"
+            }
+            Self::ActiveHasFailure => "active branch environment cannot have a failure",
+            Self::FailedMissingPreparedDeploy => {
+                "failed branch environment requires a prepared deploy id"
+            }
+            Self::FailedMissingFailure => "failed branch environment requires a failure",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for BranchEnvironmentRecordValidationError {}
+
+impl BranchEnvironmentRecord {
+    pub fn validate(&self) -> std::result::Result<(), BranchEnvironmentRecordValidationError> {
+        match self.state {
+            BranchEnvironmentState::Prepared => {
+                if self.prepared_deploy_id.is_none() {
+                    return Err(
+                        BranchEnvironmentRecordValidationError::PreparedMissingPreparedDeploy,
+                    );
+                }
+                if self.applied_deploy_id.is_some() {
+                    return Err(BranchEnvironmentRecordValidationError::PreparedHasAppliedDeploy);
+                }
+                if self.failure.is_some() {
+                    return Err(BranchEnvironmentRecordValidationError::PreparedHasFailure);
+                }
+            }
+            BranchEnvironmentState::Applying => {
+                if self.prepared_deploy_id.is_none() {
+                    return Err(
+                        BranchEnvironmentRecordValidationError::ApplyingMissingPreparedDeploy,
+                    );
+                }
+                if self.applied_deploy_id.is_some() {
+                    return Err(BranchEnvironmentRecordValidationError::ApplyingHasAppliedDeploy);
+                }
+                if self.failure.is_some() {
+                    return Err(BranchEnvironmentRecordValidationError::ApplyingHasFailure);
+                }
+            }
+            BranchEnvironmentState::Active => {
+                if self.prepared_deploy_id.is_none() {
+                    return Err(
+                        BranchEnvironmentRecordValidationError::ActiveMissingPreparedDeploy,
+                    );
+                }
+                if self.applied_deploy_id.is_none() {
+                    return Err(BranchEnvironmentRecordValidationError::ActiveMissingAppliedDeploy);
+                }
+                if self.failure.is_some() {
+                    return Err(BranchEnvironmentRecordValidationError::ActiveHasFailure);
+                }
+            }
+            BranchEnvironmentState::Failed => {
+                if self.prepared_deploy_id.is_none() {
+                    return Err(
+                        BranchEnvironmentRecordValidationError::FailedMissingPreparedDeploy,
+                    );
+                }
+                if self.failure.is_none() {
+                    return Err(BranchEnvironmentRecordValidationError::FailedMissingFailure);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployEvent {
     pub step: String,
@@ -2669,6 +2857,57 @@ mod tests {
         let result = serde_json::from_str::<ImageAvailabilityRecord>(json);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn branch_environment_record_serializes_lifecycle_identity_and_modes() {
+        let baseline = DeployPreviewBaseline::new(DeployPreviewBaselineComponents {
+            manifest: "manifest".into(),
+            participants: "participants".into(),
+            phases: "phases".into(),
+            services: "services".into(),
+            service_sources: "sources".into(),
+            volumes: "volumes".into(),
+            volume_moves: "moves".into(),
+            volume_clones: "clones".into(),
+        });
+        let record = BranchEnvironmentRecord {
+            source_namespace: Namespace("prod".into()),
+            target_namespace: Namespace("pr-39".into()),
+            state: BranchEnvironmentState::Prepared,
+            default_service_mode: BranchEnvironmentResourceMode::Branch,
+            default_volume_mode: BranchEnvironmentResourceMode::Fresh,
+            services: vec![BranchEnvironmentResourceOverride {
+                name: "worker".into(),
+                mode: BranchEnvironmentResourceMode::Fresh,
+            }],
+            volumes: Vec::new(),
+            prepared_deploy_id: Some(DeployId("prepare-1".into())),
+            applied_deploy_id: None,
+            manifest_hash: "manifest-hash".into(),
+            baseline,
+            service_branch_sources: Vec::new(),
+            volume_clones: Vec::new(),
+            image_availability: Vec::new(),
+            failure: None,
+            created_at: 1,
+            updated_at: 2,
+        };
+
+        let json = serde_json::to_value(&record).expect("serialize branch environment");
+
+        assert_eq!(json["source_namespace"], serde_json::json!("prod"));
+        assert_eq!(json["target_namespace"], serde_json::json!("pr-39"));
+        assert_eq!(json["state"], serde_json::json!("prepared"));
+        assert_eq!(json["default_service_mode"], serde_json::json!("branch"));
+        assert_eq!(json["default_volume_mode"], serde_json::json!("fresh"));
+        assert_eq!(
+            json["services"],
+            serde_json::json!([{ "name": "worker", "mode": "fresh" }])
+        );
+        assert_eq!(json["prepared_deploy_id"], serde_json::json!("prepare-1"));
+        assert!(json.get("applied_deploy_id").is_none());
+        assert!(json.get("failure").is_none());
     }
 
     #[test]

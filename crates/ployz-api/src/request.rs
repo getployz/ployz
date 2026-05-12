@@ -1,6 +1,7 @@
 use crate::build::{BuildLocalRequest, BuildMachineRequest};
 use crate::deploy::{
-    BranchNamespaceRequest, DeployApplyPreparedRequest, DeployOptions, MigrateServiceRequest,
+    BranchApplyPreparedRequest, BranchEnvironmentStatusRequest, BranchNamespaceRequest,
+    DeployApplyPreparedRequest, DeployOptions, MigrateServiceRequest,
 };
 use crate::image::{
     ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageReceiveSessionRequest,
@@ -182,6 +183,13 @@ pub enum DaemonRequest {
     BranchNamespace {
         request: BranchNamespaceRequest,
     },
+    BranchApplyPrepared {
+        request: BranchApplyPreparedRequest,
+    },
+    BranchEnvironmentStatus {
+        request: BranchEnvironmentStatusRequest,
+    },
+    BranchEnvironmentList,
     MigrateService {
         request: MigrateServiceRequest,
     },
