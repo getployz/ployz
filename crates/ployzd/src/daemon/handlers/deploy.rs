@@ -286,6 +286,11 @@ impl DaemonState {
             );
         }
         if let Some(environment) = branch_environment.as_ref()
+            && active_branch_prepared_replay(environment, &request.prepared_deploy_id)
+        {
+            return self.branch_environment_replay_response(environment.clone());
+        }
+        if let Some(environment) = branch_environment.as_ref()
             && environment.state == BranchEnvironmentState::Active
         {
             return self.err(
@@ -353,6 +358,21 @@ impl DaemonState {
                 .await;
         }
         response
+    }
+
+    fn branch_environment_replay_response(
+        &self,
+        environment: BranchEnvironmentRecord,
+    ) -> DaemonResponse {
+        self.ok_with_payload(
+            format!(
+                "branch environment '{}' is {}",
+                environment.target_namespace, environment.state
+            ),
+            Some(DaemonPayload::BranchEnvironment(BranchEnvironmentPayload {
+                environment,
+            })),
+        )
     }
 
     async fn branch_apply_prepared_response(
@@ -893,8 +913,13 @@ async fn record_branch_apply_prepared_outcome(
     response: &DaemonResponse,
 ) -> ployz_types::Result<BranchEnvironmentRecord> {
     let updated_at = ployz_types::time::now_unix_secs();
+    if let Some(environment) =
+        active_branch_prepared_replay_record(store, target_namespace, prepared_deploy_id).await?
+    {
+        return Ok(environment);
+    }
     if response.ok {
-        store
+        match store
             .mark_branch_environment_active(
                 target_namespace,
                 prepared_deploy_id,
@@ -902,7 +927,28 @@ async fn record_branch_apply_prepared_outcome(
                 updated_at,
             )
             .await
+        {
+            Ok(environment) => Ok(environment),
+            Err(error) => {
+                if let Some(environment) = active_branch_prepared_replay_record(
+                    store,
+                    target_namespace,
+                    prepared_deploy_id,
+                )
+                .await?
+                {
+                    return Ok(environment);
+                }
+                Err(error)
+            }
+        }
     } else {
+        if let Some(environment) =
+            active_branch_prepared_replay_record(store, target_namespace, prepared_deploy_id)
+                .await?
+        {
+            return Ok(environment);
+        }
         let failure = BranchEnvironmentFailure {
             code: response.code.clone(),
             message: response.message.clone(),
@@ -917,6 +963,26 @@ async fn record_branch_apply_prepared_outcome(
             )
             .await
     }
+}
+
+fn active_branch_prepared_replay(
+    environment: &BranchEnvironmentRecord,
+    prepared_deploy_id: &DeployId,
+) -> bool {
+    environment.state == BranchEnvironmentState::Active
+        && environment.prepared_deploy_id.as_ref() == Some(prepared_deploy_id)
+        && environment.applied_deploy_id.as_ref() == Some(prepared_deploy_id)
+}
+
+async fn active_branch_prepared_replay_record(
+    store: &StoreDriver,
+    target_namespace: &Namespace,
+    prepared_deploy_id: &DeployId,
+) -> ployz_types::Result<Option<BranchEnvironmentRecord>> {
+    Ok(store
+        .get_branch_environment(target_namespace)
+        .await?
+        .filter(|environment| active_branch_prepared_replay(environment, prepared_deploy_id)))
 }
 
 async fn renew_deploy_lock(
@@ -1133,21 +1199,24 @@ fn decode_manifest(manifest_json: &str) -> Result<DeployManifest, Box<DaemonResp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::RetainedSubnet;
+    use crate::mesh_state::network::NetworkConfig;
     use ployz_api::{
         BranchResourceMode, DaemonRequest, DeployFailureReason, VolumeZfsTransferInfo,
         VolumeZfsTransferPayload,
     };
     use ployz_nats::{NodeCommandSubject, RpcFailure, RpcFailureKind, RpcPolicy};
     use ployz_orchestrator::deploy::participant::MoveVolumeRequest;
+    use ployz_orchestrator::{Mesh, WireguardDriver};
     use ployz_runtime_api::Identity;
     use ployz_store_api::{DeployCommit, DeployStore, MachineMembershipStore};
     use ployz_types::model::{
         DeployBaselineComponent, DeployBaselineDiff, DeployId, DeployPhaseCommitPolicy,
         DeployPhaseId, DeployPhaseRecord, DeployPhaseRollbackPolicy, DeployPreview,
         DeployPreviewBaseline, DeployPreviewBaselineComponents, DeployRecord, DeployState,
-        MachineId, MachineLifecycle, MachineMembership, OverlayIp, PreparedDeployState, PublicKey,
-        ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord, ServiceRoutingPolicy,
-        VolumeRecord,
+        MachineId, MachineLifecycle, MachineMembership, NetworkLifecycle, NetworkName, OverlayIp,
+        PreparedDeployRecord, PreparedDeployState, PublicKey, ServiceRelease, ServiceReleaseRecord,
+        ServiceRevisionRecord, ServiceRoutingPolicy, VolumeRecord,
     };
     use ployz_types::spec::{
         ContainerSpec, Mount, MountSource, NetworkMode, Placement, PullPolicy, Resources,
@@ -1170,6 +1239,37 @@ mod tests {
             None,
             1,
         )
+    }
+
+    fn install_active_mesh(state: &mut DaemonState, store: StoreDriver) {
+        let identity = Identity::generate(MachineId("founder".into()), [42; 32]);
+        let mut config = NetworkConfig::new(
+            NetworkName("alpha".into()),
+            &identity.public_key,
+            "10.210.0.0/16",
+            "10.210.0.0/24".parse().expect("valid subnet"),
+        );
+        config.lifecycle = NetworkLifecycle::Running;
+        let mesh = Mesh::new(
+            WireguardDriver::memory(),
+            store,
+            None,
+            state.identity.machine_id.clone(),
+            51820,
+        );
+        state.active = Some(ActiveMesh {
+            retained_subnet: RetainedSubnet::from_running_config(config.subnet),
+            config,
+            mesh,
+            nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            image_receiver: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            image_receiver_bind_addr: Some("127.0.0.1:4320".parse().expect("valid address")),
+            gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            certificate_renewal: None,
+            bootstrap_peer_seed: None,
+        });
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
@@ -2135,6 +2235,140 @@ mod tests {
             .expect("branch environment exists");
         assert_eq!(stored.state, BranchEnvironmentState::Active);
         assert_eq!(stored.applied_deploy_id, Some(DeployId("prepare-1".into())));
+    }
+
+    #[tokio::test]
+    async fn branch_apply_prepared_outcome_replays_active_matching_prepared_id() {
+        let store = StoreDriver::memory();
+        let baseline = test_baseline("sources");
+        let record = BranchEnvironmentRecord {
+            source_namespace: Namespace("prod".into()),
+            target_namespace: Namespace("pr-39".into()),
+            state: BranchEnvironmentState::Active,
+            default_service_mode: BranchEnvironmentResourceMode::Branch,
+            default_volume_mode: BranchEnvironmentResourceMode::Fresh,
+            services: Vec::new(),
+            volumes: Vec::new(),
+            prepared_deploy_id: Some(DeployId("prepare-1".into())),
+            applied_deploy_id: Some(DeployId("prepare-1".into())),
+            manifest_hash: "manifest".into(),
+            baseline,
+            service_branch_sources: Vec::new(),
+            volume_clones: Vec::new(),
+            image_availability: Vec::new(),
+            failure: None,
+            created_at: 1,
+            updated_at: 10,
+        };
+        store
+            .upsert_branch_environment(&record)
+            .await
+            .expect("write active branch environment");
+
+        let stored = record_branch_apply_prepared_outcome(
+            &store,
+            &Namespace("pr-39".into()),
+            &DeployId("prepare-1".into()),
+            &DaemonResponse {
+                ok: true,
+                code: "OK".into(),
+                message: "{}".into(),
+                payload: None,
+            },
+        )
+        .await
+        .expect("matching active prepared id should replay");
+
+        assert_eq!(stored, record);
+        assert_eq!(
+            store
+                .get_branch_environment(&Namespace("pr-39".into()))
+                .await
+                .expect("get branch environment")
+                .expect("branch environment exists"),
+            record
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_branch_apply_prepared_replays_active_environment_before_runtime_setup() {
+        let mut state = test_daemon_state();
+        let store = StoreDriver::memory();
+        let namespace = Namespace("pr-39".into());
+        let prepared_deploy_id = DeployId("prepare-1".into());
+        let baseline = test_baseline("sources");
+        let preview = DeployPreview {
+            namespace: namespace.clone(),
+            manifest_hash: "manifest".into(),
+            baseline: Some(baseline.clone()),
+            participants: Vec::new(),
+            phases: Vec::new(),
+            services: Vec::new(),
+            service_sources: Vec::new(),
+            service_source_fingerprint: String::new(),
+            service_branch_sources: Vec::new(),
+            image_availability: Vec::new(),
+            volume_moves: Vec::new(),
+            volume_clones: Vec::new(),
+            volume_clone_preflights: Vec::new(),
+            warnings: Vec::new(),
+        };
+        store
+            .write_prepared_deploy(&PreparedDeployRecord {
+                prepared_deploy_id: prepared_deploy_id.clone(),
+                namespace: namespace.clone(),
+                manifest_hash: "manifest".into(),
+                manifest_json: "{not-json".into(),
+                preview,
+                baseline: baseline.clone(),
+                coordinator_machine_id: MachineId("founder".into()),
+                state: PreparedDeployState::Applied,
+                created_at: 1,
+                expires_at: 100,
+                updated_at: 10,
+            })
+            .await
+            .expect("write prepared deploy");
+        store
+            .upsert_branch_environment(&BranchEnvironmentRecord {
+                source_namespace: Namespace("prod".into()),
+                target_namespace: namespace.clone(),
+                state: BranchEnvironmentState::Active,
+                default_service_mode: BranchEnvironmentResourceMode::Branch,
+                default_volume_mode: BranchEnvironmentResourceMode::Fresh,
+                services: Vec::new(),
+                volumes: Vec::new(),
+                prepared_deploy_id: Some(prepared_deploy_id.clone()),
+                applied_deploy_id: Some(prepared_deploy_id.clone()),
+                manifest_hash: "manifest".into(),
+                baseline,
+                service_branch_sources: Vec::new(),
+                volume_clones: Vec::new(),
+                image_availability: Vec::new(),
+                failure: None,
+                created_at: 1,
+                updated_at: 10,
+            })
+            .await
+            .expect("write active branch environment");
+        install_active_mesh(&mut state, store);
+
+        let response = state
+            .handle_branch_apply_prepared(&BranchApplyPreparedRequest {
+                prepared_deploy_id: prepared_deploy_id.clone(),
+            })
+            .await;
+
+        assert!(response.ok, "{response:?}");
+        let Some(DaemonPayload::BranchEnvironment(payload)) = response.payload else {
+            panic!("expected branch environment replay payload: {response:?}");
+        };
+        assert_eq!(payload.environment.target_namespace, namespace);
+        assert_eq!(payload.environment.state, BranchEnvironmentState::Active);
+        assert_eq!(
+            payload.environment.applied_deploy_id,
+            Some(prepared_deploy_id)
+        );
     }
 
     #[tokio::test]
