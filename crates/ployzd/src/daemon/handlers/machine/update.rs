@@ -43,6 +43,11 @@ impl DaemonState {
                     format!("machine '{duplicate}' was targeted more than once"),
                 );
             }
+            for id in ids {
+                if let Err(error) = MachineId::try_new(id.as_str()) {
+                    return self.err("MACHINE_UPDATE_INVALID_TARGET", error);
+                }
+            }
             update_targets_with_self_last(ids, &self.identity.machine_id)
         };
 
@@ -260,17 +265,17 @@ impl DaemonState {
         target: &str,
         version: &str,
     ) -> Result<MachineUpdateRow, MachineUpdateRow> {
+        let machine_id = MachineId::try_new(target).map_err(|error| MachineUpdateRow {
+            id: target.to_string(),
+            version: version.to_string(),
+            message: error,
+        })?;
         let active = match self.require_active("NO_RUNNING_NETWORK", "no mesh running") {
             Ok(active) => active,
             Err(response) => {
-                return Err(update_row(
-                    &MachineId::new(target.to_string()),
-                    version,
-                    response.message(),
-                ));
+                return Err(update_row(&machine_id, version, response.message()));
             }
         };
-        let machine_id = MachineId::new(target.to_string());
         let record = match find_machine_record(&active.mesh.store, &machine_id).await {
             Ok(Some(record)) => record,
             Ok(None) => {

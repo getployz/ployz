@@ -455,6 +455,16 @@ async fn machine_remove_refuses_offline_peer_without_force() {
 }
 
 #[tokio::test]
+async fn machine_remove_rejects_invalid_target_id() {
+    let (state, _, _) = make_state(false).await;
+
+    let response = state.handle_machine_remove("bad machine", false).await;
+
+    assert!(!response.is_ok());
+    assert_eq!(response.code(), "MACHINE_INVALID_TARGET");
+}
+
+#[tokio::test]
 async fn machine_remove_force_deletes_membership_record() {
     let (state, store, _) = make_state(false).await;
     store
@@ -476,6 +486,18 @@ async fn machine_remove_force_deletes_membership_record() {
             .into_iter()
             .any(|machine| machine.id.as_str() == "peer-1")
     );
+}
+
+#[tokio::test]
+async fn machine_update_rejects_invalid_target_id() {
+    let (state, _, _) = make_state(false).await;
+
+    let response = state
+        .handle_machine_update(&["bad machine".into()], "latest", None)
+        .await;
+
+    assert!(!response.is_ok());
+    assert_eq!(response.code(), "MACHINE_UPDATE_INVALID_TARGET");
 }
 
 #[tokio::test]
