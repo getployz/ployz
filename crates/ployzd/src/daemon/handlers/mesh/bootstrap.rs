@@ -3,7 +3,7 @@ use crate::mesh_state::bootstrap::{
 };
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::{
-    DaemonPayload, DaemonResponse, MachineTransitionGoal, MeshBootstrapRequest,
+    DaemonPayload, DaemonResponse, MachineSelfTransition, MeshBootstrapRequest,
     MeshSelfRecordPayload,
 };
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
@@ -97,11 +97,9 @@ impl DaemonState {
         match self.start_mesh(net_config.clone()).await {
             Ok(_) => {
                 if let Err(error) = self
-                    .transition_local_machine(
-                        MachineTransitionGoal::Activate,
-                        Some(request.assigned_subnet),
-                        false,
-                    )
+                    .transition_local_machine(MachineSelfTransition::Activate {
+                        assigned_subnet: request.assigned_subnet,
+                    })
                     .await
                 {
                     self.stop_started_mesh_after_transition_failure().await;

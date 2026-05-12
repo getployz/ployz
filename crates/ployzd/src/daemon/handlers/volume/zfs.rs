@@ -5,6 +5,7 @@ use ployz_api::{
     DaemonPayload, DaemonResponse, VolumeZfsClonePayload, VolumeZfsInspectPayload,
     VolumeZfsPeerSendPayload, VolumeZfsSnapshotInfo, VolumeZfsSnapshotPayload,
     VolumeZfsTransferInfo, VolumeZfsTransferListPayload, VolumeZfsTransferPayload,
+    VolumeZfsTransferState,
 };
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
 use ployz_runtime_backends::storage::{CloneMetadata, DatasetSpec, TokioShellRunner, ZfsDriver};
@@ -41,17 +42,6 @@ enum TransferStatus {
     Interrupted,
 }
 
-impl TransferStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Succeeded => "succeeded",
-            Self::Failed => "failed",
-            Self::Interrupted => "interrupted",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TransferTransition {
     status: TransferStatus,
@@ -86,30 +76,275 @@ impl TransferTransition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+enum TransferState {
+    Running {
+        stage: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_transferred: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+    Succeeded {
+        stage: String,
+        snapshot_guid: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_snapshot_guid: Option<u64>,
+        bytes_transferred: u64,
+    },
+    Failed {
+        stage: String,
+        last_error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_transferred: Option<u64>,
+    },
+    Interrupted {
+        stage: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_snapshot_guid: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_transferred: Option<u64>,
+    },
+}
+
+impl TransferState {
+    fn running(stage: impl Into<String>) -> Self {
+        Self::Running {
+            stage: stage.into(),
+            snapshot_guid: None,
+            from_snapshot_guid: None,
+            bytes_transferred: None,
+            last_error: None,
+        }
+    }
+
+    fn status(&self) -> TransferStatus {
+        match self {
+            Self::Running { .. } => TransferStatus::Running,
+            Self::Succeeded { .. } => TransferStatus::Succeeded,
+            Self::Failed { .. } => TransferStatus::Failed,
+            Self::Interrupted { .. } => TransferStatus::Interrupted,
+        }
+    }
+
+    fn stage(&self) -> &str {
+        match self {
+            Self::Running { stage, .. }
+            | Self::Succeeded { stage, .. }
+            | Self::Failed { stage, .. }
+            | Self::Interrupted { stage, .. } => stage,
+        }
+    }
+
+    fn set_stage(&mut self, next_stage: String) {
+        match self {
+            Self::Running { stage, .. }
+            | Self::Succeeded { stage, .. }
+            | Self::Failed { stage, .. }
+            | Self::Interrupted { stage, .. } => *stage = next_stage,
+        }
+    }
+
+    fn snapshot_guid(&self) -> Option<u64> {
+        match self {
+            Self::Running { snapshot_guid, .. }
+            | Self::Failed { snapshot_guid, .. }
+            | Self::Interrupted { snapshot_guid, .. } => *snapshot_guid,
+            Self::Succeeded { snapshot_guid, .. } => Some(*snapshot_guid),
+        }
+    }
+
+    fn from_snapshot_guid(&self) -> Option<u64> {
+        match self {
+            Self::Running {
+                from_snapshot_guid, ..
+            }
+            | Self::Succeeded {
+                from_snapshot_guid, ..
+            }
+            | Self::Failed {
+                from_snapshot_guid, ..
+            }
+            | Self::Interrupted {
+                from_snapshot_guid, ..
+            } => *from_snapshot_guid,
+        }
+    }
+
+    fn bytes_transferred(&self) -> Option<u64> {
+        match self {
+            Self::Running {
+                bytes_transferred, ..
+            }
+            | Self::Failed {
+                bytes_transferred, ..
+            }
+            | Self::Interrupted {
+                bytes_transferred, ..
+            } => *bytes_transferred,
+            Self::Succeeded {
+                bytes_transferred, ..
+            } => Some(*bytes_transferred),
+        }
+    }
+
+    fn last_error(&self) -> Option<&str> {
+        match self {
+            Self::Running { last_error, .. } | Self::Interrupted { last_error, .. } => {
+                last_error.as_deref()
+            }
+            Self::Failed { last_error, .. } => Some(last_error.as_str()),
+            Self::Succeeded { .. } => None,
+        }
+    }
+
+    fn with_snapshot_guid(&mut self, guid: u64) {
+        match self {
+            Self::Running { snapshot_guid, .. }
+            | Self::Failed { snapshot_guid, .. }
+            | Self::Interrupted { snapshot_guid, .. } => *snapshot_guid = Some(guid),
+            Self::Succeeded { snapshot_guid, .. } => *snapshot_guid = guid,
+        }
+    }
+
+    fn with_from_snapshot_guid(&mut self, guid: u64) {
+        match self {
+            Self::Running {
+                from_snapshot_guid, ..
+            }
+            | Self::Succeeded {
+                from_snapshot_guid, ..
+            }
+            | Self::Failed {
+                from_snapshot_guid, ..
+            }
+            | Self::Interrupted {
+                from_snapshot_guid, ..
+            } => *from_snapshot_guid = Some(guid),
+        }
+    }
+
+    fn with_bytes_transferred(&mut self, bytes: u64) {
+        match self {
+            Self::Running {
+                bytes_transferred, ..
+            }
+            | Self::Failed {
+                bytes_transferred, ..
+            }
+            | Self::Interrupted {
+                bytes_transferred, ..
+            } => *bytes_transferred = Some(bytes),
+            Self::Succeeded {
+                bytes_transferred, ..
+            } => *bytes_transferred = bytes,
+        }
+    }
+
+    fn api_state(&self) -> VolumeZfsTransferState {
+        match self {
+            Self::Running {
+                stage,
+                snapshot_guid,
+                from_snapshot_guid,
+                bytes_transferred,
+                last_error,
+            } => VolumeZfsTransferState::Running {
+                stage: stage.clone(),
+                snapshot_guid: *snapshot_guid,
+                from_snapshot_guid: *from_snapshot_guid,
+                bytes_transferred: *bytes_transferred,
+                last_error: last_error.clone(),
+            },
+            Self::Succeeded {
+                stage,
+                snapshot_guid,
+                from_snapshot_guid,
+                bytes_transferred,
+            } => VolumeZfsTransferState::Succeeded {
+                stage: stage.clone(),
+                snapshot_guid: *snapshot_guid,
+                from_snapshot_guid: *from_snapshot_guid,
+                bytes_transferred: *bytes_transferred,
+            },
+            Self::Failed {
+                stage,
+                last_error,
+                snapshot_guid,
+                from_snapshot_guid,
+                bytes_transferred,
+            } => VolumeZfsTransferState::Failed {
+                stage: stage.clone(),
+                last_error: last_error.clone(),
+                snapshot_guid: *snapshot_guid,
+                from_snapshot_guid: *from_snapshot_guid,
+                bytes_transferred: *bytes_transferred,
+            },
+            Self::Interrupted {
+                stage,
+                last_error,
+                snapshot_guid,
+                from_snapshot_guid,
+                bytes_transferred,
+            } => VolumeZfsTransferState::Interrupted {
+                stage: stage.clone(),
+                last_error: last_error.clone(),
+                snapshot_guid: *snapshot_guid,
+                from_snapshot_guid: *from_snapshot_guid,
+                bytes_transferred: *bytes_transferred,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TransferRecord {
     id: String,
     namespace: String,
     volume: String,
     source_machine: MachineId,
     target_machine: MachineId,
-    status: TransferStatus,
-    stage: String,
     snapshot_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    snapshot_guid: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     from_snapshot_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    from_snapshot_guid: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    bytes_transferred: Option<u64>,
     started_at: u64,
     updated_at: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    last_error: Option<String>,
+    state: TransferState,
 }
 
 impl TransferRecord {
+    fn status(&self) -> TransferStatus {
+        self.state.status()
+    }
+
+    fn stage(&self) -> &str {
+        self.state.stage()
+    }
+
+    fn snapshot_guid(&self) -> Option<u64> {
+        self.state.snapshot_guid()
+    }
+
+    fn from_snapshot_guid(&self) -> Option<u64> {
+        self.state.from_snapshot_guid()
+    }
+
+    fn last_error(&self) -> Option<&str> {
+        self.state.last_error()
+    }
+
     fn info(&self) -> VolumeZfsTransferInfo {
         VolumeZfsTransferInfo {
             id: self.id.clone(),
@@ -117,16 +352,11 @@ impl TransferRecord {
             volume: self.volume.clone(),
             source_machine: self.source_machine.clone(),
             target_machine: self.target_machine.clone(),
-            status: self.status.as_str().to_string(),
-            stage: self.stage.clone(),
             snapshot_name: self.snapshot_name.clone(),
-            snapshot_guid: self.snapshot_guid,
             from_snapshot_name: self.from_snapshot_name.clone(),
-            from_snapshot_guid: self.from_snapshot_guid,
-            bytes_transferred: self.bytes_transferred,
             started_at: self.started_at,
             updated_at: self.updated_at,
-            last_error: self.last_error.clone(),
+            state: self.state.api_state(),
         }
     }
 
@@ -136,15 +366,40 @@ impl TransferRecord {
             last_error,
             at_unix_secs,
         } = transition;
-        self.status = status;
-        match status {
-            TransferStatus::Succeeded => self.last_error = None,
-            TransferStatus::Failed | TransferStatus::Interrupted | TransferStatus::Running => {
-                if let Some(last_error) = last_error {
-                    self.last_error = Some(last_error);
-                }
-            }
-        }
+        let stage = self.stage().to_string();
+        let snapshot_guid = self.snapshot_guid();
+        let from_snapshot_guid = self.from_snapshot_guid();
+        let bytes_transferred = self.state.bytes_transferred();
+        let current_error = self.last_error().map(str::to_string);
+        self.state = match status {
+            TransferStatus::Running => TransferState::Running {
+                stage,
+                snapshot_guid,
+                from_snapshot_guid,
+                bytes_transferred,
+                last_error: last_error.or(current_error),
+            },
+            TransferStatus::Succeeded => TransferState::Succeeded {
+                stage,
+                snapshot_guid: snapshot_guid.unwrap_or_default(),
+                from_snapshot_guid,
+                bytes_transferred: bytes_transferred.unwrap_or_default(),
+            },
+            TransferStatus::Failed => TransferState::Failed {
+                stage,
+                last_error: last_error.unwrap_or_else(|| "zfs transfer failed".into()),
+                snapshot_guid,
+                from_snapshot_guid,
+                bytes_transferred,
+            },
+            TransferStatus::Interrupted => TransferState::Interrupted {
+                stage,
+                last_error: last_error.or(current_error),
+                snapshot_guid,
+                from_snapshot_guid,
+                bytes_transferred,
+            },
+        };
         self.updated_at = at_unix_secs;
     }
 }
@@ -195,20 +450,15 @@ impl TransferStore {
     ) -> Result<TransferRecord, String> {
         let record = TransferRecord {
             id,
-            namespace: namespace.0.clone(),
+            namespace: namespace.as_str().to_string(),
             volume: volume.to_string(),
             source_machine,
             target_machine,
-            status: TransferStatus::Running,
-            stage: "preflight".into(),
             snapshot_name,
-            snapshot_guid: None,
             from_snapshot_name,
-            from_snapshot_guid: None,
-            bytes_transferred: None,
             started_at: now,
             updated_at: now,
-            last_error: None,
+            state: TransferState::running("preflight"),
         };
         self.save(&record)?;
         Ok(record)
@@ -228,13 +478,13 @@ impl TransferStore {
         from_snapshot_name: Option<&str>,
     ) -> Result<Option<TransferRecord>, String> {
         Ok(self.list()?.into_iter().find(|record| {
-            record.namespace == namespace.0
+            record.namespace == namespace.as_str()
                 && record.volume == volume
                 && record.source_machine == *source_machine
                 && record.target_machine == *target_machine
                 && record.snapshot_name == snapshot_name
                 && record.from_snapshot_name.as_deref() == from_snapshot_name
-                && record.status == TransferStatus::Running
+                && record.status() == TransferStatus::Running
         }))
     }
 
@@ -326,7 +576,7 @@ impl TransferStore {
         record: &mut TransferRecord,
         stage: impl Into<String>,
     ) -> Result<(), String> {
-        record.stage = stage.into();
+        record.state.set_stage(stage.into());
         record.updated_at = now_unix_secs();
         self.save(record)
     }
@@ -402,7 +652,7 @@ impl TransferStore {
     fn recover_startup(&self) -> Result<usize, String> {
         let mut count = 0;
         for mut record in self.list()? {
-            if record.status == TransferStatus::Running {
+            if record.status() == TransferStatus::Running {
                 self.update_status(&mut record, TransferStatus::Interrupted, None)?;
                 self.delete_claim_for(&record);
                 count += 1;
@@ -425,7 +675,7 @@ impl TransferStore {
 
     fn delete_claim_for(&self, record: &TransferRecord) {
         let key = move_claim_key(
-            &Namespace(record.namespace.clone()),
+            &Namespace::new(record.namespace.clone()),
             &record.volume,
             &record.source_machine,
             &record.target_machine,
@@ -471,7 +721,7 @@ async fn wait_for_claimed_transfer_record(
 ) -> Result<ClaimedTransfer, String> {
     for attempt in 0..MOVE_CLAIM_RECORD_WAIT_ATTEMPTS {
         match store.load(transfer_id)? {
-            Some(record) if record.status == TransferStatus::Running => {
+            Some(record) if record.status() == TransferStatus::Running => {
                 return Ok(ClaimedTransfer::Running(record));
             }
             Some(record) => return Ok(ClaimedTransfer::Terminal(record)),
@@ -495,9 +745,9 @@ fn move_claim_key(
 ) -> String {
     let raw = format!(
         "{}\n{volume}\n{}\n{}\n{snapshot_name}\n{}",
-        namespace.0,
-        source_machine.0,
-        target_machine.0,
+        namespace.as_str(),
+        source_machine.as_str(),
+        target_machine.as_str(),
         from_snapshot_name.unwrap_or("")
     );
     ployz_types::spec::stable_hash_hex(raw.as_bytes())
@@ -554,19 +804,22 @@ impl DaemonState {
         volume: &str,
         machine: Option<&str>,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = match Namespace::try_new(namespace) {
+            Ok(namespace) => namespace,
+            Err(error) => return self.err("VOLUME_ZFS_INSPECT_FAILED", error),
+        };
         let target_machine: Option<String> = match machine {
             Some(machine) => Some(machine.to_string()),
             None => match self.volume_record(&namespace, volume).await {
-                Ok(record) => Some(record.machine_id.0),
+                Ok(record) => Some(record.machine_id.as_str().to_string()),
                 Err(error) => return self.err("VOLUME_ZFS_INSPECT_FAILED", error),
             },
         };
         if let Some(machine) = target_machine
-            && machine != self.identity.machine_id.0
+            && machine != self.identity.machine_id.as_str()
         {
             return self
-                .forward_volume_zfs_inspect(&namespace.0, volume, &machine)
+                .forward_volume_zfs_inspect(&namespace.as_str(), volume, &machine)
                 .await;
         }
         match self.inspect_local_volume_zfs(&namespace, volume).await {
@@ -584,7 +837,10 @@ impl DaemonState {
         volume: &str,
         snapshot: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = match Namespace::try_new(namespace) {
+            Ok(namespace) => namespace,
+            Err(error) => return self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error),
+        };
         let record = match self.volume_record(&namespace, volume).await {
             Ok(record) => record,
             Err(error) => return self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error),
@@ -619,8 +875,8 @@ impl DaemonState {
         mode: &str,
         owner: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
-        let source_namespace = Namespace(source_namespace.to_string());
+        let namespace = Namespace::new(namespace.to_string());
+        let source_namespace = Namespace::new(source_namespace.to_string());
         match self
             .clone_local_volume_zfs(
                 &namespace,
@@ -652,8 +908,8 @@ impl DaemonState {
         source_volume: &str,
         snapshot: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
-        let source_namespace = Namespace(source_namespace.to_string());
+        let namespace = Namespace::new(namespace.to_string());
+        let source_namespace = Namespace::new(source_namespace.to_string());
         match self
             .cleanup_uncommitted_local_volume_clone_zfs(
                 &namespace,
@@ -678,7 +934,10 @@ impl DaemonState {
         target_machine: &str,
         from_snapshot: Option<&str>,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = match Namespace::try_new(namespace) {
+            Ok(namespace) => namespace,
+            Err(error) => return self.err("VOLUME_ZFS_SEND_FAILED", error),
+        };
         let record = match self.volume_record(&namespace, volume).await {
             Ok(record) => record,
             Err(error) => return self.err("VOLUME_ZFS_SEND_FAILED", error),
@@ -688,12 +947,14 @@ impl DaemonState {
                 "VOLUME_ZFS_SCOPE_NOT_SUPPORTED",
                 format!(
                     "volume '{}/{}' has scope {:?}; only Single is supported in this build",
-                    namespace.0, volume, record.scope
+                    namespace.as_str(),
+                    volume,
+                    record.scope
                 ),
             );
         }
         let source = match self
-            .find_volume_move_source_machine(&record.machine_id.0)
+            .find_volume_move_source_machine(&record.machine_id.as_str())
             .await
         {
             Ok(record) => record,
@@ -822,7 +1083,7 @@ impl DaemonState {
                             Ok(ClaimedTransfer::Terminal(existing)) => {
                                 tracing::warn!(
                                     transfer_id = %existing.id,
-                                    status = ?existing.status,
+                                    status = ?existing.status(),
                                     "deleting stale zfs transfer claim for terminal transfer"
                                 );
                                 store.delete_move_claim(
@@ -907,7 +1168,10 @@ impl DaemonState {
         volume: &str,
         snapshot: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = match Namespace::try_new(namespace) {
+            Ok(namespace) => namespace,
+            Err(error) => return self.err("VOLUME_ZFS_PEER_SNAPSHOT_FAILED", error),
+        };
         match self
             .snapshot_local_source_volume_zfs(&namespace, volume, snapshot)
             .await
@@ -926,7 +1190,10 @@ impl DaemonState {
         volume: &str,
         snapshot: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = match Namespace::try_new(namespace) {
+            Ok(namespace) => namespace,
+            Err(error) => return self.err("VOLUME_ZFS_PEER_SNAPSHOT_GUID_FAILED", error),
+        };
         match self
             .snapshot_guid_local_volume_zfs(&namespace, volume, snapshot)
             .await
@@ -949,7 +1216,10 @@ impl DaemonState {
         from_snapshot: Option<&str>,
         from_snapshot_guid: Option<u64>,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = match Namespace::try_new(namespace) {
+            Ok(namespace) => namespace,
+            Err(error) => return self.err("VOLUME_ZFS_PEER_START_SEND_FAILED", error),
+        };
         let record = match self.volume_record(&namespace, volume).await {
             Ok(record) => record,
             Err(error) => return self.err("VOLUME_ZFS_PEER_START_SEND_FAILED", error),
@@ -959,7 +1229,10 @@ impl DaemonState {
                 "VOLUME_ZFS_PEER_START_SEND_FAILED",
                 format!(
                     "volume '{}/{}' is pinned to machine '{}', not local machine '{}'",
-                    namespace.0, volume, record.machine_id, self.identity.machine_id
+                    namespace.as_str(),
+                    volume,
+                    record.machine_id,
+                    self.identity.machine_id
                 ),
             );
         }
@@ -1040,7 +1313,7 @@ impl DaemonState {
             .await
             .map_err(|error| error.to_string())?;
         Ok(VolumeZfsInspectPayload {
-            namespace: namespace.0.clone(),
+            namespace: namespace.as_str().to_string(),
             volume: volume.to_string(),
             machine_id: record.machine_id,
             dataset,
@@ -1072,7 +1345,7 @@ impl DaemonState {
             .await
             .map_err(|error| error.to_string())?;
         Ok(VolumeZfsSnapshotPayload {
-            namespace: namespace.0.clone(),
+            namespace: namespace.as_str().to_string(),
             volume: volume.to_string(),
             machine_id: record.machine_id,
             dataset,
@@ -1091,7 +1364,10 @@ impl DaemonState {
         if record.machine_id != self.identity.machine_id {
             return Err(format!(
                 "volume '{}/{}' is pinned to machine '{}', not local machine '{}'",
-                namespace.0, volume, record.machine_id, self.identity.machine_id
+                namespace.as_str(),
+                volume,
+                record.machine_id,
+                self.identity.machine_id
             ));
         }
         self.snapshot_local_volume_zfs(namespace, volume, snapshot)
@@ -1115,13 +1391,15 @@ impl DaemonState {
         if source_record.scope != VolumeScope::Single {
             return Err(format!(
                 "volume '{}/{}' has scope {:?}, expected single",
-                source_namespace.0, source_volume, source_record.scope
+                source_namespace.as_str(),
+                source_volume,
+                source_record.scope
             ));
         }
         if source_record.machine_id != self.identity.machine_id {
             return Err(format!(
                 "volume '{}/{}' is pinned to machine '{}', not local machine '{}'",
-                source_namespace.0,
+                source_namespace.as_str(),
                 source_volume,
                 source_record.machine_id,
                 self.identity.machine_id
@@ -1141,7 +1419,8 @@ impl DaemonState {
         {
             return Err(format!(
                 "volume '{}/{}' already has a committed record",
-                namespace.0, volume
+                namespace.as_str(),
+                volume
             ));
         }
 
@@ -1150,7 +1429,10 @@ impl DaemonState {
         let target_dataset = volume_dataset(driver.root_dataset(), namespace, volume);
         let target = DatasetSpec {
             dataset: target_dataset.clone(),
-            mountpoint: driver.root_mountpoint().join(&namespace.0).join(volume),
+            mountpoint: driver
+                .root_mountpoint()
+                .join(&namespace.as_str())
+                .join(volume),
             quota: quota.to_string(),
             mode: mode.to_string(),
             owner: owner.to_string(),
@@ -1166,9 +1448,9 @@ impl DaemonState {
                 &target,
                 &CloneMetadata {
                     deploy_id: deploy_id.to_string(),
-                    namespace: namespace.0.clone(),
+                    namespace: namespace.as_str().to_string(),
                     volume: volume.to_string(),
-                    source_namespace: source_namespace.0.clone(),
+                    source_namespace: source_namespace.as_str().to_string(),
                     source_volume: source_volume.to_string(),
                     snapshot: snapshot.to_string(),
                 },
@@ -1176,9 +1458,9 @@ impl DaemonState {
             .await
             .map_err(|error| error.to_string())?;
         Ok(VolumeZfsClonePayload {
-            namespace: namespace.0.clone(),
+            namespace: namespace.as_str().to_string(),
             volume: volume.to_string(),
-            source_namespace: source_namespace.0.clone(),
+            source_namespace: source_namespace.as_str().to_string(),
             source_volume: source_volume.to_string(),
             machine_id: self.identity.machine_id.clone(),
             source_dataset,
@@ -1224,9 +1506,9 @@ impl DaemonState {
                     &dataset,
                     &CloneMetadata {
                         deploy_id: deploy_id.to_string(),
-                        namespace: namespace.0.clone(),
+                        namespace: namespace.as_str().to_string(),
                         volume: volume.to_string(),
-                        source_namespace: source_namespace.0.clone(),
+                        source_namespace: source_namespace.as_str().to_string(),
                         source_volume: source_volume.to_string(),
                         snapshot: snapshot.to_string(),
                     },
@@ -1236,7 +1518,9 @@ impl DaemonState {
             if !destroyed {
                 target_cleanup_error = Some(format!(
                     "refusing to clean up uncommitted clone '{}/{}': dataset '{}' exists without matching clone metadata",
-                    namespace.0, volume, dataset
+                    namespace.as_str(),
+                    volume,
+                    dataset
                 ));
             }
         }
@@ -1264,7 +1548,7 @@ impl DaemonState {
             .await
             .map_err(|error| error.to_string())?;
         Ok(VolumeZfsSnapshotPayload {
-            namespace: namespace.0.clone(),
+            namespace: namespace.as_str().to_string(),
             volume: volume.to_string(),
             machine_id: self.identity.machine_id.clone(),
             dataset,
@@ -1337,7 +1621,7 @@ impl DaemonState {
         volume: &str,
         snapshot: &str,
     ) -> DaemonResponse {
-        let Some(machine) = self.find_machine(&machine_id.0).await else {
+        let Some(machine) = self.find_machine(&machine_id.as_str()).await else {
             return self.err(
                 "MACHINE_NOT_FOUND",
                 format!("machine '{}' not found", machine_id),
@@ -1351,7 +1635,7 @@ impl DaemonState {
             .request(
                 NodeCommandSubject::volume_zfs_snapshot(&machine.id),
                 &ployz_api::DaemonRequest::VolumeZfsSnapshot {
-                    namespace: namespace.0.clone(),
+                    namespace: namespace.as_str().to_string(),
                     volume: volume.to_string(),
                     snapshot: snapshot.to_string(),
                 },
@@ -1366,7 +1650,9 @@ impl DaemonState {
     async fn find_machine(&self, machine: &str) -> Option<ployz_types::model::MachineMembership> {
         let active = self.active.as_ref()?;
         let machines = active.mesh.store.list_machines().await.ok()?;
-        machines.into_iter().find(|record| record.id.0 == machine)
+        machines
+            .into_iter()
+            .find(|record| record.id.as_str() == machine)
     }
 
     async fn find_active_machine(&self, machine: &str) -> Result<MachineMembership, String> {
@@ -1405,7 +1691,7 @@ impl DaemonState {
 }
 
 fn volume_dataset(root: &str, namespace: &Namespace, volume: &str) -> String {
-    format!("{root}/{}/{}", namespace.0, volume)
+    format!("{root}/{}/{}", namespace.as_str(), volume)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1433,7 +1719,7 @@ async fn run_coordinated_zfs_transfer_inner(
         snapshot,
     )
     .await?;
-    transfer.snapshot_guid = Some(snap_info.guid);
+    transfer.state.with_snapshot_guid(snap_info.guid);
     store.save(transfer)?;
 
     if let Some(from_snapshot) = from_snapshot {
@@ -1464,7 +1750,7 @@ async fn run_coordinated_zfs_transfer_inner(
                 target_from_guid.guid, from_guid.guid
             ));
         }
-        transfer.from_snapshot_guid = Some(from_guid.guid);
+        transfer.state.with_from_snapshot_guid(from_guid.guid);
         store.save(transfer)?;
     }
 
@@ -1480,10 +1766,12 @@ async fn run_coordinated_zfs_transfer_inner(
         snapshot,
         snap_info.guid,
         from_snapshot,
-        transfer.from_snapshot_guid,
+        transfer.from_snapshot_guid(),
     )
     .await?;
-    transfer.bytes_transferred = Some(result.bytes_transferred);
+    transfer
+        .state
+        .with_bytes_transferred(result.bytes_transferred);
     store.save(transfer)?;
 
     store.update_stage(transfer, "verify")?;
@@ -1542,7 +1830,7 @@ async fn send_zfs_stream_from_local(
         .map_err(|err| format!("connect zfs transfer target {address}: {err}"))?;
     let (reader, mut writer) = stream.into_split();
     let open = ZfsTransferOpen {
-        namespace: record.namespace.0.clone(),
+        namespace: record.namespace.as_str().to_string(),
         volume: record.volume_name.clone(),
         snapshot: snapshot.to_string(),
         expected_guid,
@@ -1647,7 +1935,7 @@ async fn snapshot_on_machine(
             .await
             .map_err(|error| error.to_string())?;
         return Ok(VolumeZfsSnapshotPayload {
-            namespace: namespace.0.clone(),
+            namespace: namespace.as_str().to_string(),
             volume: volume.to_string(),
             machine_id: machine.id.clone(),
             dataset,
@@ -1661,7 +1949,7 @@ async fn snapshot_on_machine(
         .request(
             NodeCommandSubject::volume_zfs_snapshot(&machine.id),
             &ployz_api::DaemonRequest::VolumeZfsPeerSnapshot {
-                namespace: namespace.0.clone(),
+                namespace: namespace.as_str().to_string(),
                 volume: volume.to_string(),
                 snapshot: snapshot.to_string(),
             },
@@ -1689,7 +1977,7 @@ async fn snapshot_guid_on_machine(
             .await
             .map_err(|error| error.to_string())?;
         return Ok(VolumeZfsSnapshotPayload {
-            namespace: namespace.0.clone(),
+            namespace: namespace.as_str().to_string(),
             volume: volume.to_string(),
             machine_id: machine.id.clone(),
             dataset,
@@ -1703,7 +1991,7 @@ async fn snapshot_guid_on_machine(
         .request(
             NodeCommandSubject::volume_zfs_snapshot_guid(&machine.id),
             &ployz_api::DaemonRequest::VolumeZfsPeerSnapshotGuid {
-                namespace: namespace.0.clone(),
+                namespace: namespace.as_str().to_string(),
                 volume: volume.to_string(),
                 snapshot: snapshot.to_string(),
             },
@@ -1749,10 +2037,10 @@ async fn start_send_on_machine(
         .request(
             NodeCommandSubject::volume_zfs_start_send(&source.id),
             &ployz_api::DaemonRequest::VolumeZfsPeerStartSend {
-                namespace: record.namespace.0.clone(),
+                namespace: record.namespace.as_str().to_string(),
                 volume: record.volume_name.clone(),
                 snapshot: snapshot.to_string(),
-                target_machine: target.id.0.clone(),
+                target_machine: target.id.as_str().to_string(),
                 expected_guid,
                 from_snapshot: from_snapshot.map(str::to_string),
                 from_snapshot_guid,
@@ -1760,13 +2048,14 @@ async fn start_send_on_machine(
         )
         .await
         .map_err(|error| error.to_string())?;
-    if !response.ok {
+    if !response.is_ok() {
         return Err(format!(
             "remote peer start-send failed [{}]: {}",
-            response.code, response.message
+            response.code(),
+            response.message()
         ));
     }
-    let Some(DaemonPayload::VolumeZfsPeerSend(payload)) = response.payload else {
+    let Some(DaemonPayload::VolumeZfsPeerSend(payload)) = response.payload() else {
         return Err("remote peer start-send response missing payload".to_string());
     };
     Ok(SendResult {
@@ -1779,13 +2068,14 @@ fn expect_snapshot_payload(
     response: DaemonResponse,
     operation: &str,
 ) -> Result<VolumeZfsSnapshotPayload, String> {
-    if !response.ok {
+    if !response.is_ok() {
         return Err(format!(
             "{operation} failed [{}]: {}",
-            response.code, response.message
+            response.code(),
+            response.message()
         ));
     }
-    let Some(DaemonPayload::VolumeZfsSnapshot(payload)) = response.payload else {
+    let Some(DaemonPayload::VolumeZfsSnapshot(payload)) = response.payload() else {
         return Err(format!("{operation} response missing payload"));
     };
     Ok(payload)
@@ -1820,6 +2110,9 @@ fn finalize_zfs_transfer(
 #[cfg(test)]
 mod tests {
     use super::{MoveClaimOutcome, TransferStatus, TransferStore, finalize_zfs_transfer};
+    use crate::daemon::DaemonState;
+    use ployz_api::VolumeZfsTransferState;
+    use ployz_runtime_api::Identity;
     use ployz_types::model::MachineId;
     use ployz_types::spec::Namespace;
     use std::path::PathBuf;
@@ -1833,10 +2126,10 @@ mod tests {
     fn begin(store: &TransferStore) -> super::TransferRecord {
         store
             .begin(
-                &Namespace("default".into()),
+                &Namespace::new("default"),
                 "data",
-                MachineId("source".into()),
-                MachineId("target".into()),
+                MachineId::new("source"),
+                MachineId::new("target"),
                 "snap".into(),
                 None,
             )
@@ -1846,10 +2139,10 @@ mod tests {
     fn create_claim(store: &TransferStore, transfer_id: &str) -> MoveClaimOutcome {
         store
             .create_move_claim(
-                &Namespace("default".into()),
+                &Namespace::new("default"),
                 "data",
-                &MachineId("source".into()),
-                &MachineId("target".into()),
+                &MachineId::new("source"),
+                &MachineId::new("target"),
                 "snap",
                 None,
                 transfer_id,
@@ -1859,14 +2152,80 @@ mod tests {
 
     fn claim_path(store: &TransferStore) -> PathBuf {
         let key = super::move_claim_key(
-            &Namespace("default".into()),
+            &Namespace::new("default"),
             "data",
-            &MachineId("source".into()),
-            &MachineId("target".into()),
+            &MachineId::new("source"),
+            &MachineId::new("target"),
             "snap",
             None,
         );
         store.claim_path(&key)
+    }
+
+    fn make_state(label: &str) -> DaemonState {
+        let data_dir = tmp_root(label);
+        let identity = Identity::generate(MachineId::new("founder"), [42; 32]);
+        DaemonState::new_for_tests(
+            &data_dir,
+            identity,
+            "10.210.0.0/16".into(),
+            24,
+            4319,
+            "127.0.0.1:0".into(),
+            None,
+            1,
+        )
+    }
+
+    #[tokio::test]
+    async fn peer_snapshot_rejects_invalid_namespace() {
+        let state = make_state("peer-snapshot-invalid-namespace");
+
+        let response = state
+            .handle_volume_zfs_peer_snapshot("Prod", "data", "snap")
+            .await;
+
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "VOLUME_ZFS_PEER_SNAPSHOT_FAILED");
+        assert!(
+            response.message().contains("namespace"),
+            "got: {}",
+            response.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_snapshot_guid_rejects_invalid_namespace() {
+        let state = make_state("peer-snapshot-guid-invalid-namespace");
+
+        let response = state
+            .handle_volume_zfs_peer_snapshot_guid("bad ns", "data", "snap")
+            .await;
+
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "VOLUME_ZFS_PEER_SNAPSHOT_GUID_FAILED");
+        assert!(
+            response.message().contains("namespace"),
+            "got: {}",
+            response.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_start_send_rejects_invalid_namespace() {
+        let state = make_state("peer-start-send-invalid-namespace");
+
+        let response = state
+            .handle_volume_zfs_peer_start_send("bad ns", "data", "snap", "target", 1, None, None)
+            .await;
+
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "VOLUME_ZFS_PEER_START_SEND_FAILED");
+        assert!(
+            response.message().contains("namespace"),
+            "got: {}",
+            response.message()
+        );
     }
 
     #[test]
@@ -1878,7 +2237,7 @@ mod tests {
             create_claim(&store, &transfer.id),
             MoveClaimOutcome::Created
         ));
-        assert_eq!(transfer.status, TransferStatus::Running);
+        assert_eq!(transfer.status(), TransferStatus::Running);
 
         let count = store.recover_startup().expect("recover startup");
         assert_eq!(count, 1);
@@ -1886,7 +2245,7 @@ mod tests {
             .load(&transfer.id)
             .expect("load")
             .expect("record exists");
-        assert_eq!(loaded.status, TransferStatus::Interrupted);
+        assert_eq!(loaded.status(), TransferStatus::Interrupted);
         assert!(
             !claim_path(&store).exists(),
             "startup recovery should delete the interrupted transfer claim"
@@ -1921,10 +2280,10 @@ mod tests {
             MoveClaimOutcome::Created
         ));
         store.delete_move_claim(
-            &Namespace("default".into()),
+            &Namespace::new("default"),
             "data",
-            &MachineId("source".into()),
-            &MachineId("target".into()),
+            &MachineId::new("source"),
+            &MachineId::new("target"),
             "snap",
             None,
         );
@@ -1948,10 +2307,10 @@ mod tests {
             MoveClaimOutcome::Created => panic!("claim should already exist"),
         }
         store.delete_move_claim(
-            &Namespace("default".into()),
+            &Namespace::new("default"),
             "data",
-            &MachineId("source".into()),
-            &MachineId("target".into()),
+            &MachineId::new("source"),
+            &MachineId::new("target"),
             "snap",
             None,
         );
@@ -1979,10 +2338,10 @@ mod tests {
             delayed_store
                 .begin_with_id(
                     "transfer-a".into(),
-                    &Namespace("default".into()),
+                    &Namespace::new("default"),
                     "data",
-                    MachineId("source".into()),
-                    MachineId("target".into()),
+                    MachineId::new("source"),
+                    MachineId::new("target"),
                     "snap".into(),
                     None,
                     super::now_unix_secs(),
@@ -1996,7 +2355,7 @@ mod tests {
         {
             super::ClaimedTransfer::Running(record) => assert_eq!(record.id, "transfer-a"),
             super::ClaimedTransfer::Terminal(record) => {
-                panic!("expected running transfer, got {:?}", record.status)
+                panic!("expected running transfer, got {:?}", record.status())
             }
             super::ClaimedTransfer::MissingAfterWait => {
                 panic!("claim should wait for newly created transfer record")
@@ -2048,10 +2407,10 @@ mod tests {
 
         let found = store
             .find_reusable(
-                &Namespace("default".into()),
+                &Namespace::new("default"),
                 "data",
-                &MachineId("source".into()),
-                &MachineId("target".into()),
+                &MachineId::new("source"),
+                &MachineId::new("target"),
                 "snap",
                 None,
             )
@@ -2075,10 +2434,10 @@ mod tests {
 
             let found = store
                 .find_reusable(
-                    &Namespace("default".into()),
+                    &Namespace::new("default"),
                     "data",
-                    &MachineId("source".into()),
-                    &MachineId("target".into()),
+                    &MachineId::new("source"),
+                    &MachineId::new("target"),
                     "snap",
                     None,
                 )
@@ -2107,9 +2466,9 @@ mod tests {
             .load(&transfer.id)
             .expect("load")
             .expect("record exists");
-        assert_eq!(loaded.status, TransferStatus::Succeeded);
-        assert_eq!(loaded.stage, "complete");
-        assert!(loaded.last_error.is_none());
+        assert_eq!(loaded.status(), TransferStatus::Succeeded);
+        assert_eq!(loaded.stage(), "complete");
+        assert!(loaded.last_error().is_none());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2129,8 +2488,8 @@ mod tests {
             .load(&transfer.id)
             .expect("load")
             .expect("record exists");
-        assert_eq!(loaded.status, TransferStatus::Failed);
-        assert_eq!(loaded.last_error.as_deref(), Some("boom"));
+        assert_eq!(loaded.status(), TransferStatus::Failed);
+        assert_eq!(loaded.last_error(), Some("boom"));
         assert!(
             !claim_path(&store).exists(),
             "failed transfer should delete its move claim"
@@ -2159,11 +2518,16 @@ mod tests {
             .load(&transfer.id)
             .expect("load")
             .expect("record exists");
-        assert_eq!(loaded.status, TransferStatus::Interrupted);
-        assert_eq!(loaded.last_error.as_deref(), Some("send failed"));
-        assert_eq!(
-            loaded.info().last_error.as_deref(),
-            Some("send failed"),
+        assert_eq!(loaded.status(), TransferStatus::Interrupted);
+        assert_eq!(loaded.last_error(), Some("send failed"));
+        assert!(
+            matches!(
+                loaded.info().state,
+                VolumeZfsTransferState::Interrupted {
+                    last_error: Some(ref error),
+                    ..
+                } if error == "send failed"
+            ),
             "operator-facing payload should preserve the failure audience"
         );
         let _ = std::fs::remove_dir_all(root);

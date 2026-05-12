@@ -185,6 +185,11 @@ fn merge_authoritative_self(
             stored.overlay_ip = seed.overlay_ip;
             stored.topology = seed.topology;
             stored.subnet = seed.subnet;
+            if stored.subnet.is_some()
+                && stored.lifecycle == crate::model::MachineLifecycle::Standby
+            {
+                stored.lifecycle = crate::model::MachineLifecycle::Active;
+            }
             stored.bridge_ip = seed.bridge_ip;
             stored.endpoints = seed.endpoints;
             Some(stored)
@@ -192,5 +197,37 @@ fn merge_authoritative_self(
         (Some(seed), None) => Some(seed),
         (None, Some(stored)) => Some(stored),
         (None, None) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{MachineId, MachineLifecycle, MachineMembership, OverlayIp, PublicKey};
+
+    fn machine(id: &str, subnet: Option<&str>, lifecycle: MachineLifecycle) -> MachineMembership {
+        let mut record = MachineMembership::seed(
+            MachineId::new(id),
+            PublicKey([7; 32]),
+            OverlayIp("fd00::1".parse().expect("valid overlay")),
+            subnet.map(|value| value.parse().expect("valid subnet")),
+            vec!["127.0.0.1:51820".into()],
+        );
+        record.lifecycle = lifecycle;
+        record
+    }
+
+    #[test]
+    fn merge_authoritative_self_keeps_subnet_record_active() {
+        let seed = machine("peer", Some("10.210.1.0/24"), MachineLifecycle::Active);
+        let stored = machine("peer", None, MachineLifecycle::Standby);
+
+        let merged = merge_authoritative_self(Some(seed), Some(stored)).expect("merged record");
+
+        assert_eq!(
+            merged.subnet,
+            Some("10.210.1.0/24".parse().expect("valid subnet"))
+        );
+        assert_eq!(merged.lifecycle, MachineLifecycle::Active);
     }
 }

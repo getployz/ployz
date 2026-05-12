@@ -339,6 +339,11 @@
         }
       ]
     },
+    "NonZeroReplicaCount": {
+      "type": "integer",
+      "format": "uint16",
+      "minimum": 1.0
+    },
     "Placement": {
       "oneOf": [
         {
@@ -360,9 +365,7 @@
               ],
               "properties": {
                 "count": {
-                  "type": "integer",
-                  "format": "uint16",
-                  "minimum": 0.0
+                  "$ref": "#/definitions/NonZeroReplicaCount"
                 }
               }
             }
@@ -809,16 +812,16 @@
       ],
       "properties": {
         "mode": {
-          "type": "string"
+          "$ref": "#/definitions/VolumeMode"
         },
         "name": {
           "type": "string"
         },
         "owner": {
-          "type": "string"
+          "$ref": "#/definitions/VolumeOwner"
         },
         "quota": {
-          "type": "string"
+          "$ref": "#/definitions/VolumeQuota"
         },
         "scope": {
           "$ref": "#/definitions/VolumeScope"
@@ -908,6 +911,15 @@
         }
       },
       "additionalProperties": false
+    },
+    "VolumeMode": {
+      "type": "string"
+    },
+    "VolumeOwner": {
+      "type": "string"
+    },
+    "VolumeQuota": {
+      "type": "string"
     },
     "VolumeScope": {
       "type": "string",

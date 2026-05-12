@@ -14,8 +14,9 @@ use ployz_api::{
     BranchApplyPreparedRequest, BranchEnvironmentStatusRequest, BranchNamespaceMode,
     BranchNamespaceRequest, BranchResourceMode, BranchResourceModeOverride, BuildInputs,
     BuildLocalRequest, DaemonRequest, DeployOptions, ImageDistributeRequest, ImageInspectRequest,
-    ImagePushRequest, ImageStatusRequest, InstallSource as MachineInstallSource, MachineAddOptions,
-    MachineInstallOptions, MachineStoragePromoteRequest, MigrateServiceMode, MigrateServiceRequest,
+    ImagePushRequest, ImageStatusRequest, InstallGitUrl, InstallSource as MachineInstallSource,
+    MachineAddOptions, MachineInstallOptions, MachineStoragePromoteRequest, MigrateServiceMode,
+    MigrateServiceRequest,
 };
 use ployz_sdk::Transport;
 use ployz_types::model::{DeployId, ImageDigest, ImagePlatform, MachineId, StorageReplicaPolicy};
@@ -98,7 +99,7 @@ pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> 
             Ok(DaemonRequest::ImageStatus {
                 request: ImageStatusRequest {
                     digest,
-                    machine_id: machine.map(MachineId),
+                    machine_id: machine.map(parse_machine_id).transpose()?,
                 },
             })
         }
@@ -115,7 +116,10 @@ pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> 
             Ok(DaemonRequest::ImagePush {
                 request: ImagePushRequest {
                     source_image: image,
-                    target_machines: targets.into_iter().map(MachineId).collect(),
+                    target_machines: targets
+                        .into_iter()
+                        .map(parse_machine_id)
+                        .collect::<Result<Vec<_>>>()?,
                     platform: platform.map(parse_image_platform).transpose()?,
                     expected_digest,
                 },
@@ -131,8 +135,11 @@ pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> 
             Ok(DaemonRequest::ImageDistribute {
                 request: ImageDistributeRequest {
                     digest,
-                    source_machine: MachineId(source),
-                    target_machines: targets.into_iter().map(MachineId).collect(),
+                    source_machine: parse_machine_id(source)?,
+                    target_machines: targets
+                        .into_iter()
+                        .map(parse_machine_id)
+                        .collect::<Result<Vec<_>>>()?,
                     platform: platform.map(parse_image_platform).transpose()?,
                 },
             })
@@ -147,7 +154,11 @@ pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> 
                 request: ImageInspectRequest {
                     digest,
                     reference,
-                    machines: machine.map(MachineId).into_iter().collect(),
+                    machines: machine
+                        .map(parse_machine_id)
+                        .transpose()?
+                        .into_iter()
+                        .collect(),
                 },
             })
         }
@@ -181,6 +192,14 @@ fn parse_image_platform(value: String) -> Result<ImagePlatform> {
         architecture: architecture.to_string(),
         variant,
     })
+}
+
+fn parse_machine_id(value: String) -> Result<MachineId> {
+    MachineId::try_new(value).map_err(CliError::Usage)
+}
+
+fn parse_install_git_url(value: String) -> Result<InstallGitUrl> {
+    InstallGitUrl::try_new(value).map_err(CliError::Usage)
 }
 
 fn build_volume_request(action: VolumeAction) -> Result<DaemonRequest> {
@@ -323,7 +342,7 @@ fn build_branch_apply_prepared_request(args: BranchApplyPreparedArgs) -> Result<
     }
     Ok(DaemonRequest::BranchApplyPrepared {
         request: BranchApplyPreparedRequest {
-            prepared_deploy_id: DeployId(args.prepared_deploy_id),
+            prepared_deploy_id: DeployId::new(args.prepared_deploy_id),
         },
     })
 }
@@ -450,7 +469,7 @@ async fn build_deploy_service_request<T: Transport>(
     transport: &T,
     socket: &str,
 ) -> Result<DaemonRequest> {
-    if !args.volume.is_empty() && args.namespace != Namespace::system().0 {
+    if !args.volume.is_empty() && args.namespace != Namespace::system().as_str() {
         return Err(CliError::Usage(
             "deploy service -v creates a host bind mount and is only supported in the system namespace; declare managed volumes in a manifest for user workloads"
                 .into(),
@@ -499,14 +518,14 @@ async fn export_namespace_manifest<T: Transport>(
     )
     .await?;
 
-    if !response.ok {
+    if !response.is_ok() {
         return Err(CliError::Daemon {
-            code: response.code,
-            message: response.message,
+            code: response.code().to_string(),
+            message: response.message().to_string(),
         });
     }
 
-    serde_json::from_str(&response.message).map_err(|error| {
+    serde_json::from_str(response.message()).map_err(|error| {
         CliError::Serialize(format!(
             "failed to decode exported namespace manifest: {error}"
         ))
@@ -587,7 +606,7 @@ pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonReque
                 install_version,
                 install_git_url,
                 install_git_ref,
-            ),
+            )?,
         }),
         MachineAction::Add {
             identity,
@@ -606,7 +625,7 @@ pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonReque
                 install_version,
                 install_git_url,
                 install_git_ref,
-            );
+            )?;
             let options = MachineAddOptions {
                 ssh_identity_private_key: read_optional_text_file(
                     "machine add identity",
@@ -671,23 +690,63 @@ fn build_machine_install_options(
     install_version: Option<String>,
     install_git_url: Option<String>,
     install_git_ref: Option<String>,
-) -> MachineInstallOptions {
-    let has_version = install_version.is_some();
-    let has_git = install_git_url.is_some() || install_git_ref.is_some();
-    let resolved_source = match install_source {
-        Some(source) => Some(source.into()),
-        None if has_version && !has_git => Some(MachineInstallSource::Release),
-        None if !has_version && has_git => Some(MachineInstallSource::Git),
-        None => None,
+) -> Result<MachineInstallOptions> {
+    let resolved_source = match (
+        install_source,
+        install_version,
+        install_git_url,
+        install_git_ref,
+    ) {
+        (Some(InstallSourceArg::Release), version, None, None) => {
+            Some(MachineInstallSource::Release { version })
+        }
+        (Some(InstallSourceArg::Release), _, Some(_), _)
+        | (Some(InstallSourceArg::Release), _, _, Some(_)) => {
+            return Err(CliError::Usage(
+                "release install source cannot include --install-git-url or --install-git-ref"
+                    .into(),
+            ));
+        }
+        (Some(InstallSourceArg::Git), None, Some(git_url), git_ref) => {
+            Some(MachineInstallSource::Git {
+                git_url: parse_install_git_url(git_url)?,
+                git_ref,
+            })
+        }
+        (Some(InstallSourceArg::Git), Some(_), _, _) => {
+            return Err(CliError::Usage(
+                "git install source cannot include --install-version".into(),
+            ));
+        }
+        (Some(InstallSourceArg::Git), None, None, _) => {
+            return Err(CliError::Usage(
+                "git install source requires --install-git-url".into(),
+            ));
+        }
+        (None, Some(version), None, None) => Some(MachineInstallSource::Release {
+            version: Some(version),
+        }),
+        (None, None, Some(git_url), git_ref) => Some(MachineInstallSource::Git {
+            git_url: parse_install_git_url(git_url)?,
+            git_ref,
+        }),
+        (None, Some(_), Some(_), _) | (None, Some(_), None, Some(_)) => {
+            return Err(CliError::Usage(
+                "install options cannot mix --install-version with git install options".into(),
+            ));
+        }
+        (None, None, None, Some(_)) => {
+            return Err(CliError::Usage(
+                "--install-git-ref requires --install-git-url".into(),
+            ));
+        }
+        (None, None, None, None) => None,
     };
-    MachineInstallOptions {
+    Ok(MachineInstallOptions {
         runtime_target: runtime.map(Into::into),
         service_mode: service_mode.map(Into::into),
         source: resolved_source,
-        version: install_version,
-        git_url: install_git_url,
-        git_ref: install_git_ref,
-    }
+    })
 }
 
 fn required_value<T>(value: Option<T>, message: &str) -> Result<T> {
@@ -814,7 +873,7 @@ pub(crate) fn build_service_spec(
 
     ServiceSpec {
         name: service_name,
-        placement: Placement::Replicated { count: 1 },
+        placement: Placement::replicated(1),
         template: ContainerSpec {
             image: image.to_string(),
             command: if command.is_empty() {

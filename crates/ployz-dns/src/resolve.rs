@@ -113,25 +113,30 @@ pub fn parse_query(name: &str) -> DnsQuery {
             if !service.is_empty() && !namespace.is_empty() =>
         {
             if *service == "_services" {
-                DnsQuery::ListServicesExplicit {
-                    namespace: Namespace((*namespace).to_string()),
-                }
+                let Ok(namespace) = Namespace::try_new(*namespace) else {
+                    return DnsQuery::Unknown;
+                };
+                DnsQuery::ListServicesExplicit { namespace }
             } else if *service == "_instances" {
                 DnsQuery::ListInstancesServiceImplicit {
                     service: (*namespace).to_string(),
                 }
             } else {
+                let Ok(namespace) = Namespace::try_new(*namespace) else {
+                    return DnsQuery::Unknown;
+                };
                 DnsQuery::ServiceExplicit {
                     service: (*service).to_string(),
-                    namespace: Namespace((*namespace).to_string()),
+                    namespace,
                 }
             }
         }
 
         // "_instances.ns.namespace.ployz.internal"
         ["_instances", "ns", namespace, "ployz", "internal"] if !namespace.is_empty() => {
-            DnsQuery::ListInstancesNamespaceExplicit {
-                namespace: Namespace((*namespace).to_string()),
+            match Namespace::try_new(*namespace) {
+                Ok(namespace) => DnsQuery::ListInstancesNamespaceExplicit { namespace },
+                Err(_) => DnsQuery::Unknown,
             }
         }
 
@@ -139,9 +144,12 @@ pub fn parse_query(name: &str) -> DnsQuery {
         ["_instances", service, "ns", namespace, "ployz", "internal"]
             if !service.is_empty() && !namespace.is_empty() =>
         {
-            DnsQuery::ListInstancesExplicit {
-                service: (*service).to_string(),
-                namespace: Namespace((*namespace).to_string()),
+            match Namespace::try_new(*namespace) {
+                Ok(namespace) => DnsQuery::ListInstancesExplicit {
+                    service: (*service).to_string(),
+                    namespace,
+                },
+                Err(_) => DnsQuery::Unknown,
             }
         }
 
@@ -164,10 +172,13 @@ pub fn parse_query(name: &str) -> DnsQuery {
             "ployz",
             "internal",
         ] if !instance_id.is_empty() && !service.is_empty() && !namespace.is_empty() => {
-            DnsQuery::InstanceExplicit {
-                instance_id: (*instance_id).to_string(),
-                service: (*service).to_string(),
-                namespace: Namespace((*namespace).to_string()),
+            match Namespace::try_new(*namespace) {
+                Ok(namespace) => DnsQuery::InstanceExplicit {
+                    instance_id: (*instance_id).to_string(),
+                    service: (*service).to_string(),
+                    namespace,
+                },
+                Err(_) => DnsQuery::Unknown,
             }
         }
 
@@ -326,7 +337,7 @@ mod tests {
             parse_query("db.prod.ployz.internal"),
             DnsQuery::ServiceExplicit {
                 service: "db".into(),
-                namespace: Namespace("prod".into()),
+                namespace: Namespace::new("prod"),
             }
         );
     }
@@ -344,7 +355,7 @@ mod tests {
         assert_eq!(
             parse_query("_services.prod.ployz.internal"),
             DnsQuery::ListServicesExplicit {
-                namespace: Namespace("prod".into()),
+                namespace: Namespace::new("prod"),
             },
         );
     }
@@ -372,7 +383,7 @@ mod tests {
         assert_eq!(
             parse_query("_instances.ns.prod.ployz.internal"),
             DnsQuery::ListInstancesNamespaceExplicit {
-                namespace: Namespace("prod".into()),
+                namespace: Namespace::new("prod"),
             },
         );
     }
@@ -383,7 +394,7 @@ mod tests {
             parse_query("_instances.api.ns.prod.ployz.internal"),
             DnsQuery::ListInstancesExplicit {
                 service: "api".into(),
-                namespace: Namespace("prod".into()),
+                namespace: Namespace::new("prod"),
             },
         );
     }
@@ -406,7 +417,7 @@ mod tests {
             DnsQuery::InstanceExplicit {
                 instance_id: "inst-1".into(),
                 service: "api".into(),
-                namespace: Namespace("prod".into()),
+                namespace: Namespace::new("prod"),
             },
         );
     }
@@ -424,7 +435,7 @@ mod tests {
             parse_query("DB.Prod.Ployz.Internal"),
             DnsQuery::ServiceExplicit {
                 service: "db".into(),
-                namespace: Namespace("prod".into()),
+                namespace: Namespace::new("prod"),
             }
         );
     }
@@ -441,7 +452,7 @@ mod tests {
     ) {
         snapshot
             .services
-            .entry(Namespace(namespace.into()))
+            .entry(Namespace::new(namespace))
             .or_default()
             .insert(service.into(), ips);
     }
@@ -455,7 +466,7 @@ mod tests {
     ) {
         snapshot
             .instances
-            .entry(Namespace(namespace.into()))
+            .entry(Namespace::new(namespace))
             .or_default()
             .push(crate::snapshot::DnsInstanceDiagnostic {
                 service: service.into(),
@@ -478,7 +489,7 @@ mod tests {
             &snapshot,
             DnsQuery::ServiceExplicit {
                 service: "db".into(),
-                namespace: Namespace("prod".into()),
+                namespace: Namespace::new("prod"),
             },
             None,
         );
@@ -502,7 +513,7 @@ mod tests {
     fn resolve_implicit_with_namespace() {
         let mut snapshot = crate::snapshot::DnsSnapshot::empty();
         let ip = std::net::Ipv4Addr::new(10, 42, 1, 10);
-        let ns = Namespace("prod".into());
+        let ns = Namespace::new("prod");
         insert_service(&mut snapshot, "prod", "db", vec![ip]);
 
         let result = resolve(
@@ -525,7 +536,7 @@ mod tests {
     #[test]
     fn resolve_instances_implicit_with_namespace() {
         let mut snapshot = crate::snapshot::DnsSnapshot::empty();
-        let ns = Namespace("prod".into());
+        let ns = Namespace::new("prod");
         insert_instance(
             &mut snapshot,
             "prod",
@@ -547,7 +558,7 @@ mod tests {
     #[test]
     fn resolve_instances_service_implicit_filters_caller_namespace() {
         let mut snapshot = crate::snapshot::DnsSnapshot::empty();
-        let ns = Namespace("prod".into());
+        let ns = Namespace::new("prod");
         insert_instance(
             &mut snapshot,
             "prod",
@@ -593,7 +604,7 @@ mod tests {
         let result = resolve(
             &snapshot,
             DnsQuery::ListInstancesNamespaceExplicit {
-                namespace: Namespace("prod".into()),
+                namespace: Namespace::new("prod"),
             },
             None,
         );
@@ -617,7 +628,7 @@ mod tests {
             DnsQuery::InstanceExplicit {
                 instance_id: "inst-1".into(),
                 service: "api".into(),
-                namespace: Namespace("prod".into()),
+                namespace: Namespace::new("prod"),
             },
             None,
         );
@@ -641,7 +652,7 @@ mod tests {
             DnsQuery::InstanceExplicit {
                 instance_id: "inst-1".into(),
                 service: "worker".into(),
-                namespace: Namespace("prod".into()),
+                namespace: Namespace::new("prod"),
             },
             None,
         );

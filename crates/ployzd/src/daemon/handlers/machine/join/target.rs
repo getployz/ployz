@@ -1,10 +1,11 @@
 use ipnet::Ipv4Net;
-use ployz_api::{DaemonRequest, MachineTransitionGoal, MeshBootstrapRequest};
+use ployz_api::{DaemonRequest, MachineSelfTransition, MeshBootstrapRequest};
 use ployz_nats::NodeCommandSubject;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_store_api::MachineMembershipStore;
 use ployz_types::model::{
-    MachineLifecycle, MachineMembership, RegionRole, StorageParticipation, management_ip_from_key,
+    MachineLifecycle, MachineMembership, MachineStorageRole, RegionRole, StorageParticipation,
+    management_ip_from_key,
 };
 
 use super::super::operations::{
@@ -31,7 +32,7 @@ pub(super) async fn run_machine_add_target(
     mut operation: MachineOperationRecord,
     target: String,
     invite_id: String,
-    mut subnet_claim: BootstrapSubnetClaim,
+    subnet_claim: BootstrapSubnetClaim,
 ) -> MachineAddTargetResult {
     let mut stage;
     let mut joiner_id: Option<ployz_types::model::MachineId>;
@@ -40,7 +41,7 @@ pub(super) async fn run_machine_add_target(
     if let Err(err) =
         bootstrap_remote_machine(&target, &context.install, &context.ssh_options).await
     {
-        let _ = release_reserved_subnet(&mut subnet_claim).await;
+        let _ = release_reserved_subnet(subnet_claim).await;
         let _ = operation_store.update_status(
             &mut operation,
             MachineOperationStatus::Failed,
@@ -59,7 +60,7 @@ pub(super) async fn run_machine_add_target(
     let remote_identity = match remote_daemon_identity(&target, &context.ssh_options).await {
         Ok(identity) => identity,
         Err(err) => {
-            let _ = release_reserved_subnet(&mut subnet_claim).await;
+            let _ = release_reserved_subnet(subnet_claim).await;
             let _ = operation_store.update_status(
                 &mut operation,
                 MachineOperationStatus::Failed,
@@ -76,11 +77,10 @@ pub(super) async fn run_machine_add_target(
         remote_identity.machine_id.clone(),
         remote_identity.public_key.clone(),
         bootstrap_overlay_ip,
-        Some(subnet_claim.subnet),
+        None,
         bootstrap_wireguard_endpoints(&target),
     );
-    bootstrap_record.storage = true;
-    bootstrap_record.storage_participation = StorageParticipation::Candidate;
+    bootstrap_record.storage_role = MachineStorageRole::Candidate;
     bootstrap_record.region_role = RegionRole::Compute;
     bootstrap_record.created_at = ployz_types::time::now_unix_secs();
     bootstrap_record.updated_at = bootstrap_record.created_at;
@@ -93,7 +93,7 @@ pub(super) async fn run_machine_add_target(
         "machine add target: publishing bootstrap membership seed"
     );
     if let Err(err) = publish_bootstrap_membership_seed(&context, &bootstrap_record).await {
-        let _ = release_reserved_subnet(&mut subnet_claim).await;
+        let _ = release_reserved_subnet(subnet_claim).await;
         let _ = operation_store.update_status(
             &mut operation,
             MachineOperationStatus::Failed,
@@ -115,7 +115,7 @@ pub(super) async fn run_machine_add_target(
             request: match build_mesh_bootstrap_request(&context, subnet_claim.subnet).await {
                 Ok(request) => request,
                 Err(err) => {
-                    let _ = release_reserved_subnet(&mut subnet_claim).await;
+                    let _ = release_reserved_subnet(subnet_claim).await;
                     let _ =
                         rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref())
                             .await;
@@ -137,7 +137,7 @@ pub(super) async fn run_machine_add_target(
     {
         Ok(()) => {}
         Err(err) => {
-            let _ = release_reserved_subnet(&mut subnet_claim).await;
+            let _ = release_reserved_subnet(subnet_claim).await;
             let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
             let _ = operation_store.update_status(
                 &mut operation,
@@ -157,7 +157,7 @@ pub(super) async fn run_machine_add_target(
     tracing::info!(%target, joiner_id = %remote_identity.machine_id, "machine add target: waiting for NATS command responder");
     if let Err(err) = wait_for_joiner_command_responder(&context, &bootstrap_record).await {
         tracing::warn!(%target, joiner_id = %remote_identity.machine_id, error = %err, "machine add target: NATS command responder failed");
-        let _ = release_reserved_subnet(&mut subnet_claim).await;
+        let _ = release_reserved_subnet(subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -174,7 +174,7 @@ pub(super) async fn run_machine_add_target(
     let record = match joiner_self_record(&context, &target, &bootstrap_record).await {
         Ok(record) => record,
         Err(err) => {
-            let _ = release_reserved_subnet(&mut subnet_claim).await;
+            let _ = release_reserved_subnet(subnet_claim).await;
             let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
             let _ = operation_store.update_status(
                 &mut operation,
@@ -188,7 +188,7 @@ pub(super) async fn run_machine_add_target(
         }
     };
     if let Err(err) = validate_joined_machine_subnet(&record, subnet_claim.subnet) {
-        let _ = release_reserved_subnet(&mut subnet_claim).await;
+        let _ = release_reserved_subnet(subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -201,7 +201,25 @@ pub(super) async fn run_machine_add_target(
         };
     }
     if let Err(err) = validate_joined_machine_authority_posture(&record) {
-        let _ = release_reserved_subnet(&mut subnet_claim).await;
+        let _ = release_reserved_subnet(subnet_claim).await;
+        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
+        let _ = operation_store.update_status(
+            &mut operation,
+            MachineOperationStatus::Failed,
+            Some(err.clone()),
+        );
+        return MachineAddTargetResult::Failed {
+            target,
+            failure: MachineAddFailure::SelfRecord { reason: err },
+        };
+    }
+    if let Err(err) = context
+        .store
+        .upsert_self_machine(&record)
+        .await
+        .map_err(|err| format!("publish joined machine self-record: {err}"))
+    {
+        let _ = release_reserved_subnet(subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -220,7 +238,7 @@ pub(super) async fn run_machine_add_target(
     let machine_id = record.id.clone();
     joiner_id = Some(machine_id.clone());
     if let Err(err) = consume_invite(&context, &invite_id, &machine_id).await {
-        let _ = release_reserved_subnet(&mut subnet_claim).await;
+        let _ = release_reserved_subnet(subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -234,7 +252,7 @@ pub(super) async fn run_machine_add_target(
     }
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for remote ready");
     if let Err(err) = wait_for_joiner_ready(&context, &target, &record).await {
-        let _ = release_reserved_subnet(&mut subnet_claim).await;
+        let _ = release_reserved_subnet(subnet_claim).await;
         tracing::warn!(
             %target,
             joiner_id = %machine_id,
@@ -268,7 +286,7 @@ pub(super) async fn run_machine_add_target(
         if let Err(err) = activate_joiner_lifecycle(&context, &record, subnet_claim.subnet()).await
         {
             tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: activate lifecycle failed");
-            let _ = release_reserved_subnet(&mut subnet_claim).await;
+            let _ = release_reserved_subnet(subnet_claim).await;
             let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
             let _ = operation_store.update_status(
                 &mut operation,
@@ -291,7 +309,7 @@ pub(super) async fn run_machine_add_target(
     .await
     {
         tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: observed machine record failed");
-        let _ = release_reserved_subnet(&mut subnet_claim).await;
+        let _ = release_reserved_subnet(subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -316,7 +334,7 @@ pub(super) async fn run_machine_add_target(
             error = %err,
             "machine add target: subnet uniqueness invariant violated"
         );
-        let _ = release_reserved_subnet(&mut subnet_claim).await;
+        let _ = release_reserved_subnet(subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -329,7 +347,7 @@ pub(super) async fn run_machine_add_target(
         };
     }
 
-    let _ = release_reserved_subnet(&mut subnet_claim).await;
+    let _ = release_reserved_subnet(subnet_claim).await;
     let _ = operation_store.update_stage(&mut operation, MachineAddStage::Finalized.to_string());
     if let Err(err) = refresh_bootstrap_peer_records_from_store(
         &context.network_dir,
@@ -481,9 +499,7 @@ async fn activate_joiner_lifecycle(
     assigned_subnet: Ipv4Net,
 ) -> Result<(), String> {
     let request = DaemonRequest::MachineTransitionSelf {
-        goal: MachineTransitionGoal::Activate,
-        assigned_subnet: Some(assigned_subnet),
-        force: false,
+        transition: MachineSelfTransition::Activate { assigned_subnet },
     };
     if let Some(client) = &context.nats_rpc {
         return nats_rpc_expect_ok(
@@ -559,7 +575,7 @@ fn validate_joined_machine_subnet(
 }
 
 fn validate_joined_machine_authority_posture(record: &MachineMembership) -> Result<(), String> {
-    match &record.storage_participation {
+    match &record.storage_participation() {
         StorageParticipation::Candidate => Ok(()),
         StorageParticipation::Authority { authority_id } => Err(format!(
             "remote machine '{}' reported authority storage for '{}' during machine add; use explicit storage promotion",

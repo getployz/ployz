@@ -88,10 +88,15 @@ export type Placement =
   | "global"
   | {
       replicated: {
-        count: number;
+        count: NonZeroReplicaCount;
         [k: string]: any;
       };
     };
+/**
+ * This interface was referenced by `DeployManifest`'s JSON-Schema
+ * via the `definition` "NonZeroReplicaCount".
+ */
+export type NonZeroReplicaCount = number;
 /**
  * This interface was referenced by `DeployManifest`'s JSON-Schema
  * via the `definition` "ReadinessProbe".
@@ -166,6 +171,21 @@ export type MountSource =
  * via the `definition` "PullPolicy".
  */
 export type PullPolicy = "if_not_present" | "always" | "never";
+/**
+ * This interface was referenced by `DeployManifest`'s JSON-Schema
+ * via the `definition` "VolumeMode".
+ */
+export type VolumeMode = string;
+/**
+ * This interface was referenced by `DeployManifest`'s JSON-Schema
+ * via the `definition` "VolumeOwner".
+ */
+export type VolumeOwner = string;
+/**
+ * This interface was referenced by `DeployManifest`'s JSON-Schema
+ * via the `definition` "VolumeQuota".
+ */
+export type VolumeQuota = string;
 /**
  * This interface was referenced by `DeployManifest`'s JSON-Schema
  * via the `definition` "VolumeScope".
@@ -326,10 +346,10 @@ export interface Resources {
  * via the `definition` "VolumeDeclaration".
  */
 export interface VolumeDeclaration {
-  mode: string;
+  mode: VolumeMode;
   name: string;
-  owner: string;
-  quota: string;
+  owner: VolumeOwner;
+  quota: VolumeQuota;
   scope: VolumeScope;
   [k: string]: any;
 }

@@ -2,8 +2,8 @@ use crate::deploy::plan::ResolvedPlan;
 use crate::error::{DeployError, Error, Result};
 use crate::model::{
     DeployChangeKind, DeployId, DeployImageAvailabilityPlan, DeployPreview, DeployRecord,
-    DeployState, InstanceStatusRecord, MachineId, ServiceRelease, ServiceReleaseRecord,
-    ServiceRevisionRecord, ServiceRoutingPolicy,
+    DeployRecordState, InstanceStatusRecord, MachineId, ServiceRelease, ServiceReleaseRecord,
+    ServiceRevisionRecord,
 };
 #[cfg(test)]
 use crate::model::{
@@ -59,13 +59,12 @@ impl PreparedDeploy {
             namespace: plan.namespace().clone(),
             coordinator_machine_id: coordinator_machine_id.clone(),
             manifest_hash: plan.manifest_hash().to_string(),
-            state: DeployState::Applying,
             started_at,
-            committed_at: None,
-            finished_at: None,
-            summary_json: serde_json::to_string(&preview).map_err(|error| {
-                Error::operation("deploy_apply", format!("serialize preview: {error}"))
-            })?,
+            state: DeployRecordState::Applying {
+                summary_json: serde_json::to_string(&preview).map_err(|error| {
+                    Error::operation("deploy_apply", format!("serialize preview: {error}"))
+                })?,
+            },
         };
 
         let mut revisions = Vec::new();
@@ -147,7 +146,7 @@ impl StartedCandidates {
         let removed_services = plan
             .services()
             .iter()
-            .filter(|service| service.action == DeployChangeKind::Remove)
+            .filter(|service| service.action() == DeployChangeKind::Remove)
             .map(|service| service.service.clone())
             .collect::<Vec<_>>();
         let summary_json = serde_json::to_string(&preview).map_err(|error| {
@@ -250,22 +249,22 @@ pub(super) fn build_committed_releases_for_services(
 
         let mut next_slots = Vec::new();
         for slot in &service.slots {
-            let active_instance_id = match slot.action {
+            let active_instance_id = match slot.action() {
                 DeployChangeKind::Unchanged => {
-                    let Some(current) = &slot.current else {
+                    let Some(current) = slot.current() else {
                         return Err(Error::Deploy(DeployError::MissingCurrentSlot {
                             service: service.service.clone(),
-                            slot: slot.slot_id.0.clone(),
+                            slot: slot.slot_id().as_str().to_string(),
                         }));
                     };
                     current.active_instance_id.clone()
                 }
                 DeployChangeKind::Create | DeployChangeKind::Replace => {
-                    let key = (service.service.clone(), slot.slot_id.0.clone());
+                    let key = (service.service.clone(), slot.slot_id().as_str().to_string());
                     let Some(status) = started.get(&key) else {
                         return Err(Error::Deploy(DeployError::MissingStartedInstance {
                             service: service.service.clone(),
-                            slot: slot.slot_id.0.clone(),
+                            slot: slot.slot_id().as_str().to_string(),
                         }));
                     };
                     status.instance_id.clone()
@@ -273,8 +272,8 @@ pub(super) fn build_committed_releases_for_services(
                 DeployChangeKind::Remove => continue,
             };
             next_slots.push(crate::model::ServiceReleaseSlot {
-                slot_id: slot.slot_id.clone(),
-                machine_id: slot.machine_id.clone(),
+                slot_id: slot.slot_id().clone(),
+                machine_id: slot.machine_id().clone(),
                 active_instance_id,
                 revision_hash: revision_hash.to_string(),
             });
@@ -283,16 +282,12 @@ pub(super) fn build_committed_releases_for_services(
         releases.push(ServiceReleaseRecord {
             namespace: plan.namespace().clone(),
             service: service.service.clone(),
-            release: ServiceRelease {
-                primary_revision_hash: revision_hash.to_string(),
-                referenced_revision_hashes: vec![revision_hash.to_string()],
-                routing: ServiceRoutingPolicy::Direct {
-                    revision_hash: revision_hash.to_string(),
-                },
-                slots: next_slots,
-                updated_by_deploy_id: deploy_id.clone(),
+            release: ServiceRelease::direct(
+                revision_hash.to_string(),
+                next_slots,
+                deploy_id.clone(),
                 updated_at,
-            },
+            ),
         });
     }
     Ok(releases)

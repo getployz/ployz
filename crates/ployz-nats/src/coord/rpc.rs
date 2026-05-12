@@ -331,14 +331,15 @@ impl NatsNodeRpcClient {
         request: &DaemonRequest,
     ) -> std::result::Result<(), RpcFailure> {
         let response = self.request(subject, request).await?;
-        if response.ok {
+        if response.is_ok() {
             return Ok(());
         }
         Err(RpcFailure::new(
             RpcFailureKind::Transport,
             format!(
                 "remote daemon error [{}]: {}",
-                response.code, response.message
+                response.code(),
+                response.message()
             ),
         ))
     }
@@ -390,7 +391,7 @@ mod tests {
 
     #[test]
     fn node_command_subject_uses_substrate_for_whole_node_commands() {
-        let machine_id = MachineId("machine.a".into());
+        let machine_id = MachineId::new("machine.a");
         let scope = NatsScope::local_default();
         let subject = NodeCommandSubject::status(&machine_id);
 
@@ -406,7 +407,7 @@ mod tests {
 
     #[test]
     fn mesh_command_subjects_name_operation() {
-        let machine_id = MachineId("machine-a".into());
+        let machine_id = MachineId::new("machine-a");
         let scope = NatsScope::local_default();
 
         assert_eq!(
@@ -425,7 +426,7 @@ mod tests {
 
     #[test]
     fn deploy_command_subjects_remain_authority_scoped() {
-        let machine_id = MachineId("machine-a".into());
+        let machine_id = MachineId::new("machine-a");
         let scope = NatsScope::local_default();
 
         assert_eq!(
@@ -436,7 +437,7 @@ mod tests {
 
     #[test]
     fn volume_zfs_command_subjects_remain_authority_scoped() {
-        let machine_id = MachineId("machine.a".into());
+        let machine_id = MachineId::new("machine.a");
         let scope = NatsScope::local_default();
 
         assert_eq!(
@@ -451,7 +452,7 @@ mod tests {
 
     #[test]
     fn image_receive_session_subject_remains_authority_scoped() {
-        let machine_id = MachineId("machine.a".into());
+        let machine_id = MachineId::new("machine.a");
         let scope = NatsScope::local_default();
 
         assert_eq!(

@@ -404,12 +404,7 @@ async fn publish_error_response(
     code: impl Into<String>,
     message: impl Into<String>,
 ) -> Result<(), String> {
-    let response = ployz_api::DaemonResponse {
-        ok: false,
-        code: code.into(),
-        message: message.into(),
-        payload: None,
-    };
+    let response = ployz_api::DaemonResponse::error(code, message, None);
     let payload = encode_daemon_response(&response).map_err(|error| error.to_string())?;
     client
         .publish(reply, payload.into())

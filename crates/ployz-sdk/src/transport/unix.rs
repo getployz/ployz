@@ -55,7 +55,7 @@ mod tests {
             reader.read_line(&mut request).await.expect("read request");
             assert!(request.contains("Status"));
             writer
-                .write_all(b"{\"ok\":true,\"code\":\"OK\",\"message\":\"pong\",\"payload\":null}\n")
+                .write_all(b"{\"status\":\"success\",\"code\":\"OK\",\"message\":\"pong\"}\n")
                 .await
                 .expect("write response");
         });
@@ -65,8 +65,8 @@ mod tests {
             .await
             .expect("request over unix socket");
 
-        assert!(response.ok);
-        assert_eq!(response.message, "pong");
+        assert!(response.is_ok());
+        assert_eq!(response.message(), "pong");
         server.await.expect("server task");
         let _ = std::fs::remove_file(socket);
     }

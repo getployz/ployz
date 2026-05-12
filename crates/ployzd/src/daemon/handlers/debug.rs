@@ -102,7 +102,7 @@ mod tests {
     async fn debug_tick_rejects_when_no_mesh_is_running() {
         let mut state = DaemonState::new_for_tests(
             &std::env::temp_dir().join("ployz-debug-tick-no-mesh"),
-            Identity::generate(ployz_types::model::MachineId("self".into()), [1; 32]),
+            Identity::generate(ployz_types::model::MachineId::new("self"), [1; 32]),
             DEFAULT_CLUSTER_CIDR.into(),
             24,
             4319,
@@ -112,15 +112,15 @@ mod tests {
         );
 
         let response = state.handle_debug_tick(DebugTickTask::All, 1).await;
-        assert!(!response.ok);
-        assert_eq!(response.code, "NO_RUNNING_NETWORK");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "NO_RUNNING_NETWORK");
     }
 
     #[tokio::test]
     async fn endpoint_debug_tick_rejects_when_no_mesh_is_running() {
         let mut state = DaemonState::new_for_tests(
             &std::env::temp_dir().join("ployz-debug-tick-no-mesh-endpoints"),
-            Identity::generate(ployz_types::model::MachineId("self".into()), [1; 32]),
+            Identity::generate(ployz_types::model::MachineId::new("self"), [1; 32]),
             DEFAULT_CLUSTER_CIDR.into(),
             24,
             4319,
@@ -130,7 +130,7 @@ mod tests {
         );
 
         let response = state.handle_debug_tick(DebugTickTask::Endpoints, 1).await;
-        assert!(!response.ok);
-        assert_eq!(response.code, "NO_RUNNING_NETWORK");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "NO_RUNNING_NETWORK");
     }
 }

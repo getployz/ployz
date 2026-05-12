@@ -1430,7 +1430,7 @@ fn present_build_availability(
     let now = now_unix_secs();
     ImageAvailabilityRecord {
         machine_id: machine_id.clone(),
-        digest: artifact.image.digest.clone(),
+        digest: artifact.image.digest().clone(),
         presence: ImagePresence::Present {
             artifact,
             recorded_at: now,
@@ -1441,9 +1441,11 @@ fn present_build_availability(
 }
 
 fn image_ref_from_tag(reference: &str, digest: ImageDigest) -> ImageRef {
-    let (repository, tag) = if reference.starts_with("sha256:") {
-        (None, None)
-    } else {
+    if reference.starts_with("sha256:") {
+        return ImageRef::digest_only(digest);
+    }
+
+    let (repository, tag) = {
         let last_slash = reference.rfind('/');
         match reference
             .rfind(':')
@@ -1451,16 +1453,12 @@ fn image_ref_from_tag(reference: &str, digest: ImageDigest) -> ImageRef {
         {
             Some(index) if index + 1 < reference.len() => {
                 let (repository, tag) = reference.split_at(index);
-                (Some(repository.to_string()), Some(tag[1..].to_string()))
+                (repository.to_string(), Some(tag[1..].to_string()))
             }
-            _ => (Some(reference.to_string()), None),
+            _ => (reference.to_string(), None),
         }
     };
-    ImageRef {
-        repository,
-        tag,
-        digest,
-    }
+    ImageRef::repository_digest(repository, tag, digest)
 }
 
 fn build_command_failure_message(command: &BuildCommand, output: &BuildCommandOutput) -> String {
@@ -1666,7 +1664,7 @@ mod tests {
     async fn active_state() -> DaemonState {
         let data_dir = temp_dir("ployz-build-local-test");
         std::fs::create_dir_all(&data_dir).expect("create data dir");
-        let identity = Identity::generate(MachineId("founder".into()), [11; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [11; 32]);
         let mut config = NetworkConfig::new(
             NetworkName("alpha".into()),
             &identity.public_key,
@@ -1677,7 +1675,7 @@ mod tests {
         let store = StoreDriver::memory();
         store
             .upsert_self_machine(&MachineMembership::seed(
-                MachineId("founder".into()),
+                MachineId::new("founder"),
                 PublicKey([11; 32]),
                 OverlayIp("fd00::11".parse().expect("valid overlay")),
                 None,
@@ -2379,9 +2377,9 @@ mod tests {
 
         let artifact = build_image_artifact(&request, &image).expect("artifact");
 
-        assert_eq!(artifact.image.repository.as_deref(), Some("example/app"));
-        assert_eq!(artifact.image.tag.as_deref(), Some("latest"));
-        assert_eq!(artifact.image.digest, image_digest);
+        assert_eq!(artifact.image.repository(), Some("example/app"));
+        assert_eq!(artifact.image.tag(), Some("latest"));
+        assert_eq!(artifact.image.digest(), &image_digest);
         assert_eq!(
             artifact.provenance,
             ImageArtifactProvenance::Build {
@@ -2396,11 +2394,7 @@ mod tests {
     #[test]
     fn present_availability_points_at_build_operation() {
         let artifact = ImageArtifact {
-            image: ImageRef {
-                repository: Some("example/app".into()),
-                tag: Some("latest".into()),
-                digest: digest('b'),
-            },
+            image: ImageRef::repository_digest("example/app", Some("latest".into()), digest('b')),
             platform: None,
             provenance: ImageArtifactProvenance::Build {
                 method: BuildMethod::Railpack,
@@ -2410,9 +2404,9 @@ mod tests {
             created_at: 1,
         };
 
-        let record = present_build_availability(&MachineId("founder".into()), artifact, "build-1");
+        let record = present_build_availability(&MachineId::new("founder"), artifact, "build-1");
 
-        assert_eq!(record.machine_id.0, "founder");
+        assert_eq!(record.machine_id.as_str(), "founder");
         let ImagePresence::Present {
             source_operation_id,
             ..
@@ -2427,18 +2421,12 @@ mod tests {
     fn image_ref_parses_registry_port_without_confusing_tag() {
         let image = image_ref_from_tag("localhost:5000/example/app:latest", digest('c'));
 
-        assert_eq!(
-            image.repository.as_deref(),
-            Some("localhost:5000/example/app")
-        );
-        assert_eq!(image.tag.as_deref(), Some("latest"));
+        assert_eq!(image.repository(), Some("localhost:5000/example/app"));
+        assert_eq!(image.tag(), Some("latest"));
 
         let untagged = image_ref_from_tag("localhost:5000/example/app", digest('d'));
-        assert_eq!(
-            untagged.repository.as_deref(),
-            Some("localhost:5000/example/app")
-        );
-        assert_eq!(untagged.tag, None);
+        assert_eq!(untagged.repository(), Some("localhost:5000/example/app"));
+        assert_eq!(untagged.tag(), None);
     }
 
     #[test]
@@ -2486,30 +2474,26 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{}", response.message);
-        let Some(DaemonPayload::BuildResult(payload)) = response.payload else {
+        assert!(response.is_ok(), "{}", response.message());
+        let Some(DaemonPayload::BuildResult(payload)) = response.payload() else {
             panic!("expected build result payload");
         };
         assert_eq!(payload.artifact.digest(), &image_digest);
         let operation = state
             .build_operation_store()
             .load(&payload.operation_id)
-            .expect("load operation");
-        let Some(operation) = operation else {
-            panic!("expected operation");
-        };
-        assert_eq!(operation.status, OperationStatus::Succeeded);
-        let Some(artifact) = operation.artifact else {
-            panic!("expected artifact");
-        };
-        assert_eq!(artifact.digest(), &image_digest);
-        let Some(active) = state.active.as_ref() else {
-            panic!("expected active daemon state");
-        };
+            .expect("load operation")
+            .expect("operation exists");
+        assert_eq!(operation.status(), OperationStatus::Succeeded);
+        assert_eq!(
+            operation.artifact().expect("artifact").digest(),
+            &image_digest
+        );
+        let active = state.active.as_ref().expect("active daemon state");
         let record = active
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &image_digest)
+            .get_image_availability(&MachineId::new("founder"), &image_digest)
             .await
             .expect("read availability")
             .expect("availability exists");
@@ -2565,8 +2549,8 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{}", response.message);
-        let Some(DaemonPayload::BuildResult(payload)) = response.payload else {
+        assert!(response.is_ok(), "{}", response.message());
+        let Some(DaemonPayload::BuildResult(payload)) = response.payload() else {
             panic!("expected build result payload");
         };
         let operation = state
@@ -2618,8 +2602,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "BUILD_LOCAL_INPUT_INVALID");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "BUILD_LOCAL_INPUT_INVALID");
         assert!(
             state
                 .build_operation_store()
@@ -2649,14 +2633,12 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        let Some(DaemonPayload::BuildOperation(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        let Some(DaemonPayload::BuildOperation(payload)) = response.payload() else {
             panic!("expected build operation payload");
         };
-        assert_eq!(payload.operation.status, OperationStatus::Failed);
-        let Some(active) = state.active.as_ref() else {
-            panic!("expected active daemon state");
-        };
+        assert_eq!(payload.operation.status(), OperationStatus::Failed);
+        let active = state.active.as_ref().expect("active daemon state");
         assert!(
             active
                 .mesh
@@ -2708,18 +2690,17 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert!(!response.message.contains("production"));
-        assert!(!response.message.contains("abc123"));
-        assert!(!response.message.contains("super-secret-token"));
-        let Some(DaemonPayload::BuildOperation(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert!(!response.message().contains("production"));
+        assert!(!response.message().contains("abc123"));
+        assert!(!response.message().contains("super-secret-token"));
+        let Some(DaemonPayload::BuildOperation(payload)) = response.payload() else {
             panic!("expected build operation payload");
         };
         assert!(
             !payload
                 .operation
-                .last_error
-                .as_deref()
+                .last_error()
                 .expect("last error")
                 .contains("super-secret-token")
         );
@@ -2763,10 +2744,10 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert!(!response.message.contains("super-secret-token"));
-        assert!(!response.message.contains("abc123"));
-        let Some(DaemonPayload::BuildOperation(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert!(!response.message().contains("super-secret-token"));
+        assert!(!response.message().contains("abc123"));
+        let Some(DaemonPayload::BuildOperation(payload)) = response.payload() else {
             panic!("expected build operation payload");
         };
         let operation_json = serde_json::to_string(&payload.operation).expect("serialize");
@@ -2823,10 +2804,10 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{}", response.message);
-        assert!(!response.message.contains("production"));
-        assert!(!response.message.contains("abc123"));
-        assert!(!response.message.contains("super-secret-token"));
+        assert!(response.is_ok(), "{}", response.message());
+        assert!(!response.message().contains("production"));
+        assert!(!response.message().contains("abc123"));
+        assert!(!response.message().contains("super-secret-token"));
     }
 
     #[tokio::test]
@@ -2870,10 +2851,10 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{}", response.message);
-        assert!(!response.message.contains("master-key"));
+        assert!(response.is_ok(), "{}", response.message());
+        assert!(!response.message().contains("master-key"));
         assert_eq!(runner.programs(), vec!["railpack", "docker"]);
-        let Some(DaemonPayload::BuildResult(payload)) = response.payload else {
+        let Some(DaemonPayload::BuildResult(payload)) = response.payload() else {
             panic!("expected build result payload");
         };
         assert_eq!(payload.artifact.digest(), &image_digest);
@@ -2922,8 +2903,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "BUILD_LOCAL_COMMAND_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "BUILD_LOCAL_COMMAND_FAILED");
         assert_eq!(runner.programs(), vec!["railpack"]);
         assert!(
             {
@@ -2997,15 +2978,16 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "BUILD_LOCAL_COMMAND_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "BUILD_LOCAL_COMMAND_FAILED");
         assert_eq!(runner.programs(), vec!["railpack", "docker"]);
-        assert!(!response.message.contains("production"));
-        assert!(!response.message.contains("master-key"));
-        let Some(DaemonPayload::BuildOperation(payload)) = response.payload else {
+        assert!(!response.message().contains("production"));
+        assert!(!response.message().contains("master-key"));
+        let Some(DaemonPayload::BuildOperation(payload)) = response.payload() else {
             panic!("expected build operation payload");
         };
-        let Some(last_error) = payload.operation.last_error.as_deref() else {
+        let operation_last_error = payload.operation.last_error();
+        let Some(last_error) = operation_last_error.as_deref() else {
             panic!("expected persisted last error");
         };
         assert!(!last_error.contains("production"));
@@ -3051,11 +3033,11 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "BUILD_LOCAL_IMAGE_BUSY");
-        let Some(DaemonPayload::BuildOperation(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "BUILD_LOCAL_IMAGE_BUSY");
+        let Some(DaemonPayload::BuildOperation(payload)) = response.payload() else {
             panic!("expected build operation payload");
         };
-        assert_eq!(payload.operation.status, OperationStatus::Failed);
+        assert_eq!(payload.operation.status(), OperationStatus::Failed);
     }
 }

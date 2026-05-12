@@ -114,7 +114,9 @@ impl DaemonState {
         match req {
             DaemonRequest::MachineDrain { target }
             | DaemonRequest::MachineStandby { target, .. }
-                if MachineId(target.clone()) == self.identity.machine_id =>
+                if MachineId::try_new(target.as_str())
+                    .map(|target| target == self.identity.machine_id)
+                    .unwrap_or(false) =>
             {
                 RequestLane::Exclusive
             }
@@ -411,13 +413,8 @@ impl DaemonState {
             DaemonRequest::DebugTick { task, repeat } => self.handle_debug_tick(task, repeat).await,
             DaemonRequest::MeshJoin { token } => self.handle_mesh_join(&token).await,
             DaemonRequest::MeshBootstrap { request } => self.handle_mesh_bootstrap(&request).await,
-            DaemonRequest::MachineTransitionSelf {
-                goal,
-                assigned_subnet,
-                force,
-            } => {
-                self.handle_machine_transition_self(goal, assigned_subnet, force)
-                    .await
+            DaemonRequest::MachineTransitionSelf { transition } => {
+                self.handle_machine_transition_self(transition).await
             }
             DaemonRequest::MachineStoragePromoteSelf {
                 replicas,
@@ -622,7 +619,7 @@ mod tests {
                 method: BuildMethod::Dockerfile,
                 context_path: "/tmp/context".into(),
                 image_name: "example/app:latest".into(),
-                machine_id: MachineId("builder-a".into()),
+                machine_id: MachineId::new("builder-a"),
                 platform: None,
                 inputs: BuildInputs::default(),
             },
@@ -665,7 +662,7 @@ mod tests {
         });
         let apply_prepared_lane = DaemonState::request_lane(&DaemonRequest::DeployApplyPrepared {
             request: DeployApplyPreparedRequest {
-                prepared_deploy_id: DeployId("prepare-1".into()),
+                prepared_deploy_id: DeployId::new("prepare-1"),
             },
         });
 
@@ -678,7 +675,7 @@ mod tests {
         let push_lane = DaemonState::request_lane(&DaemonRequest::ImagePush {
             request: ImagePushRequest {
                 source_image: "example/app:latest".into(),
-                target_machines: vec![MachineId("machine-a".into())],
+                target_machines: vec![MachineId::new("machine-a")],
                 platform: None,
                 expected_digest: None,
             },
@@ -688,8 +685,8 @@ mod tests {
         let distribute_lane = DaemonState::request_lane(&DaemonRequest::ImageDistribute {
             request: ImageDistributeRequest {
                 digest: digest(),
-                source_machine: MachineId("machine-a".into()),
-                target_machines: vec![MachineId("machine-b".into())],
+                source_machine: MachineId::new("machine-a"),
+                target_machines: vec![MachineId::new("machine-b")],
                 platform: None,
             },
         });
@@ -698,7 +695,7 @@ mod tests {
         let receive_session_lane = DaemonState::request_lane(&DaemonRequest::ImageReceiveSession {
             request: ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("machine-a".into()),
+                source_machine: MachineId::new("machine-a"),
                 repository: Some("ployz/image-push-1".into()),
             },
         });
@@ -707,7 +704,7 @@ mod tests {
         let received_import_lane = DaemonState::request_lane(&DaemonRequest::ImageReceivedImport {
             request: ImageReceivedImportRequest {
                 operation_id: "image-distribute-1".into(),
-                source_machine: MachineId("machine-a".into()),
+                source_machine: MachineId::new("machine-a"),
                 repository: "ployz/image-distribute-1".into(),
                 reference: "image-distribute-1".into(),
                 expected_digest: digest(),

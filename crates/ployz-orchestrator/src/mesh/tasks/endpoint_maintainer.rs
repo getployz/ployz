@@ -509,7 +509,7 @@ mod tests {
 
     fn test_record(id: &str, key: [u8; 32], endpoints: &[&str]) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             public_key: PublicKey(key),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
@@ -521,8 +521,7 @@ mod tests {
                 .map(|endpoint| endpoint.to_string())
                 .collect(),
             lifecycle: MachineLifecycle::Standby,
-            storage: true,
-            storage_participation: crate::model::StorageParticipation::default_authority(),
+            storage_role: crate::model::StorageParticipation::default_authority().into(),
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -540,14 +539,12 @@ mod tests {
         let selections = build_initial_endpoint_selections(
             &snapshot,
             &[],
-            &MachineId("self".into()),
+            &MachineId::new("self"),
             &device_peers,
             Instant::now(),
         );
         assert_eq!(
-            selections
-                .get(&MachineId("peer".into()))
-                .map(String::as_str),
+            selections.get(&MachineId::new("peer")).map(String::as_str),
             Some("b:2")
         );
     }
@@ -558,14 +555,12 @@ mod tests {
         let selections = build_initial_endpoint_selections(
             &snapshot,
             &[],
-            &MachineId("self".into()),
+            &MachineId::new("self"),
             &[],
             Instant::now(),
         );
         assert_eq!(
-            selections
-                .get(&MachineId("peer".into()))
-                .map(String::as_str),
+            selections.get(&MachineId::new("peer")).map(String::as_str),
             Some("a:1")
         );
     }
@@ -588,7 +583,7 @@ mod tests {
                 commands: command_rx,
                 bootstrap_peers: Vec::new(),
                 network,
-                local_machine_id: MachineId("self".into()),
+                local_machine_id: MachineId::new("self"),
                 endpoint_selections: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
                 initial_device_peers: Vec::new(),
                 cancel: CancellationToken::new(),
@@ -621,7 +616,7 @@ mod tests {
                 commands: command_rx,
                 bootstrap_peers: Vec::new(),
                 network,
-                local_machine_id: MachineId("self".into()),
+                local_machine_id: MachineId::new("self"),
                 endpoint_selections: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
                 initial_device_peers: Vec::new(),
                 cancel: CancellationToken::new(),

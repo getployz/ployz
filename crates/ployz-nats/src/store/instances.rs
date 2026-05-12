@@ -26,14 +26,14 @@ impl InstanceStatusStore for NatsStore {
         let bucket = instances_bucket(self).await?;
         kv_json::put_json(
             &bucket,
-            &record.instance_id.0,
+            &record.instance_id.as_str(),
             record,
             "nats_instance_encode",
             "nats_instance_put",
         )
         .await?;
         self.publish_routing_events(
-            format!("instance:{}", record.instance_id.0),
+            format!("instance:{}", record.instance_id.as_str()),
             "instance.status",
             &[RoutingEvent::InstanceUpsert(record.clone())],
         )
@@ -42,9 +42,9 @@ impl InstanceStatusStore for NatsStore {
 
     async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
         let bucket = instances_bucket(self).await?;
-        kv_json::delete(&bucket, &instance_id.0, "nats_instance_delete").await?;
+        kv_json::delete(&bucket, &instance_id.as_str(), "nats_instance_delete").await?;
         self.publish_routing_events(
-            format!("instance:remove:{}", instance_id.0),
+            format!("instance:remove:{}", instance_id.as_str()),
             "instance.remove",
             &[RoutingEvent::InstanceRemoved {
                 instance_id: instance_id.clone(),
@@ -93,11 +93,11 @@ fn decode_instance(key: &str, bytes: &[u8]) -> Result<InstanceStatusRecord> {
 }
 
 fn validate_instance_key(key: &str, record: InstanceStatusRecord) -> Result<InstanceStatusRecord> {
-    if record.instance_id.0 != key {
+    if record.instance_id.as_str() != key {
         return Err(Error::store_key_mismatch(
             StoreRecordKind::Instance,
             key,
-            record.instance_id.0,
+            record.instance_id.as_str(),
         ));
     }
     Ok(record)
@@ -105,8 +105,8 @@ fn validate_instance_key(key: &str, record: InstanceStatusRecord) -> Result<Inst
 
 fn sort_instances(records: &mut [InstanceStatusRecord]) {
     records.sort_by(|left, right| {
-        (left.namespace.clone(), left.instance_id.0.as_str())
-            .cmp(&(right.namespace.clone(), right.instance_id.0.as_str()))
+        (left.namespace.clone(), left.instance_id.as_str())
+            .cmp(&(right.namespace.clone(), right.instance_id.as_str()))
     });
 }
 
@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(
             records
                 .iter()
-                .map(|record| (record.namespace.0.as_str(), record.instance_id.0.as_str()))
+                .map(|record| (record.namespace.as_str(), record.instance_id.as_str()))
                 .collect::<Vec<_>>(),
             [
                 ("prod", "instance-a"),
@@ -183,13 +183,13 @@ mod tests {
 
     fn test_instance_in_namespace(namespace: &str, id: &str) -> InstanceStatusRecord {
         InstanceStatusRecord {
-            instance_id: InstanceId(id.into()),
-            namespace: Namespace(namespace.into()),
+            instance_id: InstanceId::new(id),
+            namespace: Namespace::new(namespace),
             service: "api".into(),
-            slot_id: SlotId("slot-1".into()),
-            machine_id: MachineId("machine-a".into()),
+            slot_id: SlotId::new("slot-1"),
+            machine_id: MachineId::new("machine-a"),
             revision_hash: "rev-1".into(),
-            deploy_id: DeployId("deploy-1".into()),
+            deploy_id: DeployId::new("deploy-1"),
             docker_container_id: format!("container-{id}"),
             overlay_ip: None,
             backend_ports: BTreeMap::new(),

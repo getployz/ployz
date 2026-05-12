@@ -61,7 +61,7 @@ pub(in super::super) async fn best_effort_remote_cleanup(
     )
     .await
     {
-        Ok(Ok(response)) if response.ok => None,
+        Ok(Ok(response)) if response.is_ok() => None,
         Ok(Ok(response)) => Some(super::remote::remote_response_error(&response)),
         Ok(Err(err)) => Some(err),
         Err(_) => Some(format!(
@@ -88,7 +88,7 @@ pub(in super::super) async fn best_effort_remote_cleanup(
     )
     .await
     {
-        Ok(Ok(response)) if response.ok => None,
+        Ok(Ok(response)) if response.is_ok() => None,
         Ok(Ok(response)) => Some(super::remote::remote_response_error(&response)),
         Ok(Err(err)) => Some(err),
         Err(_) => Some(format!(

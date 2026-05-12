@@ -15,7 +15,7 @@ pub(crate) use cli::{
     RuntimeAction, RuntimeTargetArg, ServiceModeArg,
 };
 #[cfg(test)]
-use cli::{
+pub(crate) use cli::{
     BranchResourceModeArg, BranchStatusArgs, BuildAction, BuildMethodArg, BuildOperationAction,
 };
 use cli_io::{cmd_rpc_stdio, cmd_runtime_stream, render_response, request_daemon};
@@ -24,7 +24,8 @@ use ployz_api::DaemonRequest;
 #[cfg(test)]
 use ployz_api::{
     DebugTickTask as ProtocolDebugTickTask, InstallRuntimeTarget as ApiInstallRuntimeTarget,
-    InstallServiceMode as ApiInstallServiceMode, MigrateServiceMode,
+    InstallServiceMode as ApiInstallServiceMode, InstallSource as ApiInstallSource,
+    MigrateServiceMode,
 };
 use ployz_config::{RuntimeTarget, ServiceMode, load_client_config, load_daemon_config};
 use ployz_sdk::UnixSocketTransport;
@@ -140,7 +141,7 @@ async fn run() -> Result<i32> {
             let response = request_daemon(&transport, &socket, request).await?;
 
             render_response(cli.json, cli.plain, cli.quiet, &response)?;
-            if response.ok { Ok(0) } else { Ok(1) }
+            if response.is_ok() { Ok(0) } else { Ok(1) }
         }
     }
 }
@@ -449,7 +450,7 @@ mod tests {
         };
         assert_eq!(
             request.prepared_deploy_id,
-            ployz_types::model::DeployId("prepare-1".into())
+            ployz_types::model::DeployId::new("prepare-1")
         );
     }
 
@@ -537,7 +538,7 @@ mod tests {
     #[test]
     fn upsert_service_replaces_existing_service_and_sorts() {
         let mut manifest = DeployManifest {
-            namespace: ployz_types::spec::Namespace("prod".into()),
+            namespace: ployz_types::spec::Namespace::new("prod"),
             intent: None,
             volumes: Vec::new(),
             services: vec![
@@ -635,8 +636,52 @@ mod tests {
                 .and_then(|install| install.service_mode),
             Some(ApiInstallServiceMode::User)
         );
+        assert_eq!(
+            options
+                .install
+                .as_ref()
+                .and_then(|install| install.source.as_ref()),
+            Some(&ApiInstallSource::Git {
+                git_url: ployz_api::InstallGitUrl::new("https://example.invalid/ployz.git"),
+                git_ref: Some("main".into())
+            })
+        );
 
         std::fs::remove_file(path).expect("remove identity");
+    }
+
+    #[test]
+    fn build_machine_add_request_rejects_incoherent_install_source_options() {
+        let error = build_machine_request(MachineAction::Add {
+            identity: None,
+            runtime: None,
+            service_mode: None,
+            install_source: Some(InstallSourceArg::Release),
+            install_version: Some("0.6.1".into()),
+            install_git_url: Some("https://example.invalid/ployz.git".into()),
+            install_git_ref: None,
+            targets: vec!["ops@example".into()],
+        })
+        .expect_err("release source cannot include git options");
+
+        assert_eq!(error.exit_code(), 2);
+    }
+
+    #[test]
+    fn build_machine_add_request_rejects_git_source_without_url() {
+        let error = build_machine_request(MachineAction::Add {
+            identity: None,
+            runtime: None,
+            service_mode: None,
+            install_source: Some(InstallSourceArg::Git),
+            install_version: None,
+            install_git_url: None,
+            install_git_ref: Some("main".into()),
+            targets: vec!["ops@example".into()],
+        })
+        .expect_err("git source needs a url");
+
+        assert_eq!(error.exit_code(), 2);
     }
 
     #[test]
@@ -790,7 +835,7 @@ mod tests {
             panic!("expected image status request");
         };
         assert_eq!(request.digest.expect("digest").as_str(), digest);
-        assert_eq!(request.machine_id.expect("machine").0, "machine-a");
+        assert_eq!(request.machine_id.expect("machine").as_str(), "machine-a");
     }
 
     #[test]
@@ -843,7 +888,7 @@ mod tests {
         assert_eq!(request.reference.as_deref(), Some("example/app:latest"));
         assert_eq!(
             request.machines,
-            vec![ployz_types::model::MachineId("machine-a".into())]
+            vec![ployz_types::model::MachineId::new("machine-a")]
         );
     }
 
@@ -913,8 +958,8 @@ mod tests {
         assert_eq!(
             request.target_machines,
             vec![
-                ployz_types::model::MachineId("machine-a".into()),
-                ployz_types::model::MachineId("machine-b".into())
+                ployz_types::model::MachineId::new("machine-a"),
+                ployz_types::model::MachineId::new("machine-b")
             ]
         );
         let platform = request.platform.expect("platform");
@@ -994,12 +1039,12 @@ mod tests {
             panic!("expected image distribute request");
         };
         assert_eq!(request.digest.as_str(), digest);
-        assert_eq!(request.source_machine.0, "machine-a");
+        assert_eq!(request.source_machine.as_str(), "machine-a");
         assert_eq!(
             request.target_machines,
             vec![
-                ployz_types::model::MachineId("machine-b".into()),
-                ployz_types::model::MachineId("machine-c".into())
+                ployz_types::model::MachineId::new("machine-b"),
+                ployz_types::model::MachineId::new("machine-c")
             ]
         );
         let platform = request.platform.expect("platform");

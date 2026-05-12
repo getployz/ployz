@@ -96,7 +96,7 @@ async fn handle_connection(
     writer.flush().await?;
     let _ = response_flushed_tx.send(());
 
-    if response.ok {
+    if response.is_ok() {
         if let Some(stream_rx) = stream_rx.as_mut() {
             while let Some(frame) = stream_rx.recv().await {
                 let mut frame_line = serde_json::to_string(&frame)

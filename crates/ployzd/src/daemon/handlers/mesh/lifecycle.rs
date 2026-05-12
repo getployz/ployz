@@ -1,5 +1,5 @@
 use crate::mesh_state::network::NetworkConfig;
-use ployz_api::{DaemonRequest, MachineTransitionGoal};
+use ployz_api::{DaemonRequest, MachineSelfTransition};
 use ployz_nats::{NodeCommandSubject, RpcPolicy};
 use ployz_orchestrator::ipam::pick_candidate_subnet;
 use ployz_store_api::MachineMembershipStore;
@@ -284,10 +284,12 @@ impl DaemonState {
                 )
                 .await;
             match response {
-                Ok(response) if response.ok => prepared.push(peer.clone()),
+                Ok(response) if response.is_ok() => prepared.push(peer.clone()),
                 Ok(response) => failures.push(format!(
                     "{} rejected prepare [{}]: {}",
-                    peer.id, response.code, response.message
+                    peer.id,
+                    response.code(),
+                    response.message()
                 )),
                 Err(error) => failures.push(format!("{} unreachable: {error}", peer.id)),
             }
@@ -383,7 +385,7 @@ impl DaemonState {
         };
         let local_ids = sorted_machine_ids(&machines);
         let mut expected = expected_machine_ids.to_vec();
-        expected.sort_by(|left, right| left.0.cmp(&right.0));
+        expected.sort_by(|left, right| left.as_str().cmp(right.as_str()));
         if local_ids != expected {
             return self.err(
                 "MACHINE_SET_MISMATCH",
@@ -642,11 +644,7 @@ impl DaemonState {
             .map_err(|error| error.to_string())?;
 
         if let Err(error) = self
-            .transition_local_machine(
-                MachineTransitionGoal::Activate,
-                Some(assigned_subnet),
-                false,
-            )
+            .transition_local_machine(MachineSelfTransition::Activate { assigned_subnet })
             .await
         {
             self.stop_started_mesh_after_transition_failure().await;
@@ -729,7 +727,7 @@ fn sorted_machine_ids(machines: &[MachineMembership]) -> Vec<MachineId> {
         .iter()
         .map(|machine| machine.id.clone())
         .collect::<Vec<_>>();
-    ids.sort_by(|left, right| left.0.cmp(&right.0));
+    ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     ids
 }
 

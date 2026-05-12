@@ -115,7 +115,10 @@ impl DaemonState {
             Err(response) => return *response,
         };
 
-        let machine_id = MachineId(id.to_string());
+        let machine_id = match MachineId::try_new(id) {
+            Ok(machine_id) => machine_id,
+            Err(error) => return self.err("MACHINE_INVALID_TARGET", error),
+        };
         let record = match find_machine_record(&active.mesh.store, &machine_id).await {
             Ok(Some(record)) => record,
             Ok(None) => {
@@ -159,13 +162,13 @@ impl DaemonState {
                 )
                 .await;
             match response {
-                Ok(response) if response.ok => {}
+                Ok(response) if response.is_ok() => {}
                 Ok(response) => {
                     return self.err(
                         "MACHINE_REMOVE_PEER_REJECTED",
                         format!(
                             "machine '{id}' rejected coordinated removal [{}]: {}; resolve the remote failure or rerun with --force only if you intend membership-record-only removal",
-                            response.code, response.message
+                            response.code(), response.message()
                         ),
                     );
                 }
@@ -249,8 +252,8 @@ fn rows_from_rtt_observations(
             continue;
         };
         rows.push(MachineRttRow {
-            machine: source_machine_id.0.clone(),
-            peer: peer.id.0.clone(),
+            machine: source_machine_id.as_str().to_string(),
+            peer: peer.id.as_str().to_string(),
             median_ms,
             stddev_ms,
         });
@@ -368,7 +371,7 @@ pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineLis
         rows: machines
             .iter()
             .map(|machine| MachineListReportRow {
-                id: machine.id.0.clone(),
+                id: machine.id.as_str().to_string(),
                 lifecycle: format_lifecycle(machine),
                 authority: ployz_types::model::AuthorityNodePosture::from_machine_membership(
                     machine,
@@ -407,7 +410,7 @@ mod tests {
 
     #[test]
     fn machine_rtt_rows_map_observations_and_skip_empty_unknown_and_self() {
-        let source_id = MachineId("machine-1".into());
+        let source_id = MachineId::new("machine-1");
         let peer = machine_record("machine-2", Ipv6Addr::LOCALHOST, 2);
         let machines = vec![
             machine_record("machine-1", Ipv6Addr::UNSPECIFIED, 1),
@@ -474,7 +477,7 @@ mod tests {
 
     fn machine_record(id: &str, overlay_ip: Ipv6Addr, key_byte: u8) -> MachineMembership {
         MachineMembership::seed(
-            MachineId(id.into()),
+            MachineId::new(id),
             PublicKey([key_byte; 32]),
             OverlayIp(overlay_ip),
             None,

@@ -22,14 +22,14 @@ use crate::model::{
     BranchEnvironmentRecord, CertificateRecord, DeployBaselineComponent, DeployChangeKind,
     DeployId, DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord,
     DeployPhaseRollbackPolicy, DeployPhaseState, DeployPhaseWork, DeployPreview,
-    DeployPreviewBaseline, DeployPreviewBaselineComponents, DeployRecord, DeployState, DrainState,
-    ImageArtifact, ImageArtifactProvenance, ImageAvailabilityRecord, ImageDigest, ImagePresence,
-    ImageRef, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle,
-    MachineMembership, MachineTopology, OverlayIp, PreparedDeployRecord, PreparedDeployState,
-    PublicKey, ServiceBranchLineageRecord, ServiceRelease, ServiceReleaseRecord,
-    ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, ServiceSourceMode, SlotId,
-    VolumeBranchLineageRecord, VolumeClonePreflightAction, VolumeClonePreflightScope,
-    VolumeMovementRecord, VolumeRecord,
+    DeployPreviewBaseline, DeployPreviewBaselineComponents, DeployRecord, DeployRecordState,
+    DeployState, DrainState, ImageArtifact, ImageArtifactProvenance, ImageAvailabilityRecord,
+    ImageDigest, ImagePresence, ImageRef, InstanceId, InstancePhase, InstanceStatusRecord,
+    MachineId, MachineLifecycle, MachineMembership, MachineStorageRole, MachineTopology, OverlayIp,
+    PreparedDeployRecord, PreparedDeployState, PublicKey, ServiceBranchLineageRecord,
+    ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord,
+    ServiceSourceMode, SlotId, StorageParticipation, VolumeBranchLineageRecord,
+    VolumeClonePreflightAction, VolumeClonePreflightScope, VolumeMovementRecord, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -114,10 +114,10 @@ fn deployable_machines_filters_by_participation() {
         test_machine("draining", MachineLifecycle::Draining),
     ];
 
-    let deployable = deployable_machines(&machines, &MachineId("local".into()));
+    let deployable = deployable_machines(&machines, &MachineId::new("local"));
     assert_eq!(
         deployable,
-        vec![MachineId("enabled-a".into()), MachineId("enabled-b".into())]
+        vec![MachineId::new("enabled-a"), MachineId::new("enabled-b")]
     );
 }
 
@@ -125,14 +125,14 @@ fn deployable_machines_filters_by_participation() {
 fn deployable_machines_returns_empty_when_stored_machines_are_not_eligible() {
     let machines = vec![test_machine("draining", MachineLifecycle::Draining)];
 
-    let deployable = deployable_machines(&machines, &MachineId("local".into()));
+    let deployable = deployable_machines(&machines, &MachineId::new("local"));
     assert!(deployable.is_empty());
 }
 
 #[test]
 fn deployable_machines_falls_back_to_local_when_inventory_is_empty() {
-    let deployable = deployable_machines(&[], &MachineId("local".into()));
-    assert_eq!(deployable, vec![MachineId("local".into())]);
+    let deployable = deployable_machines(&[], &MachineId::new("local"));
+    assert_eq!(deployable, vec![MachineId::new("local")]);
 }
 
 #[test]
@@ -152,20 +152,20 @@ fn deployable_machines_includes_compute_region_and_excludes_draining_regions() {
         ),
     ];
 
-    let deployable = deployable_machines(&machines, &MachineId("local".into()));
+    let deployable = deployable_machines(&machines, &MachineId::new("local"));
     assert_eq!(
         deployable,
-        vec![MachineId("compute".into()), MachineId("home".into())]
+        vec![MachineId::new("compute"), MachineId::new("home")]
     );
 }
 
 #[tokio::test]
 async fn resolve_plan_preview_includes_default_phase_for_basic_manifest() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:latest",
     )]);
 
@@ -177,10 +177,10 @@ async fn resolve_plan_preview_includes_default_phase_for_basic_manifest() {
     let [phase] = preview.phases.as_slice() else {
         panic!("expected one default deploy phase");
     };
-    assert_eq!(phase.phase_id, DeployPhaseId("deploy".into()));
+    assert_eq!(phase.phase_id, DeployPhaseId::new("deploy"));
     assert_eq!(phase.name, "Deploy");
     assert_eq!(phase.order, 0);
-    assert_eq!(phase.participants, vec![MachineId("machine-a".into())]);
+    assert_eq!(phase.participants, vec![MachineId::new("machine-a")]);
     assert_eq!(phase.commit_policy, DeployPhaseCommitPolicy::EndOfDeploy);
     assert_eq!(phase.rollback_policy, DeployPhaseRollbackPolicy::Reversible);
     assert_eq!(phase.advance_policy, DeployPhaseAdvancePolicy::Immediate);
@@ -195,13 +195,13 @@ async fn resolve_plan_preview_includes_default_phase_for_basic_manifest() {
 #[tokio::test]
 async fn preview_includes_present_pull_never_image_availability() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let digest = test_image_digest('a');
     store
         .upsert_image_availability(&present_image_record("machine-a", digest.clone()))
         .await
         .expect("seed image availability");
-    let mut service = test_service_spec("api", Placement::Replicated { count: 1 }, digest.as_str());
+    let mut service = test_service_spec("api", Placement::replicated(1), digest.as_str());
     service.template.pull_policy = PullPolicy::Never;
     let manifest = test_manifest(vec![service]);
 
@@ -216,25 +216,25 @@ async fn preview_includes_present_pull_never_image_availability() {
         );
     };
     assert_eq!(availability.service, "api");
-    assert_eq!(availability.slot_id, SlotId("slot-0001".into()));
-    assert_eq!(availability.machine_id, MachineId("machine-a".into()));
+    assert_eq!(availability.slot_id, SlotId::new("slot-0001"));
+    assert_eq!(availability.machine_id, MachineId::new("machine-a"));
     assert_eq!(availability.digest, digest);
 }
 
 #[tokio::test]
 async fn preview_skips_unchanged_pull_never_tagged_service() {
     let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut existing = test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "example/api:already-running",
     );
     existing.template.pull_policy = PullPolicy::Never;
     let revision_hash = existing.revision_hash().expect("revision hash");
     store
         .upsert_service_release(&test_release(
-            &Namespace("test".into()),
+            &Namespace::new("test"),
             "api",
             &revision_hash,
             vec![test_slot(
@@ -262,19 +262,15 @@ async fn preview_skips_unchanged_pull_never_tagged_service() {
 #[tokio::test]
 async fn preview_checks_pull_never_image_availability_for_replace_slots() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let old_digest = test_image_digest('a');
     let new_digest = test_image_digest('b');
-    let mut old_service = test_service_spec(
-        "api",
-        Placement::Replicated { count: 1 },
-        old_digest.as_str(),
-    );
+    let mut old_service = test_service_spec("api", Placement::replicated(1), old_digest.as_str());
     old_service.template.pull_policy = PullPolicy::Never;
     let old_revision_hash = old_service.revision_hash().expect("old revision hash");
     store
         .upsert_service_release(&test_release(
-            &Namespace("test".into()),
+            &Namespace::new("test"),
             "api",
             &old_revision_hash,
             vec![test_slot(
@@ -290,11 +286,7 @@ async fn preview_checks_pull_never_image_availability_for_replace_slots() {
         .upsert_image_availability(&present_image_record("machine-a", new_digest.clone()))
         .await
         .expect("seed image availability");
-    let mut new_service = test_service_spec(
-        "api",
-        Placement::Replicated { count: 1 },
-        new_digest.as_str(),
-    );
+    let mut new_service = test_service_spec("api", Placement::replicated(1), new_digest.as_str());
     new_service.template.pull_policy = PullPolicy::Never;
     let manifest = test_manifest(vec![new_service]);
 
@@ -312,24 +304,24 @@ async fn preview_checks_pull_never_image_availability_for_replace_slots() {
             preview.image_availability
         );
     };
-    assert_eq!(availability.slot_id, SlotId("slot-0001".into()));
-    assert_eq!(availability.machine_id, MachineId("machine-a".into()));
+    assert_eq!(availability.slot_id, SlotId::new("slot-0001"));
+    assert_eq!(availability.machine_id, MachineId::new("machine-a"));
     assert_eq!(availability.digest, new_digest);
 }
 
 #[tokio::test]
 async fn apply_success_persists_pull_never_image_availability_summary() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let digest = test_image_digest('a');
     store
         .upsert_image_availability(&present_image_record("machine-a", digest.clone()))
         .await
         .expect("seed image availability");
-    let mut service = test_service_spec("api", Placement::Replicated { count: 1 }, digest.as_str());
+    let mut service = test_service_spec("api", Placement::replicated(1), digest.as_str());
     service.template.pull_policy = PullPolicy::Never;
     let manifest = test_manifest(vec![service]);
-    let deploy_id = DeployId("deploy-image-availability".into());
+    let deploy_id = DeployId::new("deploy-image-availability");
     let participant_client = FakeParticipantClient::new(FakeController::default());
 
     let result = apply_with_deploy_id_and_preconditions(
@@ -356,7 +348,7 @@ async fn apply_success_persists_pull_never_image_availability_summary() {
         );
     };
     assert_eq!(availability.service, "api");
-    assert_eq!(availability.machine_id, MachineId("machine-a".into()));
+    assert_eq!(availability.machine_id, MachineId::new("machine-a"));
     assert_eq!(availability.digest, digest);
     let record = store
         .get_deploy(&deploy_id)
@@ -364,7 +356,7 @@ async fn apply_success_persists_pull_never_image_availability_summary() {
         .expect("get deploy")
         .expect("deploy record");
     let summary: DeployPreview =
-        serde_json::from_str(&record.summary_json).expect("summary preview");
+        serde_json::from_str(&record.summary_json()).expect("summary preview");
     assert_eq!(
         summary.image_availability,
         result.preview.image_availability
@@ -374,12 +366,8 @@ async fn apply_success_persists_pull_never_image_availability_summary() {
 #[tokio::test]
 async fn preview_rejects_pull_never_without_digest_reference() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let mut service = test_service_spec(
-        "api",
-        Placement::Replicated { count: 1 },
-        "example/api:latest",
-    );
+    let local_machine_id = MachineId::new("local");
+    let mut service = test_service_spec("api", Placement::replicated(1), "example/api:latest");
     service.template.pull_policy = PullPolicy::Never;
     let manifest = test_manifest(vec![service]);
 
@@ -399,9 +387,9 @@ async fn preview_rejects_pull_never_without_digest_reference() {
 #[tokio::test]
 async fn preview_rejects_missing_pull_never_image_availability() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let digest = test_image_digest('a');
-    let mut service = test_service_spec("api", Placement::Replicated { count: 1 }, digest.as_str());
+    let mut service = test_service_spec("api", Placement::replicated(1), digest.as_str());
     service.template.pull_policy = PullPolicy::Never;
     let manifest = test_manifest(vec![service]);
 
@@ -424,13 +412,13 @@ async fn preview_rejects_missing_pull_never_image_availability() {
 #[tokio::test]
 async fn preview_rejects_non_present_pull_never_image_availability() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let digest = test_image_digest('a');
     store
         .upsert_image_availability(&absent_image_record("machine-a", digest.clone()))
         .await
         .expect("seed image availability");
-    let mut service = test_service_spec("api", Placement::Replicated { count: 1 }, digest.as_str());
+    let mut service = test_service_spec("api", Placement::replicated(1), digest.as_str());
     service.template.pull_policy = PullPolicy::Never;
     let manifest = test_manifest(vec![service]);
 
@@ -454,18 +442,11 @@ async fn preview_rejects_non_present_pull_never_image_availability() {
 #[tokio::test]
 async fn preview_does_not_require_availability_for_registry_pull_policies() {
     let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
-    let mut if_not_present = test_service_spec(
-        "api",
-        Placement::Replicated { count: 1 },
-        "example/api:latest",
-    );
+    let local_machine_id = MachineId::new("local");
+    let mut if_not_present =
+        test_service_spec("api", Placement::replicated(1), "example/api:latest");
     if_not_present.template.pull_policy = PullPolicy::IfNotPresent;
-    let mut always = test_service_spec(
-        "worker",
-        Placement::Replicated { count: 1 },
-        "example/worker:latest",
-    );
+    let mut always = test_service_spec("worker", Placement::replicated(1), "example/worker:latest");
     always.template.pull_policy = PullPolicy::Always;
     let manifest = test_manifest(vec![if_not_present, always]);
 
@@ -479,9 +460,9 @@ async fn preview_does_not_require_availability_for_registry_pull_policies() {
 #[tokio::test]
 async fn apply_rejects_missing_pull_never_image_before_participant_inspect() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let digest = test_image_digest('a');
-    let mut service = test_service_spec("api", Placement::Replicated { count: 1 }, digest.as_str());
+    let mut service = test_service_spec("api", Placement::replicated(1), digest.as_str());
     service.template.pull_policy = PullPolicy::Never;
     let manifest = test_manifest(vec![service]);
     let participant = UnsupportedParticipantClient::default();
@@ -510,10 +491,10 @@ async fn apply_rejects_missing_pull_never_image_before_participant_inspect() {
 #[tokio::test]
 async fn resolve_plan_rejects_manifest_phase_named_deploy() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = test_manifest(vec![
-        test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17"),
-        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+        test_service_spec("db", Placement::replicated(1), "postgres:17"),
+        test_service_spec("web", Placement::replicated(1), "nginx:1.27"),
     ]);
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -543,10 +524,10 @@ async fn resolve_plan_rejects_manifest_phase_named_deploy() {
 #[tokio::test]
 async fn resolve_plan_rejects_manual_phase_advance_policy() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     manifest.intent = Some(DeployIntent {
@@ -576,22 +557,22 @@ async fn resolve_plan_rejects_manual_phase_advance_policy() {
 
 #[test]
 fn replicated_one_reuses_existing_slot_machine() {
-    let spec = test_service_spec("api", Placement::Replicated { count: 1 }, "nginx:latest");
-    let machines = vec![MachineId("machine-a".into()), MachineId("machine-b".into())];
+    let spec = test_service_spec("api", Placement::replicated(1), "nginx:latest");
+    let machines = vec![MachineId::new("machine-a"), MachineId::new("machine-b")];
     let current_slots = [ServiceReleaseSlot {
-        slot_id: SlotId("slot-0001".into()),
-        machine_id: MachineId("machine-b".into()),
-        active_instance_id: InstanceId("inst-1".into()),
+        slot_id: SlotId::new("slot-0001"),
+        machine_id: MachineId::new("machine-b"),
+        active_instance_id: InstanceId::new("inst-1"),
         revision_hash: "rev-1".into(),
     }];
 
     let machine_map = HashMap::from([
         (
-            MachineId("machine-a".into()),
+            MachineId::new("machine-a"),
             test_machine("machine-a", MachineLifecycle::Active),
         ),
         (
-            MachineId("machine-b".into()),
+            MachineId::new("machine-b"),
             test_machine("machine-b", MachineLifecycle::Active),
         ),
     ]);
@@ -609,28 +590,28 @@ fn replicated_one_reuses_existing_slot_machine() {
     let [slot] = desired.as_slice() else {
         panic!("expected one desired slot");
     };
-    assert_eq!(slot.slot_id, SlotId("slot-0001".into()));
-    assert_eq!(slot.machine_id, MachineId("machine-b".into()));
+    assert_eq!(slot.slot_id, SlotId::new("slot-0001"));
+    assert_eq!(slot.machine_id, MachineId::new("machine-b"));
 }
 
 #[test]
 fn replicated_slot_relocates_from_draining_machine_during_deploy() {
-    let spec = test_service_spec("api", Placement::Replicated { count: 2 }, "nginx:latest");
-    let machines = vec![MachineId("machine-a".into())];
+    let spec = test_service_spec("api", Placement::replicated(2), "nginx:latest");
+    let machines = vec![MachineId::new("machine-a")];
     let current_slots = [ServiceReleaseSlot {
-        slot_id: SlotId("slot-0001".into()),
-        machine_id: MachineId("machine-b".into()),
-        active_instance_id: InstanceId("inst-1".into()),
+        slot_id: SlotId::new("slot-0001"),
+        machine_id: MachineId::new("machine-b"),
+        active_instance_id: InstanceId::new("inst-1"),
         revision_hash: "rev-1".into(),
     }];
 
     let machine_map = HashMap::from([
         (
-            MachineId("machine-a".into()),
+            MachineId::new("machine-a"),
             test_machine("machine-a", MachineLifecycle::Active),
         ),
         (
-            MachineId("machine-b".into()),
+            MachineId::new("machine-b"),
             test_machine("machine-b", MachineLifecycle::Draining),
         ),
     ]);
@@ -647,19 +628,19 @@ fn replicated_slot_relocates_from_draining_machine_during_deploy() {
     .expect("desired slots");
 
     assert_eq!(desired.len(), 2);
-    assert_eq!(desired[0].slot_id, SlotId("slot-0001".into()));
-    assert_eq!(desired[0].machine_id, MachineId("machine-a".into()));
-    assert_eq!(desired[1].slot_id, SlotId("slot-0002".into()));
-    assert_eq!(desired[1].machine_id, MachineId("machine-a".into()));
+    assert_eq!(desired[0].slot_id, SlotId::new("slot-0001"));
+    assert_eq!(desired[0].machine_id, MachineId::new("machine-a"));
+    assert_eq!(desired[1].slot_id, SlotId::new("slot-0002"));
+    assert_eq!(desired[1].machine_id, MachineId::new("machine-a"));
 }
 
 #[tokio::test]
 async fn resolve_plan_marks_matching_release_unchanged() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     let [spec] = manifest.services.as_slice() else {
@@ -698,7 +679,7 @@ async fn resolve_plan_marks_matching_release_unchanged() {
         panic!("expected one service plan");
     };
     assert_eq!(
-        service_plan.action,
+        service_plan.action(),
         crate::model::DeployChangeKind::Unchanged
     );
     assert_eq!(service_plan.service, "api");
@@ -707,13 +688,13 @@ async fn resolve_plan_marks_matching_release_unchanged() {
 #[tokio::test]
 async fn resolve_plan_reuses_slot_machine_when_revision_changes() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.28",
     )]);
-    let old_spec = test_service_spec("api", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let old_spec = test_service_spec("api", Placement::replicated(1), "nginx:1.27");
     let old_revision_hash = old_spec.revision_hash().expect("old revision hash");
 
     store
@@ -749,20 +730,23 @@ async fn resolve_plan_reuses_slot_machine_when_revision_changes() {
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(service_plan.action, crate::model::DeployChangeKind::Replace);
-    assert_eq!(slot_plan.machine_id, MachineId("machine-b".into()));
+    assert_eq!(
+        service_plan.action(),
+        crate::model::DeployChangeKind::Replace
+    );
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("machine-b"));
 }
 
 #[tokio::test]
 async fn resolve_plan_moves_replacement_off_region_draining_machine() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.28",
     )]);
-    let old_spec = test_service_spec("api", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let old_spec = test_service_spec("api", Placement::replicated(1), "nginx:1.27");
     let old_revision_hash = old_spec.revision_hash().expect("old revision hash");
 
     store
@@ -806,15 +790,15 @@ async fn resolve_plan_moves_replacement_off_region_draining_machine() {
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(slot_plan.action, DeployChangeKind::Replace);
-    assert_eq!(slot_plan.machine_id, MachineId("compute".into()));
+    assert_eq!(slot_plan.action(), DeployChangeKind::Replace);
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("compute"));
 }
 
 #[tokio::test]
 async fn resolve_plan_pins_new_volume_to_existing_slot_machine() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
-    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    let local_machine_id = MachineId::new("local");
+    let mut service = test_service_spec("db", Placement::replicated(1), "postgres:17");
     service.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
         target: "/var/lib/postgresql/data".into(),
@@ -824,7 +808,7 @@ async fn resolve_plan_pins_new_volume_to_existing_slot_machine() {
     manifest
         .volumes
         .push(test_volume("data", VolumeScope::Single));
-    let old_spec = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:16");
+    let old_spec = test_service_spec("db", Placement::replicated(1), "postgres:16");
     let old_revision_hash = old_spec.revision_hash().expect("old revision hash");
 
     store
@@ -857,21 +841,21 @@ async fn resolve_plan_pins_new_volume_to_existing_slot_machine() {
     let [volume] = plan.volumes() else {
         panic!("expected one volume");
     };
-    assert_eq!(volume.machine_id, MachineId("machine-b".into()));
+    assert_eq!(volume.machine_id, MachineId::new("machine-b"));
     let [service_plan] = plan.services() else {
         panic!("expected one service plan");
     };
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(slot_plan.machine_id, MachineId("machine-b".into()));
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("machine-b"));
 }
 
 #[tokio::test]
 async fn resolve_plan_keeps_existing_volume_on_region_draining_machine() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
-    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    let local_machine_id = MachineId::new("local");
+    let mut service = test_service_spec("db", Placement::replicated(1), "postgres:17");
     service.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
         target: "/var/lib/postgresql/data".into(),
@@ -927,21 +911,21 @@ async fn resolve_plan_keeps_existing_volume_on_region_draining_machine() {
     let [volume] = plan.volumes() else {
         panic!("expected one volume");
     };
-    assert_eq!(volume.machine_id, MachineId("region-draining".into()));
+    assert_eq!(volume.machine_id, MachineId::new("region-draining"));
     let [service_plan] = plan.services() else {
         panic!("expected one service plan");
     };
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(slot_plan.machine_id, MachineId("region-draining".into()));
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("region-draining"));
 }
 
 #[tokio::test]
 async fn resolve_plan_moves_volume_backed_service_from_draining_machine() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
-    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    let local_machine_id = MachineId::new("local");
+    let mut service = test_service_spec("db", Placement::replicated(1), "postgres:17");
     service.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
         target: "/var/lib/postgresql/data".into(),
@@ -997,16 +981,12 @@ async fn resolve_plan_moves_volume_backed_service_from_draining_machine() {
     let [volume] = plan.volumes() else {
         panic!("expected one planned volume");
     };
-    assert_eq!(volume.machine_id, MachineId("machine-b".into()));
+    assert_eq!(volume.machine_id, MachineId::new("machine-b"));
     assert_eq!(
         volume
-            .movement
-            .as_ref()
+            .movement()
             .map(|movement| (&movement.from_machine, &movement.to_machine)),
-        Some((
-            &MachineId("machine-a".into()),
-            &MachineId("machine-b".into())
-        ))
+        Some((&MachineId::new("machine-a"), &MachineId::new("machine-b")))
     );
 
     let [service_plan] = plan.services() else {
@@ -1015,16 +995,16 @@ async fn resolve_plan_moves_volume_backed_service_from_draining_machine() {
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(service_plan.action, DeployChangeKind::Replace);
-    assert_eq!(slot_plan.action, DeployChangeKind::Replace);
-    assert_eq!(slot_plan.machine_id, MachineId("machine-b".into()));
+    assert_eq!(service_plan.action(), DeployChangeKind::Replace);
+    assert_eq!(slot_plan.action(), DeployChangeKind::Replace);
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("machine-b"));
 }
 
 #[tokio::test]
 async fn resolve_plan_moves_draining_volume_only_to_storage_capable_target() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
-    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    let local_machine_id = MachineId::new("local");
+    let mut service = test_service_spec("db", Placement::replicated(1), "postgres:17");
     service.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
         target: "/var/lib/postgresql/data".into(),
@@ -1044,7 +1024,7 @@ async fn resolve_plan_moves_draining_volume_only_to_storage_capable_target() {
         .await
         .expect("seed machine-a");
     let mut compute_only = test_machine("machine-b", MachineLifecycle::Active);
-    compute_only.storage = false;
+    compute_only.storage_role = MachineStorageRole::Compute;
     store
         .upsert_self_machine(&compute_only)
         .await
@@ -1086,20 +1066,20 @@ async fn resolve_plan_moves_draining_volume_only_to_storage_capable_target() {
     let [volume] = plan.volumes() else {
         panic!("expected one planned volume");
     };
-    assert_eq!(volume.machine_id, MachineId("machine-c".into()));
+    assert_eq!(volume.machine_id, MachineId::new("machine-c"));
     let [service_plan] = plan.services() else {
         panic!("expected one service plan");
     };
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(slot_plan.machine_id, MachineId("machine-c".into()));
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("machine-c"));
 }
 
 #[tokio::test]
 async fn resolve_plan_moves_unattached_declared_volume_from_draining_machine() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = test_manifest(Vec::new());
     manifest
         .volumes
@@ -1122,17 +1102,13 @@ async fn resolve_plan_moves_unattached_declared_volume_from_draining_machine() {
     let [volume] = plan.volumes() else {
         panic!("expected one planned volume");
     };
-    assert_eq!(volume.machine_id, MachineId("machine-b".into()));
+    assert_eq!(volume.machine_id, MachineId::new("machine-b"));
     assert!(volume.attached_services.is_empty());
     assert_eq!(
         volume
-            .movement
-            .as_ref()
+            .movement()
             .map(|movement| (&movement.from_machine, &movement.to_machine)),
-        Some((
-            &MachineId("machine-a".into()),
-            &MachineId("machine-b".into())
-        ))
+        Some((&MachineId::new("machine-a"), &MachineId::new("machine-b")))
     );
     let preview = plan.to_preview(Vec::new());
     let [volume_move] = preview.volume_moves.as_slice() else {
@@ -1145,8 +1121,8 @@ async fn resolve_plan_moves_unattached_declared_volume_from_draining_machine() {
 #[tokio::test]
 async fn resolve_plan_moves_draining_volume_to_existing_service_volume_pin() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
-    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    let local_machine_id = MachineId::new("local");
+    let mut service = test_service_spec("db", Placement::replicated(1), "postgres:17");
     service.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
         target: "/var/lib/postgresql/data".into(),
@@ -1227,37 +1203,33 @@ async fn resolve_plan_moves_draining_volume_to_existing_service_volume_pin() {
         .iter()
         .find(|volume| volume.declaration.name == "data")
         .expect("data volume");
-    assert_eq!(data.machine_id, MachineId("machine-c".into()));
+    assert_eq!(data.machine_id, MachineId::new("machine-c"));
     assert_eq!(
-        data.movement
-            .as_ref()
+        data.movement()
             .map(|movement| (&movement.from_machine, &movement.to_machine)),
-        Some((
-            &MachineId("machine-a".into()),
-            &MachineId("machine-c".into())
-        ))
+        Some((&MachineId::new("machine-a"), &MachineId::new("machine-c")))
     );
     let wal = plan
         .volumes()
         .iter()
         .find(|volume| volume.declaration.name == "wal")
         .expect("wal volume");
-    assert_eq!(wal.machine_id, MachineId("machine-c".into()));
-    assert!(wal.movement.is_none());
+    assert_eq!(wal.machine_id, MachineId::new("machine-c"));
+    assert!(wal.movement().is_none());
     let [service_plan] = plan.services() else {
         panic!("expected one service plan");
     };
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(slot_plan.machine_id, MachineId("machine-c".into()));
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("machine-c"));
 }
 
 #[tokio::test]
 async fn resolve_plan_moves_draining_volume_to_pending_sibling_move_target() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
-    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    let local_machine_id = MachineId::new("local");
+    let mut service = test_service_spec("db", Placement::replicated(1), "postgres:17");
     service.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
         target: "/var/lib/postgresql/data".into(),
@@ -1353,30 +1325,22 @@ async fn resolve_plan_moves_draining_volume_to_pending_sibling_move_target() {
         .iter()
         .find(|volume| volume.declaration.name == "data")
         .expect("data volume");
-    assert_eq!(data.machine_id, MachineId("machine-c".into()));
+    assert_eq!(data.machine_id, MachineId::new("machine-c"));
     assert_eq!(
-        data.movement
-            .as_ref()
+        data.movement()
             .map(|movement| (&movement.from_machine, &movement.to_machine)),
-        Some((
-            &MachineId("machine-a".into()),
-            &MachineId("machine-c".into())
-        ))
+        Some((&MachineId::new("machine-a"), &MachineId::new("machine-c")))
     );
     let wal = plan
         .volumes()
         .iter()
         .find(|volume| volume.declaration.name == "wal")
         .expect("wal volume");
-    assert_eq!(wal.machine_id, MachineId("machine-c".into()));
+    assert_eq!(wal.machine_id, MachineId::new("machine-c"));
     assert_eq!(
-        wal.movement
-            .as_ref()
+        wal.movement()
             .map(|movement| (&movement.from_machine, &movement.to_machine)),
-        Some((
-            &MachineId("machine-d".into()),
-            &MachineId("machine-c".into())
-        ))
+        Some((&MachineId::new("machine-d"), &MachineId::new("machine-c")))
     );
     let [service_plan] = plan.services() else {
         panic!("expected one service plan");
@@ -1384,14 +1348,14 @@ async fn resolve_plan_moves_draining_volume_to_pending_sibling_move_target() {
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(slot_plan.machine_id, MachineId("machine-c".into()));
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("machine-c"));
 }
 
 #[tokio::test]
 async fn resolve_plan_preserves_invalid_pending_sibling_move_error() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
-    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    let local_machine_id = MachineId::new("local");
+    let mut service = test_service_spec("db", Placement::replicated(1), "postgres:17");
     service.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
         target: "/var/lib/postgresql/data".into(),
@@ -1477,7 +1441,7 @@ async fn resolve_plan_preserves_invalid_pending_sibling_move_error() {
 #[tokio::test]
 async fn resolve_plan_moves_existing_volume_and_attached_service_to_target_machine() {
     let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = volume_manifest();
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -1527,19 +1491,15 @@ async fn resolve_plan_moves_existing_volume_and_attached_service_to_target_machi
     let [volume] = plan.volumes() else {
         panic!("expected one planned volume");
     };
-    assert_eq!(volume.machine_id, MachineId("machine-b".into()));
+    assert_eq!(volume.machine_id, MachineId::new("machine-b"));
     assert_eq!(
         volume
-            .movement
-            .as_ref()
+            .movement()
             .map(|movement| (&movement.from_machine, &movement.to_machine)),
-        Some((
-            &MachineId("machine-a".into()),
-            &MachineId("machine-b".into())
-        ))
+        Some((&MachineId::new("machine-a"), &MachineId::new("machine-b")))
     );
-    assert!(plan.participants().contains(&MachineId("machine-a".into())));
-    assert!(plan.participants().contains(&MachineId("machine-b".into())));
+    assert!(plan.participants().contains(&MachineId::new("machine-a")));
+    assert!(plan.participants().contains(&MachineId::new("machine-b")));
 
     let [service_plan] = plan.services() else {
         panic!("expected one service plan");
@@ -1547,17 +1507,17 @@ async fn resolve_plan_moves_existing_volume_and_attached_service_to_target_machi
     let [slot_plan] = service_plan.slots.as_slice() else {
         panic!("expected one slot plan");
     };
-    assert_eq!(service_plan.action, DeployChangeKind::Replace);
-    assert_eq!(slot_plan.action, DeployChangeKind::Replace);
-    assert_eq!(slot_plan.machine_id, MachineId("machine-b".into()));
+    assert_eq!(service_plan.action(), DeployChangeKind::Replace);
+    assert_eq!(slot_plan.action(), DeployChangeKind::Replace);
+    assert_eq!(slot_plan.machine_id(), &MachineId::new("machine-b"));
 
     let preview = plan.to_preview(Vec::new());
     let [volume_move] = preview.volume_moves.as_slice() else {
         panic!("expected one preview volume move");
     };
     assert_eq!(volume_move.volume, "data");
-    assert_eq!(volume_move.from_machine, MachineId("machine-a".into()));
-    assert_eq!(volume_move.to_machine, MachineId("machine-b".into()));
+    assert_eq!(volume_move.from_machine, MachineId::new("machine-a"));
+    assert_eq!(volume_move.to_machine, MachineId::new("machine-b"));
     assert_eq!(volume_move.attached_services, vec!["db"]);
     let baseline = preview.baseline.as_ref().expect("preview baseline");
     assert_eq!(
@@ -1567,7 +1527,7 @@ async fn resolve_plan_moves_existing_volume_and_attached_service_to_target_machi
     let [phase] = preview.phases.as_slice() else {
         panic!("expected one default deploy phase");
     };
-    assert_eq!(phase.phase_id, DeployPhaseId("deploy".into()));
+    assert_eq!(phase.phase_id, DeployPhaseId::new("deploy"));
     assert_eq!(phase.name, "Deploy");
     assert_eq!(phase.order, 0);
     assert_eq!(phase.commit_policy, DeployPhaseCommitPolicy::EndOfDeploy);
@@ -1575,7 +1535,7 @@ async fn resolve_plan_moves_existing_volume_and_attached_service_to_target_machi
     assert_eq!(phase.advance_policy, DeployPhaseAdvancePolicy::Immediate);
     assert_eq!(
         phase.participants,
-        vec![MachineId("machine-a".into()), MachineId("machine-b".into())]
+        vec![MachineId::new("machine-a"), MachineId::new("machine-b")]
     );
     assert!(matches!(
         phase.work.as_slice(),
@@ -1588,8 +1548,8 @@ async fn resolve_plan_moves_existing_volume_and_attached_service_to_target_machi
             },
             DeployPhaseWork::Service { service, action }
         ] if volume == "data"
-            && from_machine == &MachineId("machine-a".into())
-            && to_machine == &MachineId("machine-b".into())
+            && from_machine == &MachineId::new("machine-a")
+            && to_machine == &MachineId::new("machine-b")
             && attached_services.as_slice() == ["db"]
             && service == "db"
             && *action == DeployChangeKind::Replace
@@ -1599,7 +1559,7 @@ async fn resolve_plan_moves_existing_volume_and_attached_service_to_target_machi
 #[tokio::test]
 async fn resolve_plan_treats_volume_move_to_same_machine_as_noop() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = volume_manifest();
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -1649,19 +1609,19 @@ async fn resolve_plan_treats_volume_move_to_same_machine_as_noop() {
     let [volume] = plan.volumes() else {
         panic!("expected one planned volume");
     };
-    assert_eq!(volume.machine_id, MachineId("machine-a".into()));
-    assert_eq!(volume.movement, None);
+    assert_eq!(volume.machine_id, MachineId::new("machine-a"));
+    assert_eq!(volume.movement(), None);
     assert!(plan.to_preview(Vec::new()).volume_moves.is_empty());
     let [service_plan] = plan.services() else {
         panic!("expected one service plan");
     };
-    assert_eq!(service_plan.action, DeployChangeKind::Unchanged);
+    assert_eq!(service_plan.action(), DeployChangeKind::Unchanged);
 }
 
 #[tokio::test]
 async fn resolve_plan_rejects_volume_move_source_mismatch() {
     let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = volume_manifest();
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -1692,7 +1652,7 @@ async fn resolve_plan_rejects_volume_move_source_mismatch() {
 
 #[tokio::test]
 async fn resolve_plan_rejects_volume_move_to_missing_ineligible_or_compute_only_target() {
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     for (target, maybe_machine, expected) in [
         (
             "missing",
@@ -1706,7 +1666,7 @@ async fn resolve_plan_rejects_volume_move_to_missing_ineligible_or_compute_only_
             "standby",
             Some({
                 let mut machine = test_machine("standby", MachineLifecycle::Standby);
-                machine.storage = true;
+                machine.storage_role = StorageParticipation::Candidate.into();
                 machine
             }),
             Error::Deploy(DeployError::VolumeMoveTargetIneligible {
@@ -1718,7 +1678,7 @@ async fn resolve_plan_rejects_volume_move_to_missing_ineligible_or_compute_only_
             "compute-only",
             Some({
                 let mut machine = test_machine("compute-only", MachineLifecycle::Active);
-                machine.storage = false;
+                machine.storage_role = MachineStorageRole::Compute;
                 machine
             }),
             Error::Deploy(DeployError::VolumeMoveTargetNotStorageCapable {
@@ -1759,7 +1719,7 @@ async fn resolve_plan_rejects_volume_move_to_missing_ineligible_or_compute_only_
 #[tokio::test]
 async fn resolve_plan_rejects_volume_move_for_shared_volume() {
     let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = test_manifest(Vec::new());
     manifest
         .volumes
@@ -1799,7 +1759,7 @@ async fn resolve_plan_rejects_volume_move_for_shared_volume() {
 #[tokio::test]
 async fn resolve_plan_rejects_volume_move_for_global_attached_service() {
     let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut service = test_service_spec("db", Placement::Global, "postgres:17");
     service.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
@@ -1841,8 +1801,8 @@ async fn resolve_plan_rejects_volume_move_for_global_attached_service() {
 #[tokio::test]
 async fn resolve_plan_rejects_service_with_volumes_on_different_machines() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
-    let mut service = test_service_spec("api", Placement::Replicated { count: 1 }, "nginx:1.28");
+    let local_machine_id = MachineId::new("local");
+    let mut service = test_service_spec("api", Placement::replicated(1), "nginx:1.28");
     service.template.mounts.push(Mount {
         source: MountSource::Volume("left".into()),
         target: "/left".into(),
@@ -1887,7 +1847,7 @@ async fn resolve_plan_rejects_service_with_volumes_on_different_machines() {
 #[tokio::test]
 async fn apply_commits_volume_records_and_sends_volume_payload_to_startup() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = volume_manifest();
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -1921,7 +1881,7 @@ async fn apply_commits_volume_records_and_sends_volume_payload_to_startup() {
         panic!("expected one committed volume");
     };
     assert_eq!(record.volume_name, "data");
-    assert_eq!(record.machine_id, MachineId("machine-a".into()));
+    assert_eq!(record.machine_id, MachineId::new("machine-a"));
     assert_eq!(record.quota, "1G");
     assert_eq!(record.mode, "0750");
     assert_eq!(record.owner, "999:999");
@@ -1955,11 +1915,11 @@ async fn apply_commits_volume_records_and_sends_volume_payload_to_startup() {
 #[tokio::test]
 async fn preview_plans_volume_clone_on_source_machine() {
     let (store, _backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_volume(&store, &source_namespace, "data", "machine-b").await;
     let mut manifest = volume_manifest();
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
         volumes: vec![VolumeIntentHint {
@@ -1988,8 +1948,8 @@ async fn preview_plans_volume_clone_on_source_machine() {
     assert_eq!(clone.volume, "data");
     assert_eq!(clone.source_namespace, source_namespace);
     assert_eq!(clone.source_volume, "data");
-    assert_eq!(clone.source_machine, MachineId("machine-b".into()));
-    assert_eq!(clone.target_machine, MachineId("machine-b".into()));
+    assert_eq!(clone.source_machine, MachineId::new("machine-b"));
+    assert_eq!(clone.target_machine, MachineId::new("machine-b"));
     assert_eq!(clone.data_policy, VolumeCloneDataPolicy::Raw);
     assert_eq!(clone.consistency, VolumeCloneConsistency::CrashConsistent);
     let baseline = preview.baseline.as_ref().expect("preview baseline");
@@ -2025,11 +1985,11 @@ async fn preview_plans_volume_clone_on_source_machine() {
 #[tokio::test]
 async fn resolve_plan_rejects_volume_clone_source_drift() {
     let (store, _backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_volume(&store, &source_namespace, "data", "machine-b").await;
     let mut manifest = volume_manifest();
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
         volumes: vec![VolumeIntentHint {
@@ -2068,11 +2028,11 @@ async fn resolve_plan_rejects_volume_clone_source_drift() {
 #[tokio::test]
 async fn apply_executes_volume_clone_before_startup_and_commits_lineage() {
     let (store, _backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_volume(&store, &source_namespace, "data", "machine-b").await;
     let mut manifest = volume_manifest();
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
         volumes: vec![VolumeIntentHint {
@@ -2147,7 +2107,7 @@ async fn apply_executes_volume_clone_before_startup_and_commits_lineage() {
     let [record] = records.as_slice() else {
         panic!("expected cloned volume record");
     };
-    assert_eq!(record.machine_id, MachineId("machine-b".into()));
+    assert_eq!(record.machine_id, MachineId::new("machine-b"));
     assert_eq!(record.created_by_deploy_id, result.deploy_id);
 
     let lineage = store
@@ -2160,14 +2120,14 @@ async fn apply_executes_volume_clone_before_startup_and_commits_lineage() {
     assert_eq!(branch.volume_name, "data");
     assert_eq!(branch.source_namespace, source_namespace);
     assert_eq!(branch.source_volume_name, "data");
-    assert_eq!(branch.source_machine, MachineId("machine-b".into()));
-    assert_eq!(branch.target_machine, MachineId("machine-b".into()));
+    assert_eq!(branch.source_machine, MachineId::new("machine-b"));
+    assert_eq!(branch.target_machine, MachineId::new("machine-b"));
     assert_eq!(branch.data_policy, VolumeCloneDataPolicy::Raw);
     assert_eq!(branch.consistency, VolumeCloneConsistency::CrashConsistent);
     assert_eq!(branch.snapshot_guid, 84);
     assert_eq!(branch.deploy_id, result.deploy_id);
     assert_eq!(branch.commit_deploy_id, result.deploy_id);
-    assert_eq!(branch.phase_id, Some(DeployPhaseId("deploy".into())));
+    assert_eq!(branch.phase_id, Some(DeployPhaseId::new("deploy")));
 
     let reapply_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -2196,7 +2156,7 @@ async fn apply_executes_volume_clone_before_startup_and_commits_lineage() {
     let [moved_record] = moved_records.as_slice() else {
         panic!("expected moved clone volume record");
     };
-    assert_eq!(moved_record.machine_id, MachineId("machine-a".into()));
+    assert_eq!(moved_record.machine_id, MachineId::new("machine-a"));
 
     let moved_reapply_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -2216,8 +2176,8 @@ async fn apply_executes_volume_clone_before_startup_and_commits_lineage() {
 #[tokio::test]
 async fn preview_rejects_volume_clone_when_target_exists() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_volume(&store, &source_namespace, "data", "machine-a").await;
     let mut manifest = volume_manifest();
     seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
@@ -2251,12 +2211,12 @@ async fn preview_rejects_volume_clone_when_target_exists() {
 #[tokio::test]
 async fn apply_cleans_uncommitted_volume_clone_when_startup_fails() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_volume(&store, &source_namespace, "data", "machine-a").await;
-    let web = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let web = test_service_spec("web", Placement::replicated(1), "nginx:1.27");
     let mut manifest = test_manifest(vec![web]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest
         .volumes
         .push(test_volume("data", VolumeScope::Single));
@@ -2301,11 +2261,11 @@ async fn apply_cleans_uncommitted_volume_clone_when_startup_fails() {
 #[tokio::test]
 async fn apply_keeps_volume_clone_when_attached_service_start_returns_error() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_volume(&store, &source_namespace, "data", "machine-a").await;
     let mut manifest = volume_manifest();
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
         volumes: vec![VolumeIntentHint {
@@ -2345,19 +2305,19 @@ async fn apply_keeps_volume_clone_when_attached_service_start_returns_error() {
 #[tokio::test]
 async fn apply_keeps_started_uncheckpointed_volume_clone_when_later_phase_fails() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_volume(&store, &source_namespace, "data", "machine-a").await;
 
-    let mut db = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    let mut db = test_service_spec("db", Placement::replicated(1), "postgres:17");
     db.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
         target: "/var/lib/postgresql/data".into(),
         readonly: false,
     });
-    let web = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let web = test_service_spec("web", Placement::replicated(1), "nginx:1.27");
     let mut manifest = test_manifest(vec![db, web]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest
         .volumes
         .push(test_volume("data", VolumeScope::Single));
@@ -2421,19 +2381,19 @@ async fn apply_keeps_started_uncheckpointed_volume_clone_when_later_phase_fails(
 #[tokio::test]
 async fn apply_keeps_started_volume_clone_when_same_phase_later_service_fails() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_volume(&store, &source_namespace, "data", "machine-a").await;
 
-    let mut db = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    let mut db = test_service_spec("db", Placement::replicated(1), "postgres:17");
     db.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
         target: "/var/lib/postgresql/data".into(),
         readonly: false,
     });
-    let web = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let web = test_service_spec("web", Placement::replicated(1), "nginx:1.27");
     let mut manifest = test_manifest(vec![db, web]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest
         .volumes
         .push(test_volume("data", VolumeScope::Single));
@@ -2493,19 +2453,19 @@ async fn apply_keeps_started_volume_clone_when_same_phase_later_service_fails() 
 #[tokio::test]
 async fn apply_drains_live_uncommitted_volume_clone_writers_before_retrying_clone() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_volume(&store, &source_namespace, "data", "machine-a").await;
 
-    let mut db = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    let mut db = test_service_spec("db", Placement::replicated(1), "postgres:17");
     db.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
         target: "/var/lib/postgresql/data".into(),
         readonly: false,
     });
-    let web = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let web = test_service_spec("web", Placement::replicated(1), "nginx:1.27");
     let mut manifest = test_manifest(vec![db, web]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest
         .volumes
         .push(test_volume("data", VolumeScope::Single));
@@ -2630,20 +2590,20 @@ async fn apply_drains_live_uncommitted_volume_clone_writers_before_retrying_clon
 #[tokio::test]
 async fn apply_drains_removed_uncommitted_volume_clone_candidates_before_retrying_clone() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_volume(&store, &source_namespace, "data", "machine-a").await;
     seed_volume(&store, &source_namespace, "cache", "machine-a").await;
 
-    let mut db = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    let mut db = test_service_spec("db", Placement::replicated(1), "postgres:17");
     db.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
         target: "/var/lib/postgresql/data".into(),
         readonly: false,
     });
-    let web = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let web = test_service_spec("web", Placement::replicated(1), "nginx:1.27");
     let mut manifest = test_manifest(vec![db, web]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest
         .volumes
         .push(test_volume("data", VolumeScope::Single));
@@ -2826,18 +2786,18 @@ async fn apply_drains_removed_uncommitted_volume_clone_candidates_before_retryin
 #[tokio::test]
 async fn apply_does_not_drain_committed_service_before_creating_new_clone() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_volume(&store, &source_namespace, "data", "machine-a").await;
 
-    let mut db = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    let mut db = test_service_spec("db", Placement::replicated(1), "postgres:17");
     db.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
         target: "/var/lib/postgresql/data".into(),
         readonly: false,
     });
     let mut manifest = test_manifest(vec![db]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest
         .volumes
         .push(test_volume("data", VolumeScope::Single));
@@ -2904,12 +2864,12 @@ async fn apply_does_not_drain_committed_service_before_creating_new_clone() {
 #[tokio::test]
 async fn apply_surfaces_uncommitted_volume_clone_cleanup_failures() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_volume(&store, &source_namespace, "data", "machine-a").await;
-    let web = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let web = test_service_spec("web", Placement::replicated(1), "nginx:1.27");
     let mut manifest = test_manifest(vec![web]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest
         .volumes
         .push(test_volume("data", VolumeScope::Single));
@@ -2955,12 +2915,12 @@ async fn apply_surfaces_uncommitted_volume_clone_cleanup_failures() {
 #[tokio::test]
 async fn apply_cleans_successful_volume_clones_when_later_clone_fails() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_volume(&store, &source_namespace, "data", "machine-a").await;
     seed_volume(&store, &source_namespace, "cache", "machine-a").await;
     let mut manifest = volume_manifest();
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest
         .volumes
         .push(test_volume("cache", VolumeScope::Single));
@@ -3018,7 +2978,7 @@ async fn apply_cleans_successful_volume_clones_when_later_clone_fails() {
 #[tokio::test]
 async fn apply_restarts_attached_service_before_committing_volume_quota_change() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = volume_manifest();
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -3042,7 +3002,7 @@ async fn apply_restarts_attached_service_before_committing_volume_quota_change()
     let [service] = quota_plan.services() else {
         panic!("expected one planned service");
     };
-    assert_eq!(service.action, crate::model::DeployChangeKind::Replace);
+    assert_eq!(service.action(), crate::model::DeployChangeKind::Replace);
 
     let second = apply_with_initial_plan(
         &store,
@@ -3081,7 +3041,7 @@ async fn apply_restarts_attached_service_before_committing_volume_quota_change()
 #[tokio::test]
 async fn apply_executes_volume_move_before_startup_and_commits_target_owner() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = volume_manifest();
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -3148,7 +3108,7 @@ async fn apply_executes_volume_move_before_startup_and_commits_target_owner() {
     let [record] = records.as_slice() else {
         panic!("expected moved volume record");
     };
-    assert_eq!(record.machine_id, MachineId("machine-b".into()));
+    assert_eq!(record.machine_id, MachineId::new("machine-b"));
     let movements = store
         .list_volume_movements(&manifest.namespace)
         .await
@@ -3157,12 +3117,12 @@ async fn apply_executes_volume_move_before_startup_and_commits_target_owner() {
         panic!("expected movement evidence");
     };
     assert_eq!(movement.volume_name, "data");
-    assert_eq!(movement.from_machine, MachineId("machine-a".into()));
-    assert_eq!(movement.to_machine, MachineId("machine-b".into()));
-    assert_eq!(movement.final_machine, MachineId("machine-b".into()));
+    assert_eq!(movement.from_machine, MachineId::new("machine-a"));
+    assert_eq!(movement.to_machine, MachineId::new("machine-b"));
+    assert_eq!(movement.final_machine, MachineId::new("machine-b"));
     assert_eq!(movement.deploy_id, result.deploy_id);
     assert_eq!(movement.commit_deploy_id, result.deploy_id);
-    assert_eq!(movement.phase_id, Some(DeployPhaseId("deploy".into())));
+    assert_eq!(movement.phase_id, Some(DeployPhaseId::new("deploy")));
     assert_eq!(movement.snapshot_guid, 42);
     assert_eq!(movement.bytes_transferred, 4096);
     let log = controller.operation_log().await;
@@ -3194,7 +3154,7 @@ async fn apply_executes_inferred_draining_volume_move_before_startup() {
         .upsert_self_machine(&test_machine("machine-a", MachineLifecycle::Draining))
         .await
         .expect("mark machine-a draining");
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = volume_manifest();
     seed_volume_with_attached_services(
         &store,
@@ -3247,8 +3207,8 @@ async fn apply_executes_inferred_draining_volume_move_before_startup() {
     let [move_request] = move_requests.as_slice() else {
         panic!("expected one move request");
     };
-    assert_eq!(move_request.from_machine, MachineId("machine-a".into()));
-    assert_eq!(move_request.to_machine, MachineId("machine-b".into()));
+    assert_eq!(move_request.from_machine, MachineId::new("machine-a"));
+    assert_eq!(move_request.to_machine, MachineId::new("machine-b"));
     let records = store
         .list_volumes(&manifest.namespace)
         .await
@@ -3256,13 +3216,13 @@ async fn apply_executes_inferred_draining_volume_move_before_startup() {
     let [record] = records.as_slice() else {
         panic!("expected moved volume record");
     };
-    assert_eq!(record.machine_id, MachineId("machine-b".into()));
+    assert_eq!(record.machine_id, MachineId::new("machine-b"));
 }
 
 #[tokio::test]
 async fn apply_stops_stale_live_volume_writers_before_move() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = volume_manifest();
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -3338,7 +3298,7 @@ async fn apply_stops_stale_live_volume_writers_before_move() {
 #[tokio::test]
 async fn apply_fails_volume_move_before_startup_or_commit() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = volume_manifest();
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -3415,7 +3375,7 @@ async fn apply_fails_volume_move_before_startup_or_commit() {
     let [record] = records.as_slice() else {
         panic!("expected source volume record");
     };
-    assert_eq!(record.machine_id, MachineId("machine-a".into()));
+    assert_eq!(record.machine_id, MachineId::new("machine-a"));
     assert!(
         store
             .list_volume_movements(&manifest.namespace)
@@ -3427,13 +3387,13 @@ async fn apply_fails_volume_move_before_startup_or_commit() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert!(
         last_update
-            .summary_json
+            .summary_json()
             .contains("injected move failure for 'data'"),
         "failed deploy summary should mention the move error: {}",
-        last_update.summary_json
+        last_update.summary_json()
     );
     assert_default_phase_record(
         &store,
@@ -3448,7 +3408,7 @@ async fn apply_fails_volume_move_before_startup_or_commit() {
 #[tokio::test]
 async fn apply_reuses_volume_move_snapshot_when_retrying_after_startup_failure() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = volume_manifest();
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -3521,7 +3481,7 @@ async fn apply_reuses_volume_move_snapshot_when_retrying_after_startup_failure()
     let [record] = records.as_slice() else {
         panic!("expected source volume record");
     };
-    assert_eq!(record.machine_id, MachineId("machine-a".into()));
+    assert_eq!(record.machine_id, MachineId::new("machine-a"));
 
     let retry_controller = FakeController::default();
     let retry_client = FakeParticipantClient::new(retry_controller.clone());
@@ -3554,7 +3514,7 @@ async fn apply_reuses_volume_move_snapshot_when_retrying_after_startup_failure()
 #[tokio::test]
 async fn apply_stops_current_volume_writers_even_when_service_is_removed() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = volume_manifest();
     let [spec] = manifest.services.as_slice() else {
         panic!("expected one service");
@@ -3622,7 +3582,7 @@ async fn apply_stops_current_volume_writers_even_when_service_is_removed() {
     let [record] = records.as_slice() else {
         panic!("expected moved volume record");
     };
-    assert_eq!(record.machine_id, MachineId("machine-b".into()));
+    assert_eq!(record.machine_id, MachineId::new("machine-b"));
     let log = controller.operation_log().await;
     let drain_index = log
         .iter()
@@ -3643,7 +3603,7 @@ async fn apply_stops_current_volume_writers_even_when_service_is_removed() {
 #[tokio::test]
 async fn apply_does_not_mark_committed_volume_move_failed_after_post_commit_status_error() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = volume_manifest();
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -3702,20 +3662,20 @@ async fn apply_does_not_mark_committed_volume_move_failed_after_post_commit_stat
     assert_eq!(
         writes
             .iter()
-            .filter(|record| record.state == DeployState::Failed)
+            .filter(|record| record.state() == DeployState::Failed)
             .count(),
         0
     );
     let post_commit_attempt = writes
         .last()
         .expect("post-commit status write should have been attempted");
-    assert_eq!(post_commit_attempt.state, DeployState::CleanupPending);
+    assert_eq!(post_commit_attempt.state(), DeployState::CleanupPending);
     let committed_record = store
         .get_deploy(&post_commit_attempt.deploy_id)
         .await
         .expect("get deploy")
         .expect("post-commit deploy record");
-    assert_eq!(committed_record.state, DeployState::CleanupPending);
+    assert_eq!(committed_record.state(), DeployState::CleanupPending);
     let records = store
         .list_volumes(&manifest.namespace)
         .await
@@ -3723,7 +3683,7 @@ async fn apply_does_not_mark_committed_volume_move_failed_after_post_commit_stat
     let [record] = records.as_slice() else {
         panic!("expected moved volume record");
     };
-    assert_eq!(record.machine_id, MachineId("machine-b".into()));
+    assert_eq!(record.machine_id, MachineId::new("machine-b"));
     let movements = store
         .list_volume_movements(&manifest.namespace)
         .await
@@ -3734,7 +3694,7 @@ async fn apply_does_not_mark_committed_volume_move_failed_after_post_commit_stat
 #[tokio::test]
 async fn apply_rejects_volume_move_when_target_loses_eligibility_before_mutation() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = volume_manifest();
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -3779,7 +3739,7 @@ async fn apply_rejects_volume_move_when_target_loses_eligibility_before_mutation
 #[tokio::test]
 async fn apply_rejects_unsupported_volume_move_before_probe_or_inspect() {
     let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = volume_manifest();
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -3795,7 +3755,7 @@ async fn apply_rejects_unsupported_volume_move_before_probe_or_inspect() {
     seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
     let participant = UnsupportedParticipantClient::default();
     let prober = FailingParticipantProbe {
-        machine_id: MachineId("machine-b".into()),
+        machine_id: MachineId::new("machine-b"),
     };
 
     let error = apply_with_certificate_coordination(
@@ -3824,15 +3784,15 @@ async fn apply_rejects_unsupported_volume_move_before_probe_or_inspect() {
 #[tokio::test]
 async fn apply_allows_unsupported_volume_move_client_when_plan_has_no_moves() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     let participant = UnsupportedParticipantClient::default();
     let prober = FailingParticipantProbe {
-        machine_id: MachineId("unused".into()),
+        machine_id: MachineId::new("unused"),
     };
 
     let error = apply_with_certificate_coordination(
@@ -3862,7 +3822,7 @@ async fn apply_allows_unsupported_volume_move_client_when_plan_has_no_moves() {
 #[tokio::test]
 async fn apply_deletes_volume_records_removed_from_manifest() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = volume_manifest();
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -3885,7 +3845,7 @@ async fn apply_deletes_volume_records_removed_from_manifest() {
 
     let next_manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.28",
     )]);
     let next_plan = resolve_plan(&store, &local_machine_id, &next_manifest)
@@ -3918,7 +3878,7 @@ async fn apply_keeps_retained_volume_when_attached_service_is_removed() {
     // store, but its attached_services must drop the now-deleted service so it
     // doesn't keep pointing at a name that no longer exists.
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = volume_manifest();
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -3944,7 +3904,7 @@ async fn apply_keeps_retained_volume_when_attached_service_is_removed() {
     // keeping the volume declared.
     let mut next_manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.28",
     )]);
     next_manifest
@@ -3981,10 +3941,10 @@ async fn apply_keeps_retained_volume_when_attached_service_is_removed() {
 #[tokio::test]
 async fn apply_commits_unattached_volume_declarations_without_service_restart() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     manifest
@@ -4019,10 +3979,10 @@ async fn apply_preserves_unattached_volume_record_on_unchanged_redeploy() {
     // in the manifest, no service mounts it, last_modified_by_deploy_id stays
     // tied to the first deploy after a no-op redeploy.
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     manifest
@@ -4076,7 +4036,7 @@ async fn apply_preserves_unattached_volume_record_on_unchanged_redeploy() {
 #[tokio::test]
 async fn resolve_plan_rejects_existing_volume_quota_shrink() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = volume_manifest();
     seed_volume_with(
         &store,
@@ -4103,7 +4063,7 @@ async fn resolve_plan_rejects_existing_volume_quota_shrink() {
 
 #[tokio::test]
 async fn resolve_plan_rejects_existing_volume_scope_mode_or_owner_changes() {
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
 
     for (field, manifest, expected) in [
         (
@@ -4164,7 +4124,7 @@ async fn resolve_plan_rejects_existing_volume_scope_mode_or_owner_changes() {
 #[tokio::test]
 async fn resolve_plan_rejects_invalid_stored_volume_quota_with_structured_error() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = volume_manifest();
     seed_volume_with(
         &store,
@@ -4194,7 +4154,7 @@ async fn resolve_plan_rejects_invalid_stored_volume_quota_with_structured_error(
 #[tokio::test]
 async fn resolve_plan_global_service_targets_enabled_machines_in_order() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
         Placement::Global,
@@ -4224,20 +4184,14 @@ async fn resolve_plan_global_service_targets_enabled_machines_in_order() {
     let desired = resolution
         .slots
         .iter()
-        .map(|slot| (slot.slot_id.clone(), slot.machine_id.clone()))
+        .map(|slot| (slot.slot_id().clone(), slot.machine_id().clone()))
         .collect::<Vec<_>>();
 
     assert_eq!(
         desired,
         vec![
-            (
-                SlotId("slot-machine-a".into()),
-                MachineId("machine-a".into())
-            ),
-            (
-                SlotId("slot-machine-b".into()),
-                MachineId("machine-b".into())
-            ),
+            (SlotId::new("slot-machine-a"), MachineId::new("machine-a")),
+            (SlotId::new("slot-machine-b"), MachineId::new("machine-b")),
         ]
     );
 }
@@ -4245,7 +4199,7 @@ async fn resolve_plan_global_service_targets_enabled_machines_in_order() {
 #[tokio::test]
 async fn resolve_plan_global_service_targets_home_and_compute_regions_only() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
         Placement::Global,
@@ -4282,22 +4236,22 @@ async fn resolve_plan_global_service_targets_home_and_compute_regions_only() {
     let desired = resolution
         .slots
         .iter()
-        .map(|slot| slot.machine_id.clone())
+        .map(|slot| slot.machine_id().clone())
         .collect::<Vec<_>>();
 
     assert_eq!(
         desired,
-        vec![MachineId("compute".into()), MachineId("home".into())]
+        vec![MachineId::new("compute"), MachineId::new("home")]
     );
 }
 
 #[tokio::test]
 async fn resolve_plan_fails_when_no_stored_machine_is_eligible_for_new_placement() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
 
@@ -4331,8 +4285,8 @@ async fn resolve_plan_fails_when_no_stored_machine_is_eligible_for_new_placement
 #[tokio::test]
 async fn resolve_plan_fails_new_volume_when_no_machine_is_eligible() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
-    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    let local_machine_id = MachineId::new("local");
+    let mut service = test_service_spec("db", Placement::replicated(1), "postgres:17");
     service.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
         target: "/var/lib/postgresql/data".into(),
@@ -4373,7 +4327,7 @@ async fn resolve_plan_fails_new_volume_when_no_machine_is_eligible() {
 #[tokio::test]
 async fn resolve_plan_allows_removal_only_when_no_new_placement_target_exists() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(Vec::new());
 
     store
@@ -4407,7 +4361,7 @@ async fn resolve_plan_allows_removal_only_when_no_new_placement_target_exists() 
         panic!("expected one removed service");
     };
     assert_eq!(removed.service, "old-api");
-    assert_eq!(removed.action, DeployChangeKind::Remove);
+    assert_eq!(removed.action(), DeployChangeKind::Remove);
     let preview = plan.to_preview(Vec::new());
     assert!(preview.baseline.is_some());
     assert!(preview.service_sources.is_empty());
@@ -4417,10 +4371,10 @@ async fn resolve_plan_allows_removal_only_when_no_new_placement_target_exists() 
 #[tokio::test]
 async fn resolve_plan_includes_removed_service_participants() {
     let store = StoreDriver::memory();
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     let [current_spec] = manifest.services.as_slice() else {
@@ -4464,15 +4418,15 @@ async fn resolve_plan_includes_removed_service_participants() {
         .await
         .expect("resolve plan");
 
-    assert!(plan.participants().contains(&MachineId("machine-b".into())));
+    assert!(plan.participants().contains(&MachineId::new("machine-b")));
 }
 
 #[tokio::test]
 async fn resolve_plan_fingerprint_is_stable_across_release_insert_order() {
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![
-        test_service_spec("api", Placement::Replicated { count: 1 }, "nginx:1.27"),
-        test_service_spec("worker", Placement::Replicated { count: 1 }, "busybox:1.0"),
+        test_service_spec("api", Placement::replicated(1), "nginx:1.27"),
+        test_service_spec("worker", Placement::replicated(1), "busybox:1.0"),
     ]);
     let [api_spec, worker_spec] = manifest.services.as_slice() else {
         panic!("expected two services");
@@ -4543,7 +4497,7 @@ async fn resolve_plan_fingerprint_is_stable_across_release_insert_order() {
 
 #[tokio::test]
 async fn resolve_plan_baseline_tracks_participant_changes() {
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "agent",
         Placement::Global,
@@ -4571,10 +4525,10 @@ async fn resolve_plan_baseline_tracks_participant_changes() {
 #[tokio::test]
 async fn resolve_plan_baseline_tracks_phase_work_changes() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let base_manifest = test_manifest(vec![
-        test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17"),
-        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+        test_service_spec("db", Placement::replicated(1), "postgres:17"),
+        test_service_spec("web", Placement::replicated(1), "nginx:1.27"),
     ]);
     let phased_manifest = checkpointed_db_web_manifest();
 
@@ -4594,7 +4548,7 @@ async fn resolve_plan_baseline_tracks_phase_work_changes() {
 #[tokio::test]
 async fn resolve_plan_baseline_tracks_volume_move_changes() {
     let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut move_manifest = volume_manifest();
     move_manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -4662,11 +4616,11 @@ async fn resolve_plan_baseline_tracks_volume_move_changes() {
 #[tokio::test]
 async fn resolve_plan_baseline_tracks_volume_clone_changes() {
     let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_volume(&store, &source_namespace, "data", "machine-b").await;
     let mut fresh_manifest = volume_manifest();
-    fresh_manifest.namespace = Namespace("pr-39".into());
+    fresh_manifest.namespace = Namespace::new("pr-39");
     let mut clone_manifest = fresh_manifest.clone();
     clone_manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -4707,10 +4661,10 @@ async fn resolve_plan_baseline_tracks_volume_clone_changes() {
 #[tokio::test]
 async fn resolve_plan_includes_fresh_service_source_preview_evidence() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "example/web:pr-39",
     )]);
 
@@ -4742,18 +4696,18 @@ async fn resolve_plan_includes_fresh_service_source_preview_evidence() {
 #[tokio::test]
 async fn resolve_plan_includes_branch_source_preview_evidence() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
-    let source_spec = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
+    let source_spec = test_service_spec("web", Placement::replicated(1), "nginx:1.27");
     let source_revision_hash = source_spec.revision_hash().expect("source revision hash");
     seed_committed_service_release(&store, &source_namespace, source_spec).await;
 
     let mut manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "example/web:pr-39",
     )]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: vec![ServiceIntentHint {
             service: "web".into(),
@@ -4772,7 +4726,7 @@ async fn resolve_plan_includes_branch_source_preview_evidence() {
         .expect("resolve branch plan");
     let preview = plan.to_preview(Vec::new());
 
-    assert_eq!(preview.namespace, Namespace("pr-39".into()));
+    assert_eq!(preview.namespace, Namespace::new("pr-39"));
     assert_eq!(preview.services[0].action, DeployChangeKind::Create);
     let [source] = preview.service_sources.as_slice() else {
         panic!("expected one service source");
@@ -4807,8 +4761,7 @@ async fn resolve_plan_includes_branch_source_preview_evidence() {
     ));
     assert_eq!(
         plan.fingerprint().services[0]
-            .branch_source
-            .as_ref()
+            .branch_source()
             .map(|source| source.source_revision_hash.as_str()),
         Some(source_revision_hash.as_str())
     );
@@ -4817,18 +4770,18 @@ async fn resolve_plan_includes_branch_source_preview_evidence() {
 #[tokio::test]
 async fn resolve_plan_rejects_missing_branch_source_release() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "example/web:pr-39",
     )]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: vec![ServiceIntentHint {
             service: "web".into(),
             intent: ServiceIntent::Branch {
-                source_namespace: Namespace("prod".into()),
+                source_namespace: Namespace::new("prod"),
                 source_service: "web".into(),
                 expected_source_revision_hash: None,
             },
@@ -4853,8 +4806,8 @@ async fn resolve_plan_rejects_missing_branch_source_release() {
 #[tokio::test]
 async fn resolve_plan_rejects_branch_source_missing_revision() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     store
         .upsert_service_release(&test_release(
             &source_namespace,
@@ -4866,10 +4819,10 @@ async fn resolve_plan_rejects_branch_source_missing_revision() {
         .expect("seed source release without revision");
     let mut manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "example/web:pr-39",
     )]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: vec![ServiceIntentHint {
             service: "web".into(),
@@ -4900,17 +4853,17 @@ async fn resolve_plan_rejects_branch_source_missing_revision() {
 #[tokio::test]
 async fn resolve_plan_rejects_branch_source_revision_drift() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
-    let source_spec = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
+    let source_spec = test_service_spec("web", Placement::replicated(1), "nginx:1.27");
     let actual_revision_hash = source_spec.revision_hash().expect("source revision hash");
     seed_committed_service_release(&store, &source_namespace, source_spec).await;
     let mut manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "example/web:pr-39",
     )]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: vec![ServiceIntentHint {
             service: "web".into(),
@@ -4942,8 +4895,8 @@ async fn resolve_plan_rejects_branch_source_revision_drift() {
 #[tokio::test]
 async fn resolve_plan_rejects_undecodable_branch_source_revision() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     store
         .commit_deploy(&DeployCommit {
             namespace: source_namespace.clone(),
@@ -4952,7 +4905,7 @@ async fn resolve_plan_rejects_undecodable_branch_source_revision() {
                 service: "web".into(),
                 revision_hash: "source-rev".into(),
                 spec_json: "{not-json".into(),
-                created_by: MachineId("seed".into()),
+                created_by: MachineId::new("seed"),
                 created_at: 0,
             }],
             removed_services: Vec::new(),
@@ -4974,10 +4927,10 @@ async fn resolve_plan_rejects_undecodable_branch_source_revision() {
         .expect("seed undecodable source revision");
     let mut manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "example/web:pr-39",
     )]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: vec![ServiceIntentHint {
             service: "web".into(),
@@ -5008,18 +4961,18 @@ async fn resolve_plan_rejects_undecodable_branch_source_revision() {
 #[tokio::test]
 async fn resolve_plan_rejects_branch_source_same_as_target() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "example/web:pr-39",
     )]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: vec![ServiceIntentHint {
             service: "web".into(),
             intent: ServiceIntent::Branch {
-                source_namespace: Namespace("pr-39".into()),
+                source_namespace: Namespace::new("pr-39"),
                 source_service: "web".into(),
                 expected_source_revision_hash: None,
             },
@@ -5044,21 +4997,21 @@ async fn resolve_plan_rejects_branch_source_same_as_target() {
 #[tokio::test]
 async fn ensure_plan_stable_rejects_branch_source_revision_drift() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_committed_service_release(
         &store,
         &source_namespace,
-        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+        test_service_spec("web", Placement::replicated(1), "nginx:1.27"),
     )
     .await;
 
     let mut manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "example/web:pr-39",
     )]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: vec![ServiceIntentHint {
             service: "web".into(),
@@ -5078,7 +5031,7 @@ async fn ensure_plan_stable_rejects_branch_source_revision_drift() {
     seed_committed_service_release(
         &store,
         &source_namespace,
-        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.28"),
+        test_service_spec("web", Placement::replicated(1), "nginx:1.28"),
     )
     .await;
     let final_plan = resolve_plan(&store, &local_machine_id, &manifest)
@@ -5104,21 +5057,21 @@ async fn ensure_plan_stable_rejects_branch_source_revision_drift() {
 #[tokio::test]
 async fn ensure_plan_stable_preserves_execution_plan_changed_without_service_source_baseline() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_committed_service_release(
         &store,
         &source_namespace,
-        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+        test_service_spec("web", Placement::replicated(1), "nginx:1.27"),
     )
     .await;
 
     let mut manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "example/web:pr-39",
     )]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: vec![ServiceIntentHint {
             service: "web".into(),
@@ -5138,7 +5091,7 @@ async fn ensure_plan_stable_preserves_execution_plan_changed_without_service_sou
     seed_committed_service_release(
         &store,
         &source_namespace,
-        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.28"),
+        test_service_spec("web", Placement::replicated(1), "nginx:1.28"),
     )
     .await;
     let final_plan = resolve_plan(&store, &local_machine_id, &manifest)
@@ -5154,10 +5107,10 @@ async fn ensure_plan_stable_preserves_execution_plan_changed_without_service_sou
 #[tokio::test]
 async fn apply_rejects_empty_deploy_baseline_before_participant_inspect() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "example/web:pr-39",
     )]);
     let controller = FakeController::default();
@@ -5169,7 +5122,7 @@ async fn apply_rejects_empty_deploy_baseline_before_participant_inspect() {
         &participant_client,
         &local_machine_id,
         &manifest,
-        DeployId("deploy-empty-source-baseline".into()),
+        DeployId::new("deploy-empty-source-baseline"),
         Arc::new(NoopIssuanceCoordinator),
         Arc::new(NoopAcmeAccountCoordinator),
         Arc::new(LocalHttp01ChallengeReadiness),
@@ -5193,21 +5146,21 @@ async fn apply_rejects_empty_deploy_baseline_before_participant_inspect() {
 #[tokio::test]
 async fn apply_rejects_stale_service_source_baseline_before_participant_inspect() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
     seed_committed_service_release(
         &store,
         &source_namespace,
-        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+        test_service_spec("web", Placement::replicated(1), "nginx:1.27"),
     )
     .await;
 
     let mut manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "example/web:pr-39",
     )]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: vec![ServiceIntentHint {
             service: "web".into(),
@@ -5228,7 +5181,7 @@ async fn apply_rejects_stale_service_source_baseline_before_participant_inspect(
     seed_committed_service_release(
         &store,
         &source_namespace,
-        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.28"),
+        test_service_spec("web", Placement::replicated(1), "nginx:1.28"),
     )
     .await;
     let actual_baseline = resolve_plan(&store, &local_machine_id, &manifest)
@@ -5243,7 +5196,7 @@ async fn apply_rejects_stale_service_source_baseline_before_participant_inspect(
         &participant_client,
         &local_machine_id,
         &manifest,
-        DeployId("deploy-stale-source".into()),
+        DeployId::new("deploy-stale-source"),
         Arc::new(NoopIssuanceCoordinator),
         Arc::new(NoopAcmeAccountCoordinator),
         Arc::new(LocalHttp01ChallengeReadiness),
@@ -5272,7 +5225,7 @@ async fn apply_rejects_stale_service_source_baseline_before_participant_inspect(
 #[tokio::test]
 async fn apply_rejects_stale_participant_baseline_before_participant_inspect() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "agent",
         Placement::Global,
@@ -5298,7 +5251,7 @@ async fn apply_rejects_stale_participant_baseline_before_participant_inspect() {
         &participant_client,
         &local_machine_id,
         &manifest,
-        DeployId("deploy-stale-participants".into()),
+        DeployId::new("deploy-stale-participants"),
         Arc::new(NoopIssuanceCoordinator),
         Arc::new(NoopAcmeAccountCoordinator),
         Arc::new(LocalHttp01ChallengeReadiness),
@@ -5327,18 +5280,18 @@ async fn apply_rejects_stale_participant_baseline_before_participant_inspect() {
 #[tokio::test]
 async fn apply_accepts_matching_service_source_baseline_and_commits_branch_lineage() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
-    let source_spec = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
+    let source_spec = test_service_spec("web", Placement::replicated(1), "nginx:1.27");
     let source_revision_hash = source_spec.revision_hash().expect("source revision");
     seed_committed_service_release(&store, &source_namespace, source_spec).await;
 
     let mut manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "example/web:pr-39",
     )]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: vec![ServiceIntentHint {
             service: "web".into(),
@@ -5362,7 +5315,7 @@ async fn apply_accepts_matching_service_source_baseline_and_commits_branch_linea
         &participant_client,
         &local_machine_id,
         &manifest,
-        DeployId("deploy-branch-baseline".into()),
+        DeployId::new("deploy-branch-baseline"),
         Arc::new(NoopIssuanceCoordinator),
         Arc::new(NoopAcmeAccountCoordinator),
         Arc::new(LocalHttp01ChallengeReadiness),
@@ -5391,10 +5344,10 @@ async fn apply_accepts_matching_service_source_baseline_and_commits_branch_linea
 #[tokio::test]
 async fn prepare_stores_preview_evidence_and_apply_prepared_marks_applied() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     let prepared = prepare(
@@ -5402,7 +5355,7 @@ async fn prepare_stores_preview_evidence_and_apply_prepared_marks_applied() {
         &local_machine_id,
         &manifest,
         &NoopParticipantProbe,
-        DeployId("prepare-apply".into()),
+        DeployId::new("prepare-apply"),
         60,
     )
     .await
@@ -5483,10 +5436,10 @@ async fn apply_prepared_rejects_terminal_record_states_before_participant_inspec
         PreparedDeployState::Superseded,
     ] {
         let store = seeded_store_with_machines(&["machine-a"]).await;
-        let local_machine_id = MachineId("local".into());
+        let local_machine_id = MachineId::new("local");
         let manifest = test_manifest(vec![test_service_spec(
             "web",
-            Placement::Replicated { count: 1 },
+            Placement::replicated(1),
             "nginx:1.27",
         )]);
         let mut prepared = prepare(
@@ -5494,7 +5447,7 @@ async fn apply_prepared_rejects_terminal_record_states_before_participant_inspec
             &local_machine_id,
             &manifest,
             &NoopParticipantProbe,
-            DeployId(format!("prepare-{state}")),
+            DeployId::new(format!("prepare-{state}")),
             60,
         )
         .await
@@ -5545,10 +5498,10 @@ async fn apply_prepared_rejects_terminal_record_states_before_participant_inspec
 #[tokio::test]
 async fn apply_prepared_rejects_expired_record_before_participant_inspect() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     let prepared = prepare(
@@ -5556,7 +5509,7 @@ async fn apply_prepared_rejects_expired_record_before_participant_inspect() {
         &local_machine_id,
         &manifest,
         &NoopParticipantProbe,
-        DeployId("prepare-expired".into()),
+        DeployId::new("prepare-expired"),
         0,
     )
     .await
@@ -5598,7 +5551,7 @@ async fn apply_prepared_rejects_expired_record_before_participant_inspect() {
 #[tokio::test]
 async fn apply_prepared_marks_expired_before_checking_stale_baseline() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "agent",
         Placement::Global,
@@ -5609,7 +5562,7 @@ async fn apply_prepared_marks_expired_before_checking_stale_baseline() {
         &local_machine_id,
         &manifest,
         &NoopParticipantProbe,
-        DeployId("prepare-expired-stale".into()),
+        DeployId::new("prepare-expired-stale"),
         0,
     )
     .await
@@ -5655,7 +5608,7 @@ async fn apply_prepared_marks_expired_before_checking_stale_baseline() {
 #[tokio::test]
 async fn apply_prepared_rejects_stale_baseline_before_participant_inspect() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "agent",
         Placement::Global,
@@ -5666,7 +5619,7 @@ async fn apply_prepared_rejects_stale_baseline_before_participant_inspect() {
         &local_machine_id,
         &manifest,
         &NoopParticipantProbe,
-        DeployId("prepare-stale".into()),
+        DeployId::new("prepare-stale"),
         60,
     )
     .await
@@ -5715,10 +5668,10 @@ async fn apply_prepared_rejects_stale_baseline_before_participant_inspect() {
 #[tokio::test]
 async fn apply_prepared_rejects_mismatched_manifest_namespace_before_participant_inspect() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     let mut prepared = prepare(
@@ -5726,12 +5679,12 @@ async fn apply_prepared_rejects_mismatched_manifest_namespace_before_participant
         &local_machine_id,
         &manifest,
         &NoopParticipantProbe,
-        DeployId("prepare-mismatched-namespace".into()),
+        DeployId::new("prepare-mismatched-namespace"),
         60,
     )
     .await
     .expect("prepare deploy");
-    manifest.namespace = Namespace("other".into());
+    manifest.namespace = Namespace::new("other");
     prepared.manifest_json = serde_json::to_string(&manifest).expect("serialize manifest");
     store
         .write_prepared_deploy(&prepared)
@@ -5766,10 +5719,10 @@ async fn apply_prepared_rejects_mismatched_manifest_namespace_before_participant
 async fn apply_prepared_replays_existing_terminal_committed_deploy_before_expiry() {
     for state in [DeployState::Committed, DeployState::CleanupPending] {
         let store = seeded_store_with_machines(&["machine-a"]).await;
-        let local_machine_id = MachineId("local".into());
+        let local_machine_id = MachineId::new("local");
         let manifest = test_manifest(vec![test_service_spec(
             "web",
-            Placement::Replicated { count: 1 },
+            Placement::replicated(1),
             "nginx:1.27",
         )]);
         let prepared = prepare(
@@ -5777,7 +5730,7 @@ async fn apply_prepared_replays_existing_terminal_committed_deploy_before_expiry
             &local_machine_id,
             &manifest,
             &NoopParticipantProbe,
-            DeployId(format!("prepare-replay-{state}")),
+            DeployId::new(format!("prepare-replay-{state}")),
             0,
         )
         .await
@@ -5825,10 +5778,10 @@ async fn apply_prepared_supersedes_existing_checkpoint_terminal_deploy() {
         DeployState::FailedAfterCheckpoint,
     ] {
         let store = seeded_store_with_machines(&["machine-a"]).await;
-        let local_machine_id = MachineId("local".into());
+        let local_machine_id = MachineId::new("local");
         let manifest = test_manifest(vec![test_service_spec(
             "web",
-            Placement::Replicated { count: 1 },
+            Placement::replicated(1),
             "nginx:1.27",
         )]);
         let prepared = prepare(
@@ -5836,7 +5789,7 @@ async fn apply_prepared_supersedes_existing_checkpoint_terminal_deploy() {
             &local_machine_id,
             &manifest,
             &NoopParticipantProbe,
-            DeployId(format!("prepare-checkpoint-{state}")),
+            DeployId::new(format!("prepare-checkpoint-{state}")),
             60,
         )
         .await
@@ -5886,10 +5839,10 @@ async fn apply_prepared_supersedes_existing_checkpoint_terminal_deploy() {
 #[tokio::test]
 async fn apply_prepared_keeps_prepared_after_post_commit_status_error() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     let prepared = prepare(
@@ -5897,7 +5850,7 @@ async fn apply_prepared_keeps_prepared_after_post_commit_status_error() {
         &local_machine_id,
         &manifest,
         &NoopParticipantProbe,
-        DeployId("prepare-post-commit-error".into()),
+        DeployId::new("prepare-post-commit-error"),
         60,
     )
     .await
@@ -5939,10 +5892,10 @@ async fn apply_prepared_keeps_prepared_after_post_commit_status_error() {
 #[tokio::test]
 async fn apply_prepared_repairs_terminal_status_from_durable_commit() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     let prepared = prepare(
@@ -5950,7 +5903,7 @@ async fn apply_prepared_repairs_terminal_status_from_durable_commit() {
         &local_machine_id,
         &manifest,
         &NoopParticipantProbe,
-        DeployId("prepare-terminal-status-fails".into()),
+        DeployId::new("prepare-terminal-status-fails"),
         60,
     )
     .await
@@ -5994,7 +5947,7 @@ async fn apply_prepared_repairs_terminal_status_from_durable_commit() {
             .get_deploy(&prepared.prepared_deploy_id)
             .await
             .expect("get deploy")
-            .map(|record| record.state),
+            .map(|record| record.state()),
         Some(DeployState::Committed | DeployState::CleanupPending)
     ));
 
@@ -6031,7 +5984,7 @@ async fn apply_prepared_repairs_terminal_status_from_durable_commit() {
             .await
             .expect("get repaired deploy")
             .expect("deploy status repaired")
-            .state,
+            .state(),
         DeployState::Committed
     );
     assert_eq!(
@@ -6048,14 +6001,14 @@ async fn apply_prepared_repairs_terminal_status_from_durable_commit() {
 #[tokio::test]
 async fn apply_prepared_recovers_final_commit_over_stale_checkpoint_status() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = checkpointed_db_web_manifest();
     let prepared = prepare(
         &store,
         &local_machine_id,
         &manifest,
         &NoopParticipantProbe,
-        DeployId("prepare-checkpoint-final-status-fails".into()),
+        DeployId::new("prepare-checkpoint-final-status-fails"),
         60,
     )
     .await
@@ -6089,7 +6042,7 @@ async fn apply_prepared_recovers_final_commit_over_stale_checkpoint_status() {
             .await
             .expect("get checkpoint deploy")
             .expect("checkpoint status remains")
-            .state,
+            .state(),
         DeployState::CheckpointCommitted
     );
     assert_eq!(
@@ -6130,7 +6083,7 @@ async fn apply_prepared_recovers_final_commit_over_stale_checkpoint_status() {
             .await
             .expect("get repaired deploy")
             .expect("deploy status repaired")
-            .state,
+            .state(),
         DeployState::Committed
     );
     assert_eq!(
@@ -6147,10 +6100,10 @@ async fn apply_prepared_recovers_final_commit_over_stale_checkpoint_status() {
 #[tokio::test]
 async fn apply_prepared_repairs_phases_before_replaying_committed_status() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     let prepared = prepare(
@@ -6158,7 +6111,7 @@ async fn apply_prepared_repairs_phases_before_replaying_committed_status() {
         &local_machine_id,
         &manifest,
         &NoopParticipantProbe,
-        DeployId("prepare-committed-phase-repair".into()),
+        DeployId::new("prepare-committed-phase-repair"),
         60,
     )
     .await
@@ -6217,29 +6170,54 @@ fn prepared_deploy_status(
         namespace: prepared.namespace.clone(),
         coordinator_machine_id: prepared.coordinator_machine_id.clone(),
         manifest_hash: prepared.manifest_hash.clone(),
-        state,
         started_at: prepared.created_at,
-        committed_at: Some(prepared.updated_at),
-        finished_at: Some(prepared.updated_at),
-        summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+        state: match state {
+            DeployState::Committed => DeployRecordState::Committed {
+                committed_at: prepared.updated_at,
+                finished_at: prepared.updated_at,
+                summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+            },
+            DeployState::CleanupPending => DeployRecordState::CleanupPending {
+                committed_at: prepared.updated_at,
+                finished_at: prepared.updated_at,
+                summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+            },
+            DeployState::CheckpointCommitted => DeployRecordState::CheckpointCommitted {
+                summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+            },
+            DeployState::FailedAfterCheckpoint => DeployRecordState::FailedAfterCheckpoint {
+                finished_at: prepared.updated_at,
+                summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+            },
+            DeployState::Failed => DeployRecordState::Failed {
+                finished_at: prepared.updated_at,
+                summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+            },
+            DeployState::Planning => DeployRecordState::Planning {
+                summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+            },
+            DeployState::Applying => DeployRecordState::Applying {
+                summary_json: serde_json::to_string(&prepared.preview).expect("serialize preview"),
+            },
+        },
     }
 }
 
 #[tokio::test]
 async fn apply_commits_branch_lineage_when_only_source_revision_changes() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
-    let source_spec = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.28");
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
+    let source_spec = test_service_spec("web", Placement::replicated(1), "nginx:1.28");
     let source_revision_hash = source_spec.revision_hash().expect("source revision");
     seed_committed_service_release(&store, &source_namespace, source_spec).await;
 
     let mut manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "example/web:pr-39",
     )]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: vec![ServiceIntentHint {
             service: "web".into(),
@@ -6276,7 +6254,7 @@ async fn apply_commits_branch_lineage_when_only_source_revision_changes() {
     let [service] = plan.services() else {
         panic!("expected one service");
     };
-    assert_eq!(service.action, DeployChangeKind::Unchanged);
+    assert_eq!(service.action(), DeployChangeKind::Unchanged);
     let expected_baseline = plan.baseline();
     let controller = FakeController::default();
     let participant_client = FakeParticipantClient::new(controller.clone());
@@ -6286,7 +6264,7 @@ async fn apply_commits_branch_lineage_when_only_source_revision_changes() {
         &participant_client,
         &local_machine_id,
         &manifest,
-        DeployId("deploy-branch-lineage-only".into()),
+        DeployId::new("deploy-branch-lineage-only"),
         Arc::new(NoopIssuanceCoordinator),
         Arc::new(NoopAcmeAccountCoordinator),
         Arc::new(LocalHttp01ChallengeReadiness),
@@ -6316,14 +6294,14 @@ async fn apply_commits_branch_lineage_when_only_source_revision_changes() {
 #[tokio::test]
 async fn apply_preserves_checkpointed_branch_lineage_after_final_commit() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
-    let source_spec = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:16");
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
+    let source_spec = test_service_spec("db", Placement::replicated(1), "postgres:16");
     let source_revision_hash = source_spec.revision_hash().expect("source revision");
     seed_committed_service_release(&store, &source_namespace, source_spec).await;
 
     let mut manifest = checkpointed_db_web_manifest();
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     let intent = manifest.intent.as_mut().expect("checkpointed intent");
     intent.services = vec![ServiceIntentHint {
         service: "db".into(),
@@ -6344,7 +6322,7 @@ async fn apply_preserves_checkpointed_branch_lineage_after_final_commit() {
         &participant_client,
         &local_machine_id,
         &manifest,
-        DeployId("deploy-checkpoint-branch-baseline".into()),
+        DeployId::new("deploy-checkpoint-branch-baseline"),
         Arc::new(NoopIssuanceCoordinator),
         Arc::new(NoopAcmeAccountCoordinator),
         Arc::new(LocalHttp01ChallengeReadiness),
@@ -6382,7 +6360,7 @@ async fn participant_set_inspects_participants_in_parallel_for_noop_plan() {
         "machine-e",
     ])
     .await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
         Placement::Global,
@@ -6417,7 +6395,7 @@ async fn participant_set_inspects_participants_in_parallel_for_noop_plan() {
         .await
         .expect("resolve plan");
     let factory = FakeParticipantClient::new(controller.clone());
-    let deploy_id = DeployId("deploy-open".into());
+    let deploy_id = DeployId::new("deploy-open");
 
     let (_participants, _events) =
         ParticipantSet::inspect(&factory, &plan, &local_machine_id, &deploy_id)
@@ -6431,10 +6409,10 @@ async fn participant_set_inspects_participants_in_parallel_for_noop_plan() {
 #[tokio::test]
 async fn phase_startup_uses_one_worker_per_machine_but_parallel_across_machines() {
     let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![
-        test_service_spec("api", Placement::Replicated { count: 2 }, "nginx:1.27"),
-        test_service_spec("worker", Placement::Replicated { count: 2 }, "busybox:1.0"),
+        test_service_spec("api", Placement::replicated(2), "nginx:1.27"),
+        test_service_spec("worker", Placement::replicated(2), "busybox:1.0"),
     ]);
 
     let controller = FakeController {
@@ -6445,7 +6423,7 @@ async fn phase_startup_uses_one_worker_per_machine_but_parallel_across_machines(
         .await
         .expect("resolve plan");
     let factory = FakeParticipantClient::new(controller.clone());
-    let deploy_id = DeployId("deploy-phase".into());
+    let deploy_id = DeployId::new("deploy-phase");
     let (participants, _events) =
         ParticipantSet::inspect(&factory, &plan, &local_machine_id, &deploy_id)
             .await
@@ -6468,7 +6446,7 @@ async fn phase_startup_stops_scheduling_machine_queues_after_failure() {
         .collect::<Vec<_>>();
     let machine_refs = machine_names.iter().map(String::as_str).collect::<Vec<_>>();
     let store = seeded_store_with_machines(&machine_refs).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
         Placement::Global,
@@ -6482,7 +6460,7 @@ async fn phase_startup_stops_scheduling_machine_queues_after_failure() {
         .await
         .expect("resolve plan");
     let factory = FakeParticipantClient::new(controller.clone());
-    let deploy_id = DeployId("deploy-phase".into());
+    let deploy_id = DeployId::new("deploy-phase");
     let (participants, _events) =
         ParticipantSet::inspect(&factory, &plan, &local_machine_id, &deploy_id)
             .await
@@ -6498,10 +6476,10 @@ async fn phase_startup_stops_scheduling_machine_queues_after_failure() {
 #[tokio::test]
 async fn run_phase_startup_waits_for_previous_phase_before_next_phase() {
     let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![
-        test_service_spec("api", Placement::Replicated { count: 2 }, "nginx:1.27"),
-        test_service_spec("worker", Placement::Replicated { count: 2 }, "busybox:1.0"),
+        test_service_spec("api", Placement::replicated(2), "nginx:1.27"),
+        test_service_spec("worker", Placement::replicated(2), "busybox:1.0"),
     ]);
     let mut plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -6509,15 +6487,15 @@ async fn run_phase_startup_waits_for_previous_phase_before_next_phase() {
     let [first, second] = plan.services_mut() else {
         panic!("expected two planned services");
     };
-    first.phase = Some(0);
-    second.phase = Some(1);
+    first.set_phase_for_test(0);
+    second.set_phase_for_test(1);
 
     let controller = FakeController {
         start_delay: Duration::from_millis(20),
         ..Default::default()
     };
     let factory = FakeParticipantClient::new(controller.clone());
-    let deploy_id = DeployId("deploy-test".into());
+    let deploy_id = DeployId::new("deploy-test");
     let (participants, _events) =
         ParticipantSet::inspect(&factory, &plan, &local_machine_id, &deploy_id)
             .await
@@ -6543,7 +6521,7 @@ async fn run_phase_startup_waits_for_previous_phase_before_next_phase() {
 #[tokio::test]
 async fn ensure_plan_stable_rejects_post_lock_drift() {
     let store = seeded_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
         Placement::Global,
@@ -6603,7 +6581,7 @@ async fn ensure_plan_stable_rejects_post_lock_drift() {
 #[tokio::test]
 async fn preview_rejects_duplicate_hostname_in_final_plan() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![
         http_route_service_spec("api", "api.example.com"),
         http_route_service_spec("web", "API.EXAMPLE.COM."),
@@ -6629,7 +6607,7 @@ async fn preview_rejects_duplicate_hostname_in_final_plan() {
 async fn preview_rejects_hostname_owned_by_another_namespace() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
     seed_committed_http_release(&store, "prod", "api", "api.example.com").await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![http_route_service_spec("web", "api.example.com")]);
 
     let error = preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
@@ -6653,7 +6631,7 @@ async fn apply_rejects_hostname_owned_by_another_namespace_before_commit() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
     seed_committed_http_release(&store, "prod", "api", "api.example.com").await;
     backend.reset_counts();
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![http_route_service_spec("web", "api.example.com")]);
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -6681,16 +6659,16 @@ async fn apply_rejects_hostname_owned_by_another_namespace_before_commit() {
 #[tokio::test]
 async fn apply_rejects_unreachable_participant_before_inspect_or_commit() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 2 },
+        Placement::replicated(2),
         "nginx:1.27",
     )]);
     let controller = FakeController::default();
     let participant_client = FakeParticipantClient::new(controller.clone());
     let prober = FailingParticipantProbe {
-        machine_id: MachineId("machine-b".into()),
+        machine_id: MachineId::new("machine-b"),
     };
 
     let error = apply_with_certificate_coordination(
@@ -6725,7 +6703,7 @@ async fn apply_rejects_unreachable_participant_before_inspect_or_commit() {
 async fn preview_allows_hostname_reuse_within_same_namespace() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
     seed_committed_http_release(&store, "test", "api", "api.example.com").await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![http_route_service_spec("api", "api.example.com")]);
 
     preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
@@ -6737,7 +6715,7 @@ async fn preview_allows_hostname_reuse_within_same_namespace() {
 async fn preview_allows_hostname_move_within_same_namespace() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
     seed_committed_http_release(&store, "test", "api", "api.example.com").await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![http_route_service_spec("web", "api.example.com")]);
 
     preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
@@ -6748,15 +6726,15 @@ async fn preview_allows_hostname_move_within_same_namespace() {
 #[tokio::test]
 async fn preview_surfaces_unreachable_participants_without_mutating_deploy_state() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 2 },
+        Placement::replicated(2),
         "nginx:1.27",
     )]);
     backend.reset_counts();
     let prober = FailingParticipantProbe {
-        machine_id: MachineId("machine-b".into()),
+        machine_id: MachineId::new("machine-b"),
     };
 
     let preview = preview(&store, &local_machine_id, &manifest, &prober)
@@ -6775,10 +6753,10 @@ async fn preview_surfaces_unreachable_participants_without_mutating_deploy_state
 #[tokio::test]
 async fn apply_with_initial_plan_does_not_commit_when_participant_inspect_fails() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 2 },
+        Placement::replicated(2),
         "nginx:1.27",
     )]);
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
@@ -6801,10 +6779,10 @@ async fn apply_with_initial_plan_does_not_commit_when_participant_inspect_fails(
 #[tokio::test]
 async fn apply_with_initial_plan_does_not_commit_when_start_candidate_fails() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 2 },
+        Placement::replicated(2),
         "nginx:1.27",
     )]);
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
@@ -6839,14 +6817,14 @@ async fn apply_with_initial_plan_does_not_commit_when_start_candidate_fails() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
-    assert!(last_update.finished_at.is_some());
+    assert_eq!(last_update.state(), DeployState::Failed);
+    assert!(last_update.finished_at().is_some());
     assert!(
         last_update
-            .summary_json
+            .summary_json()
             .contains("injected start failure for 'api'"),
         "failed deploy summary should mention the apply error: {}",
-        last_update.summary_json
+        last_update.summary_json()
     );
     assert_default_phase_record(
         &store,
@@ -6861,10 +6839,10 @@ async fn apply_with_initial_plan_does_not_commit_when_start_candidate_fails() {
 #[tokio::test]
 async fn apply_marks_default_phase_failed_when_commit_fails_after_phase_work() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
@@ -6884,7 +6862,7 @@ async fn apply_marks_default_phase_failed_when_commit_fails_after_phase_work() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert_default_phase_record(
         &store,
         &manifest.namespace,
@@ -6898,10 +6876,10 @@ async fn apply_marks_default_phase_failed_when_commit_fails_after_phase_work() {
 #[tokio::test]
 async fn apply_records_committed_status_when_phase_success_evidence_fails() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
@@ -6921,13 +6899,13 @@ async fn apply_records_committed_status_when_phase_success_evidence_fails() {
     assert!(
         writes
             .iter()
-            .any(|record| record.state == DeployState::Committed),
+            .any(|record| record.state() == DeployState::Committed),
         "committed deploy status should be written even when phase evidence fails"
     );
     assert!(
         writes
             .iter()
-            .all(|record| record.state != DeployState::Failed),
+            .all(|record| record.state() != DeployState::Failed),
         "phase evidence failure must not mark committed deploy failed"
     );
     let committed_record = store
@@ -6935,7 +6913,7 @@ async fn apply_records_committed_status_when_phase_success_evidence_fails() {
         .await
         .expect("get deploy")
         .expect("committed deploy record");
-    assert_eq!(committed_record.state, DeployState::Committed);
+    assert_eq!(committed_record.state(), DeployState::Committed);
     assert_default_phase_record(
         &store,
         &manifest.namespace,
@@ -6948,21 +6926,21 @@ async fn apply_records_committed_status_when_phase_success_evidence_fails() {
         .get_deploy_phase(
             &manifest.namespace,
             &result.deploy_id,
-            &DeployPhaseId("deploy".into()),
+            &DeployPhaseId::new("deploy"),
         )
         .await
         .expect("get phase")
         .expect("phase");
-    assert_eq!(phase.commit_deploy_id, Some(result.deploy_id));
+    assert_eq!(phase.commit_deploy_id(), Some(result.deploy_id));
 }
 
 #[tokio::test]
 async fn apply_marks_phase_succeeded_when_first_committed_status_write_fails() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
@@ -6986,12 +6964,12 @@ async fn apply_marks_phase_succeeded_when_first_committed_status_write_fails() {
     assert!(
         writes
             .iter()
-            .all(|record| record.state != DeployState::Failed),
+            .all(|record| record.state() != DeployState::Failed),
         "post-commit status failure must not mark committed deploy failed"
     );
     let post_commit_attempt = writes
         .iter()
-        .find(|record| record.state == DeployState::CleanupPending)
+        .find(|record| record.state() == DeployState::CleanupPending)
         .expect("post-commit status write should have been attempted");
     assert_default_phase_record(
         &store,
@@ -7006,10 +6984,10 @@ async fn apply_marks_phase_succeeded_when_first_committed_status_write_fails() {
 #[tokio::test]
 async fn resolve_plan_builds_manifest_phase_work_in_dependency_order() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = test_manifest(vec![
-        test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17"),
-        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+        test_service_spec("db", Placement::replicated(1), "postgres:17"),
+        test_service_spec("web", Placement::replicated(1), "nginx:1.27"),
     ]);
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -7045,7 +7023,7 @@ async fn resolve_plan_builds_manifest_phase_work_in_dependency_order() {
     let [db_phase, web_phase] = preview.phases.as_slice() else {
         panic!("expected two phases, got {:?}", preview.phases);
     };
-    assert_eq!(db_phase.phase_id, DeployPhaseId("db".into()));
+    assert_eq!(db_phase.phase_id, DeployPhaseId::new("db"));
     assert_eq!(db_phase.order, 0);
     assert_eq!(db_phase.commit_policy, DeployPhaseCommitPolicy::Checkpoint);
     assert!(db_phase.after.is_empty());
@@ -7056,9 +7034,9 @@ async fn resolve_plan_builds_manifest_phase_work_in_dependency_order() {
             action: DeployChangeKind::Create,
         }]
     );
-    assert_eq!(web_phase.phase_id, DeployPhaseId("web".into()));
+    assert_eq!(web_phase.phase_id, DeployPhaseId::new("web"));
     assert_eq!(web_phase.order, 1);
-    assert_eq!(web_phase.after, vec![DeployPhaseId("db".into())]);
+    assert_eq!(web_phase.after, vec![DeployPhaseId::new("db")]);
     assert_eq!(
         web_phase.commit_policy,
         DeployPhaseCommitPolicy::EndOfDeploy
@@ -7075,7 +7053,7 @@ async fn resolve_plan_builds_manifest_phase_work_in_dependency_order() {
 #[tokio::test]
 async fn apply_checkpoint_phase_commits_before_final_phase() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = checkpointed_db_web_manifest();
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -7094,7 +7072,7 @@ async fn apply_checkpoint_phase_commits_before_final_phase() {
         writes
             .iter()
             .any(|record| record.deploy_id == result.deploy_id
-                && record.state == DeployState::CheckpointCommitted),
+                && record.state() == DeployState::CheckpointCommitted),
         "checkpoint should write status against the original deploy id"
     );
     let releases = store
@@ -7131,31 +7109,34 @@ async fn apply_checkpoint_phase_commits_before_final_phase() {
         .get_deploy_phase(
             &manifest.namespace,
             &result.deploy_id,
-            &DeployPhaseId("db".into()),
+            &DeployPhaseId::new("db"),
         )
         .await
         .expect("get db phase")
         .expect("db phase");
     assert_eq!(
-        db_phase.commit_deploy_id,
-        Some(DeployId(format!("{}:phase:db", result.deploy_id.0)))
+        db_phase.commit_deploy_id(),
+        Some(DeployId::new(format!(
+            "{}:phase:db",
+            result.deploy_id.as_str()
+        )))
     );
     let web_phase = store
         .get_deploy_phase(
             &manifest.namespace,
             &result.deploy_id,
-            &DeployPhaseId("web".into()),
+            &DeployPhaseId::new("web"),
         )
         .await
         .expect("get web phase")
         .expect("web phase");
-    assert_eq!(web_phase.commit_deploy_id, Some(result.deploy_id));
+    assert_eq!(web_phase.commit_deploy_id(), Some(result.deploy_id));
 }
 
 #[tokio::test]
 async fn apply_failure_after_checkpoint_preserves_committed_phase_facts() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = checkpointed_db_web_manifest();
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -7180,7 +7161,7 @@ async fn apply_failure_after_checkpoint_preserves_committed_phase_facts() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::FailedAfterCheckpoint);
+    assert_eq!(last_update.state(), DeployState::FailedAfterCheckpoint);
     let releases = store
         .list_service_releases(&manifest.namespace)
         .await
@@ -7215,31 +7196,34 @@ async fn apply_failure_after_checkpoint_preserves_committed_phase_facts() {
         .get_deploy_phase(
             &manifest.namespace,
             &last_update.deploy_id,
-            &DeployPhaseId("db".into()),
+            &DeployPhaseId::new("db"),
         )
         .await
         .expect("get db phase")
         .expect("db phase");
     assert_eq!(
-        db_phase.commit_deploy_id,
-        Some(DeployId(format!("{}:phase:db", last_update.deploy_id.0)))
+        db_phase.commit_deploy_id(),
+        Some(DeployId::new(format!(
+            "{}:phase:db",
+            last_update.deploy_id.as_str()
+        )))
     );
     let web_phase = store
         .get_deploy_phase(
             &manifest.namespace,
             &last_update.deploy_id,
-            &DeployPhaseId("web".into()),
+            &DeployPhaseId::new("web"),
         )
         .await
         .expect("get web phase")
         .expect("web phase");
-    assert_eq!(web_phase.commit_deploy_id, None);
+    assert_eq!(web_phase.commit_deploy_id(), None);
 }
 
 #[tokio::test]
 async fn apply_failure_after_end_of_deploy_phase_fails_pending_phase() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = end_of_deploy_db_web_manifest();
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -7264,7 +7248,7 @@ async fn apply_failure_after_end_of_deploy_phase_fails_pending_phase() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert_phase_record_state(
         &store,
         &manifest.namespace,
@@ -7288,10 +7272,10 @@ async fn apply_failure_after_end_of_deploy_phase_fails_pending_phase() {
 #[tokio::test]
 async fn apply_failure_after_end_of_deploy_phase_fails_prior_pending_phases() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = test_manifest(vec![
-        test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17"),
-        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+        test_service_spec("db", Placement::replicated(1), "postgres:17"),
+        test_service_spec("web", Placement::replicated(1), "nginx:1.27"),
     ]);
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -7342,7 +7326,7 @@ async fn apply_failure_after_end_of_deploy_phase_fails_prior_pending_phases() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert_phase_record_state(
         &store,
         &manifest.namespace,
@@ -7366,11 +7350,11 @@ async fn apply_failure_after_end_of_deploy_phase_fails_prior_pending_phases() {
 #[tokio::test]
 async fn apply_failure_marks_unstarted_later_phases_failed() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let mut manifest = test_manifest(vec![
-        test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17"),
-        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
-        test_service_spec("worker", Placement::Replicated { count: 1 }, "busybox:1.36"),
+        test_service_spec("db", Placement::replicated(1), "postgres:17"),
+        test_service_spec("web", Placement::replicated(1), "nginx:1.27"),
+        test_service_spec("worker", Placement::replicated(1), "busybox:1.36"),
     ]);
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -7431,7 +7415,7 @@ async fn apply_failure_marks_unstarted_later_phases_failed() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert_phase_record_state(
         &store,
         &manifest.namespace,
@@ -7464,7 +7448,7 @@ async fn apply_failure_marks_unstarted_later_phases_failed() {
 #[tokio::test]
 async fn apply_running_phase_record_failure_marks_current_and_unstarted_phases_failed() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = end_of_deploy_db_web_manifest();
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -7483,7 +7467,7 @@ async fn apply_running_phase_record_failure_marks_current_and_unstarted_phases_f
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert_phase_record_state(
         &store,
         &manifest.namespace,
@@ -7507,7 +7491,7 @@ async fn apply_running_phase_record_failure_marks_current_and_unstarted_phases_f
 #[tokio::test]
 async fn apply_pending_phase_seed_failure_marks_already_written_phases_failed() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = end_of_deploy_db_web_manifest();
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -7526,7 +7510,7 @@ async fn apply_pending_phase_seed_failure_marks_already_written_phases_failed() 
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert_phase_record_state(
         &store,
         &manifest.namespace,
@@ -7541,7 +7525,7 @@ async fn apply_pending_phase_seed_failure_marks_already_written_phases_failed() 
             .get_deploy_phase(
                 &manifest.namespace,
                 &last_update.deploy_id,
-                &DeployPhaseId("web".into())
+                &DeployPhaseId::new("web")
             )
             .await
             .expect("get web phase")
@@ -7553,7 +7537,7 @@ async fn apply_pending_phase_seed_failure_marks_already_written_phases_failed() 
 #[tokio::test]
 async fn apply_checkpoint_commit_failure_fails_prior_end_of_deploy_phase() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = end_of_deploy_db_checkpoint_web_manifest();
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -7572,7 +7556,7 @@ async fn apply_checkpoint_commit_failure_fails_prior_end_of_deploy_phase() {
         .last_deploy_status_write()
         .await
         .expect("failed deploy record should be written");
-    assert_eq!(last_update.state, DeployState::Failed);
+    assert_eq!(last_update.state(), DeployState::Failed);
     assert_phase_record_state(
         &store,
         &manifest.namespace,
@@ -7596,7 +7580,7 @@ async fn apply_checkpoint_commit_failure_fails_prior_end_of_deploy_phase() {
 #[tokio::test]
 async fn apply_checkpointed_service_commits_changed_mounted_volume() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = checkpointed_db_volume_web_manifest();
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -7605,7 +7589,7 @@ async fn apply_checkpointed_service_commits_changed_mounted_volume() {
         .fingerprint()
         .phases
         .into_iter()
-        .find(|phase| phase.phase_id == DeployPhaseId("db".into()))
+        .find(|phase| phase.phase_id == DeployPhaseId::new("db"))
         .expect("db phase");
     assert!(
         db_phase
@@ -7649,10 +7633,10 @@ async fn apply_checkpointed_service_commits_changed_mounted_volume() {
 #[tokio::test]
 async fn apply_with_initial_plan_sets_cleanup_pending_after_cleanup_failure() {
     let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     let [spec] = manifest.services.as_slice() else {
@@ -7692,7 +7676,7 @@ async fn apply_with_initial_plan_sets_cleanup_pending_after_cleanup_failure() {
     assert!(
         status_writes
             .iter()
-            .all(|record| record.state != DeployState::Committed),
+            .all(|record| record.state() != DeployState::Committed),
         "committed status must not be visible until post-commit cleanup succeeds: {status_writes:?}"
     );
     let commit_index = result
@@ -7721,10 +7705,10 @@ async fn apply_with_initial_plan_sets_cleanup_pending_after_cleanup_failure() {
 #[tokio::test]
 async fn apply_with_initial_plan_commits_once_after_all_starts_finish() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![
-        test_service_spec("api", Placement::Replicated { count: 2 }, "nginx:1.27"),
-        test_service_spec("worker", Placement::Replicated { count: 2 }, "busybox:1.0"),
+        test_service_spec("api", Placement::replicated(2), "nginx:1.27"),
+        test_service_spec("worker", Placement::replicated(2), "busybox:1.0"),
     ]);
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
@@ -7773,10 +7757,10 @@ async fn apply_with_initial_plan_commits_once_after_all_starts_finish() {
 #[tokio::test]
 async fn prepared_deploy_builds_applying_record_and_revisions() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     let plan = resolve_plan(&store, &local_machine_id, &manifest)
@@ -7784,7 +7768,7 @@ async fn prepared_deploy_builds_applying_record_and_revisions() {
         .expect("resolve plan");
 
     let prepared = PreparedDeploy::new(
-        DeployId("deploy-1".into()),
+        DeployId::new("deploy-1"),
         10,
         local_machine_id.clone(),
         plan,
@@ -7793,11 +7777,11 @@ async fn prepared_deploy_builds_applying_record_and_revisions() {
     .expect("prepared deploy");
 
     assert_eq!(
-        prepared.applying_record().state,
+        prepared.applying_record().state(),
         crate::model::DeployState::Applying
     );
     assert_eq!(prepared.applying_record().started_at, 10);
-    assert_eq!(prepared.applying_record().committed_at, None);
+    assert_eq!(prepared.applying_record().committed_at(), None);
     assert_eq!(prepared.revisions().len(), 1);
     let [revision] = prepared.revisions() else {
         panic!("expected one revision");
@@ -7809,17 +7793,17 @@ async fn prepared_deploy_builds_applying_record_and_revisions() {
 #[tokio::test]
 async fn started_candidates_rejects_missing_started_create_slot() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "api",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "nginx:1.27",
     )]);
     let plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("resolve plan");
     let prepared = PreparedDeploy::new(
-        DeployId("deploy-1".into()),
+        DeployId::new("deploy-1"),
         10,
         local_machine_id,
         plan,
@@ -7844,10 +7828,10 @@ async fn started_candidates_rejects_missing_started_create_slot() {
 #[tokio::test]
 async fn commit_plan_contains_removed_services() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
+    let local_machine_id = MachineId::new("local");
     let manifest = test_manifest(vec![test_service_spec(
         "worker",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "busybox:1.0",
     )]);
     let revision_hash = "old-rev";
@@ -7867,11 +7851,11 @@ async fn commit_plan_contains_removed_services() {
         .services()
         .iter()
         .find(|service| service.service == "worker")
-        .and_then(|service| service.slots.first().map(|slot| slot.slot_id.clone()))
+        .and_then(|service| service.slots.first().map(|slot| slot.slot_id().clone()))
         .expect("worker slot");
     let worker_revision_hash = manifest.services[0].revision_hash().expect("revision hash");
     let prepared = PreparedDeploy::new(
-        DeployId("deploy-1".into()),
+        DeployId::new("deploy-1"),
         10,
         local_machine_id,
         plan,
@@ -7879,11 +7863,11 @@ async fn commit_plan_contains_removed_services() {
     )
     .expect("prepared deploy");
     let started = HashMap::from([(
-        (String::from("worker"), worker_slot.0.clone()),
+        (String::from("worker"), worker_slot.as_str().to_owned()),
         test_instance_status(
             &manifest.namespace,
             "worker",
-            &worker_slot.0,
+            worker_slot.as_str(),
             "machine-a",
             "worker-inst-1",
             &worker_revision_hash,
@@ -7898,31 +7882,31 @@ async fn commit_plan_contains_removed_services() {
     assert_eq!(commit_plan.commit().removed_services, vec!["api"]);
     assert_eq!(commit_plan.commit().releases.len(), 1);
     assert_eq!(
-        commit_plan.commit().deploy.state,
+        commit_plan.commit().deploy.state(),
         crate::model::DeployState::Committed
     );
-    assert!(commit_plan.commit().deploy.committed_at.is_some());
+    assert!(commit_plan.commit().deploy.committed_at().is_some());
     assert_eq!(
-        commit_plan.commit().deploy.committed_at,
-        commit_plan.commit().deploy.finished_at
+        commit_plan.commit().deploy.committed_at(),
+        commit_plan.commit().deploy.finished_at()
     );
 }
 
 #[tokio::test]
 async fn commit_plan_contains_branch_lineage() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
-    let local_machine_id = MachineId("local".into());
-    let source_namespace = Namespace("prod".into());
-    let source_spec = test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27");
+    let local_machine_id = MachineId::new("local");
+    let source_namespace = Namespace::new("prod");
+    let source_spec = test_service_spec("web", Placement::replicated(1), "nginx:1.27");
     let source_revision_hash = source_spec.revision_hash().expect("source revision hash");
     seed_committed_service_release(&store, &source_namespace, source_spec).await;
 
     let mut manifest = test_manifest(vec![test_service_spec(
         "web",
-        Placement::Replicated { count: 1 },
+        Placement::replicated(1),
         "example/web:pr-39",
     )]);
-    manifest.namespace = Namespace("pr-39".into());
+    manifest.namespace = Namespace::new("pr-39");
     manifest.intent = Some(DeployIntent {
         services: vec![ServiceIntentHint {
             service: "web".into(),
@@ -7945,10 +7929,10 @@ async fn commit_plan_contains_branch_lineage() {
         .services()
         .iter()
         .find(|service| service.service == "web")
-        .and_then(|service| service.slots.first().map(|slot| slot.slot_id.clone()))
+        .and_then(|service| service.slots.first().map(|slot| slot.slot_id().clone()))
         .expect("web slot");
     let prepared = PreparedDeploy::new(
-        DeployId("deploy-branch".into()),
+        DeployId::new("deploy-branch"),
         10,
         local_machine_id,
         plan,
@@ -7956,11 +7940,11 @@ async fn commit_plan_contains_branch_lineage() {
     )
     .expect("prepared deploy");
     let started = HashMap::from([(
-        (String::from("web"), slot.0.clone()),
+        (String::from("web"), slot.as_str().to_owned()),
         test_instance_status(
             &manifest.namespace,
             "web",
-            &slot.0,
+            slot.as_str(),
             "machine-a",
             "web-inst-1",
             &target_revision_hash,
@@ -7974,13 +7958,13 @@ async fn commit_plan_contains_branch_lineage() {
 
     assert_eq!(commit_plan.commit().branch_lineage.len(), 1);
     let lineage = &commit_plan.commit().branch_lineage[0];
-    assert_eq!(lineage.namespace, Namespace("pr-39".into()));
+    assert_eq!(lineage.namespace, Namespace::new("pr-39"));
     assert_eq!(lineage.service, "web");
     assert_eq!(lineage.revision_hash, target_revision_hash);
     assert_eq!(lineage.source_namespace, source_namespace);
     assert_eq!(lineage.source_service, "web");
     assert_eq!(lineage.source_revision_hash, source_revision_hash);
-    assert_eq!(lineage.deploy_id, DeployId("deploy-branch".into()));
+    assert_eq!(lineage.deploy_id, DeployId::new("deploy-branch"));
 }
 
 #[derive(Clone, Default)]
@@ -8089,7 +8073,7 @@ impl FakeController {
     }
 
     fn should_fail_open(&self, machine_id: &MachineId) -> bool {
-        self.fail_open_machine.as_deref() == Some(machine_id.0.as_str())
+        self.fail_open_machine.as_deref() == Some(machine_id.as_str())
     }
 
     async fn on_start_begin(&self, machine_id: &MachineId, service: &str, slot_id: &SlotId) {
@@ -8098,10 +8082,14 @@ impl FakeController {
         self.max_global_start.fetch_max(global, Ordering::SeqCst);
         {
             let mut machine_state = self.machine_state.lock().expect("machine state lock");
-            let current = machine_state.entry(machine_id.0.clone()).or_default();
+            let current = machine_state
+                .entry(machine_id.as_str().to_owned())
+                .or_default();
             *current += 1;
             let mut machine_max = self.machine_max.lock().expect("machine max lock");
-            let max = machine_max.entry(machine_id.0.clone()).or_default();
+            let max = machine_max
+                .entry(machine_id.as_str().to_owned())
+                .or_default();
             *max = (*max).max(*current);
         }
         self.start_log_entries
@@ -8125,7 +8113,7 @@ impl FakeController {
     async fn on_start_end(&self, machine_id: &MachineId) {
         self.start_active.fetch_sub(1, Ordering::SeqCst);
         let mut machine_state = self.machine_state.lock().expect("machine state lock");
-        let Some(current) = machine_state.get_mut(&machine_id.0) else {
+        let Some(current) = machine_state.get_mut(machine_id.as_str()) else {
             return;
         };
         *current -= 1;
@@ -8148,7 +8136,7 @@ impl FakeController {
     }
 
     fn should_fail_remove(&self, instance_id: &InstanceId) -> bool {
-        self.fail_remove_instance.as_deref() == Some(instance_id.0.as_str())
+        self.fail_remove_instance.as_deref() == Some(instance_id.as_str())
     }
 
     async fn on_move_volume(&self, machine_id: &MachineId, request: &MoveVolumeRequest) {
@@ -8278,7 +8266,7 @@ impl DeployParticipantClient for FakeParticipantClient {
             machine_id: machine_id.clone(),
             revision_hash: "fake-revision".into(),
             deploy_id: deploy_id.clone(),
-            docker_container_id: format!("container-{}", req.instance_id.0),
+            docker_container_id: format!("container-{}", req.instance_id.as_str()),
             overlay_ip: None,
             backend_ports: BTreeMap::new(),
             phase: InstancePhase::Ready,
@@ -8503,15 +8491,15 @@ async fn assert_default_phase_record(
     };
     assert_eq!(phase.namespace, *namespace);
     assert_eq!(phase.deploy_id, *deploy_id);
-    assert_eq!(phase.phase_id, DeployPhaseId("deploy".into()));
+    assert_eq!(phase.phase_id, DeployPhaseId::new("deploy"));
     assert_eq!(phase.name, "Deploy");
     assert_eq!(phase.order, 0);
-    assert_eq!(phase.commit_policy, DeployPhaseCommitPolicy::EndOfDeploy);
+    assert_eq!(phase.commit_policy(), DeployPhaseCommitPolicy::EndOfDeploy);
     assert_eq!(phase.rollback_policy, DeployPhaseRollbackPolicy::Reversible);
-    match (&phase.state, expected_state) {
+    match (phase.lifecycle_state(), expected_state) {
         (DeployPhaseState::Running, "running") => {}
         (DeployPhaseState::Succeeded { completed_at }, "succeeded") => {
-            assert!(*completed_at >= phase.started_at);
+            assert!(completed_at >= phase.started_at);
         }
         (
             DeployPhaseState::Failed {
@@ -8520,7 +8508,7 @@ async fn assert_default_phase_record(
             },
             "failed",
         ) => {
-            assert!(*completed_at >= phase.started_at);
+            assert!(completed_at >= phase.started_at);
             let Some(expected) = failure_contains else {
                 panic!("failed phase assertion requires expected failure text");
             };
@@ -8544,14 +8532,14 @@ async fn assert_phase_record_state(
     failure_contains: Option<&str>,
 ) {
     let phase = store
-        .get_deploy_phase(namespace, deploy_id, &DeployPhaseId(phase_id.into()))
+        .get_deploy_phase(namespace, deploy_id, &DeployPhaseId::new(phase_id))
         .await
         .expect("get deploy phase")
         .unwrap_or_else(|| panic!("expected deploy phase {phase_id}"));
-    match (&phase.state, expected_state) {
+    match (phase.lifecycle_state(), expected_state) {
         (DeployPhaseState::Running, "running") => {}
         (DeployPhaseState::Succeeded { completed_at }, "succeeded") => {
-            assert!(*completed_at >= phase.started_at);
+            assert!(completed_at >= phase.started_at);
         }
         (
             DeployPhaseState::Failed {
@@ -8560,7 +8548,7 @@ async fn assert_phase_record_state(
             },
             "failed",
         ) => {
-            assert!(*completed_at >= phase.started_at);
+            assert!(completed_at >= phase.started_at);
             let Some(expected) = failure_contains else {
                 panic!("failed phase assertion requires expected failure text");
             };
@@ -8576,7 +8564,7 @@ async fn assert_phase_record_state(
 
 fn test_manifest(services: Vec<ServiceSpec>) -> DeployManifest {
     DeployManifest {
-        namespace: Namespace("test".into()),
+        namespace: Namespace::new("test"),
         intent: None,
         volumes: Vec::new(),
         services,
@@ -8585,8 +8573,8 @@ fn test_manifest(services: Vec<ServiceSpec>) -> DeployManifest {
 
 fn checkpointed_db_web_manifest() -> DeployManifest {
     let mut manifest = test_manifest(vec![
-        test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17"),
-        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+        test_service_spec("db", Placement::replicated(1), "postgres:17"),
+        test_service_spec("web", Placement::replicated(1), "nginx:1.27"),
     ]);
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -8619,8 +8607,8 @@ fn checkpointed_db_web_manifest() -> DeployManifest {
 
 fn end_of_deploy_db_web_manifest() -> DeployManifest {
     let mut manifest = test_manifest(vec![
-        test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17"),
-        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+        test_service_spec("db", Placement::replicated(1), "postgres:17"),
+        test_service_spec("web", Placement::replicated(1), "nginx:1.27"),
     ]);
     manifest.intent = Some(DeployIntent {
         services: Vec::new(),
@@ -8669,7 +8657,7 @@ fn end_of_deploy_db_checkpoint_web_manifest() -> DeployManifest {
 }
 
 fn checkpointed_db_volume_web_manifest() -> DeployManifest {
-    let mut db = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    let mut db = test_service_spec("db", Placement::replicated(1), "postgres:17");
     db.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
         target: "/var/lib/postgresql/data".into(),
@@ -8677,7 +8665,7 @@ fn checkpointed_db_volume_web_manifest() -> DeployManifest {
     });
     let mut manifest = test_manifest(vec![
         db,
-        test_service_spec("web", Placement::Replicated { count: 1 }, "nginx:1.27"),
+        test_service_spec("web", Placement::replicated(1), "nginx:1.27"),
     ]);
     manifest
         .volumes
@@ -8712,7 +8700,7 @@ fn checkpointed_db_volume_web_manifest() -> DeployManifest {
 }
 
 fn volume_manifest() -> DeployManifest {
-    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    let mut service = test_service_spec("db", Placement::replicated(1), "postgres:17");
     service.template.mounts.push(Mount {
         source: MountSource::Volume("data".into()),
         target: "/var/lib/postgresql/data".into(),
@@ -8831,12 +8819,12 @@ async fn seed_volume_with_scope_and_attached_services(
     owner: &str,
     attached_services: Vec<String>,
 ) {
-    let deploy_id = DeployId(format!("seed-{volume_name}"));
+    let deploy_id = DeployId::new(format!("seed-{volume_name}"));
     let volume = VolumeRecord {
         namespace: namespace.clone(),
         volume_name: volume_name.into(),
         scope,
-        machine_id: MachineId(machine_id.into()),
+        machine_id: MachineId::new(machine_id),
         quota: quota.into(),
         mode: mode.into(),
         owner: owner.into(),
@@ -8849,13 +8837,14 @@ async fn seed_volume_with_scope_and_attached_services(
     let deploy = DeployRecord {
         deploy_id,
         namespace: namespace.clone(),
-        coordinator_machine_id: MachineId("local".into()),
+        coordinator_machine_id: MachineId::new("local"),
         manifest_hash: "seed".into(),
-        state: DeployState::Committed,
         started_at: 1,
-        committed_at: Some(1),
-        finished_at: Some(1),
-        summary_json: "{}".into(),
+        state: DeployRecordState::Committed {
+            committed_at: 1,
+            finished_at: 1,
+            summary_json: "{}".into(),
+        },
     };
     store
         .commit_deploy(&DeployCommit {
@@ -8912,15 +8901,11 @@ fn test_image_digest(hex: char) -> ImageDigest {
 
 fn present_image_record(machine_id: &str, digest: ImageDigest) -> ImageAvailabilityRecord {
     ImageAvailabilityRecord {
-        machine_id: MachineId(machine_id.into()),
+        machine_id: MachineId::new(machine_id),
         digest: digest.clone(),
         presence: ImagePresence::Present {
             artifact: ImageArtifact {
-                image: ImageRef {
-                    repository: None,
-                    tag: None,
-                    digest,
-                },
+                image: ImageRef::digest_only(digest),
                 platform: None,
                 provenance: ImageArtifactProvenance::External { source: None },
                 created_at: 10,
@@ -8934,7 +8919,7 @@ fn present_image_record(machine_id: &str, digest: ImageDigest) -> ImageAvailabil
 
 fn absent_image_record(machine_id: &str, digest: ImageDigest) -> ImageAvailabilityRecord {
     ImageAvailabilityRecord {
-        machine_id: MachineId(machine_id.into()),
+        machine_id: MachineId::new(machine_id),
         digest,
         presence: ImagePresence::Absent { observed_at: 10 },
         updated_at: 10,
@@ -8942,7 +8927,7 @@ fn absent_image_record(machine_id: &str, digest: ImageDigest) -> ImageAvailabili
 }
 
 fn http_route_service_spec(name: &str, hostname: &str) -> ServiceSpec {
-    let mut spec = test_service_spec(name, Placement::Replicated { count: 1 }, "nginx:1.27");
+    let mut spec = test_service_spec(name, Placement::replicated(1), "nginx:1.27");
     spec.service_ports = vec![ServicePort {
         name: "http".into(),
         container_port: 8080,
@@ -8962,7 +8947,7 @@ async fn seed_committed_http_release(
     service: &str,
     hostname: &str,
 ) {
-    let namespace = Namespace(namespace.into());
+    let namespace = Namespace::new(namespace);
     let spec = http_route_service_spec(service, hostname);
     let revision_hash = spec.revision_hash().expect("revision hash");
     store
@@ -8975,7 +8960,7 @@ async fn seed_committed_http_release(
                 spec_json: spec
                     .canonical_revision_json()
                     .expect("canonical revision json"),
-                created_by: MachineId("seed".into()),
+                created_by: MachineId::new("seed"),
                 created_at: 0,
             }],
             removed_services: Vec::new(),
@@ -9013,7 +8998,7 @@ async fn seed_committed_service_release(
                 spec_json: spec
                     .canonical_revision_json()
                     .expect("canonical revision json"),
-                created_by: MachineId("seed".into()),
+                created_by: MachineId::new("seed"),
                 created_at: 0,
             }],
             removed_services: Vec::new(),
@@ -9044,30 +9029,22 @@ fn test_release(
     ServiceReleaseRecord {
         namespace: namespace.clone(),
         service: service.into(),
-        release: ServiceRelease {
-            primary_revision_hash: revision_hash.into(),
-            referenced_revision_hashes: vec![revision_hash.into()],
-            routing: ServiceRoutingPolicy::Direct {
-                revision_hash: revision_hash.into(),
-            },
-            slots,
-            updated_by_deploy_id: DeployId("deploy-1".into()),
-            updated_at: 0,
-        },
+        release: ServiceRelease::direct(revision_hash, slots, DeployId::new("deploy-1"), 0),
     }
 }
 
 fn test_deploy_record(namespace: &Namespace, deploy_id: &str) -> DeployRecord {
     DeployRecord {
-        deploy_id: DeployId(deploy_id.into()),
+        deploy_id: DeployId::new(deploy_id),
         namespace: namespace.clone(),
-        coordinator_machine_id: MachineId("local".into()),
+        coordinator_machine_id: MachineId::new("local"),
         manifest_hash: "manifest".into(),
-        state: DeployState::Committed,
         started_at: 0,
-        committed_at: Some(0),
-        finished_at: Some(0),
-        summary_json: "{}".into(),
+        state: DeployRecordState::Committed {
+            committed_at: 0,
+            finished_at: 0,
+            summary_json: "{}".into(),
+        },
     }
 }
 
@@ -9078,9 +9055,9 @@ fn test_slot(
     revision_hash: &str,
 ) -> ServiceReleaseSlot {
     ServiceReleaseSlot {
-        slot_id: SlotId(slot_id.into()),
-        machine_id: MachineId(machine_id.into()),
-        active_instance_id: InstanceId(instance_id.into()),
+        slot_id: SlotId::new(slot_id),
+        machine_id: MachineId::new(machine_id),
+        active_instance_id: InstanceId::new(instance_id),
         revision_hash: revision_hash.into(),
     }
 }
@@ -9095,7 +9072,7 @@ fn test_machine_in_region(
     region_role: RegionRole,
 ) -> MachineMembership {
     MachineMembership {
-        id: MachineId(id.into()),
+        id: MachineId::new(id),
         public_key: PublicKey([7; 32]),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
         topology: MachineTopology::local(),
@@ -9104,8 +9081,7 @@ fn test_machine_in_region(
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],
         lifecycle,
-        storage: true,
-        storage_participation: ployz_types::model::StorageParticipation::default_authority(),
+        storage_role: ployz_types::model::StorageParticipation::default_authority().into(),
         created_at: 0,
         updated_at: 0,
         labels: BTreeMap::new(),
@@ -9121,13 +9097,13 @@ fn test_instance_status(
     revision_hash: &str,
 ) -> InstanceStatusRecord {
     InstanceStatusRecord {
-        instance_id: InstanceId(instance_id.into()),
+        instance_id: InstanceId::new(instance_id),
         namespace: namespace.clone(),
         service: service.into(),
-        slot_id: SlotId(slot_id.into()),
-        machine_id: MachineId(machine_id.into()),
+        slot_id: SlotId::new(slot_id),
+        machine_id: MachineId::new(machine_id),
         revision_hash: revision_hash.into(),
-        deploy_id: DeployId("previous-deploy".into()),
+        deploy_id: DeployId::new("previous-deploy"),
         docker_container_id: format!("container-{instance_id}"),
         overlay_ip: None,
         backend_ports: BTreeMap::new(),
@@ -9449,7 +9425,7 @@ impl DeployStore for CountingBackend {
         self.deploy_status_writes.fetch_add(1, Ordering::SeqCst);
         self.deploy_status_records.lock().await.push(deploy.clone());
         if matches!(
-            deploy.state,
+            deploy.state(),
             DeployState::Committed | DeployState::CleanupPending
         ) {
             let committed_writes = self.committed_status_writes.fetch_add(1, Ordering::SeqCst) + 1;
@@ -9596,7 +9572,7 @@ impl DeployStore for CountingBackend {
     }
 
     async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> PloyzResult<()> {
-        if matches!(phase.state, DeployPhaseState::Pending) {
+        if matches!(phase.lifecycle_state(), DeployPhaseState::Pending) {
             let call = self.pending_phase_upserts.fetch_add(1, Ordering::SeqCst) + 1;
             if call == self.fail_pending_phase_upsert_on.load(Ordering::SeqCst) {
                 return Err(Error::operation(
@@ -9605,7 +9581,7 @@ impl DeployStore for CountingBackend {
                 ));
             }
         }
-        if matches!(phase.state, DeployPhaseState::Running)
+        if matches!(phase.lifecycle_state(), DeployPhaseState::Running)
             && self.fail_running_phase_upsert.load(Ordering::SeqCst)
         {
             return Err(Error::operation(
@@ -9613,7 +9589,7 @@ impl DeployStore for CountingBackend {
                 "injected running phase failure",
             ));
         }
-        if matches!(phase.state, DeployPhaseState::Succeeded { .. })
+        if matches!(phase.lifecycle_state(), DeployPhaseState::Succeeded { .. })
             && self.fail_succeeded_phase_upsert.load(Ordering::SeqCst)
         {
             self.succeeded_phase_upserts.fetch_add(1, Ordering::SeqCst);
@@ -9622,7 +9598,7 @@ impl DeployStore for CountingBackend {
                 "injected succeeded phase failure",
             ));
         }
-        if matches!(phase.state, DeployPhaseState::Succeeded { .. }) {
+        if matches!(phase.lifecycle_state(), DeployPhaseState::Succeeded { .. }) {
             self.succeeded_phase_upserts.fetch_add(1, Ordering::SeqCst);
         }
         self.store.upsert_deploy_phase(phase).await

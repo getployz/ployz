@@ -2,7 +2,7 @@ use async_nats::jetstream::kv::{CreateError, CreateErrorKind};
 use async_trait::async_trait;
 use ployz_store_api::InviteStore;
 use ployz_types::error::{Error, Result, StoreRecordKind};
-use ployz_types::model::{InviteRecord, MachineId};
+use ployz_types::model::{InviteRecord, InviteStatus, MachineId};
 
 use crate::NatsStore;
 use crate::store::kv_json;
@@ -53,13 +53,15 @@ impl InviteStore for NatsStore {
         };
         let invite = decode_invite(invite_id, entry.value.as_ref())?;
         validate_redeemable(invite_id, &invite, machine_id, now_unix_secs)?;
-        if invite.consumed_by.as_ref() == Some(machine_id) {
+        if invite.status.is_consumed_by(machine_id) {
             return Ok(invite);
         }
 
         let mut next_invite = invite;
-        next_invite.consumed_by = Some(machine_id.clone());
-        next_invite.consumed_at = Some(now_unix_secs);
+        next_invite.status = InviteStatus::Consumed {
+            consumed_by: machine_id.clone(),
+            consumed_at: now_unix_secs,
+        };
         update_invite(&bucket, invite_id, entry.revision, &next_invite).await?;
         Ok(next_invite)
     }
@@ -74,11 +76,13 @@ impl InviteStore for NatsStore {
             return Err(Error::invite_not_found(invite_id));
         };
         let invite = decode_invite(invite_id, entry.value.as_ref())?;
-        if invite.consumed_by.is_some() {
+        if invite.status.is_consumed() {
             return Err(Error::invite_consumed(invite_id));
         }
         let mut next_invite = invite;
-        next_invite.revoked_at = Some(now_unix_secs);
+        next_invite.status = InviteStatus::Revoked {
+            revoked_at: now_unix_secs,
+        };
         update_invite(&bucket, invite_id, entry.revision, &next_invite).await?;
         Ok(next_invite)
     }
@@ -109,13 +113,13 @@ fn validate_redeemable(
     machine_id: &MachineId,
     now_unix_secs: u64,
 ) -> Result<()> {
-    if invite.revoked_at.is_some() {
+    if invite.status.is_revoked() {
         return Err(Error::invite_revoked(invite_id));
     }
     if now_unix_secs > invite.expires_at {
         return Err(Error::invite_expired(invite_id));
     }
-    if let Some(consumed_by) = &invite.consumed_by
+    if let Some(consumed_by) = invite.status.consumed_by()
         && consumed_by != machine_id
     {
         return Err(Error::invite_consumed(invite_id));
@@ -181,7 +185,7 @@ mod tests {
     use crate::store::kv_json;
     use async_nats::jetstream::kv::{CreateError, CreateErrorKind};
     use ployz_types::error::{Error, StoreRecordKind};
-    use ployz_types::model::{InviteRecord, MachineId, NetworkId};
+    use ployz_types::model::{InviteRecord, InviteStatus, MachineId, NetworkId};
 
     #[test]
     fn create_error_already_exists_maps_to_invite_already_exists() {
@@ -283,10 +287,10 @@ mod tests {
 
     #[test]
     fn validate_redeemable_returns_structured_lifecycle_errors() {
-        let machine = MachineId("machine-a".into());
+        let machine = MachineId::new("machine-a");
 
         let mut revoked = test_invite("revoked");
-        revoked.revoked_at = Some(1);
+        revoked.status = InviteStatus::Revoked { revoked_at: 1 };
         assert_eq!(
             validate_redeemable("revoked", &revoked, &machine, 2),
             Err(Error::InviteRevoked {
@@ -303,7 +307,10 @@ mod tests {
         );
 
         let mut consumed = test_invite("consumed");
-        consumed.consumed_by = Some(MachineId("machine-b".into()));
+        consumed.status = InviteStatus::Consumed {
+            consumed_by: MachineId::new("machine-b"),
+            consumed_at: 1,
+        };
         assert_eq!(
             validate_redeemable("consumed", &consumed, &machine, 2),
             Err(Error::InviteConsumed {
@@ -315,13 +322,11 @@ mod tests {
     fn test_invite(id: &str) -> InviteRecord {
         InviteRecord {
             invite_id: id.into(),
-            network_id: NetworkId("net-a".into()),
-            issuer_machine_id: MachineId("issuer".into()),
+            network_id: NetworkId::new("net-a"),
+            issuer_machine_id: MachineId::new("issuer"),
             issuer_verify_key: "verify".into(),
             expires_at: 100,
-            consumed_by: None,
-            consumed_at: None,
-            revoked_at: None,
+            status: InviteStatus::Active,
             signature: "signature".into(),
         }
     }

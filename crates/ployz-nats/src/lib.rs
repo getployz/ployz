@@ -266,7 +266,7 @@ mod tests {
         let config = NetworkConfig {
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid ip")),
             storage_participation: Some(StorageParticipation::Authority {
-                authority_id: AuthorityId("auth-sin".into()),
+                authority_id: AuthorityId::new("auth-sin"),
             }),
             storage_replicas: StorageReplicaPolicy::Single,
         };
@@ -274,7 +274,7 @@ mod tests {
         let scope = nats_scope_for_network_config(&config);
 
         assert_eq!(scope.installation(), &InstallationId::local());
-        assert_eq!(scope.authority(), &AuthorityId("auth-sin".into()));
+        assert_eq!(scope.authority(), &AuthorityId::new("auth-sin"));
     }
 
     #[test]

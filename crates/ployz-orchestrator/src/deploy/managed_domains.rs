@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use ployz_store_api::{CertificateStore, RoutingStateStore, StoreDriver};
 use ployz_types::model::{
     CertificateLifecycle, CertificateRecord, CertificateState, RoutingState, ServiceRelease,
-    ServiceReleaseRecord, ServiceRevisionRecord, ServiceRoutingPolicy,
+    ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
 
@@ -74,9 +74,9 @@ pub(super) async fn validate_hostname_ownership(
         };
         return Err(Error::Deploy(DeployError::HostnameAlreadyOwned {
             hostname: desired_owner.hostname,
-            owner_namespace: existing_owner.namespace.0.clone(),
+            owner_namespace: existing_owner.namespace.as_str().to_string(),
             owner_service: existing_owner.service.clone(),
-            request_namespace: desired_owner.namespace.0,
+            request_namespace: desired_owner.namespace.as_str().to_string(),
             request_service: desired_owner.service,
         }));
     }
@@ -107,7 +107,7 @@ fn hostname_owners_for_plan(plan: &ResolvedPlan) -> Result<Vec<HostnameOwner>> {
     let mut owners = Vec::new();
     let mut seen: Vec<HostnameOwner> = Vec::new();
     for service in plan.services() {
-        let Some(spec) = &service.spec else {
+        let Some(spec) = service.spec() else {
             continue;
         };
         for hostname in hostnames_for_spec(spec) {
@@ -136,7 +136,7 @@ fn hostname_owners_for_routing_state(
         let Some(revision) = active_revision_for_release(state, release) else {
             return Err(Error::Deploy(
                 DeployError::CommittedServiceMissingActiveRevision {
-                    namespace: release.namespace.0.clone(),
+                    namespace: release.namespace.as_str().to_string(),
                     service: release.service.clone(),
                     revision_hash: routing_revision_hash(&release.release).to_string(),
                 },
@@ -144,7 +144,7 @@ fn hostname_owners_for_routing_state(
         };
         let spec: ServiceSpec = serde_json::from_str(&revision.spec_json).map_err(|error| {
             Error::Deploy(DeployError::CommittedServiceSpecDecode {
-                namespace: revision.namespace.0.clone(),
+                namespace: revision.namespace.as_str().to_string(),
                 service: revision.service.clone(),
                 message: error.to_string(),
             })
@@ -173,10 +173,7 @@ fn active_revision_for_release<'a>(
 }
 
 fn routing_revision_hash(release: &ServiceRelease) -> &str {
-    match &release.routing {
-        ServiceRoutingPolicy::Direct { revision_hash } => revision_hash.as_str(),
-        ServiceRoutingPolicy::Split { .. } => release.primary_revision_hash.as_str(),
-    }
+    release.primary_revision_hash()
 }
 
 fn hostnames_for_spec(spec: &ServiceSpec) -> Vec<String> {
@@ -206,9 +203,9 @@ fn reject_duplicate_owner(existing: &[HostnameOwner], next: &HostnameOwner) -> R
     Err(Error::Deploy(
         DeployError::HostnameDeclaredByMultipleServices {
             hostname: next.hostname.clone(),
-            first_namespace: previous.namespace.0.clone(),
+            first_namespace: previous.namespace.as_str().to_string(),
             first_service: previous.service.clone(),
-            second_namespace: next.namespace.0.clone(),
+            second_namespace: next.namespace.as_str().to_string(),
             second_service: next.service.clone(),
         },
     ))

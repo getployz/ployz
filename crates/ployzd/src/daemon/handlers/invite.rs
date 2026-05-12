@@ -6,7 +6,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signer, SigningKey};
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_store_api::{InviteStore, MachineMembershipStore};
-use ployz_types::model::InviteRecord;
+use ployz_types::model::{InviteRecord, InviteStatus};
 use ployz_types::time::now_unix_secs;
 use x25519_dalek::StaticSecret;
 
@@ -90,9 +90,9 @@ impl DaemonState {
                     expires_at: invite.expires_at,
                     status: invite_status(invite, now).to_string(),
                     consumed_by: invite
-                        .consumed_by
-                        .as_ref()
-                        .map(|machine_id| machine_id.0.clone()),
+                        .status
+                        .consumed_by()
+                        .map(|machine_id| machine_id.as_str().to_string()),
                 })
                 .collect(),
         };
@@ -166,9 +166,7 @@ impl DaemonState {
             issuer_machine_id: self.identity.machine_id.clone(),
             issuer_verify_key: issuer_verify_key(&self.identity.private_key.0),
             expires_at,
-            consumed_by: None,
-            consumed_at: None,
-            revoked_at: None,
+            status: InviteStatus::Active,
             signature: String::new(),
         };
         invite.signature = sign_invite_record(&self.identity.private_key.0, &invite)?;
@@ -195,10 +193,10 @@ impl DaemonState {
 }
 
 fn invite_status(invite: &InviteRecord, now: u64) -> &'static str {
-    if invite.revoked_at.is_some() {
+    if invite.status.is_revoked() {
         return "revoked";
     }
-    if invite.consumed_by.is_some() {
+    if invite.status.is_consumed() {
         return "consumed";
     }
     if invite.expires_at <= now {
@@ -241,10 +239,12 @@ mod tests {
         let active = test_invite("invite-active", now + 600);
         let expired = test_invite("invite-expired", now.saturating_sub(1));
         let mut consumed = test_invite("invite-consumed", now + 600);
-        consumed.consumed_by = Some(MachineId("machine-consumer".into()));
-        consumed.consumed_at = Some(now);
+        consumed.status = InviteStatus::Consumed {
+            consumed_by: MachineId::new("machine-consumer"),
+            consumed_at: now,
+        };
         let mut revoked = test_invite("invite-revoked", now + 600);
-        revoked.revoked_at = Some(now);
+        revoked.status = InviteStatus::Revoked { revoked_at: now };
 
         for invite in [&revoked, &expired, &consumed, &active] {
             store.create_invite(invite).await.expect("seed invite");
@@ -252,8 +252,8 @@ mod tests {
 
         let response = state.handle_machine_invite_list().await;
 
-        assert!(response.ok, "invite list should succeed");
-        let Some(DaemonPayload::MachineInviteList(payload)) = response.payload else {
+        assert!(response.is_ok(), "invite list should succeed");
+        let Some(DaemonPayload::MachineInviteList(payload)) = response.payload() else {
             panic!("invite list should include structured payload");
         };
         assert_eq!(
@@ -276,7 +276,7 @@ mod tests {
     }
 
     fn make_active_state() -> (DaemonState, Arc<MemoryStore>) {
-        let identity = Identity::generate(MachineId("founder".into()), [19; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [19; 32]);
         let machine_id = identity.machine_id.clone();
         let config = NetworkConfig::new(
             ployz_types::model::NetworkName("alpha".into()),
@@ -322,13 +322,11 @@ mod tests {
     fn test_invite(invite_id: &str, expires_at: u64) -> InviteRecord {
         InviteRecord {
             invite_id: invite_id.into(),
-            network_id: NetworkId("network-a".into()),
-            issuer_machine_id: MachineId("founder".into()),
+            network_id: NetworkId::new("network-a"),
+            issuer_machine_id: MachineId::new("founder"),
             issuer_verify_key: "verify".into(),
             expires_at,
-            consumed_by: None,
-            consumed_at: None,
-            revoked_at: None,
+            status: InviteStatus::Active,
             signature: "signature".into(),
         }
     }

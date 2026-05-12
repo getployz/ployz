@@ -203,10 +203,10 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
             .or_default()
             .push(DnsInstanceDiagnostic {
                 service: instance.service.clone(),
-                instance_id: instance.instance_id.0.clone(),
-                machine_id: instance.machine_id.0.clone(),
+                instance_id: instance.instance_id.as_str().to_string(),
+                machine_id: instance.machine_id.as_str().to_string(),
                 topology: machine.topology.clone(),
-                slot_id: instance.slot_id.0.clone(),
+                slot_id: instance.slot_id.as_str().to_string(),
                 overlay_ip,
             });
     }
@@ -255,13 +255,13 @@ mod tests {
         overlay_ip: Option<Ipv4Addr>,
     ) -> InstanceStatusRecord {
         InstanceStatusRecord {
-            instance_id: InstanceId("inst-1".into()),
-            namespace: Namespace(namespace.into()),
+            instance_id: InstanceId::new("inst-1"),
+            namespace: Namespace::new(namespace),
             service: service.into(),
-            slot_id: SlotId("slot-1".into()),
-            machine_id: MachineId("machine-1".into()),
+            slot_id: SlotId::new("slot-1"),
+            machine_id: MachineId::new("machine-1"),
             revision_hash: "abc".into(),
-            deploy_id: DeployId("deploy-1".into()),
+            deploy_id: DeployId::new("deploy-1"),
             docker_container_id: "container-1".into(),
             overlay_ip,
             backend_ports: BTreeMap::new(),
@@ -285,7 +285,7 @@ mod tests {
 
     fn machine_record(id: &str) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay ip")),
             topology: MachineTopology::local(),
@@ -294,8 +294,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
-            storage: true,
-            storage_participation: StorageParticipation::default_authority(),
+            storage_role: StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: BTreeMap::new(),
@@ -320,16 +319,16 @@ mod tests {
             .push(ready_instance("prod", "web", Some(ip)));
 
         let snapshot = project_dns(&state);
-        let ns = Namespace("prod".into());
+        let ns = Namespace::new("prod");
         assert_eq!(snapshot.lookup_service(&ns, "web"), Some([ip].as_slice()));
         assert_eq!(
             snapshot.ip_to_namespace.get(&ip),
-            Some(&Namespace("prod".into()))
+            Some(&Namespace::new("prod"))
         );
         assert_eq!(
             snapshot
                 .service_names
-                .get(&Namespace("prod".into()))
+                .get(&Namespace::new("prod"))
                 .map(Vec::as_slice),
             Some(vec!["web".to_string()].as_slice())
         );
@@ -356,7 +355,7 @@ mod tests {
             .push(ready_instance("prod", "web", Some(ip)));
 
         let snapshot = project_dns(&state);
-        let ns = Namespace("prod".into());
+        let ns = Namespace::new("prod");
 
         assert_eq!(
             snapshot.instance_txt_records(&ns, Some("web")),
@@ -373,14 +372,14 @@ mod tests {
         let mut state = empty_routing_state();
         state.machines = vec![machine_record("machine-1")];
         let mut orphan = ready_instance("prod", "web", Some(orphan_ip));
-        orphan.machine_id = MachineId("missing-machine".into());
+        orphan.machine_id = MachineId::new("missing-machine");
         state.instances.push(orphan);
         let mut healthy = ready_instance("prod", "api", Some(healthy_ip));
-        healthy.instance_id = InstanceId("inst-2".into());
+        healthy.instance_id = InstanceId::new("inst-2");
         state.instances.push(healthy);
 
         let snapshot = project_dns(&state);
-        let ns = Namespace("prod".into());
+        let ns = Namespace::new("prod");
         assert_eq!(snapshot.lookup_service(&ns, "web"), None);
         assert_eq!(
             snapshot.lookup_service(&ns, "api"),

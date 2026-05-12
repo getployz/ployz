@@ -104,7 +104,7 @@ fn validate_image_availability_key(
 fn image_availability_key(machine_id: &MachineId, digest: &ImageDigest) -> String {
     format!(
         "{}.{}",
-        subjects::subject_token(machine_id.0.as_str()),
+        subjects::subject_token(machine_id.as_str()),
         subjects::subject_token(digest.0.replace(':', "_").as_str())
     )
 }
@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(
             snapshot
                 .iter()
-                .map(|record| record.machine_id.0.as_str())
+                .map(|record| record.machine_id.as_str())
                 .collect::<Vec<_>>(),
             ["machine-a", "machine-b"]
         );
@@ -160,17 +160,13 @@ mod tests {
     fn image_record(machine_id: &str) -> ImageAvailabilityRecord {
         let digest = ImageDigest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into());
         let artifact = ImageArtifact {
-            image: ImageRef {
-                repository: None,
-                tag: None,
-                digest: digest.clone(),
-            },
+            image: ImageRef::digest_only(digest.clone()),
             platform: None,
             provenance: ImageArtifactProvenance::External { source: None },
             created_at: 1,
         };
         ImageAvailabilityRecord {
-            machine_id: MachineId(machine_id.into()),
+            machine_id: MachineId::new(machine_id),
             digest,
             presence: ImagePresence::Present {
                 artifact,

@@ -88,11 +88,72 @@ pub enum InstallServiceMode {
     System,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct InstallGitUrl(String);
+
+impl InstallGitUrl {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self::try_new(value).expect("valid git install URL")
+    }
+
+    pub fn try_new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err("git install URL cannot be empty".into());
+        }
+        if value.chars().any(char::is_control) {
+            return Err("git install URL cannot contain control characters".into());
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl From<InstallGitUrl> for String {
+    fn from(value: InstallGitUrl) -> Self {
+        value.into_string()
+    }
+}
+
+impl TryFrom<String> for InstallGitUrl {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl TryFrom<&str> for InstallGitUrl {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum InstallSource {
-    Release,
-    Git,
+    Release {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
+    Git {
+        git_url: InstallGitUrl,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        git_ref: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,12 +164,6 @@ pub struct MachineInstallOptions {
     pub service_mode: Option<InstallServiceMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<InstallSource>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub git_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub git_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +255,25 @@ pub enum MachineTransitionGoal {
     Standby,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "goal")]
+pub enum MachineSelfTransition {
+    Activate { assigned_subnet: ipnet::Ipv4Net },
+    Drain,
+    Standby { force: bool },
+}
+
+impl MachineSelfTransition {
+    #[must_use]
+    pub fn goal(self) -> MachineTransitionGoal {
+        match self {
+            Self::Activate { .. } => MachineTransitionGoal::Activate,
+            Self::Drain => MachineTransitionGoal::Drain,
+            Self::Standby { .. } => MachineTransitionGoal::Standby,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineInviteListPayload {
     pub invites: Vec<MachineInviteInfo>,
@@ -244,4 +318,82 @@ pub struct MachineOperationInfo {
     pub invite_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allocated_subnet: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_source_release_owns_version() {
+        let options = MachineInstallOptions {
+            runtime_target: Some(InstallRuntimeTarget::Host),
+            service_mode: Some(InstallServiceMode::User),
+            source: Some(InstallSource::Release {
+                version: Some("0.6.1".into()),
+            }),
+        };
+
+        let json = serde_json::to_value(&options).expect("serialize install options");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "runtime_target": "host",
+                "service_mode": "user",
+                "source": {
+                    "kind": "release",
+                    "version": "0.6.1"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn install_source_git_owns_url_and_ref() {
+        let options = MachineInstallOptions {
+            runtime_target: None,
+            service_mode: None,
+            source: Some(InstallSource::Git {
+                git_url: InstallGitUrl::new("https://example.invalid/ployz.git"),
+                git_ref: Some("main".into()),
+            }),
+        };
+
+        let json = serde_json::to_value(&options).expect("serialize install options");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "source": {
+                    "kind": "git",
+                    "git_url": "https://example.invalid/ployz.git",
+                    "git_ref": "main"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn install_source_rejects_git_fields_on_release() {
+        let json = serde_json::json!({
+            "kind": "release",
+            "version": "0.6.1",
+            "git_url": "https://example.invalid/ployz.git"
+        });
+
+        serde_json::from_value::<InstallSource>(json)
+            .expect_err("release install source cannot carry git url");
+    }
+
+    #[test]
+    fn install_source_rejects_empty_git_url() {
+        let json = serde_json::json!({
+            "kind": "git",
+            "git_url": ""
+        });
+
+        serde_json::from_value::<InstallSource>(json)
+            .expect_err("git install source cannot carry an empty url");
+    }
 }

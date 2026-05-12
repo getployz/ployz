@@ -8,7 +8,8 @@ use ployz_types::model::VolumeRecord;
 use ployz_types::spec::{
     DeployIntent, DeployManifest, MountSource, Namespace, ServiceIntent, ServiceIntentHint,
     ServiceSpec, VolumeCloneConsistency, VolumeCloneDataPolicy, VolumeDeclaration, VolumeIntent,
-    VolumeIntentHint, VolumeScope, stable_hash_hex, valid_storage_segment,
+    VolumeIntentHint, VolumeMode, VolumeOwner, VolumeQuota, VolumeScope, stable_hash_hex,
+    valid_storage_segment,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -142,21 +143,19 @@ pub(super) async fn export_manifest_with_evidence(
     let mut services = Vec::with_capacity(releases.len());
     let mut service_revision_hashes = BTreeMap::new();
     for release in releases {
-        let key = (
-            release.service.clone(),
-            release.release.primary_revision_hash.clone(),
-        );
+        let primary_revision_hash = release.release.primary_revision_hash().to_string();
+        let key = (release.service.clone(), primary_revision_hash.clone());
         let Some(spec_json) = revisions_by_key.get(&key) else {
             return Err(PloyzError::Deploy(
                 DeployError::StoredReleaseMissingRevision {
                     service: release.service,
-                    revision_hash: release.release.primary_revision_hash,
+                    revision_hash: primary_revision_hash,
                 },
             ));
         };
         let spec: ServiceSpec = serde_json::from_str(spec_json).map_err(|err| {
             PloyzError::Deploy(DeployError::CommittedServiceSpecDecode {
-                namespace: namespace.0.clone(),
+                namespace: namespace.as_str().to_string(),
                 service: release.service.clone(),
                 message: err.to_string(),
             })
@@ -167,10 +166,7 @@ pub(super) async fn export_manifest_with_evidence(
                 release_service: release.service,
             }));
         }
-        service_revision_hashes.insert(
-            release.service.clone(),
-            release.release.primary_revision_hash.clone(),
-        );
+        service_revision_hashes.insert(release.service.clone(), primary_revision_hash);
         services.push(spec);
     }
     services.sort_by(|left, right| left.name.cmp(&right.name));
@@ -181,14 +177,8 @@ pub(super) async fn export_manifest_with_evidence(
         .collect::<BTreeMap<_, _>>();
     let mut volumes: Vec<VolumeDeclaration> = volume_records
         .values()
-        .map(|record| VolumeDeclaration {
-            name: record.volume_name.clone(),
-            scope: record.scope,
-            quota: record.quota.clone(),
-            mode: record.mode.clone(),
-            owner: record.owner.clone(),
-        })
-        .collect();
+        .map(volume_declaration_from_record)
+        .collect::<ployz_types::Result<_>>()?;
     volumes.sort_by(|left, right| left.name.cmp(&right.name));
 
     Ok(ExportedManifest {
@@ -253,8 +243,8 @@ pub(super) async fn render_branch_namespace_manifest(
     request: &BranchNamespaceRequest,
 ) -> Result<DeployManifest, BranchRenderError> {
     validate_branch_namespace_request(request)?;
-    let source_namespace = Namespace(request.source_namespace.clone());
-    let target_namespace = Namespace(request.target_namespace.clone());
+    let source_namespace = Namespace::new(request.source_namespace.clone());
+    let target_namespace = Namespace::new(request.target_namespace.clone());
     let exported = export_manifest_with_evidence(store, &source_namespace)
         .await
         .map_err(|error| BranchRenderError::ExportFailed {
@@ -382,6 +372,11 @@ pub(super) fn validate_migrate_service_request(
     request: &MigrateServiceRequest,
 ) -> Result<(), MigrateRenderError> {
     validate_migrate_segment("namespace", &request.namespace)?;
+    Namespace::try_new(request.namespace.as_str()).map_err(|message| {
+        MigrateRenderError::InvalidRequest {
+            message: format!("namespace is invalid: {message}"),
+        }
+    })?;
     validate_migrate_segment("service", &request.service)?;
     if request.target_machine.trim().is_empty() {
         return Err(MigrateRenderError::InvalidRequest {
@@ -418,7 +413,11 @@ pub(super) async fn render_migrate_service_manifest(
     if target_machine.is_empty() {
         return Err(MigrateRenderError::EmptyTargetMachine);
     }
-    let namespace = Namespace(request.namespace.clone());
+    let namespace = Namespace::try_new(request.namespace.as_str()).map_err(|message| {
+        MigrateRenderError::InvalidRequest {
+            message: format!("namespace is invalid: {message}"),
+        }
+    })?;
     let mut manifest = export_manifest(store, &namespace).await.map_err(|error| {
         MigrateRenderError::ExportFailed {
             namespace: request.namespace.clone(),
@@ -485,7 +484,7 @@ pub(super) async fn render_migrate_service_manifest(
                 volume: volume.clone(),
             });
         }
-        if record.machine_id.0 == target_machine {
+        if record.machine_id.as_str() == target_machine {
             return Err(MigrateRenderError::AlreadyOnTarget {
                 volume: volume.clone(),
                 machine: target_machine.to_string(),
@@ -494,7 +493,7 @@ pub(super) async fn render_migrate_service_manifest(
         move_hints.push(VolumeIntentHint {
             volume: volume.clone(),
             intent: VolumeIntent::Move {
-                from_machine: record.machine_id.0,
+                from_machine: record.machine_id.as_str().to_string(),
                 to_machine: target_machine.to_string(),
             },
         });
@@ -519,4 +518,36 @@ pub(super) async fn render_migrate_service_manifest(
     manifest.intent = Some(intent);
 
     Ok(manifest)
+}
+
+fn volume_declaration_from_record(record: &VolumeRecord) -> ployz_types::Result<VolumeDeclaration> {
+    let quota = VolumeQuota::try_new(record.quota.as_str()).map_err(|message| {
+        PloyzError::Deploy(DeployError::StoredVolumeMetadataInvalid {
+            volume: record.volume_name.clone(),
+            field: "quota",
+            message,
+        })
+    })?;
+    let mode = VolumeMode::try_new(record.mode.as_str()).map_err(|message| {
+        PloyzError::Deploy(DeployError::StoredVolumeMetadataInvalid {
+            volume: record.volume_name.clone(),
+            field: "mode",
+            message,
+        })
+    })?;
+    let owner = VolumeOwner::try_new(record.owner.as_str()).map_err(|message| {
+        PloyzError::Deploy(DeployError::StoredVolumeMetadataInvalid {
+            volume: record.volume_name.clone(),
+            field: "owner",
+            message,
+        })
+    })?;
+
+    Ok(VolumeDeclaration {
+        name: record.volume_name.clone(),
+        scope: record.scope,
+        quota,
+        mode,
+        owner,
+    })
 }

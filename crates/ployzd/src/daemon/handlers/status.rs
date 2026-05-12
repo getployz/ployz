@@ -36,7 +36,7 @@ impl DaemonState {
                     control_plane.push(status);
                 }
                 let payload = StatusPayload {
-                    machine_id: id.machine_id.0.clone(),
+                    machine_id: id.machine_id.as_str().to_string(),
                     public_key: id.public_key.clone(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
                     network: Some(net.name.0.clone()),
@@ -72,7 +72,7 @@ impl DaemonState {
                     env!("CARGO_PKG_VERSION")
                 ),
                 Some(DaemonPayload::Status(StatusPayload {
-                    machine_id: id.machine_id.0.clone(),
+                    machine_id: id.machine_id.as_str().to_string(),
                     public_key: id.public_key.clone(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
                     network: None,
@@ -697,20 +697,23 @@ mod tests {
             .storage_participation = StorageParticipation::Candidate;
 
         let response = state.handle_status().await;
-        let Some(DaemonPayload::Status(payload)) = response.payload else {
+        let Some(DaemonPayload::Status(payload)) = response.payload() else {
             panic!("expected status payload");
         };
         let authority = payload.local_authority.expect("local authority posture");
 
         assert_eq!(
-            authority.role,
+            authority.role(),
             AuthorityNodeRole::AuthorityStorage {
                 authority_id: AuthorityId::default_authority(),
             }
         );
-        assert_eq!(authority.data_bucket, ControlPlaneDataBucket::StoredIntent);
         assert_eq!(
-            authority.loss_impact,
+            authority.data_bucket(),
+            ControlPlaneDataBucket::StoredIntent
+        );
+        assert_eq!(
+            authority.loss_impact(),
             ControlPlaneLossImpact::StoredTruthLost
         );
         teardown_status_state(&mut state).await;
@@ -721,7 +724,7 @@ mod tests {
         let mut state = make_status_state(false).await;
 
         let response = state.handle_status().await;
-        let Some(DaemonPayload::Status(payload)) = response.payload else {
+        let Some(DaemonPayload::Status(payload)) = response.payload() else {
             panic!("expected status payload");
         };
 
@@ -1094,7 +1097,7 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
     }
 
     async fn make_status_state(start_mesh: bool) -> DaemonState {
-        let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [1; 32]);
         let founder_subnet: Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
         let data_dir = unique_temp_dir("ployz-status-state");
         let config = NetworkConfig::new(
@@ -1178,7 +1181,7 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
         public_key: PublicKey,
     ) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             public_key,
             overlay_ip: format!("fd00::{id_len:x}", id_len = id.len())
                 .parse()
@@ -1190,8 +1193,7 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
             lifecycle,
-            storage: true,
-            storage_participation: StorageParticipation::default_authority(),
+            storage_role: StorageParticipation::default_authority().into(),
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),

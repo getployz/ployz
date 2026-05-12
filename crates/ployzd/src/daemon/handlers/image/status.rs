@@ -71,7 +71,7 @@ async fn image_status_records(
 fn render_image_record_line(record: &ImageAvailabilityRecord) -> String {
     format!(
         "{}  {}  {}",
-        record.machine_id.0,
+        record.machine_id.as_str(),
         record.digest.as_str(),
         image_presence_label(record)
     )
@@ -106,15 +106,15 @@ mod tests {
     fn present_record(machine: &str, digest: ImageDigest) -> ImageAvailabilityRecord {
         let now = now_unix_secs();
         ImageAvailabilityRecord {
-            machine_id: MachineId(machine.into()),
+            machine_id: MachineId::new(machine),
             digest: digest.clone(),
             presence: ImagePresence::Present {
                 artifact: ImageArtifact {
-                    image: ImageRef {
-                        repository: Some("example/app".into()),
-                        tag: Some("latest".into()),
+                    image: ImageRef::repository_digest(
+                        "example/app",
+                        Some("latest".into()),
                         digest,
-                    },
+                    ),
                     platform: None,
                     provenance: ImageArtifactProvenance::Build {
                         method: BuildMethod::Dockerfile,
@@ -148,13 +148,13 @@ mod tests {
             &store,
             &ImageStatusRequest {
                 digest: Some(digest_a.clone()),
-                machine_id: Some(MachineId("machine-a".into())),
+                machine_id: Some(MachineId::new("machine-a")),
             },
         )
         .await
         .expect("status records");
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].machine_id, MachineId("machine-a".into()));
+        assert_eq!(records[0].machine_id, MachineId::new("machine-a"));
         assert_eq!(records[0].digest, digest_a);
     }
 

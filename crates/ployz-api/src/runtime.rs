@@ -1,27 +1,10 @@
 use ployz_types::model::{
-    InstanceStatusRecord, MachineMembership, RoutingEvent, RoutingState, ServiceReleaseRecord,
-    ServiceRevisionRecord,
+    InstanceId, InstanceStatusRecord, MachineId, MachineMembership, RoutingEvent, RoutingState,
+    ServiceReleaseRecord, ServiceRevisionRecord,
 };
+use ployz_types::spec::Namespace;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeCollection {
-    Machine,
-    Revision,
-    Release,
-    Instance,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum RuntimeRecord {
-    Machine(MachineMembership),
-    Revision(ServiceRevisionRecord),
-    Release(ServiceReleaseRecord),
-    Instance(InstanceStatusRecord),
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -29,14 +12,40 @@ pub enum RuntimeWatchFrame {
     Snapshot {
         state: RoutingState,
     },
-    Upsert {
-        collection: RuntimeCollection,
+    MachineUpsert {
         key: String,
-        record: RuntimeRecord,
+        record: MachineMembership,
     },
-    Remove {
-        collection: RuntimeCollection,
+    MachineRemove {
         key: String,
+        id: MachineId,
+    },
+    RevisionUpsert {
+        key: String,
+        record: ServiceRevisionRecord,
+    },
+    RevisionRemove {
+        key: String,
+        namespace: Namespace,
+        service: String,
+        revision_hash: String,
+    },
+    ReleaseUpsert {
+        key: String,
+        record: ServiceReleaseRecord,
+    },
+    ReleaseRemove {
+        key: String,
+        namespace: Namespace,
+        service: String,
+    },
+    InstanceUpsert {
+        key: String,
+        record: InstanceStatusRecord,
+    },
+    InstanceRemove {
+        key: String,
+        instance_id: InstanceId,
     },
     Error {
         code: String,
@@ -52,7 +61,7 @@ pub struct RuntimeStatePayload {
 
 #[must_use]
 pub fn machine_runtime_key(record: &MachineMembership) -> String {
-    record.id.0.clone()
+    record.id.as_str().to_string()
 }
 
 #[must_use]
@@ -70,7 +79,7 @@ pub fn release_runtime_key(record: &ServiceReleaseRecord) -> String {
 
 #[must_use]
 pub fn instance_runtime_key(record: &InstanceStatusRecord) -> String {
-    record.instance_id.0.clone()
+    record.instance_id.as_str().to_string()
 }
 
 pub fn sort_routing_state(state: &mut RoutingState) {
@@ -83,45 +92,44 @@ pub fn sort_routing_state(state: &mut RoutingState) {
 #[must_use]
 pub fn runtime_frame_from_event(event: RoutingEvent) -> RuntimeWatchFrame {
     match event {
-        RoutingEvent::MachineUpsert(record) => RuntimeWatchFrame::Upsert {
+        RoutingEvent::MachineUpsert(record) => RuntimeWatchFrame::MachineUpsert {
             key: machine_runtime_key(&record),
-            collection: RuntimeCollection::Machine,
-            record: RuntimeRecord::Machine(record),
+            record,
         },
-        RoutingEvent::MachineRemoved { id } => RuntimeWatchFrame::Remove {
-            key: id.0,
-            collection: RuntimeCollection::Machine,
+        RoutingEvent::MachineRemoved { id } => RuntimeWatchFrame::MachineRemove {
+            key: id.as_str().to_string(),
+            id,
         },
-        RoutingEvent::RevisionUpsert(record) => RuntimeWatchFrame::Upsert {
+        RoutingEvent::RevisionUpsert(record) => RuntimeWatchFrame::RevisionUpsert {
             key: revision_runtime_key(&record),
-            collection: RuntimeCollection::Revision,
-            record: RuntimeRecord::Revision(record),
+            record,
         },
         RoutingEvent::RevisionRemoved {
             namespace,
             service,
             revision_hash,
-        } => RuntimeWatchFrame::Remove {
+        } => RuntimeWatchFrame::RevisionRemove {
             key: format!("{namespace}:{service}:{revision_hash}"),
-            collection: RuntimeCollection::Revision,
+            namespace,
+            service,
+            revision_hash,
         },
-        RoutingEvent::ReleaseUpsert(record) => RuntimeWatchFrame::Upsert {
+        RoutingEvent::ReleaseUpsert(record) => RuntimeWatchFrame::ReleaseUpsert {
             key: release_runtime_key(&record),
-            collection: RuntimeCollection::Release,
-            record: RuntimeRecord::Release(record),
+            record,
         },
-        RoutingEvent::ReleaseRemoved { namespace, service } => RuntimeWatchFrame::Remove {
+        RoutingEvent::ReleaseRemoved { namespace, service } => RuntimeWatchFrame::ReleaseRemove {
             key: format!("{namespace}:{service}"),
-            collection: RuntimeCollection::Release,
+            namespace,
+            service,
         },
-        RoutingEvent::InstanceUpsert(record) => RuntimeWatchFrame::Upsert {
+        RoutingEvent::InstanceUpsert(record) => RuntimeWatchFrame::InstanceUpsert {
             key: instance_runtime_key(&record),
-            collection: RuntimeCollection::Instance,
-            record: RuntimeRecord::Instance(record),
+            record,
         },
-        RoutingEvent::InstanceRemoved { instance_id } => RuntimeWatchFrame::Remove {
-            key: instance_id.0,
-            collection: RuntimeCollection::Instance,
+        RoutingEvent::InstanceRemoved { instance_id } => RuntimeWatchFrame::InstanceRemove {
+            key: instance_id.as_str().to_string(),
+            instance_id,
         },
     }
 }
@@ -129,9 +137,8 @@ pub fn runtime_frame_from_event(event: RoutingEvent) -> RuntimeWatchFrame {
 #[cfg(test)]
 mod tests {
     use super::{
-        RuntimeCollection, RuntimeRecord, RuntimeWatchFrame, instance_runtime_key,
-        machine_runtime_key, release_runtime_key, revision_runtime_key, runtime_frame_from_event,
-        sort_routing_state,
+        RuntimeWatchFrame, instance_runtime_key, machine_runtime_key, release_runtime_key,
+        revision_runtime_key, runtime_frame_from_event, sort_routing_state,
     };
     use crate::{
         ControlPlaneHealthState, ControlPlaneStatus, DaemonPayload, DaemonResponse,
@@ -143,8 +150,8 @@ mod tests {
         AuthorityNodePosture, DeployId, DrainState, InstanceId, InstancePhase,
         InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, MachineTopology,
         NetworkLifecycle, OverlayIp, PublicKey, RoutingEvent, RoutingState, ServiceRelease,
-        ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy,
-        SlotId, StorageParticipation, StorageReplicaPolicy,
+        ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord, SlotId,
+        StorageParticipation, StorageReplicaPolicy,
     };
     use ployz_types::spec::Namespace;
     use std::collections::BTreeMap;
@@ -213,17 +220,16 @@ mod tests {
 
         assert_eq!(
             upsert,
-            RuntimeWatchFrame::Upsert {
-                collection: RuntimeCollection::Instance,
+            RuntimeWatchFrame::InstanceUpsert {
                 key: String::from("instance-1"),
-                record: RuntimeRecord::Instance(record.clone()),
+                record: record.clone(),
             }
         );
         assert_eq!(
             removed,
-            RuntimeWatchFrame::Remove {
-                collection: RuntimeCollection::Instance,
+            RuntimeWatchFrame::InstanceRemove {
                 key: String::from("instance-1"),
+                instance_id: record.instance_id.clone(),
             }
         );
     }
@@ -235,32 +241,35 @@ mod tests {
         let mut new_revision = revision_record("prod", "api", "rev-1");
         new_revision.spec_json = r#"{"image":"api:2"}"#.into();
         let mut new_release = release_record("prod", "api");
-        new_release.release.primary_revision_hash = "rev-2".into();
+        new_release.release = ServiceRelease::direct(
+            "rev-2",
+            new_release.release.slots,
+            new_release.release.updated_by_deploy_id,
+            new_release.release.updated_at,
+        );
 
         let cases = [
             (
                 runtime_frame_from_event(RoutingEvent::MachineUpsert(new_machine.clone())),
-                RuntimeWatchFrame::Upsert {
-                    collection: RuntimeCollection::Machine,
+                RuntimeWatchFrame::MachineUpsert {
                     key: String::from("machine-1"),
-                    record: RuntimeRecord::Machine(new_machine.clone()),
+                    record: new_machine.clone(),
                 },
             ),
             (
                 runtime_frame_from_event(RoutingEvent::MachineRemoved {
                     id: new_machine.id.clone(),
                 }),
-                RuntimeWatchFrame::Remove {
-                    collection: RuntimeCollection::Machine,
+                RuntimeWatchFrame::MachineRemove {
                     key: String::from("machine-1"),
+                    id: new_machine.id.clone(),
                 },
             ),
             (
                 runtime_frame_from_event(RoutingEvent::RevisionUpsert(new_revision.clone())),
-                RuntimeWatchFrame::Upsert {
-                    collection: RuntimeCollection::Revision,
+                RuntimeWatchFrame::RevisionUpsert {
                     key: String::from("prod:api:rev-1"),
-                    record: RuntimeRecord::Revision(new_revision.clone()),
+                    record: new_revision.clone(),
                 },
             ),
             (
@@ -269,17 +278,18 @@ mod tests {
                     service: new_revision.service.clone(),
                     revision_hash: new_revision.revision_hash.clone(),
                 }),
-                RuntimeWatchFrame::Remove {
-                    collection: RuntimeCollection::Revision,
+                RuntimeWatchFrame::RevisionRemove {
                     key: String::from("prod:api:rev-1"),
+                    namespace: new_revision.namespace.clone(),
+                    service: new_revision.service.clone(),
+                    revision_hash: new_revision.revision_hash.clone(),
                 },
             ),
             (
                 runtime_frame_from_event(RoutingEvent::ReleaseUpsert(new_release.clone())),
-                RuntimeWatchFrame::Upsert {
-                    collection: RuntimeCollection::Release,
+                RuntimeWatchFrame::ReleaseUpsert {
                     key: String::from("prod:api"),
-                    record: RuntimeRecord::Release(new_release.clone()),
+                    record: new_release.clone(),
                 },
             ),
             (
@@ -287,9 +297,10 @@ mod tests {
                     namespace: new_release.namespace.clone(),
                     service: new_release.service.clone(),
                 }),
-                RuntimeWatchFrame::Remove {
-                    collection: RuntimeCollection::Release,
+                RuntimeWatchFrame::ReleaseRemove {
                     key: String::from("prod:api"),
+                    namespace: new_release.namespace.clone(),
+                    service: new_release.service.clone(),
                 },
             ),
         ];
@@ -321,10 +332,9 @@ mod tests {
 
     #[test]
     fn runtime_watch_frame_serialization_roundtrips() {
-        let frame = RuntimeWatchFrame::Upsert {
-            collection: RuntimeCollection::Instance,
+        let frame = RuntimeWatchFrame::InstanceUpsert {
             key: String::from("instance-1"),
-            record: RuntimeRecord::Instance(instance_record("instance-1", "prod", "api")),
+            record: instance_record("instance-1", "prod", "api"),
         };
 
         let json = serde_json::to_value(&frame).expect("serialize runtime watch frame");
@@ -332,8 +342,7 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "kind": "upsert",
-                "collection": "instance",
+                "kind": "instance_upsert",
                 "key": "instance-1",
                 "record": {
                     "instance_id": "instance-1",
@@ -349,7 +358,7 @@ mod tests {
                         "http": 8080
                     },
                     "phase": "Ready",
-                    "ready": false,
+                    "ready": true,
                     "drain_state": "None",
                     "error": null,
                     "started_at": 10,
@@ -365,9 +374,10 @@ mod tests {
 
     #[test]
     fn runtime_watch_remove_frame_serialization_is_key_only() {
-        let frame = RuntimeWatchFrame::Remove {
-            collection: RuntimeCollection::Release,
+        let frame = RuntimeWatchFrame::ReleaseRemove {
             key: String::from("prod:api"),
+            namespace: Namespace::new("prod"),
+            service: String::from("api"),
         };
 
         let json = serde_json::to_value(&frame).expect("serialize runtime remove frame");
@@ -375,9 +385,10 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "kind": "remove",
-                "collection": "release",
-                "key": "prod:api"
+                "kind": "release_remove",
+                "key": "prod:api",
+                "namespace": "prod",
+                "service": "api"
             })
         );
 
@@ -411,11 +422,10 @@ mod tests {
 
     #[test]
     fn daemon_error_response_preserves_structured_payload() {
-        let response = DaemonResponse {
-            ok: false,
-            code: String::from("MACHINE_UPDATE_FAILED"),
-            message: String::from("machine 'peer-1' update failed: refused"),
-            payload: Some(DaemonPayload::MachineUpdate(MachineUpdatePayload {
+        let response = DaemonResponse::error(
+            "MACHINE_UPDATE_FAILED",
+            "machine 'peer-1' update failed: refused",
+            Some(DaemonPayload::MachineUpdate(MachineUpdatePayload {
                 operation_id: String::from("update-1"),
                 updated: Vec::new(),
                 failed: vec![MachineUpdateRow {
@@ -424,14 +434,14 @@ mod tests {
                     message: String::from("refused"),
                 }],
             })),
-        };
+        );
 
         let json = serde_json::to_value(&response).expect("serialize response");
 
         assert_eq!(
             json,
             serde_json::json!({
-                "ok": false,
+                "status": "error",
                 "code": "MACHINE_UPDATE_FAILED",
                 "message": "machine 'peer-1' update failed: refused",
                 "payload": {
@@ -446,9 +456,9 @@ mod tests {
             })
         );
         let decoded: DaemonResponse = serde_json::from_value(json).expect("deserialize response");
-        assert!(!decoded.ok);
-        assert_eq!(decoded.code, "MACHINE_UPDATE_FAILED");
-        let Some(DaemonPayload::MachineUpdate(payload)) = decoded.payload else {
+        assert!(!decoded.is_ok());
+        assert_eq!(decoded.code(), "MACHINE_UPDATE_FAILED");
+        let Some(DaemonPayload::MachineUpdate(payload)) = decoded.payload() else {
             panic!("expected machine update payload");
         };
         assert_eq!(payload.operation_id, "update-1");
@@ -461,11 +471,9 @@ mod tests {
 
     #[test]
     fn daemon_storage_promotion_response_preserves_structured_payload() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("storage promotion complete"),
-            payload: Some(DaemonPayload::MachineStoragePromotion(
+        let response = DaemonResponse::success(
+            "storage promotion complete",
+            Some(DaemonPayload::MachineStoragePromotion(
                 MachineStoragePromotionPayload {
                     operation_id: String::from("storage-promote-1"),
                     replicas: StorageReplicaPolicy::R3,
@@ -477,14 +485,14 @@ mod tests {
                     }],
                 },
             )),
-        };
+        );
 
         let json = serde_json::to_value(&response).expect("serialize response");
 
         assert_eq!(
             json,
             serde_json::json!({
-                "ok": true,
+                "status": "success",
                 "code": "OK",
                 "message": "storage promotion complete",
                 "payload": {
@@ -501,7 +509,7 @@ mod tests {
             })
         );
         let decoded: DaemonResponse = serde_json::from_value(json).expect("deserialize response");
-        let Some(DaemonPayload::MachineStoragePromotion(payload)) = decoded.payload else {
+        let Some(DaemonPayload::MachineStoragePromotion(payload)) = decoded.payload() else {
             panic!("expected machine storage promotion payload");
         };
         assert_eq!(payload.replicas, StorageReplicaPolicy::R3);
@@ -510,11 +518,9 @@ mod tests {
 
     #[test]
     fn daemon_operation_response_preserves_structured_failure_status() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("operation details"),
-            payload: Some(DaemonPayload::MachineOperation(MachineOperationPayload {
+        let response = DaemonResponse::success(
+            "operation details",
+            Some(DaemonPayload::MachineOperation(MachineOperationPayload {
                 operation: MachineOperationInfo {
                     id: String::from("machine-add-1"),
                     kind: String::from("add"),
@@ -525,19 +531,19 @@ mod tests {
                     started_at: 10,
                     updated_at: 20,
                     last_error: Some(String::from("daemon restarted before operation completed")),
-                    machine_id: Some(MachineId("machine-a".into())),
+                    machine_id: Some(MachineId::new("machine-a")),
                     invite_id: Some(String::from("invite-1")),
                     allocated_subnet: Some(String::from("10.210.1.0/24")),
                 },
             })),
-        };
+        );
 
         let json = serde_json::to_value(&response).expect("serialize operation response");
 
         assert_eq!(
             json,
             serde_json::json!({
-                "ok": true,
+                "status": "success",
                 "code": "OK",
                 "message": "operation details",
                 "payload": {
@@ -562,7 +568,7 @@ mod tests {
 
         let decoded: DaemonResponse =
             serde_json::from_value(json).expect("deserialize operation response");
-        let Some(DaemonPayload::MachineOperation(payload)) = decoded.payload else {
+        let Some(DaemonPayload::MachineOperation(payload)) = decoded.payload() else {
             panic!("expected machine operation payload");
         };
         assert_eq!(payload.operation.status, "interrupted");
@@ -574,11 +580,9 @@ mod tests {
 
     #[test]
     fn daemon_status_response_preserves_edge_and_control_plane_uncertainty() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("status"),
-            payload: Some(DaemonPayload::Status(StatusPayload {
+        let response = DaemonResponse::success(
+            "status",
+            Some(DaemonPayload::Status(StatusPayload {
                 machine_id: String::from("founder"),
                 public_key: PublicKey([1; 32]),
                 version: String::from("0.5.5"),
@@ -607,14 +611,14 @@ mod tests {
                     },
                 }],
             })),
-        };
+        );
 
         let json = serde_json::to_value(&response).expect("serialize status response");
 
         assert_eq!(
             json,
             serde_json::json!({
-                "ok": true,
+                "status": "success",
                 "code": "OK",
                 "message": "status",
                 "payload": {
@@ -627,12 +631,8 @@ mod tests {
                     "network_lifecycle": "Running",
                     "local_machine_lifecycle": "Active",
                     "local_authority": {
-                        "role": {
-                            "kind": "authority_storage",
-                            "authority_id": "auth-default"
-                        },
-                        "data_bucket": "stored_intent",
-                        "loss_impact": "stored_truth_lost"
+                        "kind": "authority_storage",
+                        "authority_id": "auth-default"
                     },
                     "mesh_phase": "Running",
                     "edge_sync": [{
@@ -653,7 +653,7 @@ mod tests {
 
         let decoded: DaemonResponse =
             serde_json::from_value(json).expect("deserialize status response");
-        let Some(DaemonPayload::Status(payload)) = decoded.payload else {
+        let Some(DaemonPayload::Status(payload)) = decoded.payload() else {
             panic!("expected status payload");
         };
         let [edge] = payload.edge_sync.as_slice() else {
@@ -682,7 +682,7 @@ mod tests {
 
     fn machine_record(id: &str) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             public_key: PublicKey([7; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
@@ -691,8 +691,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
             lifecycle: MachineLifecycle::Active,
-            storage: true,
-            storage_participation: StorageParticipation::default_authority(),
+            storage_role: StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 2,
             labels: BTreeMap::new(),
@@ -705,34 +704,30 @@ mod tests {
         revision_hash: &str,
     ) -> ServiceRevisionRecord {
         ServiceRevisionRecord {
-            namespace: Namespace(namespace.into()),
+            namespace: Namespace::new(namespace),
             service: service.into(),
             revision_hash: revision_hash.into(),
             spec_json: String::from("{}"),
-            created_by: MachineId(String::from("machine-1")),
+            created_by: MachineId::new(String::from("machine-1")),
             created_at: 1,
         }
     }
 
     fn release_record(namespace: &str, service: &str) -> ServiceReleaseRecord {
         ServiceReleaseRecord {
-            namespace: Namespace(namespace.into()),
+            namespace: Namespace::new(namespace),
             service: service.into(),
-            release: ServiceRelease {
-                primary_revision_hash: String::from("rev-1"),
-                referenced_revision_hashes: vec![String::from("rev-1")],
-                routing: ServiceRoutingPolicy::Direct {
-                    revision_hash: String::from("rev-1"),
-                },
-                slots: vec![ServiceReleaseSlot {
-                    slot_id: SlotId(String::from("slot-1")),
-                    machine_id: MachineId(String::from("machine-1")),
-                    active_instance_id: InstanceId(String::from("instance-1")),
+            release: ServiceRelease::direct(
+                "rev-1",
+                vec![ServiceReleaseSlot {
+                    slot_id: SlotId::new(String::from("slot-1")),
+                    machine_id: MachineId::new(String::from("machine-1")),
+                    active_instance_id: InstanceId::new(String::from("instance-1")),
                     revision_hash: String::from("rev-1"),
                 }],
-                updated_by_deploy_id: DeployId(String::from("deploy-1")),
-                updated_at: 1,
-            },
+                DeployId::new(String::from("deploy-1")),
+                1,
+            ),
         }
     }
 
@@ -740,18 +735,18 @@ mod tests {
         let mut backend_ports = BTreeMap::new();
         backend_ports.insert(String::from("http"), 8080);
         InstanceStatusRecord {
-            instance_id: InstanceId(id.into()),
-            namespace: Namespace(namespace.into()),
+            instance_id: InstanceId::new(id),
+            namespace: Namespace::new(namespace),
             service: service.into(),
-            slot_id: SlotId(String::from("slot-1")),
-            machine_id: MachineId(String::from("machine-1")),
+            slot_id: SlotId::new(String::from("slot-1")),
+            machine_id: MachineId::new(String::from("machine-1")),
             revision_hash: String::from("rev-1"),
-            deploy_id: DeployId(String::from("deploy-1")),
+            deploy_id: DeployId::new(String::from("deploy-1")),
             docker_container_id: String::from("container-1"),
             overlay_ip: Some(Ipv4Addr::new(10, 0, 0, 2)),
             backend_ports,
             phase: InstancePhase::Ready,
-            ready: false,
+            ready: true,
             drain_state: DrainState::None,
             error: None,
             started_at: 10,

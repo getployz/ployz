@@ -35,13 +35,18 @@ impl DaemonState {
         }
 
         let targets = if ids.is_empty() {
-            vec![self.identity.machine_id.0.clone()]
+            vec![self.identity.machine_id.as_str().to_string()]
         } else {
             if let Some(duplicate) = first_duplicate(ids) {
                 return self.err(
                     "DUPLICATE_MACHINE",
                     format!("machine '{duplicate}' was targeted more than once"),
                 );
+            }
+            for id in ids {
+                if let Err(error) = MachineId::try_new(id.as_str()) {
+                    return self.err("MACHINE_UPDATE_INVALID_TARGET", error);
+                }
             }
             update_targets_with_self_last(ids, &self.identity.machine_id)
         };
@@ -71,7 +76,7 @@ impl DaemonState {
             {
                 return self.err("MACHINE_UPDATE_OPERATION_FAILED", error);
             }
-            let result = if target == self.identity.machine_id.0 {
+            let result = if target == self.identity.machine_id.as_str() {
                 self.update_local_machine(
                     &operation_id,
                     &version,
@@ -87,7 +92,7 @@ impl DaemonState {
 
             match result {
                 Ok(row) => {
-                    let deferred_self_update = target == self.identity.machine_id.0
+                    let deferred_self_update = target == self.identity.machine_id.as_str()
                         && row.message == "scheduled local update";
                     updated.push(row);
                     if deferred_self_update {
@@ -166,7 +171,7 @@ impl DaemonState {
             if let Err(error) = ensure_update_operation(
                 &operation_store,
                 operation_id,
-                &[self.identity.machine_id.0.clone()],
+                &[self.identity.machine_id.as_str().to_string()],
                 &version,
                 "already-current",
             )
@@ -189,7 +194,7 @@ impl DaemonState {
         let operation = match ensure_update_operation(
             &operation_store,
             operation_id,
-            &[self.identity.machine_id.0.clone()],
+            &[self.identity.machine_id.as_str().to_string()],
             &version,
             "execute",
         ) {
@@ -260,17 +265,17 @@ impl DaemonState {
         target: &str,
         version: &str,
     ) -> Result<MachineUpdateRow, MachineUpdateRow> {
+        let machine_id = MachineId::try_new(target).map_err(|error| MachineUpdateRow {
+            id: target.to_string(),
+            version: version.to_string(),
+            message: error,
+        })?;
         let active = match self.require_active("NO_RUNNING_NETWORK", "no mesh running") {
             Ok(active) => active,
             Err(response) => {
-                return Err(update_row(
-                    &MachineId(target.to_string()),
-                    version,
-                    response.message,
-                ));
+                return Err(update_row(&machine_id, version, response.message()));
             }
         };
-        let machine_id = MachineId(target.to_string());
         let record = match find_machine_record(&active.mesh.store, &machine_id).await {
             Ok(Some(record)) => record,
             Ok(None) => {
@@ -392,8 +397,8 @@ async fn wait_for_remote_update(
             )
             .await
         {
-            Ok(response) if response.ok => {
-                let Some(DaemonPayload::MachineOperation(payload)) = response.payload else {
+            Ok(response) if response.is_ok() => {
+                let Some(DaemonPayload::MachineOperation(payload)) = response.payload() else {
                     last_error =
                         "remote operation response did not include machine operation payload"
                             .into();
@@ -424,7 +429,8 @@ async fn wait_for_remote_update(
             Ok(response) => {
                 last_error = format!(
                     "remote status failed [{}]: {}",
-                    response.code, response.message
+                    response.code(),
+                    response.message()
                 );
             }
             Err(error) => {
@@ -448,13 +454,14 @@ async fn verify_remote_version(
         )
         .await
         .map_err(|error| error.to_string())?;
-    if !response.ok {
+    if !response.is_ok() {
         return Err(format!(
             "remote status failed [{}]: {}",
-            response.code, response.message
+            response.code(),
+            response.message()
         ));
     }
-    let Some(DaemonPayload::Status(status)) = response.payload else {
+    let Some(DaemonPayload::Status(status)) = response.payload() else {
         return Err("remote status response did not include status payload".into());
     };
     if status.version == version {
@@ -563,7 +570,7 @@ fn installer_version_argument(canonical: &str) -> String {
 
 fn update_row(id: &MachineId, version: &str, message: impl Into<String>) -> MachineUpdateRow {
     MachineUpdateRow {
-        id: id.0.clone(),
+        id: id.as_str().to_string(),
         version: version.to_string(),
         message: message.into(),
     }
@@ -594,11 +601,11 @@ fn first_duplicate(values: &[String]) -> Option<String> {
 fn update_targets_with_self_last(ids: &[String], local_machine_id: &MachineId) -> Vec<String> {
     let mut targets: Vec<String> = ids
         .iter()
-        .filter(|id| *id != &local_machine_id.0)
+        .filter(|id| *id != &local_machine_id.as_str())
         .cloned()
         .collect();
-    if ids.iter().any(|id| id == &local_machine_id.0) {
-        targets.push(local_machine_id.0.clone());
+    if ids.iter().any(|id| id == &local_machine_id.as_str()) {
+        targets.push(local_machine_id.as_str().to_string());
     }
     targets
 }
@@ -650,7 +657,7 @@ mod tests {
                 "remote-a".to_string(),
                 "remote-b".to_string(),
             ],
-            &MachineId("self".into()),
+            &MachineId::new("self"),
         );
 
         assert_eq!(targets, vec!["remote-a", "remote-b", "self"]);
