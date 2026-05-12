@@ -501,6 +501,26 @@ async fn machine_update_rejects_invalid_target_id() {
 }
 
 #[tokio::test]
+async fn machine_drain_rejects_invalid_target_id() {
+    let (mut state, _, _) = make_state(false).await;
+
+    let response = state.handle_machine_drain("bad machine").await;
+
+    assert!(!response.is_ok());
+    assert_eq!(response.code(), "MACHINE_DRAIN_INVALID_TARGET");
+}
+
+#[tokio::test]
+async fn machine_standby_rejects_invalid_target_id() {
+    let (mut state, _, _) = make_state(false).await;
+
+    let response = state.handle_machine_standby("bad machine", false).await;
+
+    assert!(!response.is_ok());
+    assert_eq!(response.code(), "MACHINE_STANDBY_INVALID_TARGET");
+}
+
+#[tokio::test]
 async fn machine_drain_and_standby_route_to_exclusive_lane() {
     let (state, _, _) = make_state(true).await;
     assert_eq!(
