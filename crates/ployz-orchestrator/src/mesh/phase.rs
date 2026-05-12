@@ -55,7 +55,7 @@ pub fn transition(
         (Stopped, UpRequested) => Ok(Starting),
         (Starting, NetworkReady) => Ok(Provisioning),
         (Provisioning, ComponentsStarted) => Ok(Bootstrapping),
-        (Starting | Provisioning | Bootstrapping, ComponentFailed) => Ok(Stopped),
+        (Starting | Provisioning | Bootstrapping | Running, ComponentFailed) => Ok(Stopped),
         (Bootstrapping, SyncComplete) => Ok(Running),
         (Running, DetachRequested) => Ok(Stopped),
         (Stopped | Running | Provisioning | Bootstrapping, DestroyRequested) => Ok(Stopping),
@@ -107,6 +107,15 @@ mod tests {
         assert_eq!(
             transition(Phase::Bootstrapping, PhaseEvent::ComponentFailed)
                 .expect("bootstrapping -> stopped"),
+            Phase::Stopped
+        );
+    }
+
+    #[test]
+    fn component_failure_from_running() {
+        assert_eq!(
+            transition(Phase::Running, PhaseEvent::ComponentFailed)
+                .expect("running -> stopped on startup failure after sync"),
             Phase::Stopped
         );
     }

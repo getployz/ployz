@@ -45,6 +45,8 @@ enum ZfsTransferValidationError {
         expected: IpAddr,
     },
     #[error("{VOLUME_NOT_AUTHORIZED}")]
+    InvalidNamespace { message: String },
+    #[error("{VOLUME_NOT_AUTHORIZED}")]
     VolumeNotAuthorized {
         namespace: Namespace,
         volume: String,
@@ -103,25 +105,30 @@ impl ZfsTransferValidationError {
         {
             match reason {
                 VolumeAuthorizationRejection::OwnedByOtherMachine { owner } => tracing::warn!(
-                    namespace = %namespace.0,
+                    namespace = %namespace.as_str(),
                     volume,
                     source = %source_machine_id,
                     owner = %owner,
                     "zfs transfer rejected: source is not the volume owner",
                 ),
                 VolumeAuthorizationRejection::VolumeNotFound => tracing::warn!(
-                    namespace = %namespace.0,
+                    namespace = %namespace.as_str(),
                     volume,
                     source = %source_machine_id,
                     "zfs transfer rejected: volume not found",
                 ),
                 VolumeAuthorizationRejection::LookupFailed { message } => tracing::warn!(
                     error = %message,
-                    namespace = %namespace.0,
+                    namespace = %namespace.as_str(),
                     volume,
                     "zfs transfer authorization lookup failed",
                 ),
             }
+        } else if let Self::InvalidNamespace { message } = self {
+            tracing::warn!(
+                error = %message,
+                "zfs transfer rejected: invalid namespace",
+            );
         }
     }
 }
@@ -255,7 +262,7 @@ async fn handle_transfer(
         .map_err(|error| error.to_string())?;
     tracing::info!(
         %remote_addr,
-        source_machine_id = %source.0,
+        source_machine_id = %source.as_str(),
         namespace = %open.namespace,
         volume = %open.volume,
         snapshot = %open.snapshot,
@@ -380,7 +387,8 @@ async fn validate_volume_ownership(
     namespace: &str,
     volume: &str,
 ) -> Result<(), ZfsTransferValidationError> {
-    let namespace = Namespace(namespace.to_string());
+    let namespace = Namespace::try_new(namespace)
+        .map_err(|message| ZfsTransferValidationError::InvalidNamespace { message })?;
     match store.get_volume(&namespace, volume).await {
         Ok(Some(record)) if record.machine_id == *source => Ok(()),
         Ok(Some(record)) => Err(ZfsTransferValidationError::VolumeNotAuthorized {
@@ -610,7 +618,7 @@ mod tests {
     use ployz_store_api::{DeployCommit, DeployStore, MachineMembershipStore, StoreDriver};
     use ployz_types::error::{Error, Result};
     use ployz_types::model::{
-        DeployId, DeployRecord, DeployState, MachineId, MachineLifecycle, MachineMembership,
+        DeployId, DeployRecord, DeployRecordState, MachineId, MachineLifecycle, MachineMembership,
         MachineTopology, OverlayIp, PublicKey, StorageParticipation, VolumeRecord,
     };
     use ployz_types::spec::{Namespace, VolumeScope};
@@ -670,7 +678,7 @@ mod tests {
             volume: "data".into(),
             snapshot: snapshot.into(),
             expected_guid,
-            source_machine_id: Some(MachineId("source".into())),
+            source_machine_id: Some(MachineId::new("source")),
             from_snapshot: None,
             from_snapshot_guid: None,
         }
@@ -848,7 +856,7 @@ mod tests {
 
     fn machine(id: &str, overlay: Ipv6Addr) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.into()),
+            id: MachineId::new(id),
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(overlay),
             topology: MachineTopology::local(),
@@ -857,8 +865,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
-            storage: true,
-            storage_participation: StorageParticipation::default_authority(),
+            storage_role: StorageParticipation::default_authority().into(),
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -874,13 +881,13 @@ mod tests {
     }
 
     async fn insert_volume(store: &StoreDriver, namespace: &str, volume: &str, owner: &str) {
-        let namespace = Namespace(namespace.to_string());
-        let deploy_id = DeployId(format!("deploy-{volume}"));
+        let namespace = Namespace::new(namespace.to_string());
+        let deploy_id = DeployId::new(format!("deploy-{volume}"));
         let record = VolumeRecord {
             namespace: namespace.clone(),
             volume_name: volume.to_string(),
             scope: VolumeScope::Single,
-            machine_id: MachineId(owner.to_string()),
+            machine_id: MachineId::new(owner.to_string()),
             quota: "1G".into(),
             mode: "rw".into(),
             owner: "0:0".into(),
@@ -893,13 +900,14 @@ mod tests {
         let deploy = DeployRecord {
             deploy_id: deploy_id.clone(),
             namespace: namespace.clone(),
-            coordinator_machine_id: MachineId(owner.to_string()),
+            coordinator_machine_id: MachineId::new(owner.to_string()),
             manifest_hash: "test".into(),
-            state: DeployState::Committed,
+            state: DeployRecordState::Committed {
+                committed_at: 0,
+                finished_at: 0,
+                summary_json: "{}".into(),
+            },
             started_at: 0,
-            committed_at: Some(0),
-            finished_at: Some(0),
-            summary_json: "{}".into(),
         };
         store
             .commit_deploy(&DeployCommit {
@@ -924,7 +932,7 @@ mod tests {
         let overlay = "fd00::1".parse::<Ipv6Addr>().unwrap();
         let store = store_with(vec![machine("source", overlay)]).await;
         let remote = SocketAddr::new(IpAddr::V6(overlay), 4319);
-        validate_source_overlay(&store, &MachineId("source".into()), remote)
+        validate_source_overlay(&store, &MachineId::new("source"), remote)
             .await
             .expect("matching ip accepted");
     }
@@ -935,7 +943,7 @@ mod tests {
         let attacker = "fd00::2".parse::<Ipv6Addr>().unwrap();
         let store = store_with(vec![machine("source", claimed)]).await;
         let remote = SocketAddr::new(IpAddr::V6(attacker), 4319);
-        let err = validate_source_overlay(&store, &MachineId("source".into()), remote)
+        let err = validate_source_overlay(&store, &MachineId::new("source"), remote)
             .await
             .expect_err("mismatched ip rejected");
         assert!(matches!(
@@ -949,7 +957,7 @@ mod tests {
         let overlay = "fd00::1".parse::<Ipv6Addr>().unwrap();
         let store = store_with(vec![machine("known", overlay)]).await;
         let remote = SocketAddr::new(IpAddr::V6(overlay), 4319);
-        let err = validate_source_overlay(&store, &MachineId("ghost".into()), remote)
+        let err = validate_source_overlay(&store, &MachineId::new("ghost"), remote)
             .await
             .expect_err("unknown machine rejected");
         assert!(matches!(
@@ -1024,7 +1032,7 @@ mod tests {
     async fn validate_volume_ownership_rejects_unknown_volume() {
         let store = StoreDriver::memory();
         let err =
-            validate_volume_ownership(&store, &MachineId("source".into()), "default", "missing")
+            validate_volume_ownership(&store, &MachineId::new("source"), "default", "missing")
                 .await
                 .expect_err("unknown volume rejected");
         let rendered = err.to_string();
@@ -1039,6 +1047,27 @@ mod tests {
         assert!(
             !rendered.contains("missing"),
             "volume name leaked: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_volume_ownership_rejects_invalid_namespace() {
+        let store = StoreDriver::memory();
+        let err = validate_volume_ownership(&store, &MachineId::new("source"), "Prod", "data")
+            .await
+            .expect_err("invalid namespace rejected");
+        let rendered = err.to_string();
+        assert!(matches!(
+            err,
+            ZfsTransferValidationError::InvalidNamespace { .. }
+        ));
+        assert!(
+            rendered.contains("not authorized"),
+            "unexpected error: {rendered}"
+        );
+        assert!(
+            !rendered.contains("Prod"),
+            "namespace detail leaked: {rendered}"
         );
     }
 

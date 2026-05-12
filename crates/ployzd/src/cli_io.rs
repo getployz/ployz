@@ -93,10 +93,10 @@ pub(crate) async fn cmd_runtime_stream(socket: &str) -> Result<i32> {
     let response: DaemonResponse = serde_json::from_str(&response_line).map_err(|error| {
         CliError::Serialize(format!("failed to decode runtime stream response: {error}"))
     })?;
-    if !response.ok {
+    if !response.is_ok() {
         return Err(CliError::Daemon {
-            code: response.code,
-            message: response.message,
+            code: response.code().to_string(),
+            message: response.message().to_string(),
         });
     }
 
@@ -155,13 +155,13 @@ fn render_response_to_writers(
         return Ok(());
     }
 
-    if response.ok {
+    if response.is_ok() {
         if !quiet {
             if plain {
                 writeln!(stdout, "{}", render_plain_success(response))
                     .map_err(|error| CliError::Io(format!("failed to write response: {error}")))?;
             } else {
-                writeln!(stdout, "{}", response.message)
+                writeln!(stdout, "{}", response.message())
                     .map_err(|error| CliError::Io(format!("failed to write response: {error}")))?;
             }
         }
@@ -172,14 +172,19 @@ fn render_response_to_writers(
         writeln!(stderr, "{}", render_plain_error(response))
             .map_err(|error| CliError::Io(format!("failed to write response: {error}")))?;
     } else {
-        writeln!(stderr, "error [{}]: {}", response.code, response.message)
-            .map_err(|error| CliError::Io(format!("failed to write response: {error}")))?;
+        writeln!(
+            stderr,
+            "error [{}]: {}",
+            response.code(),
+            response.message()
+        )
+        .map_err(|error| CliError::Io(format!("failed to write response: {error}")))?;
     }
     Ok(())
 }
 
 fn render_plain_success(response: &DaemonResponse) -> String {
-    match response.payload.as_ref() {
+    match response.payload().as_ref() {
         Some(DaemonPayload::MachineList(payload)) => render_plain_machine_list(payload),
         Some(DaemonPayload::MachineRtt(payload)) => render_plain_machine_rtt(payload),
         Some(DaemonPayload::Doctor(payload)) => render_plain_doctor(payload),
@@ -204,22 +209,22 @@ fn render_plain_success(response: &DaemonResponse) -> String {
         Some(DaemonPayload::BuildResult(payload)) => render_plain_build_result(payload),
         Some(DaemonPayload::ImagePush(payload)) => render_plain_image_push(payload),
         Some(DaemonPayload::ImageDistribute(payload)) => render_plain_image_distribute(payload),
-        _ => response.message.clone(),
+        _ => response.message().to_string(),
     }
 }
 
 fn render_plain_error(response: &DaemonResponse) -> String {
-    match response.payload.as_ref() {
+    match response.payload().as_ref() {
         Some(DaemonPayload::ImageDistribute(payload))
-            if response.code.starts_with("IMAGE_DISTRIBUTE_") =>
+            if response.code().starts_with("IMAGE_DISTRIBUTE_") =>
         {
             format!(
                 "{}\n{}",
-                response.message,
+                response.message(),
                 render_plain_image_distribute(payload)
             )
         }
-        _ => response.message.clone(),
+        _ => response.message().to_string(),
     }
 }
 
@@ -274,10 +279,10 @@ fn render_plain_build_result(payload: &BuildResultPayload) -> String {
 
 fn render_build_image_ref(payload: &BuildResultPayload) -> String {
     let image = &payload.artifact.image;
-    match (&image.repository, &image.tag) {
+    match (image.repository(), image.tag()) {
         (Some(repository), Some(tag)) => format!("{repository}:{tag}"),
-        (Some(repository), None) => repository.clone(),
-        (None, _) => image.digest.as_str().into(),
+        (Some(repository), None) => repository.to_string(),
+        (None, _) => image.digest().as_str().into(),
     }
 }
 
@@ -301,7 +306,9 @@ fn render_plain_status(payload: &StatusPayload) -> String {
     if let Some(authority) = &payload.local_authority {
         lines.push(format!(
             "authority authority_role={} authority_data_bucket={} authority_loss_impact={}",
-            authority.role, authority.data_bucket, authority.loss_impact
+            authority.role(),
+            authority.data_bucket(),
+            authority.loss_impact()
         ));
     }
     for sync in &payload.edge_sync {
@@ -461,13 +468,13 @@ fn append_plain_image_targets(
     targets: &[ployz_api::ImageTransferTargetResult],
 ) {
     for target in targets {
-        let status = match target.status {
+        let status = match target.status() {
             ployz_api::ImageTransferTargetStatus::Present => "present",
             ployz_api::ImageTransferTargetStatus::SkippedPresent => "skipped_present",
             ployz_api::ImageTransferTargetStatus::Failed => "failed",
         };
-        let mut line = format!("target machine={} status={status}", target.machine_id);
-        if let Some(failure) = &target.failure {
+        let mut line = format!("target machine={} status={status}", target.machine_id());
+        if let Some(failure) = target.failure() {
             line.push_str(&format!(" error={}", failure.message));
         }
         lines.push(line);
@@ -487,9 +494,9 @@ fn render_plain_machine_list(payload: &MachineListPayload) -> String {
                 "id={} lifecycle={} authority_role={} authority_data_bucket={} authority_loss_impact={} region={} az={} overlay_ip={} subnet={} created_at={} region_role={}",
                 row.id,
                 row.lifecycle,
-                row.authority.role,
-                row.authority.data_bucket,
-                row.authority.loss_impact,
+                row.authority.role(),
+                row.authority.data_bucket(),
+                row.authority.loss_impact(),
                 row.region,
                 row.availability_zone.as_deref().unwrap_or("—"),
                 row.overlay_ip,
@@ -673,7 +680,7 @@ fn render_plain_machine_operation_info(operation: &MachineOperationInfo) -> Stri
         operation
             .machine_id
             .as_ref()
-            .map_or("—", |machine_id| machine_id.0.as_str()),
+            .map_or("—", |machine_id| machine_id.as_str()),
         operation.invite_id.as_deref().unwrap_or("—"),
         operation.allocated_subnet.as_deref().unwrap_or("—"),
         operation.last_error.as_deref().unwrap_or("—")
@@ -730,13 +737,23 @@ mod tests {
         MachineStoragePromotionPayload, MeshListEntry, MeshListPayload, StatusPayload,
     };
 
+    fn test_image_availability(
+        machine_id: &str,
+        digest: &ployz_types::model::ImageDigest,
+    ) -> ployz_types::model::ImageAvailabilityRecord {
+        ployz_types::model::ImageAvailabilityRecord {
+            machine_id: ployz_types::model::MachineId::new(machine_id),
+            digest: digest.clone(),
+            presence: ployz_types::model::ImagePresence::Absent { observed_at: 1 },
+            updated_at: 1,
+        }
+    }
+
     #[test]
     fn plain_machine_list_renders_stable_lines() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("table"),
-            payload: Some(DaemonPayload::MachineList(MachineListPayload {
+        let response = DaemonResponse::success(
+            "table",
+            Some(DaemonPayload::MachineList(MachineListPayload {
                 rows: vec![MachineListRow {
                     id: String::from("peer"),
                     lifecycle: String::from("standby"),
@@ -752,7 +769,7 @@ mod tests {
                     created_at: 123,
                 }],
             })),
-        };
+        );
 
         assert_eq!(
             render_plain_success(&response),
@@ -762,11 +779,9 @@ mod tests {
 
     #[test]
     fn plain_machine_rtt_renders_stable_lines() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("table"),
-            payload: Some(DaemonPayload::MachineRtt(MachineRttPayload {
+        let response = DaemonResponse::success(
+            "table",
+            Some(DaemonPayload::MachineRtt(MachineRttPayload {
                 rows: vec![MachineRttRow {
                     machine: String::from("machine-1"),
                     peer: String::from("machine-2"),
@@ -775,7 +790,7 @@ mod tests {
                 }],
                 warnings: vec![String::from("machine 'machine-3' RTT snapshot unreachable")],
             })),
-        };
+        );
 
         assert_eq!(
             render_plain_success(&response),
@@ -787,18 +802,16 @@ mod tests {
     fn plain_build_result_renders_operation_image_digest_and_machine() {
         let digest = ployz_types::model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
             .expect("digest");
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("built"),
-            payload: Some(DaemonPayload::BuildResult(BuildResultPayload {
+        let response = DaemonResponse::success(
+            "built",
+            Some(DaemonPayload::BuildResult(BuildResultPayload {
                 operation_id: String::from("build-local-1"),
                 artifact: ployz_types::model::ImageArtifact {
-                    image: ployz_types::model::ImageRef {
-                        repository: Some(String::from("example/app")),
-                        tag: Some(String::from("latest")),
-                        digest: digest.clone(),
-                    },
+                    image: ployz_types::model::ImageRef::repository_digest(
+                        "example/app",
+                        Some(String::from("latest")),
+                        digest.clone(),
+                    ),
                     platform: None,
                     provenance: ployz_types::model::ImageArtifactProvenance::Build {
                         method: ployz_types::model::BuildMethod::Dockerfile,
@@ -808,13 +821,13 @@ mod tests {
                     created_at: 1,
                 },
                 availability: Some(ployz_types::model::ImageAvailabilityRecord {
-                    machine_id: ployz_types::model::MachineId(String::from("founder")),
+                    machine_id: ployz_types::model::MachineId::new(String::from("founder")),
                     digest,
                     presence: ployz_types::model::ImagePresence::Absent { observed_at: 1 },
                     updated_at: 1,
                 }),
             })),
-        };
+        );
 
         assert_eq!(
             render_plain_success(&response),
@@ -824,11 +837,9 @@ mod tests {
 
     #[test]
     fn plain_machine_storage_promotion_renders_promoted_and_failed_rows() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("promoted"),
-            payload: Some(DaemonPayload::MachineStoragePromotion(
+        let response = DaemonResponse::success(
+            "promoted",
+            Some(DaemonPayload::MachineStoragePromotion(
                 MachineStoragePromotionPayload {
                     operation_id: "storage-promote-1".into(),
                     replicas: ployz_types::model::StorageReplicaPolicy::R3,
@@ -840,7 +851,7 @@ mod tests {
                     }],
                 },
             )),
-        };
+        );
 
         assert_eq!(
             render_plain_success(&response),
@@ -852,18 +863,16 @@ mod tests {
     fn plain_image_push_renders_artifact_and_targets() {
         let digest = ployz_types::model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
             .expect("valid digest");
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("pushed"),
-            payload: Some(DaemonPayload::ImagePush(ployz_api::ImagePushPayload {
+        let response = DaemonResponse::success(
+            "pushed",
+            Some(DaemonPayload::ImagePush(ployz_api::ImagePushPayload {
                 operation_id: "image-push-1".into(),
                 artifact: ployz_types::model::ImageArtifact {
-                    image: ployz_types::model::ImageRef {
-                        repository: Some("example/app".into()),
-                        tag: Some("latest".into()),
-                        digest: digest.clone(),
-                    },
+                    image: ployz_types::model::ImageRef::repository_digest(
+                        "example/app",
+                        Some("latest".into()),
+                        digest.clone(),
+                    ),
                     platform: None,
                     provenance: ployz_types::model::ImageArtifactProvenance::External {
                         source: Some("test".into()),
@@ -871,25 +880,21 @@ mod tests {
                     created_at: 1,
                 },
                 targets: vec![
-                    ployz_api::ImageTransferTargetResult {
-                        machine_id: ployz_types::model::MachineId("peer".into()),
-                        status: ployz_api::ImageTransferTargetStatus::Present,
-                        record: None,
-                        failure: None,
-                    },
-                    ployz_api::ImageTransferTargetResult {
-                        machine_id: ployz_types::model::MachineId("other".into()),
-                        status: ployz_api::ImageTransferTargetStatus::Failed,
-                        record: None,
-                        failure: Some(ployz_api::ImageTransferFailure {
+                    ployz_api::ImageTransferTargetResult::present(
+                        ployz_types::model::MachineId::new("peer"),
+                        test_image_availability("peer", &digest),
+                    ),
+                    ployz_api::ImageTransferTargetResult::failed(
+                        ployz_types::model::MachineId::new("other"),
+                        ployz_api::ImageTransferFailure {
                             code: "TEST_FAILED".into(),
                             stage: ployz_api::ImageTransferFailureStage::SourceVerify,
                             message: "no responders".into(),
-                        }),
-                    },
+                        },
+                    ),
                 ],
             })),
-        };
+        );
 
         assert_eq!(
             render_plain_success(&response),
@@ -904,32 +909,26 @@ mod tests {
     fn plain_image_distribute_renders_source_and_targets() {
         let digest = ployz_types::model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
             .expect("valid digest");
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("distributed"),
-            payload: Some(DaemonPayload::ImageDistribute(
+        let response = DaemonResponse::success(
+            "distributed",
+            Some(DaemonPayload::ImageDistribute(
                 ployz_api::ImageDistributePayload {
                     operation_id: "image-distribute-1".into(),
                     digest: digest.clone(),
-                    source_machine: ployz_types::model::MachineId("founder".into()),
+                    source_machine: ployz_types::model::MachineId::new("founder"),
                     targets: vec![
-                        ployz_api::ImageTransferTargetResult {
-                            machine_id: ployz_types::model::MachineId("founder".into()),
-                            status: ployz_api::ImageTransferTargetStatus::SkippedPresent,
-                            record: None,
-                            failure: None,
-                        },
-                        ployz_api::ImageTransferTargetResult {
-                            machine_id: ployz_types::model::MachineId("peer".into()),
-                            status: ployz_api::ImageTransferTargetStatus::Present,
-                            record: None,
-                            failure: None,
-                        },
+                        ployz_api::ImageTransferTargetResult::skipped_present(
+                            ployz_types::model::MachineId::new("founder"),
+                            test_image_availability("founder", &digest),
+                        ),
+                        ployz_api::ImageTransferTargetResult::present(
+                            ployz_types::model::MachineId::new("peer"),
+                            test_image_availability("peer", &digest),
+                        ),
                     ],
                 },
             )),
-        };
+        );
 
         assert_eq!(
             render_plain_success(&response),
@@ -944,28 +943,25 @@ mod tests {
     fn plain_image_distribute_partial_failure_renders_payload_on_error_path() {
         let digest = ployz_types::model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
             .expect("valid digest");
-        let response = DaemonResponse {
-            ok: false,
-            code: String::from("IMAGE_DISTRIBUTE_PARTIAL_FAILED"),
-            message: String::from("distributed with failures"),
-            payload: Some(DaemonPayload::ImageDistribute(
+        let response = DaemonResponse::error(
+            "IMAGE_DISTRIBUTE_PARTIAL_FAILED",
+            "distributed with failures",
+            Some(DaemonPayload::ImageDistribute(
                 ployz_api::ImageDistributePayload {
                     operation_id: "image-distribute-1".into(),
                     digest: digest.clone(),
-                    source_machine: ployz_types::model::MachineId("founder".into()),
-                    targets: vec![ployz_api::ImageTransferTargetResult {
-                        machine_id: ployz_types::model::MachineId("peer".into()),
-                        status: ployz_api::ImageTransferTargetStatus::Failed,
-                        record: None,
-                        failure: Some(ployz_api::ImageTransferFailure {
+                    source_machine: ployz_types::model::MachineId::new("founder"),
+                    targets: vec![ployz_api::ImageTransferTargetResult::failed(
+                        ployz_types::model::MachineId::new("peer"),
+                        ployz_api::ImageTransferFailure {
                             code: "TEST_FAILED".into(),
                             stage: ployz_api::ImageTransferFailureStage::ReceiveSession,
                             message: "no responders".into(),
-                        }),
-                    }],
+                        },
+                    )],
                 },
             )),
-        };
+        );
 
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -984,11 +980,9 @@ mod tests {
 
     #[test]
     fn plain_doctor_renders_summary_and_peer_lines() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("doctor"),
-            payload: Some(DaemonPayload::Doctor(DoctorPayload {
+        let response = DaemonResponse::success(
+            "doctor",
+            Some(DaemonPayload::Doctor(DoctorPayload {
                 overall: DoctorOverall {
                     lifecycle: String::from("healthy"),
                 },
@@ -1022,7 +1016,7 @@ mod tests {
                     cause_message: String::from("wireguard has a recent peer handshake"),
                 }],
             })),
-        };
+        );
 
         let rendered = render_plain_success(&response);
         assert!(rendered.contains("participation=healthy"));
@@ -1036,11 +1030,9 @@ mod tests {
 
     #[test]
     fn plain_status_renders_single_line_summary() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("status"),
-            payload: Some(DaemonPayload::Status(StatusPayload {
+        let response = DaemonResponse::success(
+            "status",
+            Some(DaemonPayload::Status(StatusPayload {
                 machine_id: String::from("founder"),
                 public_key: ployz_types::model::PublicKey([1; 32]),
                 version: String::from("0.1.0"),
@@ -1054,7 +1046,7 @@ mod tests {
                 nats_assets: Vec::new(),
                 control_plane: Vec::new(),
             })),
-        };
+        );
 
         assert_eq!(
             render_plain_success(&response),
@@ -1064,11 +1056,9 @@ mod tests {
 
     #[test]
     fn plain_status_renders_local_authority_posture() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("status"),
-            payload: Some(DaemonPayload::Status(StatusPayload {
+        let response = DaemonResponse::success(
+            "status",
+            Some(DaemonPayload::Status(StatusPayload {
                 machine_id: String::from("founder"),
                 public_key: ployz_types::model::PublicKey([1; 32]),
                 version: String::from("0.1.0"),
@@ -1087,7 +1077,7 @@ mod tests {
                 nats_assets: Vec::new(),
                 control_plane: Vec::new(),
             })),
-        };
+        );
 
         let rendered = render_plain_success(&response);
         assert!(rendered.contains(
@@ -1097,11 +1087,9 @@ mod tests {
 
     #[test]
     fn plain_status_renders_edge_sync_health() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("status"),
-            payload: Some(DaemonPayload::Status(StatusPayload {
+        let response = DaemonResponse::success(
+            "status",
+            Some(DaemonPayload::Status(StatusPayload {
                 machine_id: String::from("founder"),
                 public_key: ployz_types::model::PublicKey([1; 32]),
                 version: String::from("0.1.0"),
@@ -1137,7 +1125,7 @@ mod tests {
                 nats_assets: Vec::new(),
                 control_plane: Vec::new(),
             })),
-        };
+        );
 
         let rendered = render_plain_success(&response);
         assert!(
@@ -1155,11 +1143,9 @@ mod tests {
 
     #[test]
     fn plain_status_renders_nats_asset_replicas() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("status"),
-            payload: Some(DaemonPayload::Status(StatusPayload {
+        let response = DaemonResponse::success(
+            "status",
+            Some(DaemonPayload::Status(StatusPayload {
                 machine_id: String::from("founder"),
                 public_key: ployz_types::model::PublicKey([1; 32]),
                 version: String::from("0.1.0"),
@@ -1191,7 +1177,7 @@ mod tests {
                 }],
                 control_plane: Vec::new(),
             })),
-        };
+        );
 
         let rendered = render_plain_success(&response);
         assert!(rendered.contains(
@@ -1201,11 +1187,9 @@ mod tests {
 
     #[test]
     fn plain_status_renders_control_plane_health() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("status"),
-            payload: Some(DaemonPayload::Status(StatusPayload {
+        let response = DaemonResponse::success(
+            "status",
+            Some(DaemonPayload::Status(StatusPayload {
                 machine_id: String::from("founder"),
                 public_key: ployz_types::model::PublicKey([1; 32]),
                 version: String::from("0.1.0"),
@@ -1248,7 +1232,7 @@ mod tests {
                     },
                 ],
             })),
-        };
+        );
 
         let rendered = render_plain_success(&response);
         assert!(rendered.contains(
@@ -1267,17 +1251,15 @@ mod tests {
 
     #[test]
     fn plain_mesh_list_renders_compact_network_lines() {
-        let response = DaemonResponse {
-            ok: true,
-            code: String::from("OK"),
-            message: String::from("mesh list"),
-            payload: Some(DaemonPayload::MeshList(MeshListPayload {
+        let response = DaemonResponse::success(
+            "mesh list",
+            Some(DaemonPayload::MeshList(MeshListPayload {
                 networks: vec![MeshListEntry {
                     name: String::from("alpha"),
                     state: String::from("running"),
                 }],
             })),
-        };
+        );
 
         assert_eq!(
             render_plain_success(&response),

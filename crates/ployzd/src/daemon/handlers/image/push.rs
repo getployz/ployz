@@ -165,20 +165,16 @@ impl DaemonState {
         };
         cleanup_image_work_dir(&work_dir).await;
 
-        let mut targets = vec![ImageTransferTargetResult {
-            machine_id: first_target.clone(),
-            status: ImageTransferTargetStatus::Present,
-            record: Some(first_record),
-            failure: None,
-        }];
+        let mut targets = vec![ImageTransferTargetResult::present(
+            first_target.clone(),
+            first_record,
+        )];
         if let Err(error) = operation_store.update_target(
             &mut operation,
-            ImageOperationTargetOutcome {
-                machine_id: first_target.clone(),
-                status: OperationStatus::Succeeded,
-                bytes_transferred: Some(first_upload.bytes_uploaded),
-                last_error: None,
-            },
+            ImageOperationTargetOutcome::succeeded(
+                first_target.clone(),
+                Some(first_upload.bytes_uploaded),
+            ),
         ) {
             return self.err("IMAGE_PUSH_OPERATION_FAILED", error);
         }
@@ -202,16 +198,11 @@ impl DaemonState {
                     backend,
                 )
                 .await;
-            match target_result.status {
+            match target_result.status() {
                 ImageTransferTargetStatus::Present | ImageTransferTargetStatus::SkippedPresent => {
                     if let Err(error) = operation_store.update_target(
                         &mut operation,
-                        ImageOperationTargetOutcome {
-                            machine_id: target.clone(),
-                            status: OperationStatus::Succeeded,
-                            bytes_transferred: None,
-                            last_error: None,
-                        },
+                        ImageOperationTargetOutcome::succeeded(target.clone(), None),
                     ) {
                         return self.err("IMAGE_PUSH_OPERATION_FAILED", error);
                     }
@@ -221,12 +212,7 @@ impl DaemonState {
                         .unwrap_or_else(|| format!("image distribute to target '{target}' failed"));
                     if let Err(error) = operation_store.update_target(
                         &mut operation,
-                        ImageOperationTargetOutcome {
-                            machine_id: target.clone(),
-                            status: OperationStatus::Failed,
-                            bytes_transferred: None,
-                            last_error: Some(message.clone()),
-                        },
+                        ImageOperationTargetOutcome::failed(target.clone(), message.clone()),
                     ) {
                         return self.err(
                             "IMAGE_PUSH_OPERATION_FAILED",
@@ -256,7 +242,7 @@ impl DaemonState {
         let failed_targets = payload
             .targets
             .iter()
-            .filter(|target| target.status == ImageTransferTargetStatus::Failed)
+            .filter(|target| target.status() == ImageTransferTargetStatus::Failed)
             .count();
         if failed_targets > 0 {
             let message = format!(
@@ -384,21 +370,14 @@ impl DaemonState {
                 };
                 if let Err(error) = operation_store.update_target(
                     &mut operation,
-                    ImageOperationTargetOutcome {
-                        machine_id: target_machine.clone(),
-                        status: OperationStatus::Succeeded,
-                        bytes_transferred: None,
-                        last_error: None,
-                    },
+                    ImageOperationTargetOutcome::succeeded(target_machine.clone(), None),
                 ) {
                     return self.err("IMAGE_DISTRIBUTE_OPERATION_FAILED", error);
                 }
-                targets.push(ImageTransferTargetResult {
-                    machine_id: target_machine.clone(),
-                    status: ImageTransferTargetStatus::SkippedPresent,
-                    record: Some(record),
-                    failure: None,
-                });
+                targets.push(ImageTransferTargetResult::skipped_present(
+                    target_machine.clone(),
+                    record,
+                ));
             }
             if let Err(error) =
                 operation_store.update_status(&mut operation, OperationStatus::Succeeded, None)
@@ -538,22 +517,12 @@ impl DaemonState {
                 skipped_present.get(target_machine).cloned()
             {
                 (
-                    ImageTransferTargetResult {
-                        machine_id: target_machine.clone(),
-                        status: ImageTransferTargetStatus::SkippedPresent,
-                        record: Some(record),
-                        failure: None,
-                    },
+                    ImageTransferTargetResult::skipped_present(target_machine.clone(), record),
                     None,
                 )
             } else if let Some(record) = local_present.get(target_machine).cloned() {
                 (
-                    ImageTransferTargetResult {
-                        machine_id: target_machine.clone(),
-                        status: ImageTransferTargetStatus::Present,
-                        record: Some(record),
-                        failure: None,
-                    },
+                    ImageTransferTargetResult::present(target_machine.clone(), record),
                     None,
                 )
             } else if let Some(message) = local_failures.get(target_machine).cloned() {
@@ -577,12 +546,7 @@ impl DaemonState {
                     .await
                 {
                     Ok(record) => (
-                        ImageTransferTargetResult {
-                            machine_id: target_machine.clone(),
-                            status: ImageTransferTargetStatus::Present,
-                            record: Some(record),
-                            failure: None,
-                        },
+                        ImageTransferTargetResult::present(target_machine.clone(), record),
                         None,
                     ),
                     Err(message) => (
@@ -612,21 +576,21 @@ impl DaemonState {
                 )
                 .await
             };
-            let operation_status = match target_result.status {
+            let outcome = match target_result.status() {
                 ImageTransferTargetStatus::Present | ImageTransferTargetStatus::SkippedPresent => {
-                    OperationStatus::Succeeded
+                    ImageOperationTargetOutcome::succeeded(
+                        target_machine.clone(),
+                        bytes_transferred,
+                    )
                 }
-                ImageTransferTargetStatus::Failed => OperationStatus::Failed,
+                ImageTransferTargetStatus::Failed => ImageOperationTargetOutcome::failed(
+                    target_machine.clone(),
+                    image_transfer_target_failure_message(&target_result).unwrap_or_else(|| {
+                        format!("image distribute to target '{target_machine}' failed")
+                    }),
+                ),
             };
-            if let Err(error) = operation_store.update_target(
-                &mut operation,
-                ImageOperationTargetOutcome {
-                    machine_id: target_machine.clone(),
-                    status: operation_status,
-                    bytes_transferred,
-                    last_error: image_transfer_target_failure_message(&target_result),
-                },
-            ) {
+            if let Err(error) = operation_store.update_target(&mut operation, outcome) {
                 if let Some(work_dir) = work_dir.as_deref() {
                     cleanup_image_work_dir(work_dir).await;
                 }
@@ -647,7 +611,7 @@ impl DaemonState {
         let failed_targets = payload
             .targets
             .iter()
-            .filter(|target| target.status == ImageTransferTargetStatus::Failed)
+            .filter(|target| target.status() == ImageTransferTargetStatus::Failed)
             .count();
         if failed_targets > 0 {
             let message = format!(
@@ -758,7 +722,7 @@ impl DaemonState {
         );
         headers.insert(
             REGISTRY_SOURCE_MACHINE_HEADER.to_string(),
-            session.source_machine.0.clone(),
+            session.source_machine.as_str().to_string(),
         );
         headers.insert(REGISTRY_SESSION_HEADER.to_string(), session.token.clone());
         let payload = ImageReceiveSessionPayload {
@@ -922,12 +886,7 @@ impl DaemonState {
     ) -> ployz_api::DaemonResponse {
         if let Err(error) = operation_store.update_target(
             operation,
-            ImageOperationTargetOutcome {
-                machine_id: target_machine,
-                status: OperationStatus::Failed,
-                bytes_transferred: None,
-                last_error: Some(message.clone()),
-            },
+            ImageOperationTargetOutcome::failed(target_machine, message.clone()),
         ) {
             return self.err(
                 "IMAGE_DISTRIBUTE_OPERATION_FAILED",
@@ -962,23 +921,16 @@ impl DaemonState {
             let (result, status, last_error) =
                 if let Some(record) = skipped_present.get(target_machine) {
                     (
-                        ImageTransferTargetResult {
-                            machine_id: target_machine.clone(),
-                            status: ImageTransferTargetStatus::SkippedPresent,
-                            record: Some(record.clone()),
-                            failure: None,
-                        },
+                        ImageTransferTargetResult::skipped_present(
+                            target_machine.clone(),
+                            record.clone(),
+                        ),
                         OperationStatus::Succeeded,
                         None,
                     )
                 } else if let Some(record) = local_present.get(target_machine) {
                     (
-                        ImageTransferTargetResult {
-                            machine_id: target_machine.clone(),
-                            status: ImageTransferTargetStatus::Present,
-                            record: Some(record.clone()),
-                            failure: None,
-                        },
+                        ImageTransferTargetResult::present(target_machine.clone(), record.clone()),
                         OperationStatus::Succeeded,
                         None,
                     )
@@ -1005,11 +957,20 @@ impl DaemonState {
                         Some(message.clone()),
                     )
                 };
-            let outcome = ImageOperationTargetOutcome {
-                machine_id: target_machine.clone(),
-                status,
-                bytes_transferred: None,
-                last_error,
+            let outcome = match status {
+                OperationStatus::Succeeded => {
+                    ImageOperationTargetOutcome::succeeded(target_machine.clone(), None)
+                }
+                OperationStatus::Failed => ImageOperationTargetOutcome::failed(
+                    target_machine.clone(),
+                    last_error.unwrap_or_else(|| message.clone()),
+                ),
+                OperationStatus::Interrupted => {
+                    ImageOperationTargetOutcome::interrupted(target_machine.clone(), last_error)
+                }
+                OperationStatus::Running => {
+                    ImageOperationTargetOutcome::running(target_machine.clone())
+                }
             };
             if let Err(error) = operation_store.update_target(operation, outcome.clone()) {
                 return self.err(
@@ -1110,12 +1071,7 @@ impl DaemonState {
     ) -> ployz_api::DaemonResponse {
         if let Err(error) = operation_store.update_target(
             operation,
-            ImageOperationTargetOutcome {
-                machine_id: target_machine,
-                status: OperationStatus::Failed,
-                bytes_transferred: None,
-                last_error: Some(message.clone()),
-            },
+            ImageOperationTargetOutcome::failed(target_machine, message.clone()),
         ) {
             return self.err(
                 "IMAGE_PUSH_OPERATION_FAILED",
@@ -1203,13 +1159,14 @@ impl DaemonState {
                     format!("request image receive session from {target_machine}: {error}")
                 })?
         };
-        if !response.ok {
+        if !response.is_ok() {
             return Err(format!(
                 "target receive session failed [{}]: {}",
-                response.code, response.message
+                response.code(),
+                response.message().to_string()
             ));
         }
-        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload else {
+        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload() else {
             return Err("target receive session response did not include a session payload".into());
         };
         Ok(payload)
@@ -1234,8 +1191,8 @@ impl DaemonState {
                 failed_image_transfer_target(
                     target_machine.clone(),
                     ImageTransferFailureStage::ReceiveSession,
-                    response.code,
-                    response.message,
+                    response.code(),
+                    response.message().to_string(),
                 ),
                 None,
             );
@@ -1269,8 +1226,8 @@ impl DaemonState {
                 failed_image_transfer_target(
                     target_machine.clone(),
                     ImageTransferFailureStage::Upload,
-                    response.code,
-                    response.message,
+                    response.code(),
+                    response.message().to_string(),
                 ),
                 None,
             );
@@ -1306,8 +1263,8 @@ impl DaemonState {
                 failed_image_transfer_target(
                     target_machine.clone(),
                     ImageTransferFailureStage::Import,
-                    response.code,
-                    response.message,
+                    response.code(),
+                    response.message().to_string(),
                 ),
                 None,
             );
@@ -1343,12 +1300,7 @@ impl DaemonState {
         };
 
         (
-            ImageTransferTargetResult {
-                machine_id: target_machine.clone(),
-                status: ImageTransferTargetStatus::Present,
-                record: Some(record),
-                failure: None,
-            },
+            ImageTransferTargetResult::present(target_machine.clone(), record),
             Some(upload.bytes_uploaded),
         )
     }
@@ -1521,24 +1473,25 @@ impl DaemonState {
                 }
             }
         };
-        if !response.ok {
-            if let Some(DaemonPayload::ImageDistribute(payload)) = response.payload {
+        if !response.is_ok() {
+            if let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() {
                 let [target] = payload.targets.as_slice() else {
                     return failure(format!(
                         "target image distribute failed [{}] with {} target results: {}",
-                        response.code,
+                        response.code(),
                         payload.targets.len(),
-                        response.message
+                        response.message().to_string()
                     ));
                 };
                 return target.clone();
             }
             return failure(format!(
                 "target image distribute failed [{}]: {}",
-                response.code, response.message
+                response.code(),
+                response.message().to_string()
             ));
         }
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             return failure("target image distribute response did not include a payload".into());
         };
         let [target] = payload.targets.as_slice() else {
@@ -1575,13 +1528,14 @@ impl DaemonState {
                 .await
                 .map_err(|error| format!("request image import from {target_machine}: {error}"))?
         };
-        if !response.ok {
+        if !response.is_ok() {
             return Err(format!(
                 "target image import failed [{}]: {}",
-                response.code, response.message
+                response.code(),
+                response.message().to_string()
             ));
         }
-        let Some(DaemonPayload::ImageReceivedImport(payload)) = response.payload else {
+        let Some(DaemonPayload::ImageReceivedImport(payload)) = response.payload() else {
             return Err("target image import response did not include an import payload".into());
         };
         Ok(payload.record)
@@ -1657,23 +1611,18 @@ fn failed_image_transfer_target(
     message: String,
 ) -> ImageTransferTargetResult {
     let code = code.into();
-    ImageTransferTargetResult {
+    ImageTransferTargetResult::failed(
         machine_id,
-        status: ImageTransferTargetStatus::Failed,
-        record: None,
-        failure: Some(ImageTransferFailure {
+        ImageTransferFailure {
             code,
             stage,
             message,
-        }),
-    }
+        },
+    )
 }
 
 fn image_transfer_target_failure_message(target: &ImageTransferTargetResult) -> Option<String> {
-    target
-        .failure
-        .as_ref()
-        .map(|failure| failure.message.clone())
+    target.failure().map(|failure| failure.message.clone())
 }
 
 fn image_distribute_validation_payload(
@@ -1687,20 +1636,15 @@ fn image_distribute_validation_payload(
 }
 
 fn image_ref_from_tag(reference: &str, digest: ployz_types::model::ImageDigest) -> ImageRef {
-    let (repository, tag) = if reference.starts_with("sha256:") {
-        (None, None)
-    } else {
-        match reference.rsplit_once(':') {
-            Some((repository, tag)) if !repository.is_empty() && !tag.is_empty() => {
-                (Some(repository.to_string()), Some(tag.to_string()))
-            }
-            _ => (None, None),
+    if reference.starts_with("sha256:") {
+        return ImageRef::digest_only(digest);
+    }
+
+    match reference.rsplit_once(':') {
+        Some((repository, tag)) if !repository.is_empty() && !tag.is_empty() => {
+            ImageRef::repository_digest(repository, Some(tag.to_string()), digest)
         }
-    };
-    ImageRef {
-        repository,
-        tag,
-        digest,
+        _ => ImageRef::repository_digest(reference, None, digest),
     }
 }
 
@@ -1747,8 +1691,8 @@ mod tests {
             })
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_PUSH_TARGET_REQUIRED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_PUSH_TARGET_REQUIRED");
         assert!(
             state
                 .image_operation_store()
@@ -1780,7 +1724,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: Some(digest.clone()),
                 },
@@ -1788,17 +1732,17 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::ImagePush(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::ImagePush(payload)) = response.payload() else {
             panic!("expected push payload");
         };
         assert_eq!(payload.artifact.digest(), &digest);
         assert_eq!(payload.targets.len(), 1);
         assert_eq!(
-            payload.targets[0].status,
+            payload.targets[0].status(),
             ImageTransferTargetStatus::Present
         );
-        assert!(payload.targets[0].record.is_some());
+        assert!(payload.targets[0].record().is_some());
         assert!(*backend.imported.lock().expect("imported lock"));
         let stored = state
             .active
@@ -1806,7 +1750,7 @@ mod tests {
             .expect("active mesh")
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &digest)
+            .get_image_availability(&MachineId::new("founder"), &digest)
             .await
             .expect("get availability")
             .expect("availability");
@@ -1817,7 +1761,7 @@ mod tests {
             .expect("list operations");
         assert_eq!(operations.len(), 1);
         assert_eq!(operations[0].kind, ImageOperationKind::Push);
-        assert_eq!(operations[0].status, OperationStatus::Succeeded);
+        assert_eq!(operations[0].status(), OperationStatus::Succeeded);
         assert!(
             !state
                 .data_dir
@@ -1840,7 +1784,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: Some(expected.clone()),
                 },
@@ -1848,8 +1792,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_PUSH_FAILED");
         assert_no_availability(&state, &expected).await;
         let operations = state
             .image_operation_store()
@@ -1857,8 +1801,8 @@ mod tests {
             .expect("list operations");
         assert_eq!(operations.len(), 1);
         assert_eq!(operations[0].kind, ImageOperationKind::Push);
-        assert_eq!(operations[0].status, OperationStatus::Failed);
-        assert_eq!(operations[0].targets[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].status(), OperationStatus::Failed);
+        assert_eq!(operations[0].targets[0].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]
@@ -1884,7 +1828,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: Some(digest.clone()),
                 },
@@ -1892,8 +1836,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_PUSH_FAILED");
         assert_no_availability(&state, &digest).await;
         listener.shutdown().await;
     }
@@ -1921,7 +1865,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: None,
                 },
@@ -1929,8 +1873,8 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::ImagePush(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::ImagePush(payload)) = response.payload() else {
             panic!("expected push payload");
         };
         assert_eq!(payload.artifact.digest(), &digest);
@@ -1966,7 +1910,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: Some(repo_digest.clone()),
                 },
@@ -1974,8 +1918,8 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::ImagePush(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::ImagePush(payload)) = response.payload() else {
             panic!("expected push payload");
         };
         assert_eq!(payload.artifact.digest(), &image_id);
@@ -1986,7 +1930,7 @@ mod tests {
             .expect("active mesh")
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &image_id)
+            .get_image_availability(&MachineId::new("founder"), &image_id)
             .await
             .expect("get availability")
             .expect("image id availability");
@@ -2006,7 +1950,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: Some(digest.clone()),
                 },
@@ -2014,8 +1958,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_PUSH_FAILED");
         assert!(!*backend.imported.lock().expect("imported lock"));
         assert_no_availability(&state, &digest).await;
     }
@@ -2033,7 +1977,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: None,
                 },
@@ -2041,14 +1985,14 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_PUSH_FAILED");
         let operations = state
             .image_operation_store()
             .list()
             .expect("list operations");
         assert_eq!(operations.len(), 1);
-        assert_eq!(operations[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]
@@ -2067,7 +2011,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![MachineId("founder".into())],
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                     expected_digest: Some(digest.clone()),
                 },
@@ -2075,16 +2019,16 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_PUSH_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_PUSH_FAILED");
         assert_no_availability(&state, &digest).await;
         let operations = state
             .image_operation_store()
             .list()
             .expect("list operations");
         assert_eq!(operations.len(), 1);
-        assert_eq!(operations[0].status, OperationStatus::Failed);
-        assert_eq!(operations[0].targets[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].status(), OperationStatus::Failed);
+        assert_eq!(operations[0].targets[0].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]
@@ -2109,10 +2053,7 @@ mod tests {
             .handle_image_push_with_backend(
                 &ImagePushRequest {
                     source_image: "example/app:latest".into(),
-                    target_machines: vec![
-                        MachineId("founder".into()),
-                        MachineId("machine-a".into()),
-                    ],
+                    target_machines: vec![MachineId::new("founder"), MachineId::new("machine-a")],
                     platform: None,
                     expected_digest: Some(digest.clone()),
                 },
@@ -2120,20 +2061,26 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_PUSH_PARTIAL_FAILED");
-        let Some(DaemonPayload::ImagePush(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_PUSH_PARTIAL_FAILED");
+        let Some(DaemonPayload::ImagePush(payload)) = response.payload() else {
             panic!("expected push payload");
         };
         assert_eq!(payload.targets.len(), 2);
-        assert_eq!(payload.targets[0].machine_id, MachineId("founder".into()));
+        assert_eq!(payload.targets[0].machine_id(), &MachineId::new("founder"));
         assert_eq!(
-            payload.targets[0].status,
+            payload.targets[0].status(),
             ImageTransferTargetStatus::Present
         );
-        assert_eq!(payload.targets[1].machine_id, MachineId("machine-a".into()));
-        assert_eq!(payload.targets[1].status, ImageTransferTargetStatus::Failed);
-        let failure = payload.targets[1].failure.as_ref().expect("target failure");
+        assert_eq!(
+            payload.targets[1].machine_id(),
+            &MachineId::new("machine-a")
+        );
+        assert_eq!(
+            payload.targets[1].status(),
+            ImageTransferTargetStatus::Failed
+        );
+        let failure = payload.targets[1].failure().expect("target failure");
         assert_eq!(failure.code, "IMAGE_DISTRIBUTE_RECEIVE_SESSION_FAILED");
         assert_eq!(failure.stage, ImageTransferFailureStage::ReceiveSession);
         let stored = state
@@ -2142,7 +2089,7 @@ mod tests {
             .expect("active mesh")
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &digest)
+            .get_image_availability(&MachineId::new("founder"), &digest)
             .await
             .expect("get availability")
             .expect("first target availability");
@@ -2155,18 +2102,18 @@ mod tests {
             .iter()
             .find(|operation| operation.kind == ImageOperationKind::Push)
             .expect("push operation");
-        assert_eq!(push.status, OperationStatus::Failed);
+        assert_eq!(push.status(), OperationStatus::Failed);
         assert!(
             push.targets
                 .iter()
-                .any(|target| target.machine_id == MachineId("founder".into())
-                    && target.status == OperationStatus::Succeeded)
+                .any(|target| target.machine_id() == &MachineId::new("founder")
+                    && target.status() == OperationStatus::Succeeded)
         );
         assert!(
             push.targets
                 .iter()
-                .any(|target| target.machine_id == MachineId("machine-a".into())
-                    && target.status == OperationStatus::Failed)
+                .any(|target| target.machine_id() == &MachineId::new("machine-a")
+                    && target.status() == OperationStatus::Failed)
         );
         listener.shutdown().await;
     }
@@ -2178,22 +2125,22 @@ mod tests {
             .handle_image_distribute(&ImageDistributeRequest {
                 digest: ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
                     .expect("valid digest"),
-                source_machine: MachineId("machine-a".into()),
-                target_machines: vec![MachineId("machine-b".into())],
+                source_machine: MachineId::new("machine-a"),
+                target_machines: vec![MachineId::new("machine-b")],
                 platform: None,
             })
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_SOURCE_NOT_LOCAL");
-        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_SOURCE_NOT_LOCAL");
+        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload() else {
             panic!("expected validation payload");
         };
         assert_eq!(
             payload.failure,
             ImageDistributeValidationFailure::SourceNotLocal {
-                source_machine: MachineId("machine-a".into()),
-                local_machine: MachineId("founder".into()),
+                source_machine: MachineId::new("machine-a"),
+                local_machine: MachineId::new("founder"),
             }
         );
         assert!(
@@ -2211,14 +2158,14 @@ mod tests {
         let response = state
             .handle_image_distribute(&ImageDistributeRequest {
                 digest: digest('a'),
-                source_machine: MachineId("founder".into()),
+                source_machine: MachineId::new("founder"),
                 target_machines: Vec::new(),
                 platform: None,
             })
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_TARGET_REQUIRED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_TARGET_REQUIRED");
         assert!(
             state
                 .image_operation_store()
@@ -2239,25 +2186,25 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![MachineId("founder".into())],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                 },
                 &backend,
             )
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.digest, digest);
         assert_eq!(payload.targets.len(), 1);
         assert_eq!(
-            payload.targets[0].status,
+            payload.targets[0].status(),
             ImageTransferTargetStatus::Present
         );
-        assert!(payload.targets[0].record.is_some());
+        assert!(payload.targets[0].record().is_some());
         assert!(!*backend.imported.lock().expect("imported lock"));
         assert_eq!(backend.export_count(), 0);
         let stored = state
@@ -2266,7 +2213,7 @@ mod tests {
             .expect("active mesh")
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &payload.digest)
+            .get_image_availability(&MachineId::new("founder"), &payload.digest)
             .await
             .expect("get availability")
             .expect("availability");
@@ -2276,7 +2223,7 @@ mod tests {
             .list()
             .expect("list operations");
         assert_eq!(operations.len(), 1);
-        assert_eq!(operations[0].status, OperationStatus::Succeeded);
+        assert_eq!(operations[0].status(), OperationStatus::Succeeded);
         assert!(
             !state
                 .data_dir
@@ -2303,7 +2250,7 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
+                    source_machine: MachineId::new("founder"),
                     target_machines: Vec::new(),
                     platform: None,
                 },
@@ -2311,9 +2258,9 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_TARGET_REQUIRED");
-        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_TARGET_REQUIRED");
+        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload() else {
             panic!("expected validation payload");
         };
         assert_eq!(
@@ -2325,23 +2272,23 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest,
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![MachineId("founder".into()), MachineId("founder".into())],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder"), MachineId::new("founder")],
                     platform: None,
                 },
                 &backend,
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_DUPLICATE_TARGET");
-        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_DUPLICATE_TARGET");
+        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload() else {
             panic!("expected validation payload");
         };
         assert_eq!(
             payload.failure,
             ImageDistributeValidationFailure::DuplicateTarget {
-                duplicate_target: MachineId("founder".into())
+                duplicate_target: MachineId::new("founder")
             }
         );
         assert!(
@@ -2379,19 +2326,16 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![
-                        MachineId("founder".into()),
-                        MachineId("machine-a".into()),
-                    ],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder"), MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
             )
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 2);
@@ -2399,19 +2343,19 @@ mod tests {
             payload
                 .targets
                 .iter()
-                .all(|target| target.status == ImageTransferTargetStatus::SkippedPresent)
+                .all(|target| target.status() == ImageTransferTargetStatus::SkippedPresent)
         );
         assert_eq!(backend.export_count(), 0);
         let operations = state
             .image_operation_store()
             .list()
             .expect("list operations");
-        assert_eq!(operations[0].status, OperationStatus::Succeeded);
+        assert_eq!(operations[0].status(), OperationStatus::Succeeded);
         assert!(
             operations[0]
                 .targets
                 .iter()
-                .all(|target| target.status == OperationStatus::Succeeded)
+                .all(|target| target.status() == OperationStatus::Succeeded)
         );
     }
 
@@ -2426,36 +2370,35 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![
-                        MachineId("founder".into()),
-                        MachineId("machine-a".into()),
-                    ],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder"), MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 2);
-        assert_eq!(payload.targets[0].machine_id, MachineId("founder".into()));
+        assert_eq!(payload.targets[0].machine_id(), &MachineId::new("founder"));
         assert_eq!(
-            payload.targets[0].status,
+            payload.targets[0].status(),
             ImageTransferTargetStatus::Present
         );
-        assert_eq!(payload.targets[1].machine_id, MachineId("machine-a".into()));
-        assert_eq!(payload.targets[1].status, ImageTransferTargetStatus::Failed);
         assert_eq!(
-            payload.targets[1]
-                .failure
-                .as_ref()
-                .expect("target failure")
-                .stage,
+            payload.targets[1].machine_id(),
+            &MachineId::new("machine-a")
+        );
+        assert_eq!(
+            payload.targets[1].status(),
+            ImageTransferTargetStatus::Failed
+        );
+        assert_eq!(
+            payload.targets[1].failure().expect("target failure").stage,
             ImageTransferFailureStage::ReceiveSession
         );
         assert_eq!(backend.export_count(), 1);
@@ -2465,7 +2408,7 @@ mod tests {
             .expect("active mesh")
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &digest)
+            .get_image_availability(&MachineId::new("founder"), &digest)
             .await
             .expect("get availability")
             .expect("founder availability");
@@ -2474,9 +2417,12 @@ mod tests {
             .image_operation_store()
             .list()
             .expect("list operations");
-        assert_eq!(operations[0].status, OperationStatus::Failed);
-        assert_eq!(operations[0].targets[0].status, OperationStatus::Succeeded);
-        assert_eq!(operations[0].targets[1].status, OperationStatus::Failed);
+        assert_eq!(operations[0].status(), OperationStatus::Failed);
+        assert_eq!(
+            operations[0].targets[0].status(),
+            OperationStatus::Succeeded
+        );
+        assert_eq!(operations[0].targets[1].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]
@@ -2490,28 +2436,31 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![
-                        MachineId("machine-a".into()),
-                        MachineId("founder".into()),
-                    ],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("machine-a"), MachineId::new("founder")],
                     platform: None,
                 },
                 &backend,
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 2);
-        assert_eq!(payload.targets[0].machine_id, MachineId("machine-a".into()));
-        assert_eq!(payload.targets[0].status, ImageTransferTargetStatus::Failed);
-        assert_eq!(payload.targets[1].machine_id, MachineId("founder".into()));
         assert_eq!(
-            payload.targets[1].status,
+            payload.targets[0].machine_id(),
+            &MachineId::new("machine-a")
+        );
+        assert_eq!(
+            payload.targets[0].status(),
+            ImageTransferTargetStatus::Failed
+        );
+        assert_eq!(payload.targets[1].machine_id(), &MachineId::new("founder"));
+        assert_eq!(
+            payload.targets[1].status(),
             ImageTransferTargetStatus::Present
         );
         let stored = state
@@ -2520,7 +2469,7 @@ mod tests {
             .expect("active mesh")
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &digest)
+            .get_image_availability(&MachineId::new("founder"), &digest)
             .await
             .expect("get availability")
             .expect("founder availability");
@@ -2538,35 +2487,32 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest,
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![
-                        MachineId("machine-a".into()),
-                        MachineId("machine-b".into()),
-                    ],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("machine-a"), MachineId::new("machine-b")],
                     platform: None,
                 },
                 &backend,
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_FAILED");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(
             payload
                 .targets
                 .iter()
-                .map(|target| target.machine_id.clone())
+                .map(|target| target.machine_id().clone())
                 .collect::<Vec<_>>(),
-            vec![MachineId("machine-a".into()), MachineId("machine-b".into())]
+            vec![MachineId::new("machine-a"), MachineId::new("machine-b")]
         );
         assert!(
             payload
                 .targets
                 .iter()
-                .all(|target| target.status == ImageTransferTargetStatus::Failed)
+                .all(|target| target.status() == ImageTransferTargetStatus::Failed)
         );
         assert_eq!(backend.export_count(), 1);
         let operations = state
@@ -2578,7 +2524,7 @@ mod tests {
             operations[0]
                 .targets
                 .iter()
-                .all(|target| target.status == OperationStatus::Failed)
+                .all(|target| target.status() == OperationStatus::Failed)
         );
     }
 
@@ -2605,33 +2551,36 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![
-                        MachineId("founder".into()),
-                        MachineId("machine-a".into()),
-                    ],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder"), MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(
-            payload.targets[0].status,
+            payload.targets[0].status(),
             ImageTransferTargetStatus::SkippedPresent
         );
-        assert_eq!(payload.targets[1].status, ImageTransferTargetStatus::Failed);
+        assert_eq!(
+            payload.targets[1].status(),
+            ImageTransferTargetStatus::Failed
+        );
         let operations = state
             .image_operation_store()
             .list()
             .expect("list operations");
-        assert_eq!(operations[0].targets[0].status, OperationStatus::Succeeded);
-        assert_eq!(operations[0].targets[1].status, OperationStatus::Failed);
+        assert_eq!(
+            operations[0].targets[0].status(),
+            OperationStatus::Succeeded
+        );
+        assert_eq!(operations[0].targets[1].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]
@@ -2646,34 +2595,34 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![
-                        MachineId("founder".into()),
-                        MachineId("machine-a".into()),
-                    ],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder"), MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_PARTIAL_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(
-            payload.targets[0].status,
+            payload.targets[0].status(),
             ImageTransferTargetStatus::Present
         );
-        assert_eq!(payload.targets[1].status, ImageTransferTargetStatus::Failed);
+        assert_eq!(
+            payload.targets[1].status(),
+            ImageTransferTargetStatus::Failed
+        );
         let stored = state
             .active
             .as_ref()
             .expect("active mesh")
             .mesh
             .store
-            .get_image_availability(&MachineId("founder".into()), &digest)
+            .get_image_availability(&MachineId::new("founder"), &digest)
             .await
             .expect("get availability")
             .expect("founder availability");
@@ -2682,8 +2631,11 @@ mod tests {
             .image_operation_store()
             .list()
             .expect("list operations");
-        assert_eq!(operations[0].targets[0].status, OperationStatus::Succeeded);
-        assert_eq!(operations[0].targets[1].status, OperationStatus::Failed);
+        assert_eq!(
+            operations[0].targets[0].status(),
+            OperationStatus::Succeeded
+        );
+        assert_eq!(operations[0].targets[1].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]
@@ -2697,21 +2649,24 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![MachineId("machine-a".into())],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_FAILED");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 1);
-        assert_eq!(payload.targets[0].status, ImageTransferTargetStatus::Failed);
+        assert_eq!(
+            payload.targets[0].status(),
+            ImageTransferTargetStatus::Failed
+        );
         assert!(
             !state
                 .data_dir
@@ -2723,7 +2678,7 @@ mod tests {
             .image_operation_store()
             .list()
             .expect("list operations");
-        assert_eq!(operations[0].targets[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].targets[0].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]
@@ -2738,20 +2693,17 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: expected.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![
-                        MachineId("founder".into()),
-                        MachineId("machine-a".into()),
-                    ],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder"), MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_FAILED");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_FAILED");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 2);
@@ -2759,7 +2711,7 @@ mod tests {
             payload
                 .targets
                 .iter()
-                .all(|target| target.status == ImageTransferTargetStatus::Failed)
+                .all(|target| target.status() == ImageTransferTargetStatus::Failed)
         );
         assert_eq!(backend.export_count(), 0);
         assert_no_availability(&state, &expected).await;
@@ -2767,12 +2719,12 @@ mod tests {
             .image_operation_store()
             .list()
             .expect("list operations");
-        assert_eq!(operations[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].status(), OperationStatus::Failed);
         assert!(
             operations[0]
                 .targets
                 .iter()
-                .all(|target| target.status == OperationStatus::Failed)
+                .all(|target| target.status() == OperationStatus::Failed)
         );
     }
 
@@ -2792,23 +2744,23 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest,
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![MachineId("machine-a".into())],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_FAILED");
         let operations = state
             .image_operation_store()
             .list()
             .expect("list operations");
         assert_eq!(operations.len(), 1);
-        assert_eq!(operations[0].status, OperationStatus::Failed);
-        assert_eq!(operations[0].targets[0].status, OperationStatus::Failed);
+        assert_eq!(operations[0].status(), OperationStatus::Failed);
+        assert_eq!(operations[0].targets[0].status(), OperationStatus::Failed);
     }
 
     #[tokio::test]
@@ -2822,16 +2774,16 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![MachineId("machine-a".into())],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("machine-a")],
                     platform: None,
                 },
                 &backend,
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_DISTRIBUTE_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_DISTRIBUTE_FAILED");
         assert_no_availability_on(&state, "machine-a", &digest).await;
     }
 
@@ -2858,26 +2810,26 @@ mod tests {
             .handle_image_distribute_with_backend(
                 &ImageDistributeRequest {
                     digest: digest.clone(),
-                    source_machine: MachineId("founder".into()),
-                    target_machines: vec![MachineId("founder".into())],
+                    source_machine: MachineId::new("founder"),
+                    target_machines: vec![MachineId::new("founder")],
                     platform: None,
                 },
                 &backend,
             )
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
             panic!("expected distribute payload");
         };
         assert_eq!(payload.targets.len(), 1);
         assert_eq!(
-            payload.targets[0].status,
+            payload.targets[0].status(),
             ImageTransferTargetStatus::SkippedPresent
         );
         assert_eq!(backend.export_count(), 0);
         let stored = store
-            .get_image_availability(&MachineId("founder".into()), &digest)
+            .get_image_availability(&MachineId::new("founder"), &digest)
             .await
             .expect("get availability")
             .expect("availability");
@@ -2895,7 +2847,7 @@ mod tests {
             .handle_image_received_import_with_backend(
                 &ImageReceivedImportRequest {
                     operation_id: "op-1".into(),
-                    source_machine: MachineId("founder".into()),
+                    source_machine: MachineId::new("founder"),
                     repository: "ployz/op-1".into(),
                     reference: "op-1".into(),
                     expected_digest: digest.clone(),
@@ -2906,8 +2858,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_RECEIVED_IMPORT_RECONSTRUCT_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_RECEIVED_IMPORT_RECONSTRUCT_FAILED");
         assert!(
             state
                 .active
@@ -2915,7 +2867,7 @@ mod tests {
                 .expect("active mesh")
                 .mesh
                 .store
-                .get_image_availability(&MachineId("founder".into()), &digest)
+                .get_image_availability(&MachineId::new("founder"), &digest)
                 .await
                 .expect("get availability")
                 .is_none()
@@ -2933,7 +2885,7 @@ mod tests {
             .handle_image_received_import_with_backend(
                 &ImageReceivedImportRequest {
                     operation_id: "../outside".into(),
-                    source_machine: MachineId("founder".into()),
+                    source_machine: MachineId::new("founder"),
                     repository: "ployz/op-1".into(),
                     reference: "op-1".into(),
                     expected_digest: digest,
@@ -2944,8 +2896,8 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_RECEIVED_IMPORT_INVALID_OPERATION");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_RECEIVED_IMPORT_INVALID_OPERATION");
         assert!(!state.data_dir.join("outside").exists());
     }
 
@@ -2955,13 +2907,13 @@ mod tests {
         let response = state
             .handle_image_receive_session(&ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("machine-a".into()),
+                source_machine: MachineId::new("machine-a"),
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_RECEIVER_INACTIVE");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_RECEIVER_INACTIVE");
     }
 
     #[tokio::test]
@@ -2972,16 +2924,16 @@ mod tests {
         let response = state
             .handle_image_receive_session(&ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("founder".into()),
+                source_machine: MachineId::new("founder"),
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
 
-        assert!(response.ok, "{response:?}");
-        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload else {
+        assert!(response.is_ok(), "{response:?}");
+        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload() else {
             panic!("expected image receive session payload");
         };
-        assert_eq!(payload.target_machine, MachineId("founder".into()));
+        assert_eq!(payload.target_machine, MachineId::new("founder"));
         assert_eq!(
             payload.endpoint,
             "http://127.0.0.1:4320/v2/ployz/image-push-1"
@@ -3018,13 +2970,13 @@ mod tests {
         let response = state
             .handle_image_receive_session(&ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("unknown".into()),
+                source_machine: MachineId::new("unknown"),
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_RECEIVER_SOURCE_UNKNOWN");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_RECEIVER_SOURCE_UNKNOWN");
     }
 
     #[tokio::test]
@@ -3035,13 +2987,13 @@ mod tests {
         let response = state
             .handle_image_receive_session(&ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("machine-a".into()),
+                source_machine: MachineId::new("machine-a"),
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_RECEIVER_SOURCE_NOT_LOCAL");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_RECEIVER_SOURCE_NOT_LOCAL");
     }
 
     #[tokio::test]
@@ -3051,11 +3003,11 @@ mod tests {
         let response = state
             .handle_image_receive_session(&ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("founder".into()),
+                source_machine: MachineId::new("founder"),
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
-        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload else {
+        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload() else {
             panic!("expected image receive session payload");
         };
         let digest = test_sha256_digest(b"hello");
@@ -3092,11 +3044,11 @@ mod tests {
         let response = state
             .handle_image_receive_session(&ImageReceiveSessionRequest {
                 operation_id: "image-push-1".into(),
-                source_machine: MachineId("founder".into()),
+                source_machine: MachineId::new("founder"),
                 repository: Some("ployz/image-push-1".into()),
             })
             .await;
-        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload else {
+        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload() else {
             panic!("expected image receive session payload");
         };
         let digest = test_sha256_digest(b"hello");
@@ -3247,7 +3199,7 @@ mod tests {
     fn make_state() -> DaemonState {
         let data_dir =
             std::env::temp_dir().join(format!("ployz-image-push-handler-{}", uuid::Uuid::new_v4()));
-        let identity = Identity::generate(MachineId("founder".into()), [31; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [31; 32]);
         DaemonState::new_for_tests(
             &data_dir,
             identity,
@@ -3261,7 +3213,7 @@ mod tests {
     }
 
     async fn install_active_mesh(state: &mut DaemonState) {
-        let identity = Identity::generate(MachineId("founder".into()), [31; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [31; 32]);
         let mut config = NetworkConfig::new(
             NetworkName("alpha".into()),
             &identity.public_key,
@@ -3272,7 +3224,7 @@ mod tests {
         let store = StoreDriver::memory();
         store
             .upsert_self_machine(&MachineMembership::seed(
-                MachineId("founder".into()),
+                MachineId::new("founder"),
                 PublicKey([31; 32]),
                 OverlayIp("fd00::31".parse().expect("valid overlay")),
                 None,
@@ -3282,7 +3234,7 @@ mod tests {
             .expect("insert local machine");
         store
             .upsert_self_machine(&MachineMembership::seed(
-                MachineId("machine-a".into()),
+                MachineId::new("machine-a"),
                 PublicKey([12; 32]),
                 OverlayIp("fd00::12".parse().expect("valid overlay")),
                 None,
@@ -3339,7 +3291,7 @@ mod tests {
                 .expect("active mesh")
                 .mesh
                 .store
-                .get_image_availability(&MachineId(machine_id.into()), digest)
+                .get_image_availability(&MachineId::new(machine_id), digest)
                 .await
                 .expect("get availability")
                 .is_none()
@@ -3353,7 +3305,7 @@ mod tests {
         let now = now_unix_secs();
         let reference = digest.as_str().to_string();
         ImageAvailabilityRecord {
-            machine_id: MachineId(machine_id.into()),
+            machine_id: MachineId::new(machine_id),
             digest: digest.clone(),
             presence: ImagePresence::Present {
                 artifact: ImageArtifact {

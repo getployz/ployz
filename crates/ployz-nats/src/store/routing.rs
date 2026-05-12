@@ -139,8 +139,8 @@ mod tests {
     #[test]
     fn routing_event_specs_use_scope_for_publish_subjects() {
         let scope = NatsScope::new(
-            InstallationId("inst-acme".into()),
-            AuthorityId("auth-sin".into()),
+            InstallationId::new("inst-acme"),
+            AuthorityId::new("auth-sin"),
         );
         let specs = routing_publishes_in(
             &scope,
@@ -182,7 +182,7 @@ mod tests {
 
     fn test_machine(id: &str) -> MachineMembership {
         MachineMembership {
-            id: MachineId(id.to_string()),
+            id: MachineId::new(id.to_string()),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay")),
             topology: MachineTopology::local(),
@@ -191,8 +191,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
-            storage: true,
-            storage_participation: StorageParticipation::default_authority(),
+            storage_role: StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: Default::default(),

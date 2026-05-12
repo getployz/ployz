@@ -144,7 +144,7 @@ mod tests {
     async fn memory_runtime_image_backend_reports_unsupported_without_docker() {
         let state = DaemonState::new_for_tests(
             &unique_temp_dir("ployz-runtime-image-backend"),
-            Identity::generate(MachineId("founder".into()), [41; 32]),
+            Identity::generate(MachineId::new("founder"), [41; 32]),
             "10.210.0.0/16".into(),
             24,
             4319,

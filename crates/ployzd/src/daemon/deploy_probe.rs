@@ -31,12 +31,13 @@ impl ParticipantProbe for NatsRpcProbe {
             .request(NodeCommandSubject::ping(&machine.id), &DaemonRequest::Ping)
             .await
         {
-            Ok(response) if response.ok => Ok(()),
+            Ok(response) if response.is_ok() => Ok(()),
             Ok(response) => Err(ProbeError {
                 kind: ProbeErrorKind::Unexpected,
                 detail: format!(
                     "remote daemon error [{}]: {}",
-                    response.code, response.message
+                    response.code(),
+                    response.message()
                 ),
             }),
             Err(error) => {

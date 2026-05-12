@@ -14,7 +14,7 @@ use std::time::Duration;
 
 fn test_record(id: &str, key_byte: u8) -> MachineMembership {
     MachineMembership {
-        id: MachineId(id.into()),
+        id: MachineId::new(id),
         public_key: PublicKey([key_byte; 32]),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
         topology: MachineTopology::local(),
@@ -23,8 +23,7 @@ fn test_record(id: &str, key_byte: u8) -> MachineMembership {
         bridge_ip: None,
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
         lifecycle: MachineLifecycle::Standby,
-        storage: true,
-        storage_participation: StorageParticipation::default_authority(),
+        storage_role: StorageParticipation::default_authority().into(),
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),
@@ -41,7 +40,7 @@ fn make_mesh(
         WireguardDriver::memory_with(wg),
         StoreDriver::memory_with(store, svc),
         None,
-        MachineId(machine_id.into()),
+        MachineId::new(machine_id),
         51820,
     )
     .with_bootstrap_timing(Duration::from_millis(10), Duration::from_secs(5))

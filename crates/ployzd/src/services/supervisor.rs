@@ -54,16 +54,13 @@ fn sidecar_to_runtime_spec(spec: &SidecarSpec) -> RuntimeContainerSpec {
     let labels = build_system_labels(&key, None, Some(&spec.version));
 
     RuntimeContainerSpec {
-        key,
-        container_name: spec.container_name.clone(),
-        image: spec.image.clone(),
         pull_policy: PullPolicy::Always,
         cmd: Some(spec.cmd.clone()),
         env: spec.env.clone(),
         labels,
         binds: spec.binds.clone(),
         network_mode,
-        ..Default::default()
+        ..RuntimeContainerSpec::new(key, spec.container_name.clone(), spec.image.clone())
     }
 }
 

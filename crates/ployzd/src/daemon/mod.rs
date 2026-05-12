@@ -250,12 +250,7 @@ impl DaemonState {
         message: impl Into<String>,
         payload: Option<DaemonPayload>,
     ) -> DaemonResponse {
-        DaemonResponse {
-            ok: true,
-            code: "OK".into(),
-            message: message.into(),
-            payload,
-        }
+        DaemonResponse::success(message, payload)
     }
 
     pub fn err(&self, code: &str, message: impl Into<String>) -> DaemonResponse {
@@ -268,12 +263,7 @@ impl DaemonState {
         message: impl Into<String>,
         payload: Option<DaemonPayload>,
     ) -> DaemonResponse {
-        DaemonResponse {
-            ok: false,
-            code: code.into(),
-            message: message.into(),
-            payload,
-        }
+        DaemonResponse::error(code, message, payload)
     }
 
     pub fn require_active(

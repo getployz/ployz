@@ -6,20 +6,212 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::num::NonZeroU16;
 use strum::EnumString;
 
 use crate::spec::{
     Namespace, VolumeCloneConsistency, VolumeCloneDataPolicy, VolumeScope, stable_hash_hex,
 };
 
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, JsonSchema,
-)]
-pub struct MachineId(pub String);
+macro_rules! validated_string_id {
+    ($(#[$meta:meta])* pub struct $name:ident($label:literal);) => {
+        $(#[$meta])*
+        #[derive(
+            Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+        )]
+        #[serde(try_from = "String", into = "String")]
+        pub struct $name(String);
 
-impl AsRef<str> for MachineId {
-    fn as_ref(&self) -> &str {
+        impl $name {
+            #[must_use]
+            pub fn new(value: impl Into<String>) -> Self {
+                Self::try_new(value).expect(concat!("valid ", $label))
+            }
+
+            pub fn try_new(value: impl Into<String>) -> std::result::Result<Self, String> {
+                let value = value.into();
+                validate_non_empty_identifier(&value, $label)?;
+                Ok(Self(value))
+            }
+
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+
+            #[must_use]
+            pub fn into_string(self) -> String {
+                self.0
+            }
+        }
+
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str {
+                self.as_str()
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+
+        impl From<$name> for String {
+            fn from(value: $name) -> Self {
+                value.into_string()
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = String;
+
+            fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+                Self::try_new(value)
+            }
+        }
+
+        impl TryFrom<&str> for $name {
+            type Error = String;
+
+            fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
+                Self::try_new(value)
+            }
+        }
+    };
+}
+
+fn validate_non_empty_identifier(value: &str, label: &str) -> std::result::Result<(), String> {
+    if value.is_empty() {
+        return Err(format!("{label} cannot be empty"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!("{label} cannot contain control characters"));
+    }
+    if value.chars().any(char::is_whitespace) {
+        return Err(format!("{label} cannot contain whitespace"));
+    }
+    Ok(())
+}
+
+validated_string_id!(pub struct MachineId("machine id"););
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(try_from = "u16", into = "u16")]
+pub struct NonZeroReplicaCount(NonZeroU16);
+
+impl NonZeroReplicaCount {
+    pub fn try_new(value: u16) -> std::result::Result<Self, String> {
+        NonZeroU16::new(value)
+            .map(Self)
+            .ok_or_else(|| "replica count must be non-zero".to_string())
+    }
+
+    #[must_use]
+    pub fn get(self) -> u16 {
+        self.0.get()
+    }
+}
+
+impl TryFrom<u16> for NonZeroReplicaCount {
+    type Error = String;
+
+    fn try_from(value: u16) -> std::result::Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<NonZeroReplicaCount> for u16 {
+    fn from(value: NonZeroReplicaCount) -> Self {
+        value.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "f64", into = "f64")]
+pub struct PositiveScalar(f64);
+
+impl PositiveScalar {
+    pub fn try_new(value: f64) -> std::result::Result<Self, String> {
+        if !value.is_finite() || value <= 0.0 {
+            return Err("positive scalar must be finite and greater than zero".to_string());
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for PositiveScalar {
+    type Error = String;
+
+    fn try_from(value: f64) -> std::result::Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<PositiveScalar> for f64 {
+    fn from(value: PositiveScalar) -> Self {
+        value.get()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[schemars(with = "String")]
+#[serde(try_from = "String")]
+pub struct RedactedSecretString(String);
+
+impl RedactedSecretString {
+    const REDACTED: &'static str = "<redacted>";
+
+    pub fn try_new(value: impl Into<String>) -> std::result::Result<Self, String> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err("secret cannot be empty".to_string());
+        }
+        if value.chars().any(char::is_control) {
+            return Err("secret cannot contain control characters".to_string());
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn expose_secret(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for RedactedSecretString {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl fmt::Debug for RedactedSecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(Self::REDACTED)
+    }
+}
+
+impl fmt::Display for RedactedSecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(Self::REDACTED)
+    }
+}
+
+impl Serialize for RedactedSecretString {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(Self::REDACTED)
     }
 }
 
@@ -106,18 +298,59 @@ pub struct ImagePlatform {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ImageRef {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repository: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tag: Option<String>,
-    pub digest: ImageDigest,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageRef {
+    Digest {
+        digest: ImageDigest,
+    },
+    RepositoryDigest {
+        repository: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tag: Option<String>,
+        digest: ImageDigest,
+    },
 }
 
 impl ImageRef {
     #[must_use]
+    pub fn digest_only(digest: ImageDigest) -> Self {
+        Self::Digest { digest }
+    }
+
+    #[must_use]
+    pub fn repository_digest(
+        repository: impl Into<String>,
+        tag: Option<String>,
+        digest: ImageDigest,
+    ) -> Self {
+        Self::RepositoryDigest {
+            repository: repository.into(),
+            tag,
+            digest,
+        }
+    }
+
+    #[must_use]
     pub fn digest(&self) -> &ImageDigest {
-        &self.digest
+        match self {
+            Self::Digest { digest } | Self::RepositoryDigest { digest, .. } => digest,
+        }
+    }
+
+    #[must_use]
+    pub fn repository(&self) -> Option<&str> {
+        match self {
+            Self::Digest { .. } => None,
+            Self::RepositoryDigest { repository, .. } => Some(repository.as_str()),
+        }
+    }
+
+    #[must_use]
+    pub fn tag(&self) -> Option<&str> {
+        match self {
+            Self::Digest { .. } => None,
+            Self::RepositoryDigest { tag, .. } => tag.as_deref(),
+        }
     }
 }
 
@@ -236,20 +469,141 @@ pub enum BuildOperationKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ImageOperationTargetOutcome {
-    pub machine_id: MachineId,
-    pub status: OperationStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bytes_transferred: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageOperationTargetOutcome {
+    Running {
+        machine_id: MachineId,
+    },
+    Succeeded {
+        machine_id: MachineId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_transferred: Option<u64>,
+    },
+    Failed {
+        machine_id: MachineId,
+        last_error: String,
+    },
+    Interrupted {
+        machine_id: MachineId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+}
+
+impl ImageOperationTargetOutcome {
+    #[must_use]
+    pub fn running(machine_id: MachineId) -> Self {
+        Self::Running { machine_id }
+    }
+
+    #[must_use]
+    pub fn succeeded(machine_id: MachineId, bytes_transferred: Option<u64>) -> Self {
+        Self::Succeeded {
+            machine_id,
+            bytes_transferred,
+        }
+    }
+
+    #[must_use]
+    pub fn failed(machine_id: MachineId, last_error: impl Into<String>) -> Self {
+        Self::Failed {
+            machine_id,
+            last_error: last_error.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn interrupted(machine_id: MachineId, last_error: Option<String>) -> Self {
+        Self::Interrupted {
+            machine_id,
+            last_error,
+        }
+    }
+
+    #[must_use]
+    pub fn machine_id(&self) -> &MachineId {
+        match self {
+            Self::Running { machine_id }
+            | Self::Succeeded { machine_id, .. }
+            | Self::Failed { machine_id, .. }
+            | Self::Interrupted { machine_id, .. } => machine_id,
+        }
+    }
+
+    #[must_use]
+    pub fn status(&self) -> OperationStatus {
+        match self {
+            Self::Running { .. } => OperationStatus::Running,
+            Self::Succeeded { .. } => OperationStatus::Succeeded,
+            Self::Failed { .. } => OperationStatus::Failed,
+            Self::Interrupted { .. } => OperationStatus::Interrupted,
+        }
+    }
+
+    #[must_use]
+    pub fn bytes_transferred(&self) -> Option<u64> {
+        match self {
+            Self::Succeeded {
+                bytes_transferred, ..
+            } => *bytes_transferred,
+            Self::Running { .. } | Self::Failed { .. } | Self::Interrupted { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        match self {
+            Self::Failed { last_error, .. } => Some(last_error.as_str()),
+            Self::Interrupted { last_error, .. } => last_error.as_deref(),
+            Self::Running { .. } | Self::Succeeded { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageOperationState {
+    Running {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+    Succeeded {},
+    Failed {
+        last_error: String,
+    },
+    Interrupted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+}
+
+impl ImageOperationState {
+    #[must_use]
+    pub fn status(&self) -> OperationStatus {
+        match self {
+            Self::Running { .. } => OperationStatus::Running,
+            Self::Succeeded { .. } => OperationStatus::Succeeded,
+            Self::Failed { .. } => OperationStatus::Failed,
+            Self::Interrupted { .. } => OperationStatus::Interrupted,
+        }
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        match self {
+            Self::Failed { last_error } => Some(last_error.as_str()),
+            Self::Running { last_error } | Self::Interrupted { last_error } => {
+                last_error.as_deref()
+            }
+            Self::Succeeded { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ImageOperationRecord {
     pub id: String,
     pub kind: ImageOperationKind,
-    pub status: OperationStatus,
     pub stage: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<ImageDigest>,
@@ -259,8 +613,19 @@ pub struct ImageOperationRecord {
     pub targets: Vec<ImageOperationTargetOutcome>,
     pub started_at: u64,
     pub updated_at: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
+    pub state: ImageOperationState,
+}
+
+impl ImageOperationRecord {
+    #[must_use]
+    pub fn status(&self) -> OperationStatus {
+        self.state.status()
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        self.state.last_error()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
@@ -288,21 +653,84 @@ pub struct BuildSecretSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildOperationState {
+    Running {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+    Succeeded {
+        artifact: ImageArtifact,
+    },
+    Failed {
+        last_error: String,
+    },
+    Interrupted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+    },
+}
+
+impl BuildOperationState {
+    #[must_use]
+    pub fn status(&self) -> OperationStatus {
+        match self {
+            Self::Running { .. } => OperationStatus::Running,
+            Self::Succeeded { .. } => OperationStatus::Succeeded,
+            Self::Failed { .. } => OperationStatus::Failed,
+            Self::Interrupted { .. } => OperationStatus::Interrupted,
+        }
+    }
+
+    #[must_use]
+    pub fn artifact(&self) -> Option<&ImageArtifact> {
+        match self {
+            Self::Succeeded { artifact } => Some(artifact),
+            Self::Running { .. } | Self::Failed { .. } | Self::Interrupted { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        match self {
+            Self::Failed { last_error } => Some(last_error.as_str()),
+            Self::Running { last_error } | Self::Interrupted { last_error } => {
+                last_error.as_deref()
+            }
+            Self::Succeeded { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BuildOperationRecord {
     pub id: String,
     pub kind: BuildOperationKind,
     pub method: BuildMethod,
     pub location: BuildLocation,
-    pub status: OperationStatus,
     pub stage: String,
     #[serde(default, skip_serializing_if = "BuildInputSummary::is_empty")]
     pub inputs: BuildInputSummary,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact: Option<ImageArtifact>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
+    pub state: BuildOperationState,
     pub started_at: u64,
     pub updated_at: u64,
+}
+
+impl BuildOperationRecord {
+    #[must_use]
+    pub fn status(&self) -> OperationStatus {
+        self.state.status()
+    }
+
+    #[must_use]
+    pub fn artifact(&self) -> Option<&ImageArtifact> {
+        self.state.artifact()
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        self.state.last_error()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display, JsonSchema)]
@@ -314,14 +742,7 @@ impl AsRef<str> for NetworkName {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
-pub struct NetworkId(pub String);
-
-impl AsRef<str> for NetworkId {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
+validated_string_id!(pub struct NetworkId("network id"););
 
 impl NetworkId {
     #[must_use]
@@ -332,53 +753,25 @@ impl NetworkId {
         for b in &bytes {
             let _ = write!(&mut value, "{b:02x}");
         }
-        Self(value)
+        Self::new(value)
     }
 }
 
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, JsonSchema,
-)]
-pub struct InstallationId(pub String);
+validated_string_id!(pub struct InstallationId("installation id"););
 
 impl InstallationId {
     #[must_use]
     pub fn local() -> Self {
-        Self("local".into())
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
+        Self::new("local")
     }
 }
 
-impl AsRef<str> for InstallationId {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, JsonSchema,
-)]
-pub struct AuthorityId(pub String);
+validated_string_id!(pub struct AuthorityId("authority id"););
 
 impl AuthorityId {
     #[must_use]
     pub fn default_authority() -> Self {
-        Self("auth-default".into())
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl AsRef<str> for AuthorityId {
-    fn as_ref(&self) -> &str {
-        self.as_str()
+        Self::new("auth-default")
     }
 }
 
@@ -476,6 +869,55 @@ impl StorageParticipation {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MachineStorageRole {
+    Compute,
+    Candidate,
+    Authority { authority_id: AuthorityId },
+}
+
+impl MachineStorageRole {
+    #[must_use]
+    pub fn default_authority() -> Self {
+        Self::Authority {
+            authority_id: AuthorityId::default_authority(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_storage_capable(&self) -> bool {
+        !matches!(self, Self::Compute)
+    }
+
+    #[must_use]
+    pub fn authority_id(&self) -> Option<&AuthorityId> {
+        match self {
+            Self::Authority { authority_id } => Some(authority_id),
+            Self::Compute | Self::Candidate => None,
+        }
+    }
+
+    #[must_use]
+    pub fn storage_participation(&self) -> StorageParticipation {
+        match self {
+            Self::Compute | Self::Candidate => StorageParticipation::Candidate,
+            Self::Authority { authority_id } => StorageParticipation::Authority {
+                authority_id: authority_id.clone(),
+            },
+        }
+    }
+}
+
+impl From<StorageParticipation> for MachineStorageRole {
+    fn from(value: StorageParticipation) -> Self {
+        match value {
+            StorageParticipation::Candidate => Self::Candidate,
+            StorageParticipation::Authority { authority_id } => Self::Authority { authority_id },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageReplicaPolicy {
@@ -550,39 +992,63 @@ impl fmt::Display for AuthorityNodeRole {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct AuthorityNodePosture {
-    pub role: AuthorityNodeRole,
-    pub data_bucket: ControlPlaneDataBucket,
-    pub loss_impact: ControlPlaneLossImpact,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AuthorityNodePosture {
+    AuthorityStorage { authority_id: AuthorityId },
+    StorageCandidate,
+    Compute,
 }
 
 impl AuthorityNodePosture {
     #[must_use]
     pub fn from_storage_participation(storage: bool, participation: &StorageParticipation) -> Self {
         match participation {
-            StorageParticipation::Authority { authority_id } => Self {
-                role: AuthorityNodeRole::AuthorityStorage {
-                    authority_id: authority_id.clone(),
-                },
-                data_bucket: ControlPlaneDataBucket::StoredIntent,
-                loss_impact: ControlPlaneLossImpact::StoredTruthLost,
+            StorageParticipation::Authority { authority_id } => Self::AuthorityStorage {
+                authority_id: authority_id.clone(),
             },
-            StorageParticipation::Candidate if storage => Self {
-                role: AuthorityNodeRole::StorageCandidate,
-                data_bucket: ControlPlaneDataBucket::StoredIntent,
-                loss_impact: ControlPlaneLossImpact::NoStoredTruthLost,
-            },
-            StorageParticipation::Candidate => Self {
-                role: AuthorityNodeRole::Compute,
-                data_bucket: ControlPlaneDataBucket::LiveFacts,
-                loss_impact: ControlPlaneLossImpact::NoStoredTruthLost,
-            },
+            StorageParticipation::Candidate if storage => Self::StorageCandidate,
+            StorageParticipation::Candidate => Self::Compute,
         }
     }
 
     #[must_use]
     pub fn from_machine_membership(machine: &MachineMembership) -> Self {
-        Self::from_storage_participation(machine.storage, &machine.storage_participation)
+        match &machine.storage_role {
+            MachineStorageRole::Authority { authority_id } => Self::AuthorityStorage {
+                authority_id: authority_id.clone(),
+            },
+            MachineStorageRole::Candidate => Self::StorageCandidate,
+            MachineStorageRole::Compute => Self::Compute,
+        }
+    }
+
+    #[must_use]
+    pub fn role(&self) -> AuthorityNodeRole {
+        match self {
+            Self::AuthorityStorage { authority_id } => AuthorityNodeRole::AuthorityStorage {
+                authority_id: authority_id.clone(),
+            },
+            Self::StorageCandidate => AuthorityNodeRole::StorageCandidate,
+            Self::Compute => AuthorityNodeRole::Compute,
+        }
+    }
+
+    #[must_use]
+    pub fn data_bucket(&self) -> ControlPlaneDataBucket {
+        match self {
+            Self::AuthorityStorage { .. } | Self::StorageCandidate => {
+                ControlPlaneDataBucket::StoredIntent
+            }
+            Self::Compute => ControlPlaneDataBucket::LiveFacts,
+        }
+    }
+
+    #[must_use]
+    pub fn loss_impact(&self) -> ControlPlaneLossImpact {
+        match self {
+            Self::AuthorityStorage { .. } => ControlPlaneLossImpact::StoredTruthLost,
+            Self::StorageCandidate | Self::Compute => ControlPlaneLossImpact::NoStoredTruthLost,
+        }
     }
 }
 
@@ -913,7 +1379,7 @@ impl NetworkLifecycle {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct MachineMembership {
     pub id: MachineId,
     pub public_key: PublicKey,
@@ -926,11 +1392,68 @@ pub struct MachineMembership {
     pub endpoints: Vec<String>,
     #[serde(default)]
     pub lifecycle: MachineLifecycle,
-    pub storage: bool,
-    pub storage_participation: StorageParticipation,
+    pub storage_role: MachineStorageRole,
     pub created_at: u64,
     pub updated_at: u64,
     pub labels: BTreeMap<String, String>,
+}
+
+impl<'de> Deserialize<'de> for MachineMembership {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawMachineMembership {
+            id: MachineId,
+            public_key: PublicKey,
+            overlay_ip: OverlayIp,
+            topology: MachineTopology,
+            region_role: RegionRole,
+            subnet: Option<Ipv4Net>,
+            bridge_ip: Option<OverlayIp>,
+            endpoints: Vec<String>,
+            #[serde(default)]
+            lifecycle: MachineLifecycle,
+            storage_role: MachineStorageRole,
+            created_at: u64,
+            updated_at: u64,
+            labels: BTreeMap<String, String>,
+        }
+
+        let raw = RawMachineMembership::deserialize(deserializer)?;
+        match (raw.lifecycle, raw.subnet) {
+            (MachineLifecycle::Active | MachineLifecycle::Draining, None) => {
+                return Err(de::Error::custom(format!(
+                    "{} machine '{}' must carry an assigned subnet",
+                    raw.lifecycle, raw.id
+                )));
+            }
+            (MachineLifecycle::Standby, Some(_)) => {
+                return Err(de::Error::custom(format!(
+                    "standby machine '{}' cannot carry an assigned subnet",
+                    raw.id
+                )));
+            }
+            _ => {}
+        }
+
+        Ok(Self {
+            id: raw.id,
+            public_key: raw.public_key,
+            overlay_ip: raw.overlay_ip,
+            topology: raw.topology,
+            region_role: raw.region_role,
+            subnet: raw.subnet,
+            bridge_ip: raw.bridge_ip,
+            endpoints: raw.endpoints,
+            lifecycle: raw.lifecycle,
+            storage_role: raw.storage_role,
+            created_at: raw.created_at,
+            updated_at: raw.updated_at,
+            labels: raw.labels,
+        })
+    }
 }
 
 impl MachineMembership {
@@ -946,6 +1469,11 @@ impl MachineMembership {
         subnet: Option<Ipv4Net>,
         endpoints: Vec<String>,
     ) -> Self {
+        let lifecycle = if subnet.is_some() {
+            MachineLifecycle::Active
+        } else {
+            MachineLifecycle::Standby
+        };
         Self {
             id,
             public_key,
@@ -955,9 +1483,8 @@ impl MachineMembership {
             subnet,
             bridge_ip: None,
             endpoints,
-            lifecycle: MachineLifecycle::Standby,
-            storage: true,
-            storage_participation: StorageParticipation::Candidate,
+            lifecycle,
+            storage_role: MachineStorageRole::Candidate,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -975,6 +1502,16 @@ impl MachineMembership {
             cidrs.push(format!("{}/128", bridge_ip.0));
         }
         cidrs
+    }
+
+    #[must_use]
+    pub fn storage(&self) -> bool {
+        self.storage_role.is_storage_capable()
+    }
+
+    #[must_use]
+    pub fn storage_participation(&self) -> StorageParticipation {
+        self.storage_role.storage_participation()
     }
 
     #[must_use]
@@ -1212,10 +1749,46 @@ pub struct InviteRecord {
     pub issuer_machine_id: MachineId,
     pub issuer_verify_key: String,
     pub expires_at: u64,
-    pub consumed_by: Option<MachineId>,
-    pub consumed_at: Option<u64>,
-    pub revoked_at: Option<u64>,
+    pub status: InviteStatus,
     pub signature: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InviteStatus {
+    Active,
+    Consumed {
+        consumed_by: MachineId,
+        consumed_at: u64,
+    },
+    Revoked {
+        revoked_at: u64,
+    },
+}
+
+impl InviteStatus {
+    #[must_use]
+    pub fn consumed_by(&self) -> Option<&MachineId> {
+        match self {
+            Self::Consumed { consumed_by, .. } => Some(consumed_by),
+            Self::Active | Self::Revoked { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn is_consumed_by(&self, machine_id: &MachineId) -> bool {
+        self.consumed_by() == Some(machine_id)
+    }
+
+    #[must_use]
+    pub fn is_consumed(&self) -> bool {
+        matches!(self, Self::Consumed { .. })
+    }
+
+    #[must_use]
+    pub fn is_revoked(&self) -> bool {
+        matches!(self, Self::Revoked { .. })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1236,8 +1809,7 @@ pub enum AcmeChallengeEvent {
     Removed { hostname: String, token: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
-pub struct SidecarId(pub String);
+validated_string_id!(pub struct SidecarId("sidecar id"););
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SidecarRecord {
@@ -1248,14 +1820,11 @@ pub struct SidecarRecord {
     pub sidecar_container: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display, JsonSchema)]
-pub struct InstanceId(pub String);
+validated_string_id!(pub struct InstanceId("instance id"););
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display, JsonSchema)]
-pub struct DeployId(pub String);
+validated_string_id!(pub struct DeployId("deploy id"););
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display, JsonSchema)]
-pub struct SlotId(pub String);
+validated_string_id!(pub struct SlotId("slot id"););
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceRevisionRecord {
@@ -1276,12 +1845,103 @@ pub struct ServiceReleaseRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceRelease {
-    pub primary_revision_hash: String,
-    pub referenced_revision_hashes: Vec<String>,
-    pub routing: ServiceRoutingPolicy,
+    pub target: ServiceReleaseTarget,
     pub slots: Vec<ServiceReleaseSlot>,
     pub updated_by_deploy_id: DeployId,
     pub updated_at: u64,
+}
+
+impl ServiceRelease {
+    #[must_use]
+    pub fn direct(
+        revision_hash: impl Into<String>,
+        slots: Vec<ServiceReleaseSlot>,
+        updated_by_deploy_id: DeployId,
+        updated_at: u64,
+    ) -> Self {
+        Self {
+            target: ServiceReleaseTarget::Direct {
+                revision_hash: revision_hash.into(),
+            },
+            slots,
+            updated_by_deploy_id,
+            updated_at,
+        }
+    }
+
+    #[must_use]
+    pub fn split(
+        primary_revision_hash: impl Into<String>,
+        allocations: Vec<ServiceTrafficAllocation>,
+        slots: Vec<ServiceReleaseSlot>,
+        updated_by_deploy_id: DeployId,
+        updated_at: u64,
+    ) -> Self {
+        Self {
+            target: ServiceReleaseTarget::Split {
+                primary_revision_hash: primary_revision_hash.into(),
+                allocations,
+            },
+            slots,
+            updated_by_deploy_id,
+            updated_at,
+        }
+    }
+
+    #[must_use]
+    pub fn primary_revision_hash(&self) -> &str {
+        match &self.target {
+            ServiceReleaseTarget::Direct { revision_hash } => revision_hash,
+            ServiceReleaseTarget::Split {
+                primary_revision_hash,
+                ..
+            } => primary_revision_hash,
+        }
+    }
+
+    #[must_use]
+    pub fn referenced_revision_hashes(&self) -> Vec<String> {
+        match &self.target {
+            ServiceReleaseTarget::Direct { revision_hash } => vec![revision_hash.clone()],
+            ServiceReleaseTarget::Split {
+                primary_revision_hash,
+                allocations,
+            } => {
+                let mut revisions = Vec::with_capacity(allocations.len() + 1);
+                revisions.push(primary_revision_hash.clone());
+                for allocation in allocations {
+                    if !revisions.contains(&allocation.revision_hash) {
+                        revisions.push(allocation.revision_hash.clone());
+                    }
+                }
+                revisions
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn routing_policy(&self) -> ServiceRoutingPolicy {
+        match &self.target {
+            ServiceReleaseTarget::Direct { revision_hash } => ServiceRoutingPolicy::Direct {
+                revision_hash: revision_hash.clone(),
+            },
+            ServiceReleaseTarget::Split { allocations, .. } => ServiceRoutingPolicy::Split {
+                allocations: allocations.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ServiceReleaseTarget {
+    Direct {
+        revision_hash: String,
+    },
+    Split {
+        primary_revision_hash: String,
+        allocations: Vec<ServiceTrafficAllocation>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1914,7 +2574,7 @@ pub enum DrainState {
     Complete,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct InstanceStatusRecord {
     pub instance_id: InstanceId,
     pub namespace: Namespace,
@@ -1932,6 +2592,88 @@ pub struct InstanceStatusRecord {
     pub error: Option<String>,
     pub started_at: u64,
     pub updated_at: u64,
+}
+
+impl<'de> Deserialize<'de> for InstanceStatusRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawInstanceStatusRecord {
+            instance_id: InstanceId,
+            namespace: Namespace,
+            service: String,
+            slot_id: SlotId,
+            machine_id: MachineId,
+            revision_hash: String,
+            deploy_id: DeployId,
+            docker_container_id: String,
+            overlay_ip: Option<Ipv4Addr>,
+            backend_ports: BTreeMap<String, u16>,
+            phase: InstancePhase,
+            ready: bool,
+            drain_state: DrainState,
+            error: Option<String>,
+            started_at: u64,
+            updated_at: u64,
+        }
+
+        let raw = RawInstanceStatusRecord::deserialize(deserializer)?;
+        match raw.phase {
+            InstancePhase::Ready if !raw.ready => {
+                return Err(de::Error::custom(format!(
+                    "ready instance '{}' must set ready=true",
+                    raw.instance_id
+                )));
+            }
+            InstancePhase::Failed if raw.error.is_none() => {
+                return Err(de::Error::custom(format!(
+                    "failed instance '{}' must carry an error",
+                    raw.instance_id
+                )));
+            }
+            InstancePhase::Draining
+                if raw.ready || raw.drain_state == DrainState::None || raw.error.is_some() =>
+            {
+                return Err(de::Error::custom(format!(
+                    "draining instance '{}' must be not-ready, have drain evidence, and no error",
+                    raw.instance_id
+                )));
+            }
+            InstancePhase::Pending
+            | InstancePhase::Starting
+            | InstancePhase::Ready
+            | InstancePhase::Removed
+                if raw.error.is_some() =>
+            {
+                return Err(de::Error::custom(format!(
+                    "{} instance '{}' cannot carry failure error",
+                    raw.phase, raw.instance_id
+                )));
+            }
+            _ => {}
+        }
+
+        Ok(Self {
+            instance_id: raw.instance_id,
+            namespace: raw.namespace,
+            service: raw.service,
+            slot_id: raw.slot_id,
+            machine_id: raw.machine_id,
+            revision_hash: raw.revision_hash,
+            deploy_id: raw.deploy_id,
+            docker_container_id: raw.docker_container_id,
+            overlay_ip: raw.overlay_ip,
+            backend_ports: raw.backend_ports,
+            phase: raw.phase,
+            ready: raw.ready,
+            drain_state: raw.drain_state,
+            error: raw.error,
+            started_at: raw.started_at,
+            updated_at: raw.updated_at,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -2099,19 +2841,186 @@ impl DeployTransitionError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployRecordState {
+    Planning {
+        summary_json: String,
+    },
+    Applying {
+        summary_json: String,
+    },
+    Committed {
+        committed_at: u64,
+        finished_at: u64,
+        summary_json: String,
+    },
+    CheckpointCommitted {
+        summary_json: String,
+    },
+    CleanupPending {
+        committed_at: u64,
+        finished_at: u64,
+        summary_json: String,
+    },
+    FailedAfterCheckpoint {
+        finished_at: u64,
+        summary_json: String,
+    },
+    Failed {
+        finished_at: u64,
+        summary_json: String,
+    },
+}
+
+impl DeployRecordState {
+    #[must_use]
+    pub fn state(&self) -> DeployState {
+        match self {
+            Self::Planning { .. } => DeployState::Planning,
+            Self::Applying { .. } => DeployState::Applying,
+            Self::Committed { .. } => DeployState::Committed,
+            Self::CheckpointCommitted { .. } => DeployState::CheckpointCommitted,
+            Self::CleanupPending { .. } => DeployState::CleanupPending,
+            Self::FailedAfterCheckpoint { .. } => DeployState::FailedAfterCheckpoint,
+            Self::Failed { .. } => DeployState::Failed,
+        }
+    }
+
+    #[must_use]
+    pub fn committed_at(&self) -> Option<u64> {
+        match self {
+            Self::Committed { committed_at, .. } | Self::CleanupPending { committed_at, .. } => {
+                Some(*committed_at)
+            }
+            Self::Planning { .. }
+            | Self::Applying { .. }
+            | Self::CheckpointCommitted { .. }
+            | Self::FailedAfterCheckpoint { .. }
+            | Self::Failed { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn finished_at(&self) -> Option<u64> {
+        match self {
+            Self::Committed { finished_at, .. }
+            | Self::CleanupPending { finished_at, .. }
+            | Self::FailedAfterCheckpoint { finished_at, .. }
+            | Self::Failed { finished_at, .. } => Some(*finished_at),
+            Self::Planning { .. } | Self::Applying { .. } | Self::CheckpointCommitted { .. } => {
+                None
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn summary_json(&self) -> &str {
+        match self {
+            Self::Planning { summary_json }
+            | Self::Applying { summary_json }
+            | Self::Committed { summary_json, .. }
+            | Self::CheckpointCommitted { summary_json }
+            | Self::CleanupPending { summary_json, .. }
+            | Self::FailedAfterCheckpoint { summary_json, .. }
+            | Self::Failed { summary_json, .. } => summary_json,
+        }
+    }
+
+    pub fn set_summary_json(&mut self, next_summary_json: String) {
+        match self {
+            Self::Planning { summary_json }
+            | Self::Applying { summary_json }
+            | Self::Committed { summary_json, .. }
+            | Self::CheckpointCommitted { summary_json }
+            | Self::CleanupPending { summary_json, .. }
+            | Self::FailedAfterCheckpoint { summary_json, .. }
+            | Self::Failed { summary_json, .. } => *summary_json = next_summary_json,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployRecord {
     pub deploy_id: DeployId,
     pub namespace: Namespace,
     pub coordinator_machine_id: MachineId,
     pub manifest_hash: String,
-    pub state: DeployState,
     pub started_at: u64,
-    pub committed_at: Option<u64>,
-    pub finished_at: Option<u64>,
-    pub summary_json: String,
+    pub state: DeployRecordState,
 }
 
 impl DeployRecord {
+    #[must_use]
+    pub fn state(&self) -> DeployState {
+        self.state.state()
+    }
+
+    #[must_use]
+    pub fn committed_at(&self) -> Option<u64> {
+        self.state.committed_at()
+    }
+
+    #[must_use]
+    pub fn finished_at(&self) -> Option<u64> {
+        self.state.finished_at()
+    }
+
+    #[must_use]
+    pub fn summary_json(&self) -> &str {
+        self.state.summary_json()
+    }
+
+    pub fn set_summary_json(&mut self, summary_json: String) {
+        self.state.set_summary_json(summary_json);
+    }
+
+    pub fn mark_checkpoint_committed(&mut self, summary_json: String) {
+        self.state = DeployRecordState::CheckpointCommitted { summary_json };
+    }
+
+    pub fn mark_committed(&mut self, committed_at: u64, finished_at: u64, summary_json: String) {
+        self.state = DeployRecordState::Committed {
+            committed_at,
+            finished_at,
+            summary_json,
+        };
+    }
+
+    pub fn mark_cleanup_pending(&mut self, finished_at: u64) -> Result<(), DeployTransitionError> {
+        let DeployRecordState::Committed {
+            committed_at,
+            summary_json,
+            ..
+        } = self.state.clone()
+        else {
+            return Err(DeployTransitionError::invalid(format!(
+                "deploy '{}' must be committed before cleanup pending; current state is {}",
+                self.deploy_id,
+                self.state()
+            )));
+        };
+        self.state = DeployRecordState::CleanupPending {
+            committed_at,
+            finished_at,
+            summary_json,
+        };
+        Ok(())
+    }
+
+    pub fn mark_failed(&mut self, finished_at: u64, summary_json: String) {
+        self.state = DeployRecordState::Failed {
+            finished_at,
+            summary_json,
+        };
+    }
+
+    pub fn mark_failed_after_checkpoint(&mut self, finished_at: u64, summary_json: String) {
+        self.state = DeployRecordState::FailedAfterCheckpoint {
+            finished_at,
+            summary_json,
+        };
+    }
+
     pub fn apply_state_transition(
         &mut self,
         transition: DeployStateTransition,
@@ -2123,32 +3032,23 @@ impl DeployRecord {
         } = transition;
         match goal {
             DeployStateGoal::Commit { summary_json } => {
-                if self.state == DeployState::Committed {
+                if self.state() == DeployState::Committed {
                     return Ok(DeployTransitionOutcome::AlreadyInState);
                 }
-                if self.state != DeployState::Applying {
+                if self.state() != DeployState::Applying {
                     return Err(DeployTransitionError::invalid(format!(
                         "deploy '{}' must be applying before commit; current state is {}",
-                        self.deploy_id, self.state
+                        self.deploy_id,
+                        self.state()
                     )));
                 }
-                self.state = DeployState::Committed;
-                self.committed_at = Some(at_unix_secs);
-                self.finished_at = Some(at_unix_secs);
-                self.summary_json = summary_json;
+                self.mark_committed(at_unix_secs, at_unix_secs, summary_json);
             }
             DeployStateGoal::MarkCleanupPending => {
-                if self.state == DeployState::CleanupPending {
+                if self.state() == DeployState::CleanupPending {
                     return Ok(DeployTransitionOutcome::AlreadyInState);
                 }
-                if self.state != DeployState::Committed {
-                    return Err(DeployTransitionError::invalid(format!(
-                        "deploy '{}' must be committed before cleanup pending; current state is {}",
-                        self.deploy_id, self.state
-                    )));
-                }
-                self.state = DeployState::CleanupPending;
-                self.finished_at = Some(at_unix_secs);
+                self.mark_cleanup_pending(at_unix_secs)?;
             }
         }
         Ok(DeployTransitionOutcome::Applied)
@@ -2180,11 +3080,7 @@ pub enum DeployChangeKind {
     Unchanged,
 }
 
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, JsonSchema,
-)]
-#[display("{_0}")]
-pub struct DeployPhaseId(pub String);
+validated_string_id!(pub struct DeployPhaseId("deploy phase id"););
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -2273,22 +3169,211 @@ pub struct DeployPhaseFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeployPhaseSuccess {
+    EndOfDeploy {
+        completed_at: u64,
+        commit_deploy_id: DeployId,
+    },
+    Checkpoint {
+        completed_at: u64,
+        commit_deploy_id: DeployId,
+    },
+    NoStoreCommit {
+        completed_at: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeployPhaseRecordState {
+    Pending {
+        commit_policy: DeployPhaseCommitPolicy,
+    },
+    Running {
+        commit_policy: DeployPhaseCommitPolicy,
+    },
+    Succeeded {
+        success: DeployPhaseSuccess,
+    },
+    Failed {
+        commit_policy: DeployPhaseCommitPolicy,
+        completed_at: u64,
+        failure: DeployPhaseFailure,
+    },
+}
+
+impl DeployPhaseRecordState {
+    #[must_use]
+    pub fn pending(commit_policy: DeployPhaseCommitPolicy) -> Self {
+        Self::Pending { commit_policy }
+    }
+
+    #[must_use]
+    pub fn running(commit_policy: DeployPhaseCommitPolicy) -> Self {
+        Self::Running { commit_policy }
+    }
+
+    pub fn succeeded(
+        commit_policy: DeployPhaseCommitPolicy,
+        completed_at: u64,
+        commit_deploy_id: Option<DeployId>,
+    ) -> Result<Self, String> {
+        let success = match commit_policy {
+            DeployPhaseCommitPolicy::EndOfDeploy => DeployPhaseSuccess::EndOfDeploy {
+                completed_at,
+                commit_deploy_id: commit_deploy_id.ok_or_else(|| {
+                    "end-of-deploy phase success requires commit deploy id".to_string()
+                })?,
+            },
+            DeployPhaseCommitPolicy::Checkpoint => DeployPhaseSuccess::Checkpoint {
+                completed_at,
+                commit_deploy_id: commit_deploy_id.ok_or_else(|| {
+                    "checkpoint phase success requires commit deploy id".to_string()
+                })?,
+            },
+            DeployPhaseCommitPolicy::NoStoreCommit => {
+                if commit_deploy_id.is_some() {
+                    return Err("no-store phase success cannot carry commit deploy id".into());
+                }
+                DeployPhaseSuccess::NoStoreCommit { completed_at }
+            }
+        };
+        Ok(Self::Succeeded { success })
+    }
+
+    #[must_use]
+    pub fn failed(
+        commit_policy: DeployPhaseCommitPolicy,
+        completed_at: u64,
+        failure: DeployPhaseFailure,
+    ) -> Self {
+        Self::Failed {
+            commit_policy,
+            completed_at,
+            failure,
+        }
+    }
+
+    #[must_use]
+    pub fn lifecycle(&self) -> DeployPhaseState {
+        match self {
+            Self::Pending { .. } => DeployPhaseState::Pending,
+            Self::Running { .. } => DeployPhaseState::Running,
+            Self::Succeeded { success } => DeployPhaseState::Succeeded {
+                completed_at: success.completed_at(),
+            },
+            Self::Failed {
+                completed_at,
+                failure,
+                ..
+            } => DeployPhaseState::Failed {
+                completed_at: *completed_at,
+                failure: failure.clone(),
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn commit_policy(&self) -> DeployPhaseCommitPolicy {
+        match self {
+            Self::Pending { commit_policy }
+            | Self::Running { commit_policy }
+            | Self::Failed { commit_policy, .. } => *commit_policy,
+            Self::Succeeded { success } => success.commit_policy(),
+        }
+    }
+
+    #[must_use]
+    pub fn commit_deploy_id(&self) -> Option<DeployId> {
+        match self {
+            Self::Succeeded { success } => success.commit_deploy_id(),
+            Self::Pending { .. } | Self::Running { .. } | Self::Failed { .. } => None,
+        }
+    }
+}
+
+impl DeployPhaseSuccess {
+    #[must_use]
+    pub fn completed_at(&self) -> u64 {
+        match self {
+            Self::EndOfDeploy { completed_at, .. }
+            | Self::Checkpoint { completed_at, .. }
+            | Self::NoStoreCommit { completed_at } => *completed_at,
+        }
+    }
+
+    #[must_use]
+    pub fn commit_policy(&self) -> DeployPhaseCommitPolicy {
+        match self {
+            Self::EndOfDeploy { .. } => DeployPhaseCommitPolicy::EndOfDeploy,
+            Self::Checkpoint { .. } => DeployPhaseCommitPolicy::Checkpoint,
+            Self::NoStoreCommit { .. } => DeployPhaseCommitPolicy::NoStoreCommit,
+        }
+    }
+
+    #[must_use]
+    pub fn commit_deploy_id(&self) -> Option<DeployId> {
+        match self {
+            Self::EndOfDeploy {
+                commit_deploy_id, ..
+            }
+            | Self::Checkpoint {
+                commit_deploy_id, ..
+            } => Some(commit_deploy_id.clone()),
+            Self::NoStoreCommit { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployPhaseRecord {
     pub namespace: Namespace,
     pub deploy_id: DeployId,
     pub phase_id: DeployPhaseId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit_deploy_id: Option<DeployId>,
     pub name: String,
     pub order: u32,
     pub after: Vec<DeployPhaseId>,
     pub participants: Vec<MachineId>,
     pub work: Vec<DeployPhaseWork>,
-    pub state: DeployPhaseState,
-    pub commit_policy: DeployPhaseCommitPolicy,
+    pub state: DeployPhaseRecordState,
     pub rollback_policy: DeployPhaseRollbackPolicy,
     pub advance_policy: DeployPhaseAdvancePolicy,
     pub started_at: u64,
+}
+
+impl DeployPhaseRecord {
+    #[must_use]
+    pub fn lifecycle_state(&self) -> DeployPhaseState {
+        self.state.lifecycle()
+    }
+
+    #[must_use]
+    pub fn commit_policy(&self) -> DeployPhaseCommitPolicy {
+        self.state.commit_policy()
+    }
+
+    #[must_use]
+    pub fn commit_deploy_id(&self) -> Option<DeployId> {
+        self.state.commit_deploy_id()
+    }
+
+    pub fn mark_succeeded(
+        &mut self,
+        commit_deploy_id: Option<DeployId>,
+        completed_at: u64,
+    ) -> Result<(), String> {
+        self.state = DeployPhaseRecordState::succeeded(
+            self.commit_policy(),
+            completed_at,
+            commit_deploy_id,
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_failed(&mut self, completed_at: u64, failure: DeployPhaseFailure) {
+        self.state = DeployPhaseRecordState::failed(self.commit_policy(), completed_at, failure);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2380,10 +3465,33 @@ impl DeployPreviewBaselineComponents {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeployPreviewBaseline {
     pub fingerprint: String,
     pub components: DeployPreviewBaselineComponents,
+}
+
+impl<'de> Deserialize<'de> for DeployPreviewBaseline {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawDeployPreviewBaseline {
+            fingerprint: String,
+            components: DeployPreviewBaselineComponents,
+        }
+
+        let raw = RawDeployPreviewBaseline::deserialize(deserializer)?;
+        let baseline = Self::new(raw.components);
+        if baseline.fingerprint != raw.fingerprint {
+            return Err(de::Error::custom(format!(
+                "deploy preview baseline fingerprint '{}' does not match canonical fingerprint '{}'",
+                raw.fingerprint, baseline.fingerprint
+            )));
+        }
+        Ok(baseline)
+    }
 }
 
 impl DeployPreviewBaseline {
@@ -2828,6 +3936,47 @@ mod tests {
     use std::str::FromStr;
 
     #[test]
+    fn validated_string_ids_reject_empty_and_control_characters() {
+        assert!(MachineId::try_new("machine-a").is_ok());
+        assert!(MachineId::try_new("").is_err());
+        assert!(DeployId::try_new("deploy\n1").is_err());
+    }
+
+    #[test]
+    fn non_zero_replica_count_rejects_zero() {
+        let count = NonZeroReplicaCount::try_new(3).expect("valid replica count");
+
+        assert_eq!(count.get(), 3);
+        assert!(NonZeroReplicaCount::try_new(0).is_err());
+        assert!(serde_json::from_str::<NonZeroReplicaCount>("0").is_err());
+        assert_eq!(serde_json::to_string(&count).expect("json"), "3");
+    }
+
+    #[test]
+    fn positive_scalar_rejects_zero_negative_and_non_finite_values() {
+        let scalar = PositiveScalar::try_new(1.25).expect("valid positive scalar");
+
+        assert_eq!(scalar.get(), 1.25);
+        assert!(PositiveScalar::try_new(0.0).is_err());
+        assert!(PositiveScalar::try_new(-1.0).is_err());
+        assert!(PositiveScalar::try_new(f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn redacted_secret_string_never_displays_raw_value() {
+        let secret = RedactedSecretString::try_new("super-secret").expect("valid secret");
+
+        assert_eq!(secret.expose_secret(), "super-secret");
+        assert_eq!(format!("{secret}"), "<redacted>");
+        assert_eq!(format!("{secret:?}"), "<redacted>");
+        assert_eq!(
+            serde_json::to_string(&secret).expect("json"),
+            r#""<redacted>""#
+        );
+        assert!(RedactedSecretString::try_new("").is_err());
+    }
+
+    #[test]
     fn image_digest_requires_algorithm_and_hex_hash() {
         assert!(ImageDigest::try_new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").is_ok());
         assert!(ImageDigest::try_new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").is_err());
@@ -2872,8 +4021,8 @@ mod tests {
             volume_clones: "clones".into(),
         });
         let record = BranchEnvironmentRecord {
-            source_namespace: Namespace("prod".into()),
-            target_namespace: Namespace("pr-39".into()),
+            source_namespace: Namespace::new("prod"),
+            target_namespace: Namespace::new("pr-39"),
             state: BranchEnvironmentState::Prepared,
             default_service_mode: BranchEnvironmentResourceMode::Branch,
             default_volume_mode: BranchEnvironmentResourceMode::Fresh,
@@ -2882,7 +4031,7 @@ mod tests {
                 mode: BranchEnvironmentResourceMode::Fresh,
             }],
             volumes: Vec::new(),
-            prepared_deploy_id: Some(DeployId("prepare-1".into())),
+            prepared_deploy_id: Some(DeployId::new("prepare-1")),
             applied_deploy_id: None,
             manifest_hash: "manifest-hash".into(),
             baseline,
@@ -2913,10 +4062,10 @@ mod tests {
     #[test]
     fn deploy_preview_serializes_volume_clone_preflight_contract() {
         let preview = DeployPreview {
-            namespace: Namespace("pr-39".into()),
+            namespace: Namespace::new("pr-39"),
             manifest_hash: "manifest".into(),
             baseline: None,
-            participants: vec![MachineId("machine-a".into())],
+            participants: vec![MachineId::new("machine-a")],
             phases: Vec::new(),
             services: Vec::new(),
             service_sources: Vec::new(),
@@ -2925,7 +4074,7 @@ mod tests {
             volume_moves: Vec::new(),
             volume_clones: Vec::new(),
             volume_clone_preflights: vec![VolumeClonePreflightPlan {
-                phase_id: DeployPhaseId("data".into()),
+                phase_id: DeployPhaseId::new("data"),
                 volumes: vec!["data".into(), "cache".into()],
                 action: VolumeClonePreflightAction::DrainAndRemoveBeforeCloneReplacement,
                 scope: VolumeClonePreflightScope::UncommittedNamespaceInstances,
@@ -2988,10 +4137,10 @@ mod tests {
         let digest =
             ImageDigest::try_new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("valid digest");
         let preview = DeployPreview {
-            namespace: Namespace("default".into()),
+            namespace: Namespace::new("default"),
             manifest_hash: "manifest".into(),
             baseline: None,
-            participants: vec![MachineId("machine-a".into())],
+            participants: vec![MachineId::new("machine-a")],
             phases: Vec::new(),
             services: Vec::new(),
             service_sources: Vec::new(),
@@ -3002,8 +4151,8 @@ mod tests {
             volume_clone_preflights: Vec::new(),
             image_availability: vec![DeployImageAvailabilityPlan {
                 service: "web".into(),
-                slot_id: SlotId("web-0".into()),
-                machine_id: MachineId("machine-a".into()),
+                slot_id: SlotId::new("web-0"),
+                machine_id: MachineId::new("machine-a"),
                 image: digest.as_str().into(),
                 digest: digest.clone(),
                 status: DeployImageAvailabilityStatus::Present,
@@ -3043,7 +4192,7 @@ mod tests {
             ..baseline.components.clone()
         });
         let preview = DeployPreview {
-            namespace: Namespace("pr-39".into()),
+            namespace: Namespace::new("pr-39"),
             manifest_hash: "manifest".into(),
             baseline: Some(baseline.clone()),
             participants: Vec::new(),
@@ -3075,16 +4224,32 @@ mod tests {
         );
         assert!(baseline.changed_components(&baseline).is_empty());
         assert!(baseline.is_canonical());
-        assert!(
-            !DeployPreviewBaseline {
-                fingerprint: "bogus".into(),
-                components: baseline.components.clone(),
-            }
-            .is_canonical()
-        );
         let roundtrip: DeployPreview =
             serde_json::from_value(json).expect("deserialize deploy preview");
         assert_eq!(roundtrip.baseline, Some(baseline));
+    }
+
+    #[test]
+    fn deploy_preview_baseline_rejects_noncanonical_fingerprint() {
+        let baseline = DeployPreviewBaseline::new(DeployPreviewBaselineComponents {
+            manifest: "manifest".into(),
+            participants: "participants".into(),
+            phases: "phases".into(),
+            services: "services".into(),
+            service_sources: "sources".into(),
+            volumes: "volumes".into(),
+            volume_moves: "moves".into(),
+            volume_clones: "clones".into(),
+        });
+        let mut json = serde_json::to_value(&baseline).expect("serialize baseline");
+        json["fingerprint"] = serde_json::json!("bogus");
+
+        let error = serde_json::from_value::<DeployPreviewBaseline>(json)
+            .expect_err("mismatched fingerprint should fail");
+        assert!(
+            error.to_string().contains("canonical fingerprint"),
+            "got: {error}"
+        );
     }
 
     #[test]
@@ -3145,7 +4310,7 @@ mod tests {
             volume_clones: "clones".into(),
         });
         let preview = DeployPreview {
-            namespace: Namespace("prod".into()),
+            namespace: Namespace::new("prod"),
             manifest_hash: "manifest".into(),
             baseline: Some(baseline.clone()),
             participants: Vec::new(),
@@ -3161,13 +4326,13 @@ mod tests {
             warnings: Vec::new(),
         };
         let record = PreparedDeployRecord {
-            prepared_deploy_id: DeployId("prepare-1".into()),
-            namespace: Namespace("prod".into()),
+            prepared_deploy_id: DeployId::new("prepare-1"),
+            namespace: Namespace::new("prod"),
             manifest_hash: "manifest".into(),
             manifest_json: r#"{"namespace":"prod","services":[]}"#.into(),
             preview,
             baseline,
-            coordinator_machine_id: MachineId("machine-a".into()),
+            coordinator_machine_id: MachineId::new("machine-a"),
             state: PreparedDeployState::Prepared,
             created_at: 10,
             expires_at: 20,
@@ -3194,7 +4359,7 @@ mod tests {
             ServiceSourcePlan {
                 service: "web".into(),
                 mode: ServiceSourceMode::Branch {
-                    source_namespace: Namespace("prod".into()),
+                    source_namespace: Namespace::new("prod"),
                     source_service: "web".into(),
                     source_revision_hash: "source-rev".into(),
                 },
@@ -3202,7 +4367,7 @@ mod tests {
         ];
         let fingerprint = service_source_fingerprint(&service_sources);
         let preview = DeployPreview {
-            namespace: Namespace("pr-39".into()),
+            namespace: Namespace::new("pr-39"),
             manifest_hash: "manifest".into(),
             baseline: None,
             participants: Vec::new(),
@@ -3251,7 +4416,7 @@ mod tests {
         let branch = ServiceSourcePlan {
             service: "web".into(),
             mode: ServiceSourceMode::Branch {
-                source_namespace: Namespace("prod".into()),
+                source_namespace: Namespace::new("prod"),
                 source_service: "web".into(),
                 source_revision_hash: "rev-1".into(),
             },
@@ -3269,7 +4434,7 @@ mod tests {
         let branch_with_other_namespace = ServiceSourcePlan {
             service: "web".into(),
             mode: ServiceSourceMode::Branch {
-                source_namespace: Namespace("staging".into()),
+                source_namespace: Namespace::new("staging"),
                 source_service: "web".into(),
                 source_revision_hash: "rev-1".into(),
             },
@@ -3282,7 +4447,7 @@ mod tests {
         let branch_with_other_service = ServiceSourcePlan {
             service: "web".into(),
             mode: ServiceSourceMode::Branch {
-                source_namespace: Namespace("prod".into()),
+                source_namespace: Namespace::new("prod"),
                 source_service: "api".into(),
                 source_revision_hash: "rev-1".into(),
             },
@@ -3295,7 +4460,7 @@ mod tests {
         let branch_with_other_revision = ServiceSourcePlan {
             service: "web".into(),
             mode: ServiceSourceMode::Branch {
-                source_namespace: Namespace("prod".into()),
+                source_namespace: Namespace::new("prod"),
                 source_service: "web".into(),
                 source_revision_hash: "rev-2".into(),
             },
@@ -3315,11 +4480,11 @@ mod tests {
     #[test]
     fn image_artifact_preserves_digest_identity_through_json() {
         let artifact = ImageArtifact {
-            image: ImageRef {
-                repository: Some("registry.example/api".into()),
-                tag: Some("latest".into()),
-                digest: ImageDigest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
-            },
+            image: ImageRef::repository_digest(
+                "registry.example/api",
+                Some("latest".into()),
+                ImageDigest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            ),
             platform: Some(ImagePlatform {
                 os: "linux".into(),
                 architecture: "amd64".into(),
@@ -3328,7 +4493,7 @@ mod tests {
             provenance: ImageArtifactProvenance::Build {
                 method: BuildMethod::Railpack,
                 location: BuildLocation::Machine {
-                    machine_id: MachineId("builder-a".into()),
+                    machine_id: MachineId::new("builder-a"),
                 },
                 source_digest: Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()),
             },
@@ -3347,7 +4512,7 @@ mod tests {
             ImageArtifactProvenance::Build {
                 method: BuildMethod::Railpack,
                 location: BuildLocation::Machine {
-                    machine_id: MachineId("builder-a".into()),
+                    machine_id: MachineId::new("builder-a"),
                 },
                 source_digest: Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()),
             }
@@ -3355,10 +4520,78 @@ mod tests {
     }
 
     #[test]
+    fn image_ref_rejects_tag_without_repository_variant() {
+        let json = serde_json::json!({
+            "kind": "digest",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tag": "latest"
+        });
+
+        serde_json::from_value::<ImageRef>(json).expect_err("digest-only image cannot carry tag");
+    }
+
+    #[test]
+    fn image_operation_target_outcome_rejects_failed_success_facts() {
+        let json = serde_json::json!({
+            "status": "failed",
+            "machine_id": "machine-a",
+            "bytes_transferred": 128,
+            "last_error": "disk full"
+        });
+
+        serde_json::from_value::<ImageOperationTargetOutcome>(json)
+            .expect_err("failed target cannot carry success bytes");
+    }
+
+    #[test]
+    fn image_operation_state_rejects_success_with_error() {
+        let json = serde_json::json!({
+            "id": "image-push-1",
+            "kind": "push",
+            "stage": "complete",
+            "digest": {
+                "kind": "digest",
+                "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "targets": [],
+            "started_at": 1,
+            "updated_at": 2,
+            "state": {
+                "status": "succeeded",
+                "last_error": "copy failed"
+            }
+        });
+
+        serde_json::from_value::<ImageOperationRecord>(json)
+            .expect_err("succeeded image operation cannot carry last_error");
+    }
+
+    #[test]
+    fn build_operation_state_rejects_failed_artifact() {
+        let json = serde_json::json!({
+            "status": "failed",
+            "last_error": "build failed",
+            "artifact": {
+                "image": {
+                    "kind": "digest",
+                    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "provenance": {
+                    "kind": "external"
+                },
+                "created_at": 42
+            }
+        });
+
+        serde_json::from_value::<BuildOperationState>(json)
+            .expect_err("failed build operation cannot carry success artifact");
+    }
+
+    #[test]
     fn image_availability_record_carries_machine_scoped_presence() {
         let digest = ImageDigest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into());
         let record = ImageAvailabilityRecord {
-            machine_id: MachineId("machine-a".into()),
+            machine_id: MachineId::new("machine-a"),
             digest: digest.clone(),
             presence: ImagePresence::Failed {
                 reason: "transfer interrupted".into(),
@@ -3369,7 +4602,7 @@ mod tests {
         };
 
         assert_eq!(record.digest, digest);
-        assert_eq!(record.machine_id, MachineId("machine-a".into()));
+        assert_eq!(record.machine_id, MachineId::new("machine-a"));
     }
 
     #[test]
@@ -3430,13 +4663,16 @@ mod tests {
         );
 
         assert_eq!(
-            posture.role,
+            posture.role(),
             AuthorityNodeRole::AuthorityStorage {
                 authority_id: AuthorityId::default_authority(),
             }
         );
-        assert_eq!(posture.data_bucket, ControlPlaneDataBucket::StoredIntent);
-        assert_eq!(posture.loss_impact, ControlPlaneLossImpact::StoredTruthLost);
+        assert_eq!(posture.data_bucket(), ControlPlaneDataBucket::StoredIntent);
+        assert_eq!(
+            posture.loss_impact(),
+            ControlPlaneLossImpact::StoredTruthLost
+        );
     }
 
     #[test]
@@ -3446,10 +4682,10 @@ mod tests {
             &StorageParticipation::Candidate,
         );
 
-        assert_eq!(posture.role, AuthorityNodeRole::StorageCandidate);
-        assert_eq!(posture.data_bucket, ControlPlaneDataBucket::StoredIntent);
+        assert_eq!(posture.role(), AuthorityNodeRole::StorageCandidate);
+        assert_eq!(posture.data_bucket(), ControlPlaneDataBucket::StoredIntent);
         assert_eq!(
-            posture.loss_impact,
+            posture.loss_impact(),
             ControlPlaneLossImpact::NoStoredTruthLost
         );
     }
@@ -3461,16 +4697,16 @@ mod tests {
             &StorageParticipation::Candidate,
         );
 
-        assert_eq!(posture.role, AuthorityNodeRole::Compute);
-        assert_eq!(posture.data_bucket, ControlPlaneDataBucket::LiveFacts);
+        assert_eq!(posture.role(), AuthorityNodeRole::Compute);
+        assert_eq!(posture.data_bucket(), ControlPlaneDataBucket::LiveFacts);
         assert_eq!(
-            posture.loss_impact,
+            posture.loss_impact(),
             ControlPlaneLossImpact::NoStoredTruthLost
         );
     }
 
     #[test]
-    fn authority_posture_serializes_with_typed_role_and_impact() {
+    fn authority_posture_serializes_as_single_variant_with_derived_impact() {
         let posture = AuthorityNodePosture::from_storage_participation(
             true,
             &StorageParticipation::default_authority(),
@@ -3481,17 +4717,18 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "role": {
-                    "kind": "authority_storage",
-                    "authority_id": "auth-default"
-                },
-                "data_bucket": "stored_intent",
-                "loss_impact": "stored_truth_lost"
+                "kind": "authority_storage",
+                "authority_id": "auth-default"
             })
         );
         let decoded: AuthorityNodePosture =
             serde_json::from_value(json).expect("deserialize posture");
         assert_eq!(decoded, posture);
+        assert_eq!(decoded.data_bucket(), ControlPlaneDataBucket::StoredIntent);
+        assert_eq!(
+            decoded.loss_impact(),
+            ControlPlaneLossImpact::StoredTruthLost
+        );
     }
 
     #[test]
@@ -3673,25 +4910,104 @@ mod tests {
                     summary_json: "{}".into(),
                 },
                 evidence: DeployTransitionEvidence::DeployExecutor {
-                    coordinator_machine_id: MachineId("m1".into()),
+                    coordinator_machine_id: MachineId::new("m1"),
                 },
                 at_unix_secs: 42,
             })
             .expect("commit is valid");
 
         assert_eq!(outcome, DeployTransitionOutcome::Applied);
-        assert_eq!(record.state, DeployState::Committed);
-        assert_eq!(record.committed_at, Some(42));
-        assert_eq!(record.finished_at, Some(42));
-        assert_eq!(record.summary_json, "{}");
+        assert_eq!(record.state(), DeployState::Committed);
+        assert_eq!(record.committed_at(), Some(42));
+        assert_eq!(record.finished_at(), Some(42));
+        assert_eq!(record.summary_json(), "{}");
+    }
+
+    #[test]
+    fn deploy_phase_success_evidence_matches_commit_policy() {
+        let end_commit = DeployId::new("deploy-1");
+        let end_state = DeployPhaseRecordState::succeeded(
+            DeployPhaseCommitPolicy::EndOfDeploy,
+            42,
+            Some(end_commit.clone()),
+        )
+        .expect("end-of-deploy success has commit id");
+        assert_eq!(
+            end_state.commit_policy(),
+            DeployPhaseCommitPolicy::EndOfDeploy
+        );
+        assert_eq!(end_state.commit_deploy_id(), Some(end_commit));
+        assert_eq!(
+            end_state.lifecycle(),
+            DeployPhaseState::Succeeded { completed_at: 42 }
+        );
+
+        let checkpoint_commit = DeployId::new("deploy-1:phase:db");
+        let checkpoint_state = DeployPhaseRecordState::succeeded(
+            DeployPhaseCommitPolicy::Checkpoint,
+            43,
+            Some(checkpoint_commit.clone()),
+        )
+        .expect("checkpoint success has commit id");
+        assert_eq!(
+            checkpoint_state.commit_policy(),
+            DeployPhaseCommitPolicy::Checkpoint
+        );
+        assert_eq!(checkpoint_state.commit_deploy_id(), Some(checkpoint_commit));
+
+        let no_store_state =
+            DeployPhaseRecordState::succeeded(DeployPhaseCommitPolicy::NoStoreCommit, 44, None)
+                .expect("no-store success omits commit id");
+        assert_eq!(
+            no_store_state.commit_policy(),
+            DeployPhaseCommitPolicy::NoStoreCommit
+        );
+        assert_eq!(no_store_state.commit_deploy_id(), None);
+
+        assert!(
+            DeployPhaseRecordState::succeeded(DeployPhaseCommitPolicy::Checkpoint, 45, None)
+                .is_err()
+        );
+        assert!(
+            DeployPhaseRecordState::succeeded(
+                DeployPhaseCommitPolicy::NoStoreCommit,
+                46,
+                Some(DeployId::new("deploy-1:phase:no-store")),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn deploy_phase_record_rejects_old_parallel_commit_fields() {
+        let old_shape = serde_json::json!({
+            "namespace": "prod",
+            "deploy_id": "deploy-1",
+            "phase_id": "deploy",
+            "commit_deploy_id": "deploy-1",
+            "name": "Deploy",
+            "order": 0,
+            "after": [],
+            "participants": [],
+            "work": [],
+            "state": {
+                "succeeded": {
+                    "completed_at": 42
+                }
+            },
+            "commit_policy": "end_of_deploy",
+            "rollback_policy": "reversible",
+            "advance_policy": "immediate",
+            "started_at": 1
+        });
+
+        assert!(serde_json::from_value::<DeployPhaseRecord>(old_shape).is_err());
     }
 
     #[test]
     fn deploy_transition_idempotent_commit_preserves_original_completion() {
         let mut record = deploy_record(DeployState::Committed);
-        record.committed_at = Some(42);
-        record.finished_at = Some(42);
-        record.summary_json = r#"{"started":1}"#.into();
+        record.mark_committed(42, 42, r#"{"started":1}"#.into());
 
         let outcome = record
             .apply_state_transition(DeployStateTransition {
@@ -3699,41 +5015,40 @@ mod tests {
                     summary_json: r#"{"started":2}"#.into(),
                 },
                 evidence: DeployTransitionEvidence::DeployExecutor {
-                    coordinator_machine_id: MachineId("m1".into()),
+                    coordinator_machine_id: MachineId::new("m1"),
                 },
                 at_unix_secs: 99,
             })
             .expect("committed deploy commit is idempotent");
 
         assert_eq!(outcome, DeployTransitionOutcome::AlreadyInState);
-        assert_eq!(record.state, DeployState::Committed);
-        assert_eq!(record.committed_at, Some(42));
-        assert_eq!(record.finished_at, Some(42));
-        assert_eq!(record.summary_json, r#"{"started":1}"#);
+        assert_eq!(record.state(), DeployState::Committed);
+        assert_eq!(record.committed_at(), Some(42));
+        assert_eq!(record.finished_at(), Some(42));
+        assert_eq!(record.summary_json(), r#"{"started":1}"#);
     }
 
     #[test]
     fn deploy_transition_idempotent_cleanup_pending_preserves_original_timestamp() {
         let mut record = deploy_record(DeployState::CleanupPending);
-        record.committed_at = Some(42);
-        record.finished_at = Some(50);
-        record.summary_json = "{}".into();
+        record.mark_committed(42, 42, "{}".into());
+        record.mark_cleanup_pending(50).expect("cleanup pending");
 
         let outcome = record
             .apply_state_transition(DeployStateTransition {
                 goal: DeployStateGoal::MarkCleanupPending,
                 evidence: DeployTransitionEvidence::DeployExecutor {
-                    coordinator_machine_id: MachineId("m1".into()),
+                    coordinator_machine_id: MachineId::new("m1"),
                 },
                 at_unix_secs: 99,
             })
             .expect("cleanup-pending deploy cleanup transition is idempotent");
 
         assert_eq!(outcome, DeployTransitionOutcome::AlreadyInState);
-        assert_eq!(record.state, DeployState::CleanupPending);
-        assert_eq!(record.committed_at, Some(42));
-        assert_eq!(record.finished_at, Some(50));
-        assert_eq!(record.summary_json, "{}");
+        assert_eq!(record.state(), DeployState::CleanupPending);
+        assert_eq!(record.committed_at(), Some(42));
+        assert_eq!(record.finished_at(), Some(50));
+        assert_eq!(record.summary_json(), "{}");
     }
 
     #[test]
@@ -3744,14 +5059,14 @@ mod tests {
             .apply_state_transition(DeployStateTransition {
                 goal: DeployStateGoal::MarkCleanupPending,
                 evidence: DeployTransitionEvidence::DeployExecutor {
-                    coordinator_machine_id: MachineId("m1".into()),
+                    coordinator_machine_id: MachineId::new("m1"),
                 },
                 at_unix_secs: 42,
             })
             .expect_err("cleanup pending requires committed");
 
         assert_eq!(error.code(), "INVALID_TRANSITION");
-        assert_eq!(record.state, DeployState::Applying);
+        assert_eq!(record.state(), DeployState::Applying);
     }
 
     #[test]
@@ -3863,7 +5178,7 @@ mod tests {
             .apply_status_transition(InstanceStatusTransition {
                 goal: InstanceStatusGoal::MarkDraining,
                 evidence: InstanceStatusEvidence::DeployCleanup {
-                    deploy_id: DeployId("deploy-1".into()),
+                    deploy_id: DeployId::new("deploy-1"),
                 },
                 at_unix_secs: 42,
             })
@@ -3890,7 +5205,7 @@ mod tests {
             .apply_status_transition(InstanceStatusTransition {
                 goal: InstanceStatusGoal::MarkDraining,
                 evidence: InstanceStatusEvidence::DeployCleanup {
-                    deploy_id: DeployId("deploy-1".into()),
+                    deploy_id: DeployId::new("deploy-1"),
                 },
                 at_unix_secs: 99,
             })
@@ -3914,7 +5229,7 @@ mod tests {
                     error: "image pull failed".into(),
                 },
                 evidence: InstanceStatusEvidence::RuntimeStart {
-                    deploy_id: DeployId("deploy-1".into()),
+                    deploy_id: DeployId::new("deploy-1"),
                 },
                 at_unix_secs: 42,
             })
@@ -3931,7 +5246,7 @@ mod tests {
                     error: "image pull failed".into(),
                 },
                 evidence: InstanceStatusEvidence::RuntimeStart {
-                    deploy_id: DeployId("deploy-1".into()),
+                    deploy_id: DeployId::new("deploy-1"),
                 },
                 at_unix_secs: 99,
             })
@@ -3947,7 +5262,7 @@ mod tests {
                     error: "health check failed".into(),
                 },
                 evidence: InstanceStatusEvidence::RuntimeStart {
-                    deploy_id: DeployId("deploy-1".into()),
+                    deploy_id: DeployId::new("deploy-1"),
                 },
                 at_unix_secs: 100,
             })
@@ -3976,7 +5291,7 @@ mod tests {
         };
         let participation = AuthorityParticipationRecord {
             authority: AuthorityId::default_authority(),
-            machine_id: MachineId("node-1".into()),
+            machine_id: MachineId::new("node-1"),
             role: AuthorityParticipationRole::Participant,
             created_at: 1,
             updated_at: 2,
@@ -4164,7 +5479,7 @@ mod tests {
         let mut labels = BTreeMap::new();
         labels.insert("region".into(), "iad".into());
         MachineMembership {
-            id: MachineId("m1".into()),
+            id: MachineId::new("m1"),
             public_key: PublicKey([0x11; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 7)),
             topology: MachineTopology::local(),
@@ -4173,8 +5488,7 @@ mod tests {
             bridge_ip: Some(OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 8))),
             endpoints: vec!["1.2.3.4:51820".into(), "5.6.7.8:51820".into()],
             lifecycle: MachineLifecycle::Active,
-            storage: true,
-            storage_participation: StorageParticipation::default_authority(),
+            storage_role: StorageParticipation::default_authority().into(),
             created_at: 100,
             updated_at: 200,
             labels,
@@ -4182,28 +5496,54 @@ mod tests {
     }
 
     fn deploy_record(state: DeployState) -> DeployRecord {
+        let record_state = match state {
+            DeployState::Planning => DeployRecordState::Planning {
+                summary_json: "null".into(),
+            },
+            DeployState::Applying => DeployRecordState::Applying {
+                summary_json: "null".into(),
+            },
+            DeployState::Committed => DeployRecordState::Committed {
+                committed_at: 1,
+                finished_at: 1,
+                summary_json: "null".into(),
+            },
+            DeployState::CheckpointCommitted => DeployRecordState::CheckpointCommitted {
+                summary_json: "null".into(),
+            },
+            DeployState::CleanupPending => DeployRecordState::CleanupPending {
+                committed_at: 1,
+                finished_at: 1,
+                summary_json: "null".into(),
+            },
+            DeployState::FailedAfterCheckpoint => DeployRecordState::FailedAfterCheckpoint {
+                finished_at: 1,
+                summary_json: "null".into(),
+            },
+            DeployState::Failed => DeployRecordState::Failed {
+                finished_at: 1,
+                summary_json: "null".into(),
+            },
+        };
         DeployRecord {
-            deploy_id: DeployId("deploy-1".into()),
-            namespace: Namespace("default".into()),
-            coordinator_machine_id: MachineId("m1".into()),
+            deploy_id: DeployId::new("deploy-1"),
+            namespace: Namespace::new("default"),
+            coordinator_machine_id: MachineId::new("m1"),
             manifest_hash: "hash".into(),
-            state,
             started_at: 1,
-            committed_at: None,
-            finished_at: None,
-            summary_json: "null".into(),
+            state: record_state,
         }
     }
 
     fn instance_record() -> InstanceStatusRecord {
         InstanceStatusRecord {
-            instance_id: InstanceId("instance-1".into()),
-            namespace: Namespace("default".into()),
+            instance_id: InstanceId::new("instance-1"),
+            namespace: Namespace::new("default"),
             service: "api".into(),
-            slot_id: SlotId("slot-1".into()),
-            machine_id: MachineId("m1".into()),
+            slot_id: SlotId::new("slot-1"),
+            machine_id: MachineId::new("m1"),
             revision_hash: "rev1".into(),
-            deploy_id: DeployId("deploy-1".into()),
+            deploy_id: DeployId::new("deploy-1"),
             docker_container_id: "container-1".into(),
             overlay_ip: None,
             backend_ports: BTreeMap::new(),
@@ -4293,7 +5633,7 @@ mod tests {
     #[test]
     fn machine_observation_seed_omits_bridge_ip() {
         let observation = MachineObservation::seed(
-            MachineId("m9".into()),
+            MachineId::new("m9"),
             PublicKey([0x22; 32]),
             OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 9)),
             None,

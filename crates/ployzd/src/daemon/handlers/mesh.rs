@@ -41,7 +41,7 @@ mod tests {
     use crate::mesh_state::network::NetworkConfig;
     use axum::body::Body;
     use axum::http::{HeaderValue, Method, Request, StatusCode};
-    use ployz_api::{MachineTransitionGoal, MeshBootstrapRequest};
+    use ployz_api::{MachineSelfTransition, MeshBootstrapRequest};
     use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_orchestrator::{Mesh, WireguardDriver};
     use ployz_runtime_api::Identity;
@@ -59,9 +59,9 @@ mod tests {
     #[tokio::test]
     async fn mesh_join_is_unsupported_without_machine_add() {
         let founder_identity =
-            Identity::generate(ployz_types::model::MachineId("founder".into()), [7; 32]);
+            Identity::generate(ployz_types::model::MachineId::new("founder"), [7; 32]);
         let joiner_identity =
-            Identity::generate(ployz_types::model::MachineId("joiner".into()), [8; 32]);
+            Identity::generate(ployz_types::model::MachineId::new("joiner"), [8; 32]);
         let founder_subnet: ipnet::Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
         let network = NetworkConfig::new(
             ployz_types::model::NetworkName("alpha".into()),
@@ -96,8 +96,8 @@ mod tests {
         );
 
         let response = state.handle_mesh_join(&token).await;
-        assert!(!response.ok);
-        assert_eq!(response.code, "UNSUPPORTED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "UNSUPPORTED");
     }
 
     #[tokio::test]
@@ -123,7 +123,7 @@ mod tests {
         let bind_addr = image_receiver.bind_addr();
         let session = state
             .image_registry
-            .register_session("image-push-1", MachineId("founder".into()), "apps/web")
+            .register_session("image-push-1", MachineId::new("founder"), "apps/web")
             .await;
         let active = state.active.as_mut().expect("active mesh");
         active.image_receiver = Box::new(image_receiver);
@@ -156,7 +156,8 @@ mod tests {
                     )
                     .header(
                         registry::REGISTRY_SOURCE_MACHINE_HEADER,
-                        HeaderValue::from_str(&session.source_machine.0).expect("source machine"),
+                        HeaderValue::from_str(&session.source_machine.as_str())
+                            .expect("source machine"),
                     )
                     .body(Body::empty())
                     .expect("registry request"),
@@ -168,7 +169,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_transition_fails_without_authoritative_self_record() {
-        let identity = Identity::generate(MachineId("founder".into()), [11; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [11; 32]);
         let machine_id = identity.machine_id.clone();
         let data_dir = unique_temp_dir("ployz-startup-participation-fail");
         let config = NetworkConfig::new(
@@ -210,11 +211,9 @@ mod tests {
         });
 
         let error = state
-            .transition_local_machine(
-                MachineTransitionGoal::Activate,
-                Some("10.210.0.0/24".parse().expect("valid subnet")),
-                false,
-            )
+            .transition_local_machine(MachineSelfTransition::Activate {
+                assigned_subnet: "10.210.0.0/24".parse().expect("valid subnet"),
+            })
             .await
             .expect_err("missing self record should fail");
         assert_eq!(error.code, "SELF_RECORD_MISSING");
@@ -222,7 +221,7 @@ mod tests {
 
     #[tokio::test]
     async fn mesh_bootstrap_refuses_to_overwrite_existing_network_config() {
-        let identity = Identity::generate(MachineId("joiner".into()), [9; 32]);
+        let identity = Identity::generate(MachineId::new("joiner"), [9; 32]);
         let data_dir = unique_temp_dir("ployz-bootstrap-guard");
         let existing = NetworkConfig::new(
             ployz_types::model::NetworkName("alpha".into()),
@@ -246,15 +245,15 @@ mod tests {
 
         let response = state
             .handle_mesh_bootstrap(&MeshBootstrapRequest {
-                network_id: ployz_types::model::NetworkId("net-new".into()),
+                network_id: ployz_types::model::NetworkId::new("net-new"),
                 network_name: "alpha".into(),
                 cluster_cidr: "10.210.0.0/16".into(),
                 assigned_subnet: "10.210.2.0/24".parse().expect("valid subnet"),
                 bootstrap_peers: Vec::new(),
             })
             .await;
-        assert!(!response.ok);
-        assert_eq!(response.code, "NETWORK_ALREADY_EXISTS");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "NETWORK_ALREADY_EXISTS");
 
         let persisted = NetworkConfig::load(&config_path).expect("load existing config");
         assert_eq!(persisted.id, existing.id);
@@ -263,7 +262,7 @@ mod tests {
 
     #[test]
     fn restore_network_config_subnet_restores_previous_value() {
-        let identity = Identity::generate(MachineId("joiner".into()), [10; 32]);
+        let identity = Identity::generate(MachineId::new("joiner"), [10; 32]);
         let data_dir = unique_temp_dir("ployz-promote-rollback");
         let config_path = NetworkConfig::path(&data_dir, "alpha");
         let previous_subnet: ipnet::Ipv4Net = "10.210.1.0/24".parse().expect("valid subnet");
@@ -286,7 +285,7 @@ mod tests {
     }
 
     async fn make_active_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
-        let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [1; 32]);
         let config = NetworkConfig::new(
             ployz_types::model::NetworkName("alpha".into()),
             &identity.public_key,
@@ -305,9 +304,7 @@ mod tests {
                 bridge_ip: None,
                 endpoints: vec!["127.0.0.1:51820".into()],
                 lifecycle: MachineLifecycle::Standby,
-                storage: true,
-                storage_participation: ployz_types::model::StorageParticipation::default_authority(
-                ),
+                storage_role: ployz_types::model::MachineStorageRole::default_authority(),
                 created_at: 0,
                 updated_at: 0,
                 labels: std::collections::BTreeMap::new(),

@@ -136,7 +136,7 @@ mod tests {
     #[tokio::test]
     async fn first_claim_wins_then_second_sees_already_held() {
         let coord = MemorySubnetCoordinator::new();
-        let owner = MachineId("a".into());
+        let owner = MachineId::new("a");
         let candidate = subnet("10.210.1.0/24");
         let claim = coord
             .try_claim(candidate, &owner, Duration::from_secs(30))
@@ -156,7 +156,7 @@ mod tests {
     #[tokio::test]
     async fn distinct_subnets_do_not_conflict() {
         let coord = MemorySubnetCoordinator::new();
-        let owner = MachineId("a".into());
+        let owner = MachineId::new("a");
         let _a = coord
             .try_claim(subnet("10.0.1.0/24"), &owner, Duration::from_secs(30))
             .await

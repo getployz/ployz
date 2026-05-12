@@ -16,7 +16,7 @@ const SUBNET_RESERVATION_TTL: Duration = Duration::from_secs(30);
 const MAX_SUBNET_ATTEMPTS: usize = 64;
 
 pub(in super::super) struct BootstrapSubnetClaim {
-    claim: Option<SubnetClaim>,
+    claim: SubnetClaim,
     pub(super) subnet: Ipv4Net,
 }
 
@@ -75,7 +75,7 @@ impl DaemonState {
             {
                 Ok(claim) => {
                     return Ok(BootstrapSubnetClaim {
-                        claim: Some(claim),
+                        claim,
                         subnet: candidate,
                     });
                 }
@@ -94,14 +94,12 @@ impl DaemonState {
 }
 
 pub(in crate::daemon::handlers::machine) async fn release_reserved_subnet(
-    subnet_claim: &mut BootstrapSubnetClaim,
+    subnet_claim: BootstrapSubnetClaim,
 ) -> Result<(), String> {
-    let Some(claim) = subnet_claim.claim.take() else {
-        return Ok(());
-    };
-    if let Err(err) = claim.release().await {
+    let subnet = subnet_claim.subnet;
+    if let Err(err) = subnet_claim.claim.release().await {
         tracing::warn!(
-            subnet = %subnet_claim.subnet,
+            subnet = %subnet,
             error = %err,
             "subnet reservation release failed; lease will expire by TTL"
         );
@@ -141,7 +139,7 @@ pub(super) async fn assert_subnet_unique(
     let conflicting_machine_ids = machines
         .into_iter()
         .filter(|machine| machine.id != *machine_id && machine.subnet == Some(claimed_subnet))
-        .map(|machine| machine.id.0)
+        .map(|machine| machine.id.into_string())
         .collect::<Vec<_>>();
     if conflicting_machine_ids.is_empty() {
         return Ok(());
@@ -177,7 +175,7 @@ mod tests {
             .await
             .expect("upsert beta");
 
-        let err = assert_subnet_unique(&store, &MachineId("alpha".into()), subnet)
+        let err = assert_subnet_unique(&store, &MachineId::new("alpha"), subnet)
             .await
             .expect_err("duplicate subnet should fail");
 
@@ -198,7 +196,7 @@ mod tests {
             .await
             .expect("upsert beta");
 
-        let result = assert_subnet_unique(&store, &MachineId("alpha".into()), claimed_subnet).await;
+        let result = assert_subnet_unique(&store, &MachineId::new("alpha"), claimed_subnet).await;
 
         assert!(result.is_ok());
     }
@@ -209,7 +207,7 @@ mod tests {
         subnet: Option<Ipv4Net>,
     ) -> MachineMembership {
         let record = MachineMembership::seed(
-            MachineId(machine_id.into()),
+            MachineId::new(machine_id),
             PublicKey([1; 32]),
             overlay_ip.parse().map(OverlayIp).expect("valid overlay"),
             subnet,

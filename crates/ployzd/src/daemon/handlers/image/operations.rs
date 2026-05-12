@@ -3,8 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_api::{DaemonPayload, ImageOperationListPayload, ImageOperationPayload};
 use ployz_types::model::{
-    ImageDigest, ImageOperationKind, ImageOperationRecord, ImageOperationTargetOutcome, MachineId,
-    OperationStatus,
+    ImageDigest, ImageOperationKind, ImageOperationRecord, ImageOperationState,
+    ImageOperationTargetOutcome, MachineId, OperationStatus,
 };
 use ployz_types::time::now_unix_secs;
 
@@ -37,7 +37,6 @@ impl ImageOperationStore {
         let record = ImageOperationRecord {
             id: unique_operation_id(kind, now),
             kind,
-            status: OperationStatus::Running,
             stage: stage.into(),
             digest,
             source_machine,
@@ -47,7 +46,7 @@ impl ImageOperationStore {
                 .collect(),
             started_at: now,
             updated_at: now,
-            last_error: None,
+            state: ImageOperationState::Running { last_error: None },
         };
         self.save(&record)?;
         Ok(record)
@@ -68,7 +67,6 @@ impl ImageOperationStore {
         let record = ImageOperationRecord {
             id,
             kind,
-            status: OperationStatus::Running,
             stage: stage.into(),
             digest,
             source_machine,
@@ -78,7 +76,7 @@ impl ImageOperationStore {
                 .collect(),
             started_at: now,
             updated_at: now,
-            last_error: None,
+            state: ImageOperationState::Running { last_error: None },
         };
         self.save(&record)?;
         Ok(record)
@@ -101,13 +99,7 @@ impl ImageOperationStore {
         status: OperationStatus,
         last_error: Option<String>,
     ) -> Result<(), String> {
-        apply_status_transition(
-            &mut record.status,
-            &mut record.last_error,
-            &mut record.updated_at,
-            status,
-            last_error,
-        );
+        apply_status_transition(record, status, last_error);
         self.save(record)
     }
 
@@ -117,11 +109,11 @@ impl ImageOperationStore {
         record: &mut ImageOperationRecord,
         outcome: ImageOperationTargetOutcome,
     ) -> Result<(), String> {
-        let machine_id = outcome.machine_id.clone();
+        let machine_id = outcome.machine_id().clone();
         match record
             .targets
             .iter_mut()
-            .find(|target| target.machine_id == machine_id)
+            .find(|target| target.machine_id() == &machine_id)
         {
             Some(existing) => *existing = outcome,
             None => record.targets.push(outcome),
@@ -227,7 +219,11 @@ impl DaemonState {
                     .unwrap_or("-");
                 format!(
                     "{}  {}  {}  {}  {}",
-                    record.id, record.kind, record.status, digest, record.stage
+                    record.id,
+                    record.kind,
+                    record.status(),
+                    digest,
+                    record.stage
                 )
             })
             .collect::<Vec<_>>()
@@ -276,7 +272,7 @@ impl DaemonState {
         };
 
         for mut record in records {
-            if record.status != OperationStatus::Running {
+            if record.status() != OperationStatus::Running {
                 continue;
             }
             if let Err(err) = store.update_status(
@@ -295,31 +291,25 @@ impl DaemonState {
 
 #[allow(dead_code)]
 fn running_target_outcome(machine_id: MachineId) -> ImageOperationTargetOutcome {
-    ImageOperationTargetOutcome {
-        machine_id,
-        status: OperationStatus::Running,
-        bytes_transferred: None,
-        last_error: None,
-    }
+    ImageOperationTargetOutcome::running(machine_id)
 }
 
 fn apply_status_transition(
-    current_status: &mut OperationStatus,
-    current_error: &mut Option<String>,
-    updated_at: &mut u64,
+    record: &mut ImageOperationRecord,
     status: OperationStatus,
     last_error: Option<String>,
 ) {
-    *current_status = status;
-    match status {
-        OperationStatus::Succeeded => *current_error = None,
-        OperationStatus::Failed | OperationStatus::Interrupted | OperationStatus::Running => {
-            if let Some(last_error) = last_error {
-                *current_error = Some(last_error);
-            }
-        }
-    }
-    *updated_at = now_unix_secs();
+    record.state = match status {
+        OperationStatus::Running => ImageOperationState::Running {
+            last_error: last_error.or_else(|| record.last_error().map(str::to_string)),
+        },
+        OperationStatus::Succeeded => ImageOperationState::Succeeded {},
+        OperationStatus::Failed => ImageOperationState::Failed {
+            last_error: last_error.unwrap_or_else(|| "image operation failed".into()),
+        },
+        OperationStatus::Interrupted => ImageOperationState::Interrupted { last_error },
+    };
+    record.updated_at = now_unix_secs();
 }
 
 #[allow(dead_code)]
@@ -407,7 +397,7 @@ mod tests {
 
     fn make_state() -> DaemonState {
         let data_dir = unique_temp_dir("ployz-image-op-state");
-        let identity = Identity::generate(MachineId("founder".into()), [31; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [31; 32]);
         DaemonState::new_for_tests(
             &data_dir,
             identity,
@@ -446,7 +436,7 @@ mod tests {
             "streaming",
             Some(digest()),
             None,
-            vec![MachineId("machine-a".into())],
+            vec![MachineId::new("machine-a")],
         );
         assert!(result.is_err());
         assert!(store.load("../../etc/passwd").is_err());
@@ -461,20 +451,15 @@ mod tests {
                 ImageOperationKind::Distribute,
                 "streaming",
                 Some(digest()),
-                Some(MachineId("source".into())),
-                vec![MachineId("target-a".into())],
+                Some(MachineId::new("source")),
+                vec![MachineId::new("target-a")],
             )
             .expect("begin operation");
 
         store
             .update_target(
                 &mut record,
-                ImageOperationTargetOutcome {
-                    machine_id: MachineId("target-a".into()),
-                    status: OperationStatus::Failed,
-                    bytes_transferred: Some(128),
-                    last_error: Some("disk full".into()),
-                },
+                ImageOperationTargetOutcome::failed(MachineId::new("target-a"), "disk full"),
             )
             .expect("update target");
 
@@ -483,9 +468,9 @@ mod tests {
             .expect("load operation")
             .expect("operation exists");
         assert_eq!(loaded.targets.len(), 1);
-        assert_eq!(loaded.targets[0].status, OperationStatus::Failed);
-        assert_eq!(loaded.targets[0].bytes_transferred, Some(128));
-        assert_eq!(loaded.targets[0].last_error.as_deref(), Some("disk full"));
+        assert_eq!(loaded.targets[0].status(), OperationStatus::Failed);
+        assert_eq!(loaded.targets[0].bytes_transferred(), None);
+        assert_eq!(loaded.targets[0].last_error(), Some("disk full"));
     }
 
     #[test]
@@ -498,7 +483,7 @@ mod tests {
                 "streaming",
                 Some(digest()),
                 None,
-                vec![MachineId("target-a".into())],
+                vec![MachineId::new("target-a")],
             )
             .expect("begin operation");
 
@@ -520,8 +505,8 @@ mod tests {
             .load("image-visible-failure")
             .expect("load running operation")
             .expect("operation exists");
-        assert_eq!(running.status, OperationStatus::Running);
-        assert_eq!(running.last_error.as_deref(), Some("copy failed"));
+        assert_eq!(running.status(), OperationStatus::Running);
+        assert_eq!(running.last_error(), Some("copy failed"));
 
         store
             .update_status(&mut record, OperationStatus::Succeeded, None)
@@ -530,8 +515,8 @@ mod tests {
             .load("image-visible-failure")
             .expect("load succeeded operation")
             .expect("operation exists");
-        assert_eq!(succeeded.status, OperationStatus::Succeeded);
-        assert_eq!(succeeded.last_error, None);
+        assert_eq!(succeeded.status(), OperationStatus::Succeeded);
+        assert_eq!(succeeded.last_error(), None);
     }
 
     #[test]
@@ -584,7 +569,7 @@ mod tests {
                 "streaming",
                 Some(digest()),
                 None,
-                vec![MachineId("target-a".into())],
+                vec![MachineId::new("target-a")],
             )
             .expect("begin operation");
 
@@ -595,11 +580,10 @@ mod tests {
             .load(&operation.id)
             .expect("load operation")
             .expect("operation exists");
-        assert_eq!(recovered.status, OperationStatus::Interrupted);
+        assert_eq!(recovered.status(), OperationStatus::Interrupted);
         assert!(
             recovered
-                .last_error
-                .as_deref()
+                .last_error()
                 .expect("last error")
                 .contains("daemon restarted")
         );

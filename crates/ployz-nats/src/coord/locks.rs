@@ -38,7 +38,7 @@ impl NatsDeployLock {
         let lease = locks
             .acquire(
                 &subjects::deploy_lock(namespace),
-                owner.0.clone(),
+                owner.as_str().to_string(),
                 nonce.to_string(),
                 ttl,
                 now_unix_secs().saturating_add(ttl.as_secs()),

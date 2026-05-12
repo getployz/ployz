@@ -120,25 +120,24 @@ fn install_script_args(install: &MachineInstallOptions) -> String {
     }
     if let Some(source) = &install.source {
         args.push("--source".into());
-        args.push(
-            match source {
-                InstallSource::Release => "release",
-                InstallSource::Git => "git",
+        match source {
+            InstallSource::Release { version } => {
+                args.push("release".into());
+                if let Some(version) = version {
+                    args.push("--version".into());
+                    args.push(shell_quote(version));
+                }
             }
-            .into(),
-        );
-    }
-    if let Some(version) = &install.version {
-        args.push("--version".into());
-        args.push(shell_quote(version));
-    }
-    if let Some(git_url) = &install.git_url {
-        args.push("--git-url".into());
-        args.push(shell_quote(git_url));
-    }
-    if let Some(git_ref) = &install.git_ref {
-        args.push("--git-ref".into());
-        args.push(shell_quote(git_ref));
+            InstallSource::Git { git_url, git_ref } => {
+                args.push("git".into());
+                args.push("--git-url".into());
+                args.push(shell_quote(git_url.as_str()));
+                if let Some(git_ref) = git_ref {
+                    args.push("--git-ref".into());
+                    args.push(shell_quote(git_ref));
+                }
+            }
+        }
     }
 
     args.join(" ")

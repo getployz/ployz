@@ -339,7 +339,7 @@ impl SnapshotState {
             (
                 route.hostnames.is_empty(),
                 std::cmp::Reverse(route.path_prefix.len()),
-                route.namespace.0.clone(),
+                route.namespace.as_str().to_string(),
                 route.service.clone(),
                 route.route_id.clone(),
             )
@@ -401,7 +401,7 @@ fn insert_sorted_route(routes: &mut Vec<Arc<HttpRouteView>>, route: Arc<HttpRout
     routes.sort_by_key(|route| {
         (
             std::cmp::Reverse(route.path_prefix.len()),
-            route.namespace.0.clone(),
+            route.namespace.as_str().to_string(),
             route.service.clone(),
             route.route_id.clone(),
         )
@@ -595,7 +595,7 @@ mod tests {
     }
 
     fn route(route_id: &str, hostname: &str, path_prefix: &str, port: u16) -> HttpRouteView {
-        let namespace = Namespace("prod".into());
+        let namespace = Namespace::new("prod");
         let service = route_id.to_string();
         HttpRouteView {
             route_id: RouteId::http(&ServiceKey::new(namespace.clone(), service.clone()), 0),
@@ -605,8 +605,8 @@ mod tests {
             hostnames: vec![hostname.into()],
             path_prefix: path_prefix.into(),
             backends: vec![BackendView {
-                instance_id: InstanceId(format!("inst-{route_id}")),
-                machine_id: MachineId("machine-a".into()),
+                instance_id: InstanceId::new(format!("inst-{route_id}")),
+                machine_id: MachineId::new("machine-a"),
                 topology: MachineTopology::local(),
                 service_port: "http".into(),
                 address: SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 2), port).into(),

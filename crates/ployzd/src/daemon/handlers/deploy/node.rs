@@ -24,7 +24,7 @@ impl DaemonState {
         namespace: &str,
         _deploy_id: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = Namespace::new(namespace.to_string());
         let agent = match self.deploy_node_agent().await {
             Ok(agent) => agent,
             Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
@@ -51,8 +51,22 @@ impl DaemonState {
         spec_json: &str,
         volumes_json: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
-        let deploy_id = DeployId(deploy_id.to_string());
+        let namespace = match Namespace::try_new(namespace) {
+            Ok(namespace) => namespace,
+            Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
+        };
+        let deploy_id = match DeployId::try_new(deploy_id) {
+            Ok(deploy_id) => deploy_id,
+            Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
+        };
+        let slot_id = match SlotId::try_new(slot_id) {
+            Ok(slot_id) => slot_id,
+            Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
+        };
+        let instance_id = match InstanceId::try_new(instance_id) {
+            Ok(instance_id) => instance_id,
+            Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
+        };
         let agent = match self.deploy_node_agent().await {
             Ok(agent) => agent,
             Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
@@ -62,8 +76,8 @@ impl DaemonState {
             .start_candidate(
                 &context,
                 service,
-                &SlotId(slot_id.to_string()),
-                &InstanceId(instance_id.to_string()),
+                &slot_id,
+                &instance_id,
                 &deploy_id,
                 spec_json,
                 volumes_json,
@@ -117,13 +131,13 @@ impl DaemonState {
         instance_id: &str,
         op: DeployNodeOp,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
+        let namespace = Namespace::new(namespace.to_string());
         let agent = match self.deploy_node_agent().await {
             Ok(agent) => agent,
             Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
         };
         let context = agent.command_context(namespace);
-        let instance_id = InstanceId(instance_id.to_string());
+        let instance_id = InstanceId::new(instance_id.to_string());
         let result = match op {
             DeployNodeOp::Drain => agent.drain_instance(&context, &instance_id).await,
             DeployNodeOp::Remove => agent.remove_instance(&context, &instance_id).await,
@@ -193,20 +207,20 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             .request(
                 NodeCommandSubject::deploy_inspect_namespace(&machine.id),
                 &ployz_api::DaemonRequest::DeployNodeInspectNamespace {
-                    namespace: namespace.0.clone(),
-                    deploy_id: deploy_id.0.clone(),
+                    namespace: namespace.as_str().to_string(),
+                    deploy_id: deploy_id.as_str().to_string(),
                 },
             )
             .await
             .map_err(PloyzError::from)?;
-        if !response.ok {
+        if !response.is_ok() {
             return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
                 operation: "deploy_node_inspect",
-                code: response.code,
-                message: response.message,
+                code: response.code().to_string(),
+                message: response.message().to_string(),
             }));
         }
-        let Some(DaemonPayload::DeployNamespaceSnapshot(payload)) = response.payload else {
+        let Some(DaemonPayload::DeployNamespaceSnapshot(payload)) = response.payload() else {
             return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
                 payload: "namespace snapshot",
             }));
@@ -226,25 +240,25 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             .request(
                 NodeCommandSubject::deploy_start_candidate(machine_id),
                 &ployz_api::DaemonRequest::DeployNodeStartCandidate {
-                    namespace: namespace.0.clone(),
-                    deploy_id: deploy_id.0.clone(),
+                    namespace: namespace.as_str().to_string(),
+                    deploy_id: deploy_id.as_str().to_string(),
                     service: request.service,
-                    slot_id: request.slot_id.0,
-                    instance_id: request.instance_id.0,
+                    slot_id: request.slot_id.as_str().to_string(),
+                    instance_id: request.instance_id.as_str().to_string(),
                     spec_json: request.spec_json,
                     volumes_json: request.volumes_json,
                 },
             )
             .await
             .map_err(PloyzError::from)?;
-        if !response.ok {
+        if !response.is_ok() {
             return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
                 operation: "deploy_node_start_candidate",
-                code: response.code,
-                message: response.message,
+                code: response.code().to_string(),
+                message: response.message().to_string(),
             }));
         }
-        let Some(DaemonPayload::DeployCandidateStarted(payload)) = response.payload else {
+        let Some(DaemonPayload::DeployCandidateStarted(payload)) = response.payload() else {
             return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
                 payload: "candidate",
             }));
@@ -288,10 +302,10 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             .request(
                 NodeCommandSubject::deploy_clone_volume(machine_id),
                 &ployz_api::DaemonRequest::DeployNodeCloneVolume {
-                    namespace: namespace.0.clone(),
-                    deploy_id: deploy_id.0.clone(),
+                    namespace: namespace.as_str().to_string(),
+                    deploy_id: deploy_id.as_str().to_string(),
                     volume: request.volume,
-                    source_namespace: request.source_namespace.0,
+                    source_namespace: request.source_namespace.as_str().to_string(),
                     source_volume: request.source_volume,
                     snapshot: request.snapshot,
                     quota: request.quota,
@@ -301,14 +315,14 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             )
             .await
             .map_err(PloyzError::from)?;
-        if !response.ok {
+        if !response.is_ok() {
             return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
                 operation: "deploy_node_clone_volume",
-                code: response.code,
-                message: response.message,
+                code: response.code().to_string(),
+                message: response.message().to_string(),
             }));
         }
-        let Some(DaemonPayload::VolumeZfsClone(payload)) = response.payload else {
+        let Some(DaemonPayload::VolumeZfsClone(payload)) = response.payload() else {
             return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
                 payload: "volume zfs clone",
             }));
@@ -336,23 +350,23 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             .request(
                 NodeCommandSubject::deploy_clone_volume(machine_id),
                 &ployz_api::DaemonRequest::DeployNodeCleanupUncommittedVolumeClone {
-                    namespace: namespace.0.clone(),
-                    deploy_id: deploy_id.0.clone(),
+                    namespace: namespace.as_str().to_string(),
+                    deploy_id: deploy_id.as_str().to_string(),
                     volume: request.volume,
-                    source_namespace: request.source_namespace.0,
+                    source_namespace: request.source_namespace.as_str().to_string(),
                     source_volume: request.source_volume,
                     snapshot: request.snapshot,
                 },
             )
             .await
             .map_err(PloyzError::from)?;
-        if response.ok {
+        if response.is_ok() {
             return Ok(());
         }
         Err(PloyzError::Deploy(DeployError::RemoteNodeError {
             operation: "deploy_node_cleanup_uncommitted_volume_clone",
-            code: response.code,
-            message: response.message,
+            code: response.code().to_string(),
+            message: response.message().to_string(),
         }))
     }
 
@@ -366,9 +380,9 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         self.expect_ok(
             NodeCommandSubject::deploy_drain_instance(machine_id),
             ployz_api::DaemonRequest::DeployNodeDrainInstance {
-                namespace: namespace.0.clone(),
-                deploy_id: deploy_id.0.clone(),
-                instance_id: instance_id.0.clone(),
+                namespace: namespace.as_str().to_string(),
+                deploy_id: deploy_id.as_str().to_string(),
+                instance_id: instance_id.as_str().to_string(),
             },
             "deploy_node_drain",
         )
@@ -385,9 +399,9 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         self.expect_ok(
             NodeCommandSubject::deploy_remove_instance(machine_id),
             ployz_api::DaemonRequest::DeployNodeRemoveInstance {
-                namespace: namespace.0.clone(),
-                deploy_id: deploy_id.0.clone(),
-                instance_id: instance_id.0.clone(),
+                namespace: namespace.as_str().to_string(),
+                deploy_id: deploy_id.as_str().to_string(),
+                instance_id: instance_id.as_str().to_string(),
             },
             "deploy_node_remove",
         )
@@ -407,13 +421,13 @@ impl NatsDeployParticipantClient {
             .request(subject, &request)
             .await
             .map_err(PloyzError::from)?;
-        if response.ok {
+        if response.is_ok() {
             return Ok(());
         }
         Err(PloyzError::Deploy(DeployError::RemoteNodeError {
             operation,
-            code: response.code,
-            message: response.message,
+            code: response.code().to_string(),
+            message: response.message().to_string(),
         }))
     }
 }

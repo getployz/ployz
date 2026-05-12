@@ -3,40 +3,90 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use crate::model::{DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseRollbackPolicy};
+use crate::model::{
+    DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseRollbackPolicy,
+    NonZeroReplicaCount,
+};
 
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
 )]
-pub struct Namespace(pub String);
+#[serde(try_from = "String", into = "String")]
+pub struct Namespace(String);
 
 impl AsRef<str> for Namespace {
     fn as_ref(&self) -> &str {
-        &self.0
+        self.as_str()
     }
 }
 
 impl Namespace {
     #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self::try_new(value).expect("valid namespace")
+    }
+
+    pub fn try_new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        if !valid_namespace_name(&value) {
+            return Err(format!(
+                "namespace '{value}' must be 1-63 chars of [a-z0-9_-], starting with a letter or digit"
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
     pub fn system() -> Self {
-        Self("system".into())
+        Self::new("system")
     }
 
     #[must_use]
     pub fn default_ns() -> Self {
-        Self("default".into())
+        Self::new("default")
     }
 
     #[must_use]
     pub fn is_system(&self) -> bool {
-        self.0 == "system"
+        self.as_str() == "system"
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl From<Namespace> for String {
+    fn from(value: Namespace) -> Self {
+        value.into_string()
+    }
+}
+
+impl TryFrom<String> for Namespace {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl TryFrom<&str> for Namespace {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::try_new(value)
     }
 }
 
 impl std::fmt::Display for Namespace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Self(inner) = self;
-        f.write_str(inner)
+        f.write_str(self.as_str())
     }
 }
 
@@ -52,13 +102,6 @@ pub struct DeployManifest {
 
 impl DeployManifest {
     pub fn validate(&self) -> Result<(), String> {
-        if !valid_namespace_name(&self.namespace.0) {
-            return Err(format!(
-                "manifest namespace '{}' must be 1-63 chars of [a-z0-9_-], starting with a letter or digit",
-                self.namespace
-            ));
-        }
-
         let mut volumes_by_name = BTreeMap::new();
         for volume in &self.volumes {
             volume.validate()?;
@@ -93,7 +136,10 @@ impl DeployManifest {
                             ));
                         };
                         if volume.scope == VolumeScope::Single
-                            && matches!(service.placement, Placement::Replicated { count } if count > 1)
+                            && matches!(
+                                service.placement,
+                                Placement::Replicated { count } if count.get() > 1
+                            )
                         {
                             return Err(format!(
                                 "service '{}' has replicas > 1 but mounts volume '{}' with scope=single",
@@ -613,7 +659,7 @@ fn validate_service_source(
     source_namespace: &Namespace,
     source_service: &str,
 ) -> Result<(), String> {
-    if !valid_namespace_name(&source_namespace.0) {
+    if !valid_namespace_name(&source_namespace.as_str()) {
         return Err(format!(
             "deploy intent {intent} for service '{service}' has invalid source namespace '{}'",
             source_namespace
@@ -642,7 +688,7 @@ fn validate_volume_source(
     source_namespace: &Namespace,
     source_volume: &str,
 ) -> Result<(), String> {
-    if !valid_namespace_name(&source_namespace.0) {
+    if !valid_namespace_name(&source_namespace.as_str()) {
         return Err(format!(
             "deploy intent {intent} for volume '{volume}' has invalid source namespace '{}'",
             source_namespace
@@ -724,14 +770,7 @@ impl ServiceSpec {
                     ));
                 }
             }
-            Placement::Replicated { count } => {
-                if count == 0 {
-                    return Err(format!(
-                        "service '{}' must request at least one replica",
-                        self.name
-                    ));
-                }
-            }
+            Placement::Replicated { .. } => {}
         }
 
         let mut seen_ports = BTreeSet::new();
@@ -848,7 +887,16 @@ impl ServiceSpec {
 #[serde(rename_all = "snake_case")]
 pub enum Placement {
     Global,
-    Replicated { count: u16 },
+    Replicated { count: NonZeroReplicaCount },
+}
+
+impl Placement {
+    #[must_use]
+    pub fn replicated(count: u16) -> Self {
+        Self::Replicated {
+            count: NonZeroReplicaCount::try_new(count).expect("non-zero replica count"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -919,9 +967,9 @@ pub enum VolumeScope {
 pub struct VolumeDeclaration {
     pub name: String,
     pub scope: VolumeScope,
-    pub quota: String,
-    pub mode: String,
-    pub owner: String,
+    pub quota: VolumeQuota,
+    pub mode: VolumeMode,
+    pub owner: VolumeOwner,
 }
 
 impl VolumeDeclaration {
@@ -932,25 +980,230 @@ impl VolumeDeclaration {
                 self.name
             ));
         }
-        if !valid_quota(&self.quota) {
-            return Err(format!(
-                "volume '{}' quota must be an integer with optional K, M, G, or T suffix",
-                self.name
-            ));
-        }
-        if !valid_mode(&self.mode) {
-            return Err(format!(
-                "volume '{}' mode must be octal like 0750",
-                self.name
-            ));
-        }
-        if !valid_owner(&self.owner) {
-            return Err(format!(
-                "volume '{}' owner must be numeric uid:gid",
-                self.name
-            ));
-        }
         Ok(())
+    }
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(try_from = "String", into = "String")]
+pub struct VolumeQuota(String);
+
+impl VolumeQuota {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self::try_new(value).expect("valid volume quota")
+    }
+
+    pub fn try_new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        parse_quota_bytes(&value)?;
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl AsRef<str> for VolumeQuota {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for VolumeQuota {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<VolumeQuota> for String {
+    fn from(value: VolumeQuota) -> Self {
+        value.into_string()
+    }
+}
+
+impl From<&str> for VolumeQuota {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<String> for VolumeQuota {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl PartialEq<&str> for VolumeQuota {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for VolumeQuota {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(try_from = "String", into = "String")]
+pub struct VolumeMode(String);
+
+impl VolumeMode {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self::try_new(value).expect("valid volume mode")
+    }
+
+    pub fn try_new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        if !valid_mode(&value) {
+            return Err(format!("volume mode '{value}' must be octal like 0750"));
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl AsRef<str> for VolumeMode {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for VolumeMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<VolumeMode> for String {
+    fn from(value: VolumeMode) -> Self {
+        value.into_string()
+    }
+}
+
+impl From<&str> for VolumeMode {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<String> for VolumeMode {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl PartialEq<&str> for VolumeMode {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for VolumeMode {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(try_from = "String", into = "String")]
+pub struct VolumeOwner(String);
+
+impl VolumeOwner {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self::try_new(value).expect("valid volume owner")
+    }
+
+    pub fn try_new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        if !valid_owner(&value) {
+            return Err(format!("volume owner '{value}' must be numeric uid:gid"));
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl AsRef<str> for VolumeOwner {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for VolumeOwner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<VolumeOwner> for String {
+    fn from(value: VolumeOwner) -> Self {
+        value.into_string()
+    }
+}
+
+impl From<&str> for VolumeOwner {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<String> for VolumeOwner {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl PartialEq<&str> for VolumeOwner {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for VolumeOwner {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
     }
 }
 
@@ -977,15 +1230,12 @@ pub fn valid_storage_segment(value: &str) -> bool {
         .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
 }
 
-fn valid_quota(value: &str) -> bool {
-    parse_quota_bytes(value).is_ok()
-}
-
 /// Parse a ZFS-style quota string (`"20G"`, `"512M"`, `"1024"`) into bytes.
 ///
 /// Suffixes use base-2 multipliers (K=1024, M=1024², G=1024³, T=1024⁴), matching
 /// ZFS conventions. A bare integer is interpreted as bytes.
-pub fn parse_quota_bytes(value: &str) -> Result<u64, String> {
+pub fn parse_quota_bytes(value: impl AsRef<str>) -> Result<u64, String> {
+    let value = value.as_ref();
     let Some(last) = value.chars().last() else {
         return Err("quota cannot be empty".into());
     };
@@ -1261,7 +1511,7 @@ mod tests {
     fn sample_spec() -> ServiceSpec {
         ServiceSpec {
             name: "api".into(),
-            placement: Placement::Replicated { count: 1 },
+            placement: Placement::replicated(1),
             template: ContainerSpec {
                 image: "myapp:latest".into(),
                 command: Some(vec!["serve".into()]),
@@ -1385,12 +1635,12 @@ mod tests {
     #[test]
     fn deploy_intent_roundtrips_in_manifest_json() {
         let manifest = DeployManifest {
-            namespace: Namespace("pr_39".into()),
+            namespace: Namespace::new("pr_39"),
             intent: Some(DeployIntent {
                 services: vec![ServiceIntentHint {
                     service: "api".into(),
                     intent: ServiceIntent::Branch {
-                        source_namespace: Namespace("prod".into()),
+                        source_namespace: Namespace::new("prod"),
                         source_service: "api".into(),
                         expected_source_revision_hash: Some("rev-api".into()),
                     },
@@ -1398,7 +1648,7 @@ mod tests {
                 volumes: vec![VolumeIntentHint {
                     volume: "data".into(),
                     intent: VolumeIntent::Clone {
-                        source_namespace: Namespace("prod".into()),
+                        source_namespace: Namespace::new("prod"),
                         source_volume: "data".into(),
                         data_policy: VolumeCloneDataPolicy::Raw,
                         consistency: VolumeCloneConsistency::CrashConsistent,
@@ -1432,12 +1682,12 @@ mod tests {
     #[test]
     fn deploy_intent_accepts_service_branch_planner_support() {
         let manifest = DeployManifest {
-            namespace: Namespace("pr_39".into()),
+            namespace: Namespace::new("pr_39"),
             intent: Some(DeployIntent {
                 services: vec![ServiceIntentHint {
                     service: "api".into(),
                     intent: ServiceIntent::Branch {
-                        source_namespace: Namespace("prod".into()),
+                        source_namespace: Namespace::new("prod"),
                         source_service: "api".into(),
                         expected_source_revision_hash: None,
                     },
@@ -1463,12 +1713,12 @@ mod tests {
     #[test]
     fn deploy_intent_rejects_unplanned_modes_after_shape_validation() {
         let mut manifest = DeployManifest {
-            namespace: Namespace("pr_39".into()),
+            namespace: Namespace::new("pr_39"),
             intent: Some(DeployIntent {
                 services: vec![ServiceIntentHint {
                     service: "api".into(),
                     intent: ServiceIntent::Portal {
-                        source_namespace: Namespace("prod".into()),
+                        source_namespace: Namespace::new("prod"),
                         source_service: "api".into(),
                     },
                 }],
@@ -1512,35 +1762,9 @@ mod tests {
 
     #[test]
     fn deploy_intent_validates_shape_before_rejecting_unsupported_modes() {
-        let manifest = DeployManifest {
-            namespace: Namespace("pr_39".into()),
-            intent: Some(DeployIntent {
-                services: vec![ServiceIntentHint {
-                    service: "api".into(),
-                    intent: ServiceIntent::Branch {
-                        source_namespace: Namespace("Prod".into()),
-                        source_service: "api".into(),
-                        expected_source_revision_hash: None,
-                    },
-                }],
-                volumes: Vec::new(),
-                phases: Vec::new(),
-            }),
-            volumes: vec![VolumeDeclaration {
-                name: "data".into(),
-                scope: VolumeScope::Single,
-                quota: "10G".into(),
-                mode: "0750".into(),
-                owner: "999:999".into(),
-            }],
-            services: vec![sample_spec()],
-        };
+        let error = Namespace::try_new("Prod").expect_err("invalid source namespace should fail");
 
-        let error = manifest
-            .validate()
-            .expect_err("invalid source namespace should fail before unsupported mode");
-
-        assert!(error.contains("invalid source namespace"), "got: {error}");
+        assert!(error.contains("namespace"), "got: {error}");
     }
 
     #[test]
@@ -1767,43 +1991,15 @@ mod tests {
 
     #[test]
     fn manifest_rejects_empty_namespace() {
-        let manifest = DeployManifest {
-            namespace: Namespace(String::new()),
-            intent: None,
-            volumes: vec![VolumeDeclaration {
-                name: "data".into(),
-                scope: VolumeScope::Single,
-                quota: "10G".into(),
-                mode: "0750".into(),
-                owner: "999:999".into(),
-            }],
-            services: vec![sample_spec()],
-        };
-        let error = manifest
-            .validate()
-            .expect_err("empty namespace should fail");
+        let error = Namespace::try_new(String::new()).expect_err("empty namespace should fail");
         assert!(error.contains("namespace"));
     }
 
     #[test]
     fn manifest_rejects_path_segment_namespace() {
         for namespace in ["../tmp", "prod/api", "prod api", ".prod", "Prod"] {
-            let manifest = DeployManifest {
-                namespace: Namespace(namespace.into()),
-                intent: None,
-                volumes: vec![VolumeDeclaration {
-                    name: "data".into(),
-                    scope: VolumeScope::Single,
-                    quota: "10G".into(),
-                    mode: "0750".into(),
-                    owner: "999:999".into(),
-                }],
-                services: vec![sample_spec()],
-            };
-
-            let error = manifest
-                .validate()
-                .expect_err("path-segment namespace should fail");
+            let error =
+                Namespace::try_new(namespace).expect_err("path-segment namespace should fail");
 
             assert!(error.contains("namespace"));
         }
@@ -1835,16 +2031,15 @@ mod tests {
 
     #[test]
     fn replicated_zero_is_rejected() {
-        let mut spec = sample_spec();
-        spec.placement = Placement::Replicated { count: 0 };
-        let error = spec.validate().expect_err("zero replicas should fail");
-        assert!(error.contains("at least one replica"));
+        let error = serde_json::from_str::<Placement>(r#"{"replicated":{"count":0}}"#)
+            .expect_err("zero replicas should fail during deserialization");
+        assert!(error.to_string().contains("replica count"));
     }
 
     #[test]
     fn single_scope_volume_rejects_multiple_replicas() {
         let mut spec = sample_spec();
-        spec.placement = Placement::Replicated { count: 2 };
+        spec.placement = Placement::replicated(2);
         let manifest = DeployManifest {
             namespace: Namespace::default_ns(),
             intent: None,

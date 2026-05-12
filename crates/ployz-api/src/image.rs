@@ -136,13 +136,74 @@ pub struct ImageOperationListPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageTransferTargetResult {
-    pub machine_id: MachineId,
-    pub status: ImageTransferTargetStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub record: Option<ImageAvailabilityRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure: Option<ImageTransferFailure>,
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageTransferTargetResult {
+    Present {
+        machine_id: MachineId,
+        record: ImageAvailabilityRecord,
+    },
+    SkippedPresent {
+        machine_id: MachineId,
+        record: ImageAvailabilityRecord,
+    },
+    Failed {
+        machine_id: MachineId,
+        failure: ImageTransferFailure,
+    },
+}
+
+impl ImageTransferTargetResult {
+    #[must_use]
+    pub fn present(machine_id: MachineId, record: ImageAvailabilityRecord) -> Self {
+        Self::Present { machine_id, record }
+    }
+
+    #[must_use]
+    pub fn skipped_present(machine_id: MachineId, record: ImageAvailabilityRecord) -> Self {
+        Self::SkippedPresent { machine_id, record }
+    }
+
+    #[must_use]
+    pub fn failed(machine_id: MachineId, failure: ImageTransferFailure) -> Self {
+        Self::Failed {
+            machine_id,
+            failure,
+        }
+    }
+
+    #[must_use]
+    pub fn machine_id(&self) -> &MachineId {
+        match self {
+            Self::Present { machine_id, .. }
+            | Self::SkippedPresent { machine_id, .. }
+            | Self::Failed { machine_id, .. } => machine_id,
+        }
+    }
+
+    #[must_use]
+    pub fn status(&self) -> ImageTransferTargetStatus {
+        match self {
+            Self::Present { .. } => ImageTransferTargetStatus::Present,
+            Self::SkippedPresent { .. } => ImageTransferTargetStatus::SkippedPresent,
+            Self::Failed { .. } => ImageTransferTargetStatus::Failed,
+        }
+    }
+
+    #[must_use]
+    pub fn record(&self) -> Option<&ImageAvailabilityRecord> {
+        match self {
+            Self::Present { record, .. } | Self::SkippedPresent { record, .. } => Some(record),
+            Self::Failed { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn failure(&self) -> Option<&ImageTransferFailure> {
+        match self {
+            Self::Failed { failure, .. } => Some(failure),
+            Self::Present { .. } | Self::SkippedPresent { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

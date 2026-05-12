@@ -113,7 +113,7 @@ pub async fn stream_runtime_frames(
 #[cfg(test)]
 mod tests {
     use super::{relay_runtime_events, stream_runtime_frames};
-    use ployz_api::{RuntimeCollection, RuntimeRecord, RuntimeWatchFrame};
+    use ployz_api::RuntimeWatchFrame;
     use ployz_store_api::RoutingEventEnvelope;
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
@@ -158,7 +158,7 @@ mod tests {
             state
                 .instances
                 .iter()
-                .map(|record| record.instance_id.0.as_str())
+                .map(|record| record.instance_id.as_str())
                 .collect::<Vec<_>>(),
             ["instance-a", "instance-b"]
         );
@@ -166,10 +166,9 @@ mod tests {
         let second = frame_rx.recv().await.expect("event frame");
         assert_eq!(
             second,
-            RuntimeWatchFrame::Upsert {
-                collection: RuntimeCollection::Instance,
+            RuntimeWatchFrame::InstanceUpsert {
                 key: String::from("instance-c"),
-                record: RuntimeRecord::Instance(instance_record("instance-c", "prod", "worker")),
+                record: instance_record("instance-c", "prod", "worker"),
             }
         );
     }
@@ -289,13 +288,13 @@ mod tests {
         let mut backend_ports = BTreeMap::new();
         backend_ports.insert(String::from("http"), 8080);
         InstanceStatusRecord {
-            instance_id: InstanceId(id.into()),
-            namespace: Namespace(namespace.into()),
+            instance_id: InstanceId::new(id),
+            namespace: Namespace::new(namespace),
             service: service.into(),
-            slot_id: SlotId(String::from("slot-1")),
-            machine_id: MachineId(String::from("machine-1")),
+            slot_id: SlotId::new(String::from("slot-1")),
+            machine_id: MachineId::new(String::from("machine-1")),
             revision_hash: String::from("rev-1"),
-            deploy_id: DeployId(String::from("deploy-1")),
+            deploy_id: DeployId::new(String::from("deploy-1")),
             docker_container_id: String::from("container-1"),
             overlay_ip: Some(Ipv4Addr::new(10, 0, 0, 2)),
             backend_ports,

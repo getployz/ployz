@@ -132,11 +132,11 @@ mod tests {
                 Some("test".into()),
                 ployz_types::model::RoutingEvent::RevisionUpsert(
                     ployz_types::model::ServiceRevisionRecord {
-                        namespace: ployz_types::spec::Namespace("prod".into()),
+                        namespace: ployz_types::spec::Namespace::new("prod"),
                         service: "api".into(),
                         revision_hash: "rev-1".into(),
                         spec_json: "{}".into(),
-                        created_by: MachineId("machine-1".into()),
+                        created_by: MachineId::new("machine-1"),
                         created_at: 1,
                     },
                 ),

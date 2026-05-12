@@ -262,7 +262,7 @@ fn readiness_key(hostname: &str, token: &str, machine_id: &MachineId) -> String 
     format!(
         "{}.{}",
         challenge_key(hostname, token),
-        subjects::kv_key_token(&machine_id.0)
+        subjects::kv_key_token(&machine_id.as_str())
     )
 }
 
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn acme_challenge_readiness_key_is_collision_safe() {
-        let machine = MachineId("machine.1".into());
+        let machine = MachineId::new("machine.1");
 
         let dotted = readiness_key("foo.bar.example", "token", &machine);
         let underscored = readiness_key("foo_bar.example", "token", &machine);
@@ -413,8 +413,8 @@ mod tests {
 
     #[test]
     fn acme_challenge_key_includes_token() {
-        let old = readiness_key("example.com", "old-token", &MachineId("machine-a".into()));
-        let new = readiness_key("example.com", "new-token", &MachineId("machine-a".into()));
+        let old = readiness_key("example.com", "old-token", &MachineId::new("machine-a"));
+        let new = readiness_key("example.com", "new-token", &MachineId::new("machine-a"));
 
         assert_ne!(old, new);
     }
@@ -422,8 +422,8 @@ mod tests {
     #[test]
     fn readiness_key_prefix_matches_only_challenge_entries() {
         let prefix = readiness_key_prefix("example.com", "token");
-        let readiness = readiness_key("example.com", "token", &MachineId("machine-a".into()));
-        let other = readiness_key("example.com", "token-extra", &MachineId("machine-a".into()));
+        let readiness = readiness_key("example.com", "token", &MachineId::new("machine-a"));
+        let other = readiness_key("example.com", "token-extra", &MachineId::new("machine-a"));
 
         assert!(readiness.starts_with(&prefix));
         assert!(!other.starts_with(&prefix));

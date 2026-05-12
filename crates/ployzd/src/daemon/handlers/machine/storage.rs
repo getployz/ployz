@@ -6,8 +6,8 @@ use ployz_api::{
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
 use ployz_store_api::MachineMembershipStore;
 use ployz_types::model::{
-    AuthorityId, MachineId, MachineLifecycle, MachineMembership, StorageParticipation,
-    StorageReplicaPolicy,
+    AuthorityId, MachineId, MachineLifecycle, MachineMembership, MachineStorageRole,
+    StorageParticipation, StorageReplicaPolicy,
 };
 use std::collections::BTreeSet;
 use tokio::sync::oneshot;
@@ -52,7 +52,7 @@ impl DaemonState {
         };
 
         if !matches!(
-            local_record.storage_participation,
+            local_record.storage_participation(),
             StorageParticipation::Authority { .. }
         ) {
             return self.err(
@@ -152,9 +152,9 @@ impl DaemonState {
             .iter()
             .filter(|machine| {
                 machine.lifecycle == MachineLifecycle::Active
-                    && machine.storage
+                    && machine.storage()
                     && matches!(
-                        &machine.storage_participation,
+                        &machine.storage_participation(),
                         StorageParticipation::Authority { authority_id }
                             if authority_id == &default_authority
                     )
@@ -166,9 +166,9 @@ impl DaemonState {
             .any(|machine| machine.id == local_record.id)
         {
             if local_record.lifecycle != MachineLifecycle::Active
-                || !local_record.storage
+                || !local_record.storage()
                 || !matches!(
-                    &local_record.storage_participation,
+                    &local_record.storage_participation(),
                     StorageParticipation::Authority { authority_id }
                         if authority_id == &default_authority
                 )
@@ -178,8 +178,8 @@ impl DaemonState {
                         "local authority must be active storage for {} (lifecycle={}, storage={}, participation={:?})",
                         default_authority,
                         local_record.lifecycle,
-                        local_record.storage,
-                        local_record.storage_participation
+                        local_record.storage(),
+                        local_record.storage_participation()
                     ),
                 });
             }
@@ -188,11 +188,11 @@ impl DaemonState {
 
         let mut targets = Vec::new();
         for target in &request.targets {
-            match machines.iter().find(|machine| machine.id.0 == *target) {
+            match machines.iter().find(|machine| machine.id.as_str() == *target) {
                 Some(machine)
                     if machine.lifecycle == MachineLifecycle::Active
-                        && machine.storage
-                        && machine.storage_participation == StorageParticipation::Candidate =>
+                        && machine.storage()
+                        && machine.storage_participation() == StorageParticipation::Candidate =>
                 {
                     targets.push(machine.clone());
                 }
@@ -201,7 +201,7 @@ impl DaemonState {
                     cause: MachineStoragePromotionFailureCause::InvalidCandidate,
                     message: format!(
                         "machine must be an active storage candidate (lifecycle={}, storage={}, participation={:?})",
-                        machine.lifecycle, machine.storage, machine.storage_participation
+                        machine.lifecycle, machine.storage(), machine.storage_participation()
                     ),
                 }),
                 None => failed.push(MachineStoragePromotionFailure {
@@ -241,7 +241,7 @@ impl DaemonState {
             .unwrap_or(StorageReplicaPolicy::Single);
         let mut authority_peers = authorities.clone();
         authority_peers.extend(targets.clone().into_iter().map(|mut target| {
-            target.storage_participation = StorageParticipation::default_authority();
+            target.storage_role = MachineStorageRole::default_authority();
             target
         }));
 
@@ -253,16 +253,16 @@ impl DaemonState {
                 .update_stage(operation, "promoting-authority-members");
             for target in &targets {
                 let mut promoted_record = target.clone();
-                promoted_record.storage_participation = StorageParticipation::default_authority();
+                promoted_record.storage_role = MachineStorageRole::default_authority();
                 promoted_record.updated_at = ployz_types::time::now_unix_secs();
                 if let Err(error) = store.upsert_self_machine(&promoted_record).await {
                     failed.push(MachineStoragePromotionFailure {
-                        machine_id: target.id.0.clone(),
+                        machine_id: target.id.as_str().to_string(),
                         cause: MachineStoragePromotionFailureCause::PublishPromotedMembershipFailed,
                         message: format!("publish promoted membership: {error}"),
                     });
                 } else {
-                    promoted.push(target.id.0.clone());
+                    promoted.push(target.id.as_str().to_string());
                 }
             }
             if failed.is_empty() {
@@ -379,19 +379,19 @@ impl DaemonState {
                         .await
                 {
                     failed.push(MachineStoragePromotionFailure {
-                        machine_id: target.id.0.clone(),
+                        machine_id: target.id.as_str().to_string(),
                         cause: MachineStoragePromotionFailureCause::RpcUnavailable,
                         message: error,
                     });
                 } else {
                     remote_rollbacks.push(RemoteStorageRollback {
                         machine_id: target.id.clone(),
-                        participation: target.storage_participation.clone(),
+                        participation: target.storage_participation().clone(),
                         replicas: previous_remote_replicas,
                         authority_peers: previous_authority_peers.clone(),
                     });
                     if targets.iter().any(|candidate| candidate.id == target.id) {
-                        promoted.push(target.id.0.clone());
+                        promoted.push(target.id.as_str().to_string());
                     }
                 }
             }
@@ -578,8 +578,7 @@ impl DaemonState {
         let update_result = active
             .mesh
             .update_authoritative_self_record(|record| {
-                record.storage = true;
-                record.storage_participation = StorageParticipation::default_authority();
+                record.storage_role = MachineStorageRole::default_authority();
             })
             .await;
         if update_result.is_none() {
@@ -684,8 +683,7 @@ impl DaemonState {
         let update_result = active
             .mesh
             .update_authoritative_self_record(|record| {
-                record.storage = true;
-                record.storage_participation = participation.clone();
+                record.storage_role = participation.clone().into();
             })
             .await;
         if update_result.is_none() {
@@ -864,7 +862,7 @@ async fn rollback_remote_storage_promotions(
     for rollback in rollbacks.iter().rev() {
         if let Err(error) = restore_remote_storage(client, rollback).await {
             failed.push(MachineStoragePromotionFailure {
-                machine_id: rollback.machine_id.0.clone(),
+                machine_id: rollback.machine_id.as_str().to_string(),
                 cause: MachineStoragePromotionFailureCause::RpcUnavailable,
                 message: format!("rollback promoted storage config: {error}"),
             });
@@ -888,10 +886,10 @@ async fn restore_remote_storage(
         )
         .await
         .map_err(|error| error.to_string())?;
-    if response.ok {
+    if response.is_ok() {
         Ok(())
     } else {
-        Err(format!("{}: {}", response.code, response.message))
+        Err(format!("{}: {}", response.code(), response.message()))
     }
 }
 
@@ -914,10 +912,10 @@ async fn promote_remote_storage(
         )
         .await
         .map_err(|error| error.to_string())?;
-    if response.ok {
+    if response.is_ok() {
         Ok(())
     } else {
-        Err(format!("{}: {}", response.code, response.message))
+        Err(format!("{}: {}", response.code(), response.message()))
     }
 }
 
@@ -931,7 +929,7 @@ async fn preflight_remote_storage_promotion(
             Ok(status) => {
                 if status.version != env!("CARGO_PKG_VERSION") {
                     failed.push(MachineStoragePromotionFailure {
-                        machine_id: target.id.0.clone(),
+                        machine_id: target.id.as_str().to_string(),
                         cause: MachineStoragePromotionFailureCause::VersionMismatch,
                         message: format!(
                             "remote daemon version {} does not match required version {} for storage promotion",
@@ -942,7 +940,7 @@ async fn preflight_remote_storage_promotion(
                 }
             }
             Err(message) => failed.push(MachineStoragePromotionFailure {
-                machine_id: target.id.0.clone(),
+                machine_id: target.id.as_str().to_string(),
                 cause: MachineStoragePromotionFailureCause::RpcUnavailable,
                 message,
             }),
@@ -966,11 +964,13 @@ async fn remote_status(
         )
         .await
         .map_err(|error| error.to_string())?;
-    if !response.ok {
-        return Err(format!("{}: {}", response.code, response.message));
+    if !response.is_ok() {
+        return Err(format!("{}: {}", response.code(), response.message()));
     }
-    match response.payload {
-        Some(DaemonPayload::Status(status)) if status.machine_id == target.id.0 => Ok(status),
+    match response.payload() {
+        Some(DaemonPayload::Status(status)) if status.machine_id == target.id.as_str() => {
+            Ok(status)
+        }
         Some(DaemonPayload::Status(status)) => Err(format!(
             "remote status reported machine {} instead of {}",
             status.machine_id, target.id
@@ -1073,7 +1073,7 @@ fn validate_authority_peers_match_membership(
             local_peer.machine_id
         ));
     }
-    if machine.lifecycle != MachineLifecycle::Active || !machine.storage {
+    if machine.lifecycle != MachineLifecycle::Active || !machine.storage() {
         return Err(format!(
             "storage promotion self payload local authority peer '{}' is not active storage membership",
             local_peer.machine_id

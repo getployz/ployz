@@ -21,7 +21,7 @@ impl DaemonState {
             return self.err("NO_ACTIVE_MESH", "image inspect requires a running mesh");
         };
         if let Err(error) = inspect_target_machine(&self.identity.machine_id, request) {
-            return self.err(error.code, error.message);
+            return self.err(&error.code, error.message);
         }
 
         self.handle_image_inspect_with_backend(request, self.runtime_image_backend().await)
@@ -38,7 +38,7 @@ impl DaemonState {
         };
         let target_machine = match inspect_target_machine(&self.identity.machine_id, request) {
             Ok(machine_id) => machine_id,
-            Err(error) => return self.err(error.code, error.message),
+            Err(error) => return self.err(&error.code, error.message),
         };
         let reference = image_inspect_reference(request);
         let operation_store = self.image_operation_store();
@@ -175,11 +175,7 @@ fn present_image_record(
         digest: digest.clone(),
         presence: ImagePresence::Present {
             artifact: ImageArtifact {
-                image: ImageRef {
-                    repository: Some(image.reference),
-                    tag: None,
-                    digest,
-                },
+                image: ImageRef::repository_digest(image.reference, None, digest),
                 platform: image.platform,
                 provenance: ImageArtifactProvenance::External {
                     source: Some(reference.into()),
@@ -233,15 +229,16 @@ fn inspect_target_machine(
             code: "IMAGE_INSPECT_REMOTE_UNSUPPORTED",
             message: format!(
                 "image inspect only supports local machine '{}' in this release, got '{}'",
-                local_machine.0, machine_id.0
+                local_machine.as_str(),
+                machine_id.as_str()
             ),
         }),
         [first, second, rest @ ..] => Err(InspectTargetError {
             code: "IMAGE_INSPECT_REMOTE_UNSUPPORTED",
             message: format!(
                 "image inspect supports one local target in this release, got '{}', '{}' and {} more",
-                first.0,
-                second.0,
+                first.as_str(),
+                second.as_str(),
                 rest.len()
             ),
         }),
@@ -274,11 +271,16 @@ fn image_operation_target(
     status: OperationStatus,
     last_error: Option<String>,
 ) -> ImageOperationTargetOutcome {
-    ImageOperationTargetOutcome {
-        machine_id,
-        status,
-        bytes_transferred: None,
-        last_error,
+    match status {
+        OperationStatus::Running => ImageOperationTargetOutcome::running(machine_id),
+        OperationStatus::Succeeded => ImageOperationTargetOutcome::succeeded(machine_id, None),
+        OperationStatus::Failed => ImageOperationTargetOutcome::failed(
+            machine_id,
+            last_error.unwrap_or_else(|| "image inspect target failed".into()),
+        ),
+        OperationStatus::Interrupted => {
+            ImageOperationTargetOutcome::interrupted(machine_id, last_error)
+        }
     }
 }
 
@@ -293,7 +295,7 @@ fn render_image_inspect_record(operation_id: &str, record: &ImageAvailabilityRec
     format!(
         "{}  {}  {}  {}",
         operation_id,
-        record.machine_id.0,
+        record.machine_id.as_str(),
         record.digest.as_str(),
         image_presence_label(record)
     )
@@ -406,14 +408,14 @@ mod tests {
 
         let record = inspect_runtime_image_record(
             backend.as_ref(),
-            MachineId("founder".into()),
+            MachineId::new("founder"),
             digest.clone(),
             "example/app:latest",
             "op-1",
         )
         .await;
 
-        assert_eq!(record.machine_id, MachineId("founder".into()));
+        assert_eq!(record.machine_id, MachineId::new("founder"));
         assert_eq!(record.digest, digest);
         let ImagePresence::Present {
             artifact,
@@ -423,10 +425,7 @@ mod tests {
         else {
             panic!("expected present record");
         };
-        assert_eq!(
-            artifact.image.repository.as_deref(),
-            Some("example/app:latest")
-        );
+        assert_eq!(artifact.image.repository(), Some("example/app:latest"));
         assert_eq!(artifact.platform.expect("platform").architecture, "amd64");
         assert_eq!(source_operation_id.as_deref(), Some("op-1"));
     }
@@ -438,7 +437,7 @@ mod tests {
 
         let record = inspect_runtime_image_record(
             backend.as_ref(),
-            MachineId("founder".into()),
+            MachineId::new("founder"),
             digest,
             "example/app:latest",
             "op-1",
@@ -455,7 +454,7 @@ mod tests {
 
         let record = inspect_runtime_image_record(
             backend.as_ref(),
-            MachineId("founder".into()),
+            MachineId::new("founder"),
             digest,
             "example/app:latest",
             "op-1",
@@ -486,7 +485,7 @@ mod tests {
 
         let record = inspect_runtime_image_record(
             backend.as_ref(),
-            MachineId("founder".into()),
+            MachineId::new("founder"),
             digest('a'),
             "example/app:latest",
             "op-1",
@@ -501,15 +500,15 @@ mod tests {
 
     #[test]
     fn inspect_defaults_to_local_machine() {
-        let local = MachineId("founder".into());
+        let local = MachineId::new("founder");
         let target = inspect_target_machine(&local, &request(Vec::new())).expect("local target");
         assert_eq!(target, local);
     }
 
     #[test]
     fn inspect_rejects_remote_machine() {
-        let local = MachineId("founder".into());
-        let error = inspect_target_machine(&local, &request(vec![MachineId("worker".into())]))
+        let local = MachineId::new("founder");
+        let error = inspect_target_machine(&local, &request(vec![MachineId::new("worker")]))
             .expect_err("remote unsupported");
         assert_eq!(error.code, "IMAGE_INSPECT_REMOTE_UNSUPPORTED");
     }
@@ -529,7 +528,7 @@ mod tests {
     async fn handler_writes_present_record_and_preserves_unrelated_records() {
         let (state, store) = make_active_state().await;
         let unrelated_digest = digest('b');
-        let unrelated = absent_image_record(MachineId("worker".into()), unrelated_digest.clone());
+        let unrelated = absent_image_record(MachineId::new("worker"), unrelated_digest.clone());
         store
             .upsert_image_availability(&unrelated)
             .await
@@ -554,14 +553,14 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "response: {response:?}");
-        let Some(DaemonPayload::ImageInspect(payload)) = response.payload else {
+        assert!(response.is_ok(), "response: {response:?}");
+        let Some(DaemonPayload::ImageInspect(payload)) = response.payload() else {
             panic!("expected image inspect payload");
         };
         assert!(!payload.operation_id.is_empty());
-        assert!(response.message.contains(&payload.operation_id));
+        assert!(response.message().contains(&payload.operation_id));
         assert_eq!(payload.records.len(), 1);
-        assert_eq!(payload.records[0].machine_id, MachineId("founder".into()));
+        assert_eq!(payload.records[0].machine_id, MachineId::new("founder"));
         assert_eq!(payload.records[0].digest, inspected_digest);
         assert!(matches!(
             payload.records[0].presence,
@@ -569,13 +568,13 @@ mod tests {
         ));
 
         let stored = store
-            .get_image_availability(&MachineId("founder".into()), &inspected_digest)
+            .get_image_availability(&MachineId::new("founder"), &inspected_digest)
             .await
             .expect("get inspected")
             .expect("inspected record");
         assert!(matches!(stored.presence, ImagePresence::Present { .. }));
         let preserved = store
-            .get_image_availability(&MachineId("worker".into()), &unrelated_digest)
+            .get_image_availability(&MachineId::new("worker"), &unrelated_digest)
             .await
             .expect("get unrelated")
             .expect("unrelated record");
@@ -585,7 +584,7 @@ mod tests {
             .list()
             .expect("list image operations");
         assert_eq!(operations.len(), 1);
-        assert_eq!(operations[0].status, OperationStatus::Succeeded);
+        assert_eq!(operations[0].status(), OperationStatus::Succeeded);
     }
 
     #[tokio::test]
@@ -598,14 +597,14 @@ mod tests {
                 &ImageInspectRequest {
                     digest: digest('a'),
                     reference: Some("example/app:latest".into()),
-                    machines: vec![MachineId("worker".into())],
+                    machines: vec![MachineId::new("worker")],
                 },
                 Ok(backend),
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_INSPECT_REMOTE_UNSUPPORTED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_INSPECT_REMOTE_UNSUPPORTED");
         assert!(
             store
                 .list_image_availability()
@@ -640,7 +639,10 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "missing image should be an absent observation");
+        assert!(
+            response.is_ok(),
+            "missing image should be an absent observation"
+        );
         assert_eq!(
             inspected_references
                 .lock()
@@ -665,14 +667,14 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "IMAGE_INSPECT_FAILED");
-        let Some(DaemonPayload::ImageInspect(payload)) = response.payload else {
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "IMAGE_INSPECT_FAILED");
+        let Some(DaemonPayload::ImageInspect(payload)) = response.payload() else {
             panic!("expected image inspect payload");
         };
-        assert!(response.message.contains(&payload.operation_id));
+        assert!(response.message().contains(&payload.operation_id));
         let stored = store
-            .get_image_availability(&MachineId("founder".into()), &inspected_digest)
+            .get_image_availability(&MachineId::new("founder"), &inspected_digest)
             .await
             .expect("get failed availability")
             .expect("failed availability");
@@ -683,7 +685,7 @@ mod tests {
     #[test]
     fn render_inspect_line_includes_machine_digest_and_presence() {
         let digest = digest('a');
-        let record = absent_image_record(MachineId("founder".into()), digest.clone());
+        let record = absent_image_record(MachineId::new("founder"), digest.clone());
 
         let line = render_image_inspect_record("op-1", &record);
 
@@ -694,7 +696,7 @@ mod tests {
     }
 
     async fn make_active_state() -> (DaemonState, Arc<MemoryStore>) {
-        let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
+        let identity = Identity::generate(MachineId::new("founder"), [1; 32]);
         let founder_subnet: Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
         let data_dir = unique_temp_dir("ployz-image-inspect-state");
         let mut config = NetworkConfig::new(
@@ -721,8 +723,7 @@ mod tests {
                 region_role: RegionRole::HomeData,
                 bridge_ip: None,
                 endpoints: Vec::new(),
-                storage: true,
-                storage_participation: StorageParticipation::default_authority(),
+                storage_role: StorageParticipation::default_authority().into(),
                 created_at: now_unix_secs(),
                 updated_at: now_unix_secs(),
                 labels: BTreeMap::new(),

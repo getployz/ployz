@@ -315,16 +315,15 @@ fn spawn_command_task(
         if matches!(command.request, ployz_api::DaemonRequest::RuntimeSubscribe) {
             let started_at = std::time::Instant::now();
             let Some(stream) = command.stream.take() else {
-                let response = ployz_api::DaemonResponse {
-                    ok: false,
-                    code: "INTERNAL".into(),
-                    message: "runtime stream channel missing".into(),
-                    payload: None,
-                };
+                let response = ployz_api::DaemonResponse::error(
+                    "INTERNAL",
+                    "runtime stream channel missing",
+                    None,
+                );
                 crate::metrics::observe_request(
                     request_name,
                     RequestLane::Shared,
-                    response.ok,
+                    response.is_ok(),
                     started_at.elapsed(),
                 );
                 let _ = command.reply.send(response);
@@ -342,7 +341,7 @@ fn spawn_command_task(
                     crate::metrics::observe_request(
                         request_name,
                         RequestLane::Shared,
-                        response.ok,
+                        response.is_ok(),
                         started_at.elapsed(),
                     );
                     let _ = command.reply.send(*response);
@@ -350,13 +349,8 @@ fn spawn_command_task(
                 }
             };
 
-            let response = ployz_api::DaemonResponse {
-                ok: true,
-                code: "OK".into(),
-                message: "runtime stream opened".into(),
-                payload: None,
-            };
-            let ok = response.ok;
+            let response = ployz_api::DaemonResponse::success("runtime stream opened", None);
+            let ok = response.is_ok();
             if command.reply.send(response).is_err() {
                 crate::metrics::observe_request(
                     request_name,
@@ -387,12 +381,11 @@ fn spawn_command_task(
         let started_at = std::time::Instant::now();
         let response_flushed = command.response_flushed.take();
         let response = tokio::select! {
-            _ = cancel.cancelled() => ployz_api::DaemonResponse {
-                ok: false,
-                code: "SHUTDOWN".into(),
-                message: "daemon shutting down".into(),
-                payload: None,
-            },
+            _ = cancel.cancelled() => ployz_api::DaemonResponse::error(
+                "SHUTDOWN",
+                "daemon shutting down",
+                None,
+            ),
             response = async {
                 match lane {
                     RequestLane::Shared => {
@@ -408,7 +401,7 @@ fn spawn_command_task(
                 }
             } => response,
         };
-        crate::metrics::observe_request(request_name, lane, response.ok, started_at.elapsed());
+        crate::metrics::observe_request(request_name, lane, response.is_ok(), started_at.elapsed());
         let _ = command.reply.send(response);
     });
 }
@@ -507,13 +500,13 @@ mod tests {
             .request(DaemonRequest::Status)
             .await
             .expect("status request should succeed");
-        assert!(status_response.ok);
+        assert!(status_response.is_ok());
 
         let mesh_down_response = transport
             .request(DaemonRequest::MeshStop { force: false })
             .await
             .expect("mesh down request should return a response");
-        assert!(!mesh_down_response.ok);
+        assert!(!mesh_down_response.is_ok());
 
         let metrics = fetch_http_body(metrics_addr, "/metrics").await;
         assert!(metrics.contains(
@@ -596,7 +589,7 @@ mod tests {
             .request(DaemonRequest::Status)
             .await
             .expect("status request should succeed");
-        assert!(status_response.ok);
+        assert!(status_response.is_ok());
 
         let metrics = fetch_http_body(metrics_addr, "/metrics").await;
         assert!(metrics.contains(&format!(
