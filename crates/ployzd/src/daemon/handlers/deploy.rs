@@ -17,7 +17,9 @@ use manifest_render::{
 };
 use node::NatsDeployParticipantClient;
 use ployz_api::{
-    BranchNamespaceMode, BranchNamespaceRequest, DaemonPayload, DaemonResponse,
+    BranchApplyPreparedRequest, BranchEnvironmentListPayload, BranchEnvironmentPayload,
+    BranchEnvironmentStatusRequest, BranchNamespaceMode, BranchNamespaceRequest,
+    BranchResourceMode, BranchResourceModeOverride, DaemonPayload, DaemonResponse,
     DeployApplyPreparedRequest, DeployOptions, DeployPreparePayload, MigrateServiceMode,
     MigrateServiceRequest,
 };
@@ -35,8 +37,12 @@ use ployz_orchestrator::deploy::{
 use ployz_store_api::{DeployStore, StoreDriver, StoreRuntimeControl};
 use ployz_types::Error as PloyzError;
 use ployz_types::error::DeployError;
-use ployz_types::model::{DeployId, DeployPhaseCommitPolicy, DeployPhaseFailure, DeployPhaseState};
-use ployz_types::spec::{DeployManifest, Namespace};
+use ployz_types::model::{
+    BranchEnvironmentFailure, BranchEnvironmentRecord, BranchEnvironmentResourceMode,
+    BranchEnvironmentResourceOverride, BranchEnvironmentState, DeployId, DeployPhaseCommitPolicy,
+    DeployPhaseFailure, DeployPhaseState, DeployState, PreparedDeployRecord, PreparedDeployState,
+};
+use ployz_types::spec::{DeployManifest, Namespace, valid_storage_segment};
 
 #[cfg(test)]
 use manifest_render::{BranchRenderError, MigrateRenderError, stable_fingerprint};
@@ -58,6 +64,24 @@ struct DeployApplyRuntime {
     nats_store: NatsStore,
     nats_locks: NatsLocks,
     deploy_lock: NatsDeployLock,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchApplyPreparedLifecycle {
+    BestEffort,
+    Required,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchApplyPreparedRecording {
+    None,
+    Claimed,
+}
+
+enum BranchApplyingReplayAction {
+    Replayed(BranchEnvironmentRecord),
+    ResumePreparedApply,
+    Busy,
 }
 
 type DeployApplyFuture<'a> = Pin<
@@ -211,6 +235,18 @@ impl DaemonState {
         &self,
         request: &DeployApplyPreparedRequest,
     ) -> DaemonResponse {
+        self.handle_deploy_apply_prepared_with_branch_lifecycle(
+            request,
+            BranchApplyPreparedLifecycle::BestEffort,
+        )
+        .await
+    }
+
+    async fn handle_deploy_apply_prepared_with_branch_lifecycle(
+        &self,
+        request: &DeployApplyPreparedRequest,
+        lifecycle: BranchApplyPreparedLifecycle,
+    ) -> DaemonResponse {
         let active = match self.require_active("NO_MESH", "no mesh is running") {
             Ok(active) => active,
             Err(response) => return *response,
@@ -232,9 +268,202 @@ impl DaemonState {
             }
             Err(error) => return self.deploy_error_response("DEPLOY_APPLY_PREPARED_FAILED", error),
         };
+        let loaded_branch_environment = match active
+            .mesh
+            .store
+            .get_branch_environment(&prepared.namespace)
+            .await
+        {
+            Ok(environment) => environment,
+            Err(error) => return self.deploy_error_response("DEPLOY_APPLY_PREPARED_FAILED", error),
+        };
+
+        let branch_environment = match (lifecycle, loaded_branch_environment) {
+            (BranchApplyPreparedLifecycle::Required, None) => {
+                return self.err(
+                    "BRANCH_ENVIRONMENT_NOT_FOUND",
+                    format!(
+                        "prepared deploy '{}' is not current for any branch environment",
+                        request.prepared_deploy_id
+                    ),
+                );
+            }
+            (BranchApplyPreparedLifecycle::Required, Some(environment))
+                if environment.prepared_deploy_id.as_ref() != Some(&request.prepared_deploy_id) =>
+            {
+                return self.err(
+                    "BRANCH_PREPARED_DEPLOY_STALE",
+                    format!(
+                        "prepared deploy '{}' is not current for branch environment '{}'",
+                        request.prepared_deploy_id, environment.target_namespace
+                    ),
+                );
+            }
+            (BranchApplyPreparedLifecycle::Required, Some(environment)) => Some(environment),
+            (BranchApplyPreparedLifecycle::BestEffort, Some(environment))
+                if environment.prepared_deploy_id.as_ref() == Some(&request.prepared_deploy_id) =>
+            {
+                Some(environment)
+            }
+            (BranchApplyPreparedLifecycle::BestEffort, Some(_) | None) => None,
+        };
+
+        if lifecycle == BranchApplyPreparedLifecycle::Required
+            && let Some(environment) = branch_environment.as_ref()
+            && active_branch_prepared_replay(environment, &request.prepared_deploy_id)
+        {
+            return self.branch_environment_replay_response(environment.clone());
+        }
+
+        let branch_recording = match branch_environment.as_ref() {
+            Some(environment) if environment.state == BranchEnvironmentState::Active => {
+                if lifecycle == BranchApplyPreparedLifecycle::Required {
+                    return self.err(
+                        "BRANCH_ENVIRONMENT_ALREADY_ACTIVE",
+                        format!(
+                            "branch environment '{}' is already active",
+                            environment.target_namespace
+                        ),
+                    );
+                }
+                BranchApplyPreparedRecording::None
+            }
+            Some(environment) if environment.state == BranchEnvironmentState::Applying => {
+                match branch_applying_replay_action(
+                    &active.mesh.store,
+                    &prepared,
+                    &request.prepared_deploy_id,
+                )
+                .await
+                {
+                    Ok(BranchApplyingReplayAction::Replayed(environment)) => {
+                        return self.branch_environment_replay_response(environment);
+                    }
+                    Ok(BranchApplyingReplayAction::ResumePreparedApply) => {
+                        BranchApplyPreparedRecording::Claimed
+                    }
+                    Ok(BranchApplyingReplayAction::Busy) => {
+                        return self.err(
+                            "BRANCH_ENVIRONMENT_BUSY",
+                            format!(
+                                "branch environment '{}' is already applying prepared deploy '{}'",
+                                environment.target_namespace, request.prepared_deploy_id
+                            ),
+                        );
+                    }
+                    Err(error) => {
+                        return self.err(
+                            "BRANCH_ENVIRONMENT_RECORD_FAILED",
+                            format!("failed to repair applying branch environment: {error}"),
+                        );
+                    }
+                }
+            }
+            Some(_) => match active
+                .mesh
+                .store
+                .mark_branch_environment_applying(
+                    &prepared.namespace,
+                    &request.prepared_deploy_id,
+                    ployz_types::time::now_unix_secs(),
+                )
+                .await
+            {
+                Ok(_) => BranchApplyPreparedRecording::Claimed,
+                Err(error) if lifecycle == BranchApplyPreparedLifecycle::BestEffort => {
+                    if let Some(environment) = active_branch_prepared_replay_record(
+                        &active.mesh.store,
+                        &prepared.namespace,
+                        &request.prepared_deploy_id,
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+                    {
+                        return self.branch_environment_replay_response(environment);
+                    }
+                    if branch_environment_applying_record(
+                        &active.mesh.store,
+                        &prepared.namespace,
+                        &request.prepared_deploy_id,
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some()
+                    {
+                        return self.err(
+                            "BRANCH_ENVIRONMENT_BUSY",
+                            format!(
+                                "branch environment '{}' is already applying prepared deploy '{}'",
+                                prepared.namespace, request.prepared_deploy_id
+                            ),
+                        );
+                    }
+                    tracing::warn!(
+                        %error,
+                        target_namespace = %prepared.namespace,
+                        prepared_deploy_id = %request.prepared_deploy_id,
+                        "failed to claim branch apply-prepared lifecycle"
+                    );
+                    BranchApplyPreparedRecording::None
+                }
+                Err(error) => {
+                    if let Some(environment) = active_branch_prepared_replay_record(
+                        &active.mesh.store,
+                        &prepared.namespace,
+                        &request.prepared_deploy_id,
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+                    {
+                        return self.branch_environment_replay_response(environment);
+                    }
+                    if branch_environment_applying_record(
+                        &active.mesh.store,
+                        &prepared.namespace,
+                        &request.prepared_deploy_id,
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some()
+                    {
+                        return self.err(
+                            "BRANCH_ENVIRONMENT_BUSY",
+                            format!(
+                                "branch environment '{}' is already applying prepared deploy '{}'",
+                                prepared.namespace, request.prepared_deploy_id
+                            ),
+                        );
+                    }
+                    return self.err(
+                        "BRANCH_ENVIRONMENT_RECORD_FAILED",
+                        format!("failed to claim branch apply-prepared lifecycle: {error}"),
+                    );
+                }
+            },
+            None => BranchApplyPreparedRecording::None,
+        };
+
         let manifest = match validated_prepared_manifest(&prepared) {
             Ok(manifest) => manifest,
-            Err(error) => return self.deploy_error_response("DEPLOY_APPLY_PREPARED_FAILED", error),
+            Err(error) => {
+                let response = self.deploy_error_response("DEPLOY_APPLY_PREPARED_FAILED", error);
+                if branch_recording != BranchApplyPreparedRecording::None {
+                    return self
+                        .branch_apply_prepared_response(
+                            &active.mesh.store,
+                            &prepared.namespace,
+                            &request.prepared_deploy_id,
+                            response,
+                            branch_recording,
+                        )
+                        .await;
+                }
+                return response;
+            }
         };
         let runtime = match self
             .prepare_deploy_apply_runtime(
@@ -245,10 +474,87 @@ impl DaemonState {
             .await
         {
             Ok(runtime) => runtime,
-            Err(response) => return response,
+            Err(response) => {
+                if branch_recording != BranchApplyPreparedRecording::None {
+                    return self
+                        .branch_apply_prepared_response(
+                            &active.mesh.store,
+                            &prepared.namespace,
+                            &request.prepared_deploy_id,
+                            response,
+                            branch_recording,
+                        )
+                        .await;
+                }
+                return response;
+            }
         };
-        self.apply_prepared_with_runtime(active, &request.prepared_deploy_id, runtime)
-            .await
+        let response = self
+            .apply_prepared_with_runtime(active, &request.prepared_deploy_id, runtime)
+            .await;
+        if branch_recording != BranchApplyPreparedRecording::None {
+            return self
+                .branch_apply_prepared_response(
+                    &active.mesh.store,
+                    &prepared.namespace,
+                    &request.prepared_deploy_id,
+                    response,
+                    branch_recording,
+                )
+                .await;
+        }
+        response
+    }
+
+    fn branch_environment_replay_response(
+        &self,
+        environment: BranchEnvironmentRecord,
+    ) -> DaemonResponse {
+        self.ok_with_payload(
+            format!(
+                "branch environment '{}' is {}",
+                environment.target_namespace, environment.state
+            ),
+            Some(DaemonPayload::BranchEnvironment(BranchEnvironmentPayload {
+                environment,
+            })),
+        )
+    }
+
+    async fn branch_apply_prepared_response(
+        &self,
+        store: &StoreDriver,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        response: DaemonResponse,
+        recording: BranchApplyPreparedRecording,
+    ) -> DaemonResponse {
+        match record_branch_apply_prepared_outcome(
+            store,
+            target_namespace,
+            prepared_deploy_id,
+            &response,
+        )
+        .await
+        {
+            Ok(_) => response,
+            Err(error) if recording != BranchApplyPreparedRecording::Claimed => {
+                tracing::warn!(
+                    %error,
+                    %target_namespace,
+                    %prepared_deploy_id,
+                    "failed to record branch apply-prepared outcome"
+                );
+                response
+            }
+            Err(error) => self.err(
+                "BRANCH_ENVIRONMENT_RECORD_FAILED",
+                format!(
+                    "failed to record branch apply-prepared outcome: {error}; deploy response was {}: {}",
+                    response.code, response.message
+                ),
+            ),
+        }
     }
 
     async fn prepare_deploy_apply_runtime(
@@ -494,10 +800,41 @@ impl DaemonState {
         if let Err(error) = validate_branch_namespace_request(&request) {
             return self.err(error.code(), error.to_string());
         }
+        if matches!(request.mode, BranchNamespaceMode::Apply) {
+            return self.err(
+                "BRANCH_DIRECT_APPLY_UNSUPPORTED",
+                "branch apply requires branch prepare followed by branch apply-prepared so lifecycle state is durable",
+            );
+        }
         let active = match self.require_active("NO_MESH", "no mesh is running") {
             Ok(active) => active,
             Err(response) => return *response,
         };
+        if matches!(request.mode, BranchNamespaceMode::Prepare) {
+            let target_namespace = Namespace(request.target_namespace.clone());
+            match active
+                .mesh
+                .store
+                .get_branch_environment(&target_namespace)
+                .await
+            {
+                Ok(Some(environment))
+                    if matches!(environment.state, BranchEnvironmentState::Applying) =>
+                {
+                    return self.err(
+                        "BRANCH_ENVIRONMENT_BUSY",
+                        format!(
+                            "branch environment '{target_namespace}' is {}",
+                            environment.state
+                        ),
+                    );
+                }
+                Ok(Some(_)) | Ok(None) => {}
+                Err(error) => {
+                    return self.err("BRANCH_ENVIRONMENT_STATUS_FAILED", error.to_string());
+                }
+            }
+        }
         let manifest = match render_branch_namespace_manifest(&active.mesh.store, &request).await {
             Ok(manifest) => manifest,
             Err(error) => return self.err(error.code(), error.to_string()),
@@ -511,7 +848,18 @@ impl DaemonState {
                     Ok(manifest_json) => manifest_json,
                     Err(error) => return self.err(error.code(), error.to_string()),
                 };
-                self.handle_deploy_prepare(&manifest_json).await
+                let response = self.handle_deploy_prepare(&manifest_json).await;
+                if response.ok {
+                    if let Some(DaemonPayload::DeployPrepare(payload)) = response.payload.as_ref() {
+                        let record = branch_environment_record_from_prepare(&request, payload);
+                        if let Err(error) =
+                            active.mesh.store.upsert_branch_environment(&record).await
+                        {
+                            return self.err("BRANCH_ENVIRONMENT_RECORD_FAILED", error.to_string());
+                        }
+                    }
+                }
+                response
             }
             BranchNamespaceMode::Preview => {
                 let manifest_json = match encode_branch_manifest_json(&manifest) {
@@ -530,6 +878,77 @@ impl DaemonState {
                     .await
             }
         }
+    }
+
+    pub async fn handle_branch_apply_prepared(
+        &self,
+        request: &BranchApplyPreparedRequest,
+    ) -> DaemonResponse {
+        self.handle_deploy_apply_prepared_with_branch_lifecycle(
+            &DeployApplyPreparedRequest {
+                prepared_deploy_id: request.prepared_deploy_id.clone(),
+            },
+            BranchApplyPreparedLifecycle::Required,
+        )
+        .await
+    }
+
+    pub async fn handle_branch_environment_status(
+        &self,
+        request: &BranchEnvironmentStatusRequest,
+    ) -> DaemonResponse {
+        if !valid_storage_segment(&request.target_namespace) {
+            return self.err(
+                "BRANCH_ENVIRONMENT_INVALID_TARGET",
+                "branch target namespace must be 1-63 chars of [a-z0-9_-], starting with a letter or digit",
+            );
+        }
+        let active = match self.require_active("NO_MESH", "no mesh is running") {
+            Ok(active) => active,
+            Err(response) => return *response,
+        };
+        let target_namespace = Namespace(request.target_namespace.clone());
+        let environment = match active
+            .mesh
+            .store
+            .get_branch_environment(&target_namespace)
+            .await
+        {
+            Ok(Some(environment)) => environment,
+            Ok(None) => {
+                return self.err(
+                    "BRANCH_ENVIRONMENT_NOT_FOUND",
+                    format!("branch environment '{target_namespace}' not found"),
+                );
+            }
+            Err(error) => return self.err("BRANCH_ENVIRONMENT_STATUS_FAILED", error.to_string()),
+        };
+        self.ok_with_payload(
+            format!(
+                "branch environment '{}' is {}",
+                environment.target_namespace, environment.state
+            ),
+            Some(DaemonPayload::BranchEnvironment(BranchEnvironmentPayload {
+                environment,
+            })),
+        )
+    }
+
+    pub async fn handle_branch_environment_list(&self) -> DaemonResponse {
+        let active = match self.require_active("NO_MESH", "no mesh is running") {
+            Ok(active) => active,
+            Err(response) => return *response,
+        };
+        let environments = match active.mesh.store.list_branch_environments().await {
+            Ok(environments) => environments,
+            Err(error) => return self.err("BRANCH_ENVIRONMENT_LIST_FAILED", error.to_string()),
+        };
+        self.ok_with_payload(
+            format!("{} branch environment(s)", environments.len()),
+            Some(DaemonPayload::BranchEnvironmentList(
+                BranchEnvironmentListPayload { environments },
+            )),
+        )
     }
 
     pub async fn handle_migrate_service(&self, request: MigrateServiceRequest) -> DaemonResponse {
@@ -590,6 +1009,220 @@ impl DaemonState {
                 )
                 .await
             }
+        }
+    }
+}
+
+fn branch_environment_record_from_prepare(
+    request: &BranchNamespaceRequest,
+    payload: &DeployPreparePayload,
+) -> BranchEnvironmentRecord {
+    BranchEnvironmentRecord {
+        source_namespace: Namespace(request.source_namespace.clone()),
+        target_namespace: Namespace(request.target_namespace.clone()),
+        state: BranchEnvironmentState::Prepared,
+        default_service_mode: branch_environment_mode(request.default_service_mode),
+        default_volume_mode: branch_environment_mode(request.default_volume_mode),
+        services: branch_environment_overrides(&request.services),
+        volumes: branch_environment_overrides(&request.volumes),
+        prepared_deploy_id: Some(payload.prepared.prepared_deploy_id.clone()),
+        applied_deploy_id: None,
+        manifest_hash: payload.prepared.manifest_hash.clone(),
+        baseline: payload.prepared.baseline.clone(),
+        service_branch_sources: payload.prepared.preview.service_branch_sources.clone(),
+        volume_clones: payload.prepared.preview.volume_clones.clone(),
+        image_availability: payload.prepared.preview.image_availability.clone(),
+        failure: None,
+        created_at: payload.prepared.created_at,
+        updated_at: payload.prepared.updated_at,
+    }
+}
+
+fn branch_environment_mode(mode: BranchResourceMode) -> BranchEnvironmentResourceMode {
+    match mode {
+        BranchResourceMode::Fresh => BranchEnvironmentResourceMode::Fresh,
+        BranchResourceMode::Branch => BranchEnvironmentResourceMode::Branch,
+    }
+}
+
+fn branch_environment_overrides(
+    overrides: &[BranchResourceModeOverride],
+) -> Vec<BranchEnvironmentResourceOverride> {
+    overrides
+        .iter()
+        .map(|override_| BranchEnvironmentResourceOverride {
+            name: override_.name.clone(),
+            mode: branch_environment_mode(override_.mode),
+        })
+        .collect()
+}
+
+async fn record_branch_apply_prepared_outcome(
+    store: &StoreDriver,
+    target_namespace: &Namespace,
+    prepared_deploy_id: &DeployId,
+    response: &DaemonResponse,
+) -> ployz_types::Result<BranchEnvironmentRecord> {
+    let updated_at = ployz_types::time::now_unix_secs();
+    if let Some(environment) =
+        active_branch_prepared_replay_record(store, target_namespace, prepared_deploy_id).await?
+    {
+        return Ok(environment);
+    }
+    if response.ok {
+        match store
+            .mark_branch_environment_active(
+                target_namespace,
+                prepared_deploy_id,
+                prepared_deploy_id,
+                updated_at,
+            )
+            .await
+        {
+            Ok(environment) => Ok(environment),
+            Err(error) => {
+                if let Some(environment) = active_branch_prepared_replay_record(
+                    store,
+                    target_namespace,
+                    prepared_deploy_id,
+                )
+                .await?
+                {
+                    return Ok(environment);
+                }
+                Err(error)
+            }
+        }
+    } else {
+        if let Some(environment) =
+            active_branch_prepared_replay_record(store, target_namespace, prepared_deploy_id)
+                .await?
+        {
+            return Ok(environment);
+        }
+        let failure = BranchEnvironmentFailure {
+            code: response.code.clone(),
+            message: response.message.clone(),
+            deploy_id: None,
+        };
+        match store
+            .mark_branch_environment_failed(
+                target_namespace,
+                prepared_deploy_id,
+                &failure,
+                updated_at,
+            )
+            .await
+        {
+            Ok(environment) => Ok(environment),
+            Err(error) => {
+                if let Some(environment) = active_branch_prepared_replay_record(
+                    store,
+                    target_namespace,
+                    prepared_deploy_id,
+                )
+                .await?
+                {
+                    return Ok(environment);
+                }
+                Err(error)
+            }
+        }
+    }
+}
+
+fn active_branch_prepared_replay(
+    environment: &BranchEnvironmentRecord,
+    prepared_deploy_id: &DeployId,
+) -> bool {
+    environment.state == BranchEnvironmentState::Active
+        && environment.prepared_deploy_id.as_ref() == Some(prepared_deploy_id)
+        && environment.applied_deploy_id.as_ref() == Some(prepared_deploy_id)
+}
+
+async fn active_branch_prepared_replay_record(
+    store: &StoreDriver,
+    target_namespace: &Namespace,
+    prepared_deploy_id: &DeployId,
+) -> ployz_types::Result<Option<BranchEnvironmentRecord>> {
+    Ok(store
+        .get_branch_environment(target_namespace)
+        .await?
+        .filter(|environment| active_branch_prepared_replay(environment, prepared_deploy_id)))
+}
+
+async fn branch_environment_applying_record(
+    store: &StoreDriver,
+    target_namespace: &Namespace,
+    prepared_deploy_id: &DeployId,
+) -> ployz_types::Result<Option<BranchEnvironmentRecord>> {
+    Ok(store
+        .get_branch_environment(target_namespace)
+        .await?
+        .filter(|environment| {
+            environment.state == BranchEnvironmentState::Applying
+                && environment.prepared_deploy_id.as_ref() == Some(prepared_deploy_id)
+        }))
+}
+
+async fn branch_applying_replay_action(
+    store: &StoreDriver,
+    prepared: &PreparedDeployRecord,
+    prepared_deploy_id: &DeployId,
+) -> ployz_types::Result<BranchApplyingReplayAction> {
+    if let Some(environment) =
+        active_branch_prepared_replay_record(store, &prepared.namespace, prepared_deploy_id).await?
+    {
+        return Ok(BranchApplyingReplayAction::Replayed(environment));
+    }
+    if branch_environment_applying_record(store, &prepared.namespace, prepared_deploy_id)
+        .await?
+        .is_none()
+    {
+        return Ok(BranchApplyingReplayAction::Busy);
+    }
+    if store
+        .get_deploy_commit(&prepared.namespace, prepared_deploy_id)
+        .await?
+        .is_some_and(|commit| {
+            matches!(
+                commit.deploy.state,
+                DeployState::Committed | DeployState::CleanupPending
+            )
+        })
+        || store
+            .get_deploy(prepared_deploy_id)
+            .await?
+            .is_some_and(|record| {
+                matches!(
+                    record.state,
+                    DeployState::Committed | DeployState::CleanupPending
+                )
+            })
+    {
+        return Ok(BranchApplyingReplayAction::ResumePreparedApply);
+    }
+    if prepared.state != PreparedDeployState::Applied {
+        return Ok(BranchApplyingReplayAction::Busy);
+    }
+    match store
+        .mark_branch_environment_active(
+            &prepared.namespace,
+            prepared_deploy_id,
+            prepared_deploy_id,
+            ployz_types::time::now_unix_secs(),
+        )
+        .await
+    {
+        Ok(environment) => Ok(BranchApplyingReplayAction::Replayed(environment)),
+        Err(error) => {
+            if let Some(environment) =
+                active_branch_prepared_replay_record(store, &prepared.namespace, prepared_deploy_id)
+                    .await?
+            {
+                return Ok(BranchApplyingReplayAction::Replayed(environment));
+            }
+            Err(error)
         }
     }
 }
@@ -808,21 +1441,24 @@ fn decode_manifest(manifest_json: &str) -> Result<DeployManifest, Box<DaemonResp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::RetainedSubnet;
+    use crate::mesh_state::network::NetworkConfig;
     use ployz_api::{
         BranchResourceMode, DaemonRequest, DeployFailureReason, VolumeZfsTransferInfo,
         VolumeZfsTransferPayload,
     };
     use ployz_nats::{NodeCommandSubject, RpcFailure, RpcFailureKind, RpcPolicy};
     use ployz_orchestrator::deploy::participant::MoveVolumeRequest;
+    use ployz_orchestrator::{Mesh, WireguardDriver};
     use ployz_runtime_api::Identity;
     use ployz_store_api::{DeployCommit, DeployStore, MachineMembershipStore};
     use ployz_types::model::{
         DeployBaselineComponent, DeployBaselineDiff, DeployId, DeployPhaseCommitPolicy,
         DeployPhaseId, DeployPhaseRecord, DeployPhaseRollbackPolicy, DeployPreview,
         DeployPreviewBaseline, DeployPreviewBaselineComponents, DeployRecord, DeployState,
-        MachineId, MachineLifecycle, MachineMembership, OverlayIp, PreparedDeployState, PublicKey,
-        ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord, ServiceRoutingPolicy,
-        VolumeRecord,
+        MachineId, MachineLifecycle, MachineMembership, NetworkLifecycle, NetworkName, OverlayIp,
+        PreparedDeployRecord, PreparedDeployState, PublicKey, ServiceRelease, ServiceReleaseRecord,
+        ServiceRevisionRecord, ServiceRoutingPolicy, VolumeRecord,
     };
     use ployz_types::spec::{
         ContainerSpec, Mount, MountSource, NetworkMode, Placement, PullPolicy, Resources,
@@ -847,6 +1483,37 @@ mod tests {
         )
     }
 
+    fn install_active_mesh(state: &mut DaemonState, store: StoreDriver) {
+        let identity = Identity::generate(MachineId("founder".into()), [42; 32]);
+        let mut config = NetworkConfig::new(
+            NetworkName("alpha".into()),
+            &identity.public_key,
+            "10.210.0.0/16",
+            "10.210.0.0/24".parse().expect("valid subnet"),
+        );
+        config.lifecycle = NetworkLifecycle::Running;
+        let mesh = Mesh::new(
+            WireguardDriver::memory(),
+            store,
+            None,
+            state.identity.machine_id.clone(),
+            51820,
+        );
+        state.active = Some(ActiveMesh {
+            retained_subnet: RetainedSubnet::from_running_config(config.subnet),
+            config,
+            mesh,
+            nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            image_receiver: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            image_receiver_bind_addr: Some("127.0.0.1:4320".parse().expect("valid address")),
+            gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            certificate_renewal: None,
+            bootstrap_peer_seed: None,
+        });
+    }
+
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
         let nanos = SystemTime::now()
@@ -868,6 +1535,52 @@ mod tests {
             volume_moves: "moves".into(),
             volume_clones: "clones".into(),
         })
+    }
+
+    fn test_empty_preview(namespace: &Namespace, baseline: DeployPreviewBaseline) -> DeployPreview {
+        DeployPreview {
+            namespace: namespace.clone(),
+            manifest_hash: "manifest".into(),
+            baseline: Some(baseline),
+            participants: Vec::new(),
+            phases: Vec::new(),
+            services: Vec::new(),
+            service_sources: Vec::new(),
+            service_source_fingerprint: String::new(),
+            service_branch_sources: Vec::new(),
+            image_availability: Vec::new(),
+            volume_moves: Vec::new(),
+            volume_clones: Vec::new(),
+            volume_clone_preflights: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    fn test_branch_environment_record(
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        state: BranchEnvironmentState,
+        baseline: DeployPreviewBaseline,
+    ) -> BranchEnvironmentRecord {
+        BranchEnvironmentRecord {
+            source_namespace: Namespace("prod".into()),
+            target_namespace: target_namespace.clone(),
+            state,
+            default_service_mode: BranchEnvironmentResourceMode::Branch,
+            default_volume_mode: BranchEnvironmentResourceMode::Fresh,
+            services: Vec::new(),
+            volumes: Vec::new(),
+            prepared_deploy_id: Some(prepared_deploy_id.clone()),
+            applied_deploy_id: None,
+            manifest_hash: "manifest".into(),
+            baseline,
+            service_branch_sources: Vec::new(),
+            volume_clones: Vec::new(),
+            image_availability: Vec::new(),
+            failure: None,
+            created_at: 1,
+            updated_at: 1,
+        }
     }
 
     fn test_service() -> ServiceSpec {
@@ -1556,6 +2269,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_branch_namespace_apply_is_unsupported() {
+        let state = test_daemon_state();
+
+        let response = state
+            .handle_branch_namespace(BranchNamespaceRequest {
+                source_namespace: "prod".into(),
+                target_namespace: "pr-39".into(),
+                mode: BranchNamespaceMode::Apply,
+                default_service_mode: BranchResourceMode::Branch,
+                default_volume_mode: BranchResourceMode::Fresh,
+                services: Vec::new(),
+                volumes: Vec::new(),
+            })
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.code, "BRANCH_DIRECT_APPLY_UNSUPPORTED");
+    }
+
+    #[tokio::test]
     async fn branch_prepare_record_preserves_compiled_source_evidence() {
         let store = StoreDriver::memory();
         let mut machine = MachineMembership::seed(
@@ -1641,6 +2374,727 @@ mod tests {
         assert_eq!(prepared.preview.namespace, Namespace("pr-39".into()));
         assert_eq!(prepared.preview.service_branch_sources.len(), 1);
         assert_eq!(prepared.preview.volume_clones.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn handle_branch_namespace_prepare_allows_active_branch_environment_past_busy_guard() {
+        let mut state = test_daemon_state();
+        let store = StoreDriver::memory();
+        let mut machine = MachineMembership::seed(
+            MachineId("founder".into()),
+            PublicKey([42; 32]),
+            OverlayIp("fd00::42".parse().expect("valid overlay")),
+            None,
+            Vec::new(),
+        );
+        machine.lifecycle = MachineLifecycle::Active;
+        store
+            .upsert_self_machine(&machine)
+            .await
+            .expect("seed active machine");
+        seed_committed_service(
+            &store,
+            &Namespace("prod".into()),
+            test_service_with_mounts("web", Vec::new()),
+            Vec::new(),
+        )
+        .await;
+        let active_prepared_deploy_id = DeployId("prepare-old".into());
+        let baseline = test_baseline("sources");
+        let mut active_record = test_branch_environment_record(
+            &Namespace("pr-39".into()),
+            &active_prepared_deploy_id,
+            BranchEnvironmentState::Prepared,
+            baseline,
+        );
+        active_record.state = BranchEnvironmentState::Active;
+        active_record.applied_deploy_id = Some(active_prepared_deploy_id.clone());
+        store
+            .upsert_branch_environment(&active_record)
+            .await
+            .expect("seed active branch environment");
+        install_active_mesh(&mut state, store.clone());
+
+        let response = state
+            .handle_branch_namespace(BranchNamespaceRequest {
+                source_namespace: "prod".into(),
+                target_namespace: "pr-39".into(),
+                mode: BranchNamespaceMode::Prepare,
+                default_service_mode: BranchResourceMode::Branch,
+                default_volume_mode: BranchResourceMode::Fresh,
+                services: Vec::new(),
+                volumes: Vec::new(),
+            })
+            .await;
+
+        assert_ne!(response.code, "BRANCH_ENVIRONMENT_BUSY", "{response:?}");
+    }
+
+    #[tokio::test]
+    async fn branch_apply_prepared_outcome_uses_expected_prepared_id_transition() {
+        let store = StoreDriver::memory();
+        let baseline = test_baseline("sources");
+        let record = BranchEnvironmentRecord {
+            source_namespace: Namespace("prod".into()),
+            target_namespace: Namespace("pr-39".into()),
+            state: BranchEnvironmentState::Prepared,
+            default_service_mode: BranchEnvironmentResourceMode::Branch,
+            default_volume_mode: BranchEnvironmentResourceMode::Fresh,
+            services: Vec::new(),
+            volumes: Vec::new(),
+            prepared_deploy_id: Some(DeployId("prepare-new".into())),
+            applied_deploy_id: None,
+            manifest_hash: "manifest".into(),
+            baseline,
+            service_branch_sources: Vec::new(),
+            volume_clones: Vec::new(),
+            image_availability: Vec::new(),
+            failure: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        store
+            .upsert_branch_environment(&record)
+            .await
+            .expect("write branch environment");
+
+        record_branch_apply_prepared_outcome(
+            &store,
+            &Namespace("pr-39".into()),
+            &DeployId("prepare-old".into()),
+            &DaemonResponse {
+                ok: true,
+                code: "OK".into(),
+                message: "{}".into(),
+                payload: None,
+            },
+        )
+        .await
+        .expect_err("stale prepared id should not transition branch environment");
+        assert_eq!(
+            store
+                .get_branch_environment(&Namespace("pr-39".into()))
+                .await
+                .expect("get branch environment")
+                .expect("branch environment exists")
+                .state,
+            BranchEnvironmentState::Prepared
+        );
+
+        store
+            .mark_branch_environment_applying(
+                &Namespace("pr-39".into()),
+                &DeployId("prepare-new".into()),
+                2,
+            )
+            .await
+            .expect("claim branch environment apply");
+        record_branch_apply_prepared_outcome(
+            &store,
+            &Namespace("pr-39".into()),
+            &DeployId("prepare-new".into()),
+            &DaemonResponse {
+                ok: true,
+                code: "OK".into(),
+                message: "{}".into(),
+                payload: None,
+            },
+        )
+        .await
+        .expect("matching prepared id should transition branch environment");
+        let stored = store
+            .get_branch_environment(&Namespace("pr-39".into()))
+            .await
+            .expect("get branch environment")
+            .expect("branch environment exists");
+        assert_eq!(stored.state, BranchEnvironmentState::Active);
+        assert_eq!(
+            stored.applied_deploy_id,
+            Some(DeployId("prepare-new".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn branch_apply_prepared_outcome_allows_retry_from_failed_for_same_prepared_id() {
+        let store = StoreDriver::memory();
+        let baseline = test_baseline("sources");
+        let record = BranchEnvironmentRecord {
+            source_namespace: Namespace("prod".into()),
+            target_namespace: Namespace("pr-39".into()),
+            state: BranchEnvironmentState::Prepared,
+            default_service_mode: BranchEnvironmentResourceMode::Branch,
+            default_volume_mode: BranchEnvironmentResourceMode::Fresh,
+            services: Vec::new(),
+            volumes: Vec::new(),
+            prepared_deploy_id: Some(DeployId("prepare-1".into())),
+            applied_deploy_id: None,
+            manifest_hash: "manifest".into(),
+            baseline,
+            service_branch_sources: Vec::new(),
+            volume_clones: Vec::new(),
+            image_availability: Vec::new(),
+            failure: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        store
+            .upsert_branch_environment(&record)
+            .await
+            .expect("write branch environment");
+
+        store
+            .mark_branch_environment_applying(
+                &Namespace("pr-39".into()),
+                &DeployId("prepare-1".into()),
+                2,
+            )
+            .await
+            .expect("claim branch environment apply");
+        record_branch_apply_prepared_outcome(
+            &store,
+            &Namespace("pr-39".into()),
+            &DeployId("prepare-1".into()),
+            &DaemonResponse {
+                ok: false,
+                code: "DEPLOY_APPLY_PREPARED_FAILED".into(),
+                message: "transient runtime failure".into(),
+                payload: None,
+            },
+        )
+        .await
+        .expect("failure should mark branch environment failed");
+        assert_eq!(
+            store
+                .get_branch_environment(&Namespace("pr-39".into()))
+                .await
+                .expect("get branch environment")
+                .expect("branch environment exists")
+                .state,
+            BranchEnvironmentState::Failed
+        );
+
+        store
+            .mark_branch_environment_applying(
+                &Namespace("pr-39".into()),
+                &DeployId("prepare-1".into()),
+                21,
+            )
+            .await
+            .expect("reclaim failed branch environment apply");
+        record_branch_apply_prepared_outcome(
+            &store,
+            &Namespace("pr-39".into()),
+            &DeployId("prepare-1".into()),
+            &DaemonResponse {
+                ok: true,
+                code: "OK".into(),
+                message: "{}".into(),
+                payload: None,
+            },
+        )
+        .await
+        .expect("same prepared id retry should activate branch environment");
+        let stored = store
+            .get_branch_environment(&Namespace("pr-39".into()))
+            .await
+            .expect("get branch environment")
+            .expect("branch environment exists");
+        assert_eq!(stored.state, BranchEnvironmentState::Active);
+        assert_eq!(stored.applied_deploy_id, Some(DeployId("prepare-1".into())));
+    }
+
+    #[tokio::test]
+    async fn branch_apply_prepared_outcome_replays_active_matching_prepared_id() {
+        let store = StoreDriver::memory();
+        let baseline = test_baseline("sources");
+        let record = BranchEnvironmentRecord {
+            source_namespace: Namespace("prod".into()),
+            target_namespace: Namespace("pr-39".into()),
+            state: BranchEnvironmentState::Active,
+            default_service_mode: BranchEnvironmentResourceMode::Branch,
+            default_volume_mode: BranchEnvironmentResourceMode::Fresh,
+            services: Vec::new(),
+            volumes: Vec::new(),
+            prepared_deploy_id: Some(DeployId("prepare-1".into())),
+            applied_deploy_id: Some(DeployId("prepare-1".into())),
+            manifest_hash: "manifest".into(),
+            baseline,
+            service_branch_sources: Vec::new(),
+            volume_clones: Vec::new(),
+            image_availability: Vec::new(),
+            failure: None,
+            created_at: 1,
+            updated_at: 10,
+        };
+        store
+            .upsert_branch_environment(&record)
+            .await
+            .expect("write active branch environment");
+
+        let stored = record_branch_apply_prepared_outcome(
+            &store,
+            &Namespace("pr-39".into()),
+            &DeployId("prepare-1".into()),
+            &DaemonResponse {
+                ok: true,
+                code: "OK".into(),
+                message: "{}".into(),
+                payload: None,
+            },
+        )
+        .await
+        .expect("matching active prepared id should replay");
+
+        assert_eq!(stored, record);
+        assert_eq!(
+            store
+                .get_branch_environment(&Namespace("pr-39".into()))
+                .await
+                .expect("get branch environment")
+                .expect("branch environment exists"),
+            record
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_branch_apply_prepared_replays_active_environment_before_runtime_setup() {
+        let mut state = test_daemon_state();
+        let store = StoreDriver::memory();
+        let namespace = Namespace("pr-39".into());
+        let prepared_deploy_id = DeployId("prepare-1".into());
+        let baseline = test_baseline("sources");
+        let preview = DeployPreview {
+            namespace: namespace.clone(),
+            manifest_hash: "manifest".into(),
+            baseline: Some(baseline.clone()),
+            participants: Vec::new(),
+            phases: Vec::new(),
+            services: Vec::new(),
+            service_sources: Vec::new(),
+            service_source_fingerprint: String::new(),
+            service_branch_sources: Vec::new(),
+            image_availability: Vec::new(),
+            volume_moves: Vec::new(),
+            volume_clones: Vec::new(),
+            volume_clone_preflights: Vec::new(),
+            warnings: Vec::new(),
+        };
+        store
+            .write_prepared_deploy(&PreparedDeployRecord {
+                prepared_deploy_id: prepared_deploy_id.clone(),
+                namespace: namespace.clone(),
+                manifest_hash: "manifest".into(),
+                manifest_json: "{not-json".into(),
+                preview,
+                baseline: baseline.clone(),
+                coordinator_machine_id: MachineId("founder".into()),
+                state: PreparedDeployState::Applied,
+                created_at: 1,
+                expires_at: 100,
+                updated_at: 10,
+            })
+            .await
+            .expect("write prepared deploy");
+        store
+            .upsert_branch_environment(&BranchEnvironmentRecord {
+                source_namespace: Namespace("prod".into()),
+                target_namespace: namespace.clone(),
+                state: BranchEnvironmentState::Active,
+                default_service_mode: BranchEnvironmentResourceMode::Branch,
+                default_volume_mode: BranchEnvironmentResourceMode::Fresh,
+                services: Vec::new(),
+                volumes: Vec::new(),
+                prepared_deploy_id: Some(prepared_deploy_id.clone()),
+                applied_deploy_id: Some(prepared_deploy_id.clone()),
+                manifest_hash: "manifest".into(),
+                baseline,
+                service_branch_sources: Vec::new(),
+                volume_clones: Vec::new(),
+                image_availability: Vec::new(),
+                failure: None,
+                created_at: 1,
+                updated_at: 10,
+            })
+            .await
+            .expect("write active branch environment");
+        install_active_mesh(&mut state, store);
+
+        let response = state
+            .handle_branch_apply_prepared(&BranchApplyPreparedRequest {
+                prepared_deploy_id: prepared_deploy_id.clone(),
+            })
+            .await;
+
+        assert!(response.ok, "{response:?}");
+        let Some(DaemonPayload::BranchEnvironment(payload)) = response.payload else {
+            panic!("expected branch environment replay payload: {response:?}");
+        };
+        assert_eq!(payload.environment.target_namespace, namespace);
+        assert_eq!(payload.environment.state, BranchEnvironmentState::Active);
+        assert_eq!(
+            payload.environment.applied_deploy_id,
+            Some(prepared_deploy_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_branch_apply_prepared_marks_applying_before_manifest_validation_failure() {
+        let mut state = test_daemon_state();
+        let store = StoreDriver::memory();
+        let namespace = Namespace("pr-39".into());
+        let prepared_deploy_id = DeployId("prepare-1".into());
+        let baseline = test_baseline("sources");
+        store
+            .write_prepared_deploy(&PreparedDeployRecord {
+                prepared_deploy_id: prepared_deploy_id.clone(),
+                namespace: namespace.clone(),
+                manifest_hash: "manifest".into(),
+                manifest_json: "{not-json".into(),
+                preview: test_empty_preview(&namespace, baseline.clone()),
+                baseline: baseline.clone(),
+                coordinator_machine_id: MachineId("founder".into()),
+                state: PreparedDeployState::Prepared,
+                created_at: 1,
+                expires_at: 100,
+                updated_at: 10,
+            })
+            .await
+            .expect("write prepared deploy");
+        store
+            .upsert_branch_environment(&test_branch_environment_record(
+                &namespace,
+                &prepared_deploy_id,
+                BranchEnvironmentState::Prepared,
+                baseline,
+            ))
+            .await
+            .expect("write prepared branch environment");
+        install_active_mesh(&mut state, store.clone());
+
+        let response = state
+            .handle_branch_apply_prepared(&BranchApplyPreparedRequest {
+                prepared_deploy_id: prepared_deploy_id.clone(),
+            })
+            .await;
+
+        assert!(!response.ok, "{response:?}");
+        assert_eq!(response.code, "PREPARED_DEPLOY_INVALID");
+        let stored = store
+            .get_branch_environment(&namespace)
+            .await
+            .expect("get branch environment")
+            .expect("branch environment exists");
+        assert_eq!(stored.state, BranchEnvironmentState::Failed);
+        assert_eq!(stored.prepared_deploy_id, Some(prepared_deploy_id));
+        assert_eq!(
+            stored.failure.as_ref().map(|failure| failure.code.as_str()),
+            Some("PREPARED_DEPLOY_INVALID")
+        );
+    }
+
+    #[tokio::test]
+    async fn deploy_apply_prepared_best_effort_ignores_stale_branch_environment() {
+        let mut state = test_daemon_state();
+        let store = StoreDriver::memory();
+        let namespace = Namespace("pr-39".into());
+        let prepared_deploy_id = DeployId("prepare-new".into());
+        let stale_prepared_deploy_id = DeployId("prepare-old".into());
+        let baseline = test_baseline("sources");
+        store
+            .write_prepared_deploy(&PreparedDeployRecord {
+                prepared_deploy_id: prepared_deploy_id.clone(),
+                namespace: namespace.clone(),
+                manifest_hash: "manifest".into(),
+                manifest_json: "{not-json".into(),
+                preview: test_empty_preview(&namespace, baseline.clone()),
+                baseline: baseline.clone(),
+                coordinator_machine_id: MachineId("founder".into()),
+                state: PreparedDeployState::Prepared,
+                created_at: 1,
+                expires_at: 100,
+                updated_at: 10,
+            })
+            .await
+            .expect("write prepared deploy");
+        let stale_record = test_branch_environment_record(
+            &namespace,
+            &stale_prepared_deploy_id,
+            BranchEnvironmentState::Prepared,
+            baseline,
+        );
+        store
+            .upsert_branch_environment(&stale_record)
+            .await
+            .expect("write stale branch environment");
+        install_active_mesh(&mut state, store.clone());
+
+        let response = state
+            .handle_deploy_apply_prepared(&DeployApplyPreparedRequest { prepared_deploy_id })
+            .await;
+
+        assert!(!response.ok, "{response:?}");
+        assert_eq!(response.code, "PREPARED_DEPLOY_INVALID");
+        assert_eq!(
+            store
+                .get_branch_environment(&namespace)
+                .await
+                .expect("get branch environment"),
+            Some(stale_record)
+        );
+    }
+
+    #[tokio::test]
+    async fn branch_apply_prepared_rejects_existing_applying_before_runtime_work() {
+        let mut state = test_daemon_state();
+        let store = StoreDriver::memory();
+        let namespace = Namespace("pr-39".into());
+        let prepared_deploy_id = DeployId("prepare-1".into());
+        let baseline = test_baseline("sources");
+        store
+            .write_prepared_deploy(&PreparedDeployRecord {
+                prepared_deploy_id: prepared_deploy_id.clone(),
+                namespace: namespace.clone(),
+                manifest_hash: "manifest".into(),
+                manifest_json: "{not-json".into(),
+                preview: test_empty_preview(&namespace, baseline.clone()),
+                baseline: baseline.clone(),
+                coordinator_machine_id: MachineId("founder".into()),
+                state: PreparedDeployState::Prepared,
+                created_at: 1,
+                expires_at: 100,
+                updated_at: 10,
+            })
+            .await
+            .expect("write prepared deploy");
+        store
+            .upsert_branch_environment(&test_branch_environment_record(
+                &namespace,
+                &prepared_deploy_id,
+                BranchEnvironmentState::Prepared,
+                baseline,
+            ))
+            .await
+            .expect("write branch environment");
+        store
+            .mark_branch_environment_applying(&namespace, &prepared_deploy_id, 20)
+            .await
+            .expect("mark branch environment applying");
+        install_active_mesh(&mut state, store.clone());
+
+        let response = state
+            .handle_branch_apply_prepared(&BranchApplyPreparedRequest {
+                prepared_deploy_id: prepared_deploy_id.clone(),
+            })
+            .await;
+
+        assert!(!response.ok, "{response:?}");
+        assert_eq!(response.code, "BRANCH_ENVIRONMENT_BUSY");
+        let stored = store
+            .get_branch_environment(&namespace)
+            .await
+            .expect("get branch environment")
+            .expect("branch environment exists");
+        assert_eq!(stored.state, BranchEnvironmentState::Applying);
+        assert_eq!(stored.prepared_deploy_id, Some(prepared_deploy_id));
+    }
+
+    #[tokio::test]
+    async fn branch_apply_prepared_repairs_applying_environment_after_durable_apply() {
+        let mut state = test_daemon_state();
+        let store = StoreDriver::memory();
+        let namespace = Namespace("pr-39".into());
+        let prepared_deploy_id = DeployId("prepare-1".into());
+        let baseline = test_baseline("sources");
+        store
+            .write_prepared_deploy(&PreparedDeployRecord {
+                prepared_deploy_id: prepared_deploy_id.clone(),
+                namespace: namespace.clone(),
+                manifest_hash: "manifest".into(),
+                manifest_json: "{not-json".into(),
+                preview: test_empty_preview(&namespace, baseline.clone()),
+                baseline: baseline.clone(),
+                coordinator_machine_id: MachineId("founder".into()),
+                state: PreparedDeployState::Applied,
+                created_at: 1,
+                expires_at: 100,
+                updated_at: 10,
+            })
+            .await
+            .expect("write applied prepared deploy");
+        store
+            .upsert_branch_environment(&test_branch_environment_record(
+                &namespace,
+                &prepared_deploy_id,
+                BranchEnvironmentState::Prepared,
+                baseline,
+            ))
+            .await
+            .expect("write branch environment");
+        store
+            .mark_branch_environment_applying(&namespace, &prepared_deploy_id, 20)
+            .await
+            .expect("mark branch environment applying");
+        install_active_mesh(&mut state, store.clone());
+
+        let response = state
+            .handle_branch_apply_prepared(&BranchApplyPreparedRequest {
+                prepared_deploy_id: prepared_deploy_id.clone(),
+            })
+            .await;
+
+        assert!(response.ok, "{response:?}");
+        let Some(DaemonPayload::BranchEnvironment(payload)) = response.payload else {
+            panic!("expected branch environment replay payload: {response:?}");
+        };
+        assert_eq!(payload.environment.state, BranchEnvironmentState::Active);
+        assert_eq!(
+            payload.environment.applied_deploy_id,
+            Some(prepared_deploy_id.clone())
+        );
+        let stored = store
+            .get_branch_environment(&namespace)
+            .await
+            .expect("get branch environment")
+            .expect("branch environment exists");
+        assert_eq!(stored.state, BranchEnvironmentState::Active);
+        assert_eq!(stored.applied_deploy_id, Some(prepared_deploy_id));
+    }
+
+    #[tokio::test]
+    async fn branch_applying_durable_commit_resumes_prepared_apply_repair_path() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("pr-39".into());
+        let prepared_deploy_id = DeployId("prepare-1".into());
+        let baseline = test_baseline("sources");
+        let preview = test_empty_preview(&namespace, baseline.clone());
+        store
+            .write_prepared_deploy(&PreparedDeployRecord {
+                prepared_deploy_id: prepared_deploy_id.clone(),
+                namespace: namespace.clone(),
+                manifest_hash: "manifest".into(),
+                manifest_json: "{}".into(),
+                preview: preview.clone(),
+                baseline: baseline.clone(),
+                coordinator_machine_id: MachineId("founder".into()),
+                state: PreparedDeployState::Prepared,
+                created_at: 1,
+                expires_at: 100,
+                updated_at: 10,
+            })
+            .await
+            .expect("write prepared deploy");
+        store
+            .upsert_branch_environment(&test_branch_environment_record(
+                &namespace,
+                &prepared_deploy_id,
+                BranchEnvironmentState::Prepared,
+                baseline,
+            ))
+            .await
+            .expect("write branch environment");
+        store
+            .mark_branch_environment_applying(&namespace, &prepared_deploy_id, 20)
+            .await
+            .expect("mark branch environment applying");
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: Vec::new(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                branch_lineage: Vec::new(),
+                volume_movements: Vec::new(),
+                volume_branches: Vec::new(),
+                phase_commits: Vec::new(),
+                releases: Vec::new(),
+                volumes: Vec::new(),
+                deploy: DeployRecord {
+                    deploy_id: prepared_deploy_id.clone(),
+                    namespace: namespace.clone(),
+                    coordinator_machine_id: MachineId("founder".into()),
+                    manifest_hash: "manifest".into(),
+                    state: DeployState::Committed,
+                    started_at: 1,
+                    committed_at: Some(2),
+                    finished_at: None,
+                    summary_json: serde_json::to_string(&preview).expect("preview json"),
+                },
+            })
+            .await
+            .expect("write durable commit");
+        let prepared = store
+            .get_prepared_deploy(&prepared_deploy_id)
+            .await
+            .expect("get prepared deploy")
+            .expect("prepared deploy exists");
+
+        assert!(matches!(
+            branch_applying_replay_action(&store, &prepared, &prepared_deploy_id)
+                .await
+                .expect("classify replay action"),
+            BranchApplyingReplayAction::ResumePreparedApply
+        ));
+    }
+
+    #[tokio::test]
+    async fn branch_applying_replay_action_prefers_active_replay_after_race() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("pr-39".into());
+        let prepared_deploy_id = DeployId("prepare-1".into());
+        let baseline = test_baseline("sources");
+        store
+            .write_prepared_deploy(&PreparedDeployRecord {
+                prepared_deploy_id: prepared_deploy_id.clone(),
+                namespace: namespace.clone(),
+                manifest_hash: "manifest".into(),
+                manifest_json: "{}".into(),
+                preview: test_empty_preview(&namespace, baseline.clone()),
+                baseline: baseline.clone(),
+                coordinator_machine_id: MachineId("founder".into()),
+                state: PreparedDeployState::Prepared,
+                created_at: 1,
+                expires_at: 100,
+                updated_at: 10,
+            })
+            .await
+            .expect("write prepared deploy");
+        store
+            .upsert_branch_environment(&test_branch_environment_record(
+                &namespace,
+                &prepared_deploy_id,
+                BranchEnvironmentState::Prepared,
+                baseline,
+            ))
+            .await
+            .expect("write branch environment");
+        store
+            .mark_branch_environment_applying(&namespace, &prepared_deploy_id, 20)
+            .await
+            .expect("mark branch environment applying");
+        store
+            .mark_branch_environment_active(
+                &namespace,
+                &prepared_deploy_id,
+                &prepared_deploy_id,
+                30,
+            )
+            .await
+            .expect("mark branch environment active");
+        let prepared = store
+            .get_prepared_deploy(&prepared_deploy_id)
+            .await
+            .expect("get prepared deploy")
+            .expect("prepared deploy exists");
+
+        let BranchApplyingReplayAction::Replayed(environment) =
+            branch_applying_replay_action(&store, &prepared, &prepared_deploy_id)
+                .await
+                .expect("classify replay action")
+        else {
+            panic!("expected active replay after applying-to-active race");
+        };
+        assert_eq!(environment.state, BranchEnvironmentState::Active);
+        assert_eq!(environment.applied_deploy_id, Some(prepared_deploy_id));
     }
 
     #[tokio::test]

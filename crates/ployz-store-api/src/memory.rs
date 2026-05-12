@@ -9,12 +9,12 @@ use async_trait::async_trait;
 use ployz_types::error::{DeployError, Error, Result, SubscriptionStream};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
-    CertificateEvent, CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord,
-    DeployPhaseState, DeployRecord, ImageAvailabilityRecord, ImageDigest, InstanceId,
-    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership,
-    PreparedDeployRecord, PreparedDeployState, RoutingEvent, RoutingState,
-    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
-    VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
+    BranchEnvironmentFailure, BranchEnvironmentRecord, BranchEnvironmentState, CertificateEvent,
+    CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord, DeployPhaseState, DeployRecord,
+    ImageAvailabilityRecord, ImageDigest, InstanceId, InstanceStatusRecord, InviteRecord,
+    MachineEvent, MachineId, MachineMembership, PreparedDeployRecord, PreparedDeployState,
+    RoutingEvent, RoutingState, ServiceBranchLineageRecord, ServiceReleaseRecord,
+    ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::{BTreeMap, HashMap};
@@ -29,6 +29,18 @@ pub struct MemoryStore {
     inner: Mutex<StoreInner>,
 }
 
+fn validate_branch_environment(record: &BranchEnvironmentRecord) -> Result<()> {
+    record.validate().map_err(|error| {
+        Error::operation(
+            "memory_branch_environment_validate",
+            format!(
+                "invalid branch environment '{}': {error}",
+                record.target_namespace
+            ),
+        )
+    })
+}
+
 struct StoreInner {
     machines: BTreeMap<MachineId, MachineMembership>,
     machine_events: broadcast::Sender<MachineEvent>,
@@ -38,6 +50,7 @@ struct StoreInner {
     deploy_commits: HashMap<(Namespace, DeployId), DeployCommit>,
     deploy_records: HashMap<DeployId, DeployRecord>,
     prepared_deploy_records: HashMap<DeployId, PreparedDeployRecord>,
+    branch_environment_records: BTreeMap<Namespace, BranchEnvironmentRecord>,
     deploy_phase_records: HashMap<(Namespace, DeployId, DeployPhaseId), DeployPhaseRecord>,
     image_availability: BTreeMap<(MachineId, ImageDigest), ImageAvailabilityRecord>,
     instance_status: HashMap<InstanceId, InstanceStatusRecord>,
@@ -48,6 +61,16 @@ struct StoreInner {
     acme_challenge_events: broadcast::Sender<AcmeChallengeEvent>,
     acme_challenge_readiness: BTreeMap<(String, String, MachineId), AcmeChallengeReadinessRecord>,
     sync_status: SyncStatus,
+}
+
+enum BranchEnvironmentTransition<'a> {
+    Applying,
+    Active {
+        applied_deploy_id: &'a DeployId,
+    },
+    Failed {
+        failure: &'a BranchEnvironmentFailure,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +99,7 @@ impl MemoryStore {
                 deploy_commits: HashMap::new(),
                 deploy_records: HashMap::new(),
                 prepared_deploy_records: HashMap::new(),
+                branch_environment_records: BTreeMap::new(),
                 deploy_phase_records: HashMap::new(),
                 image_availability: BTreeMap::new(),
                 instance_status: HashMap::new(),
@@ -121,6 +145,61 @@ impl MemoryStore {
         }
         record.state = state;
         record.updated_at = updated_at;
+        Ok(record.clone())
+    }
+
+    fn transition_branch_environment(
+        inner: &mut StoreInner,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+        transition: BranchEnvironmentTransition<'_>,
+    ) -> Result<BranchEnvironmentRecord> {
+        let Some(record) = inner.branch_environment_records.get_mut(target_namespace) else {
+            return Err(Error::operation(
+                "memory_branch_environment_state",
+                format!("branch environment '{target_namespace}' not found"),
+            ));
+        };
+        if record.prepared_deploy_id.as_ref() != Some(prepared_deploy_id) {
+            return Err(Error::operation(
+                "memory_branch_environment_state",
+                format!(
+                    "branch environment '{target_namespace}' is not prepared by '{prepared_deploy_id}'"
+                ),
+            ));
+        }
+        match (record.state, transition) {
+            (
+                BranchEnvironmentState::Prepared | BranchEnvironmentState::Failed,
+                BranchEnvironmentTransition::Applying,
+            ) => {
+                record.state = BranchEnvironmentState::Applying;
+                record.applied_deploy_id = None;
+                record.failure = None;
+            }
+            (
+                BranchEnvironmentState::Applying,
+                BranchEnvironmentTransition::Active { applied_deploy_id },
+            ) => {
+                record.state = BranchEnvironmentState::Active;
+                record.applied_deploy_id = Some(applied_deploy_id.clone());
+                record.failure = None;
+            }
+            (BranchEnvironmentState::Applying, BranchEnvironmentTransition::Failed { failure }) => {
+                record.state = BranchEnvironmentState::Failed;
+                record.applied_deploy_id = None;
+                record.failure = Some(failure.clone());
+            }
+            (state, _) => {
+                return Err(Error::operation(
+                    "memory_branch_environment_state",
+                    format!("branch environment '{target_namespace}' is {state}"),
+                ));
+            }
+        }
+        record.updated_at = updated_at;
+        validate_branch_environment(record)?;
         Ok(record.clone())
     }
 
@@ -614,6 +693,94 @@ impl DeployStore for MemoryStore {
         )
     }
 
+    async fn upsert_branch_environment(&self, record: &BranchEnvironmentRecord) -> Result<()> {
+        validate_branch_environment(record)?;
+        let mut inner = self.lock_inner();
+        if let Some(existing) = inner
+            .branch_environment_records
+            .get(&record.target_namespace)
+            && matches!(existing.state, BranchEnvironmentState::Applying)
+        {
+            return Err(Error::operation(
+                "memory_branch_environment_upsert",
+                format!(
+                    "branch environment '{}' is {}",
+                    record.target_namespace, existing.state
+                ),
+            ));
+        }
+        inner
+            .branch_environment_records
+            .insert(record.target_namespace.clone(), record.clone());
+        Ok(())
+    }
+
+    async fn mark_branch_environment_applying(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<BranchEnvironmentRecord> {
+        let mut inner = self.lock_inner();
+        Self::transition_branch_environment(
+            &mut inner,
+            target_namespace,
+            prepared_deploy_id,
+            updated_at,
+            BranchEnvironmentTransition::Applying,
+        )
+    }
+
+    async fn get_branch_environment(
+        &self,
+        target_namespace: &Namespace,
+    ) -> Result<Option<BranchEnvironmentRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner
+            .branch_environment_records
+            .get(target_namespace)
+            .cloned())
+    }
+
+    async fn list_branch_environments(&self) -> Result<Vec<BranchEnvironmentRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.branch_environment_records.values().cloned().collect())
+    }
+
+    async fn mark_branch_environment_active(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        applied_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<BranchEnvironmentRecord> {
+        let mut inner = self.lock_inner();
+        Self::transition_branch_environment(
+            &mut inner,
+            target_namespace,
+            prepared_deploy_id,
+            updated_at,
+            BranchEnvironmentTransition::Active { applied_deploy_id },
+        )
+    }
+
+    async fn mark_branch_environment_failed(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        failure: &BranchEnvironmentFailure,
+        updated_at: u64,
+    ) -> Result<BranchEnvironmentRecord> {
+        let mut inner = self.lock_inner();
+        Self::transition_branch_environment(
+            &mut inner,
+            target_namespace,
+            prepared_deploy_id,
+            updated_at,
+            BranchEnvironmentTransition::Failed { failure },
+        )
+    }
+
     async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> Result<()> {
         let mut inner = self.lock_inner();
         inner.deploy_phase_records.insert(
@@ -1023,6 +1190,7 @@ impl StoreRuntimeControl for MemoryService {
 mod tests {
     use super::*;
     use ployz_types::model::{
+        BranchEnvironmentRecord, BranchEnvironmentResourceMode, BranchEnvironmentState,
         CertificateLifecycle, DeployPhaseCommitPolicy, DeployPhaseFailure,
         DeployPhaseRollbackPolicy, DeployPhaseState, DeployPreview, DeployPreviewBaseline,
         DeployPreviewBaselineComponents, ImageArtifact, ImageArtifactProvenance, ImagePlatform,
@@ -1619,6 +1787,218 @@ mod tests {
                 .supersede_prepared_deploy(&prepared.prepared_deploy_id, 22)
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn branch_environment_records_are_keyed_by_target_namespace() {
+        let store = MemoryStore::new();
+        let prepared_a = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-a");
+        let prepared_b = test_prepared_deploy(&Namespace("pr-40".into()), "prepare-b");
+        let record_a = test_branch_environment("prod", "pr-39", &prepared_a);
+        let record_b = test_branch_environment("prod", "pr-40", &prepared_b);
+
+        store
+            .upsert_branch_environment(&record_b)
+            .await
+            .expect("upsert second branch environment");
+        store
+            .upsert_branch_environment(&record_a)
+            .await
+            .expect("upsert first branch environment");
+        store
+            .mark_branch_environment_applying(
+                &Namespace("pr-39".into()),
+                &DeployId("prepare-a".into()),
+                9,
+            )
+            .await
+            .expect("mark first branch environment applying");
+        store
+            .mark_branch_environment_active(
+                &Namespace("pr-39".into()),
+                &DeployId("prepare-a".into()),
+                &DeployId("deploy-a".into()),
+                10,
+            )
+            .await
+            .expect("activate first branch environment");
+
+        let mut record_a_updated = record_a.clone();
+        record_a_updated.state = BranchEnvironmentState::Active;
+        record_a_updated.applied_deploy_id = Some(DeployId("deploy-a".into()));
+        record_a_updated.updated_at = 10;
+
+        assert_eq!(
+            store
+                .get_branch_environment(&Namespace("pr-39".into()))
+                .await
+                .expect("get branch environment"),
+            Some(record_a_updated.clone())
+        );
+        assert_eq!(
+            store
+                .list_branch_environments()
+                .await
+                .expect("list branch environments"),
+            vec![record_a_updated, record_b]
+        );
+    }
+
+    #[tokio::test]
+    async fn branch_environment_upsert_replaces_non_active_records() {
+        let store = MemoryStore::new();
+        let prepared_a = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-a");
+        let prepared_b = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-b");
+        let prepared_c = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-c");
+        let record_a = test_branch_environment("prod", "pr-39", &prepared_a);
+        let record_b = test_branch_environment("prod", "pr-39", &prepared_b);
+        let record_c = test_branch_environment("prod", "pr-39", &prepared_c);
+
+        store
+            .upsert_branch_environment(&record_a)
+            .await
+            .expect("create branch environment");
+        store
+            .upsert_branch_environment(&record_b)
+            .await
+            .expect("replace prepared branch environment");
+        assert_eq!(
+            store
+                .get_branch_environment(&Namespace("pr-39".into()))
+                .await
+                .expect("get branch environment")
+                .expect("branch environment exists")
+                .prepared_deploy_id,
+            Some(DeployId("prepare-b".into()))
+        );
+
+        store
+            .mark_branch_environment_applying(
+                &Namespace("pr-39".into()),
+                &DeployId("prepare-b".into()),
+                19,
+            )
+            .await
+            .expect("mark branch environment applying");
+        store
+            .mark_branch_environment_failed(
+                &Namespace("pr-39".into()),
+                &DeployId("prepare-b".into()),
+                &BranchEnvironmentFailure {
+                    code: "DEPLOY_APPLY_PREPARED_FAILED".into(),
+                    message: "transient failure".into(),
+                    deploy_id: None,
+                },
+                20,
+            )
+            .await
+            .expect("mark branch environment failed");
+        store
+            .upsert_branch_environment(&record_c)
+            .await
+            .expect("replace failed branch environment");
+        let stored = store
+            .get_branch_environment(&Namespace("pr-39".into()))
+            .await
+            .expect("get branch environment")
+            .expect("branch environment exists");
+        assert_eq!(stored.state, BranchEnvironmentState::Prepared);
+        assert_eq!(
+            stored.prepared_deploy_id,
+            Some(DeployId("prepare-c".into()))
+        );
+        assert_eq!(stored.failure, None);
+    }
+
+    #[tokio::test]
+    async fn branch_environment_upsert_rejects_applying_and_replaces_active_records() {
+        let store = MemoryStore::new();
+        let prepared_a = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-a");
+        let prepared_b = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-b");
+        let record_a = test_branch_environment("prod", "pr-39", &prepared_a);
+        let record_b = test_branch_environment("prod", "pr-39", &prepared_b);
+
+        store
+            .upsert_branch_environment(&record_a)
+            .await
+            .expect("create branch environment");
+        store
+            .mark_branch_environment_applying(
+                &Namespace("pr-39".into()),
+                &DeployId("prepare-a".into()),
+                9,
+            )
+            .await
+            .expect("mark branch environment applying");
+        store
+            .upsert_branch_environment(&record_b)
+            .await
+            .expect_err("applying branch environment should not be replaced");
+        assert_eq!(
+            store
+                .get_branch_environment(&Namespace("pr-39".into()))
+                .await
+                .expect("get branch environment")
+                .expect("branch environment exists")
+                .prepared_deploy_id,
+            Some(DeployId("prepare-a".into()))
+        );
+        store
+            .mark_branch_environment_active(
+                &Namespace("pr-39".into()),
+                &DeployId("prepare-a".into()),
+                &DeployId("deploy-a".into()),
+                10,
+            )
+            .await
+            .expect("activate branch environment");
+
+        store
+            .upsert_branch_environment(&record_b)
+            .await
+            .expect("active branch environment should be replaced for next prepare");
+        assert_eq!(
+            store
+                .get_branch_environment(&Namespace("pr-39".into()))
+                .await
+                .expect("get branch environment")
+                .expect("branch environment exists")
+                .prepared_deploy_id,
+            Some(DeployId("prepare-b".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn branch_environment_transition_rejects_stale_prepared_id() {
+        let store = MemoryStore::new();
+        let prepared = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-new");
+        let record = test_branch_environment("prod", "pr-39", &prepared);
+
+        store
+            .upsert_branch_environment(&record)
+            .await
+            .expect("upsert branch environment");
+
+        assert!(
+            store
+                .mark_branch_environment_active(
+                    &Namespace("pr-39".into()),
+                    &DeployId("prepare-old".into()),
+                    &DeployId("deploy-old".into()),
+                    10,
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .get_branch_environment(&Namespace("pr-39".into()))
+                .await
+                .expect("get branch environment")
+                .expect("branch environment exists")
+                .state,
+            BranchEnvironmentState::Prepared
         );
     }
 
@@ -2388,6 +2768,32 @@ mod tests {
             created_at: 1,
             expires_at: 100,
             updated_at: 1,
+        }
+    }
+
+    fn test_branch_environment(
+        source_namespace: &str,
+        target_namespace: &str,
+        prepared: &PreparedDeployRecord,
+    ) -> BranchEnvironmentRecord {
+        BranchEnvironmentRecord {
+            source_namespace: Namespace(source_namespace.into()),
+            target_namespace: Namespace(target_namespace.into()),
+            state: BranchEnvironmentState::Prepared,
+            default_service_mode: BranchEnvironmentResourceMode::Branch,
+            default_volume_mode: BranchEnvironmentResourceMode::Fresh,
+            services: Vec::new(),
+            volumes: Vec::new(),
+            prepared_deploy_id: Some(prepared.prepared_deploy_id.clone()),
+            applied_deploy_id: None,
+            manifest_hash: prepared.manifest_hash.clone(),
+            baseline: prepared.baseline.clone(),
+            service_branch_sources: prepared.preview.service_branch_sources.clone(),
+            volume_clones: prepared.preview.volume_clones.clone(),
+            image_availability: prepared.preview.image_availability.clone(),
+            failure: None,
+            created_at: prepared.created_at,
+            updated_at: prepared.updated_at,
         }
     }
 

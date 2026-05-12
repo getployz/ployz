@@ -3,12 +3,12 @@ use ployz_types::Result;
 use ployz_types::error::{Error, StoreRecordKind};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
-    CertificateEvent, CertificateRecord, DeployId, DeployPhaseCommitRecord, DeployPhaseId,
-    DeployPhaseRecord, DeployRecord, ImageAvailabilityRecord, ImageDigest, InstanceId,
-    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership,
-    PreparedDeployRecord, RoutingEvent, RoutingState, ServiceBranchLineageRecord,
-    ServiceReleaseRecord, ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord,
-    VolumeRecord,
+    BranchEnvironmentFailure, BranchEnvironmentRecord, CertificateEvent, CertificateRecord,
+    DeployId, DeployPhaseCommitRecord, DeployPhaseId, DeployPhaseRecord, DeployRecord,
+    ImageAvailabilityRecord, ImageDigest, InstanceId, InstanceStatusRecord, InviteRecord,
+    MachineEvent, MachineId, MachineMembership, PreparedDeployRecord, RoutingEvent, RoutingState,
+    ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
+    VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use serde::{Deserialize, Serialize};
@@ -783,6 +783,38 @@ pub trait DeployStore: Send + Sync {
         prepared_deploy_id: &DeployId,
         updated_at: u64,
     ) -> Result<PreparedDeployRecord>;
+
+    async fn upsert_branch_environment(&self, record: &BranchEnvironmentRecord) -> Result<()>;
+
+    async fn get_branch_environment(
+        &self,
+        target_namespace: &Namespace,
+    ) -> Result<Option<BranchEnvironmentRecord>>;
+
+    async fn list_branch_environments(&self) -> Result<Vec<BranchEnvironmentRecord>>;
+
+    async fn mark_branch_environment_applying(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<BranchEnvironmentRecord>;
+
+    async fn mark_branch_environment_active(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        applied_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> Result<BranchEnvironmentRecord>;
+
+    async fn mark_branch_environment_failed(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        failure: &BranchEnvironmentFailure,
+        updated_at: u64,
+    ) -> Result<BranchEnvironmentRecord>;
 
     async fn upsert_deploy_phase(&self, phase: &DeployPhaseRecord) -> Result<()>;
 

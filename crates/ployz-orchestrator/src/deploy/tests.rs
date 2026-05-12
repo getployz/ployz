@@ -18,13 +18,13 @@ use crate::deploy::participant::{
 use crate::error::{DeployError, Error, Result};
 use crate::model::RegionRole;
 use crate::model::{
-    AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
-    DeployBaselineComponent, DeployChangeKind, DeployId, DeployPhaseAdvancePolicy,
-    DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord, DeployPhaseRollbackPolicy,
-    DeployPhaseState, DeployPhaseWork, DeployPreview, DeployPreviewBaseline,
-    DeployPreviewBaselineComponents, DeployRecord, DeployState, DrainState, ImageArtifact,
-    ImageArtifactProvenance, ImageAvailabilityRecord, ImageDigest, ImagePresence, ImageRef,
-    InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle,
+    AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, BranchEnvironmentFailure,
+    BranchEnvironmentRecord, CertificateRecord, DeployBaselineComponent, DeployChangeKind,
+    DeployId, DeployPhaseAdvancePolicy, DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord,
+    DeployPhaseRollbackPolicy, DeployPhaseState, DeployPhaseWork, DeployPreview,
+    DeployPreviewBaseline, DeployPreviewBaselineComponents, DeployRecord, DeployState, DrainState,
+    ImageArtifact, ImageArtifactProvenance, ImageAvailabilityRecord, ImageDigest, ImagePresence,
+    ImageRef, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle,
     MachineMembership, MachineTopology, OverlayIp, PreparedDeployRecord, PreparedDeployState,
     PublicKey, ServiceBranchLineageRecord, ServiceRelease, ServiceReleaseRecord,
     ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, ServiceSourceMode, SlotId,
@@ -9532,6 +9532,66 @@ impl DeployStore for CountingBackend {
     ) -> PloyzResult<PreparedDeployRecord> {
         self.store
             .supersede_prepared_deploy(prepared_deploy_id, updated_at)
+            .await
+    }
+
+    async fn upsert_branch_environment(&self, record: &BranchEnvironmentRecord) -> PloyzResult<()> {
+        self.store.upsert_branch_environment(record).await
+    }
+
+    async fn get_branch_environment(
+        &self,
+        target_namespace: &Namespace,
+    ) -> PloyzResult<Option<BranchEnvironmentRecord>> {
+        self.store.get_branch_environment(target_namespace).await
+    }
+
+    async fn list_branch_environments(&self) -> PloyzResult<Vec<BranchEnvironmentRecord>> {
+        self.store.list_branch_environments().await
+    }
+
+    async fn mark_branch_environment_applying(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> PloyzResult<BranchEnvironmentRecord> {
+        self.store
+            .mark_branch_environment_applying(target_namespace, prepared_deploy_id, updated_at)
+            .await
+    }
+
+    async fn mark_branch_environment_active(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        applied_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> PloyzResult<BranchEnvironmentRecord> {
+        self.store
+            .mark_branch_environment_active(
+                target_namespace,
+                prepared_deploy_id,
+                applied_deploy_id,
+                updated_at,
+            )
+            .await
+    }
+
+    async fn mark_branch_environment_failed(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        failure: &BranchEnvironmentFailure,
+        updated_at: u64,
+    ) -> PloyzResult<BranchEnvironmentRecord> {
+        self.store
+            .mark_branch_environment_failed(
+                target_namespace,
+                prepared_deploy_id,
+                failure,
+                updated_at,
+            )
             .await
     }
 
