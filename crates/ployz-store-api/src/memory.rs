@@ -1802,8 +1802,8 @@ mod tests {
     #[tokio::test]
     async fn branch_environment_records_are_keyed_by_target_namespace() {
         let store = MemoryStore::new();
-        let prepared_a = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-a");
-        let prepared_b = test_prepared_deploy(&Namespace("pr-40".into()), "prepare-b");
+        let prepared_a = test_prepared_deploy(&Namespace::new("pr-39"), "prepare-a");
+        let prepared_b = test_prepared_deploy(&Namespace::new("pr-40"), "prepare-b");
         let record_a = test_branch_environment("prod", "pr-39", &prepared_a);
         let record_b = test_branch_environment("prod", "pr-40", &prepared_b);
 
@@ -1817,7 +1817,7 @@ mod tests {
             .expect("upsert first branch environment");
         store
             .mark_branch_environment_applying(
-                &Namespace("pr-39".into()),
+                &Namespace::new("pr-39"),
                 &DeployId("prepare-a".into()),
                 9,
             )
@@ -1825,7 +1825,7 @@ mod tests {
             .expect("mark first branch environment applying");
         store
             .mark_branch_environment_active(
-                &Namespace("pr-39".into()),
+                &Namespace::new("pr-39"),
                 &DeployId("prepare-a".into()),
                 &DeployId("deploy-a".into()),
                 10,
@@ -1840,7 +1840,7 @@ mod tests {
 
         assert_eq!(
             store
-                .get_branch_environment(&Namespace("pr-39".into()))
+                .get_branch_environment(&Namespace::new("pr-39"))
                 .await
                 .expect("get branch environment"),
             Some(record_a_updated.clone())
@@ -1857,9 +1857,9 @@ mod tests {
     #[tokio::test]
     async fn branch_environment_upsert_replaces_non_active_records() {
         let store = MemoryStore::new();
-        let prepared_a = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-a");
-        let prepared_b = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-b");
-        let prepared_c = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-c");
+        let prepared_a = test_prepared_deploy(&Namespace::new("pr-39"), "prepare-a");
+        let prepared_b = test_prepared_deploy(&Namespace::new("pr-39"), "prepare-b");
+        let prepared_c = test_prepared_deploy(&Namespace::new("pr-39"), "prepare-c");
         let record_a = test_branch_environment("prod", "pr-39", &prepared_a);
         let record_b = test_branch_environment("prod", "pr-39", &prepared_b);
         let record_c = test_branch_environment("prod", "pr-39", &prepared_c);
@@ -1874,7 +1874,7 @@ mod tests {
             .expect("replace prepared branch environment");
         assert_eq!(
             store
-                .get_branch_environment(&Namespace("pr-39".into()))
+                .get_branch_environment(&Namespace::new("pr-39"))
                 .await
                 .expect("get branch environment")
                 .expect("branch environment exists")
@@ -1884,7 +1884,7 @@ mod tests {
 
         store
             .mark_branch_environment_applying(
-                &Namespace("pr-39".into()),
+                &Namespace::new("pr-39"),
                 &DeployId("prepare-b".into()),
                 19,
             )
@@ -1892,7 +1892,7 @@ mod tests {
             .expect("mark branch environment applying");
         store
             .mark_branch_environment_failed(
-                &Namespace("pr-39".into()),
+                &Namespace::new("pr-39"),
                 &DeployId("prepare-b".into()),
                 &BranchEnvironmentFailure {
                     code: "DEPLOY_APPLY_PREPARED_FAILED".into(),
@@ -1908,7 +1908,7 @@ mod tests {
             .await
             .expect("replace failed branch environment");
         let stored = store
-            .get_branch_environment(&Namespace("pr-39".into()))
+            .get_branch_environment(&Namespace::new("pr-39"))
             .await
             .expect("get branch environment")
             .expect("branch environment exists");
@@ -1923,8 +1923,8 @@ mod tests {
     #[tokio::test]
     async fn branch_environment_upsert_rejects_applying_and_replaces_active_records() {
         let store = MemoryStore::new();
-        let prepared_a = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-a");
-        let prepared_b = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-b");
+        let prepared_a = test_prepared_deploy(&Namespace::new("pr-39"), "prepare-a");
+        let prepared_b = test_prepared_deploy(&Namespace::new("pr-39"), "prepare-b");
         let record_a = test_branch_environment("prod", "pr-39", &prepared_a);
         let record_b = test_branch_environment("prod", "pr-39", &prepared_b);
 
@@ -1934,7 +1934,7 @@ mod tests {
             .expect("create branch environment");
         store
             .mark_branch_environment_applying(
-                &Namespace("pr-39".into()),
+                &Namespace::new("pr-39"),
                 &DeployId("prepare-a".into()),
                 9,
             )
@@ -1946,7 +1946,7 @@ mod tests {
             .expect_err("applying branch environment should not be replaced");
         assert_eq!(
             store
-                .get_branch_environment(&Namespace("pr-39".into()))
+                .get_branch_environment(&Namespace::new("pr-39"))
                 .await
                 .expect("get branch environment")
                 .expect("branch environment exists")
@@ -1955,7 +1955,7 @@ mod tests {
         );
         store
             .mark_branch_environment_active(
-                &Namespace("pr-39".into()),
+                &Namespace::new("pr-39"),
                 &DeployId("prepare-a".into()),
                 &DeployId("deploy-a".into()),
                 10,
@@ -1969,7 +1969,7 @@ mod tests {
             .expect("active branch environment should be replaced for next prepare");
         assert_eq!(
             store
-                .get_branch_environment(&Namespace("pr-39".into()))
+                .get_branch_environment(&Namespace::new("pr-39"))
                 .await
                 .expect("get branch environment")
                 .expect("branch environment exists")
@@ -1981,7 +1981,7 @@ mod tests {
     #[tokio::test]
     async fn branch_environment_transition_rejects_stale_prepared_id() {
         let store = MemoryStore::new();
-        let prepared = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-new");
+        let prepared = test_prepared_deploy(&Namespace::new("pr-39"), "prepare-new");
         let record = test_branch_environment("prod", "pr-39", &prepared);
 
         store
@@ -1992,7 +1992,7 @@ mod tests {
         assert!(
             store
                 .mark_branch_environment_active(
-                    &Namespace("pr-39".into()),
+                    &Namespace::new("pr-39"),
                     &DeployId("prepare-old".into()),
                     &DeployId("deploy-old".into()),
                     10,
@@ -2002,7 +2002,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .get_branch_environment(&Namespace("pr-39".into()))
+                .get_branch_environment(&Namespace::new("pr-39"))
                 .await
                 .expect("get branch environment")
                 .expect("branch environment exists")
@@ -2783,8 +2783,8 @@ mod tests {
         prepared: &PreparedDeployRecord,
     ) -> BranchEnvironmentRecord {
         BranchEnvironmentRecord {
-            source_namespace: Namespace(source_namespace.into()),
-            target_namespace: Namespace(target_namespace.into()),
+            source_namespace: Namespace::new(source_namespace),
+            target_namespace: Namespace::new(target_namespace),
             state: BranchEnvironmentState::Prepared,
             default_service_mode: BranchEnvironmentResourceMode::Branch,
             default_volume_mode: BranchEnvironmentResourceMode::Fresh,

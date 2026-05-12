@@ -4021,8 +4021,8 @@ mod tests {
             volume_clones: "clones".into(),
         });
         let record = BranchEnvironmentRecord {
-            source_namespace: Namespace("prod".into()),
-            target_namespace: Namespace("pr-39".into()),
+            source_namespace: Namespace::new("prod"),
+            target_namespace: Namespace::new("pr-39"),
             state: BranchEnvironmentState::Prepared,
             default_service_mode: BranchEnvironmentResourceMode::Branch,
             default_volume_mode: BranchEnvironmentResourceMode::Fresh,
