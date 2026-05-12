@@ -9550,6 +9550,17 @@ impl DeployStore for CountingBackend {
         self.store.list_branch_environments().await
     }
 
+    async fn mark_branch_environment_applying(
+        &self,
+        target_namespace: &Namespace,
+        prepared_deploy_id: &DeployId,
+        updated_at: u64,
+    ) -> PloyzResult<BranchEnvironmentRecord> {
+        self.store
+            .mark_branch_environment_applying(target_namespace, prepared_deploy_id, updated_at)
+            .await
+    }
+
     async fn mark_branch_environment_active(
         &self,
         target_namespace: &Namespace,
