@@ -2851,10 +2851,10 @@ mod tests {
             )
             .await;
 
-        assert!(response.ok, "{}", response.message);
-        assert!(!response.message.contains("master-key"));
+        assert!(response.is_ok(), "{}", response.message());
+        assert!(!response.message().contains("master-key"));
         assert_eq!(runner.programs(), vec!["railpack", "docker"]);
-        let Some(DaemonPayload::BuildResult(payload)) = response.payload else {
+        let Some(DaemonPayload::BuildResult(payload)) = response.payload() else {
             panic!("expected build result payload");
         };
         assert_eq!(payload.artifact.digest(), &image_digest);
@@ -2978,15 +2978,15 @@ mod tests {
             )
             .await;
 
-        assert!(!response.ok);
-        assert_eq!(response.code, "BUILD_LOCAL_COMMAND_FAILED");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "BUILD_LOCAL_COMMAND_FAILED");
         assert_eq!(runner.programs(), vec!["railpack", "docker"]);
-        assert!(!response.message.contains("production"));
-        assert!(!response.message.contains("master-key"));
-        let Some(DaemonPayload::BuildOperation(payload)) = response.payload else {
+        assert!(!response.message().contains("production"));
+        assert!(!response.message().contains("master-key"));
+        let Some(DaemonPayload::BuildOperation(payload)) = response.payload() else {
             panic!("expected build operation payload");
         };
-        let Some(last_error) = payload.operation.last_error.as_deref() else {
+        let Some(last_error) = payload.operation.last_error().as_deref() else {
             panic!("expected persisted last error");
         };
         assert!(!last_error.contains("production"));

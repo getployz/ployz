@@ -1470,7 +1470,7 @@ mod tests {
         DeployPreviewBaseline, DeployPreviewBaselineComponents, DeployRecord, DeployState,
         MachineId, MachineLifecycle, MachineMembership, NetworkLifecycle, NetworkName, OverlayIp,
         PreparedDeployRecord, PreparedDeployState, PublicKey, ServiceRelease, ServiceReleaseRecord,
-        ServiceRevisionRecord, ServiceRoutingPolicy, VolumeRecord,
+        ServiceRevisionRecord, VolumeRecord,
     };
     use ployz_types::spec::{
         ContainerSpec, Mount, MountSource, NetworkMode, Placement, PullPolicy, Resources,
@@ -2473,12 +2473,7 @@ mod tests {
             &store,
             &Namespace::new("pr-39"),
             &DeployId::new("prepare-old"),
-            &DaemonResponse {
-                ok: true,
-                code: "OK".into(),
-                message: "{}".into(),
-                payload: None,
-            },
+            &DaemonResponse::success("{}", None),
         )
         .await
         .expect_err("stale prepared id should not transition branch environment");
@@ -2504,12 +2499,7 @@ mod tests {
             &store,
             &Namespace::new("pr-39"),
             &DeployId::new("prepare-new"),
-            &DaemonResponse {
-                ok: true,
-                code: "OK".into(),
-                message: "{}".into(),
-                payload: None,
-            },
+            &DaemonResponse::success("{}", None),
         )
         .await
         .expect("matching prepared id should transition branch environment");
@@ -2562,12 +2552,11 @@ mod tests {
             &store,
             &Namespace::new("pr-39"),
             &DeployId::new("prepare-1"),
-            &DaemonResponse {
-                ok: false,
-                code: "DEPLOY_APPLY_PREPARED_FAILED".into(),
-                message: "transient runtime failure".into(),
-                payload: None,
-            },
+            &DaemonResponse::error(
+                "DEPLOY_APPLY_PREPARED_FAILED",
+                "transient runtime failure",
+                None,
+            ),
         )
         .await
         .expect("failure should mark branch environment failed");
@@ -2593,12 +2582,7 @@ mod tests {
             &store,
             &Namespace::new("pr-39"),
             &DeployId::new("prepare-1"),
-            &DaemonResponse {
-                ok: true,
-                code: "OK".into(),
-                message: "{}".into(),
-                payload: None,
-            },
+            &DaemonResponse::success("{}", None),
         )
         .await
         .expect("same prepared id retry should activate branch environment");
@@ -2643,12 +2627,7 @@ mod tests {
             &store,
             &Namespace::new("pr-39"),
             &DeployId::new("prepare-1"),
-            &DaemonResponse {
-                ok: true,
-                code: "OK".into(),
-                message: "{}".into(),
-                payload: None,
-            },
+            &DaemonResponse::success("{}", None),
         )
         .await
         .expect("matching active prepared id should replay");
@@ -3021,11 +3000,12 @@ mod tests {
                     namespace: namespace.clone(),
                     coordinator_machine_id: MachineId::new("founder"),
                     manifest_hash: "manifest".into(),
-                    state: DeployState::Committed,
+                    state: DeployRecordState::Committed {
+                        committed_at: 2,
+                        finished_at: 2,
+                        summary_json: serde_json::to_string(&preview).expect("preview json"),
+                    },
                     started_at: 1,
-                    committed_at: Some(2),
-                    finished_at: None,
-                    summary_json: serde_json::to_string(&preview).expect("preview json"),
                 },
             })
             .await
