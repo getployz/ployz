@@ -936,7 +936,7 @@ pub(super) async fn resolve_plan(
     let mut planned_volumes = Vec::new();
     let mut volume_machine_map = HashMap::new();
     let branch_intents = branch_intents(manifest);
-    let volume_move_intents = volume_move_intents(manifest);
+    let volume_move_intents = volume_move_intents(manifest)?;
     let volume_clone_intents = volume_clone_intents(manifest);
     let phase_intents = ordered_phase_intents(manifest)?;
     let mut service_phase_owners = phase_service_owners(&phase_intents);
@@ -1643,10 +1643,10 @@ fn branch_intents(manifest: &DeployManifest) -> HashMap<String, BranchIntent> {
     intents
 }
 
-fn volume_move_intents(manifest: &DeployManifest) -> HashMap<String, VolumeMoveIntent> {
+fn volume_move_intents(manifest: &DeployManifest) -> Result<HashMap<String, VolumeMoveIntent>> {
     let mut intents = HashMap::new();
     let Some(deploy_intent) = &manifest.intent else {
-        return intents;
+        return Ok(intents);
     };
 
     for hint in &deploy_intent.volumes {
@@ -1655,11 +1655,28 @@ fn volume_move_intents(manifest: &DeployManifest) -> HashMap<String, VolumeMoveI
                 from_machine,
                 to_machine,
             } => {
+                let from_machine =
+                    MachineId::try_new(from_machine.as_str()).map_err(|message| {
+                        Error::Deploy(DeployError::ManifestInvalid {
+                            message: format!(
+                                "volume '{}' move from_machine is invalid: {message}",
+                                hint.volume
+                            ),
+                        })
+                    })?;
+                let to_machine = MachineId::try_new(to_machine.as_str()).map_err(|message| {
+                    Error::Deploy(DeployError::ManifestInvalid {
+                        message: format!(
+                            "volume '{}' move to_machine is invalid: {message}",
+                            hint.volume
+                        ),
+                    })
+                })?;
                 intents.insert(
                     hint.volume.clone(),
                     VolumeMoveIntent {
-                        from_machine: MachineId::new(from_machine.clone()),
-                        to_machine: MachineId::new(to_machine.clone()),
+                        from_machine,
+                        to_machine,
                     },
                 );
             }
@@ -1667,7 +1684,7 @@ fn volume_move_intents(manifest: &DeployManifest) -> HashMap<String, VolumeMoveI
         }
     }
 
-    intents
+    Ok(intents)
 }
 
 fn volume_clone_intents(manifest: &DeployManifest) -> HashMap<String, VolumeCloneIntent> {

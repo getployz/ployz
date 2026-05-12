@@ -790,7 +790,10 @@ impl DaemonState {
             Ok(active) => active,
             Err(response) => return *response,
         };
-        let namespace = Namespace::new(namespace.to_string());
+        let namespace = match Namespace::try_new(namespace) {
+            Ok(namespace) => namespace,
+            Err(error) => return self.err("DEPLOY_EXPORT_FAILED", error),
+        };
         let manifest = match export_manifest(&active.mesh.store, &namespace).await {
             Ok(manifest) => manifest,
             Err(err) => return self.err("DEPLOY_EXPORT_FAILED", format!("{err}")),

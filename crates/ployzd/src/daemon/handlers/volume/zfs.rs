@@ -804,7 +804,10 @@ impl DaemonState {
         volume: &str,
         machine: Option<&str>,
     ) -> DaemonResponse {
-        let namespace = Namespace::new(namespace.to_string());
+        let namespace = match Namespace::try_new(namespace) {
+            Ok(namespace) => namespace,
+            Err(error) => return self.err("VOLUME_ZFS_INSPECT_FAILED", error),
+        };
         let target_machine: Option<String> = match machine {
             Some(machine) => Some(machine.to_string()),
             None => match self.volume_record(&namespace, volume).await {
@@ -834,7 +837,10 @@ impl DaemonState {
         volume: &str,
         snapshot: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace::new(namespace.to_string());
+        let namespace = match Namespace::try_new(namespace) {
+            Ok(namespace) => namespace,
+            Err(error) => return self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error),
+        };
         let record = match self.volume_record(&namespace, volume).await {
             Ok(record) => record,
             Err(error) => return self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error),
@@ -928,7 +934,10 @@ impl DaemonState {
         target_machine: &str,
         from_snapshot: Option<&str>,
     ) -> DaemonResponse {
-        let namespace = Namespace::new(namespace.to_string());
+        let namespace = match Namespace::try_new(namespace) {
+            Ok(namespace) => namespace,
+            Err(error) => return self.err("VOLUME_ZFS_SEND_FAILED", error),
+        };
         let record = match self.volume_record(&namespace, volume).await {
             Ok(record) => record,
             Err(error) => return self.err("VOLUME_ZFS_SEND_FAILED", error),

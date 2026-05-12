@@ -141,13 +141,41 @@ impl LocalDeployRuntime {
             let Some(ip_address) = obs.ip_address.as_observed() else {
                 continue;
             };
+            let instance_id = match InstanceId::try_new(wl.instance_id) {
+                Ok(instance_id) => instance_id,
+                Err(error) => {
+                    tracing::warn!(%error, "skipping malformed observed workload instance label");
+                    continue;
+                }
+            };
+            let slot_id = match SlotId::try_new(wl.slot_id) {
+                Ok(slot_id) => slot_id,
+                Err(error) => {
+                    tracing::warn!(%error, "skipping malformed observed workload slot label");
+                    continue;
+                }
+            };
+            let machine_id = match MachineId::try_new(wl.machine_id) {
+                Ok(machine_id) => machine_id,
+                Err(error) => {
+                    tracing::warn!(%error, "skipping malformed observed workload machine label");
+                    continue;
+                }
+            };
+            let deploy_id = match DeployId::try_new(wl.deploy_id) {
+                Ok(deploy_id) => deploy_id,
+                Err(error) => {
+                    tracing::warn!(%error, "skipping malformed observed workload deploy label");
+                    continue;
+                }
+            };
             instances.push(ManagedInstance {
-                instance_id: InstanceId::new(wl.instance_id),
+                instance_id,
                 service: wl.service,
-                slot_id: SlotId::new(wl.slot_id),
-                machine_id: MachineId::new(wl.machine_id),
+                slot_id,
+                machine_id,
                 revision_hash: wl.revision_hash,
-                deploy_id: DeployId::new(wl.deploy_id),
+                deploy_id,
                 docker_container_id: container_id.clone(),
                 ip_address: *ip_address,
                 backend_ports: BTreeMap::new(),

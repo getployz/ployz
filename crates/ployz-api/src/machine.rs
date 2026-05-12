@@ -89,6 +89,60 @@ pub enum InstallServiceMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct InstallGitUrl(String);
+
+impl InstallGitUrl {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self::try_new(value).expect("valid git install URL")
+    }
+
+    pub fn try_new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err("git install URL cannot be empty".into());
+        }
+        if value.chars().any(char::is_control) {
+            return Err("git install URL cannot contain control characters".into());
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl From<InstallGitUrl> for String {
+    fn from(value: InstallGitUrl) -> Self {
+        value.into_string()
+    }
+}
+
+impl TryFrom<String> for InstallGitUrl {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl TryFrom<&str> for InstallGitUrl {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum InstallSource {
     Release {
@@ -96,7 +150,7 @@ pub enum InstallSource {
         version: Option<String>,
     },
     Git {
-        git_url: String,
+        git_url: InstallGitUrl,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         git_ref: Option<String>,
     },
@@ -301,7 +355,7 @@ mod tests {
             runtime_target: None,
             service_mode: None,
             source: Some(InstallSource::Git {
-                git_url: "https://example.invalid/ployz.git".into(),
+                git_url: InstallGitUrl::new("https://example.invalid/ployz.git"),
                 git_ref: Some("main".into()),
             }),
         };
@@ -330,5 +384,16 @@ mod tests {
 
         serde_json::from_value::<InstallSource>(json)
             .expect_err("release install source cannot carry git url");
+    }
+
+    #[test]
+    fn install_source_rejects_empty_git_url() {
+        let json = serde_json::json!({
+            "kind": "git",
+            "git_url": ""
+        });
+
+        serde_json::from_value::<InstallSource>(json)
+            .expect_err("git install source cannot carry an empty url");
     }
 }
