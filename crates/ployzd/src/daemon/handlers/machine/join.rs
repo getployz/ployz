@@ -394,7 +394,10 @@ impl DaemonState {
     }
 
     pub(crate) async fn handle_machine_drain(&mut self, target: &str) -> DaemonResponse {
-        let machine_id = MachineId::new(target.to_string());
+        let machine_id = match MachineId::try_new(target) {
+            Ok(machine_id) => machine_id,
+            Err(error) => return self.err("MACHINE_DRAIN_INVALID_TARGET", error),
+        };
         if machine_id == self.identity.machine_id {
             return self
                 .handle_machine_transition_self(MachineSelfTransition::Drain)
@@ -404,7 +407,10 @@ impl DaemonState {
     }
 
     pub(crate) async fn handle_remote_machine_drain(&self, target: &str) -> DaemonResponse {
-        let machine_id = MachineId::new(target.to_string());
+        let machine_id = match MachineId::try_new(target) {
+            Ok(machine_id) => machine_id,
+            Err(error) => return self.err("MACHINE_DRAIN_INVALID_TARGET", error),
+        };
         if machine_id == self.identity.machine_id {
             return self.err(
                 "LOCAL_DRAIN_REQUIRES_EXCLUSIVE_LANE",
@@ -495,7 +501,10 @@ impl DaemonState {
         target: &str,
         force: bool,
     ) -> DaemonResponse {
-        let machine_id = MachineId::new(target.to_string());
+        let machine_id = match MachineId::try_new(target) {
+            Ok(machine_id) => machine_id,
+            Err(error) => return self.err("MACHINE_STANDBY_INVALID_TARGET", error),
+        };
         if machine_id == self.identity.machine_id {
             return self
                 .handle_machine_transition_self(MachineSelfTransition::Standby { force })
@@ -509,7 +518,10 @@ impl DaemonState {
         target: &str,
         force: bool,
     ) -> DaemonResponse {
-        let machine_id = MachineId::new(target.to_string());
+        let machine_id = match MachineId::try_new(target) {
+            Ok(machine_id) => machine_id,
+            Err(error) => return self.err("MACHINE_STANDBY_INVALID_TARGET", error),
+        };
         if machine_id == self.identity.machine_id {
             return self.err(
                 "LOCAL_STANDBY_REQUIRES_EXCLUSIVE_LANE",
