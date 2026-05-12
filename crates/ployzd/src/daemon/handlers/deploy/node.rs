@@ -51,8 +51,22 @@ impl DaemonState {
         spec_json: &str,
         volumes_json: &str,
     ) -> DaemonResponse {
-        let namespace = Namespace::new(namespace.to_string());
-        let deploy_id = DeployId::new(deploy_id.to_string());
+        let namespace = match Namespace::try_new(namespace) {
+            Ok(namespace) => namespace,
+            Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
+        };
+        let deploy_id = match DeployId::try_new(deploy_id) {
+            Ok(deploy_id) => deploy_id,
+            Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
+        };
+        let slot_id = match SlotId::try_new(slot_id) {
+            Ok(slot_id) => slot_id,
+            Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
+        };
+        let instance_id = match InstanceId::try_new(instance_id) {
+            Ok(instance_id) => instance_id,
+            Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
+        };
         let agent = match self.deploy_node_agent().await {
             Ok(agent) => agent,
             Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
@@ -62,8 +76,8 @@ impl DaemonState {
             .start_candidate(
                 &context,
                 service,
-                &SlotId::new(slot_id.to_string()),
-                &InstanceId::new(instance_id.to_string()),
+                &slot_id,
+                &instance_id,
                 &deploy_id,
                 spec_json,
                 volumes_json,

@@ -114,7 +114,9 @@ impl DaemonState {
         match req {
             DaemonRequest::MachineDrain { target }
             | DaemonRequest::MachineStandby { target, .. }
-                if MachineId::new(target.clone()) == self.identity.machine_id =>
+                if MachineId::try_new(target.as_str())
+                    .map(|target| target == self.identity.machine_id)
+                    .unwrap_or(false) =>
             {
                 RequestLane::Exclusive
             }

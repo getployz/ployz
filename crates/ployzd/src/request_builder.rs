@@ -14,8 +14,9 @@ use ployz_api::{
     BranchApplyPreparedRequest, BranchEnvironmentStatusRequest, BranchNamespaceMode,
     BranchNamespaceRequest, BranchResourceMode, BranchResourceModeOverride, BuildInputs,
     BuildLocalRequest, DaemonRequest, DeployOptions, ImageDistributeRequest, ImageInspectRequest,
-    ImagePushRequest, ImageStatusRequest, InstallSource as MachineInstallSource, MachineAddOptions,
-    MachineInstallOptions, MachineStoragePromoteRequest, MigrateServiceMode, MigrateServiceRequest,
+    ImagePushRequest, ImageStatusRequest, InstallGitUrl, InstallSource as MachineInstallSource,
+    MachineAddOptions, MachineInstallOptions, MachineStoragePromoteRequest, MigrateServiceMode,
+    MigrateServiceRequest,
 };
 use ployz_sdk::Transport;
 use ployz_types::model::{DeployId, ImageDigest, ImagePlatform, MachineId, StorageReplicaPolicy};
@@ -98,7 +99,7 @@ pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> 
             Ok(DaemonRequest::ImageStatus {
                 request: ImageStatusRequest {
                     digest,
-                    machine_id: machine.map(MachineId::new),
+                    machine_id: machine.map(parse_machine_id).transpose()?,
                 },
             })
         }
@@ -115,7 +116,10 @@ pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> 
             Ok(DaemonRequest::ImagePush {
                 request: ImagePushRequest {
                     source_image: image,
-                    target_machines: targets.into_iter().map(MachineId::new).collect(),
+                    target_machines: targets
+                        .into_iter()
+                        .map(parse_machine_id)
+                        .collect::<Result<Vec<_>>>()?,
                     platform: platform.map(parse_image_platform).transpose()?,
                     expected_digest,
                 },
@@ -131,8 +135,11 @@ pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> 
             Ok(DaemonRequest::ImageDistribute {
                 request: ImageDistributeRequest {
                     digest,
-                    source_machine: MachineId::new(source),
-                    target_machines: targets.into_iter().map(MachineId::new).collect(),
+                    source_machine: parse_machine_id(source)?,
+                    target_machines: targets
+                        .into_iter()
+                        .map(parse_machine_id)
+                        .collect::<Result<Vec<_>>>()?,
                     platform: platform.map(parse_image_platform).transpose()?,
                 },
             })
@@ -147,7 +154,11 @@ pub(crate) fn build_image_request(action: ImageAction) -> Result<DaemonRequest> 
                 request: ImageInspectRequest {
                     digest,
                     reference,
-                    machines: machine.map(MachineId::new).into_iter().collect(),
+                    machines: machine
+                        .map(parse_machine_id)
+                        .transpose()?
+                        .into_iter()
+                        .collect(),
                 },
             })
         }
@@ -181,6 +192,14 @@ fn parse_image_platform(value: String) -> Result<ImagePlatform> {
         architecture: architecture.to_string(),
         variant,
     })
+}
+
+fn parse_machine_id(value: String) -> Result<MachineId> {
+    MachineId::try_new(value).map_err(CliError::Usage)
+}
+
+fn parse_install_git_url(value: String) -> Result<InstallGitUrl> {
+    InstallGitUrl::try_new(value).map_err(CliError::Usage)
 }
 
 fn build_volume_request(action: VolumeAction) -> Result<DaemonRequest> {
@@ -688,9 +707,12 @@ fn build_machine_install_options(
                     .into(),
             ));
         }
-        (Some(InstallSourceArg::Git), None, Some(git_url), git_ref) => {
-            Some(MachineInstallSource::Git { git_url, git_ref })
-        }
+        (Some(InstallSourceArg::Git), None, Some(git_url), git_ref) => Some(
+            MachineInstallSource::Git {
+                git_url: parse_install_git_url(git_url)?,
+                git_ref,
+            },
+        ),
         (Some(InstallSourceArg::Git), Some(_), _, _) => {
             return Err(CliError::Usage(
                 "git install source cannot include --install-version".into(),
@@ -704,9 +726,10 @@ fn build_machine_install_options(
         (None, Some(version), None, None) => Some(MachineInstallSource::Release {
             version: Some(version),
         }),
-        (None, None, Some(git_url), git_ref) => {
-            Some(MachineInstallSource::Git { git_url, git_ref })
-        }
+        (None, None, Some(git_url), git_ref) => Some(MachineInstallSource::Git {
+            git_url: parse_install_git_url(git_url)?,
+            git_ref,
+        }),
         (None, Some(_), Some(_), _) | (None, Some(_), None, Some(_)) => {
             return Err(CliError::Usage(
                 "install options cannot mix --install-version with git install options".into(),

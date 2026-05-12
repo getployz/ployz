@@ -112,26 +112,28 @@ pub fn parse_query(name: &str) -> DnsQuery {
         [service, namespace, "ployz", "internal"]
             if !service.is_empty() && !namespace.is_empty() =>
         {
+            let Ok(namespace) = Namespace::try_new(*namespace) else {
+                return DnsQuery::Unknown;
+            };
             if *service == "_services" {
-                DnsQuery::ListServicesExplicit {
-                    namespace: Namespace::new((*namespace).to_string()),
-                }
+                DnsQuery::ListServicesExplicit { namespace }
             } else if *service == "_instances" {
                 DnsQuery::ListInstancesServiceImplicit {
-                    service: (*namespace).to_string(),
+                    service: namespace.into_string(),
                 }
             } else {
                 DnsQuery::ServiceExplicit {
                     service: (*service).to_string(),
-                    namespace: Namespace::new((*namespace).to_string()),
+                    namespace,
                 }
             }
         }
 
         // "_instances.ns.namespace.ployz.internal"
         ["_instances", "ns", namespace, "ployz", "internal"] if !namespace.is_empty() => {
-            DnsQuery::ListInstancesNamespaceExplicit {
-                namespace: Namespace::new((*namespace).to_string()),
+            match Namespace::try_new(*namespace) {
+                Ok(namespace) => DnsQuery::ListInstancesNamespaceExplicit { namespace },
+                Err(_) => DnsQuery::Unknown,
             }
         }
 
@@ -139,9 +141,12 @@ pub fn parse_query(name: &str) -> DnsQuery {
         ["_instances", service, "ns", namespace, "ployz", "internal"]
             if !service.is_empty() && !namespace.is_empty() =>
         {
-            DnsQuery::ListInstancesExplicit {
-                service: (*service).to_string(),
-                namespace: Namespace::new((*namespace).to_string()),
+            match Namespace::try_new(*namespace) {
+                Ok(namespace) => DnsQuery::ListInstancesExplicit {
+                    service: (*service).to_string(),
+                    namespace,
+                },
+                Err(_) => DnsQuery::Unknown,
             }
         }
 
@@ -164,10 +169,13 @@ pub fn parse_query(name: &str) -> DnsQuery {
             "ployz",
             "internal",
         ] if !instance_id.is_empty() && !service.is_empty() && !namespace.is_empty() => {
-            DnsQuery::InstanceExplicit {
-                instance_id: (*instance_id).to_string(),
-                service: (*service).to_string(),
-                namespace: Namespace::new((*namespace).to_string()),
+            match Namespace::try_new(*namespace) {
+                Ok(namespace) => DnsQuery::InstanceExplicit {
+                    instance_id: (*instance_id).to_string(),
+                    service: (*service).to_string(),
+                    namespace,
+                },
+                Err(_) => DnsQuery::Unknown,
             }
         }
 

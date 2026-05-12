@@ -310,6 +310,12 @@ pub enum DeployError {
         stored_service: String,
         release_service: String,
     },
+    #[error("stored volume '{volume}' has invalid {field}: {message}")]
+    StoredVolumeMetadataInvalid {
+        volume: String,
+        field: &'static str,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
