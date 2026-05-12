@@ -112,16 +112,19 @@ pub fn parse_query(name: &str) -> DnsQuery {
         [service, namespace, "ployz", "internal"]
             if !service.is_empty() && !namespace.is_empty() =>
         {
-            let Ok(namespace) = Namespace::try_new(*namespace) else {
-                return DnsQuery::Unknown;
-            };
             if *service == "_services" {
+                let Ok(namespace) = Namespace::try_new(*namespace) else {
+                    return DnsQuery::Unknown;
+                };
                 DnsQuery::ListServicesExplicit { namespace }
             } else if *service == "_instances" {
                 DnsQuery::ListInstancesServiceImplicit {
-                    service: namespace.into_string(),
+                    service: (*namespace).to_string(),
                 }
             } else {
+                let Ok(namespace) = Namespace::try_new(*namespace) else {
+                    return DnsQuery::Unknown;
+                };
                 DnsQuery::ServiceExplicit {
                     service: (*service).to_string(),
                     namespace,

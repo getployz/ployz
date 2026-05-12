@@ -131,7 +131,7 @@ fn install_script_args(install: &MachineInstallOptions) -> String {
             InstallSource::Git { git_url, git_ref } => {
                 args.push("git".into());
                 args.push("--git-url".into());
-                args.push(shell_quote(git_url));
+                args.push(shell_quote(git_url.as_str()));
                 if let Some(git_ref) = git_ref {
                     args.push("--git-ref".into());
                     args.push(shell_quote(git_ref));
