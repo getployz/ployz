@@ -699,10 +699,7 @@ impl DeployStore for MemoryStore {
         if let Some(existing) = inner
             .branch_environment_records
             .get(&record.target_namespace)
-            && matches!(
-                existing.state,
-                BranchEnvironmentState::Applying | BranchEnvironmentState::Active
-            )
+            && matches!(existing.state, BranchEnvironmentState::Applying)
         {
             return Err(Error::operation(
                 "memory_branch_environment_upsert",
@@ -1915,7 +1912,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn branch_environment_upsert_rejects_active_record_replacement() {
+    async fn branch_environment_upsert_rejects_applying_and_replaces_active_records() {
         let store = MemoryStore::new();
         let prepared_a = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-a");
         let prepared_b = test_prepared_deploy(&Namespace("pr-39".into()), "prepare-b");
@@ -1960,7 +1957,7 @@ mod tests {
         store
             .upsert_branch_environment(&record_b)
             .await
-            .expect_err("active branch environment should not be replaced");
+            .expect("active branch environment should be replaced for next prepare");
         assert_eq!(
             store
                 .get_branch_environment(&Namespace("pr-39".into()))
@@ -1968,7 +1965,7 @@ mod tests {
                 .expect("get branch environment")
                 .expect("branch environment exists")
                 .prepared_deploy_id,
-            Some(DeployId("prepare-a".into()))
+            Some(DeployId("prepare-b".into()))
         );
     }
 
