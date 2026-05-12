@@ -868,6 +868,32 @@ struct BuildCommandPaths {
     railpack_secret_cache_token: Option<String>,
 }
 
+struct CleanupDirsOnError {
+    dirs: Vec<PathBuf>,
+}
+
+impl CleanupDirsOnError {
+    fn new() -> Self {
+        Self { dirs: Vec::new() }
+    }
+
+    fn push(&mut self, path: PathBuf) {
+        self.dirs.push(path);
+    }
+
+    fn disarm(mut self) {
+        self.dirs.clear();
+    }
+}
+
+impl Drop for CleanupDirsOnError {
+    fn drop(&mut self) {
+        for path in &self.dirs {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
 fn prepare_build_command_paths(
     data_dir: &Path,
     method: BuildMethod,
@@ -881,10 +907,12 @@ fn prepare_build_command_paths(
         buildkit_secret_files: Vec::new(),
         railpack_secret_cache_token: None,
     };
+    let mut cleanup_on_error = CleanupDirsOnError::new();
     if method == BuildMethod::Railpack || !invocation.secret_env.is_empty() {
         let metadata_dir = railpack_metadata_dir(data_dir, operation_id);
         create_private_dir(&metadata_dir)?;
         paths.cleanup_dirs.push(metadata_dir.clone());
+        cleanup_on_error.push(metadata_dir.clone());
         if method == BuildMethod::Railpack {
             paths.railpack_plan_path = Some(metadata_dir.join("railpack-plan.json"));
             paths.railpack_info_path = Some(metadata_dir.join("railpack-info.json"));
@@ -903,6 +931,7 @@ fn prepare_build_command_paths(
         let key = load_or_create_build_cache_key(data_dir)?;
         paths.railpack_secret_cache_token = Some(secret_cache_token(&key, &invocation.secret_env));
     }
+    cleanup_on_error.disarm();
     Ok(paths)
 }
 
@@ -2017,6 +2046,37 @@ mod tests {
         handle.join().expect("writer should not panic");
 
         assert_eq!(key, expected_key);
+    }
+
+    #[test]
+    fn build_command_path_preparation_cleans_secret_files_on_error() {
+        let data_dir = temp_dir("ployz-build-command-path-cleanup");
+        let operation_id = "build-op";
+        let metadata_dir = railpack_metadata_dir(&data_dir, operation_id);
+        let secret_path = metadata_dir.join("secrets").join("API_TOKEN");
+        std::fs::create_dir_all(&secret_path).expect("create conflicting secret path");
+        let inputs = BuildInputs {
+            env: BTreeMap::from([(
+                "API_TOKEN".into(),
+                BuildEnvValue::Secret {
+                    value: "secret".into(),
+                    fingerprint: None,
+                },
+            )]),
+            docker_build_args: BTreeMap::new(),
+        };
+        let invocation =
+            plan_build_invocation(BuildMethod::Dockerfile, &inputs).expect("invocation plan");
+
+        let result = prepare_build_command_paths(
+            &data_dir,
+            BuildMethod::Dockerfile,
+            operation_id,
+            &invocation,
+        );
+
+        assert!(result.is_err());
+        assert!(!metadata_dir.exists());
     }
 
     #[test]
