@@ -7,7 +7,12 @@ publish = false
 
 [features]
 default = ["userspace-wg"]
-docker = ["dep:bollard", "dep:reqwest", "dep:ployz-runtime-docker"]
+docker = [
+    "userspace-wg",
+    "dep:bollard",
+    "dep:reqwest",
+    "dep:ployz-runtime-docker",
+]
 userspace-wg = [
     "dep:defguard_boringtun",
     "dep:defguard_wireguard_rs",

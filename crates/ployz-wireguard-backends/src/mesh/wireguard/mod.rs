@@ -1,4 +1,4 @@
-#[cfg(feature = "userspace-wg")]
+#[cfg(feature = "docker")]
 pub(crate) mod bridge;
 pub(crate) mod config;
 #[cfg(feature = "docker")]
