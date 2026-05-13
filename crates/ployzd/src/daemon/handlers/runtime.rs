@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use ployz_api::{RuntimeWatchFrame, runtime_frame_from_event, sort_routing_state};
+use ployz_model::{RoutingEvent, RoutingState};
 use ployz_store_api::{RoutingEventSubscriptionUpdate, RoutingStateStore};
-use ployz_types::model::{RoutingEvent, RoutingState};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio_util::sync::CancellationToken;
@@ -114,12 +114,12 @@ pub async fn stream_runtime_frames(
 mod tests {
     use super::{relay_runtime_events, stream_runtime_frames};
     use ployz_api::RuntimeWatchFrame;
-    use ployz_store_api::RoutingEventEnvelope;
-    use ployz_types::model::{
+    use ployz_model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
         RoutingEvent, RoutingState, SlotId,
     };
-    use ployz_types::spec::Namespace;
+    use ployz_spec::Namespace;
+    use ployz_store_api::RoutingEventEnvelope;
     use std::collections::BTreeMap;
     use std::net::Ipv4Addr;
     use tokio::sync::mpsc;
@@ -230,7 +230,7 @@ mod tests {
     async fn relay_runtime_events_exit_on_subscription_failure() {
         let (envelope_tx, mut envelope_rx) = mpsc::channel(1);
         envelope_tx
-            .send(Err(ployz_types::Error::operation(
+            .send(Err(ployz_error::Error::operation(
                 "test_routing_subscription",
                 "closed",
             )))

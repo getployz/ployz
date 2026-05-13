@@ -21,7 +21,7 @@ use crate::routes::GatewaySnapshot;
 use crate::routes::ProjectedTlsMaterial;
 use crate::snapshot::SharedSnapshot;
 use crate::sync::load_projected_snapshot_from_store;
-use ployz_types::model::MachineId;
+use ployz_model::MachineId;
 
 const STORE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const STORE_READY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -362,8 +362,8 @@ mod tests {
     use crate::SharedSnapshot;
     use crate::routes::{BackendView, GatewaySnapshot, HttpRouteView, RouteId, ServiceKey};
     use pingora::prelude::Opt;
-    use ployz_types::model::{InstanceId, MachineId, MachineTopology};
-    use ployz_types::spec::Namespace;
+    use ployz_model::{InstanceId, MachineId, MachineTopology};
+    use ployz_spec::Namespace;
     use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpListener};
@@ -728,7 +728,7 @@ mod tests {
     mod resolve_tls_material_tests {
         use crate::routes::{GatewaySnapshot, ProjectedTlsMaterial, project_certificates};
         use crate::server::{TlsResolution, resolve_tls_material};
-        use ployz_types::model::{CertificateLifecycle, CertificateRecord, CertificateVersion};
+        use ployz_model::{CertificateLifecycle, CertificateRecord, CertificateVersion};
         use std::collections::HashMap;
         use std::sync::Arc;
 

@@ -1,5 +1,5 @@
 use chrono::DateTime;
-use ployz_types::model::{MachineLifecycle, MachineMembership};
+use ployz_model::{MachineLifecycle, MachineMembership};
 
 use super::types::{MachineAddReport, MachineListReport};
 

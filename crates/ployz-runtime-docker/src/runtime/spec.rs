@@ -8,7 +8,7 @@ use bollard::models::ContainerInspectResponse;
 pub use ployz_runtime_api::{
     Observation, ObservedContainer, PortBinding, PortMap, RestartPolicy, RuntimeContainerSpec,
 };
-pub use ployz_types::spec::PullPolicy;
+pub use ployz_spec::PullPolicy;
 
 /// Parse env string "KEY=VALUE" into (key, value) tuple.
 #[cfg(feature = "docker")]

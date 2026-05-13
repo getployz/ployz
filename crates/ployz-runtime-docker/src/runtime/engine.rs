@@ -9,13 +9,13 @@ use bollard::query_parameters::{
     StatsOptionsBuilder, StopContainerOptionsBuilder,
 };
 use futures_util::{StreamExt, TryStreamExt};
+use ployz_error::RuntimeError;
+use ployz_error::{Error, Result};
+use ployz_model::{ImageDigest, ImagePlatform};
 use ployz_runtime_api::{
     ImageArchiveReader, ImageDiskPreflight, ImageReceivePreflightRequest, RuntimeImage,
     RuntimeImageBackend, RuntimeImageError, RuntimeImageImportResult,
 };
-use ployz_types::error::RuntimeError;
-use ployz_types::model::{ImageDigest, ImagePlatform};
-use ployz_types::{Error, Result};
 use tokio_util::codec::{BytesCodec, FramedRead};
 use tokio_util::io::StreamReader;
 use tracing::{info, warn};
@@ -675,8 +675,8 @@ mod tests {
     use bollard::models::{
         ContainerCpuStats, ContainerCpuUsage, ContainerMemoryStats, ContainerStatsResponse,
     };
-    use ployz_types::Error;
-    use ployz_types::error::RuntimeError;
+    use ployz_error::Error;
+    use ployz_error::RuntimeError;
 
     #[test]
     fn workload_resource_snapshot_reads_cpu_and_memory_stats() {

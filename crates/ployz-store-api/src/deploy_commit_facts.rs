@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
-use ployz_types::model::{
+use ployz_model::{
     DeployId, DeployPhaseCommitRecord, DeployPhaseId, RoutingEvent, ServiceBranchLineageRecord,
     ServiceReleaseRecord, ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord,
     VolumeRecord,
 };
-use ployz_types::spec::Namespace;
+use ployz_spec::Namespace;
 
 use crate::DeployCommit;
 
@@ -189,7 +189,7 @@ impl DeployCommitFacts {
     pub fn phase_commits(
         &self,
         namespace: &Namespace,
-        deploy_id: &ployz_types::model::DeployId,
+        deploy_id: &ployz_model::DeployId,
     ) -> Vec<DeployPhaseCommitRecord> {
         self.phase_commits
             .values()
@@ -202,7 +202,7 @@ impl DeployCommitFacts {
     pub fn phase_commit(
         &self,
         namespace: &Namespace,
-        deploy_id: &ployz_types::model::DeployId,
+        deploy_id: &ployz_model::DeployId,
         phase_id: &DeployPhaseId,
     ) -> Option<&DeployPhaseCommitRecord> {
         self.phase_commits.get(&(
@@ -351,11 +351,11 @@ fn phase_commit_deploy_id(deploy_id: &DeployId, phase_id: &DeployPhaseId) -> Dep
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{
+    use ployz_model::{
         DeployId, DeployPhaseCommitRecord, DeployPhaseId, DeployRecord, DeployRecordState,
         MachineId, ServiceBranchLineageRecord, ServiceRelease, VolumeMovementRecord,
     };
-    use ployz_types::spec::VolumeScope;
+    use ployz_spec::VolumeScope;
 
     #[test]
     fn deploy_commit_facts_returns_namespace_snapshots_in_contract_identity_order() {

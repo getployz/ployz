@@ -5,12 +5,12 @@ use crate::store::kv_watch;
 use crate::subjects;
 use async_nats::jetstream::kv;
 use async_trait::async_trait;
-use ployz_store_api::{AcmeChallengeSubscription, CertificateStore, CertificateSubscription};
-use ployz_types::error::{Error, Result, StoreRecordKind};
-use ployz_types::model::{
+use ployz_error::{Error, Result, StoreRecordKind};
+use ployz_model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     CertificateEvent, CertificateRecord, CertificateState, MachineId,
 };
+use ployz_store_api::{AcmeChallengeSubscription, CertificateStore, CertificateSubscription};
 
 #[async_trait]
 impl CertificateStore for NatsStore {
@@ -25,7 +25,7 @@ impl CertificateStore for NatsStore {
             .get(acme_account_key(issuer_url))
             .await
             .map_err(|error| {
-                ployz_types::Error::operation("nats_acme_account_get", format!("{error:?}"))
+                ployz_error::Error::operation("nats_acme_account_get", format!("{error:?}"))
             })?
         else {
             return Ok(None);
@@ -64,7 +64,7 @@ impl CertificateStore for NatsStore {
             .get(certificate_key(hostname))
             .await
             .map_err(|error| {
-                ployz_types::Error::operation("nats_certificate_get", format!("{error:?}"))
+                ployz_error::Error::operation("nats_certificate_get", format!("{error:?}"))
             })?
         else {
             return Ok(None);
@@ -397,8 +397,8 @@ fn decode_acme_account(key: &str, bytes: &[u8]) -> Result<AcmeAccountRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::error::{Error, StoreRecordKind};
-    use ployz_types::model::CertificateLifecycle;
+    use ployz_error::{Error, StoreRecordKind};
+    use ployz_model::CertificateLifecycle;
 
     #[test]
     fn acme_challenge_readiness_key_is_collision_safe() {

@@ -1,5 +1,5 @@
 use ipnet::Ipv4Net;
-use ployz_types::model::{
+use ployz_model::{
     AuthorityNodePosture, MachineId, OverlayIp, PublicKey, RegionRole, StorageReplicaPolicy,
 };
 use serde::{Deserialize, Serialize};
@@ -60,8 +60,8 @@ pub struct MachineStorageAuthorityPeer {
     pub endpoints: Vec<String>,
 }
 
-impl From<&ployz_types::model::MachineMembership> for MachineStorageAuthorityPeer {
-    fn from(record: &ployz_types::model::MachineMembership) -> Self {
+impl From<&ployz_model::MachineMembership> for MachineStorageAuthorityPeer {
+    fn from(record: &ployz_model::MachineMembership) -> Self {
         Self {
             machine_id: record.id.clone(),
             public_key: record.public_key.clone(),

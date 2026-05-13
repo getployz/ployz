@@ -1,8 +1,8 @@
 use crate::mesh::wireguard::MemoryWireGuard;
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use async_trait::async_trait;
-use ployz_types::Result;
-use ployz_types::model::{OverlayIp, PublicKey, WireGuardPeerSpec};
+use ployz_error::Result;
+use ployz_model::{OverlayIp, PublicKey, WireGuardPeerSpec};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

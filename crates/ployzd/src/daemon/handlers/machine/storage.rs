@@ -3,13 +3,13 @@ use ployz_api::{
     MachineStoragePromotionFailure, MachineStoragePromotionFailureCause,
     MachineStoragePromotionPayload, StatusPayload,
 };
-use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
-use ployz_node_api::NodeRequest;
-use ployz_store_api::MachineMembershipStore;
-use ployz_types::model::{
+use ployz_model::{
     AuthorityId, MachineId, MachineLifecycle, MachineMembership, MachineStorageRole,
     StorageParticipation, StorageReplicaPolicy,
 };
+use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
+use ployz_node_api::NodeRequest;
+use ployz_store_api::MachineMembershipStore;
 use std::collections::BTreeSet;
 use tokio::sync::oneshot;
 
@@ -255,7 +255,7 @@ impl DaemonState {
             for target in &targets {
                 let mut promoted_record = target.clone();
                 promoted_record.storage_role = MachineStorageRole::default_authority();
-                promoted_record.updated_at = ployz_types::time::now_unix_secs();
+                promoted_record.updated_at = ployz_time::now_unix_secs();
                 if let Err(error) = store.upsert_self_machine(&promoted_record).await {
                     failed.push(MachineStoragePromotionFailure {
                         machine_id: target.id.as_str().to_string(),
@@ -721,7 +721,7 @@ struct RemoteStorageRollback {
 
 enum StoragePromotionError {
     StoreList {
-        error: ployz_types::error::Error,
+        error: ployz_error::Error,
     },
     InvalidLocalAuthority {
         message: String,
@@ -999,7 +999,7 @@ impl From<&MachineStorageAuthorityPeer> for BootstrapPeerRecord {
 fn validate_authority_peer_payload(
     replicas: StorageReplicaPolicy,
     authority_peers: &[MachineStorageAuthorityPeer],
-    local_machine_id: &ployz_types::model::MachineId,
+    local_machine_id: &ployz_model::MachineId,
 ) -> Result<(), String> {
     if authority_peers.len() != replicas.replicas() {
         return Err(format!(
@@ -1039,7 +1039,7 @@ fn validate_authority_peer_payload(
 fn validate_authority_peers_match_membership(
     authority_peers: &[MachineStorageAuthorityPeer],
     machines: &[MachineMembership],
-    local_machine_id: &ployz_types::model::MachineId,
+    local_machine_id: &ployz_model::MachineId,
 ) -> Result<(), String> {
     let Some(local_peer) = authority_peers
         .iter()

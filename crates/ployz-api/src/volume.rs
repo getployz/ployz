@@ -1,4 +1,4 @@
-use ployz_types::model::MachineId;
+use ployz_model::MachineId;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

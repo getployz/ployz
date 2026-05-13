@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use ployz_types::model::OverlayIp;
+use ployz_model::OverlayIp;
 
 // ---------------------------------------------------------------------------
 // DnsError
@@ -129,7 +129,7 @@ impl DnsConfig {
 #[cfg(test)]
 mod tests {
     use super::DnsConfig;
-    use ployz_types::model::OverlayIp;
+    use ployz_model::OverlayIp;
     use std::net::Ipv6Addr;
     use std::path::Path;
 

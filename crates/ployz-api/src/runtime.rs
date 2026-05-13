@@ -1,8 +1,8 @@
-use ployz_types::model::{
+use ployz_model::{
     InstanceId, InstanceStatusRecord, MachineId, MachineMembership, RoutingEvent, RoutingState,
     ServiceReleaseRecord, ServiceRevisionRecord,
 };
-use ployz_types::spec::Namespace;
+use ployz_spec::Namespace;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -146,14 +146,14 @@ mod tests {
         MachineStoragePromotionFailure, MachineStoragePromotionFailureCause,
         MachineStoragePromotionPayload, MachineUpdatePayload, MachineUpdateRow, StatusPayload,
     };
-    use ployz_types::model::{
+    use ployz_model::{
         AuthorityNodePosture, DeployId, DrainState, InstanceId, InstancePhase,
         InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, MachineTopology,
         NetworkLifecycle, OverlayIp, PublicKey, RoutingEvent, RoutingState, ServiceRelease,
         ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord, SlotId,
         StorageParticipation, StorageReplicaPolicy,
     };
-    use ployz_types::spec::Namespace;
+    use ployz_spec::Namespace;
     use std::collections::BTreeMap;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -686,7 +686,7 @@ mod tests {
             public_key: PublicKey([7; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
-            region_role: ployz_types::model::RegionRole::HomeData,
+            region_role: ployz_model::RegionRole::HomeData,
             subnet: None,
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],

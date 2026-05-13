@@ -18,9 +18,9 @@ use crate::model::{
     DeployApplyResult, DeployPreview, MachineId, PreparedDeployRecord, PreparedDeployState,
 };
 use plan::{preflight_image_availability, resolve_plan};
+use ployz_spec::{DeployManifest, stable_hash_hex};
 use ployz_store_api::{DeployStore, StoreDriver};
-use ployz_types::spec::{DeployManifest, stable_hash_hex};
-use ployz_types::time::now_unix_secs;
+use ployz_time::now_unix_secs;
 use probe::{probe_participants, warnings_from_reachability};
 use std::sync::Arc;
 

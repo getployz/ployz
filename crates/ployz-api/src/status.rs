@@ -1,4 +1,4 @@
-use ployz_types::model::{
+use ployz_model::{
     AuthorityNodePosture, ControlPlaneDataBucket, ControlPlaneLossImpact, MachineLifecycle,
     NetworkLifecycle, PublicKey,
 };

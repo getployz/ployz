@@ -1,4 +1,4 @@
-use ployz_types::model::{MachineId, PrivateKey, PublicKey};
+use ployz_model::{MachineId, PrivateKey, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;

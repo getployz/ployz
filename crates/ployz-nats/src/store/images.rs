@@ -1,9 +1,9 @@
 use async_nats::jetstream::kv;
 use async_trait::async_trait;
+use ployz_error::Result;
+use ployz_error::{Error, StoreRecordKind};
+use ployz_model::{ImageAvailabilityRecord, ImageDigest, MachineId};
 use ployz_store_api::ImageAvailabilityStore;
-use ployz_types::Result;
-use ployz_types::error::{Error, StoreRecordKind};
-use ployz_types::model::{ImageAvailabilityRecord, ImageDigest, MachineId};
 
 use crate::NatsStore;
 use crate::store::kv_json;
@@ -112,7 +112,7 @@ fn image_availability_key(machine_id: &MachineId, digest: &ImageDigest) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{ImageArtifact, ImageArtifactProvenance, ImagePresence, ImageRef};
+    use ployz_model::{ImageArtifact, ImageArtifactProvenance, ImagePresence, ImageRef};
 
     #[test]
     fn image_availability_key_mismatch_is_visible() {
@@ -124,7 +124,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            Error::Store(ployz_types::error::StoreError::KeyMismatch {
+            Error::Store(ployz_error::StoreError::KeyMismatch {
                 record: StoreRecordKind::ImageAvailability,
                 ..
             })

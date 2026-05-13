@@ -1,13 +1,13 @@
 use std::time::Duration;
 
 use ployz_api::{DaemonPayload, DaemonResponse, VolumeZfsTransferPayload, VolumeZfsTransferState};
+use ployz_error::DeployError;
+use ployz_error::Error as PloyzError;
+use ployz_model::{DeployId, MachineId};
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcFailure, RpcPolicy};
 use ployz_node_api::NodeRequest;
 use ployz_orchestrator::deploy::participant::{MoveVolumeRequest, MoveVolumeResult};
-use ployz_types::Error as PloyzError;
-use ployz_types::error::DeployError;
-use ployz_types::model::{DeployId, MachineId};
-use ployz_types::spec::Namespace;
+use ployz_spec::Namespace;
 
 #[async_trait::async_trait]
 pub(super) trait DeployMoveRpcClient: Clone + Send + Sync {
@@ -43,7 +43,7 @@ pub(super) async fn run_volume_move_rpc<R: DeployMoveRpcClient>(
     start_timeout: Duration,
     wait_timeout: Duration,
     poll_interval: Duration,
-) -> ployz_types::Result<MoveVolumeResult> {
+) -> ployz_error::Result<MoveVolumeResult> {
     let MoveVolumeRequest {
         volume,
         from_machine,
@@ -104,7 +104,7 @@ async fn wait_for_volume_transfer<R: DeployMoveRpcClient>(
     timeout: Duration,
     poll_rpc_timeout: Duration,
     poll_interval: Duration,
-) -> ployz_types::Result<MoveVolumeResult> {
+) -> ployz_error::Result<MoveVolumeResult> {
     let started = tokio::time::Instant::now();
     let mut retry_delay = poll_interval;
     loop {
@@ -195,7 +195,7 @@ fn volume_move_rpc_error(operation: &'static str, error: RpcFailure) -> PloyzErr
 
 pub(super) fn volume_move_result_from_transfer(
     payload: VolumeZfsTransferPayload,
-) -> ployz_types::Result<Option<MoveVolumeResult>> {
+) -> ployz_error::Result<Option<MoveVolumeResult>> {
     match payload.transfer.state {
         VolumeZfsTransferState::Succeeded {
             snapshot_guid,

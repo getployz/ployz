@@ -2,8 +2,8 @@ use ployz_api::image::{
     ImageDistributeRequest, ImageReceiveSessionRequest, ImageReceivedImportRequest,
 };
 use ployz_api::machine::{MachineSelfTransition, MachineStorageAuthorityPeer};
-use ployz_types::error::{Error, Result};
-use ployz_types::model::{
+use ployz_error::{Error, Result};
+use ployz_model::{
     MachineId, MachineMembership, NetworkId, StorageParticipation, StorageReplicaPolicy,
 };
 use serde::{Deserialize, Serialize};

@@ -10,8 +10,8 @@ use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions,
     MachineSelfTransition,
 };
+use ployz_model::{MachineId, MachineLifecycle, MachineMembership};
 use ployz_node_api::NodeRequest;
-use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership};
 use tokio::task::JoinSet;
 
 use crate::daemon::DaemonState;

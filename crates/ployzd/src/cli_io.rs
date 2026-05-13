@@ -6,8 +6,8 @@ use ployz_api::{
     MachineRttPayload, MachineStoragePromotionPayload, MeshListPayload, MeshReadyPayload,
     MeshSelfRecordPayload, MeshStatusPayload, StatusPayload,
 };
+use ployz_model::BranchEnvironmentRecord;
 use ployz_sdk::{Transport, UnixSocketTransport};
-use ployz_types::model::BranchEnvironmentRecord;
 use std::io::{BufRead, BufReader, Read, Write};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
 use tokio::net::UnixStream;
@@ -739,12 +739,12 @@ mod tests {
 
     fn test_image_availability(
         machine_id: &str,
-        digest: &ployz_types::model::ImageDigest,
-    ) -> ployz_types::model::ImageAvailabilityRecord {
-        ployz_types::model::ImageAvailabilityRecord {
-            machine_id: ployz_types::model::MachineId::new(machine_id),
+        digest: &ployz_model::ImageDigest,
+    ) -> ployz_model::ImageAvailabilityRecord {
+        ployz_model::ImageAvailabilityRecord {
+            machine_id: ployz_model::MachineId::new(machine_id),
             digest: digest.clone(),
-            presence: ployz_types::model::ImagePresence::Absent { observed_at: 1 },
+            presence: ployz_model::ImagePresence::Absent { observed_at: 1 },
             updated_at: 1,
         }
     }
@@ -757,9 +757,9 @@ mod tests {
                 rows: vec![MachineListRow {
                     id: String::from("peer"),
                     lifecycle: String::from("standby"),
-                    authority: ployz_types::model::AuthorityNodePosture::from_storage_participation(
+                    authority: ployz_model::AuthorityNodePosture::from_storage_participation(
                         true,
-                        &ployz_types::model::StorageParticipation::Candidate,
+                        &ployz_model::StorageParticipation::Candidate,
                     ),
                     region: String::from("us-east-1"),
                     region_role: String::from("compute"),
@@ -800,30 +800,30 @@ mod tests {
 
     #[test]
     fn plain_build_result_renders_operation_image_digest_and_machine() {
-        let digest = ployz_types::model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
+        let digest = ployz_model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
             .expect("digest");
         let response = DaemonResponse::success(
             "built",
             Some(DaemonPayload::BuildResult(BuildResultPayload {
                 operation_id: String::from("build-local-1"),
-                artifact: ployz_types::model::ImageArtifact {
-                    image: ployz_types::model::ImageRef::repository_digest(
+                artifact: ployz_model::ImageArtifact {
+                    image: ployz_model::ImageRef::repository_digest(
                         "example/app",
                         Some(String::from("latest")),
                         digest.clone(),
                     ),
                     platform: None,
-                    provenance: ployz_types::model::ImageArtifactProvenance::Build {
-                        method: ployz_types::model::BuildMethod::Dockerfile,
-                        location: ployz_types::model::BuildLocation::Local,
+                    provenance: ployz_model::ImageArtifactProvenance::Build {
+                        method: ployz_model::BuildMethod::Dockerfile,
+                        location: ployz_model::BuildLocation::Local,
                         source_digest: None,
                     },
                     created_at: 1,
                 },
-                availability: Some(ployz_types::model::ImageAvailabilityRecord {
-                    machine_id: ployz_types::model::MachineId::new(String::from("founder")),
+                availability: Some(ployz_model::ImageAvailabilityRecord {
+                    machine_id: ployz_model::MachineId::new(String::from("founder")),
                     digest,
-                    presence: ployz_types::model::ImagePresence::Absent { observed_at: 1 },
+                    presence: ployz_model::ImagePresence::Absent { observed_at: 1 },
                     updated_at: 1,
                 }),
             })),
@@ -842,7 +842,7 @@ mod tests {
             Some(DaemonPayload::MachineStoragePromotion(
                 MachineStoragePromotionPayload {
                     operation_id: "storage-promote-1".into(),
-                    replicas: ployz_types::model::StorageReplicaPolicy::R3,
+                    replicas: ployz_model::StorageReplicaPolicy::R3,
                     promoted: vec!["m2".into(), "m3".into()],
                     failed: vec![ployz_api::MachineStoragePromotionFailure {
                         machine_id: "m4".into(),
@@ -861,31 +861,31 @@ mod tests {
 
     #[test]
     fn plain_image_push_renders_artifact_and_targets() {
-        let digest = ployz_types::model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
+        let digest = ployz_model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
             .expect("valid digest");
         let response = DaemonResponse::success(
             "pushed",
             Some(DaemonPayload::ImagePush(ployz_api::ImagePushPayload {
                 operation_id: "image-push-1".into(),
-                artifact: ployz_types::model::ImageArtifact {
-                    image: ployz_types::model::ImageRef::repository_digest(
+                artifact: ployz_model::ImageArtifact {
+                    image: ployz_model::ImageRef::repository_digest(
                         "example/app",
                         Some("latest".into()),
                         digest.clone(),
                     ),
                     platform: None,
-                    provenance: ployz_types::model::ImageArtifactProvenance::External {
+                    provenance: ployz_model::ImageArtifactProvenance::External {
                         source: Some("test".into()),
                     },
                     created_at: 1,
                 },
                 targets: vec![
                     ployz_api::ImageTransferTargetResult::present(
-                        ployz_types::model::MachineId::new("peer"),
+                        ployz_model::MachineId::new("peer"),
                         test_image_availability("peer", &digest),
                     ),
                     ployz_api::ImageTransferTargetResult::failed(
-                        ployz_types::model::MachineId::new("other"),
+                        ployz_model::MachineId::new("other"),
                         ployz_api::ImageTransferFailure {
                             code: "TEST_FAILED".into(),
                             stage: ployz_api::ImageTransferFailureStage::SourceVerify,
@@ -907,7 +907,7 @@ mod tests {
 
     #[test]
     fn plain_image_distribute_renders_source_and_targets() {
-        let digest = ployz_types::model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
+        let digest = ployz_model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
             .expect("valid digest");
         let response = DaemonResponse::success(
             "distributed",
@@ -915,14 +915,14 @@ mod tests {
                 ployz_api::ImageDistributePayload {
                     operation_id: "image-distribute-1".into(),
                     digest: digest.clone(),
-                    source_machine: ployz_types::model::MachineId::new("founder"),
+                    source_machine: ployz_model::MachineId::new("founder"),
                     targets: vec![
                         ployz_api::ImageTransferTargetResult::skipped_present(
-                            ployz_types::model::MachineId::new("founder"),
+                            ployz_model::MachineId::new("founder"),
                             test_image_availability("founder", &digest),
                         ),
                         ployz_api::ImageTransferTargetResult::present(
-                            ployz_types::model::MachineId::new("peer"),
+                            ployz_model::MachineId::new("peer"),
                             test_image_availability("peer", &digest),
                         ),
                     ],
@@ -941,7 +941,7 @@ mod tests {
 
     #[test]
     fn plain_image_distribute_partial_failure_renders_payload_on_error_path() {
-        let digest = ployz_types::model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
+        let digest = ployz_model::ImageDigest::try_new(format!("sha256:{}", "a".repeat(64)))
             .expect("valid digest");
         let response = DaemonResponse::error(
             "IMAGE_DISTRIBUTE_PARTIAL_FAILED",
@@ -950,9 +950,9 @@ mod tests {
                 ployz_api::ImageDistributePayload {
                     operation_id: "image-distribute-1".into(),
                     digest: digest.clone(),
-                    source_machine: ployz_types::model::MachineId::new("founder"),
+                    source_machine: ployz_model::MachineId::new("founder"),
                     targets: vec![ployz_api::ImageTransferTargetResult::failed(
-                        ployz_types::model::MachineId::new("peer"),
+                        ployz_model::MachineId::new("peer"),
                         ployz_api::ImageTransferFailure {
                             code: "TEST_FAILED".into(),
                             stage: ployz_api::ImageTransferFailureStage::ReceiveSession,
@@ -1034,12 +1034,12 @@ mod tests {
             "status",
             Some(DaemonPayload::Status(StatusPayload {
                 machine_id: String::from("founder"),
-                public_key: ployz_types::model::PublicKey([1; 32]),
+                public_key: ployz_model::PublicKey([1; 32]),
                 version: String::from("0.1.0"),
                 network: Some(String::from("alpha")),
                 overlay_ip: Some(String::from("fd00::1")),
-                network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
-                local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                network_lifecycle: Some(ployz_model::NetworkLifecycle::Running),
+                local_machine_lifecycle: Some(ployz_model::MachineLifecycle::Active),
                 local_authority: None,
                 mesh_phase: String::from("Running"),
                 edge_sync: Vec::new(),
@@ -1060,16 +1060,16 @@ mod tests {
             "status",
             Some(DaemonPayload::Status(StatusPayload {
                 machine_id: String::from("founder"),
-                public_key: ployz_types::model::PublicKey([1; 32]),
+                public_key: ployz_model::PublicKey([1; 32]),
                 version: String::from("0.1.0"),
                 network: Some(String::from("alpha")),
                 overlay_ip: Some(String::from("fd00::1")),
-                network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
-                local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                network_lifecycle: Some(ployz_model::NetworkLifecycle::Running),
+                local_machine_lifecycle: Some(ployz_model::MachineLifecycle::Active),
                 local_authority: Some(
-                    ployz_types::model::AuthorityNodePosture::from_storage_participation(
+                    ployz_model::AuthorityNodePosture::from_storage_participation(
                         true,
-                        &ployz_types::model::StorageParticipation::default_authority(),
+                        &ployz_model::StorageParticipation::default_authority(),
                     ),
                 ),
                 mesh_phase: String::from("Running"),
@@ -1091,12 +1091,12 @@ mod tests {
             "status",
             Some(DaemonPayload::Status(StatusPayload {
                 machine_id: String::from("founder"),
-                public_key: ployz_types::model::PublicKey([1; 32]),
+                public_key: ployz_model::PublicKey([1; 32]),
                 version: String::from("0.1.0"),
                 network: Some(String::from("alpha")),
                 overlay_ip: Some(String::from("fd00::1")),
-                network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
-                local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                network_lifecycle: Some(ployz_model::NetworkLifecycle::Running),
+                local_machine_lifecycle: Some(ployz_model::MachineLifecycle::Active),
                 local_authority: None,
                 mesh_phase: String::from("Running"),
                 edge_sync: vec![
@@ -1147,20 +1147,20 @@ mod tests {
             "status",
             Some(DaemonPayload::Status(StatusPayload {
                 machine_id: String::from("founder"),
-                public_key: ployz_types::model::PublicKey([1; 32]),
+                public_key: ployz_model::PublicKey([1; 32]),
                 version: String::from("0.1.0"),
                 network: Some(String::from("alpha")),
                 overlay_ip: Some(String::from("fd00::1")),
-                network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
-                local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                network_lifecycle: Some(ployz_model::NetworkLifecycle::Running),
+                local_machine_lifecycle: Some(ployz_model::MachineLifecycle::Active),
                 local_authority: None,
                 mesh_phase: String::from("Running"),
                 edge_sync: Vec::new(),
                 nats_assets: vec![ployz_api::NatsAssetStatus {
                     kind: String::from("stream"),
                     name: String::from("routing_events_auth-default"),
-                    data_bucket: ployz_types::model::ControlPlaneDataBucket::Projection,
-                    loss_impact: ployz_types::model::ControlPlaneLossImpact::NoStoredTruthLost,
+                    data_bucket: ployz_model::ControlPlaneDataBucket::Projection,
+                    loss_impact: ployz_model::ControlPlaneLossImpact::NoStoredTruthLost,
                     installation: Some(String::from("local")),
                     authority: Some(String::from("auth-default")),
                     domain: Some(String::from("dom-auth-default")),
@@ -1191,12 +1191,12 @@ mod tests {
             "status",
             Some(DaemonPayload::Status(StatusPayload {
                 machine_id: String::from("founder"),
-                public_key: ployz_types::model::PublicKey([1; 32]),
+                public_key: ployz_model::PublicKey([1; 32]),
                 version: String::from("0.1.0"),
                 network: Some(String::from("alpha")),
                 overlay_ip: Some(String::from("fd00::1")),
-                network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
-                local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                network_lifecycle: Some(ployz_model::NetworkLifecycle::Running),
+                local_machine_lifecycle: Some(ployz_model::MachineLifecycle::Active),
                 local_authority: None,
                 mesh_phase: String::from("Running"),
                 edge_sync: Vec::new(),

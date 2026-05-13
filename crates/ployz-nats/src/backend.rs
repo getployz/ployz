@@ -2,12 +2,12 @@ use async_nats::jetstream::consumer::push;
 use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use ployz_error::{Error, Result};
+use ployz_model::{RoutingEvent, RoutingState};
 use ployz_store_api::{
     MachineMembershipStore, PeerRttStore, RoutingEventEnvelope, RoutingEventSubscription,
     RoutingStateStore, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
-use ployz_types::error::{Error, Result};
-use ployz_types::model::{RoutingEvent, RoutingState};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -215,7 +215,7 @@ impl StoreRuntimeControl for NatsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{MachineId, MachineMembership};
+    use ployz_model::{MachineId, MachineMembership};
 
     #[test]
     fn routing_consumers_are_ephemeral() {
@@ -241,8 +241,8 @@ mod tests {
     #[test]
     fn routing_consumer_filter_uses_scope() {
         let scope = NatsScope::new(
-            ployz_types::model::InstallationId::new("inst-acme"),
-            ployz_types::model::AuthorityId::new("auth-sin"),
+            ployz_model::InstallationId::new("inst-acme"),
+            ployz_model::AuthorityId::new("auth-sin"),
         );
         let config = routing_consumer_config(1, "_INBOX.runtime.1".to_string(), &scope);
 
@@ -331,15 +331,15 @@ mod tests {
     fn test_machine(id: &str) -> MachineMembership {
         MachineMembership {
             id: MachineId::new(id.to_string()),
-            public_key: ployz_types::model::PublicKey([0; 32]),
-            overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
-            topology: ployz_types::model::MachineTopology::local(),
-            region_role: ployz_types::model::RegionRole::HomeData,
+            public_key: ployz_model::PublicKey([0; 32]),
+            overlay_ip: ployz_model::OverlayIp("fd00::1".parse().expect("valid overlay")),
+            topology: ployz_model::MachineTopology::local(),
+            region_role: ployz_model::RegionRole::HomeData,
             subnet: Some("10.210.0.0/24".parse().expect("valid subnet")),
             bridge_ip: None,
             endpoints: Vec::new(),
-            lifecycle: ployz_types::model::MachineLifecycle::Active,
-            storage_role: ployz_types::model::StorageParticipation::default_authority().into(),
+            lifecycle: ployz_model::MachineLifecycle::Active,
+            storage_role: ployz_model::StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: Default::default(),

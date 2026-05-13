@@ -10,12 +10,12 @@ use crate::model::{
     SlotPlan, VolumeClonePlan, VolumeClonePreflightAction, VolumeClonePreflightPlan,
     VolumeClonePreflightScope, VolumeMovePlan, VolumeRecord, service_source_fingerprint,
 };
-use ployz_store_api::{DeployStore, ImageAvailabilityStore, MachineMembershipStore, StoreDriver};
-use ployz_types::spec::{
+use ployz_spec::{
     DeployManifest, DeployPhaseIntent, MountSource, Namespace, Placement, PullPolicy,
     ServiceIntent, ServiceSpec, VolumeCloneConsistency, VolumeCloneDataPolicy, VolumeDeclaration,
     VolumeIntent, VolumeScope, parse_quota_bytes, stable_hash_hex,
 };
+use ployz_store_api::{DeployStore, ImageAvailabilityStore, MachineMembershipStore, StoreDriver};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 

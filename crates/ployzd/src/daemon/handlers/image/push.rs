@@ -10,18 +10,18 @@ use ployz_api::{
     ImageReceivedImportPayload, ImageReceivedImportRequest, ImageTransferFailure,
     ImageTransferFailureStage, ImageTransferTargetResult, ImageTransferTargetStatus,
 };
+use ployz_model::{
+    ImageArtifact, ImageArtifactProvenance, ImageAvailabilityRecord, ImageOperationKind,
+    ImageOperationRecord, ImageOperationTargetOutcome, ImagePresence, ImageRef, MachineId,
+    OperationStatus,
+};
 use ployz_nats::{NodeCommandSubject, RpcPolicy};
 use ployz_node_api::NodeRequest;
 use ployz_runtime_api::{ImageArchiveReader, RuntimeImage, RuntimeImageBackend, RuntimeImageError};
 use ployz_store_api::{ImageAvailabilityStore, MachineMembershipStore};
 #[cfg(test)]
 use ployz_store_memory::StoreDriverMemoryExt as _;
-use ployz_types::model::{
-    ImageArtifact, ImageArtifactProvenance, ImageAvailabilityRecord, ImageOperationKind,
-    ImageOperationRecord, ImageOperationTargetOutcome, ImagePresence, ImageRef, MachineId,
-    OperationStatus,
-};
-use ployz_types::time::now_unix_secs;
+use ployz_time::now_unix_secs;
 
 use crate::daemon::DaemonState;
 use crate::features::image::archive::{
@@ -1347,8 +1347,8 @@ impl DaemonState {
         target_machine: &MachineId,
         repository: &str,
         reference: &str,
-        digest: &ployz_types::model::ImageDigest,
-        platform: Option<ployz_types::model::ImagePlatform>,
+        digest: &ployz_model::ImageDigest,
+        platform: Option<ployz_model::ImagePlatform>,
         repo_tags: Vec<String>,
         archive: &crate::features::image::archive::ParsedImageArchive,
         backend: &dyn RuntimeImageBackend,
@@ -1430,8 +1430,8 @@ impl DaemonState {
         &self,
         source_machine: &MachineId,
         target_machine: &MachineId,
-        digest: &ployz_types::model::ImageDigest,
-        platform: Option<ployz_types::model::ImagePlatform>,
+        digest: &ployz_model::ImageDigest,
+        platform: Option<ployz_model::ImagePlatform>,
         backend: &dyn RuntimeImageBackend,
     ) -> ImageTransferTargetResult {
         let failure = |message: String| {
@@ -1548,8 +1548,8 @@ impl DaemonState {
 async fn resolve_push_source_image(
     backend: &dyn RuntimeImageBackend,
     source_image: &str,
-    expected_digest: &Option<ployz_types::model::ImageDigest>,
-) -> Result<(ployz_types::model::ImageDigest, RuntimeImage), RuntimeImageError> {
+    expected_digest: &Option<ployz_model::ImageDigest>,
+) -> Result<(ployz_model::ImageDigest, RuntimeImage), RuntimeImageError> {
     if let Some(expected_digest) = expected_digest {
         let image = backend
             .verify_image_digest(source_image, expected_digest)
@@ -1569,13 +1569,13 @@ async fn resolve_push_source_image(
 fn push_runtime_image_identity(
     source_image: &str,
     image: &RuntimeImage,
-) -> Result<ployz_types::model::ImageDigest, RuntimeImageError> {
+) -> Result<ployz_model::ImageDigest, RuntimeImageError> {
     let Some(id) = image.id.as_deref() else {
         return Err(RuntimeImageError::MissingDigest {
             reference: source_image.into(),
         });
     };
-    ployz_types::model::ImageDigest::try_new(id).map_err(|_| RuntimeImageError::MissingDigest {
+    ployz_model::ImageDigest::try_new(id).map_err(|_| RuntimeImageError::MissingDigest {
         reference: source_image.into(),
     })
 }
@@ -1638,7 +1638,7 @@ fn image_distribute_validation_payload(
     }
 }
 
-fn image_ref_from_tag(reference: &str, digest: ployz_types::model::ImageDigest) -> ImageRef {
+fn image_ref_from_tag(reference: &str, digest: ployz_model::ImageDigest) -> ImageRef {
     if reference.starts_with("sha256:") {
         return ImageRef::digest_only(digest);
     }
@@ -1667,13 +1667,13 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Method, Request, StatusCode};
     use ployz_api::DaemonPayload;
-    use ployz_orchestrator::{Mesh, WireguardDriver};
-    use ployz_runtime_api::{Identity, RuntimeImage, RuntimeImageError, RuntimeImageImportResult};
-    use ployz_store_api::StoreDriver;
-    use ployz_types::model::{
+    use ployz_model::{
         ImageDigest, ImagePresence, MachineId, MachineMembership, NetworkLifecycle, NetworkName,
         OverlayIp, PublicKey,
     };
+    use ployz_orchestrator::{Mesh, WireguardDriver};
+    use ployz_runtime_api::{Identity, RuntimeImage, RuntimeImageError, RuntimeImageImportResult};
+    use ployz_store_api::StoreDriver;
     use sha2::{Digest as _, Sha256};
     use std::sync::{Arc, Mutex};
     use tokio::io::AsyncReadExt as _;

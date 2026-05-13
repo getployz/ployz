@@ -12,24 +12,24 @@
 //! checkers that state externally meaningful contracts directly.
 
 use ployz_dns::project_dns;
+use ployz_error::{Error, Result};
 use ployz_gateway::routes;
+use ployz_model::{
+    DeployId, DeployRecord, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
+    MachineLifecycle, MachineMembership, OverlayIp, PublicKey, RoutingState, ServiceReleaseRecord,
+    ServiceRevisionRecord, VolumeRecord, WireGuardPeerSpec,
+};
 use ployz_orchestrator::mesh::MeshNetwork;
 use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
+use ployz_spec::{
+    ContainerSpec, HttpRoute, Namespace, NetworkMode, Placement, PortProtocol, PullPolicy,
+    Resources, RestartPolicy, RolloutStrategy, RouteSpec, ServicePort, ServiceSpec, VolumeScope,
+};
 use ployz_store_api::{
     DeployCommit, DeployStore, InstanceStatusStore, MachineMembershipStore, RoutingStateStore,
     StoreDriver,
 };
 use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
-use ployz_types::error::{Error, Result};
-use ployz_types::model::{
-    DeployId, DeployRecord, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
-    MachineLifecycle, MachineMembership, OverlayIp, PublicKey, RoutingState, ServiceReleaseRecord,
-    ServiceRevisionRecord, VolumeRecord, WireGuardPeerSpec,
-};
-use ployz_types::spec::{
-    ContainerSpec, HttpRoute, Namespace, NetworkMode, Placement, PortProtocol, PullPolicy,
-    Resources, RestartPolicy, RolloutStrategy, RouteSpec, ServicePort, ServiceSpec, VolumeScope,
-};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use std::cmp::Ordering;
@@ -1217,7 +1217,7 @@ pub fn check_deploy_graph(state: &RoutingState) -> Vec<InvariantViolation> {
 
     for release in &state.releases {
         match &release.release.target {
-            ployz_types::model::ServiceReleaseTarget::Direct { revision_hash } => {
+            ployz_model::ServiceReleaseTarget::Direct { revision_hash } => {
                 let key = (
                     release.namespace.clone(),
                     release.service.clone(),
@@ -1233,7 +1233,7 @@ pub fn check_deploy_graph(state: &RoutingState) -> Vec<InvariantViolation> {
                     ));
                 }
             }
-            ployz_types::model::ServiceReleaseTarget::Split { allocations, .. } => {
+            ployz_model::ServiceReleaseTarget::Split { allocations, .. } => {
                 let mut percent_total = 0u16;
                 for allocation in allocations {
                     percent_total += u16::from(allocation.percent);
@@ -1697,7 +1697,7 @@ fn ready_service_keys(state: &RoutingState) -> HashSet<(Namespace, String)> {
 
 pub mod fixture {
     use super::*;
-    use ployz_types::model::{
+    use ployz_model::{
         DeployId, DeployRecordState, ServiceRelease, ServiceReleaseSlot, SlotId,
         StorageParticipation,
     };
@@ -1716,8 +1716,8 @@ pub mod fixture {
             id: MachineId::new(format!("machine-{index}")),
             public_key: PublicKey([index; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, u16::from(index))),
-            topology: ployz_types::model::MachineTopology::local(),
-            region_role: ployz_types::model::RegionRole::HomeData,
+            topology: ployz_model::MachineTopology::local(),
+            region_role: ployz_model::RegionRole::HomeData,
             subnet,
             bridge_ip: None,
             endpoints: vec![format!("192.0.2.{index}:51820")],
@@ -1865,7 +1865,7 @@ pub mod fixture {
 mod tests {
     use super::fixture;
     use super::*;
-    use ployz_types::model::DeployId;
+    use ployz_model::DeployId;
 
     fn commit(
         namespace: Namespace,
@@ -2651,6 +2651,6 @@ mod tests {
     fn fixture_deploy_record_uses_committed_state_without_default() {
         let deploy = fixture::deploy(Namespace::default_ns());
         assert_eq!(deploy.deploy_id, DeployId::new("deploy-1"));
-        assert_eq!(deploy.state(), ployz_types::model::DeployState::Committed);
+        assert_eq!(deploy.state(), ployz_model::DeployState::Committed);
     }
 }

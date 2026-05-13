@@ -3,15 +3,15 @@ use std::time::Duration;
 
 use crate::routes::{GatewayProjectionEvent, GatewayProjector, GatewaySnapshot, ProjectionDelta};
 use backon::{ConstantBuilder, Retryable};
+use ployz_model::{
+    AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateEvent,
+    CertificateRecord, MachineId, RoutingState,
+};
 use ployz_store_api::{
     AcmeChallengeSubscriptionUpdate, CertificateSubscriptionUpdate, RoutingEventEnvelope,
     RoutingEventSubscription, RoutingEventSubscriptionUpdate,
 };
-use ployz_types::model::{
-    AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateEvent,
-    CertificateRecord, MachineId, RoutingState,
-};
-use ployz_types::time::now_unix_secs;
+use ployz_time::now_unix_secs;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -618,7 +618,7 @@ mod tests {
             created_at: 1,
         };
         let (tx, mut rx) = mpsc::channel(1);
-        tx.try_send(Err(ployz_types::error::Error::operation(
+        tx.try_send(Err(ployz_error::Error::operation(
             "test_stream_failure",
             "challenge stream failed",
         )))
@@ -689,16 +689,14 @@ mod tests {
             RoutingEventEnvelope::with_ack(
                 "event-1",
                 Some("test".into()),
-                ployz_types::model::RoutingEvent::RevisionUpsert(
-                    ployz_types::model::ServiceRevisionRecord {
-                        namespace: ployz_types::spec::Namespace::new("prod"),
-                        service: "api".into(),
-                        revision_hash: "rev-1".into(),
-                        spec_json: "{}".into(),
-                        created_by: MachineId::new("machine-1"),
-                        created_at: 1,
-                    },
-                ),
+                ployz_model::RoutingEvent::RevisionUpsert(ployz_model::ServiceRevisionRecord {
+                    namespace: ployz_spec::Namespace::new("prod"),
+                    service: "api".into(),
+                    revision_hash: "rev-1".into(),
+                    spec_json: "{}".into(),
+                    created_by: MachineId::new("machine-1"),
+                    created_at: 1,
+                }),
                 ack_tx,
             ),
             &snapshot,

@@ -292,9 +292,7 @@ where
     })
 }
 
-async fn wait_for_initial_routing_state<S>(
-    store: &S,
-) -> Result<ployz_types::model::RoutingState, DnsError>
+async fn wait_for_initial_routing_state<S>(store: &S) -> Result<ployz_model::RoutingState, DnsError>
 where
     S: DnsStore + Send + Sync,
 {
@@ -350,7 +348,7 @@ mod tests {
     use hickory_server::proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
     use hickory_server::proto::rr::rdata::A;
     use hickory_server::proto::rr::{Name, RData, RecordType};
-    use ployz_types::model::MachineTopology;
+    use ployz_model::MachineTopology;
     use std::collections::HashMap;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::time::Duration;
@@ -371,14 +369,14 @@ mod tests {
 
         let mut services = HashMap::new();
         services.insert(
-            ployz_types::spec::Namespace::new("prod"),
+            ployz_spec::Namespace::new("prod"),
             HashMap::from([("web".into(), vec![Ipv4Addr::new(10, 42, 0, 2)])]),
         );
         let snapshot = crate::DnsSnapshot {
             services,
             ip_to_namespace: HashMap::new(),
             service_names: HashMap::from([(
-                ployz_types::spec::Namespace::new("prod"),
+                ployz_spec::Namespace::new("prod"),
                 vec!["web".into()],
             )]),
             instances: HashMap::new(),
@@ -420,7 +418,7 @@ mod tests {
     async fn dns_server_returns_instance_txt_records() {
         let dns_addr = free_local_addr();
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let namespace = ployz_types::spec::Namespace::new("prod");
+        let namespace = ployz_spec::Namespace::new("prod");
         let instance = DnsInstanceDiagnostic {
             service: "web".into(),
             instance_id: "inst-1".into(),
@@ -467,7 +465,7 @@ mod tests {
     async fn dns_server_returns_direct_instance_a_record() {
         let dns_addr = free_local_addr();
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let namespace = ployz_types::spec::Namespace::new("prod");
+        let namespace = ployz_spec::Namespace::new("prod");
         let instance = DnsInstanceDiagnostic {
             service: "web".into(),
             instance_id: "inst-1".into(),
@@ -509,7 +507,7 @@ mod tests {
     async fn dns_server_returns_no_records_for_known_name_wrong_type() {
         let dns_addr = free_local_addr();
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let namespace = ployz_types::spec::Namespace::new("prod");
+        let namespace = ployz_spec::Namespace::new("prod");
         let instance = DnsInstanceDiagnostic {
             service: "web".into(),
             instance_id: "inst-1".into(),

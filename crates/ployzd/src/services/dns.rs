@@ -128,7 +128,7 @@ fn build_dns_sidecar_spec(config: &DnsConfig, image: &str) -> SidecarSpec {
 mod tests {
     use super::build_dns_sidecar_spec;
     use ployz_dns::DnsConfig;
-    use ployz_types::model::OverlayIp;
+    use ployz_model::OverlayIp;
     use std::net::Ipv6Addr;
     use std::path::Path;
 

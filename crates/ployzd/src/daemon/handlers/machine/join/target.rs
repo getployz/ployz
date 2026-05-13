@@ -1,13 +1,13 @@
 use ipnet::Ipv4Net;
 use ployz_api::{DaemonRequest, MachineSelfTransition, MeshBootstrapRequest};
+use ployz_model::{
+    MachineLifecycle, MachineMembership, MachineStorageRole, RegionRole, StorageParticipation,
+    management_ip_from_key,
+};
 use ployz_nats::NodeCommandSubject;
 use ployz_node_api::NodeRequest;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_store_api::MachineMembershipStore;
-use ployz_types::model::{
-    MachineLifecycle, MachineMembership, MachineStorageRole, RegionRole, StorageParticipation,
-    management_ip_from_key,
-};
 
 use super::super::operations::{
     MachineOperationRecord, MachineOperationStatus, MachineOperationStore,
@@ -36,7 +36,7 @@ pub(super) async fn run_machine_add_target(
     subnet_claim: BootstrapSubnetClaim,
 ) -> MachineAddTargetResult {
     let mut stage;
-    let mut joiner_id: Option<ployz_types::model::MachineId>;
+    let mut joiner_id: Option<ployz_model::MachineId>;
 
     tracing::info!(%target, "machine add target: bootstrap starting");
     if let Err(err) =
@@ -83,7 +83,7 @@ pub(super) async fn run_machine_add_target(
     );
     bootstrap_record.storage_role = MachineStorageRole::Candidate;
     bootstrap_record.region_role = RegionRole::Compute;
-    bootstrap_record.created_at = ployz_types::time::now_unix_secs();
+    bootstrap_record.created_at = ployz_time::now_unix_secs();
     bootstrap_record.updated_at = bootstrap_record.created_at;
     joiner_id = Some(remote_identity.machine_id.clone());
     operation.artifacts.machine_id = Some(remote_identity.machine_id.clone());
@@ -515,12 +515,12 @@ async fn activate_joiner_lifecycle(
     {
         let mut active_record = record.clone();
         active_record
-            .apply_lifecycle_transition(ployz_types::model::MachineLifecycleTransition {
-                goal: ployz_types::model::MachineLifecycleGoal::Activate { assigned_subnet },
-                evidence: ployz_types::model::MachineTransitionEvidence::BootstrapActivation {
+            .apply_lifecycle_transition(ployz_model::MachineLifecycleTransition {
+                goal: ployz_model::MachineLifecycleGoal::Activate { assigned_subnet },
+                evidence: ployz_model::MachineTransitionEvidence::BootstrapActivation {
                     operation_id: None,
                 },
-                at_unix_secs: ployz_types::time::now_unix_secs(),
+                at_unix_secs: ployz_time::now_unix_secs(),
             })
             .map_err(|err| format!("activate joined machine: {err}"))?;
         return context

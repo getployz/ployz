@@ -3,13 +3,13 @@ use std::sync::Arc;
 
 use ployz_dns::DnsConfig;
 use ployz_gateway::GatewayConfig;
+use ployz_model::OverlayIp;
 use ployz_runtime_api::{
     ImageArchiveReader, RuntimeHandle, RuntimeImage, RuntimeImageBackend, RuntimeImageError,
     RuntimeImageImportResult,
 };
 use ployz_runtime_docker::runtime::ContainerEngine;
 use ployz_storage_zfs::{TokioShellRunner, ZfsDriver};
-use ployz_types::model::OverlayIp;
 
 use super::DaemonState;
 use crate::runtime_profile::{MeshBuildRequest, MeshRuntimeComponents};
@@ -133,8 +133,8 @@ impl RuntimeImageBackend for UnsupportedRuntimeImageBackend {
 
 #[cfg(test)]
 mod tests {
+    use ployz_model::MachineId;
     use ployz_runtime_api::Identity;
-    use ployz_types::model::MachineId;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 

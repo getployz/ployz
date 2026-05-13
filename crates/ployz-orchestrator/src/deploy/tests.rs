@@ -32,20 +32,20 @@ use crate::model::{
     VolumeClonePreflightAction, VolumeClonePreflightScope, VolumeMovementRecord, VolumeRecord,
 };
 use async_trait::async_trait;
-use ployz_store_api::{
-    CertificateStore, DeployCommit, DeployStore, ImageAvailabilityStore, InstanceStatusStore,
-    InviteStore, MachineMembershipStore, MachineSubscription, PeerRttStore,
-    RoutingEventSubscription, RoutingStateStore, StoreDriver, StoreRuntimeControl, SyncProbe,
-};
-use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
-use ployz_types::Result as PloyzResult;
-use ployz_types::spec::{
+use ployz_error::Result as PloyzResult;
+use ployz_spec::{
     ContainerSpec, DeployIntent, DeployManifest, DeployPhaseIntent, HttpRoute, Mount, MountSource,
     Namespace, NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy,
     RolloutStrategy, RouteSpec, ServiceIntent, ServiceIntentHint, ServicePort, ServiceSpec,
     VolumeCloneConsistency, VolumeCloneDataPolicy, VolumeDeclaration, VolumeIntent,
     VolumeIntentHint, VolumeScope,
 };
+use ployz_store_api::{
+    CertificateStore, DeployCommit, DeployStore, ImageAvailabilityStore, InstanceStatusStore,
+    InviteStore, MachineMembershipStore, MachineSubscription, PeerRttStore,
+    RoutingEventSubscription, RoutingStateStore, StoreDriver, StoreRuntimeControl, SyncProbe,
+};
+use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
 use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
@@ -8211,7 +8211,7 @@ impl DeployParticipantClient for FakeParticipantClient {
     ) -> Result<Vec<InstanceStatusRecord>> {
         self.controller.on_open_start().await;
         if self.controller.should_fail_open(&machine.id) {
-            return Err(ployz_types::error::Error::operation(
+            return Err(ployz_error::Error::operation(
                 "fake_open",
                 format!("injected open failure for '{}'", machine.id),
             ));
@@ -8244,7 +8244,7 @@ impl DeployParticipantClient for FakeParticipantClient {
             .await;
         if self.controller.should_fail_start(&req.service) {
             self.controller.on_start_end(machine_id).await;
-            return Err(ployz_types::error::Error::operation(
+            return Err(ployz_error::Error::operation(
                 "fake_start",
                 format!("injected start failure for '{}'", req.service),
             ));
@@ -8252,7 +8252,7 @@ impl DeployParticipantClient for FakeParticipantClient {
         sleep(self.controller.start_delay).await;
         if self.controller.should_fail_start_after_create(&req.service) {
             self.controller.on_start_end(machine_id).await;
-            return Err(ployz_types::error::Error::operation(
+            return Err(ployz_error::Error::operation(
                 "fake_start_after_create",
                 format!("injected post-create start failure for '{}'", req.service),
             ));
@@ -8287,7 +8287,7 @@ impl DeployParticipantClient for FakeParticipantClient {
     ) -> Result<MoveVolumeResult> {
         self.controller.on_move_volume(machine_id, &request).await;
         if self.controller.should_fail_move(&request.volume) {
-            return Err(ployz_types::error::Error::operation(
+            return Err(ployz_error::Error::operation(
                 "fake_move_volume",
                 format!("injected move failure for '{}'", request.volume),
             ));
@@ -8308,7 +8308,7 @@ impl DeployParticipantClient for FakeParticipantClient {
     ) -> Result<CloneVolumeResult> {
         self.controller.on_clone_volume(machine_id, &request).await;
         if self.controller.should_fail_clone(&request.volume) {
-            return Err(ployz_types::error::Error::operation(
+            return Err(ployz_error::Error::operation(
                 "fake_clone_volume",
                 format!("injected clone failure for '{}'", request.volume),
             ));
@@ -8332,7 +8332,7 @@ impl DeployParticipantClient for FakeParticipantClient {
             .on_cleanup_uncommitted_volume_clone(volume)
             .await;
         if self.controller.should_fail_cleanup_clone(volume) {
-            return Err(ployz_types::error::Error::operation(
+            return Err(ployz_error::Error::operation(
                 "fake_cleanup_volume_clone",
                 format!("injected cleanup failure for '{volume}'"),
             ));
@@ -8360,7 +8360,7 @@ impl DeployParticipantClient for FakeParticipantClient {
     ) -> Result<()> {
         self.controller.on_remove(instance_id).await;
         if self.controller.should_fail_remove(instance_id) {
-            return Err(ployz_types::error::Error::operation(
+            return Err(ployz_error::Error::operation(
                 "fake_remove",
                 format!("injected remove failure for '{}'", instance_id),
             ));
@@ -9081,7 +9081,7 @@ fn test_machine_in_region(
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],
         lifecycle,
-        storage_role: ployz_types::model::StorageParticipation::default_authority().into(),
+        storage_role: ployz_model::StorageParticipation::default_authority().into(),
         created_at: 0,
         updated_at: 0,
         labels: BTreeMap::new(),
@@ -9235,18 +9235,15 @@ impl MachineMembershipStore for CountingBackend {
 
 #[async_trait]
 impl InviteStore for CountingBackend {
-    async fn create_invite(&self, invite: &ployz_types::model::InviteRecord) -> PloyzResult<()> {
+    async fn create_invite(&self, invite: &ployz_model::InviteRecord) -> PloyzResult<()> {
         self.store.create_invite(invite).await
     }
 
-    async fn get_invite(
-        &self,
-        invite_id: &str,
-    ) -> PloyzResult<Option<ployz_types::model::InviteRecord>> {
+    async fn get_invite(&self, invite_id: &str) -> PloyzResult<Option<ployz_model::InviteRecord>> {
         self.store.get_invite(invite_id).await
     }
 
-    async fn list_invites(&self) -> PloyzResult<Vec<ployz_types::model::InviteRecord>> {
+    async fn list_invites(&self) -> PloyzResult<Vec<ployz_model::InviteRecord>> {
         self.store.list_invites().await
     }
 
@@ -9255,7 +9252,7 @@ impl InviteStore for CountingBackend {
         invite_id: &str,
         machine_id: &MachineId,
         now_unix_secs: u64,
-    ) -> PloyzResult<ployz_types::model::InviteRecord> {
+    ) -> PloyzResult<ployz_model::InviteRecord> {
         self.store
             .redeem_invite(invite_id, machine_id, now_unix_secs)
             .await
@@ -9265,7 +9262,7 @@ impl InviteStore for CountingBackend {
         &self,
         invite_id: &str,
         now_unix_secs: u64,
-    ) -> PloyzResult<ployz_types::model::InviteRecord> {
+    ) -> PloyzResult<ployz_model::InviteRecord> {
         self.store.revoke_invite(invite_id, now_unix_secs).await
     }
 }
@@ -9285,7 +9282,7 @@ impl RoutingStateStore for CountingBackend {
 impl ImageAvailabilityStore for CountingBackend {
     async fn upsert_image_availability(
         &self,
-        record: &ployz_types::model::ImageAvailabilityRecord,
+        record: &ployz_model::ImageAvailabilityRecord,
     ) -> PloyzResult<()> {
         self.store.upsert_image_availability(record).await
     }
@@ -9293,14 +9290,14 @@ impl ImageAvailabilityStore for CountingBackend {
     async fn get_image_availability(
         &self,
         machine_id: &MachineId,
-        digest: &ployz_types::model::ImageDigest,
-    ) -> PloyzResult<Option<ployz_types::model::ImageAvailabilityRecord>> {
+        digest: &ployz_model::ImageDigest,
+    ) -> PloyzResult<Option<ployz_model::ImageAvailabilityRecord>> {
         self.store.get_image_availability(machine_id, digest).await
     }
 
     async fn list_image_availability(
         &self,
-    ) -> PloyzResult<Vec<ployz_types::model::ImageAvailabilityRecord>> {
+    ) -> PloyzResult<Vec<ployz_model::ImageAvailabilityRecord>> {
         self.store.list_image_availability().await
     }
 }

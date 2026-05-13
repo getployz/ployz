@@ -3,13 +3,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use ipnet::Ipv4Net;
 
+use ployz_model::MachineId;
 use ployz_nats::subnet_lock;
 use ployz_nats::{Lease, LockAcquireError, NatsLocks};
 use ployz_orchestrator::coordination::{
     ClaimError, ReservationId, SubnetClaim, SubnetClaimRelease, SubnetReservationCoordinator,
 };
-use ployz_types::model::MachineId;
-use ployz_types::time::now_unix_secs;
+use ployz_time::now_unix_secs;
 
 /// JetStream KV-backed subnet reservation coordinator.
 ///
@@ -88,7 +88,7 @@ mod tests {
     fn lock_contention_is_retryable() {
         let result = claim_error_from_lock_acquire(LockAcquireError::Contention {
             key: "locks.subnet.x".into(),
-            source: ployz_types::Error::operation("nats_lock_publish", "wrong sequence"),
+            source: ployz_error::Error::operation("nats_lock_publish", "wrong sequence"),
         });
 
         assert!(matches!(result, ClaimError::AlreadyHeld));

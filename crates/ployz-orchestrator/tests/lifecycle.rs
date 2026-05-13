@@ -1,13 +1,13 @@
+use ployz_model::{
+    MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
+    RegionRole, StorageParticipation,
+};
 use ployz_orchestrator::mesh::WireGuardDevice;
 use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
 use ployz_orchestrator::{Mesh, Phase, WireguardDriver};
 use ployz_store_api::StoreDriver;
 use ployz_store_api::{MachineMembershipStore, SyncStatus};
 use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
-use ployz_types::model::{
-    MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
-    RegionRole, StorageParticipation,
-};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;

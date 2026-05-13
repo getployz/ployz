@@ -1,6 +1,6 @@
 use async_nats::jetstream::kv;
 use futures_util::TryStreamExt;
-use ployz_types::error::{Error, Result};
+use ployz_error::{Error, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 

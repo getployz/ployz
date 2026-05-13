@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 
-use ployz_types::model::{
+use ployz_model::{
     DrainState, InstancePhase, MachineId, MachineMembership, MachineTopology, RoutingState,
 };
-use ployz_types::spec::Namespace;
+use ployz_spec::Namespace;
 use tracing::warn;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,7 +243,7 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{
+    use ployz_model::{
         DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership,
         OverlayIp, PublicKey, RoutingState, SlotId, StorageParticipation,
     };
@@ -289,7 +289,7 @@ mod tests {
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay ip")),
             topology: MachineTopology::local(),
-            region_role: ployz_types::model::RegionRole::HomeData,
+            region_role: ployz_model::RegionRole::HomeData,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),

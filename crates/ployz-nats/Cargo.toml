@@ -14,7 +14,10 @@ ipnet.workspace = true
 ployz-api = { path = "../ployz-api" }
 ployz-node-api = { path = "../ployz-node-api" }
 ployz-store-api = { path = "../ployz-store-api" }
-ployz-types = { path = "../ployz-types" }
+ployz-error = { path = "../ployz-error" }
+ployz-model = { path = "../ployz-model" }
+ployz-spec = { path = "../ployz-spec" }
+ployz-time = { path = "../ployz-time" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

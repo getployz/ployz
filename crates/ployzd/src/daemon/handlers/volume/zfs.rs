@@ -7,14 +7,14 @@ use ployz_api::{
     VolumeZfsTransferInfo, VolumeZfsTransferListPayload, VolumeZfsTransferPayload,
     VolumeZfsTransferState,
 };
+use ployz_model::{MachineId, MachineLifecycle, MachineMembership, VolumeRecord};
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
 use ployz_node_api::NodeRequest;
+use ployz_spec::{Namespace, VolumeScope};
 use ployz_storage_api::{CloneMetadata, DatasetSpec};
 use ployz_storage_zfs::{TokioShellRunner, ZfsDriver};
 use ployz_store_api::{DeployStore, MachineMembershipStore};
-use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership, VolumeRecord};
-use ployz_types::spec::{Namespace, VolumeScope};
-use ployz_types::time::now_unix_secs;
+use ployz_time::now_unix_secs;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -752,7 +752,7 @@ fn move_claim_key(
         target_machine.as_str(),
         from_snapshot_name.unwrap_or("")
     );
-    ployz_types::spec::stable_hash_hex(raw.as_bytes())
+    ployz_spec::stable_hash_hex(raw.as_bytes())
 }
 
 fn validate_transfer_id(id: &str) -> Result<(), String> {
@@ -1649,7 +1649,7 @@ impl DaemonState {
         }
     }
 
-    async fn find_machine(&self, machine: &str) -> Option<ployz_types::model::MachineMembership> {
+    async fn find_machine(&self, machine: &str) -> Option<ployz_model::MachineMembership> {
         let active = self.active.as_ref()?;
         let machines = active.mesh.store.list_machines().await.ok()?;
         machines
@@ -2114,9 +2114,9 @@ mod tests {
     use super::{MoveClaimOutcome, TransferStatus, TransferStore, finalize_zfs_transfer};
     use crate::daemon::DaemonState;
     use ployz_api::VolumeZfsTransferState;
+    use ployz_model::MachineId;
     use ployz_runtime_api::Identity;
-    use ployz_types::model::MachineId;
-    use ployz_types::spec::Namespace;
+    use ployz_spec::Namespace;
     use std::path::PathBuf;
     use std::time::Duration;
 

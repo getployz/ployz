@@ -1,0 +1,33 @@
+[package]
+name = "ployz-image"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ployz-api = { path = "../ployz-api" }
+ployz-model = { path = "../ployz-model" }
+ployz-runtime-api = { path = "../ployz-runtime-api" }
+ployz-store-api = { path = "../ployz-store-api" }
+ployz-time = { path = "../ployz-time" }
+axum = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true, features = ["rustls-tls", "stream"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tar = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "sync", "time", "rt"] }
+tokio-util = { workspace = true, features = ["io"] }
+tracing = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+ployz-store-memory = { path = "../ployz-store-memory" }
+tower = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,5 +1,5 @@
 use ipnet::Ipv4Net;
-use ployz_types::model::{MachineMembership, NetworkId};
+use ployz_model::{MachineMembership, NetworkId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

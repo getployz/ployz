@@ -7,12 +7,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use pingora::tls::pkey::{PKey, Private};
 use pingora::tls::x509::X509;
-use ployz_types::model::{
+use ployz_model::{
     AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent, CertificateRecord, InstanceId,
     InstancePhase, InstanceStatusRecord, MachineId, MachineMembership, MachineTopology,
     RoutingEvent, RoutingState, ServiceRelease, ServiceReleaseSlot, ServiceReleaseTarget,
 };
-use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
+use ployz_spec::{Namespace, RouteSpec, ServiceSpec};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::warn;
@@ -110,7 +110,7 @@ impl ServiceKey {
     }
 
     #[must_use]
-    pub fn from_release(record: &ployz_types::model::ServiceReleaseRecord) -> Self {
+    pub fn from_release(record: &ployz_model::ServiceReleaseRecord) -> Self {
         Self::new(record.namespace.clone(), record.service.clone())
     }
 
@@ -304,9 +304,9 @@ pub fn match_http_route<'a>(
 #[derive(Clone)]
 pub struct GatewayProjector {
     machines: HashMap<MachineId, MachineMembership>,
-    revisions: HashMap<RevisionKey, ployz_types::model::ServiceRevisionRecord>,
+    revisions: HashMap<RevisionKey, ployz_model::ServiceRevisionRecord>,
     specs: HashMap<RevisionKey, ServiceSpec>,
-    releases: HashMap<ServiceKey, ployz_types::model::ServiceReleaseRecord>,
+    releases: HashMap<ServiceKey, ployz_model::ServiceReleaseRecord>,
     instances: HashMap<InstanceId, InstanceStatusRecord>,
     instances_by_machine: HashMap<MachineId, HashSet<InstanceId>>,
     service_routes: HashMap<ServiceKey, BTreeSet<RouteId>>,
@@ -618,7 +618,7 @@ impl GatewayProjector {
         spec: &ServiceSpec,
         revision_hash: &str,
         index: usize,
-        route: &ployz_types::spec::HttpRoute,
+        route: &ployz_spec::HttpRoute,
         backends_by_port: &BTreeMap<String, Vec<BackendView>>,
     ) -> Result<(), ProjectionError> {
         let route_id = RouteId::http(service, index);
@@ -657,7 +657,7 @@ impl GatewayProjector {
         spec: &ServiceSpec,
         revision_hash: &str,
         index: usize,
-        route: &ployz_types::spec::TcpRoute,
+        route: &ployz_spec::TcpRoute,
         backends_by_port: &BTreeMap<String, Vec<BackendView>>,
     ) -> Result<(), ProjectionError> {
         let route_id = RouteId::tcp(service, index);
@@ -683,7 +683,7 @@ impl GatewayProjector {
     fn project_backends(
         &self,
         spec: &ServiceSpec,
-        release_record: &ployz_types::model::ServiceReleaseRecord,
+        release_record: &ployz_model::ServiceReleaseRecord,
     ) -> Result<BTreeMap<String, Vec<BackendView>>, ProjectionError> {
         let allowed_revision_hashes = allowed_revision_hashes(&release_record.release);
         routable_backends_by_port(
@@ -1034,7 +1034,7 @@ pub fn project_certificates(
 /// is intentionally synchronous.
 fn parse_tls_material(
     hostname: &str,
-    version: &ployz_types::model::CertificateVersion,
+    version: &ployz_model::CertificateVersion,
 ) -> Option<ProjectedTlsMaterial> {
     let stack = match X509::stack_from_pem(version.fullchain_pem.as_bytes()) {
         Ok(stack) => stack,
@@ -1163,7 +1163,7 @@ fn is_routable_instance(
         && allowed_revision_hashes.contains(&instance.revision_hash)
         && instance.ready
         && instance.phase == InstancePhase::Ready
-        && instance.drain_state == ployz_types::model::DrainState::None
+        && instance.drain_state == ployz_model::DrainState::None
         && instance.error.is_none()
 }
 
@@ -1277,12 +1277,12 @@ pub(crate) fn normalize_path_prefix(path_prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{
+    use ployz_model::{
         CertificateLifecycle, DeployId, DrainState, InstanceStatusRecord, MachineLifecycle,
         OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
         ServiceRevisionRecord, SlotId, StorageParticipation,
     };
-    use ployz_types::spec::{
+    use ployz_spec::{
         ContainerSpec, NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy,
         RouteSpec, ServicePort, ServiceSpec,
     };
@@ -1356,12 +1356,12 @@ mod tests {
                 release: ServiceRelease::split(
                     stable_hash.clone(),
                     vec![
-                        ployz_types::model::ServiceTrafficAllocation {
+                        ployz_model::ServiceTrafficAllocation {
                             revision_hash: stable_hash.clone(),
                             percent: 90,
                             label: Some(String::from("stable")),
                         },
-                        ployz_types::model::ServiceTrafficAllocation {
+                        ployz_model::ServiceTrafficAllocation {
                             revision_hash: canary_hash.clone(),
                             percent: 10,
                             label: Some(String::from("canary")),
@@ -1485,7 +1485,7 @@ mod tests {
     fn tcp_routes_are_projected_with_no_serving_dependency() {
         let namespace = Namespace::new("prod");
         let mut spec = service_spec(&namespace, "db", "v1", Vec::new());
-        spec.routes = vec![RouteSpec::Tcp(ployz_types::spec::TcpRoute {
+        spec.routes = vec![RouteSpec::Tcp(ployz_spec::TcpRoute {
             service_port: "sql".into(),
             listen_port: 5432,
         })];
@@ -1911,13 +1911,13 @@ mod tests {
                 protocol: PortProtocol::Tcp,
             }],
             publish: Vec::new(),
-            routes: vec![RouteSpec::Http(ployz_types::spec::HttpRoute {
+            routes: vec![RouteSpec::Http(ployz_spec::HttpRoute {
                 service_port: "http".into(),
                 hostnames,
                 path_prefix: "/".into(),
             })],
             readiness: None,
-            rollout: ployz_types::spec::RolloutStrategy::Recreate,
+            rollout: ployz_spec::RolloutStrategy::Recreate,
             labels: BTreeMap::new(),
             restart: RestartPolicy::UnlessStopped,
         }
@@ -2000,7 +2000,7 @@ mod tests {
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay ip")),
             topology: MachineTopology::local(),
-            region_role: ployz_types::model::RegionRole::HomeData,
+            region_role: ployz_model::RegionRole::HomeData,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),
@@ -2026,7 +2026,7 @@ mod tests {
     // with_managed_tls + match_acme_challenge
     // ---------------------------------------------------------------------
 
-    use ployz_types::model::CertificateVersion;
+    use ployz_model::CertificateVersion;
 
     /// Generate a self-signed PEM bundle for tests. project_certificates parses
     /// PEM at projection time and drops malformed records, so test fixtures

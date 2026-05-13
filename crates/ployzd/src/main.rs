@@ -28,10 +28,10 @@ use ployz_api::{
     MigrateServiceMode,
 };
 use ployz_config::{RuntimeTarget, ServiceMode, load_client_config, load_daemon_config};
+use ployz_model::MachineTopology;
 use ployz_sdk::UnixSocketTransport;
-use ployz_types::model::MachineTopology;
 #[cfg(test)]
-use ployz_types::spec::DeployManifest;
+use ployz_spec::DeployManifest;
 use ployzd::{BuiltInImages, HostPlatform, init_tracing, run_daemon, validate_runtime};
 use request_builder::build_request;
 #[cfg(test)]
@@ -450,7 +450,7 @@ mod tests {
         };
         assert_eq!(
             request.prepared_deploy_id,
-            ployz_types::model::DeployId::new("prepare-1")
+            ployz_model::DeployId::new("prepare-1")
         );
     }
 
@@ -538,7 +538,7 @@ mod tests {
     #[test]
     fn upsert_service_replaces_existing_service_and_sorts() {
         let mut manifest = DeployManifest {
-            namespace: ployz_types::spec::Namespace::new("prod"),
+            namespace: ployz_spec::Namespace::new("prod"),
             intent: None,
             volumes: Vec::new(),
             services: vec![
@@ -715,10 +715,7 @@ mod tests {
         let DaemonRequest::MachineStoragePromote { request } = request else {
             panic!("expected machine storage promote request");
         };
-        assert_eq!(
-            request.replicas,
-            ployz_types::model::StorageReplicaPolicy::R5
-        );
+        assert_eq!(request.replicas, ployz_model::StorageReplicaPolicy::R5);
         assert_eq!(request.targets, vec!["m2", "m3", "m4", "m5"]);
     }
 
@@ -735,10 +732,7 @@ mod tests {
         let DaemonRequest::MachineStoragePromote { request } = request else {
             panic!("expected machine storage promote request");
         };
-        assert_eq!(
-            request.replicas,
-            ployz_types::model::StorageReplicaPolicy::R3
-        );
+        assert_eq!(request.replicas, ployz_model::StorageReplicaPolicy::R3);
         assert_eq!(request.targets, vec!["m2", "m3"]);
     }
 
@@ -888,7 +882,7 @@ mod tests {
         assert_eq!(request.reference.as_deref(), Some("example/app:latest"));
         assert_eq!(
             request.machines,
-            vec![ployz_types::model::MachineId::new("machine-a")]
+            vec![ployz_model::MachineId::new("machine-a")]
         );
     }
 
@@ -958,8 +952,8 @@ mod tests {
         assert_eq!(
             request.target_machines,
             vec![
-                ployz_types::model::MachineId::new("machine-a"),
-                ployz_types::model::MachineId::new("machine-b")
+                ployz_model::MachineId::new("machine-a"),
+                ployz_model::MachineId::new("machine-b")
             ]
         );
         let platform = request.platform.expect("platform");
@@ -1043,8 +1037,8 @@ mod tests {
         assert_eq!(
             request.target_machines,
             vec![
-                ployz_types::model::MachineId::new("machine-b"),
-                ployz_types::model::MachineId::new("machine-c")
+                ployz_model::MachineId::new("machine-b"),
+                ployz_model::MachineId::new("machine-c")
             ]
         );
         let platform = request.platform.expect("platform");
@@ -1113,7 +1107,7 @@ mod tests {
         let DaemonRequest::BuildLocal { request } = request else {
             panic!("expected build local request");
         };
-        assert_eq!(request.method, ployz_types::model::BuildMethod::Railpack);
+        assert_eq!(request.method, ployz_model::BuildMethod::Railpack);
         assert_eq!(request.image_name, "example/app:latest");
         assert!(std::path::Path::new(&request.context_dir).is_absolute());
         let platform = request.platform.expect("platform");

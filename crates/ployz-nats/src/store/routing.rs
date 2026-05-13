@@ -2,8 +2,8 @@ use async_nats::HeaderMap;
 use async_nats::header::{NATS_EXPECTED_STREAM, NATS_MESSAGE_ID};
 use async_nats::jetstream;
 use async_nats::jetstream::message::PublishMessage;
-use ployz_types::error::{Error, Result};
-use ployz_types::model::RoutingEvent;
+use ployz_error::{Error, Result};
+use ployz_model::RoutingEvent;
 
 use crate::NatsStore;
 use crate::buckets::NatsAssetNames;
@@ -85,8 +85,8 @@ fn routing_publishes_in(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{AuthorityId, InstallationId};
-    use ployz_types::model::{
+    use ployz_model::{AuthorityId, InstallationId};
+    use ployz_model::{
         MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
         StorageParticipation,
     };
@@ -186,7 +186,7 @@ mod tests {
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay")),
             topology: MachineTopology::local(),
-            region_role: ployz_types::model::RegionRole::HomeData,
+            region_role: ployz_model::RegionRole::HomeData,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),

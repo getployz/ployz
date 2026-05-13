@@ -9,11 +9,11 @@ use crate::model::{
 use crate::model::{
     DeployStateGoal, DeployStateTransition, DeployTransitionEvidence, VolumeRecord,
 };
+use ployz_spec::Namespace;
 #[cfg(test)]
 use ployz_store_api::DeployCommit;
-use ployz_types::spec::Namespace;
 #[cfg(test)]
-use ployz_types::time::now_unix_secs;
+use ployz_time::now_unix_secs;
 use std::collections::{BTreeSet, HashMap};
 
 #[derive(Debug)]

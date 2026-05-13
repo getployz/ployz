@@ -1,8 +1,8 @@
 use std::net::Ipv4Addr;
 
 #[cfg(test)]
-use ployz_types::model::MachineTopology;
-use ployz_types::spec::Namespace;
+use ployz_model::MachineTopology;
+use ployz_spec::Namespace;
 
 use crate::snapshot::DnsSnapshot;
 

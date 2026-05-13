@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 
-use ployz_store_api::{CertificateStore, RoutingStateStore, StoreDriver};
-use ployz_types::model::{
+use ployz_model::{
     CertificateLifecycle, CertificateRecord, CertificateState, RoutingState, ServiceRelease,
     ServiceReleaseRecord, ServiceRevisionRecord,
 };
-use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
+use ployz_spec::{Namespace, RouteSpec, ServiceSpec};
+use ployz_store_api::{CertificateStore, RoutingStateStore, StoreDriver};
 
 use crate::certificates::account_id_for_issuer_url;
 use crate::deploy::plan::ResolvedPlan;
@@ -30,7 +30,7 @@ pub(super) async fn ensure_certificate_intents(
     issuer_url: &str,
 ) -> Result<Vec<String>> {
     let hostnames = managed_hostnames_for_plan(plan);
-    let now = ployz_types::time::now_unix_secs();
+    let now = ployz_time::now_unix_secs();
     for hostname in &hostnames {
         if store.get_certificate(hostname).await?.is_some() {
             continue;
@@ -248,7 +248,7 @@ fn normalize_hostname(hostname: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{build_domain_warnings, normalize_hostname};
-    use ployz_types::model::{CertificateLifecycle, CertificateRecord, CertificateState};
+    use ployz_model::{CertificateLifecycle, CertificateRecord, CertificateState};
 
     #[test]
     fn domain_warnings_are_quiet_for_active_certificates() {

@@ -5,8 +5,8 @@ use crate::daemon::ssh::SshOptions;
 
 use super::super::types::{MachineAddContext, MachineAddStage};
 use super::remote::remote_rpc;
+use ployz_model::MachineId;
 use ployz_store_api::MachineMembershipStore;
-use ployz_types::model::MachineId;
 
 const REMOTE_CLEANUP_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 

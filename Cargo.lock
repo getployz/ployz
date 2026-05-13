@@ -3145,7 +3145,8 @@ name = "ployz-api"
 version = "0.6.1"
 dependencies = [
  "ipnet",
- "ployz-types",
+ "ployz-model",
+ "ployz-spec",
  "schemars",
  "serde",
  "serde_json",
@@ -3162,15 +3163,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-build"
+version = "0.6.1"
+dependencies = [
+ "async-trait",
+ "ployz-api",
+ "ployz-model",
+ "ployz-runtime-api",
+ "ployz-store-api",
+ "ployz-time",
+ "rand 0.10.0",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
 name = "ployz-cert-acme"
 version = "0.6.1"
 dependencies = [
  "async-trait",
  "instant-acme",
  "ployz-cert-api",
+ "ployz-error",
+ "ployz-model",
  "ployz-store-api",
  "ployz-store-memory",
- "ployz-types",
+ "ployz-time",
  "reqwest",
  "serde_json",
  "tokio",
@@ -3182,8 +3201,8 @@ name = "ployz-cert-api"
 version = "0.6.1"
 dependencies = [
  "async-trait",
+ "ployz-error",
  "ployz-store-api",
- "ployz-types",
  "tokio",
  "tracing",
 ]
@@ -3209,9 +3228,10 @@ dependencies = [
  "libc",
  "ployz-config",
  "ployz-metrics",
+ "ployz-model",
  "ployz-nats",
+ "ployz-spec",
  "ployz-store-api",
- "ployz-types",
  "prometheus",
  "thiserror 2.0.18",
  "tokio",
@@ -3255,10 +3275,13 @@ dependencies = [
  "libc",
  "pingora",
  "ployz-config",
+ "ployz-error",
  "ployz-metrics",
+ "ployz-model",
  "ployz-nats",
+ "ployz-spec",
  "ployz-store-api",
- "ployz-types",
+ "ployz-time",
  "prometheus",
  "rcgen",
  "serde",
@@ -3278,6 +3301,32 @@ dependencies = [
  "reqwest",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "ployz-image"
+version = "0.6.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "futures-util",
+ "ployz-api",
+ "ployz-model",
+ "ployz-runtime-api",
+ "ployz-store-api",
+ "ployz-store-memory",
+ "ployz-time",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3323,9 +3372,12 @@ dependencies = [
  "futures-util",
  "ipnet",
  "ployz-api",
+ "ployz-error",
+ "ployz-model",
  "ployz-node-api",
+ "ployz-spec",
  "ployz-store-api",
- "ployz-types",
+ "ployz-time",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3338,7 +3390,8 @@ name = "ployz-node-api"
 version = "0.6.1"
 dependencies = [
  "ployz-api",
- "ployz-types",
+ "ployz-error",
+ "ployz-model",
  "serde",
  "serde_json",
 ]
@@ -3353,10 +3406,13 @@ dependencies = [
  "ipnet",
  "ployz-cert-api",
  "ployz-ebpf-common",
+ "ployz-error",
+ "ployz-model",
  "ployz-runtime-api",
+ "ployz-spec",
  "ployz-store-api",
  "ployz-store-memory",
- "ployz-types",
+ "ployz-time",
  "rand 0.10.0",
  "serde",
  "serde_json",
@@ -3375,7 +3431,9 @@ dependencies = [
  "async-trait",
  "hostname",
  "ipnet",
- "ployz-types",
+ "ployz-error",
+ "ployz-model",
+ "ployz-spec",
  "rand 0.10.0",
  "serde",
  "serde_json",
@@ -3399,11 +3457,14 @@ dependencies = [
  "ipnet",
  "libc",
  "ployz-api",
+ "ployz-error",
+ "ployz-model",
  "ployz-runtime-api",
+ "ployz-spec",
  "ployz-storage-api",
  "ployz-storage-zfs",
  "ployz-store-api",
- "ployz-types",
+ "ployz-time",
  "rand 0.10.0",
  "reqwest",
  "serde",
@@ -3421,7 +3482,9 @@ version = "0.6.1"
 dependencies = [
  "ployz-api",
  "ployz-config",
- "ployz-types",
+ "ployz-error",
+ "ployz-model",
+ "ployz-spec",
  "serde_json",
  "tokio",
 ]
@@ -3431,11 +3494,13 @@ name = "ployz-sim"
 version = "0.6.1"
 dependencies = [
  "ployz-dns",
+ "ployz-error",
  "ployz-gateway",
+ "ployz-model",
  "ployz-orchestrator",
+ "ployz-spec",
  "ployz-store-api",
  "ployz-store-memory",
- "ployz-types",
  "rand 0.10.0",
  "tokio",
 ]
@@ -3460,8 +3525,9 @@ name = "ployz-storage-zfs"
 version = "0.6.1"
 dependencies = [
  "async-trait",
+ "ployz-error",
+ "ployz-spec",
  "ployz-storage-api",
- "ployz-types",
  "tokio",
 ]
 
@@ -3470,7 +3536,9 @@ name = "ployz-store-api"
 version = "0.6.1"
 dependencies = [
  "async-trait",
- "ployz-types",
+ "ployz-error",
+ "ployz-model",
+ "ployz-spec",
  "serde",
  "tokio",
  "tracing",
@@ -3481,22 +3549,17 @@ name = "ployz-store-memory"
 version = "0.6.1"
 dependencies = [
  "async-trait",
+ "ployz-error",
+ "ployz-model",
+ "ployz-spec",
  "ployz-store-api",
- "ployz-types",
  "tokio",
  "tracing",
 ]
 
 [[package]]
-name = "ployz-types"
+name = "ployz-time"
 version = "0.6.1"
-dependencies = [
- "ployz-error",
- "ployz-model",
- "ployz-spec",
- "schemars",
- "serde_json",
-]
 
 [[package]]
 name = "ployz-wireguard-backends"
@@ -3510,9 +3573,10 @@ dependencies = [
  "futures-util",
  "ipnet",
  "libc",
+ "ployz-error",
+ "ployz-model",
  "ployz-runtime-api",
  "ployz-runtime-docker",
- "ployz-types",
  "reqwest",
  "serde",
  "smoltcp",
@@ -3546,24 +3610,29 @@ dependencies = [
  "ipnet",
  "libc",
  "ployz-api",
+ "ployz-build",
  "ployz-cert-acme",
  "ployz-config",
  "ployz-dns",
+ "ployz-error",
  "ployz-gateway",
  "ployz-host-backends",
+ "ployz-image",
  "ployz-install",
  "ployz-metrics",
+ "ployz-model",
  "ployz-nats",
  "ployz-node-api",
  "ployz-orchestrator",
  "ployz-runtime-api",
  "ployz-runtime-docker",
  "ployz-sdk",
+ "ployz-spec",
  "ployz-storage-api",
  "ployz-storage-zfs",
  "ployz-store-api",
  "ployz-store-memory",
- "ployz-types",
+ "ployz-time",
  "ployz-wireguard-backends",
  "prometheus",
  "rand 0.10.0",

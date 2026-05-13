@@ -3,8 +3,8 @@ pub mod docker_bridge;
 use async_trait::async_trait;
 use docker_bridge::DockerBridgeNetwork;
 use ipnet::Ipv4Net;
+use ployz_error::Result;
 use ployz_runtime_api::mesh::container_network::{ContainerNetwork, ContainerNetworkBackend};
-use ployz_types::Result;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 

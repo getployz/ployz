@@ -3,11 +3,11 @@ pub mod shell;
 pub mod zfs;
 
 pub(crate) mod error {
-    pub use ployz_types::error::*;
+    pub use ployz_error::*;
 }
 
 pub(crate) mod spec {
-    pub use ployz_types::spec::*;
+    pub use ployz_spec::*;
 }
 
 pub use ployz_storage_api::{

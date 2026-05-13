@@ -5,8 +5,8 @@ use crate::{
     RoutingStateStore, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
-use ployz_types::Result;
-use ployz_types::model::{
+use ployz_error::Result;
+use ployz_model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, BranchEnvironmentFailure,
     BranchEnvironmentRecord, CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord,
     DeployRecord, ImageAvailabilityRecord, ImageDigest, InstanceId, InstanceStatusRecord,
@@ -14,7 +14,7 @@ use ployz_types::model::{
     ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
     VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
-use ployz_types::spec::Namespace;
+use ployz_spec::Namespace;
 use std::sync::Arc;
 
 #[derive(Clone)]

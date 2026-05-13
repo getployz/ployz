@@ -1,4 +1,4 @@
-use ployz_types::model::{AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord};
+use ployz_model::{AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

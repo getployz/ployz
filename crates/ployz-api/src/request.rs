@@ -212,7 +212,7 @@ mod tests {
         ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageReceiveSessionRequest,
         ImageReceivedImportRequest,
     };
-    use ployz_types::model::{BuildMethod, ImageDigest, MachineId};
+    use ployz_model::{BuildMethod, ImageDigest, MachineId};
     use std::collections::BTreeMap;
 
     #[test]
@@ -314,7 +314,7 @@ mod tests {
         };
         let apply = DaemonRequest::DeployApplyPrepared {
             request: DeployApplyPreparedRequest {
-                prepared_deploy_id: ployz_types::model::DeployId::new("prepare-1"),
+                prepared_deploy_id: ployz_model::DeployId::new("prepare-1"),
             },
         };
 
@@ -417,7 +417,7 @@ mod tests {
                 digest: digest(),
                 source_machine: MachineId::new("machine-a"),
                 target_machines: vec![MachineId::new("machine-b")],
-                platform: Some(ployz_types::model::ImagePlatform {
+                platform: Some(ployz_model::ImagePlatform {
                     os: "linux".into(),
                     architecture: "amd64".into(),
                     variant: None,

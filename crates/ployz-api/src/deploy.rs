@@ -1,4 +1,4 @@
-use ployz_types::model::{
+use ployz_model::{
     BranchEnvironmentRecord, DeployBaselineComponent, DeployId, DeployPreviewBaseline,
     InstanceStatusRecord, PreparedDeployRecord, PreparedDeployState,
 };
@@ -195,8 +195,8 @@ pub enum DeployFailureReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{DeployPreview, DeployPreviewBaselineComponents, PreparedDeployState};
-    use ployz_types::spec::Namespace;
+    use ployz_model::{DeployPreview, DeployPreviewBaselineComponents, PreparedDeployState};
+    use ployz_spec::Namespace;
 
     fn test_baseline(service_sources: &str) -> DeployPreviewBaseline {
         DeployPreviewBaseline::new(DeployPreviewBaselineComponents {
@@ -283,7 +283,7 @@ mod tests {
             manifest_json: "{}".into(),
             preview,
             baseline,
-            coordinator_machine_id: ployz_types::model::MachineId::new("machine-a"),
+            coordinator_machine_id: ployz_model::MachineId::new("machine-a"),
             state: PreparedDeployState::Prepared,
             created_at: 1,
             expires_at: 2,

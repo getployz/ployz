@@ -428,8 +428,8 @@ fn backend_fingerprint(backends: &[BackendView]) -> Vec<SocketAddr> {
 mod tests {
     use super::*;
     use crate::routes::ServiceKey;
-    use ployz_types::model::{InstanceId, MachineId, MachineTopology};
-    use ployz_types::spec::Namespace;
+    use ployz_model::{InstanceId, MachineId, MachineTopology};
+    use ployz_spec::Namespace;
     use std::net::{Ipv4Addr, SocketAddrV4};
 
     #[test]

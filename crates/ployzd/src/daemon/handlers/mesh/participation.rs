@@ -1,5 +1,5 @@
 use ployz_api::MachineSelfTransition;
-use ployz_types::model::{
+use ployz_model::{
     MachineLifecycleGoal, MachineLifecycleTransition, MachineTransitionEvidence,
     MachineTransitionOutcome, StandbyTransitionClearance,
 };
@@ -61,7 +61,7 @@ impl DaemonState {
                     evidence: MachineTransitionEvidence::OperatorCommand {
                         command: "machine transition activate".into(),
                     },
-                    at_unix_secs: ployz_types::time::now_unix_secs(),
+                    at_unix_secs: ployz_time::now_unix_secs(),
                 };
                 let mut validated = current.clone();
                 let outcome = validated
@@ -129,7 +129,7 @@ impl DaemonState {
                     evidence: MachineTransitionEvidence::OperatorCommand {
                         command: "machine transition drain".into(),
                     },
-                    at_unix_secs: ployz_types::time::now_unix_secs(),
+                    at_unix_secs: ployz_time::now_unix_secs(),
                 };
                 let mut validated = current.clone();
                 let outcome = validated
@@ -169,7 +169,7 @@ impl DaemonState {
                     evidence: MachineTransitionEvidence::OperatorCommand {
                         command: "machine transition standby".into(),
                     },
-                    at_unix_secs: ployz_types::time::now_unix_secs(),
+                    at_unix_secs: ployz_time::now_unix_secs(),
                 };
                 let mut validated = current.clone();
                 let outcome = validated

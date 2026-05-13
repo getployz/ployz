@@ -4,8 +4,8 @@ pub mod wireguard;
 
 pub use driver::WireguardDriver;
 
-use ployz_types::Result;
-use ployz_types::model::{OverlayIp, PublicKey, WireGuardPeerSpec};
+use ployz_error::Result;
+use ployz_model::{OverlayIp, PublicKey, WireGuardPeerSpec};
 use std::future::Future;
 use tokio::time::Instant;
 

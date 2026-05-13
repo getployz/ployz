@@ -18,7 +18,10 @@ ployz-config = { path = "../ployz-config" }
 ployz-metrics = { path = "../ployz-metrics" }
 ployz-nats = { path = "../ployz-nats" }
 ployz-store-api = { path = "../ployz-store-api" }
-ployz-types = { path = "../ployz-types" }
+ployz-error = { path = "../ployz-error" }
+ployz-model = { path = "../ployz-model" }
+ployz-spec = { path = "../ployz-spec" }
+ployz-time = { path = "../ployz-time" }
 backon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

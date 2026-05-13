@@ -7,9 +7,9 @@ mod subjects;
 
 use async_nats::Client;
 use buckets::NatsAssetNames;
+use ployz_error::{Error, Result};
+use ployz_model::{MachineId, OverlayIp, StorageParticipation, StorageReplicaPolicy};
 use ployz_store_api::StoreRuntimeControl;
-use ployz_types::error::{Error, Result};
-use ployz_types::model::{MachineId, OverlayIp, StorageParticipation, StorageReplicaPolicy};
 use serde::Deserialize;
 use std::net::Ipv4Addr;
 use std::path::Path;
@@ -166,12 +166,12 @@ impl NatsStore {
     }
 
     #[must_use]
-    pub fn installation(&self) -> &ployz_types::model::InstallationId {
+    pub fn installation(&self) -> &ployz_model::InstallationId {
         self.scope.installation()
     }
 
     #[must_use]
-    pub fn authority(&self) -> &ployz_types::model::AuthorityId {
+    pub fn authority(&self) -> &ployz_model::AuthorityId {
         self.scope.authority()
     }
 
@@ -251,7 +251,7 @@ fn client_urls_for_network(overlay_ip: OverlayIp) -> [String; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{AuthorityId, InstallationId, StorageReplicaPolicy};
+    use ployz_model::{AuthorityId, InstallationId, StorageReplicaPolicy};
 
     #[test]
     fn network_client_urls_try_local_bridge_before_overlay() {

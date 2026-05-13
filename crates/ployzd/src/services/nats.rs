@@ -5,22 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use ployz_nats::NatsScope;
-use ployz_nats::NatsStore;
-use ployz_nats::config::{self, CLIENT_PORT, PeerRoute, ServerConfig};
-use ployz_runtime_docker::runtime::labels::build_system_labels;
-use ployz_runtime_docker::runtime::{
-    ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec,
-};
-use ployz_store_api::{
-    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
-    DeployStore, ImageAvailabilityStore, InstanceStatusStore, InviteStore, MachineMembershipStore,
-    MachineSubscription, PeerRttObservation, PeerRttStore, RoutingEventSubscription,
-    RoutingStateStore, StoreDriver, StoreRuntimeControl, SyncProbe, SyncStatus,
-};
-use ployz_types::Result;
-use ployz_types::error::Error;
-use ployz_types::model::{
+use ployz_error::Error;
+use ployz_error::Result;
+use ployz_model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, BranchEnvironmentFailure,
     BranchEnvironmentRecord, CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord,
     DeployRecord, ImageAvailabilityRecord, ImageDigest, InstanceId, InstanceStatusRecord,
@@ -28,7 +15,20 @@ use ployz_types::model::{
     ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord, StorageParticipation,
     StorageReplicaPolicy, VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
-use ployz_types::spec::Namespace;
+use ployz_nats::NatsScope;
+use ployz_nats::NatsStore;
+use ployz_nats::config::{self, CLIENT_PORT, PeerRoute, ServerConfig};
+use ployz_runtime_docker::runtime::labels::build_system_labels;
+use ployz_runtime_docker::runtime::{
+    ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec,
+};
+use ployz_spec::Namespace;
+use ployz_store_api::{
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
+    DeployStore, ImageAvailabilityStore, InstanceStatusStore, InviteStore, MachineMembershipStore,
+    MachineSubscription, PeerRttObservation, PeerRttStore, RoutingEventSubscription,
+    RoutingStateStore, StoreDriver, StoreRuntimeControl, SyncProbe, SyncStatus,
+};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
@@ -1021,7 +1021,7 @@ fn nats_data_volume_name(network_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{OverlayIp, config, nats_data_volume_name, parse_peer_route, write_node_config};
-    use ployz_types::model::{AuthorityId, StorageParticipation};
+    use ployz_model::{AuthorityId, StorageParticipation};
 
     #[test]
     fn parses_bootstrap_peer_route_from_socket() {

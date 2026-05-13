@@ -1,8 +1,8 @@
 use async_nats::jetstream::kv;
 use async_trait::async_trait;
+use ployz_error::{Error, Result, StoreRecordKind};
+use ployz_model::{MachineEvent, MachineId, MachineMembership, RoutingEvent};
 use ployz_store_api::{MachineMembershipStore, MachineSubscription};
-use ployz_types::error::{Error, Result, StoreRecordKind};
-use ployz_types::model::{MachineEvent, MachineId, MachineMembership, RoutingEvent};
 
 use crate::NatsStore;
 use crate::store::kv_json;
@@ -125,7 +125,7 @@ fn validate_machine_key(key: &str, record: MachineMembership) -> Result<MachineM
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{
+    use ployz_model::{
         MachineLifecycle, MachineTopology, OverlayIp, PublicKey, StorageParticipation,
     };
 
@@ -200,7 +200,7 @@ mod tests {
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay")),
             topology: MachineTopology::local(),
-            region_role: ployz_types::model::RegionRole::HomeData,
+            region_role: ployz_model::RegionRole::HomeData,
             subnet: Some("10.210.0.0/24".parse().expect("valid subnet")),
             bridge_ip: None,
             endpoints: Vec::new(),

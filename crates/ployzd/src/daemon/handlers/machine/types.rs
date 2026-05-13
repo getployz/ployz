@@ -4,9 +4,9 @@ use ployz_api::{
     MachineAddPayload, MachineAwaitingSelfPublication, MachineInstallOptions, MachineListPayload,
     MachineListRow,
 };
+use ployz_model::{AuthorityNodePosture, MachineId, NetworkId};
 use ployz_nats::NatsNodeRpcClient;
 use ployz_store_api::StoreDriver;
-use ployz_types::model::{AuthorityNodePosture, MachineId, NetworkId};
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;

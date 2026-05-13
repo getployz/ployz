@@ -15,7 +15,9 @@ ployz-gateway = { path = "../ployz-gateway" }
 ployz-orchestrator = { path = "../ployz-orchestrator" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-store-memory = { path = "../ployz-store-memory" }
-ployz-types = { path = "../ployz-types" }
+ployz-error = { path = "../ployz-error" }
+ployz-model = { path = "../ployz-model" }
+ployz-spec = { path = "../ployz-spec" }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
 

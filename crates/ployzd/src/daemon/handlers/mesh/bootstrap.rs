@@ -7,7 +7,7 @@ use ployz_api::{
     MeshSelfRecordPayload,
 };
 use ployz_host_backends::network::endpoints::detect_advertised_endpoints;
-use ployz_types::model::{
+use ployz_model::{
     NetworkLifecycleGoal, NetworkLifecycleTransition, NetworkName, NetworkTransitionEvidence,
     RegionRole, StorageParticipation,
 };
@@ -89,7 +89,7 @@ impl DaemonState {
                 evidence: NetworkTransitionEvidence::BootstrapJoin {
                     network: net_config.name.clone(),
                 },
-                at_unix_secs: ployz_types::time::now_unix_secs(),
+                at_unix_secs: ployz_time::now_unix_secs(),
             })
         {
             return self.err("INVALID_TRANSITION", error.message().to_string());
@@ -117,7 +117,7 @@ impl DaemonState {
                                 evidence: NetworkTransitionEvidence::BootstrapJoin {
                                     network: active_network_name,
                                 },
-                                at_unix_secs: ployz_types::time::now_unix_secs(),
+                                at_unix_secs: ployz_time::now_unix_secs(),
                             })
                     {
                         self.stop_started_mesh_after_transition_failure().await;

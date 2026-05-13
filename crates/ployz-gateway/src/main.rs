@@ -27,7 +27,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
     impl ployz_gateway::RoutingStateStore for StandaloneStore {
         async fn load_routing_state(
             &self,
-        ) -> Result<ployz_types::model::RoutingState, ployz_gateway::GatewayError> {
+        ) -> Result<ployz_model::RoutingState, ployz_gateway::GatewayError> {
             info!("gateway store call start: load_routing_state");
             match self.0.load_routing_state().await {
                 Ok(state) => {
@@ -73,8 +73,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
 
         async fn list_certificates(
             &self,
-        ) -> Result<Vec<ployz_types::model::CertificateRecord>, ployz_gateway::GatewayError>
-        {
+        ) -> Result<Vec<ployz_model::CertificateRecord>, ployz_gateway::GatewayError> {
             info!("gateway store call start: list_certificates");
             match ployz_store_api::CertificateStore::list_certificates(&self.0).await {
                 Ok(records) => {
@@ -95,7 +94,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
             &self,
         ) -> Result<
             (
-                Vec<ployz_types::model::CertificateRecord>,
+                Vec<ployz_model::CertificateRecord>,
                 tokio::sync::mpsc::Receiver<ployz_store_api::CertificateSubscriptionUpdate>,
             ),
             ployz_gateway::GatewayError,
@@ -118,8 +117,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
 
         async fn list_acme_challenges(
             &self,
-        ) -> Result<Vec<ployz_types::model::AcmeChallengeRecord>, ployz_gateway::GatewayError>
-        {
+        ) -> Result<Vec<ployz_model::AcmeChallengeRecord>, ployz_gateway::GatewayError> {
             info!("gateway store call start: list_acme_challenges");
             match ployz_store_api::CertificateStore::list_acme_challenges(&self.0).await {
                 Ok(records) => {
@@ -140,7 +138,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
             &self,
         ) -> Result<
             (
-                Vec<ployz_types::model::AcmeChallengeRecord>,
+                Vec<ployz_model::AcmeChallengeRecord>,
                 tokio::sync::mpsc::Receiver<ployz_store_api::AcmeChallengeSubscriptionUpdate>,
             ),
             ployz_gateway::GatewayError,
@@ -166,7 +164,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
 
         async fn upsert_acme_challenge_readiness(
             &self,
-            record: &ployz_types::model::AcmeChallengeReadinessRecord,
+            record: &ployz_model::AcmeChallengeReadinessRecord,
         ) -> Result<(), ployz_gateway::GatewayError> {
             info!(
                 hostname = %record.hostname,

@@ -5,8 +5,8 @@ mod status;
 
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::MeshReadyPayload;
+use ployz_model::MachineMembership;
 use ployz_orchestrator::mesh::orchestrator::MeshReadyStatus;
-use ployz_types::model::MachineMembership;
 use std::path::Path;
 
 use super::super::DaemonState;
@@ -42,14 +42,14 @@ mod tests {
     use axum::body::Body;
     use axum::http::{HeaderValue, Method, Request, StatusCode};
     use ployz_api::{MachineSelfTransition, MeshBootstrapRequest};
+    use ployz_model::{MachineId, MachineLifecycle, MachineTopology};
     use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_orchestrator::{Mesh, WireguardDriver};
     use ployz_runtime_api::Identity;
     use ployz_store_api::MachineMembershipStore;
     use ployz_store_api::StoreDriver;
     use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
-    use ployz_types::model::{MachineId, MachineLifecycle, MachineTopology};
-    use ployz_types::time::now_unix_secs;
+    use ployz_time::now_unix_secs;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -58,13 +58,11 @@ mod tests {
 
     #[tokio::test]
     async fn mesh_join_is_unsupported_without_machine_add() {
-        let founder_identity =
-            Identity::generate(ployz_types::model::MachineId::new("founder"), [7; 32]);
-        let joiner_identity =
-            Identity::generate(ployz_types::model::MachineId::new("joiner"), [8; 32]);
+        let founder_identity = Identity::generate(ployz_model::MachineId::new("founder"), [7; 32]);
+        let joiner_identity = Identity::generate(ployz_model::MachineId::new("joiner"), [8; 32]);
         let founder_subnet: ipnet::Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
         let network = NetworkConfig::new(
-            ployz_types::model::NetworkName("alpha".into()),
+            ployz_model::NetworkName("alpha".into()),
             &founder_identity.public_key,
             "10.210.0.0/16",
             founder_subnet,
@@ -173,7 +171,7 @@ mod tests {
         let machine_id = identity.machine_id.clone();
         let data_dir = unique_temp_dir("ployz-startup-participation-fail");
         let config = NetworkConfig::new(
-            ployz_types::model::NetworkName("alpha".into()),
+            ployz_model::NetworkName("alpha".into()),
             &identity.public_key,
             "10.210.0.0/16",
             "10.210.0.0/24".parse().expect("valid subnet"),
@@ -224,7 +222,7 @@ mod tests {
         let identity = Identity::generate(MachineId::new("joiner"), [9; 32]);
         let data_dir = unique_temp_dir("ployz-bootstrap-guard");
         let existing = NetworkConfig::new(
-            ployz_types::model::NetworkName("alpha".into()),
+            ployz_model::NetworkName("alpha".into()),
             &identity.public_key,
             "10.210.0.0/16",
             "10.210.1.0/24".parse().expect("valid subnet"),
@@ -245,7 +243,7 @@ mod tests {
 
         let response = state
             .handle_mesh_bootstrap(&MeshBootstrapRequest {
-                network_id: ployz_types::model::NetworkId::new("net-new"),
+                network_id: ployz_model::NetworkId::new("net-new"),
                 network_name: "alpha".into(),
                 cluster_cidr: "10.210.0.0/16".into(),
                 assigned_subnet: "10.210.2.0/24".parse().expect("valid subnet"),
@@ -267,7 +265,7 @@ mod tests {
         let config_path = NetworkConfig::path(&data_dir, "alpha");
         let previous_subnet: ipnet::Ipv4Net = "10.210.1.0/24".parse().expect("valid subnet");
         let mut config = NetworkConfig::new(
-            ployz_types::model::NetworkName("alpha".into()),
+            ployz_model::NetworkName("alpha".into()),
             &identity.public_key,
             "10.210.0.0/16",
             previous_subnet,
@@ -287,24 +285,24 @@ mod tests {
     async fn make_active_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
         let identity = Identity::generate(MachineId::new("founder"), [1; 32]);
         let config = NetworkConfig::new(
-            ployz_types::model::NetworkName("alpha".into()),
+            ployz_model::NetworkName("alpha".into()),
             &identity.public_key,
             "10.210.0.0/16",
             "10.210.0.0/24".parse().expect("valid subnet"),
         );
         let store = Arc::new(MemoryStore::new());
         store
-            .upsert_self_machine(&ployz_types::model::MachineMembership {
+            .upsert_self_machine(&ployz_model::MachineMembership {
                 id: identity.machine_id.clone(),
                 public_key: identity.public_key.clone(),
                 overlay_ip: config.overlay_ip,
                 topology: MachineTopology::local(),
-                region_role: ployz_types::model::RegionRole::HomeData,
+                region_role: ployz_model::RegionRole::HomeData,
                 subnet: config.subnet,
                 bridge_ip: None,
                 endpoints: vec!["127.0.0.1:51820".into()],
                 lifecycle: MachineLifecycle::Standby,
-                storage_role: ployz_types::model::MachineStorageRole::default_authority(),
+                storage_role: ployz_model::MachineStorageRole::default_authority(),
                 created_at: 0,
                 updated_at: 0,
                 labels: std::collections::BTreeMap::new(),

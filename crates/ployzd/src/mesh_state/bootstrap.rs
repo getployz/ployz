@@ -1,13 +1,13 @@
 use super::network::NetworkConfig;
 use ployz_host_backends::network::endpoints::detect_advertised_endpoints;
+use ployz_model::{
+    MachineEvent, MachineId, MachineMembership, MachineStorageRole, MachineTopology, OverlayIp,
+    PublicKey, RegionRole, StorageParticipation,
+};
 use ployz_runtime_api::Identity;
 use ployz_store_api::{MachineMembershipStore, StoreDriver};
 #[cfg(test)]
 use ployz_store_memory::StoreDriverMemoryExt as _;
-use ployz_types::model::{
-    MachineEvent, MachineId, MachineMembership, MachineStorageRole, MachineTopology, OverlayIp,
-    PublicKey, RegionRole, StorageParticipation,
-};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -470,7 +470,7 @@ async fn sleep_or_cancel(delay: Duration, cancel: &CancellationToken) -> bool {
 }
 
 fn mark_peer_seed_healthy(network_dir: &Path) {
-    let health = BootstrapPeerSeedHealth::healthy(ployz_types::time::now_unix_secs());
+    let health = BootstrapPeerSeedHealth::healthy(ployz_time::now_unix_secs());
     if let Err(error) = write_bootstrap_peer_seed_health(network_dir, &health) {
         tracing::warn!(%error, "failed to write bootstrap peer seed health");
     }
@@ -481,7 +481,7 @@ fn mark_peer_seed_failed(
     health_state: &mut Option<BootstrapPeerSeedHealth>,
     error: impl Into<String>,
 ) {
-    let now = ployz_types::time::now_unix_secs();
+    let now = ployz_time::now_unix_secs();
     let health = BootstrapPeerSeedHealth::stale(now, health_state.as_ref(), error);
     *health_state = Some(health.clone());
     if let Err(error) = write_bootstrap_peer_seed_health(network_dir, &health) {
@@ -522,9 +522,9 @@ mod tests {
     use super::super::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
     use super::*;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use ployz_model::{MachineTopology, NetworkId, NetworkName};
     use ployz_runtime_api::Identity;
     use ployz_store_api::{MachineMembershipStore, StoreDriver};
-    use ployz_types::model::{MachineTopology, NetworkId, NetworkName};
     use std::time::{Duration, Instant};
 
     fn temp_network_dir(name: &str) -> std::path::PathBuf {

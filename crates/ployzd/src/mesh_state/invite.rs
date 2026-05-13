@@ -1,8 +1,8 @@
 use super::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ployz_model::{MachineId, NetworkId, PublicKey};
 use ployz_runtime_api::Identity;
-use ployz_types::model::{MachineId, NetworkId, PublicKey};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,7 +110,7 @@ pub fn parse_and_verify_invite_token(encoded: &str) -> Result<InviteToken, Strin
 }
 
 #[must_use]
-pub fn peer_hint_from_record(record: &ployz_types::model::MachineMembership) -> Option<PeerHint> {
+pub fn peer_hint_from_record(record: &ployz_model::MachineMembership) -> Option<PeerHint> {
     if record.endpoints.is_empty() {
         return None;
     }
@@ -125,8 +125,8 @@ pub fn peer_hint_from_record(record: &ployz_types::model::MachineMembership) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_model::{MachineId, NetworkName};
     use ployz_runtime_api::Identity;
-    use ployz_types::model::{MachineId, NetworkName};
 
     #[test]
     fn invite_roundtrip_preserves_bootstrap_hints() {

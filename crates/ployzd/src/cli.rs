@@ -4,7 +4,7 @@ use ployz_api::{
     InstallServiceMode as ApiInstallServiceMode,
 };
 use ployz_config::{RuntimeTarget, ServiceMode};
-use ployz_types::model::BuildMethod;
+use ployz_model::BuildMethod;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

@@ -1,5 +1,5 @@
 use ipnet::Ipv4Net;
-use ployz_types::model::{
+use ployz_model::{
     NetworkId, NetworkLifecycle, NetworkName, OverlayIp, PublicKey, RegionRole,
     StorageParticipation, StorageReplicaPolicy, management_ip_from_key,
 };

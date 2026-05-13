@@ -2,8 +2,8 @@ use crate::daemon::DaemonState;
 use ployz_api::{
     DaemonPayload, DaemonResponse, MachineRemovePayload, MachineRttPayload, MachineRttRow,
 };
+use ployz_model::{MachineId, MachineMembership};
 use ployz_store_api::{MachineMembershipStore, PeerRttObservation, PeerRttStore, StoreDriver};
-use ployz_types::model::{MachineId, MachineMembership};
 use std::collections::HashMap;
 use std::net::IpAddr;
 
@@ -150,7 +150,7 @@ impl DaemonState {
                     );
                 }
             };
-            let operation_id = format!("machine-rm-{}", ployz_types::model::NetworkId::random());
+            let operation_id = format!("machine-rm-{}", ployz_model::NetworkId::random());
             let response = rpc_client
                 .request(
                     NodeCommandSubject::mesh_remove_machine(&record.id),
@@ -373,9 +373,7 @@ pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineLis
             .map(|machine| MachineListReportRow {
                 id: machine.id.as_str().to_string(),
                 lifecycle: format_lifecycle(machine),
-                authority: ployz_types::model::AuthorityNodePosture::from_machine_membership(
-                    machine,
-                ),
+                authority: ployz_model::AuthorityNodePosture::from_machine_membership(machine),
                 region: machine.topology.region.0.clone(),
                 region_role: machine.region_role.to_string(),
                 availability_zone: machine
@@ -405,7 +403,7 @@ pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineLis
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{OverlayIp, PublicKey};
+    use ployz_model::{OverlayIp, PublicKey};
     use std::net::{Ipv6Addr, SocketAddr};
 
     #[test]

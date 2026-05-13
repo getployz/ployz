@@ -1,4 +1,4 @@
-use ployz_types::spec::PullPolicy;
+use ployz_spec::PullPolicy;
 use std::collections::HashMap;
 use std::net::IpAddr;
 

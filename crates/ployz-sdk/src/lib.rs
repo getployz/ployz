@@ -21,6 +21,8 @@ pub use ployz_api::{
     MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload, RuntimeStatePayload,
     RuntimeWatchFrame, StatusPayload,
 };
-pub use ployz_types::{Error, Result};
-pub use ployz_types::{error, model, spec};
+pub use ployz_error as error;
+pub use ployz_error::{Error, Result};
+pub use ployz_model as model;
+pub use ployz_spec as spec;
 pub use transport::{StdioTransport, Transport, UnixSocketTransport};

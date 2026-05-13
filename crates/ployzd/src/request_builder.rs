@@ -18,9 +18,9 @@ use ployz_api::{
     MachineAddOptions, MachineInstallOptions, MachineStoragePromoteRequest, MigrateServiceMode,
     MigrateServiceRequest,
 };
+use ployz_model::{DeployId, ImageDigest, ImagePlatform, MachineId, StorageReplicaPolicy};
 use ployz_sdk::Transport;
-use ployz_types::model::{DeployId, ImageDigest, ImagePlatform, MachineId, StorageReplicaPolicy};
-use ployz_types::spec::{
+use ployz_spec::{
     ContainerSpec, DeployManifest, Mount, MountSource, Namespace, NetworkMode, Placement,
     PortProtocol, PublishedPort, PullPolicy, Resources, RestartPolicy, RolloutStrategy,
     ServicePort, ServiceSpec, valid_storage_segment,

@@ -56,7 +56,7 @@ where
 }
 
 async fn apply_routing_envelope(
-    state: &mut ployz_types::model::RoutingState,
+    state: &mut ployz_model::RoutingState,
     envelope: ployz_store_api::RoutingEventEnvelope,
     snapshot: &SharedDnsSnapshot,
 ) {
@@ -68,7 +68,7 @@ async fn apply_routing_envelope(
     }
 }
 
-fn replace_dns_snapshot(state: &ployz_types::model::RoutingState, snapshot: &SharedDnsSnapshot) {
+fn replace_dns_snapshot(state: &ployz_model::RoutingState, snapshot: &SharedDnsSnapshot) {
     let next = project_dns(state);
     let service_count: usize = next.services.values().map(HashMap::len).sum();
     snapshot.replace(next);
@@ -108,7 +108,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::MachineId;
+    use ployz_model::MachineId;
     use prometheus::Encoder;
     use tokio::sync::oneshot;
 
@@ -116,7 +116,7 @@ mod tests {
     async fn routing_ack_failure_marks_dns_sync_unhealthy_after_snapshot_swap() {
         crate::metrics::set_store_sync_healthy("routing", true);
         let snapshot = SharedDnsSnapshot::new(crate::DnsSnapshot::empty());
-        let mut state = ployz_types::model::RoutingState {
+        let mut state = ployz_model::RoutingState {
             machines: Vec::new(),
             revisions: Vec::new(),
             releases: Vec::new(),
@@ -130,16 +130,14 @@ mod tests {
             ployz_store_api::RoutingEventEnvelope::with_ack(
                 "event-1",
                 Some("test".into()),
-                ployz_types::model::RoutingEvent::RevisionUpsert(
-                    ployz_types::model::ServiceRevisionRecord {
-                        namespace: ployz_types::spec::Namespace::new("prod"),
-                        service: "api".into(),
-                        revision_hash: "rev-1".into(),
-                        spec_json: "{}".into(),
-                        created_by: MachineId::new("machine-1"),
-                        created_at: 1,
-                    },
-                ),
+                ployz_model::RoutingEvent::RevisionUpsert(ployz_model::ServiceRevisionRecord {
+                    namespace: ployz_spec::Namespace::new("prod"),
+                    service: "api".into(),
+                    revision_hash: "rev-1".into(),
+                    spec_json: "{}".into(),
+                    created_by: MachineId::new("machine-1"),
+                    created_at: 1,
+                }),
                 ack_tx,
             ),
             &snapshot,

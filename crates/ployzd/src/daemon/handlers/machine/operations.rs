@@ -9,9 +9,9 @@ use crate::daemon::ssh::SshOptions;
 use ployz_api::{
     DaemonPayload, MachineOperationInfo, MachineOperationListPayload, MachineOperationPayload,
 };
+use ployz_model::{MachineId, MachineLifecycle};
 use ployz_store_api::MachineMembershipStore;
-use ployz_types::model::{MachineId, MachineLifecycle};
-use ployz_types::time::now_unix_secs;
+use ployz_time::now_unix_secs;
 
 use super::join::rollback::best_effort_remote_cleanup;
 use super::types::MachineAddStage;

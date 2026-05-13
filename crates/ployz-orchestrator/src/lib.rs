@@ -1,6 +1,6 @@
-pub(crate) use ployz_types::error;
-pub(crate) use ployz_types::model;
-pub(crate) use ployz_types::time;
+pub(crate) use ployz_error as error;
+pub(crate) use ployz_model as model;
+pub(crate) use ployz_time as time;
 
 pub mod certificates;
 pub mod coordination;

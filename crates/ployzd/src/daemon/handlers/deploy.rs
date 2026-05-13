@@ -25,6 +25,16 @@ use ployz_api::{
 };
 use ployz_cert_acme::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
+use ployz_error::DeployError;
+use ployz_error::Error as PloyzError;
+#[cfg(test)]
+use ployz_model::DeployPhaseRecordState;
+use ployz_model::{
+    BranchEnvironmentFailure, BranchEnvironmentRecord, BranchEnvironmentResourceMode,
+    BranchEnvironmentResourceOverride, BranchEnvironmentState, DeployId, DeployPhaseCommitPolicy,
+    DeployPhaseFailure, DeployPhaseState, DeployRecordState, PreparedDeployRecord,
+    PreparedDeployState,
+};
 use ployz_nats::RpcPolicy;
 use ployz_nats::{NatsDeployLock, NatsLocks, NatsStore};
 use ployz_orchestrator::certificates::{AcmeAccountCoordinator, CertificateManagerConfig};
@@ -34,20 +44,10 @@ use ployz_orchestrator::deploy::{
     apply_with_deploy_id_and_preconditions, new_deploy_id, prepare, preview,
     validated_prepared_manifest,
 };
+use ployz_spec::{DeployManifest, Namespace, valid_storage_segment};
 use ployz_store_api::{DeployStore, StoreDriver, StoreRuntimeControl};
 #[cfg(test)]
 use ployz_store_memory::StoreDriverMemoryExt as _;
-use ployz_types::Error as PloyzError;
-use ployz_types::error::DeployError;
-#[cfg(test)]
-use ployz_types::model::DeployPhaseRecordState;
-use ployz_types::model::{
-    BranchEnvironmentFailure, BranchEnvironmentRecord, BranchEnvironmentResourceMode,
-    BranchEnvironmentResourceOverride, BranchEnvironmentState, DeployId, DeployPhaseCommitPolicy,
-    DeployPhaseFailure, DeployPhaseState, DeployRecordState, PreparedDeployRecord,
-    PreparedDeployState,
-};
-use ployz_types::spec::{DeployManifest, Namespace, valid_storage_segment};
 
 #[cfg(test)]
 use manifest_render::{BranchRenderError, MigrateRenderError, stable_fingerprint};
@@ -89,11 +89,8 @@ enum BranchApplyingReplayAction {
     Busy,
 }
 
-type DeployApplyFuture<'a> = Pin<
-    Box<
-        dyn Future<Output = ployz_types::Result<ployz_types::model::DeployApplyResult>> + Send + 'a,
-    >,
->;
+type DeployApplyFuture<'a> =
+    Pin<Box<dyn Future<Output = ployz_error::Result<ployz_model::DeployApplyResult>> + Send + 'a>>;
 
 impl DaemonState {
     fn overlay_network_name(&self) -> Option<String> {
@@ -370,7 +367,7 @@ impl DaemonState {
                 .mark_branch_environment_applying(
                     &prepared.namespace,
                     &request.prepared_deploy_id,
-                    ployz_types::time::now_unix_secs(),
+                    ployz_time::now_unix_secs(),
                 )
                 .await
             {
@@ -1070,8 +1067,8 @@ async fn record_branch_apply_prepared_outcome(
     target_namespace: &Namespace,
     prepared_deploy_id: &DeployId,
     response: &DaemonResponse,
-) -> ployz_types::Result<BranchEnvironmentRecord> {
-    let updated_at = ployz_types::time::now_unix_secs();
+) -> ployz_error::Result<BranchEnvironmentRecord> {
+    let updated_at = ployz_time::now_unix_secs();
     if let Some(environment) =
         active_branch_prepared_replay_record(store, target_namespace, prepared_deploy_id).await?
     {
@@ -1152,7 +1149,7 @@ async fn active_branch_prepared_replay_record(
     store: &StoreDriver,
     target_namespace: &Namespace,
     prepared_deploy_id: &DeployId,
-) -> ployz_types::Result<Option<BranchEnvironmentRecord>> {
+) -> ployz_error::Result<Option<BranchEnvironmentRecord>> {
     Ok(store
         .get_branch_environment(target_namespace)
         .await?
@@ -1163,7 +1160,7 @@ async fn branch_environment_applying_record(
     store: &StoreDriver,
     target_namespace: &Namespace,
     prepared_deploy_id: &DeployId,
-) -> ployz_types::Result<Option<BranchEnvironmentRecord>> {
+) -> ployz_error::Result<Option<BranchEnvironmentRecord>> {
     Ok(store
         .get_branch_environment(target_namespace)
         .await?
@@ -1177,7 +1174,7 @@ async fn branch_applying_replay_action(
     store: &StoreDriver,
     prepared: &PreparedDeployRecord,
     prepared_deploy_id: &DeployId,
-) -> ployz_types::Result<BranchApplyingReplayAction> {
+) -> ployz_error::Result<BranchApplyingReplayAction> {
     if let Some(environment) =
         active_branch_prepared_replay_record(store, &prepared.namespace, prepared_deploy_id).await?
     {
@@ -1218,7 +1215,7 @@ async fn branch_applying_replay_action(
             &prepared.namespace,
             prepared_deploy_id,
             prepared_deploy_id,
-            ployz_types::time::now_unix_secs(),
+            ployz_time::now_unix_secs(),
         )
         .await
     {
@@ -1239,7 +1236,7 @@ async fn renew_deploy_lock(
     deploy_lock: NatsDeployLock,
     ttl: Duration,
     interval: Duration,
-) -> ployz_types::Result<()> {
+) -> ployz_error::Result<()> {
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ticker.tick().await;
@@ -1264,25 +1261,25 @@ async fn mark_deploy_failed_after_lock_loss(
     let deploy = match store.get_deploy(deploy_id).await {
         Ok(Some(mut deploy)) => {
             match deploy.state() {
-                ployz_types::model::DeployState::Committed
-                | ployz_types::model::DeployState::CleanupPending
-                | ployz_types::model::DeployState::CheckpointCommitted => {
+                ployz_model::DeployState::Committed
+                | ployz_model::DeployState::CleanupPending
+                | ployz_model::DeployState::CheckpointCommitted => {
                     return DeployLockLossOutcome::PastCommit;
                 }
-                ployz_types::model::DeployState::Applying => {}
-                ployz_types::model::DeployState::Planning
-                | ployz_types::model::DeployState::FailedAfterCheckpoint
-                | ployz_types::model::DeployState::Failed => {
+                ployz_model::DeployState::Applying => {}
+                ployz_model::DeployState::Planning
+                | ployz_model::DeployState::FailedAfterCheckpoint
+                | ployz_model::DeployState::Failed => {
                     return DeployLockLossOutcome::NotApplying;
                 }
             }
             if deploy_has_checkpoint_commit_point(store, &deploy.namespace, deploy_id).await {
                 return DeployLockLossOutcome::PastCommit;
             }
-            let finished_at = ployz_types::time::now_unix_secs();
+            let finished_at = ployz_time::now_unix_secs();
             let mut summary_json = deploy.summary_json().to_string();
             if let Ok(mut preview) =
-                serde_json::from_str::<ployz_types::model::DeployPreview>(deploy.summary_json())
+                serde_json::from_str::<ployz_model::DeployPreview>(deploy.summary_json())
             {
                 preview
                     .warnings
@@ -1395,9 +1392,9 @@ async fn mark_running_deploy_phases_failed_after_lock_loss(
     namespace: &Namespace,
     deploy_id: &DeployId,
     message: &str,
-) -> ployz_types::Result<()> {
+) -> ployz_error::Result<()> {
     let phases = store.list_deploy_phases(namespace, deploy_id).await?;
-    let completed_at = ployz_types::time::now_unix_secs();
+    let completed_at = ployz_time::now_unix_secs();
     for mut phase in phases {
         if !matches!(
             phase.lifecycle_state(),
@@ -1427,7 +1424,7 @@ fn deploy_apply_preconditions(
 
 fn expected_baseline(
     options: &DeployOptions,
-) -> Result<Option<&ployz_types::model::DeployPreviewBaseline>, &'static str> {
+) -> Result<Option<&ployz_model::DeployPreviewBaseline>, &'static str> {
     match options.expected_baseline.as_ref() {
         Some(baseline) if baseline.is_empty() => {
             Err("expected_baseline must be omitted or non-empty")
@@ -1461,13 +1458,7 @@ mod tests {
         BranchResourceMode, DaemonRequest, DeployFailurePayload, VolumeZfsTransferInfo,
         VolumeZfsTransferPayload, VolumeZfsTransferState,
     };
-    use ployz_nats::{NodeCommandSubject, RpcFailure, RpcFailureKind, RpcPolicy};
-    use ployz_node_api::NodeRequest;
-    use ployz_orchestrator::deploy::participant::MoveVolumeRequest;
-    use ployz_orchestrator::{Mesh, WireguardDriver};
-    use ployz_runtime_api::Identity;
-    use ployz_store_api::{DeployCommit, DeployStore, MachineMembershipStore};
-    use ployz_types::model::{
+    use ployz_model::{
         DeployBaselineComponent, DeployBaselineDiff, DeployId, DeployPhaseCommitPolicy,
         DeployPhaseId, DeployPhaseRecord, DeployPhaseRollbackPolicy, DeployPreview,
         DeployPreviewBaseline, DeployPreviewBaselineComponents, DeployRecord, DeployState,
@@ -1475,11 +1466,17 @@ mod tests {
         PreparedDeployRecord, PreparedDeployState, PublicKey, ServiceRelease, ServiceReleaseRecord,
         ServiceRevisionRecord, VolumeRecord,
     };
-    use ployz_types::spec::{
+    use ployz_nats::{NodeCommandSubject, RpcFailure, RpcFailureKind, RpcPolicy};
+    use ployz_node_api::NodeRequest;
+    use ployz_orchestrator::deploy::participant::MoveVolumeRequest;
+    use ployz_orchestrator::{Mesh, WireguardDriver};
+    use ployz_runtime_api::Identity;
+    use ployz_spec::{
         ContainerSpec, Mount, MountSource, NetworkMode, Placement, PullPolicy, Resources,
         RestartPolicy, RolloutStrategy, ServiceIntent, ServiceSpec, VolumeCloneConsistency,
         VolumeCloneDataPolicy, VolumeIntent, VolumeScope,
     };
+    use ployz_store_api::{DeployCommit, DeployStore, MachineMembershipStore};
     use std::collections::{BTreeMap, VecDeque};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -4039,7 +4036,7 @@ mod tests {
                 work: Vec::new(),
                 state: DeployPhaseRecordState::running(DeployPhaseCommitPolicy::EndOfDeploy),
                 rollback_policy: DeployPhaseRollbackPolicy::Reversible,
-                advance_policy: ployz_types::model::DeployPhaseAdvancePolicy::Immediate,
+                advance_policy: ployz_model::DeployPhaseAdvancePolicy::Immediate,
                 started_at: 1,
             })
             .await
@@ -4176,7 +4173,7 @@ mod tests {
                 work: Vec::new(),
                 state: DeployPhaseRecordState::running(DeployPhaseCommitPolicy::Checkpoint),
                 rollback_policy: DeployPhaseRollbackPolicy::Reversible,
-                advance_policy: ployz_types::model::DeployPhaseAdvancePolicy::Immediate,
+                advance_policy: ployz_model::DeployPhaseAdvancePolicy::Immediate,
                 started_at: 1,
             })
             .await

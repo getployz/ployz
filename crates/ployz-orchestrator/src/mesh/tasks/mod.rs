@@ -17,7 +17,7 @@ pub(crate) use self_record::run_self_record_writer_task;
 pub(crate) use subnet_claim_monitor::run_subnet_claim_monitor_task;
 
 use crate::error::Error;
-use ployz_types::time::now_unix_secs;
+use ployz_time::now_unix_secs;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;

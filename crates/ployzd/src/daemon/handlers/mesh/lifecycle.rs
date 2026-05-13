@@ -1,15 +1,15 @@
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::MachineSelfTransition;
-use ployz_nats::{NodeCommandSubject, RpcPolicy};
-use ployz_node_api::NodeRequest;
-use ployz_runtime_api::ipam::pick_candidate_subnet;
-use ployz_store_api::MachineMembershipStore;
-use ployz_types::model::MachineMembership;
-use ployz_types::model::{
+use ployz_model::MachineMembership;
+use ployz_model::{
     MachineId, MachineLifecycle, MachineLifecycleGoal, MachineLifecycleTransition,
     MachineTransitionEvidence, NetworkId, NetworkLifecycle, NetworkLifecycleGoal,
     NetworkLifecycleTransition, NetworkName, NetworkTransitionEvidence, StandbyTransitionClearance,
 };
+use ployz_nats::{NodeCommandSubject, RpcPolicy};
+use ployz_node_api::NodeRequest;
+use ployz_runtime_api::ipam::pick_candidate_subnet;
+use ployz_store_api::MachineMembershipStore;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -185,7 +185,7 @@ impl DaemonState {
                 evidence: NetworkTransitionEvidence::MeshTeardown {
                     network: persisted_network_name,
                 },
-                at_unix_secs: ployz_types::time::now_unix_secs(),
+                at_unix_secs: ployz_time::now_unix_secs(),
             });
         persisted.subnet = subnet_to_persist;
         let config_path = NetworkConfig::path(&self.data_dir, &network_name);
@@ -635,7 +635,7 @@ impl DaemonState {
                         "mesh start".into()
                     },
                 },
-                at_unix_secs: ployz_types::time::now_unix_secs(),
+                at_unix_secs: ployz_time::now_unix_secs(),
             })
             .map_err(|error| error.message().to_string())?;
         let network_name = running_config.name.clone();
@@ -667,7 +667,7 @@ impl DaemonState {
                     evidence: NetworkTransitionEvidence::OperatorCommand {
                         command: active_command,
                     },
-                    at_unix_secs: ployz_types::time::now_unix_secs(),
+                    at_unix_secs: ployz_time::now_unix_secs(),
                 })
                 .map_err(|error| error.message().to_string())?;
             if let Err(error) = active.config.save(&config_path) {
@@ -745,7 +745,7 @@ async fn persist_stopped_self_record(
             evidence: MachineTransitionEvidence::MeshStop {
                 network: active.config.name.clone(),
             },
-            at_unix_secs: ployz_types::time::now_unix_secs(),
+            at_unix_secs: ployz_time::now_unix_secs(),
         })
         .map_err(|err| format!("build standby self record: {err}"))?;
 

@@ -6,7 +6,8 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-ployz-types = { path = "../ployz-types" }
+ployz-model = { path = "../ployz-model" }
+ployz-spec = { path = "../ployz-spec" }
 ipnet = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -8,7 +8,9 @@ publish = false
 [dependencies]
 ployz-cert-api = { path = "../ployz-cert-api" }
 ployz-store-api = { path = "../ployz-store-api" }
-ployz-types = { path = "../ployz-types" }
+ployz-error = { path = "../ployz-error" }
+ployz-model = { path = "../ployz-model" }
+ployz-time = { path = "../ployz-time" }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

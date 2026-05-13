@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use ipnet::Ipv4Net;
 use tokio::sync::Mutex;
 
-use ployz_types::model::MachineId;
+use ployz_model::MachineId;
 
 /// Reasons a `try_claim` call may fail.
 #[derive(Debug)]

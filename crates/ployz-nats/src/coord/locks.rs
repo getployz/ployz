@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use async_nats::jetstream::kv;
 use async_nats::{HeaderMap, header};
-use ployz_types::error::{CoordinationError, Error, Result};
-use ployz_types::model::MachineId;
-use ployz_types::spec::Namespace;
-use ployz_types::time::now_unix_secs;
+use ployz_error::{CoordinationError, Error, Result};
+use ployz_model::MachineId;
+use ployz_spec::Namespace;
+use ployz_time::now_unix_secs;
 use tokio::sync::Mutex;
 
 use crate::NatsStore;

@@ -18,8 +18,8 @@ use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use futures_util::StreamExt;
+use ployz_model::MachineId;
 use ployz_runtime_api::RuntimeHandle;
-use ployz_types::model::MachineId;
 use serde::Serialize;
 use sha2::{Digest as ShaDigest, Sha256};
 use tokio::fs::{self, File, OpenOptions};
@@ -31,9 +31,9 @@ use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-pub(crate) const REGISTRY_OPERATION_HEADER: &str = "x-ployz-image-operation";
-pub(crate) const REGISTRY_SOURCE_MACHINE_HEADER: &str = "x-ployz-source-machine";
-pub(crate) const REGISTRY_SESSION_HEADER: &str = "x-ployz-image-session";
+pub const REGISTRY_OPERATION_HEADER: &str = "x-ployz-image-operation";
+pub const REGISTRY_SOURCE_MACHINE_HEADER: &str = "x-ployz-source-machine";
+pub const REGISTRY_SESSION_HEADER: &str = "x-ployz-image-session";
 
 const API_VERSION_HEADER: &str = "docker-distribution-api-version";
 const API_VERSION: &str = "registry/2.0";
@@ -48,8 +48,7 @@ const LISTENER_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const LISTENER_SHUTDOWN_GRACE: Duration = Duration::from_millis(50);
 
-pub(crate) struct ImageRegistryListenerHandle {
-    #[cfg(test)]
+pub struct ImageRegistryListenerHandle {
     bind_addr: SocketAddr,
     cancel: CancellationToken,
     task: JoinHandle<()>,
@@ -57,22 +56,20 @@ pub(crate) struct ImageRegistryListenerHandle {
 
 impl ImageRegistryListenerHandle {
     #[must_use]
-    pub(crate) fn noop() -> Self {
+    pub fn noop() -> Self {
         Self {
-            #[cfg(test)]
             bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             cancel: CancellationToken::new(),
             task: tokio::spawn(async {}),
         }
     }
 
-    #[cfg(test)]
     #[must_use]
-    pub(crate) fn bind_addr(&self) -> SocketAddr {
+    pub fn bind_addr(&self) -> SocketAddr {
         self.bind_addr
     }
 
-    pub(crate) async fn shutdown(self) {
+    pub async fn shutdown(self) {
         self.cancel.cancel();
         let mut task = self.task;
         tokio::select! {
@@ -105,7 +102,7 @@ impl RuntimeHandle for ImageRegistryListenerHandle {
     }
 }
 
-pub(crate) async fn serve(
+pub async fn serve(
     bind_addr: SocketAddr,
     registry: ImageRegistry,
 ) -> Result<ImageRegistryListenerHandle, String> {
@@ -127,7 +124,6 @@ pub(crate) async fn serve(
         }
     });
     Ok(ImageRegistryListenerHandle {
-        #[cfg(test)]
         bind_addr,
         cancel,
         task,
@@ -135,46 +131,46 @@ pub(crate) async fn serve(
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ImageRegistry {
+pub struct ImageRegistry {
     root: PathBuf,
     sessions: Arc<RwLock<BTreeMap<String, ImageRegistrySession>>>,
     uploads: Arc<RwLock<BTreeMap<String, UploadState>>>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ImageRegistrySession {
-    pub(crate) operation_id: String,
-    pub(crate) source_machine: MachineId,
-    pub(crate) repository: String,
-    pub(crate) token: String,
-    pub(crate) expires_at_unix_secs: u64,
+pub struct ImageRegistrySession {
+    pub operation_id: String,
+    pub source_machine: MachineId,
+    pub repository: String,
+    pub token: String,
+    pub expires_at_unix_secs: u64,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct UploadStarted {
-    pub(crate) uuid: String,
-    pub(crate) location: String,
+pub struct UploadStarted {
+    pub uuid: String,
+    pub location: String,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct BlobStored {
-    pub(crate) digest: String,
-    pub(crate) bytes: u64,
-    pub(crate) path: PathBuf,
+pub struct BlobStored {
+    pub digest: String,
+    pub bytes: u64,
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ManifestStored {
-    pub(crate) digest: String,
-    pub(crate) bytes: u64,
-    pub(crate) media_type: String,
+pub struct ManifestStored {
+    pub digest: String,
+    pub bytes: u64,
+    pub media_type: String,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ReceivedManifest {
-    pub(crate) body: Bytes,
-    pub(crate) digest: String,
-    pub(crate) media_type: String,
+pub struct ReceivedManifest {
+    pub body: Bytes,
+    pub digest: String,
+    pub media_type: String,
 }
 
 #[derive(Debug, Clone)]
@@ -189,7 +185,7 @@ struct UploadState {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ImageRegistryError {
+pub enum ImageRegistryError {
     #[error("registry session header '{name}' is missing")]
     MissingHeader { name: &'static str },
     #[error("registry session header '{name}' was not valid UTF-8")]
@@ -230,7 +226,7 @@ pub(crate) enum ImageRegistryError {
 
 impl ImageRegistry {
     #[must_use]
-    pub(crate) fn new(root: PathBuf) -> Self {
+    pub fn new(root: PathBuf) -> Self {
         Self {
             root,
             sessions: Arc::new(RwLock::new(BTreeMap::new())),
@@ -239,14 +235,14 @@ impl ImageRegistry {
     }
 
     #[must_use]
-    pub(crate) fn router(self) -> Router {
+    pub fn router(self) -> Router {
         Router::new()
             .route("/v2/", any(registry_root))
             .route("/v2/{*path}", any(registry_entry))
             .with_state(self)
     }
 
-    pub(crate) async fn register_session(
+    pub async fn register_session(
         &self,
         operation_id: impl Into<String>,
         source_machine: MachineId,
@@ -267,7 +263,7 @@ impl ImageRegistry {
         session
     }
 
-    pub(crate) async fn revoke_session(&self, token: &str) -> Result<(), ImageRegistryError> {
+    pub async fn revoke_session(&self, token: &str) -> Result<(), ImageRegistryError> {
         self.sessions.write().await.remove(token);
         let upload_ids = self
             .uploads
@@ -285,7 +281,7 @@ impl ImageRegistry {
         Ok(())
     }
 
-    pub(crate) async fn revoke_all_sessions(&self) -> Result<(), ImageRegistryError> {
+    pub async fn revoke_all_sessions(&self) -> Result<(), ImageRegistryError> {
         let tokens = self
             .sessions
             .read()
@@ -299,7 +295,7 @@ impl ImageRegistry {
         Ok(())
     }
 
-    pub(crate) fn blob_path_for_digest(
+    pub fn blob_path_for_digest(
         &self,
         digest: &str,
     ) -> Result<Option<PathBuf>, ImageRegistryError> {
@@ -312,7 +308,7 @@ impl ImageRegistry {
         }
     }
 
-    pub(crate) async fn received_manifest(
+    pub async fn received_manifest(
         &self,
         repository: &str,
         reference: &str,
@@ -979,7 +975,7 @@ fn split_manifest_path(path: &str) -> Option<(&str, &str)> {
     Some((repository, reference))
 }
 
-pub(crate) fn validate_repository(value: &str) -> Result<(), ImageRegistryError> {
+pub fn validate_repository(value: &str) -> Result<(), ImageRegistryError> {
     if value.is_empty()
         || value
             .split('/')
@@ -1151,7 +1147,7 @@ fn format_digest(bytes: impl AsRef<[u8]>) -> String {
 }
 
 fn current_unix_secs() -> u64 {
-    ployz_types::time::now_unix_secs()
+    ployz_time::now_unix_secs()
 }
 
 #[cfg(test)]

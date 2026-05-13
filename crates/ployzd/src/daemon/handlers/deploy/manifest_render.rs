@@ -1,16 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_api::{BranchNamespaceRequest, BranchResourceMode, MigrateServiceRequest};
-use ployz_store_api::{DeployStore, StoreDriver};
-use ployz_types::Error as PloyzError;
-use ployz_types::error::DeployError;
-use ployz_types::model::VolumeRecord;
-use ployz_types::spec::{
+use ployz_error::DeployError;
+use ployz_error::Error as PloyzError;
+use ployz_model::VolumeRecord;
+use ployz_spec::{
     DeployIntent, DeployManifest, MountSource, Namespace, ServiceIntent, ServiceIntentHint,
     ServiceSpec, VolumeCloneConsistency, VolumeCloneDataPolicy, VolumeDeclaration, VolumeIntent,
     VolumeIntentHint, VolumeMode, VolumeOwner, VolumeQuota, VolumeScope, stable_hash_hex,
     valid_storage_segment,
 };
+use ployz_store_api::{DeployStore, StoreDriver};
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum MigrateRenderError {
@@ -111,7 +111,7 @@ impl BranchRenderError {
 pub(super) async fn export_manifest(
     store: &StoreDriver,
     namespace: &Namespace,
-) -> ployz_types::Result<DeployManifest> {
+) -> ployz_error::Result<DeployManifest> {
     Ok(export_manifest_with_evidence(store, namespace)
         .await?
         .manifest)
@@ -126,7 +126,7 @@ pub(super) struct ExportedManifest {
 pub(super) async fn export_manifest_with_evidence(
     store: &StoreDriver,
     namespace: &Namespace,
-) -> ployz_types::Result<ExportedManifest> {
+) -> ployz_error::Result<ExportedManifest> {
     let releases = store.list_deploy_releases(namespace).await?;
     let revisions = store.list_deploy_revisions(namespace).await?;
     let volume_records = store.list_volumes(namespace).await?;
@@ -178,7 +178,7 @@ pub(super) async fn export_manifest_with_evidence(
     let mut volumes: Vec<VolumeDeclaration> = volume_records
         .values()
         .map(volume_declaration_from_record)
-        .collect::<ployz_types::Result<_>>()?;
+        .collect::<ployz_error::Result<_>>()?;
     volumes.sort_by(|left, right| left.name.cmp(&right.name));
 
     Ok(ExportedManifest {
@@ -520,7 +520,7 @@ pub(super) async fn render_migrate_service_manifest(
     Ok(manifest)
 }
 
-fn volume_declaration_from_record(record: &VolumeRecord) -> ployz_types::Result<VolumeDeclaration> {
+fn volume_declaration_from_record(record: &VolumeRecord) -> ployz_error::Result<VolumeDeclaration> {
     let quota = VolumeQuota::try_new(record.quota.as_str()).map_err(|message| {
         PloyzError::Deploy(DeployError::StoredVolumeMetadataInvalid {
             volume: record.volume_name.clone(),

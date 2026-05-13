@@ -5,9 +5,9 @@ use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signer, SigningKey};
 use ployz_host_backends::network::endpoints::detect_advertised_endpoints;
+use ployz_model::{InviteRecord, InviteStatus};
 use ployz_store_api::{InviteStore, MachineMembershipStore};
-use ployz_types::model::{InviteRecord, InviteStatus};
-use ployz_types::time::now_unix_secs;
+use ployz_time::now_unix_secs;
 use x25519_dalek::StaticSecret;
 
 use ployz_api::{DaemonPayload, DaemonResponse, MachineInviteInfo, MachineInviteListPayload};
@@ -222,12 +222,12 @@ mod tests {
     use crate::daemon::ActiveMesh;
     use crate::mesh_state::network::NetworkConfig;
     use ployz_api::DaemonPayload;
+    use ployz_model::{MachineId, NetworkId};
     use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_orchestrator::{Mesh, WireguardDriver};
     use ployz_runtime_api::Identity;
     use ployz_store_api::{InviteStore, StoreDriver};
     use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
-    use ployz_types::model::{MachineId, NetworkId};
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -279,7 +279,7 @@ mod tests {
         let identity = Identity::generate(MachineId::new("founder"), [19; 32]);
         let machine_id = identity.machine_id.clone();
         let config = NetworkConfig::new(
-            ployz_types::model::NetworkName("alpha".into()),
+            ployz_model::NetworkName("alpha".into()),
             &identity.public_key,
             "10.210.0.0/16",
             "10.210.0.0/24".parse().expect("valid subnet"),

@@ -2,11 +2,11 @@ use crate::daemon::{ActiveMesh, DaemonState};
 use crate::endpoint_maintenance::local_endpoint_watch_supported;
 use ployz_api::{DaemonPayload, DoctorLocal, DoctorOverall, DoctorPayload, DoctorPeer};
 use ployz_host_backends::network::endpoints::detect_advertised_endpoints;
+use ployz_model::{MachineId, MachineMembership, PublicKey};
 use ployz_orchestrator::machine_policy::{DiagnosticRole, diagnostic_role};
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_orchestrator::mesh::{DevicePeer, WireGuardDevice};
 use ployz_store_api::{MachineMembershipStore, PeerRttObservation, PeerRttStore};
-use ployz_types::model::{MachineId, MachineMembership, PublicKey};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -217,8 +217,8 @@ fn store_status_column(row: &DoctorPeer) -> String {
 
 fn format_storage_participation(machine: &MachineMembership) -> String {
     match &machine.storage_participation() {
-        ployz_types::model::StorageParticipation::Candidate => String::from("candidate"),
-        ployz_types::model::StorageParticipation::Authority { authority_id } => {
+        ployz_model::StorageParticipation::Candidate => String::from("candidate"),
+        ployz_model::StorageParticipation::Authority { authority_id } => {
             format!("authority:{}", authority_id.as_str())
         }
     }
@@ -409,6 +409,9 @@ mod tests {
     use super::*;
     use crate::daemon::ActiveMesh;
     use crate::mesh_state::network::NetworkConfig;
+    use ployz_model::{
+        MachineId, MachineLifecycle, MachineTopology, NetworkLifecycle, OverlayIp, PublicKey,
+    };
     use ployz_orchestrator::Mesh;
     use ployz_orchestrator::mesh::DevicePeer;
     use ployz_orchestrator::mesh::driver::WireguardDriver;
@@ -417,9 +420,6 @@ mod tests {
     use ployz_store_api::PeerRttObservation;
     use ployz_store_api::StoreDriver;
     use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
-    use ployz_types::model::{
-        MachineId, MachineLifecycle, MachineTopology, NetworkLifecycle, OverlayIp, PublicKey,
-    };
     use std::net::{IpAddr, Ipv6Addr, SocketAddr};
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -575,7 +575,7 @@ mod tests {
     async fn make_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
         let identity = Identity::generate(MachineId::new(String::from("joiner5")), [1; 32]);
         let config = NetworkConfig::new(
-            ployz_types::model::NetworkName(String::from("alpha")),
+            ployz_model::NetworkName(String::from("alpha")),
             &identity.public_key,
             "10.210.0.0/16",
             "10.210.3.0/24".parse().expect("valid subnet"),
@@ -639,12 +639,12 @@ mod tests {
             public_key,
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
-            region_role: ployz_types::model::RegionRole::HomeData,
+            region_role: ployz_model::RegionRole::HomeData,
             subnet: Some("10.210.0.0/24".parse().expect("valid subnet")),
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
             lifecycle,
-            storage_role: ployz_types::model::StorageParticipation::default_authority().into(),
+            storage_role: ployz_model::StorageParticipation::default_authority().into(),
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),
@@ -654,7 +654,7 @@ mod tests {
     fn test_active_mesh() -> ActiveMesh {
         let identity = Identity::generate(MachineId::new(String::from("joiner5")), [1; 32]);
         let mut config = NetworkConfig::new(
-            ployz_types::model::NetworkName(String::from("alpha")),
+            ployz_model::NetworkName(String::from("alpha")),
             &identity.public_key,
             "10.210.0.0/16",
             "10.210.3.0/24".parse().expect("valid subnet"),

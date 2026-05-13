@@ -1,6 +1,6 @@
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
-use ployz_types::error::{Error, Result};
-use ployz_types::model::{PublicKey, WireGuardPeerSpec};
+use ployz_error::{Error, Result};
+use ployz_model::{PublicKey, WireGuardPeerSpec};
 use std::sync::{Mutex, MutexGuard};
 
 pub struct MemoryWireGuard {

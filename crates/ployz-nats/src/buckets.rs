@@ -3,8 +3,8 @@ use std::time::Duration;
 use async_nats::jetstream;
 use async_nats::jetstream::kv;
 use async_nats::jetstream::stream;
-use ployz_types::error::{Error, Result};
-use ployz_types::model::{ControlPlaneDataBucket, ControlPlaneLossImpact, StorageReplicaPolicy};
+use ployz_error::{Error, Result};
+use ployz_model::{ControlPlaneDataBucket, ControlPlaneLossImpact, StorageReplicaPolicy};
 
 use crate::subjects::{self, NatsScope};
 
@@ -762,8 +762,8 @@ mod tests {
     #[test]
     fn asset_configs_use_provided_scope_for_names_and_subject_filters() {
         let scope = NatsScope::new(
-            ployz_types::model::InstallationId::new("inst-acme"),
-            ployz_types::model::AuthorityId::new("auth-sin"),
+            ployz_model::InstallationId::new("inst-acme"),
+            ployz_model::AuthorityId::new("auth-sin"),
         );
         let configs = asset_configs_in(&scope, AssetPolicy { replicas: 3 });
 

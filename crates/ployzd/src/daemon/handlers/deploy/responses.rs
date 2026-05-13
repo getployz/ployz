@@ -1,7 +1,7 @@
 use ployz_api::DeployFailurePayload;
-use ployz_types::Error as PloyzError;
-use ployz_types::error::DeployError;
-use ployz_types::model::{DeployId, PreparedDeployState};
+use ployz_error::DeployError;
+use ployz_error::Error as PloyzError;
+use ployz_model::{DeployId, PreparedDeployState};
 
 pub(super) fn deploy_error_code<'a>(default_code: &'a str, error: &PloyzError) -> &'a str {
     match error {

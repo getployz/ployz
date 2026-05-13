@@ -12,6 +12,10 @@ use ployz_api::{
     MachineStorageAuthorityPeer, MachineStoragePromoteRequest, MeshSelfRecordPayload,
     StatusPayload,
 };
+use ployz_model::{
+    MachineId, MachineLifecycle, MachineMembership, MachineStorageRole, MachineTopology,
+    NetworkLifecycle, OverlayIp, PublicKey, RegionRole, StorageParticipation, StorageReplicaPolicy,
+};
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::driver::WireguardDriver;
 use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
@@ -19,10 +23,6 @@ use ployz_runtime_api::Identity;
 use ployz_store_api::StoreDriver;
 use ployz_store_api::{InviteStore, MachineMembershipStore};
 use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
-use ployz_types::model::{
-    MachineId, MachineLifecycle, MachineMembership, MachineStorageRole, MachineTopology,
-    NetworkLifecycle, OverlayIp, PublicKey, RegionRole, StorageParticipation, StorageReplicaPolicy,
-};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -113,13 +113,13 @@ async fn machine_list_json_payload_contains_rows() {
     assert_eq!(founder.region_role, "home_data");
     assert_eq!(
         founder.authority.role(),
-        ployz_types::model::AuthorityNodeRole::AuthorityStorage {
-            authority_id: ployz_types::model::AuthorityId::default_authority(),
+        ployz_model::AuthorityNodeRole::AuthorityStorage {
+            authority_id: ployz_model::AuthorityId::default_authority(),
         }
     );
     assert_eq!(
         founder.authority.loss_impact(),
-        ployz_types::model::ControlPlaneLossImpact::StoredTruthLost
+        ployz_model::ControlPlaneLossImpact::StoredTruthLost
     );
     let candidate = payload
         .rows
@@ -128,15 +128,15 @@ async fn machine_list_json_payload_contains_rows() {
         .expect("candidate row");
     assert_eq!(
         candidate.authority.role(),
-        ployz_types::model::AuthorityNodeRole::StorageCandidate
+        ployz_model::AuthorityNodeRole::StorageCandidate
     );
     assert_eq!(
         candidate.authority.data_bucket(),
-        ployz_types::model::ControlPlaneDataBucket::StoredIntent
+        ployz_model::ControlPlaneDataBucket::StoredIntent
     );
     assert_eq!(
         candidate.authority.loss_impact(),
-        ployz_types::model::ControlPlaneLossImpact::NoStoredTruthLost
+        ployz_model::ControlPlaneLossImpact::NoStoredTruthLost
     );
     assert_eq!(candidate.region_role, "home_data");
     let compute = payload
@@ -146,15 +146,15 @@ async fn machine_list_json_payload_contains_rows() {
         .expect("compute row");
     assert_eq!(
         compute.authority.role(),
-        ployz_types::model::AuthorityNodeRole::Compute
+        ployz_model::AuthorityNodeRole::Compute
     );
     assert_eq!(
         compute.authority.data_bucket(),
-        ployz_types::model::ControlPlaneDataBucket::LiveFacts
+        ployz_model::ControlPlaneDataBucket::LiveFacts
     );
     assert_eq!(
         compute.authority.loss_impact(),
-        ployz_types::model::ControlPlaneLossImpact::NoStoredTruthLost
+        ployz_model::ControlPlaneLossImpact::NoStoredTruthLost
     );
     assert_eq!(compute.region_role, "home_data");
 }
@@ -1880,7 +1880,7 @@ async fn make_state_with_zfs_transfer_port(
     let founder_subnet: Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
     let data_dir = unique_temp_dir("ployz-machine-state");
     let config = NetworkConfig::new(
-        ployz_types::model::NetworkName("alpha".into()),
+        ployz_model::NetworkName("alpha".into()),
         &identity.public_key,
         DEFAULT_CLUSTER_CIDR,
         founder_subnet,
@@ -1984,7 +1984,7 @@ fn test_machine_record(
             .map(OverlayIp)
             .expect("valid overlay"),
         topology: MachineTopology::local(),
-        region_role: ployz_types::model::RegionRole::HomeData,
+        region_role: ployz_model::RegionRole::HomeData,
         subnet: match lifecycle {
             MachineLifecycle::Active | MachineLifecycle::Draining => {
                 Some(subnet.parse().expect("valid subnet"))

@@ -18,7 +18,8 @@ ployz-config = { path = "../ployz-config" }
 ployz-metrics = { path = "../ployz-metrics" }
 ployz-nats = { path = "../ployz-nats" }
 ployz-store-api = { path = "../ployz-store-api" }
-ployz-types = { path = "../ployz-types" }
+ployz-model = { path = "../ployz-model" }
+ployz-spec = { path = "../ployz-spec" }
 backon = { workspace = true }
 hickory-server = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "net", "io-util"] }

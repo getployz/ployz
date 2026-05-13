@@ -1,10 +1,10 @@
-use ployz_store_api::{CertificateStore, StoreDriver};
-use ployz_types::error::{CertificateError, Error, Result};
-use ployz_types::model::{
+use ployz_error::{CertificateError, Error, Result};
+use ployz_model::{
     CertificateRecord, CertificateState, CertificateStateGoal, CertificateStateTransition,
     CertificateTransitionEvidence, CertificateVersion,
 };
-use ployz_types::time::now_unix_secs;
+use ployz_store_api::{CertificateStore, StoreDriver};
+use ployz_time::now_unix_secs;
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
@@ -636,8 +636,8 @@ where
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use ployz_model::{AcmeChallengeRecord, CertificateLifecycle, CertificateRecord};
     use ployz_store_memory::StoreDriverMemoryExt as _;
-    use ployz_types::model::{AcmeChallengeRecord, CertificateLifecycle, CertificateRecord};
     use std::sync::Mutex;
     use std::time::Duration;
 

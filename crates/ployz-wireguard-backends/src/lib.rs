@@ -1,5 +1,5 @@
-pub(crate) use ployz_types::error;
-pub(crate) use ployz_types::model;
+pub(crate) use ployz_error as error;
+pub(crate) use ployz_model as model;
 
 pub mod mesh;
 pub use mesh::{driver, wireguard};

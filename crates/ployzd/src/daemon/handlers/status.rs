@@ -7,8 +7,8 @@ use ployz_api::{
     NatsAssetStatus, StatusPayload,
 };
 use ployz_config::RuntimeTarget;
+use ployz_model::{AuthorityNodePosture, StorageReplicaPolicy};
 use ployz_nats::{NatsAssetScope, NatsAssetSpec, NatsScope, NatsStore};
-use ployz_types::model::{AuthorityNodePosture, StorageReplicaPolicy};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -236,7 +236,7 @@ fn storage_replica_intent_status(
                     return Some(ControlPlaneStatus {
                         component: String::from("storage_replica_intent"),
                         state: ControlPlaneHealthState::Stale {
-                            stale_since_unix_secs: ployz_types::time::now_unix_secs(),
+                            stale_since_unix_secs: ployz_time::now_unix_secs(),
                             consecutive_failures: 1,
                             error: format!(
                                 "asset '{}' reports {} replicas; expected {}",
@@ -252,7 +252,7 @@ fn storage_replica_intent_status(
                     return Some(ControlPlaneStatus {
                         component: String::from("storage_replica_intent"),
                         state: ControlPlaneHealthState::Stale {
-                            stale_since_unix_secs: ployz_types::time::now_unix_secs(),
+                            stale_since_unix_secs: ployz_time::now_unix_secs(),
                             consecutive_failures: 1,
                             error: format!(
                                 "asset '{}' reports {} replicas; expected {}",
@@ -280,7 +280,7 @@ fn storage_replica_intent_status(
         return Some(ControlPlaneStatus {
             component: String::from("storage_replica_intent"),
             state: ControlPlaneHealthState::Stale {
-                stale_since_unix_secs: ployz_types::time::now_unix_secs(),
+                stale_since_unix_secs: ployz_time::now_unix_secs(),
                 consecutive_failures: 1,
                 error: format!("asset '{asset_name}' replica observation is stale"),
             },
@@ -636,6 +636,11 @@ mod tests {
         ControlPlaneHealthState, DaemonPayload, EdgeSyncHealthState, NatsAssetHealthState,
         NatsAssetReplicaStatus, NatsAssetStatus,
     };
+    use ployz_model::{
+        AuthorityId, AuthorityNodeRole, ControlPlaneDataBucket, ControlPlaneLossImpact, MachineId,
+        MachineLifecycle, MachineMembership, MachineTopology, NetworkLifecycle, NetworkName,
+        OverlayIp, PublicKey, StorageParticipation, StorageReplicaPolicy,
+    };
     use ployz_nats::{NatsScope, NatsStore};
     use ployz_orchestrator::Mesh;
     use ployz_orchestrator::mesh::driver::WireguardDriver;
@@ -643,11 +648,6 @@ mod tests {
     use ployz_runtime_api::Identity;
     use ployz_store_api::{MachineMembershipStore, StoreDriver};
     use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
-    use ployz_types::model::{
-        AuthorityId, AuthorityNodeRole, ControlPlaneDataBucket, ControlPlaneLossImpact, MachineId,
-        MachineLifecycle, MachineMembership, MachineTopology, NetworkLifecycle, NetworkName,
-        OverlayIp, PublicKey, StorageParticipation, StorageReplicaPolicy,
-    };
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -1188,7 +1188,7 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 7
                 .map(OverlayIp)
                 .expect("valid overlay"),
             topology: MachineTopology::local(),
-            region_role: ployz_types::model::RegionRole::HomeData,
+            region_role: ployz_model::RegionRole::HomeData,
             subnet: Some(subnet),
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],

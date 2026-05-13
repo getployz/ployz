@@ -2,6 +2,10 @@ use crate::daemon::DaemonState;
 use ployz_api::{
     DaemonPayload, DaemonResponse, DeployCandidateStartedPayload, DeployNamespaceSnapshotPayload,
 };
+use ployz_error::DeployError;
+use ployz_error::Error as PloyzError;
+use ployz_model::SlotId;
+use ployz_model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineMembership};
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
 use ployz_node_api::NodeRequest;
 use ployz_orchestrator::deploy::participant::{
@@ -9,13 +13,7 @@ use ployz_orchestrator::deploy::participant::{
     MoveVolumeRequest, MoveVolumeResult, StartCandidateRequest,
 };
 use ployz_runtime_docker::deploy::remote::DeployAgent;
-use ployz_types::Error as PloyzError;
-use ployz_types::error::DeployError;
-use ployz_types::model::SlotId;
-use ployz_types::model::{
-    DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineMembership,
-};
-use ployz_types::spec::Namespace;
+use ployz_spec::Namespace;
 
 use super::volume_transfer::run_volume_move_rpc;
 
@@ -202,7 +200,7 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         namespace: &Namespace,
         deploy_id: &DeployId,
         _coordinator_id: &MachineId,
-    ) -> ployz_types::Result<Vec<InstanceStatusRecord>> {
+    ) -> ployz_error::Result<Vec<InstanceStatusRecord>> {
         let response = self
             .client
             .request(
@@ -235,7 +233,7 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         namespace: &Namespace,
         deploy_id: &DeployId,
         request: StartCandidateRequest,
-    ) -> ployz_types::Result<InstanceStatusRecord> {
+    ) -> ployz_error::Result<InstanceStatusRecord> {
         let response = self
             .client
             .request(
@@ -273,7 +271,7 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         namespace: &Namespace,
         deploy_id: &DeployId,
         request: MoveVolumeRequest,
-    ) -> ployz_types::Result<MoveVolumeResult> {
+    ) -> ployz_error::Result<MoveVolumeResult> {
         run_volume_move_rpc(
             &self.client,
             machine_id,
@@ -293,7 +291,7 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         namespace: &Namespace,
         deploy_id: &DeployId,
         request: CloneVolumeRequest,
-    ) -> ployz_types::Result<CloneVolumeResult> {
+    ) -> ployz_error::Result<CloneVolumeResult> {
         let response = self
             .client
             .clone()
@@ -341,7 +339,7 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         namespace: &Namespace,
         deploy_id: &DeployId,
         request: CleanupVolumeCloneRequest,
-    ) -> ployz_types::Result<()> {
+    ) -> ployz_error::Result<()> {
         let response = self
             .client
             .clone()
@@ -377,7 +375,7 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         namespace: &Namespace,
         deploy_id: &DeployId,
         instance_id: &InstanceId,
-    ) -> ployz_types::Result<()> {
+    ) -> ployz_error::Result<()> {
         self.expect_ok(
             NodeCommandSubject::deploy_drain_instance(machine_id),
             NodeRequest::DeployNodeDrainInstance {
@@ -396,7 +394,7 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         namespace: &Namespace,
         deploy_id: &DeployId,
         instance_id: &InstanceId,
-    ) -> ployz_types::Result<()> {
+    ) -> ployz_error::Result<()> {
         self.expect_ok(
             NodeCommandSubject::deploy_remove_instance(machine_id),
             NodeRequest::DeployNodeRemoveInstance {
@@ -416,7 +414,7 @@ impl NatsDeployParticipantClient {
         subject: NodeCommandSubject,
         request: NodeRequest,
         operation: &'static str,
-    ) -> ployz_types::Result<()> {
+    ) -> ployz_error::Result<()> {
         let response = self
             .client
             .request(subject, &request)

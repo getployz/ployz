@@ -4,15 +4,15 @@ use async_nats::jetstream::kv;
 use async_nats::jetstream::message::PublishMessage;
 use async_nats::jetstream::stream::DirectGetErrorKind;
 use async_trait::async_trait;
-use ployz_store_api::{DeployCommit, DeployCommitFacts, DeployStore};
-use ployz_types::error::{DeployError, Error, Result, StoreError, StoreRecordKind};
-use ployz_types::model::{
+use ployz_error::{DeployError, Error, Result, StoreError, StoreRecordKind};
+use ployz_model::{
     BranchEnvironmentFailure, BranchEnvironmentRecord, BranchEnvironmentState, DeployId,
     DeployPhaseId, DeployPhaseRecord, DeployRecord, PreparedDeployRecord, PreparedDeployState,
     RoutingEvent, ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
     VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
-use ployz_types::spec::Namespace;
+use ployz_spec::Namespace;
+use ployz_store_api::{DeployCommit, DeployCommitFacts, DeployStore};
 
 use crate::NatsStore;
 use crate::buckets::NatsAssetNames;
@@ -1074,7 +1074,7 @@ fn sort_deploy_phases(phases: &mut [DeployPhaseRecord]) {
 
 fn apply_phase_commit_fact(
     phase: &mut DeployPhaseRecord,
-    commit: Option<&ployz_types::model::DeployPhaseCommitRecord>,
+    commit: Option<&ployz_model::DeployPhaseCommitRecord>,
 ) {
     let Some(commit) = commit else {
         return;
@@ -1094,14 +1094,14 @@ fn apply_phase_commit_fact(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::error::{Error, StoreRecordKind};
-    use ployz_types::model::{
+    use ployz_error::{Error, StoreRecordKind};
+    use ployz_model::{
         DeployPhaseCommitPolicy, DeployPhaseId, DeployPhaseRecord, DeployPhaseRollbackPolicy,
         DeployPhaseState, DeployPreview, DeployPreviewBaseline, DeployPreviewBaselineComponents,
         DeployRecordState, MachineId, PreparedDeployRecord, PreparedDeployState, ServiceRelease,
         ServiceRevisionRecord,
     };
-    use ployz_types::spec::Namespace;
+    use ployz_spec::Namespace;
 
     #[test]
     fn duplicate_commit_repair_republishes_current_truth_for_touched_keys() {
@@ -1258,7 +1258,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            Error::Store(ployz_types::error::StoreError::KeyMismatch {
+            Error::Store(ployz_error::StoreError::KeyMismatch {
                 record: StoreRecordKind::DeployPhase,
                 ..
             })
@@ -1308,7 +1308,7 @@ mod tests {
         let namespace = Namespace::new(String::from("prod"));
         let deploy_id = DeployId::new(String::from("deploy-a"));
         let phase_id = DeployPhaseId::new(String::from("db"));
-        let commit = ployz_types::model::DeployPhaseCommitRecord {
+        let commit = ployz_model::DeployPhaseCommitRecord {
             namespace: namespace.clone(),
             deploy_id: deploy_id.clone(),
             phase_id: phase_id.clone(),
@@ -1318,7 +1318,7 @@ mod tests {
         let mut phase = deploy_phase("prod", "deploy-a", "db", 0);
         phase.mark_failed(
             40,
-            ployz_types::model::DeployPhaseFailure {
+            ployz_model::DeployPhaseFailure {
                 code: String::from("COMMIT_PUBLISH_FAILED"),
                 message: String::from("routing publish failed after durable commit"),
             },
@@ -1398,11 +1398,11 @@ mod tests {
             after: Vec::new(),
             participants: Vec::new(),
             work: Vec::new(),
-            state: ployz_types::model::DeployPhaseRecordState::running(
+            state: ployz_model::DeployPhaseRecordState::running(
                 DeployPhaseCommitPolicy::EndOfDeploy,
             ),
             rollback_policy: DeployPhaseRollbackPolicy::Reversible,
-            advance_policy: ployz_types::model::DeployPhaseAdvancePolicy::Immediate,
+            advance_policy: ployz_model::DeployPhaseAdvancePolicy::Immediate,
             started_at: 1,
         }
     }

@@ -23,7 +23,8 @@ userspace-wg = [
 [dependencies]
 ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-runtime-docker = { path = "../ployz-runtime-docker", optional = true }
-ployz-types = { path = "../ployz-types" }
+ployz-error = { path = "../ployz-error" }
+ployz-model = { path = "../ployz-model" }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 bollard = { version = "0.20.1", optional = true }

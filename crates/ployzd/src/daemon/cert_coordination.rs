@@ -3,6 +3,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ployz_api::{AcmeHttp01ChallengeStatus, AcmeHttp01StatusPayload, DaemonPayload};
+use ployz_error::{CertificateError, Error, Result};
+use ployz_model::{
+    MachineId, MachineLifecycle, MachineMembership, RoutingState, ServiceReleaseRecord,
+    ServiceRevisionRecord,
+};
 use ployz_nats::{Lease, LockAcquireError, NatsLocks};
 use ployz_nats::{acme_account_lock, cert_lock};
 use ployz_orchestrator::certificates::{
@@ -10,14 +15,9 @@ use ployz_orchestrator::certificates::{
     Http01ChallengeReadiness, IssuanceAcquisition, IssuanceCoordinator, IssuanceHold,
 };
 use ployz_orchestrator::coordination::ReservationId;
+use ployz_spec::{RouteSpec, ServiceSpec};
 use ployz_store_api::{CertificateStore, RoutingStateStore, StoreDriver};
-use ployz_types::error::{CertificateError, Error, Result};
-use ployz_types::model::{
-    MachineId, MachineLifecycle, MachineMembership, RoutingState, ServiceReleaseRecord,
-    ServiceRevisionRecord,
-};
-use ployz_types::spec::{RouteSpec, ServiceSpec};
-use ployz_types::time::now_unix_secs;
+use ployz_time::now_unix_secs;
 use tokio::time::{Instant, sleep};
 use tracing::warn;
 
@@ -250,10 +250,10 @@ fn hostname_is_advertised(routing: &RoutingState, hostname: &str) -> Result<bool
 
 fn active_release_revisions(release: &ServiceReleaseRecord) -> Vec<&str> {
     match &release.release.target {
-        ployz_types::model::ServiceReleaseTarget::Direct { revision_hash } => {
+        ployz_model::ServiceReleaseTarget::Direct { revision_hash } => {
             vec![revision_hash.as_str()]
         }
-        ployz_types::model::ServiceReleaseTarget::Split { allocations, .. } => allocations
+        ployz_model::ServiceReleaseTarget::Split { allocations, .. } => allocations
             .iter()
             .filter(|allocation| allocation.percent > 0)
             .map(|allocation| allocation.revision_hash.as_str())
@@ -294,8 +294,8 @@ fn exclusion_codes(exclusions: &[ChallengeReadinessExclusion]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{DeployId, MachineTopology, OverlayIp, PublicKey, ServiceRelease};
-    use ployz_types::spec::Namespace;
+    use ployz_model::{DeployId, MachineTopology, OverlayIp, PublicKey, ServiceRelease};
+    use ployz_spec::Namespace;
     use std::net::Ipv6Addr;
 
     #[test]
@@ -382,12 +382,12 @@ mod tests {
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
-            region_role: ployz_types::model::RegionRole::HomeData,
+            region_role: ployz_model::RegionRole::HomeData,
             subnet: has_subnet.then(|| "10.0.0.0/24".parse().expect("valid cidr")),
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle,
-            storage_role: ployz_types::model::StorageParticipation::default_authority().into(),
+            storage_role: ployz_model::StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: Default::default(),

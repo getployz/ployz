@@ -1,13 +1,6 @@
 use async_trait::async_trait;
-use ployz_store_api::{
-    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
-    DeployCommitFacts, DeployStore, ImageAvailabilityStore, InstanceStatusStore, InviteStore,
-    MachineMembershipStore, MachineSubscription, PeerRttStore, RoutingEventEnvelope,
-    RoutingEventSubscription, RoutingEventSubscriptionUpdate, RoutingStateStore, StoreDriver,
-    StoreRuntimeControl, SyncProbe, SyncStatus,
-};
-use ployz_types::error::{DeployError, Error, Result, SubscriptionStream};
-use ployz_types::model::{
+use ployz_error::{DeployError, Error, Result, SubscriptionStream};
+use ployz_model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     BranchEnvironmentFailure, BranchEnvironmentRecord, BranchEnvironmentState, CertificateEvent,
     CertificateRecord, DeployId, DeployPhaseId, DeployPhaseRecord, DeployRecord,
@@ -17,7 +10,14 @@ use ployz_types::model::{
     ServiceReleaseRecord, ServiceRevisionRecord, VolumeBranchLineageRecord, VolumeMovementRecord,
     VolumeRecord,
 };
-use ployz_types::spec::Namespace;
+use ployz_spec::Namespace;
+use ployz_store_api::{
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
+    DeployCommitFacts, DeployStore, ImageAvailabilityStore, InstanceStatusStore, InviteStore,
+    MachineMembershipStore, MachineSubscription, PeerRttStore, RoutingEventEnvelope,
+    RoutingEventSubscription, RoutingEventSubscriptionUpdate, RoutingStateStore, StoreDriver,
+    StoreRuntimeControl, SyncProbe, SyncStatus,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -865,7 +865,7 @@ fn sort_deploy_phases(phases: &mut [DeployPhaseRecord]) {
 
 fn apply_phase_commit_fact(
     phase: &mut DeployPhaseRecord,
-    commit: Option<&ployz_types::model::DeployPhaseCommitRecord>,
+    commit: Option<&ployz_model::DeployPhaseCommitRecord>,
 ) {
     let Some(commit) = commit else {
         return;
@@ -1266,7 +1266,7 @@ impl StoreRuntimeControl for MemoryRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::{
+    use ployz_model::{
         BranchEnvironmentRecord, BranchEnvironmentResourceMode, BranchEnvironmentState,
         CertificateLifecycle, DeployPhaseCommitPolicy, DeployPhaseFailure,
         DeployPhaseRollbackPolicy, DeployPhaseState, DeployPreview, DeployPreviewBaseline,
@@ -1279,15 +1279,15 @@ mod tests {
     fn test_machine(id: impl Into<String>) -> MachineMembership {
         MachineMembership {
             id: MachineId::new(id),
-            public_key: ployz_types::model::PublicKey([0; 32]),
-            overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
-            topology: ployz_types::model::MachineTopology::local(),
-            region_role: ployz_types::model::RegionRole::HomeData,
+            public_key: ployz_model::PublicKey([0; 32]),
+            overlay_ip: ployz_model::OverlayIp("fd00::1".parse().expect("valid overlay")),
+            topology: ployz_model::MachineTopology::local(),
+            region_role: ployz_model::RegionRole::HomeData,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),
-            lifecycle: ployz_types::model::MachineLifecycle::Active,
-            storage_role: ployz_types::model::StorageParticipation::default_authority().into(),
+            lifecycle: ployz_model::MachineLifecycle::Active,
+            storage_role: ployz_model::StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: std::collections::BTreeMap::new(),
@@ -1387,7 +1387,7 @@ mod tests {
         let store = MemoryStore::new();
         let invite = InviteRecord {
             invite_id: "inv-1".into(),
-            network_id: ployz_types::model::NetworkId::new("net-1"),
+            network_id: ployz_model::NetworkId::new("net-1"),
             issuer_machine_id: MachineId::new("issuer"),
             issuer_verify_key: "verify".into(),
             expires_at: 10_000,
@@ -1415,7 +1415,7 @@ mod tests {
         let store = MemoryStore::new();
         let invite = InviteRecord {
             invite_id: "inv-2".into(),
-            network_id: ployz_types::model::NetworkId::new("net-1"),
+            network_id: ployz_model::NetworkId::new("net-1"),
             issuer_machine_id: MachineId::new("issuer"),
             issuer_verify_key: "verify".into(),
             expires_at: 50,
@@ -1456,7 +1456,7 @@ mod tests {
                 .get_deploy_phase(
                     &namespace,
                     &deploy_id,
-                    &ployz_types::model::DeployPhaseId::new("db")
+                    &ployz_model::DeployPhaseId::new("db")
                 )
                 .await
                 .expect("read deploy phase"),
@@ -1532,7 +1532,7 @@ mod tests {
                 branch_lineage: Vec::new(),
                 volume_branches: Vec::new(),
                 volume_movements: Vec::new(),
-                phase_commits: vec![ployz_types::model::DeployPhaseCommitRecord {
+                phase_commits: vec![ployz_model::DeployPhaseCommitRecord {
                     namespace: namespace.clone(),
                     deploy_id: deploy_id.clone(),
                     phase_id: phase_id.clone(),
@@ -2733,7 +2733,7 @@ mod tests {
         ServiceReleaseRecord {
             namespace: namespace.clone(),
             service: service.into(),
-            release: ployz_types::model::ServiceRelease::direct(
+            release: ployz_model::ServiceRelease::direct(
                 revision_hash,
                 Vec::new(),
                 DeployId::new(deploy_id),
@@ -2751,17 +2751,17 @@ mod tests {
         DeployPhaseRecord {
             namespace: namespace.clone(),
             deploy_id: deploy_id.clone(),
-            phase_id: ployz_types::model::DeployPhaseId::new(phase_id),
+            phase_id: ployz_model::DeployPhaseId::new(phase_id),
             name: phase_id.into(),
             order,
             after: Vec::new(),
             participants: Vec::new(),
             work: Vec::new(),
-            state: ployz_types::model::DeployPhaseRecordState::running(
+            state: ployz_model::DeployPhaseRecordState::running(
                 DeployPhaseCommitPolicy::EndOfDeploy,
             ),
             rollback_policy: DeployPhaseRollbackPolicy::Reversible,
-            advance_policy: ployz_types::model::DeployPhaseAdvancePolicy::Immediate,
+            advance_policy: ployz_model::DeployPhaseAdvancePolicy::Immediate,
             started_at: 10,
         }
     }
@@ -2901,8 +2901,8 @@ mod tests {
             source_volume_name: volume_name.into(),
             source_machine: MachineId::new("machine-a"),
             target_machine: MachineId::new("machine-1"),
-            data_policy: ployz_types::spec::VolumeCloneDataPolicy::Raw,
-            consistency: ployz_types::spec::VolumeCloneConsistency::CrashConsistent,
+            data_policy: ployz_spec::VolumeCloneDataPolicy::Raw,
+            consistency: ployz_spec::VolumeCloneConsistency::CrashConsistent,
             deploy_id: deploy_id.clone(),
             commit_deploy_id: deploy_id,
             phase_id: None,
@@ -2918,16 +2918,16 @@ mod tests {
             instance_id: InstanceId::new(instance_id),
             namespace: namespace.clone(),
             service: "api".into(),
-            slot_id: ployz_types::model::SlotId::new("slot-1"),
+            slot_id: ployz_model::SlotId::new("slot-1"),
             machine_id: MachineId::new("machine-1"),
             revision_hash: "rev-1".into(),
             deploy_id: DeployId::new("deploy-1"),
             docker_container_id: "container-1".into(),
             overlay_ip: None,
             backend_ports: std::collections::BTreeMap::new(),
-            phase: ployz_types::model::InstancePhase::Ready,
+            phase: ployz_model::InstancePhase::Ready,
             ready: true,
-            drain_state: ployz_types::model::DrainState::None,
+            drain_state: ployz_model::DrainState::None,
             error: None,
             started_at: 1,
             updated_at: 1,
@@ -2938,7 +2938,7 @@ mod tests {
         VolumeRecord {
             namespace: namespace.clone(),
             volume_name: volume_name.into(),
-            scope: ployz_types::spec::VolumeScope::Single,
+            scope: ployz_spec::VolumeScope::Single,
             machine_id: MachineId::new("machine-1"),
             quota: "1G".into(),
             mode: "0750".into(),
@@ -2978,16 +2978,16 @@ mod tests {
         let store = MemoryStore::new();
         let machine = MachineMembership {
             id: MachineId::new("machine-1"),
-            public_key: ployz_types::model::PublicKey([0; 32]),
-            overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
-            region_role: ployz_types::model::RegionRole::HomeData,
-            topology: ployz_types::model::MachineTopology::new("us-east", Some("use1-a"))
+            public_key: ployz_model::PublicKey([0; 32]),
+            overlay_ip: ployz_model::OverlayIp("fd00::1".parse().expect("valid overlay")),
+            region_role: ployz_model::RegionRole::HomeData,
+            topology: ployz_model::MachineTopology::new("us-east", Some("use1-a"))
                 .expect("topology should parse"),
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),
-            lifecycle: ployz_types::model::MachineLifecycle::Active,
-            storage_role: ployz_types::model::StorageParticipation::default_authority().into(),
+            lifecycle: ployz_model::MachineLifecycle::Active,
+            storage_role: ployz_model::StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: std::collections::BTreeMap::new(),
@@ -3053,15 +3053,15 @@ mod tests {
         let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
         let machine = MachineMembership {
             id: MachineId::new("machine-1"),
-            public_key: ployz_types::model::PublicKey([0; 32]),
-            overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
-            topology: ployz_types::model::MachineTopology::local(),
-            region_role: ployz_types::model::RegionRole::HomeData,
+            public_key: ployz_model::PublicKey([0; 32]),
+            overlay_ip: ployz_model::OverlayIp("fd00::1".parse().expect("valid overlay")),
+            topology: ployz_model::MachineTopology::local(),
+            region_role: ployz_model::RegionRole::HomeData,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),
-            lifecycle: ployz_types::model::MachineLifecycle::Active,
-            storage_role: ployz_types::model::StorageParticipation::default_authority().into(),
+            lifecycle: ployz_model::MachineLifecycle::Active,
+            storage_role: ployz_model::StorageParticipation::default_authority().into(),
             created_at: 1,
             updated_at: 1,
             labels: std::collections::BTreeMap::new(),
@@ -3240,7 +3240,7 @@ mod tests {
         let volume = VolumeRecord {
             namespace: namespace.clone(),
             volume_name: "data".into(),
-            scope: ployz_types::spec::VolumeScope::Single,
+            scope: ployz_spec::VolumeScope::Single,
             machine_id: MachineId::new("machine-1"),
             quota: "1G".into(),
             mode: "0750".into(),

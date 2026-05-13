@@ -7,10 +7,10 @@
 //! state, rather than relying on freshness of stale membership gossip.
 
 use async_trait::async_trait;
+use ployz_model::MachineMembership;
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcFailureKind};
 use ployz_node_api::NodeRequest;
 use ployz_orchestrator::deploy::{ParticipantProbe, ProbeError, ProbeErrorKind};
-use ployz_types::model::MachineMembership;
 
 pub struct NatsRpcProbe {
     client: NatsNodeRpcClient,

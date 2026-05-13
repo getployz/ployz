@@ -1,8 +1,8 @@
 use async_trait::async_trait;
+use ployz_error::{Error, Result, StoreRecordKind};
+use ployz_model::{InstanceId, InstanceStatusRecord, RoutingEvent};
+use ployz_spec::Namespace;
 use ployz_store_api::InstanceStatusStore;
-use ployz_types::error::{Error, Result, StoreRecordKind};
-use ployz_types::model::{InstanceId, InstanceStatusRecord, RoutingEvent};
-use ployz_types::spec::Namespace;
 
 use crate::NatsStore;
 use crate::store::kv_json;
@@ -113,11 +113,11 @@ fn sort_instances(records: &mut [InstanceStatusRecord]) {
 #[cfg(test)]
 mod tests {
     use super::{decode_instance, sort_instances};
-    use ployz_types::error::{Error, StoreRecordKind};
-    use ployz_types::model::{
+    use ployz_error::{Error, StoreRecordKind};
+    use ployz_model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, SlotId,
     };
-    use ployz_types::spec::Namespace;
+    use ployz_spec::Namespace;
     use std::collections::BTreeMap;
 
     #[test]

@@ -1,8 +1,8 @@
 use async_nats::jetstream::kv::{CreateError, CreateErrorKind};
 use async_trait::async_trait;
+use ployz_error::{Error, Result, StoreRecordKind};
+use ployz_model::{InviteRecord, InviteStatus, MachineId};
 use ployz_store_api::InviteStore;
-use ployz_types::error::{Error, Result, StoreRecordKind};
-use ployz_types::model::{InviteRecord, InviteStatus, MachineId};
 
 use crate::NatsStore;
 use crate::store::kv_json;
@@ -184,8 +184,8 @@ mod tests {
     };
     use crate::store::kv_json;
     use async_nats::jetstream::kv::{CreateError, CreateErrorKind};
-    use ployz_types::error::{Error, StoreRecordKind};
-    use ployz_types::model::{InviteRecord, InviteStatus, MachineId, NetworkId};
+    use ployz_error::{Error, StoreRecordKind};
+    use ployz_model::{InviteRecord, InviteStatus, MachineId, NetworkId};
 
     #[test]
     fn create_error_already_exists_maps_to_invite_already_exists() {

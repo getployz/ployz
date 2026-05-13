@@ -8,7 +8,9 @@ publish = false
 [dependencies]
 ployz-api = { path = "../ployz-api" }
 ployz-config = { path = "../ployz-config" }
-ployz-types = { path = "../ployz-types" }
+ployz-error = { path = "../ployz-error" }
+ployz-model = { path = "../ployz-model" }
+ployz-spec = { path = "../ployz-spec" }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "process"] }
 

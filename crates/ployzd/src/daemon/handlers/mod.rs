@@ -10,8 +10,8 @@ pub(crate) mod volume;
 
 use crate::ipc::listener::IncomingRequest;
 use ployz_api::{DaemonRequest, DaemonResponse};
+use ployz_model::MachineId;
 use ployz_node_api::NodeRequest;
-use ployz_types::model::MachineId;
 use tokio::sync::oneshot;
 
 use super::DaemonState;
@@ -704,8 +704,8 @@ mod tests {
         DeployApplyPreparedRequest, ImageDistributeRequest, ImagePushRequest,
         ImageReceiveSessionRequest, ImageReceivedImportRequest,
     };
+    use ployz_model::{BuildMethod, DeployId, ImageDigest, MachineId};
     use ployz_node_api::NodeRequest;
-    use ployz_types::model::{BuildMethod, DeployId, ImageDigest, MachineId};
 
     #[test]
     fn debug_tick_routes_to_exclusive_lane() {

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use ployz_types::Result;
+use ployz_error::Result;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 

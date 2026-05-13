@@ -14,7 +14,7 @@ use tokio::io::AsyncWriteExt as _;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
-use crate::features::image::registry::ImageRegistry;
+use crate::registry::ImageRegistry;
 
 const DOCKER_MANIFEST_MEDIA_TYPE: &str = "application/vnd.docker.distribution.manifest.v2+json";
 const DOCKER_CONFIG_MEDIA_TYPE: &str = "application/vnd.docker.container.image.v1+json";
@@ -23,7 +23,7 @@ const RECEIVER_HTTP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const RECEIVER_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ImageArchiveError {
+pub enum ImageArchiveError {
     #[error("{operation}: {message}")]
     Io {
         operation: &'static str,
@@ -42,26 +42,26 @@ pub(crate) enum ImageArchiveError {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ParsedImageArchive {
-    pub(crate) config: ArchiveBlob,
-    pub(crate) layers: Vec<ArchiveBlob>,
-    pub(crate) repo_tags: Vec<String>,
-    pub(crate) distribution_manifest: Vec<u8>,
+pub struct ParsedImageArchive {
+    pub config: ArchiveBlob,
+    pub layers: Vec<ArchiveBlob>,
+    pub repo_tags: Vec<String>,
+    pub distribution_manifest: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ArchiveBlob {
-    pub(crate) digest: String,
-    pub(crate) size: u64,
-    pub(crate) path: PathBuf,
+pub struct ArchiveBlob {
+    pub digest: String,
+    pub size: u64,
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ReceiverUploadReport {
-    pub(crate) uploaded_blobs: usize,
-    pub(crate) skipped_blobs: usize,
-    pub(crate) bytes_uploaded: u64,
-    pub(crate) manifest_digest: String,
+pub struct ReceiverUploadReport {
+    pub uploaded_blobs: usize,
+    pub skipped_blobs: usize,
+    pub bytes_uploaded: u64,
+    pub manifest_digest: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,11 +91,11 @@ struct DistributionManifest {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct OwnedDistributionManifest {
-    pub(crate) schema_version: u8,
-    pub(crate) media_type: String,
-    pub(crate) config: OwnedDescriptor,
-    pub(crate) layers: Vec<OwnedDescriptor>,
+pub struct OwnedDistributionManifest {
+    pub schema_version: u8,
+    pub media_type: String,
+    pub config: OwnedDescriptor,
+    pub layers: Vec<OwnedDescriptor>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -108,10 +108,10 @@ struct Descriptor {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct OwnedDescriptor {
-    pub(crate) media_type: String,
-    pub(crate) size: u64,
-    pub(crate) digest: String,
+pub struct OwnedDescriptor {
+    pub media_type: String,
+    pub size: u64,
+    pub digest: String,
 }
 
 #[derive(Serialize)]
@@ -122,7 +122,7 @@ struct DockerLoadManifestEntry<'a> {
     layers: Vec<String>,
 }
 
-pub(crate) async fn parse_image_archive(
+pub async fn parse_image_archive(
     mut reader: ImageArchiveReader<'_>,
     work_dir: &Path,
 ) -> Result<ParsedImageArchive, ImageArchiveError> {
@@ -149,7 +149,7 @@ pub(crate) async fn parse_image_archive(
         })?
 }
 
-pub(crate) async fn upload_archive_to_receiver(
+pub async fn upload_archive_to_receiver(
     session: &ImageReceiveSessionPayload,
     reference: &str,
     archive: &ParsedImageArchive,
@@ -201,7 +201,7 @@ pub(crate) async fn upload_archive_to_receiver(
     })
 }
 
-pub(crate) async fn reconstruct_received_archive(
+pub async fn reconstruct_received_archive(
     registry: &ImageRegistry,
     repository: &str,
     reference: &str,
@@ -612,7 +612,7 @@ fn io_error(operation: &'static str, error: io::Error) -> ImageArchiveError {
 mod tests {
     use super::*;
     use axum::http::{Method, Request};
-    use ployz_types::model::MachineId;
+    use ployz_model::MachineId;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tower::ServiceExt as _;
@@ -695,10 +695,9 @@ mod tests {
         let response = router.oneshot(request).await.expect("preload blob");
         assert_eq!(response.status(), StatusCode::CREATED);
 
-        let listener =
-            crate::features::image::registry::serve("127.0.0.1:0".parse().expect("addr"), registry)
-                .await
-                .expect("serve registry");
+        let listener = crate::registry::serve("127.0.0.1:0".parse().expect("addr"), registry)
+            .await
+            .expect("serve registry");
         let endpoint = format!("http://{}/v2/ployz/op-1", listener.bind_addr());
         let mut headers = BTreeMap::new();
         headers.insert("x-ployz-image-operation".into(), "op-1".into());

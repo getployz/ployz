@@ -17,8 +17,8 @@ use crate::metrics::{
     ContainerResourceMetricsSource, DockerContainerResourceMetricsSource,
     spawn_container_resource_metrics_loop,
 };
-use ployz_types::model::MachineTopology;
-use ployz_types::model::{
+use ployz_model::MachineTopology;
+use ployz_model::{
     NetworkLifecycle, NetworkLifecycleGoal, NetworkLifecycleTransition, NetworkTransitionEvidence,
 };
 
@@ -285,7 +285,7 @@ async fn resume_running_network(state: &Arc<RwLock<DaemonState>>) {
                     evidence: NetworkTransitionEvidence::StartupResumeFailure {
                         network: stopped_network_name,
                     },
-                    at_unix_secs: ployz_types::time::now_unix_secs(),
+                    at_unix_secs: ployz_time::now_unix_secs(),
                 });
             let path = NetworkConfig::path(&state_guard.data_dir, &network);
             if let Err(save_error) = stopped.save(&path) {

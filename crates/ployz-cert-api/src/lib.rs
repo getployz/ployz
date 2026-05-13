@@ -1,6 +1,6 @@
 use async_trait::async_trait;
+use ployz_error::{CertificateError, Result};
 use ployz_store_api::{CertificateStore, StoreDriver};
-use ployz_types::error::{CertificateError, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;

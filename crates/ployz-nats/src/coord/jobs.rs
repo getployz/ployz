@@ -8,7 +8,7 @@ use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy, ReplayPolicy, pu
 use async_nats::jetstream::message::PublishMessage;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
-use ployz_types::error::{CoordinationError, Error, Result};
+use ployz_error::{CoordinationError, Error, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::NatsStore;
@@ -459,8 +459,8 @@ mod tests {
     #[test]
     fn renewal_consumer_config_uses_scope() {
         let scope = NatsScope::new(
-            ployz_types::model::InstallationId::new("inst-acme"),
-            ployz_types::model::AuthorityId::new("auth-sin"),
+            ployz_model::InstallationId::new("inst-acme"),
+            ployz_model::AuthorityId::new("auth-sin"),
         );
         let config = cert_renewal_consumer_config_in(&scope, CertRenewalConsumerPolicy::default())
             .expect("consumer config");
@@ -493,8 +493,8 @@ mod tests {
     #[test]
     fn renewal_job_decode_accepts_scoped_subject() {
         let scope = NatsScope::new(
-            ployz_types::model::InstallationId::new("inst-acme"),
-            ployz_types::model::AuthorityId::new("auth-sin"),
+            ployz_model::InstallationId::new("inst-acme"),
+            ployz_model::AuthorityId::new("auth-sin"),
         );
         let subject: async_nats::Subject =
             "ployz.v1.inst-acme.auth-sin.work.cert.renew.api%2Eexample%2Ecom"

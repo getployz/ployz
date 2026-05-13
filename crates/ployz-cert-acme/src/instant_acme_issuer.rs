@@ -9,12 +9,10 @@ use ployz_cert_api::{
     IssuedCertificate, LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, StartedOrder,
     account_id_for_issuer_url,
 };
+use ployz_error::{AcmeAuthorizationStatus, AcmeOrderStatus, CertificateError, Error, Result};
+use ployz_model::{AcmeAccountRecord, AcmeChallengeRecord};
 use ployz_store_api::{CertificateStore, StoreDriver};
-use ployz_types::error::{
-    AcmeAuthorizationStatus, AcmeOrderStatus, CertificateError, Error, Result,
-};
-use ployz_types::model::{AcmeAccountRecord, AcmeChallengeRecord};
-use ployz_types::time::now_unix_secs;
+use ployz_time::now_unix_secs;
 use std::sync::Arc;
 
 pub struct InstantAcmeIssuer {
@@ -373,10 +371,10 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use ployz_cert_api::{AccountAcquisition, AcmeAccountCoordinator, CertificateManagerConfig};
+    use ployz_error::Error;
+    use ployz_model::AcmeAccountRecord;
     use ployz_store_api::StoreDriver;
     use ployz_store_memory::StoreDriverMemoryExt as _;
-    use ployz_types::error::Error;
-    use ployz_types::model::AcmeAccountRecord;
 
     struct VetoAccountCoordinator;
 

@@ -1,7 +1,7 @@
 use base64::Engine;
 use ipnet::Ipv4Net;
-use ployz_types::model::{AuthorityId, DeployId, InstallationId, MachineId, StorageParticipation};
-use ployz_types::spec::Namespace;
+use ployz_model::{AuthorityId, DeployId, InstallationId, MachineId, StorageParticipation};
+use ployz_spec::Namespace;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatsScope {

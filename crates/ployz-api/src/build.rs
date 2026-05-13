@@ -1,4 +1,4 @@
-use ployz_types::model::{
+use ployz_model::{
     BuildMethod, BuildOperationRecord, ImageArtifact, ImageAvailabilityRecord, ImagePlatform,
     MachineId,
 };

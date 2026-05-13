@@ -23,11 +23,11 @@ use crate::model::{
     VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use futures_util::stream::{self, FuturesUnordered, StreamExt, TryStreamExt};
+use ployz_spec::{VolumeCloneConsistency, VolumeCloneDataPolicy};
 use ployz_store_api::{
     DeployCommit, DeployStore, InstanceStatusStore, MachineMembershipStore, StoreDriver,
 };
-use ployz_types::spec::{VolumeCloneConsistency, VolumeCloneDataPolicy};
-use ployz_types::time::now_unix_secs;
+use ployz_time::now_unix_secs;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use tracing::warn;
@@ -103,7 +103,7 @@ struct InspectedParticipant {
 pub(super) struct ParticipantSet {
     machines: BTreeMap<MachineId, MachineMembership>,
     instances: Vec<InstanceStatusRecord>,
-    namespace: ployz_types::spec::Namespace,
+    namespace: ployz_spec::Namespace,
     deploy_id: DeployId,
 }
 
@@ -128,7 +128,7 @@ impl ParticipantSet {
 
     async fn inspect_participants(
         participant_client: &dyn DeployParticipantClient,
-        namespace: ployz_types::spec::Namespace,
+        namespace: ployz_spec::Namespace,
         machine_map: HashMap<MachineId, MachineMembership>,
         participant_ids: BTreeSet<MachineId>,
         local_machine_id: &MachineId,
@@ -217,7 +217,7 @@ pub(super) async fn apply(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
     local_machine_id: &MachineId,
-    manifest: &ployz_types::spec::DeployManifest,
+    manifest: &ployz_spec::DeployManifest,
 ) -> Result<DeployApplyResult> {
     apply_with_certificate_coordination(
         store,
@@ -237,7 +237,7 @@ pub(super) async fn apply_with_certificate_coordination(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
     local_machine_id: &MachineId,
-    manifest: &ployz_types::spec::DeployManifest,
+    manifest: &ployz_spec::DeployManifest,
     certificate_coordinator: Arc<dyn IssuanceCoordinator>,
     account_coordinator: Arc<dyn AcmeAccountCoordinator>,
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
@@ -265,7 +265,7 @@ pub(super) async fn apply_with_initial_plan(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
     local_machine_id: &MachineId,
-    manifest: &ployz_types::spec::DeployManifest,
+    manifest: &ployz_spec::DeployManifest,
     initial_plan: ResolvedPlan,
 ) -> Result<DeployApplyResult> {
     apply_with_initial_plan_and_certificate_coordination(
@@ -287,7 +287,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
     local_machine_id: &MachineId,
-    manifest: &ployz_types::spec::DeployManifest,
+    manifest: &ployz_spec::DeployManifest,
     initial_plan: ResolvedPlan,
     certificate_coordinator: Arc<dyn IssuanceCoordinator>,
     account_coordinator: Arc<dyn AcmeAccountCoordinator>,
@@ -315,7 +315,7 @@ pub(super) async fn apply_with_deploy_id_and_preconditions(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
     local_machine_id: &MachineId,
-    manifest: &ployz_types::spec::DeployManifest,
+    manifest: &ployz_spec::DeployManifest,
     deploy_id: DeployId,
     certificate_coordinator: Arc<dyn IssuanceCoordinator>,
     account_coordinator: Arc<dyn AcmeAccountCoordinator>,
@@ -345,7 +345,7 @@ async fn apply_with_deploy_id_and_preconditions_for_prepared(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
     local_machine_id: &MachineId,
-    manifest: &ployz_types::spec::DeployManifest,
+    manifest: &ployz_spec::DeployManifest,
     deploy_id: DeployId,
     certificate_coordinator: Arc<dyn IssuanceCoordinator>,
     account_coordinator: Arc<dyn AcmeAccountCoordinator>,
@@ -600,7 +600,7 @@ async fn resume_prepared_apply_after_durable_commit(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
     local_machine_id: &MachineId,
-    manifest: &ployz_types::spec::DeployManifest,
+    manifest: &ployz_spec::DeployManifest,
     prepared: &PreparedDeployRecord,
     commit: DeployCommit,
     certificate_coordinator: Arc<dyn IssuanceCoordinator>,
@@ -1003,7 +1003,7 @@ async fn apply_with_deploy_id_initial_plan_and_certificate_coordination(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
     local_machine_id: &MachineId,
-    manifest: &ployz_types::spec::DeployManifest,
+    manifest: &ployz_spec::DeployManifest,
     deploy_id: DeployId,
     initial_plan: ResolvedPlan,
     certificate_coordinator: Arc<dyn IssuanceCoordinator>,
@@ -1644,7 +1644,7 @@ struct ExecutedVolumeMove {
 #[derive(Debug, Clone)]
 struct ExecutedVolumeClone {
     volume_name: String,
-    source_namespace: ployz_types::spec::Namespace,
+    source_namespace: ployz_spec::Namespace,
     source_volume: String,
     source_machine: MachineId,
     target_machine: MachineId,
@@ -2531,7 +2531,7 @@ struct VolumeCloneExecution {
 async fn cleanup_uncommitted_volume_clones(
     participant_client: &dyn DeployParticipantClient,
     participants: &ParticipantSet,
-    namespace: &ployz_types::spec::Namespace,
+    namespace: &ployz_spec::Namespace,
     deploy_id: &DeployId,
     branches: &BTreeMap<String, ExecutedVolumeClone>,
 ) -> Vec<String> {

@@ -151,7 +151,7 @@ mod tests {
         ImageDistributeValidationFailure, ImageDistributeValidationPayload, ImageTransferFailure,
         ImageTransferFailureStage, ImageTransferTargetResult,
     };
-    use ployz_types::model::{ImageDigest, MachineId};
+    use ployz_model::{ImageDigest, MachineId};
     use std::collections::BTreeMap;
 
     #[test]

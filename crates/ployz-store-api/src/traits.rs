@@ -1,7 +1,7 @@
 use async_trait::async_trait;
-use ployz_types::Result;
-use ployz_types::error::{Error, StoreRecordKind};
-use ployz_types::model::{
+use ployz_error::Result;
+use ployz_error::{Error, StoreRecordKind};
+use ployz_model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     BranchEnvironmentFailure, BranchEnvironmentRecord, CertificateEvent, CertificateRecord,
     DeployId, DeployPhaseCommitRecord, DeployPhaseId, DeployPhaseRecord, DeployRecord,
@@ -10,7 +10,7 @@ use ployz_types::model::{
     ServiceBranchLineageRecord, ServiceReleaseRecord, ServiceRevisionRecord,
     VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
-use ployz_types::spec::Namespace;
+use ployz_spec::Namespace;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use tokio::sync::{mpsc, oneshot};
@@ -159,14 +159,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::{RoutingEventEnvelope, apply_routing_event, apply_routing_events};
-    use ployz_types::error::Error;
-    use ployz_types::model::{
+    use ployz_error::Error;
+    use ployz_model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
         MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey, RoutingEvent,
         RoutingState, ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord, SlotId,
         StorageParticipation,
     };
-    use ployz_types::spec::Namespace;
+    use ployz_spec::Namespace;
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
 
@@ -528,7 +528,7 @@ mod tests {
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
-            region_role: ployz_types::model::RegionRole::HomeData,
+            region_role: ployz_model::RegionRole::HomeData,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),

@@ -1,4 +1,4 @@
-use ployz_types::model::ImageDigest;
+use ployz_model::ImageDigest;
 
 pub struct DockerImageRef<'a> {
     pub from_image: &'a str,

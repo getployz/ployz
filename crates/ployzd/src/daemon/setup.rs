@@ -12,7 +12,9 @@ use crate::mesh_state::network::NetworkConfig;
 use ployz_cert_acme::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
 use ployz_dns::DnsConfig;
+use ployz_error::Error as PloyzError;
 use ployz_gateway::GatewayConfig;
+use ployz_model::CertificateState;
 use ployz_nats::NatsLocks;
 use ployz_nats::NatsStore;
 use ployz_nats::config as nats_config;
@@ -27,8 +29,6 @@ use ployz_orchestrator::coordination::SubnetReservationCoordinator;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
 use ployz_store_api::{CertificateStore, StoreDriver, StoreRuntimeControl};
-use ployz_types::error::Error as PloyzError;
-use ployz_types::model::CertificateState;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -252,10 +252,7 @@ enum CertRenewalFailureKind {
     Job,
 }
 
-async fn renewal_job_is_complete(
-    store: &StoreDriver,
-    hostname: &str,
-) -> ployz_types::error::Result<()> {
+async fn renewal_job_is_complete(store: &StoreDriver, hostname: &str) -> ployz_error::Result<()> {
     let Some(record) = store.get_certificate(hostname).await? else {
         return Ok(());
     };
@@ -1028,8 +1025,8 @@ mod tests {
     use crate::mesh_state::bootstrap::write_bootstrap_peer_records;
     use crate::runtime_profile::RuntimeProfile;
     use ployz_config::{RuntimeTarget, ServiceMode};
+    use ployz_model::{MachineId, NetworkName, OverlayIp, PublicKey};
     use ployz_runtime_api::Identity;
-    use ployz_types::model::{MachineId, NetworkName, OverlayIp, PublicKey};
     use tokio::net::TcpListener;
 
     #[test]
@@ -1145,8 +1142,8 @@ mod tests {
             subnet: None,
             bridge_ip: None,
             storage: true,
-            storage_participation: ployz_types::model::StorageParticipation::default_authority(),
-            region_role: ployz_types::model::RegionRole::HomeData,
+            storage_participation: ployz_model::StorageParticipation::default_authority(),
+            region_role: ployz_model::RegionRole::HomeData,
             endpoints: vec!["peer:51820".into()],
         };
         write_bootstrap_peer_records(&network_dir, std::slice::from_ref(&peer))

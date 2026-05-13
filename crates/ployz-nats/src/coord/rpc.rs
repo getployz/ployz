@@ -1,8 +1,8 @@
 use std::time::Duration;
 
+use ployz_error::{Error, Result};
+use ployz_model::MachineId;
 use ployz_node_api::{NodeRequest, NodeResponse};
-use ployz_types::error::{Error, Result};
-use ployz_types::model::MachineId;
 
 use crate::NatsStore;
 use crate::subjects::{self, NatsScope};

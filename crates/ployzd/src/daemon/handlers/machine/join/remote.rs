@@ -2,11 +2,11 @@ use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineSelfTransition, MeshReadyPayload,
     MeshSelfRecordPayload, StatusPayload,
 };
+use ployz_model::{MachineEvent, MachineId, MachineLifecycle, MachineMembership, PublicKey};
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject};
 use ployz_node_api::NodeRequest;
 use ployz_sdk::Transport;
 use ployz_store_api::{MachineMembershipStore, StoreDriver};
-use ployz_types::model::{MachineEvent, MachineId, MachineLifecycle, MachineMembership, PublicKey};
 use tokio::time::{Duration, Instant, sleep, timeout};
 
 use crate::daemon::ssh::{SshOptions, ssh_stdio_transport};

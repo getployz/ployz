@@ -1,4 +1,4 @@
-use ployz_types::spec::DeployManifest;
+use ployz_spec::DeployManifest;
 use schemars::schema_for;
 
 fn main() {

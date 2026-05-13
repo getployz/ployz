@@ -5,8 +5,8 @@ use backon::{ConstantBuilder, Retryable};
 use bollard::Docker;
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use futures_util::StreamExt;
-use ployz_types::error::RuntimeError;
-use ployz_types::{Error, Result};
+use ployz_error::RuntimeError;
+use ployz_error::{Error, Result};
 use reqwest::StatusCode;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -183,8 +183,8 @@ fn attempts_for_duration(duration: Duration, interval: Duration) -> usize {
 mod tests {
     use super::{Probe, ProbeRunner};
     use bollard::Docker;
-    use ployz_types::Error;
-    use ployz_types::error::RuntimeError;
+    use ployz_error::Error;
+    use ployz_error::RuntimeError;
     use std::net::{IpAddr, Ipv4Addr};
     use std::time::Duration;
 

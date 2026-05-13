@@ -4,9 +4,9 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use ployz_api::{DaemonPayload, DaemonResponse, MachineUpdatePayload, MachineUpdateRow};
+use ployz_model::{MachineId, MachineMembership};
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject};
 use ployz_node_api::NodeRequest;
-use ployz_types::model::{MachineId, MachineMembership};
 use tokio::process::Command;
 use tokio::sync::oneshot;
 use tokio::time::{Instant, sleep};
@@ -612,7 +612,7 @@ mod tests {
         first_duplicate, installer_version_argument, normalize_requested_version,
         requested_version_matches_current, update_targets_with_self_last,
     };
-    use ployz_types::model::MachineId;
+    use ployz_model::MachineId;
 
     #[test]
     fn version_normalization_trims_and_drops_v_prefix() {

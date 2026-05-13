@@ -21,12 +21,12 @@ use crate::runtime_profile::RuntimeProfile;
 use ipnet::Ipv4Net;
 use ployz_api::{DaemonPayload, DaemonResponse};
 use ployz_config::{RuntimeTarget, ServiceMode, StorageConfig};
+use ployz_model::MachineTopology;
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::certificates::CertificateRenewalTask;
 use ployz_orchestrator::coordination::{MemorySubnetCoordinator, SubnetReservationCoordinator};
 use ployz_runtime_api::Identity;
 use ployz_runtime_api::RuntimeHandle;
-use ployz_types::model::MachineTopology;
 use serde::Serialize;
 use tokio::sync::{Mutex, mpsc};
 

@@ -1,6 +1,6 @@
 use async_nats::jetstream::kv;
 use futures_util::StreamExt;
-use ployz_types::error::{Error, Result, StoreError};
+use ployz_error::{Error, Result, StoreError};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -116,7 +116,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::error::Error;
+    use ployz_error::Error;
 
     #[test]
     fn put_updates_live_records_and_emits_event() {

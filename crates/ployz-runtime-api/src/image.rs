@@ -1,7 +1,7 @@
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use ployz_types::model::{ImageDigest, ImagePlatform};
+use ployz_model::{ImageDigest, ImagePlatform};
 use thiserror::Error;
 use tokio::io::AsyncRead;
 

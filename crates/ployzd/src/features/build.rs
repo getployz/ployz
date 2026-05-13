@@ -4,6 +4,7 @@ mod local;
 mod operations;
 
 use ployz_api::BuildMachineRequest;
+use ployz_build::local::plan_build_invocation;
 
 use crate::daemon::DaemonState;
 
@@ -12,7 +13,7 @@ impl DaemonState {
         &self,
         request: &BuildMachineRequest,
     ) -> ployz_api::DaemonResponse {
-        if let Err(error) = local::plan_build_invocation(request.method, &request.inputs) {
+        if let Err(error) = plan_build_invocation(request.method, &request.inputs) {
             return self.err("BUILD_MACHINE_INPUT_INVALID", error);
         }
         self.err(
@@ -26,8 +27,8 @@ impl DaemonState {
 mod tests {
     use super::*;
     use ployz_api::{BuildEnvValue, BuildInputs};
+    use ployz_model::{BuildMethod, MachineId};
     use ployz_runtime_api::Identity;
-    use ployz_types::model::{BuildMethod, MachineId};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};

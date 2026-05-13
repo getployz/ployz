@@ -7,7 +7,8 @@ publish = false
 
 [dependencies]
 ployz-storage-api = { path = "../ployz-storage-api" }
-ployz-types = { path = "../ployz-types" }
+ployz-error = { path = "../ployz-error" }
+ployz-spec = { path = "../ployz-spec" }
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["process"] }
 
