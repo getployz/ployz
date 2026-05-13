@@ -10,6 +10,41 @@ Ployz owns storage end-to-end. There is no generic "persistent volume" abstracti
 
 ZFS provides three capabilities that directly map to Ployz primitives:
 
+```mermaid
+%%{init: {"theme": "neutral"}}%%
+flowchart LR
+    accTitle: ZFS capabilities map to Ployz primitives
+    accDescr: Four ZFS capabilities — atomic snapshots, copy-on-write clones, incremental send, and quota enforcement — each enable specific Ployz primitives that operators run as single commands.
+
+    subgraph CAP["ZFS capability"]
+        direction TB
+        SNAP["Atomic snapshots"]
+        CLONE["Copy-on-write clones"]
+        SEND["Incremental send"]
+        QUOTA["Per-dataset quotas"]
+    end
+
+    subgraph PRIM["Ployz primitive"]
+        direction TB
+        ROLL["ployzctl deploy<br/>(rollback)"]
+        BRANCH["ployzctl branch apply"]
+        FORK["ployzctl branch<br/>--volume-mode branch"]
+        MIGR["ployzctl migrate apply"]
+        ENF["Volume quota<br/>enforcement"]
+    end
+
+    SNAP --> ROLL
+    CLONE --> BRANCH
+    CLONE --> FORK
+    SEND --> MIGR
+    QUOTA --> ENF
+
+    classDef cap fill:#e2f2ed,stroke:#0b4f4a,stroke-width:1.5px,color:#1f2320;
+    classDef prim fill:#fffdf8,stroke:#d8d5c9,stroke-width:1.5px,color:#1f2320;
+    class SNAP,CLONE,SEND,QUOTA cap;
+    class ROLL,BRANCH,FORK,MIGR,ENF prim;
+```
+
 ### Snapshots
 
   Atomic, instant point-in-time captures of a dataset. The basis for `rollback` — promoting a branch leaves the old environment snapshotted and instantly restorable.

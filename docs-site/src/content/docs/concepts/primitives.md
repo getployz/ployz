@@ -37,6 +37,11 @@ For small clusters — the 1–200 node range Ployz targets — that tradeoff in
 
 The same discipline that makes a CLI useful for humans makes it usable for agents. An agent can:
 
+<figure class="diagram">
+  <img src="/assets/operator-loop.svg" alt="The operator loop: observe live state, choose one operation, execute bounded foreground work, verify the evidence, decide the next step." />
+  <figcaption>Humans and agents run the same loop: observe, choose, execute, verify.</figcaption>
+</figure>
+
 1. Inspect the current cluster state.
 2. Choose a primitive that achieves the desired outcome.
 3. Run it and observe the structured result.
