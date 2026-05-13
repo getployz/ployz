@@ -42,7 +42,56 @@ On startup, the daemon adopts what is already running and only recreates managed
 
 ## System boundaries
 
-Ployz is organized into four layers that interact through explicit contracts.
+Ployz is organized into four layers that interact through explicit contracts. Dependencies flow downward only: each layer depends on the narrow contracts of the layer beneath it.
+
+```mermaid
+%%{init: {"theme": "neutral"}}%%
+flowchart TB
+    accTitle: Four layers of the Ployz architecture
+    accDescr: Four stacked layers — operator surfaces, orchestration kernel, runtime and substrate backends, and data plane services — with dependencies flowing downward through narrow contracts. The data plane layer survives daemon restart.
+
+    subgraph OS["Operator surfaces"]
+        direction LR
+        CLI["ployzctl CLI"]
+        SDK["SDK / API"]
+        UI["Cloud UI"]
+        AGENT["Agents"]
+    end
+
+    subgraph OK["Orchestration kernel (ployzd)"]
+        direction LR
+        DEPLOY["deploy · branch · promote"]
+        MIGRATE["migrate · transfer · rollback"]
+        COORD["coordination · placement · membership"]
+    end
+
+    subgraph RB["Runtime &amp; substrate backends"]
+        direction LR
+        DOCK["Docker / host runtime"]
+        WG["WireGuard"]
+        ZFS["ZFS / Btrfs"]
+        NATSB["NATS process"]
+        GWB["gateway / DNS"]
+    end
+
+    subgraph DP["Data plane services — survives daemon restart"]
+        direction LR
+        WORK["Workload containers"]
+        MESH["WireGuard mesh"]
+        STORE["NATS streams &amp; KV"]
+        EDGE["Gateway · DNS"]
+        VOL["Storage datasets"]
+    end
+
+    OS -- "structured commands" --> OK
+    OK -- "narrow contracts" --> RB
+    RB -- "supervises" --> DP
+
+    classDef layer fill:#f7f5ef,stroke:#9bc9bd,stroke-width:1.5px,color:#1f2320;
+    classDef survives fill:#e2f2ed,stroke:#0b4f4a,stroke-width:2px,color:#1f2320;
+    class OS,OK,RB layer;
+    class DP survives;
+```
 
 ### Operator surfaces
 
