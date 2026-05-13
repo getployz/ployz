@@ -44,6 +44,47 @@ Ployz separates state into three categories that are never mixed:
 | **Status**      | Durable lifecycle facts emitted by operations                    | Deploy phase records, volume movement evidence, branch lineage              |
 | **Observation** | Live reachability, health, and capacity checked at decision time | Placement probes, WireGuard handshake state, participant readiness          |
 
+```mermaid
+%%{init: {"theme": "neutral"}}%%
+flowchart TB
+    accTitle: Three kinds of truth in Ployz
+    accDescr: Three lanes — Intent, Status, and Observation — feed into operator decisions. Intent and Status are durable in NATS JetStream. Observation is read live at decision time and is never written back as cluster policy.
+
+    subgraph INTENT["Intent · durable in NATS"]
+        direction TB
+        I1["Deploy commits"]
+        I2["Machine membership"]
+        I3["Service revisions"]
+    end
+
+    subgraph STATUS["Status · durable in NATS"]
+        direction TB
+        S1["Deploy phase records"]
+        S2["Volume movement evidence"]
+        S3["Instance lifecycle"]
+    end
+
+    subgraph OBS["Observation · live, not stored"]
+        direction TB
+        O1["Placement probes"]
+        O2["WireGuard handshakes"]
+        O3["Readiness checks"]
+    end
+
+    DECISION{{"Operator decision at request time"}}
+
+    INTENT --> DECISION
+    STATUS --> DECISION
+    OBS -. "consulted, never written back" .-> DECISION
+
+    classDef durable fill:#e2f2ed,stroke:#0b4f4a,stroke-width:1.5px,color:#1f2320;
+    classDef live fill:#fffdf8,stroke:#d8d5c9,stroke-width:1.5px,color:#1f2320;
+    classDef gate fill:#f7f5ef,stroke:#0b4f4a,stroke-width:2px,color:#1f2320;
+    class INTENT,STATUS durable;
+    class OBS live;
+    class DECISION gate;
+```
+
 Intent and Status live in NATS JetStream — they are durable and survive restarts. Observation is always checked live, at the moment a decision needs to be made. The cluster does not rewrite Intent from stale Observations.
 
 :::tip

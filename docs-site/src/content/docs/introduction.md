@@ -81,6 +81,11 @@ Ployz is built around three components that work together.
 
 The system is designed around a tight, human-readable loop:
 
+<figure class="diagram">
+  <img src="/assets/operator-loop.svg" alt="The operator loop: observe live state, choose one operation, execute bounded foreground work, verify the evidence, decide the next step." />
+  <figcaption>The operator loop — one operation at a time, with explicit verification.</figcaption>
+</figure>
+
 1. You observe the cluster with `ployzctl status`.
 2. You decide what to do.
 3. You run one command.

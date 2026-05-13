@@ -1,8 +1,20 @@
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
+import rehypeMermaid from "rehype-mermaid";
 
 export default defineConfig({
   site: "https://docs.ployz.org",
+  markdown: {
+    rehypePlugins: [
+      [
+        rehypeMermaid,
+        {
+          strategy: "inline-svg",
+          mermaidConfig: { theme: "neutral" },
+        },
+      ],
+    ],
+  },
   integrations: [
     starlight({
       title: "Ployz",

@@ -33,6 +33,46 @@ Raw manifests are not stored as deploy evidence because service specs may contai
 
 A deploy apply is foreground work with nine explicit steps. Each step has a defined scope and a defined failure behavior.
 
+```mermaid
+%%{init: {"theme": "neutral"}}%%
+flowchart TD
+    accTitle: Deploy apply flow with commit points
+    accDescr: Nine sequential steps of a deploy apply. Steps one through five are reversible — failure aborts with no lasting state change. The checkpoint commit and final deploy commit are points of no return. After the final commit, cleanup failures become visible status but do not revert the deploy.
+
+    S1["1. Preview manifest against<br/>current stored intent"]
+    S2["2. Acquire namespace<br/>deploy lease"]
+    S3["3. Probe eligible machines<br/>for live capacity"]
+    S4["4. Write applying status<br/>+ pending phase records"]
+    S5["5. Execute phase-owned work<br/>(stop writers, ZFS moves, start candidates)"]
+    S6["6. Append checkpoint commit<br/>— point of no return —"]
+    S7["7. Append final deploy commit<br/>— point of no return —"]
+    S8["8. Publish derived<br/>routing events"]
+    S9["9. Drain and remove<br/>old instances"]
+
+    ABORT["Abort — no lasting state change"]
+    AFTER["FailedAfterCheckpoint<br/>· checkpoint facts remain durable<br/>· cleanup failures = visible status, not revert"]
+
+    S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S9
+    S1 -. "fail" .-> ABORT
+    S2 -. "fail" .-> ABORT
+    S3 -. "fail" .-> ABORT
+    S4 -. "fail" .-> ABORT
+    S5 -. "fail" .-> ABORT
+    S6 -. "fail after" .-> AFTER
+    S7 -. "fail after" .-> AFTER
+    S8 -. "fail after" .-> AFTER
+    S9 -. "fail after" .-> AFTER
+
+    classDef step fill:#fffdf8,stroke:#d8d5c9,stroke-width:1.5px,color:#1f2320;
+    classDef commit fill:#e2f2ed,stroke:#0b4f4a,stroke-width:2.5px,color:#1f2320;
+    classDef abort fill:#f7f5ef,stroke:#9f9b90,stroke-width:1.5px,color:#1f2320;
+    classDef after fill:#f7f5ef,stroke:#0b4f4a,stroke-width:1.5px,color:#1f2320,stroke-dasharray: 4 2;
+    class S1,S2,S3,S4,S5,S8,S9 step;
+    class S6,S7 commit;
+    class ABORT abort;
+    class AFTER after;
+```
+
 ### Preview manifest against current stored intent
 
   The orchestrator reads current deploy commits, status, and instance records to understand what is already running. This produces a plan: which instances need to start, which need to stop, which volumes need to move.
@@ -76,6 +116,40 @@ Before the first commit, a failure aborts the deploy and leaves no lasting state
 ## Routing projection
 
 The gateway and DNS are stateless projections. They do not hold authoritative routing state; they rebuild it from durable records.
+
+```mermaid
+%%{init: {"theme": "neutral"}}%%
+flowchart LR
+    accTitle: Routing projection rebuilt from durable store
+    accDescr: The durable store holds deploy commits, instance records, and a routing events stream. The gateway and DNS read stored state at startup, then consume routing events to keep their in-memory projection current. If freshness becomes uncertain, the projection is discarded and rebuilt from the store before serving resumes.
+
+    subgraph STORE["Durable store · NATS JetStream"]
+        direction TB
+        DC["Deploy commits"]
+        IR["Instance records"]
+        EV["routing_events stream"]
+    end
+
+    subgraph PROJ["In-memory projection"]
+        direction TB
+        GW["ployz-gateway"]
+        DNS["ployz-dns"]
+    end
+
+    TRAFFIC["Live traffic"]
+
+    STORE -- "load on startup" --> PROJ
+    EV -- "ordered events" --> PROJ
+    PROJ -- "upstreams + DNS records" --> TRAFFIC
+    PROJ -. "freshness uncertain · discard + rebuild" .-> STORE
+
+    classDef store fill:#e2f2ed,stroke:#0b4f4a,stroke-width:1.5px,color:#1f2320;
+    classDef proj fill:#fffdf8,stroke:#d8d5c9,stroke-width:1.5px,color:#1f2320;
+    classDef traffic fill:#f7f5ef,stroke:#0b4f4a,stroke-width:2px,color:#1f2320;
+    class DC,IR,EV store;
+    class GW,DNS proj;
+    class TRAFFIC traffic;
+```
 
 On startup:
 
