@@ -1,4 +1,6 @@
+#[path = "../daemon/handlers/build/local.rs"]
 mod local;
+#[path = "../daemon/handlers/build/operations.rs"]
 mod operations;
 
 use ployz_api::BuildMachineRequest;

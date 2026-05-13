@@ -15,7 +15,6 @@ path = "src/main.rs"
 
 [dependencies]
 ployz-config = { path = "../ployz-config" }
-ployz-gateway-config = { path = "../ployz-gateway-config" }
 ployz-metrics = { path = "../ployz-metrics" }
 ployz-nats = { path = "../ployz-nats" }
 ployz-store-api = { path = "../ployz-store-api" }

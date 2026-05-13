@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::built_in_images::BuiltInImages;
-use crate::daemon::handlers::image::registry::ImageRegistry;
+use crate::features::image::registry::ImageRegistry;
 use crate::ipc::listener::IncomingCommand;
 use crate::mesh_state::bootstrap::BootstrapPeerSeedTask;
 use crate::mesh_state::network::NetworkConfig;

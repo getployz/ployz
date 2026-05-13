@@ -1,4 +1,5 @@
 use ployz_api::{DaemonRequest, DaemonResponse, RuntimeWatchFrame};
+use ployz_node_api::NodeRequest;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
@@ -7,10 +8,35 @@ use tracing::{info, warn};
 
 /// A command received from a client, paired with a channel to send the response back.
 pub struct IncomingCommand {
-    pub request: DaemonRequest,
+    pub request: IncomingRequest,
     pub reply: oneshot::Sender<DaemonResponse>,
     pub response_flushed: Option<oneshot::Receiver<()>>,
     pub stream: Option<mpsc::Sender<RuntimeWatchFrame>>,
+}
+
+pub enum IncomingRequest {
+    Control(DaemonRequest),
+    Node(NodeRequest),
+}
+
+impl IncomingRequest {
+    #[must_use]
+    pub fn control(request: DaemonRequest) -> Self {
+        Self::Control(request)
+    }
+
+    #[must_use]
+    pub fn node(request: NodeRequest) -> Self {
+        Self::Node(request)
+    }
+
+    #[must_use]
+    pub fn as_control(&self) -> Option<&DaemonRequest> {
+        match self {
+            Self::Control(request) => Some(request),
+            Self::Node(_) => None,
+        }
+    }
 }
 
 /// Listen on a Unix socket and forward incoming requests as IncomingCommand.
@@ -72,7 +98,7 @@ async fn handle_connection(
         (None, None)
     };
     let cmd = IncomingCommand {
-        request,
+        request: IncomingRequest::control(request),
         reply: reply_tx,
         response_flushed: Some(response_flushed_rx),
         stream: stream_tx,

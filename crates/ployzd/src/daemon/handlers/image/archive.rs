@@ -14,7 +14,7 @@ use tokio::io::AsyncWriteExt as _;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
-use crate::daemon::handlers::image::registry::ImageRegistry;
+use crate::features::image::registry::ImageRegistry;
 
 const DOCKER_MANIFEST_MEDIA_TYPE: &str = "application/vnd.docker.distribution.manifest.v2+json";
 const DOCKER_CONFIG_MEDIA_TYPE: &str = "application/vnd.docker.container.image.v1+json";
@@ -695,12 +695,10 @@ mod tests {
         let response = router.oneshot(request).await.expect("preload blob");
         assert_eq!(response.status(), StatusCode::CREATED);
 
-        let listener = crate::daemon::handlers::image::registry::serve(
-            "127.0.0.1:0".parse().expect("addr"),
-            registry,
-        )
-        .await
-        .expect("serve registry");
+        let listener =
+            crate::features::image::registry::serve("127.0.0.1:0".parse().expect("addr"), registry)
+                .await
+                .expect("serve registry");
         let endpoint = format!("http://{}/v2/ployz/op-1", listener.bind_addr());
         let mut headers = BTreeMap::new();
         headers.insert("x-ployz-image-operation".into(), "op-1".into());

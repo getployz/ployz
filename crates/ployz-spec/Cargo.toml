@@ -1,0 +1,16 @@
+[package]
+name = "ployz-spec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+humantime-serde = { workspace = true }
+ployz-model = { path = "../ployz-model" }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

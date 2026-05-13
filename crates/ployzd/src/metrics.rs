@@ -82,9 +82,6 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::MeshStart { .. } => "mesh_start",
         ployz_api::DaemonRequest::MeshStop { .. } => "mesh_stop",
         ployz_api::DaemonRequest::MeshDestroy { .. } => "mesh_destroy",
-        ployz_api::DaemonRequest::MeshPeerPrepareDestroy { .. } => "mesh_peer_prepare_destroy",
-        ployz_api::DaemonRequest::MeshPeerCancelDestroy { .. } => "mesh_peer_cancel_destroy",
-        ployz_api::DaemonRequest::MeshPeerExecuteDestroy { .. } => "mesh_peer_execute_destroy",
         ployz_api::DaemonRequest::MachineList => "machine_list",
         ployz_api::DaemonRequest::MachineRtt => "machine_rtt",
         ployz_api::DaemonRequest::MeshPeerRttSnapshot => "mesh_peer_rtt_snapshot",
@@ -92,13 +89,10 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::MachineAdd { .. } => "machine_add",
         ployz_api::DaemonRequest::MachineStoragePromote { .. } => "machine_storage_promote",
         ployz_api::DaemonRequest::MachineUpdate { .. } => "machine_update",
-        ployz_api::DaemonRequest::MeshPeerPrepareUpdate { .. } => "mesh_peer_prepare_update",
-        ployz_api::DaemonRequest::MeshPeerExecuteUpdate { .. } => "mesh_peer_execute_update",
         ployz_api::DaemonRequest::MachineActivate { .. } => "machine_activate",
         ployz_api::DaemonRequest::MachineDrain { .. } => "machine_drain",
         ployz_api::DaemonRequest::MachineStandby { .. } => "machine_standby",
         ployz_api::DaemonRequest::MachineRemove { .. } => "machine_remove",
-        ployz_api::DaemonRequest::MeshPeerRemoveMachine { .. } => "mesh_peer_remove_machine",
         ployz_api::DaemonRequest::MachineOperationList => "machine_operation_list",
         ployz_api::DaemonRequest::MachineOperationGet { .. } => "machine_operation_get",
         ployz_api::DaemonRequest::MachineInviteCreate { .. } => "machine_invite_create",
@@ -106,13 +100,6 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::MachineInviteList => "machine_invite_list",
         ployz_api::DaemonRequest::MachineInviteImport { .. } => "machine_invite_import",
         ployz_api::DaemonRequest::MeshBootstrap { .. } => "mesh_bootstrap",
-        ployz_api::DaemonRequest::MachineTransitionSelf { .. } => "machine_transition_self",
-        ployz_api::DaemonRequest::MachineStoragePromoteSelf { .. } => {
-            "machine_storage_promote_self"
-        }
-        ployz_api::DaemonRequest::MachineStorageRestoreSelf { .. } => {
-            "machine_storage_restore_self"
-        }
         ployz_api::DaemonRequest::AcmeChallengeReady { .. } => "acme_challenge_ready",
         ployz_api::DaemonRequest::AcmeHttp01Status { .. } => "acme_http01_status",
         ployz_api::DaemonRequest::MeshSelfRecord => "mesh_self_record",
@@ -138,27 +125,78 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::BuildMachine { .. } => "build_machine",
         ployz_api::DaemonRequest::BuildOperationGet { .. } => "build_operation_get",
         ployz_api::DaemonRequest::BuildOperationList => "build_operation_list",
-        ployz_api::DaemonRequest::DeployNodeInspectNamespace { .. } => {
-            "deploy_node_inspect_namespace"
-        }
-        ployz_api::DaemonRequest::DeployNodeStartCandidate { .. } => "deploy_node_start_candidate",
-        ployz_api::DaemonRequest::DeployNodeDrainInstance { .. } => "deploy_node_drain_instance",
-        ployz_api::DaemonRequest::DeployNodeRemoveInstance { .. } => "deploy_node_remove_instance",
-        ployz_api::DaemonRequest::DeployNodeCloneVolume { .. } => "deploy_node_clone_volume",
-        ployz_api::DaemonRequest::DeployNodeCleanupUncommittedVolumeClone { .. } => {
-            "deploy_node_cleanup_uncommitted_volume_clone"
-        }
         ployz_api::DaemonRequest::RuntimeSubscribe => "runtime_subscribe",
         ployz_api::DaemonRequest::VolumeZfsInspect { .. } => "volume_zfs_inspect",
         ployz_api::DaemonRequest::VolumeZfsSnapshot { .. } => "volume_zfs_snapshot",
         ployz_api::DaemonRequest::VolumeZfsSend { .. } => "volume_zfs_send",
-        ployz_api::DaemonRequest::VolumeZfsPeerSnapshot { .. } => "volume_zfs_peer_snapshot",
-        ployz_api::DaemonRequest::VolumeZfsPeerSnapshotGuid { .. } => {
-            "volume_zfs_peer_snapshot_guid"
-        }
-        ployz_api::DaemonRequest::VolumeZfsPeerStartSend { .. } => "volume_zfs_peer_start_send",
         ployz_api::DaemonRequest::VolumeZfsTransferGet { .. } => "volume_zfs_transfer_get",
         ployz_api::DaemonRequest::VolumeZfsTransferList => "volume_zfs_transfer_list",
+    }
+}
+
+#[must_use]
+pub fn node_request_name(request: &ployz_node_api::NodeRequest) -> &'static str {
+    match request {
+        ployz_node_api::NodeRequest::Ping => "node_ping",
+        ployz_node_api::NodeRequest::Status => "node_status",
+        ployz_node_api::NodeRequest::MeshReady { .. } => "node_mesh_ready",
+        ployz_node_api::NodeRequest::MeshSelfRecord => "node_mesh_self_record",
+        ployz_node_api::NodeRequest::MeshPeerPrepareDestroy { .. } => {
+            "node_mesh_peer_prepare_destroy"
+        }
+        ployz_node_api::NodeRequest::MeshPeerCancelDestroy { .. } => {
+            "node_mesh_peer_cancel_destroy"
+        }
+        ployz_node_api::NodeRequest::MeshPeerExecuteDestroy { .. } => {
+            "node_mesh_peer_execute_destroy"
+        }
+        ployz_node_api::NodeRequest::MeshPeerPrepareUpdate { .. } => {
+            "node_mesh_peer_prepare_update"
+        }
+        ployz_node_api::NodeRequest::MeshPeerExecuteUpdate { .. } => {
+            "node_mesh_peer_execute_update"
+        }
+        ployz_node_api::NodeRequest::MeshPeerRemoveMachine { .. } => {
+            "node_mesh_peer_remove_machine"
+        }
+        ployz_node_api::NodeRequest::MachineTransitionSelf { .. } => "node_machine_transition_self",
+        ployz_node_api::NodeRequest::MachineStoragePromoteSelf { .. } => {
+            "node_machine_storage_promote_self"
+        }
+        ployz_node_api::NodeRequest::MachineStorageRestoreSelf { .. } => {
+            "node_machine_storage_restore_self"
+        }
+        ployz_node_api::NodeRequest::MachineOperationGet { .. } => "node_machine_operation_get",
+        ployz_node_api::NodeRequest::DeployNodeInspectNamespace { .. } => {
+            "node_deploy_inspect_namespace"
+        }
+        ployz_node_api::NodeRequest::DeployNodeStartCandidate { .. } => {
+            "node_deploy_start_candidate"
+        }
+        ployz_node_api::NodeRequest::DeployNodeDrainInstance { .. } => "node_deploy_drain_instance",
+        ployz_node_api::NodeRequest::DeployNodeRemoveInstance { .. } => {
+            "node_deploy_remove_instance"
+        }
+        ployz_node_api::NodeRequest::DeployNodeCloneVolume { .. } => "node_deploy_clone_volume",
+        ployz_node_api::NodeRequest::DeployNodeCleanupUncommittedVolumeClone { .. } => {
+            "node_deploy_cleanup_uncommitted_volume_clone"
+        }
+        ployz_node_api::NodeRequest::VolumeZfsInspect { .. } => "node_volume_zfs_inspect",
+        ployz_node_api::NodeRequest::VolumeZfsSnapshot { .. } => "node_volume_zfs_snapshot",
+        ployz_node_api::NodeRequest::VolumeZfsSend { .. } => "node_volume_zfs_send",
+        ployz_node_api::NodeRequest::VolumeZfsPeerSnapshot { .. } => {
+            "node_volume_zfs_peer_snapshot"
+        }
+        ployz_node_api::NodeRequest::VolumeZfsPeerSnapshotGuid { .. } => {
+            "node_volume_zfs_peer_snapshot_guid"
+        }
+        ployz_node_api::NodeRequest::VolumeZfsPeerStartSend { .. } => {
+            "node_volume_zfs_peer_start_send"
+        }
+        ployz_node_api::NodeRequest::VolumeZfsTransferGet { .. } => "node_volume_zfs_transfer_get",
+        ployz_node_api::NodeRequest::ImageDistribute { .. } => "node_image_distribute",
+        ployz_node_api::NodeRequest::ImageReceiveSession { .. } => "node_image_receive_session",
+        ployz_node_api::NodeRequest::ImageReceivedImport { .. } => "node_image_received_import",
     }
 }
 

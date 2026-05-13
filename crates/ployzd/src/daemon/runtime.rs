@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use ployz_dns_config::DnsConfig;
-use ployz_gateway_config::GatewayConfig;
+use ployz_dns::DnsConfig;
+use ployz_gateway::GatewayConfig;
 use ployz_runtime_api::{
     ImageArchiveReader, RuntimeHandle, RuntimeImage, RuntimeImageBackend, RuntimeImageError,
     RuntimeImageImportResult,

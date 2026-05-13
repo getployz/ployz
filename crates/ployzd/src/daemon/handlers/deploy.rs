@@ -23,7 +23,7 @@ use ployz_api::{
     DeployApplyPreparedRequest, DeployOptions, DeployPreparePayload, MigrateServiceMode,
     MigrateServiceRequest,
 };
-use ployz_cert_backends::InstantAcmeIssuerFactory;
+use ployz_cert_acme::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
 use ployz_nats::RpcPolicy;
 use ployz_nats::{NatsDeployLock, NatsLocks, NatsStore};

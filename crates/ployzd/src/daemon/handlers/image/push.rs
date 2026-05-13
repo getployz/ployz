@@ -24,11 +24,11 @@ use ployz_types::model::{
 use ployz_types::time::now_unix_secs;
 
 use crate::daemon::DaemonState;
-use crate::daemon::handlers::image::archive::{
+use crate::features::image::archive::{
     parse_image_archive, reconstruct_received_archive, upload_archive_to_receiver,
 };
-use crate::daemon::handlers::image::operations::{ImageOperationStore, validate_operation_id};
-use crate::daemon::handlers::image::registry::{
+use crate::features::image::operations::{ImageOperationStore, validate_operation_id};
+use crate::features::image::registry::{
     REGISTRY_OPERATION_HEADER, REGISTRY_SESSION_HEADER, REGISTRY_SOURCE_MACHINE_HEADER,
     validate_repository,
 };
@@ -1181,7 +1181,7 @@ impl DaemonState {
         operation: &mut ImageOperationRecord,
         target_machine: &MachineId,
         request: &ImageDistributeRequest,
-        archive: &crate::daemon::handlers::image::archive::ParsedImageArchive,
+        archive: &crate::features::image::archive::ParsedImageArchive,
         backend: &dyn RuntimeImageBackend,
     ) -> (ImageTransferTargetResult, Option<u64>) {
         if let Err(response) = self.update_image_distribute_stage(
@@ -1350,12 +1350,12 @@ impl DaemonState {
         digest: &ployz_types::model::ImageDigest,
         platform: Option<ployz_types::model::ImagePlatform>,
         repo_tags: Vec<String>,
-        archive: &crate::daemon::handlers::image::archive::ParsedImageArchive,
+        archive: &crate::features::image::archive::ParsedImageArchive,
         backend: &dyn RuntimeImageBackend,
     ) -> Result<
         (
             ImageAvailabilityRecord,
-            crate::daemon::handlers::image::archive::ReceiverUploadReport,
+            crate::features::image::archive::ReceiverUploadReport,
         ),
         ployz_api::DaemonResponse,
     > {
@@ -1709,7 +1709,7 @@ mod tests {
     async fn image_push_self_target_uploads_imports_and_records_availability() {
         let mut state = make_state();
         install_active_mesh(&mut state).await;
-        let listener = crate::daemon::handlers::image::registry::serve(
+        let listener = crate::features::image::registry::serve(
             "127.0.0.1:0".parse().expect("bind addr"),
             state.image_registry.clone(),
         )
@@ -1812,7 +1812,7 @@ mod tests {
     async fn image_push_import_failure_does_not_record_availability() {
         let mut state = make_state();
         install_active_mesh(&mut state).await;
-        let listener = crate::daemon::handlers::image::registry::serve(
+        let listener = crate::features::image::registry::serve(
             "127.0.0.1:0".parse().expect("bind addr"),
             state.image_registry.clone(),
         )
@@ -1849,7 +1849,7 @@ mod tests {
     async fn image_push_without_expected_digest_uses_image_id_when_repo_digest_is_absent() {
         let mut state = make_state();
         install_active_mesh(&mut state).await;
-        let listener = crate::daemon::handlers::image::registry::serve(
+        let listener = crate::features::image::registry::serve(
             "127.0.0.1:0".parse().expect("bind addr"),
             state.image_registry.clone(),
         )
@@ -1893,7 +1893,7 @@ mod tests {
     async fn image_push_expected_repo_digest_uses_image_id_for_import_identity() {
         let mut state = make_state();
         install_active_mesh(&mut state).await;
-        let listener = crate::daemon::handlers::image::registry::serve(
+        let listener = crate::features::image::registry::serve(
             "127.0.0.1:0".parse().expect("bind addr"),
             state.image_registry.clone(),
         )
@@ -2038,7 +2038,7 @@ mod tests {
     async fn image_push_later_target_failure_preserves_first_target_success() {
         let mut state = make_state();
         install_active_mesh(&mut state).await;
-        let listener = crate::daemon::handlers::image::registry::serve(
+        let listener = crate::features::image::registry::serve(
             "127.0.0.1:0".parse().expect("bind addr"),
             state.image_registry.clone(),
         )

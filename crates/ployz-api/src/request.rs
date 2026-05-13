@@ -7,14 +7,8 @@ use crate::image::{
     ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageReceiveSessionRequest,
     ImageReceivedImportRequest, ImageStatusRequest,
 };
-use crate::machine::{
-    MachineAddOptions, MachineInstallOptions, MachineSelfTransition, MachineStorageAuthorityPeer,
-    MachineStoragePromoteRequest,
-};
+use crate::machine::{MachineAddOptions, MachineInstallOptions, MachineStoragePromoteRequest};
 use crate::mesh::MeshBootstrapRequest;
-use ployz_types::model::{
-    MachineId, MachineMembership, NetworkId, StorageParticipation, StorageReplicaPolicy,
-};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,19 +57,6 @@ pub enum DaemonRequest {
     MeshDestroy {
         network: String,
     },
-    MeshPeerPrepareDestroy {
-        operation_id: String,
-        network_id: NetworkId,
-        coordinator_id: MachineId,
-        expected_machine_ids: Vec<MachineId>,
-    },
-    MeshPeerCancelDestroy {
-        operation_id: String,
-    },
-    MeshPeerExecuteDestroy {
-        operation_id: String,
-        network_id: NetworkId,
-    },
     MachineList,
     MachineInit {
         target: String,
@@ -109,19 +90,6 @@ pub enum DaemonRequest {
     },
     MachineRtt,
     MeshPeerRttSnapshot,
-    MeshPeerPrepareUpdate {
-        operation_id: String,
-        version: String,
-    },
-    MeshPeerExecuteUpdate {
-        operation_id: String,
-        version: String,
-    },
-    MeshPeerRemoveMachine {
-        operation_id: String,
-        network_id: NetworkId,
-        machine_id: MachineId,
-    },
     MachineOperationList,
     MachineOperationGet {
         id: String,
@@ -138,18 +106,6 @@ pub enum DaemonRequest {
     },
     MeshBootstrap {
         request: MeshBootstrapRequest,
-    },
-    MachineTransitionSelf {
-        transition: MachineSelfTransition,
-    },
-    MachineStoragePromoteSelf {
-        replicas: StorageReplicaPolicy,
-        authority_peers: Vec<MachineStorageAuthorityPeer>,
-    },
-    MachineStorageRestoreSelf {
-        participation: StorageParticipation,
-        replicas: StorageReplicaPolicy,
-        authority_peers: Vec<MachineMembership>,
     },
     AcmeChallengeReady {
         hostname: String,
@@ -221,48 +177,6 @@ pub enum DaemonRequest {
         id: String,
     },
     BuildOperationList,
-    DeployNodeInspectNamespace {
-        namespace: String,
-        deploy_id: String,
-    },
-    DeployNodeStartCandidate {
-        namespace: String,
-        deploy_id: String,
-        service: String,
-        slot_id: String,
-        instance_id: String,
-        spec_json: String,
-        volumes_json: String,
-    },
-    DeployNodeDrainInstance {
-        namespace: String,
-        deploy_id: String,
-        instance_id: String,
-    },
-    DeployNodeRemoveInstance {
-        namespace: String,
-        deploy_id: String,
-        instance_id: String,
-    },
-    DeployNodeCloneVolume {
-        namespace: String,
-        deploy_id: String,
-        volume: String,
-        source_namespace: String,
-        source_volume: String,
-        snapshot: String,
-        quota: String,
-        mode: String,
-        owner: String,
-    },
-    DeployNodeCleanupUncommittedVolumeClone {
-        namespace: String,
-        deploy_id: String,
-        volume: String,
-        source_namespace: String,
-        source_volume: String,
-        snapshot: String,
-    },
     RuntimeSubscribe,
     VolumeZfsInspect {
         namespace: String,
@@ -281,25 +195,6 @@ pub enum DaemonRequest {
         target_machine: String,
         from_snapshot: Option<String>,
     },
-    VolumeZfsPeerSnapshot {
-        namespace: String,
-        volume: String,
-        snapshot: String,
-    },
-    VolumeZfsPeerSnapshotGuid {
-        namespace: String,
-        volume: String,
-        snapshot: String,
-    },
-    VolumeZfsPeerStartSend {
-        namespace: String,
-        volume: String,
-        snapshot: String,
-        target_machine: String,
-        expected_guid: u64,
-        from_snapshot: Option<String>,
-        from_snapshot_guid: Option<u64>,
-    },
     VolumeZfsTransferGet {
         id: String,
     },
@@ -317,7 +212,7 @@ mod tests {
         ImageDistributeRequest, ImageInspectRequest, ImagePushRequest, ImageReceiveSessionRequest,
         ImageReceivedImportRequest,
     };
-    use ployz_types::model::{BuildMethod, ImageDigest};
+    use ployz_types::model::{BuildMethod, ImageDigest, MachineId};
     use std::collections::BTreeMap;
 
     #[test]

@@ -3189,13 +3189,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ployz-cert-backends"
-version = "0.6.1"
-dependencies = [
- "ployz-cert-acme",
-]
-
-[[package]]
 name = "ployz-config"
 version = "0.6.1"
 dependencies = [
@@ -3215,7 +3208,6 @@ dependencies = [
  "hickory-server",
  "libc",
  "ployz-config",
- "ployz-dns-config",
  "ployz-metrics",
  "ployz-nats",
  "ployz-store-api",
@@ -3225,15 +3217,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "ployz-dns-config"
-version = "0.6.1"
-dependencies = [
- "ployz-config",
- "ployz-types",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3254,6 +3237,14 @@ name = "ployz-ebpf-common"
 version = "0.6.1"
 
 [[package]]
+name = "ployz-error"
+version = "0.6.1"
+dependencies = [
+ "ployz-model",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ployz-gateway"
 version = "0.6.1"
 dependencies = [
@@ -3264,7 +3255,6 @@ dependencies = [
  "libc",
  "pingora",
  "ployz-config",
- "ployz-gateway-config",
  "ployz-metrics",
  "ployz-nats",
  "ployz-store-api",
@@ -3277,14 +3267,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "ployz-gateway-config"
-version = "0.6.1"
-dependencies = [
- "ployz-config",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3313,6 +3295,21 @@ dependencies = [
  "axum",
  "prometheus",
  "tokio",
+]
+
+[[package]]
+name = "ployz-model"
+version = "0.6.1"
+dependencies = [
+ "base64",
+ "derive_more",
+ "ipnet",
+ "rand 0.10.0",
+ "schemars",
+ "serde",
+ "serde_json",
+ "strum",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3426,7 +3423,31 @@ dependencies = [
 name = "ployz-runtime-docker"
 version = "0.6.1"
 dependencies = [
- "ployz-runtime-backends",
+ "async-trait",
+ "backon",
+ "base64",
+ "bollard",
+ "chrono",
+ "derive_more",
+ "futures-util",
+ "http",
+ "ipnet",
+ "libc",
+ "ployz-api",
+ "ployz-runtime-api",
+ "ployz-storage-api",
+ "ployz-storage-zfs",
+ "ployz-store-api",
+ "ployz-types",
+ "rand 0.10.0",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3452,6 +3473,17 @@ dependencies = [
  "ployz-types",
  "rand 0.10.0",
  "tokio",
+]
+
+[[package]]
+name = "ployz-spec"
+version = "0.6.1"
+dependencies = [
+ "humantime-serde",
+ "ployz-model",
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3494,23 +3526,35 @@ dependencies = [
 name = "ployz-types"
 version = "0.6.1"
 dependencies = [
- "base64",
- "derive_more",
- "humantime-serde",
- "ipnet",
- "rand 0.10.0",
+ "ployz-error",
+ "ployz-model",
+ "ployz-spec",
  "schemars",
- "serde",
  "serde_json",
- "strum",
- "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "ployz-wireguard-backends"
 version = "0.6.1"
 dependencies = [
- "ployz-runtime-backends",
+ "async-trait",
+ "base64",
+ "bollard",
+ "defguard_boringtun",
+ "defguard_wireguard_rs",
+ "futures-util",
+ "ipnet",
+ "libc",
+ "ployz-runtime-api",
+ "ployz-runtime-docker",
+ "ployz-types",
+ "reqwest",
+ "serde",
+ "smoltcp",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "x25519-dalek",
 ]
 
 [[package]]
@@ -3537,10 +3581,10 @@ dependencies = [
  "ipnet",
  "libc",
  "ployz-api",
- "ployz-cert-backends",
+ "ployz-cert-acme",
  "ployz-config",
- "ployz-dns-config",
- "ployz-gateway-config",
+ "ployz-dns",
+ "ployz-gateway",
  "ployz-host-backends",
  "ployz-install",
  "ployz-metrics",

@@ -9,10 +9,10 @@ use crate::mesh_state::bootstrap::{
     resolve_bootstrap_addrs,
 };
 use crate::mesh_state::network::NetworkConfig;
-use ployz_cert_backends::InstantAcmeIssuerFactory;
+use ployz_cert_acme::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
-use ployz_dns_config::DnsConfig;
-use ployz_gateway_config::GatewayConfig;
+use ployz_dns::DnsConfig;
+use ployz_gateway::GatewayConfig;
 use ployz_nats::NatsLocks;
 use ployz_nats::NatsStore;
 use ployz_nats::config as nats_config;
@@ -35,8 +35,8 @@ use std::time::Duration;
 use crate::daemon::subnet_coordination::NatsSubnetCoordinator;
 
 use super::{ActiveMesh, DaemonState, RuntimeRestartMode};
-use crate::daemon::handlers::image::registry;
 use crate::daemon::handlers::volume::transfer_listener;
+use crate::features::image::registry;
 use crate::ipc::nats_listener;
 use crate::runtime_profile::MeshBuildRequest;
 

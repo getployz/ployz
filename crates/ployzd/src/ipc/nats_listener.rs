@@ -10,7 +10,7 @@ use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use super::listener::IncomingCommand;
+use super::listener::{IncomingCommand, IncomingRequest};
 
 const RESUBSCRIBE_DELAY: Duration = Duration::from_secs(1);
 const MAX_IN_FLIGHT_COMMANDS: usize = 64;
@@ -358,7 +358,7 @@ async fn handle_message(
             reply: reply_tx,
             response_flushed: Some(response_flushed_rx),
             stream: None,
-            request: request.into(),
+            request: IncomingRequest::node(request),
         })
         .await
         .is_err()

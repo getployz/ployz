@@ -1,8 +1,6 @@
-mod build;
 mod debug;
 mod deploy;
 mod doctor;
-pub(crate) mod image;
 mod invite;
 pub(crate) mod machine;
 mod mesh;
@@ -10,7 +8,9 @@ pub(crate) mod runtime;
 mod status;
 pub(crate) mod volume;
 
+use crate::ipc::listener::IncomingRequest;
 use ployz_api::{DaemonRequest, DaemonResponse};
+use ployz_node_api::NodeRequest;
 use ployz_types::model::MachineId;
 use tokio::sync::oneshot;
 
@@ -29,22 +29,13 @@ impl DaemonState {
             DaemonRequest::DebugTick { .. }
             | DaemonRequest::MeshJoin { .. }
             | DaemonRequest::MeshBootstrap { .. }
-            | DaemonRequest::MachineTransitionSelf { .. }
-            | DaemonRequest::MachineStoragePromoteSelf { .. }
-            | DaemonRequest::MachineStorageRestoreSelf { .. }
             | DaemonRequest::MeshInit { .. }
             | DaemonRequest::MeshStart { .. }
             | DaemonRequest::MeshStop { .. }
             | DaemonRequest::MeshDestroy { .. }
-            | DaemonRequest::MeshPeerPrepareDestroy { .. }
-            | DaemonRequest::MeshPeerCancelDestroy { .. }
-            | DaemonRequest::MeshPeerExecuteDestroy { .. }
             | DaemonRequest::MachineUpdate { .. }
             | DaemonRequest::MachineStoragePromote { .. }
-            | DaemonRequest::MeshPeerPrepareUpdate { .. }
-            | DaemonRequest::MeshPeerExecuteUpdate { .. }
-            | DaemonRequest::MachineRemove { .. }
-            | DaemonRequest::MeshPeerRemoveMachine { .. } => RequestLane::Exclusive,
+            | DaemonRequest::MachineRemove { .. } => RequestLane::Exclusive,
             DaemonRequest::Ping
             | DaemonRequest::Status
             | DaemonRequest::Doctor
@@ -70,19 +61,10 @@ impl DaemonState {
             | DaemonRequest::BuildMachine { .. }
             | DaemonRequest::BuildOperationGet { .. }
             | DaemonRequest::BuildOperationList
-            | DaemonRequest::DeployNodeInspectNamespace { .. }
-            | DaemonRequest::DeployNodeStartCandidate { .. }
-            | DaemonRequest::DeployNodeDrainInstance { .. }
-            | DaemonRequest::DeployNodeRemoveInstance { .. }
-            | DaemonRequest::DeployNodeCloneVolume { .. }
-            | DaemonRequest::DeployNodeCleanupUncommittedVolumeClone { .. }
             | DaemonRequest::RuntimeSubscribe
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }
             | DaemonRequest::VolumeZfsSend { .. }
-            | DaemonRequest::VolumeZfsPeerSnapshot { .. }
-            | DaemonRequest::VolumeZfsPeerSnapshotGuid { .. }
-            | DaemonRequest::VolumeZfsPeerStartSend { .. }
             | DaemonRequest::VolumeZfsTransferGet { .. }
             | DaemonRequest::VolumeZfsTransferList
             | DaemonRequest::MeshList
@@ -124,6 +106,72 @@ impl DaemonState {
         }
     }
 
+    #[must_use]
+    pub fn node_request_lane(req: &NodeRequest) -> RequestLane {
+        match req {
+            NodeRequest::MeshPeerPrepareDestroy { .. }
+            | NodeRequest::MeshPeerCancelDestroy { .. }
+            | NodeRequest::MeshPeerExecuteDestroy { .. }
+            | NodeRequest::MeshPeerPrepareUpdate { .. }
+            | NodeRequest::MeshPeerExecuteUpdate { .. }
+            | NodeRequest::MeshPeerRemoveMachine { .. }
+            | NodeRequest::MachineTransitionSelf { .. }
+            | NodeRequest::MachineStoragePromoteSelf { .. }
+            | NodeRequest::MachineStorageRestoreSelf { .. } => RequestLane::Exclusive,
+            NodeRequest::Ping
+            | NodeRequest::Status
+            | NodeRequest::MeshReady { .. }
+            | NodeRequest::MeshSelfRecord
+            | NodeRequest::MachineOperationGet { .. }
+            | NodeRequest::DeployNodeInspectNamespace { .. }
+            | NodeRequest::DeployNodeStartCandidate { .. }
+            | NodeRequest::DeployNodeDrainInstance { .. }
+            | NodeRequest::DeployNodeRemoveInstance { .. }
+            | NodeRequest::DeployNodeCloneVolume { .. }
+            | NodeRequest::DeployNodeCleanupUncommittedVolumeClone { .. }
+            | NodeRequest::VolumeZfsInspect { .. }
+            | NodeRequest::VolumeZfsSnapshot { .. }
+            | NodeRequest::VolumeZfsSend { .. }
+            | NodeRequest::VolumeZfsPeerSnapshot { .. }
+            | NodeRequest::VolumeZfsPeerSnapshotGuid { .. }
+            | NodeRequest::VolumeZfsPeerStartSend { .. }
+            | NodeRequest::VolumeZfsTransferGet { .. }
+            | NodeRequest::ImageDistribute { .. }
+            | NodeRequest::ImageReceiveSession { .. }
+            | NodeRequest::ImageReceivedImport { .. } => RequestLane::Shared,
+        }
+    }
+
+    #[must_use]
+    pub fn request_lane_for_command(&self, req: &IncomingRequest) -> RequestLane {
+        match req {
+            IncomingRequest::Control(request) => self.request_lane_for_state(request),
+            IncomingRequest::Node(request) => Self::node_request_lane(request),
+        }
+    }
+
+    pub async fn handle_command_shared(&self, req: IncomingRequest) -> DaemonResponse {
+        match req {
+            IncomingRequest::Control(request) => self.handle_shared(request).await,
+            IncomingRequest::Node(request) => self.handle_node_shared(request).await,
+        }
+    }
+
+    pub async fn handle_command_exclusive(
+        &mut self,
+        req: IncomingRequest,
+        response_flushed: Option<oneshot::Receiver<()>>,
+    ) -> DaemonResponse {
+        match req {
+            IncomingRequest::Control(request) => {
+                self.handle_exclusive(request, response_flushed).await
+            }
+            IncomingRequest::Node(request) => {
+                self.handle_node_exclusive(request, response_flushed).await
+            }
+        }
+    }
+
     pub async fn handle_shared(&self, req: DaemonRequest) -> DaemonResponse {
         match req {
             DaemonRequest::Ping => self.ok("pong"),
@@ -132,22 +180,13 @@ impl DaemonState {
             DaemonRequest::DebugTick { .. }
             | DaemonRequest::MeshJoin { .. }
             | DaemonRequest::MeshBootstrap { .. }
-            | DaemonRequest::MachineTransitionSelf { .. }
-            | DaemonRequest::MachineStoragePromoteSelf { .. }
-            | DaemonRequest::MachineStorageRestoreSelf { .. }
             | DaemonRequest::MeshInit { .. }
             | DaemonRequest::MeshStart { .. }
             | DaemonRequest::MeshStop { .. }
             | DaemonRequest::MeshDestroy { .. }
-            | DaemonRequest::MeshPeerPrepareDestroy { .. }
-            | DaemonRequest::MeshPeerCancelDestroy { .. }
-            | DaemonRequest::MeshPeerExecuteDestroy { .. }
             | DaemonRequest::MachineUpdate { .. }
             | DaemonRequest::MachineStoragePromote { .. }
-            | DaemonRequest::MeshPeerPrepareUpdate { .. }
-            | DaemonRequest::MeshPeerExecuteUpdate { .. }
-            | DaemonRequest::MachineRemove { .. }
-            | DaemonRequest::MeshPeerRemoveMachine { .. } => {
+            | DaemonRequest::MachineRemove { .. } => {
                 self.err("INTERNAL", "exclusive request routed to shared handler")
             }
             DaemonRequest::RuntimeSubscribe => {
@@ -199,91 +238,6 @@ impl DaemonState {
             DaemonRequest::BuildMachine { request } => self.handle_build_machine(&request).await,
             DaemonRequest::BuildOperationGet { id } => self.handle_build_operation_get(&id).await,
             DaemonRequest::BuildOperationList => self.handle_build_operation_list().await,
-            DaemonRequest::DeployNodeInspectNamespace {
-                namespace,
-                deploy_id,
-            } => {
-                self.handle_deploy_node_inspect_namespace(&namespace, &deploy_id)
-                    .await
-            }
-            DaemonRequest::DeployNodeStartCandidate {
-                namespace,
-                deploy_id,
-                service,
-                slot_id,
-                instance_id,
-                spec_json,
-                volumes_json,
-            } => {
-                self.handle_deploy_node_start_candidate(
-                    &namespace,
-                    &deploy_id,
-                    &service,
-                    &slot_id,
-                    &instance_id,
-                    &spec_json,
-                    &volumes_json,
-                )
-                .await
-            }
-            DaemonRequest::DeployNodeDrainInstance {
-                namespace,
-                deploy_id,
-                instance_id,
-            } => {
-                self.handle_deploy_node_drain_instance(&namespace, &deploy_id, &instance_id)
-                    .await
-            }
-            DaemonRequest::DeployNodeRemoveInstance {
-                namespace,
-                deploy_id,
-                instance_id,
-            } => {
-                self.handle_deploy_node_remove_instance(&namespace, &deploy_id, &instance_id)
-                    .await
-            }
-            DaemonRequest::DeployNodeCloneVolume {
-                namespace,
-                deploy_id,
-                volume,
-                source_namespace,
-                source_volume,
-                snapshot,
-                quota,
-                mode,
-                owner,
-            } => {
-                self.handle_deploy_node_clone_volume(
-                    &namespace,
-                    &deploy_id,
-                    &volume,
-                    &source_namespace,
-                    &source_volume,
-                    &snapshot,
-                    &quota,
-                    &mode,
-                    &owner,
-                )
-                .await
-            }
-            DaemonRequest::DeployNodeCleanupUncommittedVolumeClone {
-                namespace,
-                deploy_id,
-                volume,
-                source_namespace,
-                source_volume,
-                snapshot,
-            } => {
-                self.handle_deploy_node_cleanup_uncommitted_volume_clone(
-                    &namespace,
-                    &deploy_id,
-                    &volume,
-                    &source_namespace,
-                    &source_volume,
-                    &snapshot,
-                )
-                .await
-            }
             DaemonRequest::VolumeZfsInspect {
                 namespace,
                 volume,
@@ -313,42 +267,6 @@ impl DaemonState {
                     &snapshot,
                     &target_machine,
                     from_snapshot.as_deref(),
-                )
-                .await
-            }
-            DaemonRequest::VolumeZfsPeerSnapshot {
-                namespace,
-                volume,
-                snapshot,
-            } => {
-                self.handle_volume_zfs_peer_snapshot(&namespace, &volume, &snapshot)
-                    .await
-            }
-            DaemonRequest::VolumeZfsPeerSnapshotGuid {
-                namespace,
-                volume,
-                snapshot,
-            } => {
-                self.handle_volume_zfs_peer_snapshot_guid(&namespace, &volume, &snapshot)
-                    .await
-            }
-            DaemonRequest::VolumeZfsPeerStartSend {
-                namespace,
-                volume,
-                snapshot,
-                target_machine,
-                expected_guid,
-                from_snapshot,
-                from_snapshot_guid,
-            } => {
-                self.handle_volume_zfs_peer_start_send(
-                    &namespace,
-                    &volume,
-                    &snapshot,
-                    &target_machine,
-                    expected_guid,
-                    from_snapshot.as_deref(),
-                    from_snapshot_guid,
                 )
                 .await
             }
@@ -413,52 +331,10 @@ impl DaemonState {
             DaemonRequest::DebugTick { task, repeat } => self.handle_debug_tick(task, repeat).await,
             DaemonRequest::MeshJoin { token } => self.handle_mesh_join(&token).await,
             DaemonRequest::MeshBootstrap { request } => self.handle_mesh_bootstrap(&request).await,
-            DaemonRequest::MachineTransitionSelf { transition } => {
-                self.handle_machine_transition_self(transition).await
-            }
-            DaemonRequest::MachineStoragePromoteSelf {
-                replicas,
-                authority_peers,
-            } => {
-                self.handle_machine_storage_promote_self(replicas, &authority_peers)
-                    .await
-            }
-            DaemonRequest::MachineStorageRestoreSelf {
-                participation,
-                replicas,
-                authority_peers,
-            } => {
-                self.handle_machine_storage_restore_self(participation, replicas, &authority_peers)
-                    .await
-            }
             DaemonRequest::MeshInit { network } => self.handle_mesh_init(&network).await,
             DaemonRequest::MeshStart { network } => self.handle_mesh_start(&network).await,
             DaemonRequest::MeshStop { force } => self.handle_mesh_stop(force).await,
             DaemonRequest::MeshDestroy { network } => self.handle_mesh_destroy(&network).await,
-            DaemonRequest::MeshPeerPrepareDestroy {
-                operation_id,
-                network_id,
-                coordinator_id,
-                expected_machine_ids,
-            } => {
-                self.handle_mesh_peer_prepare_destroy(
-                    &operation_id,
-                    &network_id,
-                    &coordinator_id,
-                    &expected_machine_ids,
-                )
-                .await
-            }
-            DaemonRequest::MeshPeerCancelDestroy { operation_id } => {
-                self.handle_mesh_peer_cancel_destroy(&operation_id).await
-            }
-            DaemonRequest::MeshPeerExecuteDestroy {
-                operation_id,
-                network_id,
-            } => {
-                self.handle_mesh_peer_execute_destroy(&operation_id, &network_id, response_flushed)
-                    .await
-            }
             DaemonRequest::MachineRemove { id, force } => {
                 self.handle_machine_remove(&id, force).await
             }
@@ -473,33 +349,6 @@ impl DaemonState {
             DaemonRequest::MachineStoragePromote { request } => {
                 self.handle_machine_storage_promote(&request, response_flushed)
                     .await
-            }
-            DaemonRequest::MeshPeerPrepareUpdate {
-                operation_id,
-                version,
-            } => {
-                self.handle_mesh_peer_prepare_update(&operation_id, &version)
-                    .await
-            }
-            DaemonRequest::MeshPeerExecuteUpdate {
-                operation_id,
-                version,
-            } => {
-                self.handle_mesh_peer_execute_update(&operation_id, &version, response_flushed)
-                    .await
-            }
-            DaemonRequest::MeshPeerRemoveMachine {
-                operation_id,
-                network_id,
-                machine_id,
-            } => {
-                self.handle_mesh_peer_remove_machine(
-                    &operation_id,
-                    &network_id,
-                    &machine_id,
-                    response_flushed,
-                )
-                .await
             }
             DaemonRequest::Ping
             | DaemonRequest::Status
@@ -526,19 +375,10 @@ impl DaemonState {
             | DaemonRequest::BuildMachine { .. }
             | DaemonRequest::BuildOperationGet { .. }
             | DaemonRequest::BuildOperationList
-            | DaemonRequest::DeployNodeInspectNamespace { .. }
-            | DaemonRequest::DeployNodeStartCandidate { .. }
-            | DaemonRequest::DeployNodeDrainInstance { .. }
-            | DaemonRequest::DeployNodeRemoveInstance { .. }
-            | DaemonRequest::DeployNodeCloneVolume { .. }
-            | DaemonRequest::DeployNodeCleanupUncommittedVolumeClone { .. }
             | DaemonRequest::RuntimeSubscribe
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }
             | DaemonRequest::VolumeZfsSend { .. }
-            | DaemonRequest::VolumeZfsPeerSnapshot { .. }
-            | DaemonRequest::VolumeZfsPeerSnapshotGuid { .. }
-            | DaemonRequest::VolumeZfsPeerStartSend { .. }
             | DaemonRequest::VolumeZfsTransferGet { .. }
             | DaemonRequest::VolumeZfsTransferList
             | DaemonRequest::MeshList
@@ -564,6 +404,295 @@ impl DaemonState {
             }
         }
     }
+
+    pub async fn handle_node_shared(&self, req: NodeRequest) -> DaemonResponse {
+        match req {
+            NodeRequest::Ping => self.ok("pong"),
+            NodeRequest::Status => self.handle_status().await,
+            NodeRequest::MeshReady { json } => self.handle_mesh_ready(json).await,
+            NodeRequest::MeshSelfRecord => self.handle_mesh_self_record().await,
+            NodeRequest::MachineOperationGet { id } => self.handle_machine_operation_get(&id).await,
+            NodeRequest::DeployNodeInspectNamespace {
+                namespace,
+                deploy_id,
+            } => {
+                self.handle_deploy_node_inspect_namespace(&namespace, &deploy_id)
+                    .await
+            }
+            NodeRequest::DeployNodeStartCandidate {
+                namespace,
+                deploy_id,
+                service,
+                slot_id,
+                instance_id,
+                spec_json,
+                volumes_json,
+            } => {
+                self.handle_deploy_node_start_candidate(
+                    &namespace,
+                    &deploy_id,
+                    &service,
+                    &slot_id,
+                    &instance_id,
+                    &spec_json,
+                    &volumes_json,
+                )
+                .await
+            }
+            NodeRequest::DeployNodeDrainInstance {
+                namespace,
+                deploy_id,
+                instance_id,
+            } => {
+                self.handle_deploy_node_drain_instance(&namespace, &deploy_id, &instance_id)
+                    .await
+            }
+            NodeRequest::DeployNodeRemoveInstance {
+                namespace,
+                deploy_id,
+                instance_id,
+            } => {
+                self.handle_deploy_node_remove_instance(&namespace, &deploy_id, &instance_id)
+                    .await
+            }
+            NodeRequest::DeployNodeCloneVolume {
+                namespace,
+                deploy_id,
+                volume,
+                source_namespace,
+                source_volume,
+                snapshot,
+                quota,
+                mode,
+                owner,
+            } => {
+                self.handle_deploy_node_clone_volume(
+                    &namespace,
+                    &deploy_id,
+                    &volume,
+                    &source_namespace,
+                    &source_volume,
+                    &snapshot,
+                    &quota,
+                    &mode,
+                    &owner,
+                )
+                .await
+            }
+            NodeRequest::DeployNodeCleanupUncommittedVolumeClone {
+                namespace,
+                deploy_id,
+                volume,
+                source_namespace,
+                source_volume,
+                snapshot,
+            } => {
+                self.handle_deploy_node_cleanup_uncommitted_volume_clone(
+                    &namespace,
+                    &deploy_id,
+                    &volume,
+                    &source_namespace,
+                    &source_volume,
+                    &snapshot,
+                )
+                .await
+            }
+            NodeRequest::VolumeZfsInspect {
+                namespace,
+                volume,
+                machine,
+            } => {
+                self.handle_volume_zfs_inspect(&namespace, &volume, machine.as_deref())
+                    .await
+            }
+            NodeRequest::VolumeZfsSnapshot {
+                namespace,
+                volume,
+                snapshot,
+            } => {
+                self.handle_volume_zfs_snapshot(&namespace, &volume, &snapshot)
+                    .await
+            }
+            NodeRequest::VolumeZfsSend {
+                namespace,
+                volume,
+                snapshot,
+                target_machine,
+                from_snapshot,
+            } => {
+                self.handle_volume_zfs_send(
+                    &namespace,
+                    &volume,
+                    &snapshot,
+                    &target_machine,
+                    from_snapshot.as_deref(),
+                )
+                .await
+            }
+            NodeRequest::VolumeZfsPeerSnapshot {
+                namespace,
+                volume,
+                snapshot,
+            } => {
+                self.handle_volume_zfs_peer_snapshot(&namespace, &volume, &snapshot)
+                    .await
+            }
+            NodeRequest::VolumeZfsPeerSnapshotGuid {
+                namespace,
+                volume,
+                snapshot,
+            } => {
+                self.handle_volume_zfs_peer_snapshot_guid(&namespace, &volume, &snapshot)
+                    .await
+            }
+            NodeRequest::VolumeZfsPeerStartSend {
+                namespace,
+                volume,
+                snapshot,
+                target_machine,
+                expected_guid,
+                from_snapshot,
+                from_snapshot_guid,
+            } => {
+                self.handle_volume_zfs_peer_start_send(
+                    &namespace,
+                    &volume,
+                    &snapshot,
+                    &target_machine,
+                    expected_guid,
+                    from_snapshot.as_deref(),
+                    from_snapshot_guid,
+                )
+                .await
+            }
+            NodeRequest::VolumeZfsTransferGet { id } => {
+                self.handle_volume_zfs_transfer_get(&id).await
+            }
+            NodeRequest::ImageDistribute { request } => {
+                self.handle_image_distribute(&request).await
+            }
+            NodeRequest::ImageReceiveSession { request } => {
+                self.handle_image_receive_session(&request).await
+            }
+            NodeRequest::ImageReceivedImport { request } => {
+                self.handle_image_received_import(&request).await
+            }
+            NodeRequest::MeshPeerPrepareDestroy { .. }
+            | NodeRequest::MeshPeerCancelDestroy { .. }
+            | NodeRequest::MeshPeerExecuteDestroy { .. }
+            | NodeRequest::MeshPeerPrepareUpdate { .. }
+            | NodeRequest::MeshPeerExecuteUpdate { .. }
+            | NodeRequest::MeshPeerRemoveMachine { .. }
+            | NodeRequest::MachineTransitionSelf { .. }
+            | NodeRequest::MachineStoragePromoteSelf { .. }
+            | NodeRequest::MachineStorageRestoreSelf { .. } => self.err(
+                "INTERNAL",
+                "exclusive node request routed to shared handler",
+            ),
+        }
+    }
+
+    pub async fn handle_node_exclusive(
+        &mut self,
+        req: NodeRequest,
+        response_flushed: Option<oneshot::Receiver<()>>,
+    ) -> DaemonResponse {
+        match req {
+            NodeRequest::MachineTransitionSelf { transition } => {
+                self.handle_machine_transition_self(transition).await
+            }
+            NodeRequest::MachineStoragePromoteSelf {
+                replicas,
+                authority_peers,
+            } => {
+                self.handle_machine_storage_promote_self(replicas, &authority_peers)
+                    .await
+            }
+            NodeRequest::MachineStorageRestoreSelf {
+                participation,
+                replicas,
+                authority_peers,
+            } => {
+                self.handle_machine_storage_restore_self(participation, replicas, &authority_peers)
+                    .await
+            }
+            NodeRequest::MeshPeerPrepareDestroy {
+                operation_id,
+                network_id,
+                coordinator_id,
+                expected_machine_ids,
+            } => {
+                self.handle_mesh_peer_prepare_destroy(
+                    &operation_id,
+                    &network_id,
+                    &coordinator_id,
+                    &expected_machine_ids,
+                )
+                .await
+            }
+            NodeRequest::MeshPeerCancelDestroy { operation_id } => {
+                self.handle_mesh_peer_cancel_destroy(&operation_id).await
+            }
+            NodeRequest::MeshPeerExecuteDestroy {
+                operation_id,
+                network_id,
+            } => {
+                self.handle_mesh_peer_execute_destroy(&operation_id, &network_id, response_flushed)
+                    .await
+            }
+            NodeRequest::MeshPeerPrepareUpdate {
+                operation_id,
+                version,
+            } => {
+                self.handle_mesh_peer_prepare_update(&operation_id, &version)
+                    .await
+            }
+            NodeRequest::MeshPeerExecuteUpdate {
+                operation_id,
+                version,
+            } => {
+                self.handle_mesh_peer_execute_update(&operation_id, &version, response_flushed)
+                    .await
+            }
+            NodeRequest::MeshPeerRemoveMachine {
+                operation_id,
+                network_id,
+                machine_id,
+            } => {
+                self.handle_mesh_peer_remove_machine(
+                    &operation_id,
+                    &network_id,
+                    &machine_id,
+                    response_flushed,
+                )
+                .await
+            }
+            NodeRequest::Ping
+            | NodeRequest::Status
+            | NodeRequest::MeshReady { .. }
+            | NodeRequest::MeshSelfRecord
+            | NodeRequest::MachineOperationGet { .. }
+            | NodeRequest::DeployNodeInspectNamespace { .. }
+            | NodeRequest::DeployNodeStartCandidate { .. }
+            | NodeRequest::DeployNodeDrainInstance { .. }
+            | NodeRequest::DeployNodeRemoveInstance { .. }
+            | NodeRequest::DeployNodeCloneVolume { .. }
+            | NodeRequest::DeployNodeCleanupUncommittedVolumeClone { .. }
+            | NodeRequest::VolumeZfsInspect { .. }
+            | NodeRequest::VolumeZfsSnapshot { .. }
+            | NodeRequest::VolumeZfsSend { .. }
+            | NodeRequest::VolumeZfsPeerSnapshot { .. }
+            | NodeRequest::VolumeZfsPeerSnapshotGuid { .. }
+            | NodeRequest::VolumeZfsPeerStartSend { .. }
+            | NodeRequest::VolumeZfsTransferGet { .. }
+            | NodeRequest::ImageDistribute { .. }
+            | NodeRequest::ImageReceiveSession { .. }
+            | NodeRequest::ImageReceivedImport { .. } => self.err(
+                "INTERNAL",
+                "shared node request routed to exclusive handler",
+            ),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -575,6 +704,7 @@ mod tests {
         DeployApplyPreparedRequest, ImageDistributeRequest, ImagePushRequest,
         ImageReceiveSessionRequest, ImageReceivedImportRequest,
     };
+    use ployz_node_api::NodeRequest;
     use ployz_types::model::{BuildMethod, DeployId, ImageDigest, MachineId};
 
     #[test]
@@ -630,7 +760,7 @@ mod tests {
 
     #[test]
     fn deploy_volume_clone_node_rpcs_route_to_shared_lane() {
-        let clone_lane = DaemonState::request_lane(&DaemonRequest::DeployNodeCloneVolume {
+        let clone_lane = DaemonState::node_request_lane(&NodeRequest::DeployNodeCloneVolume {
             namespace: "pr-39".into(),
             deploy_id: "deploy-1".into(),
             volume: "data".into(),
@@ -644,7 +774,7 @@ mod tests {
         assert_eq!(clone_lane, RequestLane::Shared);
 
         let cleanup_lane =
-            DaemonState::request_lane(&DaemonRequest::DeployNodeCleanupUncommittedVolumeClone {
+            DaemonState::node_request_lane(&NodeRequest::DeployNodeCleanupUncommittedVolumeClone {
                 namespace: "pr-39".into(),
                 deploy_id: "deploy-1".into(),
                 volume: "data".into(),

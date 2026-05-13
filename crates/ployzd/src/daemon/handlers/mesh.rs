@@ -36,7 +36,7 @@ fn mesh_ready_payload(value: MeshReadyStatus, self_record: &MachineMembership) -
 mod tests {
     use super::*;
     use crate::daemon::ActiveMesh;
-    use crate::daemon::handlers::image::registry;
+    use crate::features::image::registry;
     use crate::mesh_state::invite::issue_invite_token;
     use crate::mesh_state::network::NetworkConfig;
     use axum::body::Body;

@@ -11,7 +11,7 @@ use crate::built_in_images::BuiltInImages;
 use crate::daemon::handlers::RequestLane;
 use crate::daemon::{ActiveMesh, DaemonState};
 use crate::endpoint_maintenance::spawn_local_endpoint_publisher;
-use crate::ipc::listener::{IncomingCommand, serve};
+use crate::ipc::listener::{IncomingCommand, IncomingRequest, serve};
 use crate::mesh_state::network::NetworkConfig;
 use crate::metrics::{
     ContainerResourceMetricsSource, DockerContainerResourceMetricsSource,
@@ -311,8 +311,14 @@ fn spawn_command_task(
     mut command: IncomingCommand,
 ) {
     tokio::spawn(async move {
-        let request_name = crate::metrics::request_name(&command.request);
-        if matches!(command.request, ployz_api::DaemonRequest::RuntimeSubscribe) {
+        let request_name = match &command.request {
+            IncomingRequest::Control(request) => crate::metrics::request_name(request),
+            IncomingRequest::Node(request) => crate::metrics::node_request_name(request),
+        };
+        if matches!(
+            command.request.as_control(),
+            Some(ployz_api::DaemonRequest::RuntimeSubscribe)
+        ) {
             let started_at = std::time::Instant::now();
             let Some(stream) = command.stream.take() else {
                 let response = ployz_api::DaemonResponse::error(
@@ -376,7 +382,7 @@ fn spawn_command_task(
 
         let lane = {
             let state_guard = state.read().await;
-            state_guard.request_lane_for_state(&command.request)
+            state_guard.request_lane_for_command(&command.request)
         };
         let started_at = std::time::Instant::now();
         let response_flushed = command.response_flushed.take();
@@ -390,12 +396,12 @@ fn spawn_command_task(
                 match lane {
                     RequestLane::Shared => {
                         let state_guard = state.read_owned().await;
-                        state_guard.handle_shared(command.request).await
+                        state_guard.handle_command_shared(command.request).await
                     }
                     RequestLane::Exclusive => {
                         let mut state_guard = state.write_owned().await;
                         state_guard
-                            .handle_exclusive(command.request, response_flushed)
+                            .handle_command_exclusive(command.request, response_flushed)
                             .await
                     }
                 }
