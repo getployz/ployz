@@ -17,8 +17,8 @@ use ployz_orchestrator::mesh::driver::WireguardDriver;
 use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
 use ployz_runtime_api::Identity;
 use ployz_store_api::StoreDriver;
-use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{InviteStore, MachineMembershipStore};
+use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
 use ployz_types::model::{
     MachineId, MachineLifecycle, MachineMembership, MachineStorageRole, MachineTopology,
     NetworkLifecycle, OverlayIp, PublicKey, RegionRole, StorageParticipation, StorageReplicaPolicy,

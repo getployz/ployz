@@ -1,0 +1,23 @@
+[package]
+name = "ployz-cert-acme"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ployz-cert-api = { path = "../ployz-cert-api" }
+ployz-store-api = { path = "../ployz-store-api" }
+ployz-types = { path = "../ployz-types" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+reqwest = { workspace = true, features = ["rustls-tls"] }
+instant-acme = { workspace = true, features = ["hyper-rustls", "ring"] }
+
+[dev-dependencies]
+ployz-store-memory = { path = "../ployz-store-memory" }
+
+[lints]
+workspace = true

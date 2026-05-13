@@ -1,7 +1,9 @@
 use super::network::NetworkConfig;
-use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
+use ployz_host_backends::network::endpoints::detect_advertised_endpoints;
 use ployz_runtime_api::Identity;
 use ployz_store_api::{MachineMembershipStore, StoreDriver};
+#[cfg(test)]
+use ployz_store_memory::StoreDriverMemoryExt as _;
 use ployz_types::model::{
     MachineEvent, MachineId, MachineMembership, MachineStorageRole, MachineTopology, OverlayIp,
     PublicKey, RegionRole, StorageParticipation,

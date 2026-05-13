@@ -1,6 +1,7 @@
 use ipnet::Ipv4Net;
 use ployz_api::{DaemonRequest, MachineSelfTransition, MeshBootstrapRequest};
 use ployz_nats::NodeCommandSubject;
+use ployz_node_api::NodeRequest;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_store_api::MachineMembershipStore;
 use ployz_types::model::{
@@ -498,7 +499,7 @@ async fn activate_joiner_lifecycle(
     record: &MachineMembership,
     assigned_subnet: Ipv4Net,
 ) -> Result<(), String> {
-    let request = DaemonRequest::MachineTransitionSelf {
+    let request = NodeRequest::MachineTransitionSelf {
         transition: MachineSelfTransition::Activate { assigned_subnet },
     };
     if let Some(client) = &context.nats_rpc {

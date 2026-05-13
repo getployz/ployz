@@ -1,10 +1,10 @@
 use crate::daemon::{ActiveMesh, DaemonState};
 use crate::endpoint_maintenance::local_endpoint_watch_supported;
 use ployz_api::{DaemonPayload, DoctorLocal, DoctorOverall, DoctorPayload, DoctorPeer};
+use ployz_host_backends::network::endpoints::detect_advertised_endpoints;
 use ployz_orchestrator::machine_policy::{DiagnosticRole, diagnostic_role};
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_orchestrator::mesh::{DevicePeer, WireGuardDevice};
-use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_store_api::{MachineMembershipStore, PeerRttObservation, PeerRttStore};
 use ployz_types::model::{MachineId, MachineMembership, PublicKey};
 use std::collections::HashMap;
@@ -416,7 +416,7 @@ mod tests {
     use ployz_runtime_api::Identity;
     use ployz_store_api::PeerRttObservation;
     use ployz_store_api::StoreDriver;
-    use ployz_store_api::memory::{MemoryService, MemoryStore};
+    use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
     use ployz_types::model::{
         MachineId, MachineLifecycle, MachineTopology, NetworkLifecycle, OverlayIp, PublicKey,
     };

@@ -1,4 +1,4 @@
-use ployz_api::{DaemonRequest, DaemonResponse};
+use crate::{ControlRequest, ControlResponse};
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::process::Stdio;
@@ -64,7 +64,7 @@ impl StdioTransport {
 }
 
 impl super::Transport for StdioTransport {
-    async fn request(&self, request: DaemonRequest) -> std::io::Result<DaemonResponse> {
+    async fn request(&self, request: ControlRequest) -> std::io::Result<ControlResponse> {
         let mut child = self.command().spawn()?;
         let Some(mut stdin) = child.stdin.take() else {
             return Err(std::io::Error::new(
@@ -133,8 +133,8 @@ fn shell_render(value: &OsStr) -> String {
 #[cfg(test)]
 mod tests {
     use super::StdioTransport;
+    use crate::ControlRequest;
     use crate::transport::Transport;
-    use ployz_api::DaemonRequest;
 
     #[tokio::test]
     async fn stdio_transport_round_trip_reads_and_writes_line_protocol() {
@@ -144,7 +144,7 @@ mod tests {
         ]);
 
         let response = transport
-            .request(DaemonRequest::Status)
+            .request(ControlRequest::Status)
             .await
             .expect("request over stdio");
         assert!(response.is_ok());
@@ -157,7 +157,7 @@ mod tests {
             StdioTransport::new("/bin/sh").args(["-c", "read line\nprintf 'not-json\\n'\n"]);
 
         let error = transport
-            .request(DaemonRequest::Status)
+            .request(ControlRequest::Status)
             .await
             .expect_err("malformed daemon output should fail");
 
@@ -172,7 +172,7 @@ mod tests {
         ]);
 
         let error = transport
-            .request(DaemonRequest::Status)
+            .request(ControlRequest::Status)
             .await
             .expect_err("child failure should fail");
 

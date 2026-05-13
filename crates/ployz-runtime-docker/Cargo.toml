@@ -1,0 +1,12 @@
+[package]
+name = "ployz-runtime-docker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ployz-runtime-backends = { path = "../ployz-runtime-backends", features = ["docker"] }
+
+[lints]
+workspace = true

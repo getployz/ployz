@@ -1,9 +1,10 @@
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineStorageAuthorityPeer,
-    MachineStoragePromoteRequest, MachineStoragePromotionFailure,
-    MachineStoragePromotionFailureCause, MachineStoragePromotionPayload, StatusPayload,
+    DaemonPayload, DaemonResponse, MachineStorageAuthorityPeer, MachineStoragePromoteRequest,
+    MachineStoragePromotionFailure, MachineStoragePromotionFailureCause,
+    MachineStoragePromotionPayload, StatusPayload,
 };
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
+use ployz_node_api::NodeRequest;
 use ployz_store_api::MachineMembershipStore;
 use ployz_types::model::{
     AuthorityId, MachineId, MachineLifecycle, MachineMembership, MachineStorageRole,
@@ -878,7 +879,7 @@ async fn restore_remote_storage(
     let response = client
         .request(
             NodeCommandSubject::machine_storage_restore_self(&rollback.machine_id),
-            &DaemonRequest::MachineStorageRestoreSelf {
+            &NodeRequest::MachineStorageRestoreSelf {
                 participation: rollback.participation.clone(),
                 replicas: rollback.replicas,
                 authority_peers: rollback.authority_peers.clone(),
@@ -902,7 +903,7 @@ async fn promote_remote_storage(
     let response = client
         .request(
             NodeCommandSubject::machine_storage_promote_self(&target.id),
-            &DaemonRequest::MachineStoragePromoteSelf {
+            &NodeRequest::MachineStoragePromoteSelf {
                 replicas,
                 authority_peers: authority_peers
                     .iter()
@@ -958,10 +959,7 @@ async fn remote_status(
     target: &MachineMembership,
 ) -> Result<StatusPayload, String> {
     let response = client
-        .request(
-            NodeCommandSubject::status(&target.id),
-            &DaemonRequest::Status,
-        )
+        .request(NodeCommandSubject::status(&target.id), &NodeRequest::Status)
         .await
         .map_err(|error| error.to_string())?;
     if !response.is_ok() {

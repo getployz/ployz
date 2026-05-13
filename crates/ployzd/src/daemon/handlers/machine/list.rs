@@ -1,7 +1,6 @@
 use crate::daemon::DaemonState;
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineRemovePayload, MachineRttPayload,
-    MachineRttRow,
+    DaemonPayload, DaemonResponse, MachineRemovePayload, MachineRttPayload, MachineRttRow,
 };
 use ployz_store_api::{MachineMembershipStore, PeerRttObservation, PeerRttStore, StoreDriver};
 use ployz_types::model::{MachineId, MachineMembership};
@@ -12,6 +11,7 @@ use super::render::{format_lifecycle, format_timestamp, render_machine_list_repo
 use super::types::{MachineListReport, MachineListReportRow};
 use crate::mesh_state::bootstrap::refresh_bootstrap_peer_records_from_store;
 use ployz_nats::{NodeCommandSubject, RpcPolicy};
+use ployz_node_api::NodeRequest;
 use std::time::Duration;
 
 const MACHINE_REMOVE_RPC_TIMEOUT: Duration = Duration::from_secs(120);
@@ -154,7 +154,7 @@ impl DaemonState {
             let response = rpc_client
                 .request(
                     NodeCommandSubject::mesh_remove_machine(&record.id),
-                    &DaemonRequest::MeshPeerRemoveMachine {
+                    &NodeRequest::MeshPeerRemoveMachine {
                         operation_id,
                         network_id: active.config.id.clone(),
                         machine_id: record.id.clone(),

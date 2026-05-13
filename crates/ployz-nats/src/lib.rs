@@ -22,7 +22,7 @@ pub use coord::jobs::{
 pub use coord::locks::{Lease, LockAcquireError, NatsDeployLock, NatsLocks};
 pub use coord::rpc::{
     NatsNodeRpcClient, NodeCommandSubject, RpcFailure, RpcFailureKind, RpcPolicy,
-    decode_daemon_request, encode_daemon_response,
+    decode_node_request, encode_node_response,
 };
 pub use subjects::{NatsScope, acme_account_lock, cert_lock, deploy_lock, subnet_lock};
 

@@ -14,9 +14,10 @@ ployz-dns = { path = "../ployz-dns" }
 ployz-gateway = { path = "../ployz-gateway" }
 ployz-orchestrator = { path = "../ployz-orchestrator" }
 ployz-store-api = { path = "../ployz-store-api" }
+ployz-store-memory = { path = "../ployz-store-memory" }
 ployz-types = { path = "../ployz-types" }
 rand = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]
 workspace = true

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_runtime_api::RuntimeHandle;
-use ployz_runtime_backends::storage::{ShellRunner, TokioShellRunner, ZfsDriver};
+use ployz_storage_zfs::{ShellRunner, TokioShellRunner, ZfsDriver};
 use ployz_store_api::{DeployStore, MachineMembershipStore, StoreDriver};
 use ployz_types::model::MachineId;
 use ployz_types::spec::Namespace;
@@ -614,8 +614,9 @@ mod tests {
         validate_open_source, validate_source_overlay, validate_volume_ownership,
     };
     use async_trait::async_trait;
-    use ployz_runtime_backends::storage::{ShellOutput, ShellRunner, ZfsDriver};
+    use ployz_storage_zfs::{ShellOutput, ShellRunner, ZfsDriver};
     use ployz_store_api::{DeployCommit, DeployStore, MachineMembershipStore, StoreDriver};
+    use ployz_store_memory::StoreDriverMemoryExt as _;
     use ployz_types::error::{Error, Result};
     use ployz_types::model::{
         DeployId, DeployRecord, DeployRecordState, MachineId, MachineLifecycle, MachineMembership,

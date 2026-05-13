@@ -21,8 +21,8 @@ ployz-nats = { path = "../ployz-nats" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
 backon = { workspace = true }
-hickory-server = "0.25"
-tokio = { workspace = true }
+hickory-server = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "net", "io-util"] }
 # TODO: remove when upstream hickory drops async_trait
 async-trait = { workspace = true }
 prometheus = { workspace = true }

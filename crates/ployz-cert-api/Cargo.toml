@@ -1,0 +1,16 @@
+[package]
+name = "ployz-cert-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ployz-store-api = { path = "../ployz-store-api" }
+ployz-types = { path = "../ployz-types" }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time"] }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

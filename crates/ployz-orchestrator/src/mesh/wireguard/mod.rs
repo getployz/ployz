@@ -1,5 +1,4 @@
-pub(crate) mod memory;
+pub mod memory;
 
 pub use memory::MemoryWireGuard;
-
-pub const DEFAULT_LISTEN_PORT: u16 = 51820;
+pub use ployz_runtime_api::mesh::wireguard::DEFAULT_LISTEN_PORT;

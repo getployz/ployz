@@ -1,8 +1,14 @@
+mod container;
 mod identity;
 mod image;
+pub mod ipam;
+pub mod mesh;
 
 use async_trait::async_trait;
 
+pub use container::{
+    Observation, ObservedContainer, PortBinding, PortMap, RestartPolicy, RuntimeContainerSpec,
+};
 pub use identity::{Identity, IdentityError};
 pub use image::{
     ImageArchiveReader, ImageDiskPreflight, ImageReceivePreflightRequest, RuntimeImage,

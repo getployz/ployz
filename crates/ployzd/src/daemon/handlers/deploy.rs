@@ -35,6 +35,8 @@ use ployz_orchestrator::deploy::{
     validated_prepared_manifest,
 };
 use ployz_store_api::{DeployStore, StoreDriver, StoreRuntimeControl};
+#[cfg(test)]
+use ployz_store_memory::StoreDriverMemoryExt as _;
 use ployz_types::Error as PloyzError;
 use ployz_types::error::DeployError;
 #[cfg(test)]
@@ -1460,6 +1462,7 @@ mod tests {
         VolumeZfsTransferPayload, VolumeZfsTransferState,
     };
     use ployz_nats::{NodeCommandSubject, RpcFailure, RpcFailureKind, RpcPolicy};
+    use ployz_node_api::NodeRequest;
     use ployz_orchestrator::deploy::participant::MoveVolumeRequest;
     use ployz_orchestrator::{Mesh, WireguardDriver};
     use ployz_runtime_api::Identity;
@@ -3325,7 +3328,7 @@ mod tests {
             "{second_poll:?}"
         );
         match &send.1 {
-            DaemonRequest::VolumeZfsSend {
+            NodeRequest::VolumeZfsSend {
                 namespace,
                 volume,
                 snapshot,
@@ -4442,7 +4445,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct FakeMoveRpcClient {
         responses: Arc<Mutex<VecDeque<std::result::Result<DaemonResponse, RpcFailure>>>>,
-        requests: Arc<Mutex<Vec<(String, DaemonRequest)>>>,
+        requests: Arc<Mutex<Vec<(String, NodeRequest)>>>,
         policies: Arc<Mutex<Vec<RpcPolicy>>>,
     }
 
@@ -4455,7 +4458,7 @@ mod tests {
             }
         }
 
-        fn requests(&self) -> Vec<(String, DaemonRequest)> {
+        fn requests(&self) -> Vec<(String, NodeRequest)> {
             self.requests.lock().expect("requests").clone()
         }
 
@@ -4474,7 +4477,7 @@ mod tests {
         async fn request(
             &self,
             subject: NodeCommandSubject,
-            request: &DaemonRequest,
+            request: &NodeRequest,
         ) -> std::result::Result<DaemonResponse, RpcFailure> {
             self.requests
                 .lock()

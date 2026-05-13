@@ -4,7 +4,7 @@ use bollard::models::{
     NetworkCreateRequest, NetworkDisconnectRequest,
 };
 use ipnet::Ipv4Net;
-use ployz_orchestrator::ipam::{container_ip, machine_ip};
+use ployz_runtime_api::ipam::{container_ip, machine_ip};
 use std::net::Ipv4Addr;
 #[cfg(target_os = "linux")]
 use std::process::Command;

@@ -1,0 +1,20 @@
+[package]
+name = "ployz-store-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "ployz_store_memory"
+path = "src/lib.rs"
+
+[dependencies]
+ployz-store-api = { path = "../ployz-store-api" }
+ployz-types = { path = "../ployz-types" }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,4 +1,3 @@
-use crate::memory::{MemoryService, MemoryStore};
 use crate::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
     DeployStore, ImageAvailabilityStore, InstanceStatusStore, InviteStore, MachineMembershipStore,
@@ -33,31 +32,6 @@ pub struct StoreDriver {
 }
 
 impl StoreDriver {
-    #[must_use]
-    pub fn memory() -> Self {
-        Self::memory_with(Arc::new(MemoryStore::new()), Arc::new(MemoryService::new()))
-    }
-
-    #[must_use]
-    pub fn memory_with(store: Arc<MemoryStore>, service: Arc<MemoryService>) -> Self {
-        let runtime = Arc::new(MemoryRuntime {
-            store: Arc::clone(&store),
-            service: Arc::clone(&service),
-        });
-        Self::new(
-            runtime,
-            store.clone(),
-            store.clone(),
-            store.clone(),
-            store.clone(),
-            store.clone(),
-            store.clone(),
-            store.clone(),
-            store.clone(),
-            store,
-        )
-    }
-
     #[must_use]
     pub fn new(
         runtime: Arc<dyn StoreRuntimeControl>,
@@ -475,29 +449,5 @@ impl CertificateStore for StoreDriver {
         self.certificates
             .list_acme_challenge_readiness(hostname, token)
             .await
-    }
-}
-
-struct MemoryRuntime {
-    store: Arc<MemoryStore>,
-    service: Arc<MemoryService>,
-}
-
-#[async_trait]
-impl StoreRuntimeControl for MemoryRuntime {
-    async fn start(&self) -> Result<()> {
-        self.service.start().await
-    }
-
-    async fn stop(&self) -> Result<()> {
-        self.service.stop().await
-    }
-
-    async fn wipe_data(&self) -> Result<()> {
-        self.store.wipe_data().await
-    }
-
-    async fn healthy(&self) -> bool {
-        self.service.healthy().await
     }
 }

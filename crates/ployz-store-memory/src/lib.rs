@@ -1,11 +1,11 @@
-use crate::deploy_commit_facts::DeployCommitFacts;
-use crate::{
-    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
-    DeployStore, ImageAvailabilityStore, InstanceStatusStore, InviteStore, MachineMembershipStore,
-    RoutingEventEnvelope, RoutingEventSubscription, RoutingStateStore, StoreRuntimeControl,
-    SyncProbe, SyncStatus,
-};
 use async_trait::async_trait;
+use ployz_store_api::{
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
+    DeployCommitFacts, DeployStore, ImageAvailabilityStore, InstanceStatusStore, InviteStore,
+    MachineMembershipStore, MachineSubscription, PeerRttStore, RoutingEventEnvelope,
+    RoutingEventSubscription, RoutingEventSubscriptionUpdate, RoutingStateStore, StoreDriver,
+    StoreRuntimeControl, SyncProbe, SyncStatus,
+};
 use ployz_types::error::{DeployError, Error, Result, SubscriptionStream};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
@@ -314,7 +314,7 @@ where
 
 fn subscribe_routing_broadcast(
     mut events: broadcast::Receiver<MemoryRoutingEvent>,
-) -> mpsc::Receiver<crate::RoutingEventSubscriptionUpdate> {
+) -> mpsc::Receiver<RoutingEventSubscriptionUpdate> {
     let (tx, rx) = mpsc::channel(MEMORY_SUBSCRIPTION_CAPACITY);
     tokio::spawn(async move {
         loop {
@@ -354,7 +354,7 @@ impl SyncProbe for MemoryStore {
 }
 
 #[async_trait]
-impl crate::PeerRttStore for MemoryStore {}
+impl PeerRttStore for MemoryStore {}
 
 #[async_trait]
 impl MachineMembershipStore for MemoryStore {
@@ -395,7 +395,7 @@ impl MachineMembershipStore for MemoryStore {
         Ok(())
     }
 
-    async fn subscribe_machines(&self) -> Result<crate::MachineSubscription> {
+    async fn subscribe_machines(&self) -> Result<MachineSubscription> {
         let inner = self.lock_inner();
         let snapshot = inner.machines.values().cloned().collect::<Vec<_>>();
         let receiver = subscribe_broadcast(
@@ -1194,6 +1194,72 @@ impl StoreRuntimeControl for MemoryService {
 
     async fn healthy(&self) -> bool {
         self.healthy.load(Ordering::SeqCst)
+    }
+}
+
+pub trait StoreDriverMemoryExt {
+    #[must_use]
+    fn memory() -> StoreDriver;
+
+    #[must_use]
+    fn memory_with(
+        store: std::sync::Arc<MemoryStore>,
+        service: std::sync::Arc<MemoryService>,
+    ) -> StoreDriver;
+}
+
+impl StoreDriverMemoryExt for StoreDriver {
+    fn memory() -> StoreDriver {
+        Self::memory_with(
+            std::sync::Arc::new(MemoryStore::new()),
+            std::sync::Arc::new(MemoryService::new()),
+        )
+    }
+
+    fn memory_with(
+        store: std::sync::Arc<MemoryStore>,
+        service: std::sync::Arc<MemoryService>,
+    ) -> StoreDriver {
+        let runtime = std::sync::Arc::new(MemoryRuntime {
+            store: std::sync::Arc::clone(&store),
+            service: std::sync::Arc::clone(&service),
+        });
+        StoreDriver::new(
+            runtime,
+            store.clone(),
+            store.clone(),
+            store.clone(),
+            store.clone(),
+            store.clone(),
+            store.clone(),
+            store.clone(),
+            store.clone(),
+            store,
+        )
+    }
+}
+
+struct MemoryRuntime {
+    store: std::sync::Arc<MemoryStore>,
+    service: std::sync::Arc<MemoryService>,
+}
+
+#[async_trait]
+impl StoreRuntimeControl for MemoryRuntime {
+    async fn start(&self) -> Result<()> {
+        self.service.start().await
+    }
+
+    async fn stop(&self) -> Result<()> {
+        self.service.stop().await
+    }
+
+    async fn wipe_data(&self) -> Result<()> {
+        self.store.wipe_data().await
+    }
+
+    async fn healthy(&self) -> bool {
+        self.service.healthy().await
     }
 }
 

@@ -7,8 +7,8 @@ use ployz_runtime_api::{
     ImageArchiveReader, RuntimeHandle, RuntimeImage, RuntimeImageBackend, RuntimeImageError,
     RuntimeImageImportResult,
 };
-use ployz_runtime_backends::runtime::ContainerEngine;
-use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
+use ployz_runtime_docker::runtime::ContainerEngine;
+use ployz_storage_zfs::{TokioShellRunner, ZfsDriver};
 use ployz_types::model::OverlayIp;
 
 use super::DaemonState;

@@ -8,7 +8,9 @@ use ployz_api::{
     VolumeZfsTransferState,
 };
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
-use ployz_runtime_backends::storage::{CloneMetadata, DatasetSpec, TokioShellRunner, ZfsDriver};
+use ployz_node_api::NodeRequest;
+use ployz_storage_api::{CloneMetadata, DatasetSpec};
+use ployz_storage_zfs::{TokioShellRunner, ZfsDriver};
 use ployz_store_api::{DeployStore, MachineMembershipStore};
 use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership, VolumeRecord};
 use ployz_types::spec::{Namespace, VolumeScope};
@@ -1601,7 +1603,7 @@ impl DaemonState {
         match client
             .request(
                 NodeCommandSubject::volume_zfs_inspect(&machine.id),
-                &ployz_api::DaemonRequest::VolumeZfsInspect {
+                &NodeRequest::VolumeZfsInspect {
                     namespace: namespace.to_string(),
                     volume: volume.to_string(),
                     machine: None,
@@ -1634,7 +1636,7 @@ impl DaemonState {
         match client
             .request(
                 NodeCommandSubject::volume_zfs_snapshot(&machine.id),
-                &ployz_api::DaemonRequest::VolumeZfsSnapshot {
+                &NodeRequest::VolumeZfsSnapshot {
                     namespace: namespace.as_str().to_string(),
                     volume: volume.to_string(),
                     snapshot: snapshot.to_string(),
@@ -1948,7 +1950,7 @@ async fn snapshot_on_machine(
     let response = nats_rpc
         .request(
             NodeCommandSubject::volume_zfs_snapshot(&machine.id),
-            &ployz_api::DaemonRequest::VolumeZfsPeerSnapshot {
+            &NodeRequest::VolumeZfsPeerSnapshot {
                 namespace: namespace.as_str().to_string(),
                 volume: volume.to_string(),
                 snapshot: snapshot.to_string(),
@@ -1990,7 +1992,7 @@ async fn snapshot_guid_on_machine(
     let response = nats_rpc
         .request(
             NodeCommandSubject::volume_zfs_snapshot_guid(&machine.id),
-            &ployz_api::DaemonRequest::VolumeZfsPeerSnapshotGuid {
+            &NodeRequest::VolumeZfsPeerSnapshotGuid {
                 namespace: namespace.as_str().to_string(),
                 volume: volume.to_string(),
                 snapshot: snapshot.to_string(),
@@ -2036,7 +2038,7 @@ async fn start_send_on_machine(
     let response = nats_rpc
         .request(
             NodeCommandSubject::volume_zfs_start_send(&source.id),
-            &ployz_api::DaemonRequest::VolumeZfsPeerStartSend {
+            &NodeRequest::VolumeZfsPeerStartSend {
                 namespace: record.namespace.as_str().to_string(),
                 volume: record.volume_name.clone(),
                 snapshot: snapshot.to_string(),

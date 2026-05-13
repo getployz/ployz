@@ -1,14 +1,14 @@
 //! ployzd-side `ParticipantProbe` implementation.
 //!
-//! Issues a `DaemonRequest::Ping` to each participant over NATS request-reply.
+//! Issues a `NodeRequest::Ping` to each participant over NATS request-reply.
 //! This is the live, decision-time
 //! reachability check that AGENTS.md mandates: it confirms the peer's daemon
 //! is processing requests at the moment a deploy is about to mutate cluster
 //! state, rather than relying on freshness of stale membership gossip.
 
 use async_trait::async_trait;
-use ployz_api::DaemonRequest;
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcFailureKind};
+use ployz_node_api::NodeRequest;
 use ployz_orchestrator::deploy::{ParticipantProbe, ProbeError, ProbeErrorKind};
 use ployz_types::model::MachineMembership;
 
@@ -28,7 +28,7 @@ impl ParticipantProbe for NatsRpcProbe {
     async fn ping(&self, machine: &MachineMembership) -> Result<(), ProbeError> {
         match self
             .client
-            .request(NodeCommandSubject::ping(&machine.id), &DaemonRequest::Ping)
+            .request(NodeCommandSubject::ping(&machine.id), &NodeRequest::Ping)
             .await
         {
             Ok(response) if response.is_ok() => Ok(()),

@@ -3,10 +3,9 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineUpdatePayload, MachineUpdateRow,
-};
+use ployz_api::{DaemonPayload, DaemonResponse, MachineUpdatePayload, MachineUpdateRow};
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject};
+use ployz_node_api::NodeRequest;
 use ployz_types::model::{MachineId, MachineMembership};
 use tokio::process::Command;
 use tokio::sync::oneshot;
@@ -298,7 +297,7 @@ impl DaemonState {
             Err(error) => return Err(update_row(&machine_id, version, error)),
         };
 
-        let prepare = DaemonRequest::MeshPeerPrepareUpdate {
+        let prepare = NodeRequest::MeshPeerPrepareUpdate {
             operation_id: operation_id.to_string(),
             version: version.to_string(),
         };
@@ -316,7 +315,7 @@ impl DaemonState {
             ));
         }
 
-        let execute = DaemonRequest::MeshPeerExecuteUpdate {
+        let execute = NodeRequest::MeshPeerExecuteUpdate {
             operation_id: operation_id.to_string(),
             version: version.to_string(),
         };
@@ -391,7 +390,7 @@ async fn wait_for_remote_update(
         match client
             .request(
                 NodeCommandSubject::machine_operation_get(&record.id),
-                &DaemonRequest::MachineOperationGet {
+                &NodeRequest::MachineOperationGet {
                     id: operation_id.to_string(),
                 },
             )
@@ -448,10 +447,7 @@ async fn verify_remote_version(
     version: &str,
 ) -> Result<(), String> {
     let response = client
-        .request(
-            NodeCommandSubject::status(&record.id),
-            &DaemonRequest::Status,
-        )
+        .request(NodeCommandSubject::status(&record.id), &NodeRequest::Status)
         .await
         .map_err(|error| error.to_string())?;
     if !response.is_ok() {

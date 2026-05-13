@@ -13,10 +13,11 @@ use ployz_gateway_config::GatewayConfig;
 use ployz_nats::config as nats_config;
 use ployz_orchestrator::WireguardDriver;
 use ployz_runtime_api::Identity;
-use ployz_runtime_backends::mesh::driver as mesh_backends;
-use ployz_runtime_backends::network::docker_bridge_network;
+use ployz_runtime_docker::network::docker_bridge_network;
 use ployz_store_api::StoreDriver;
+use ployz_store_memory::StoreDriverMemoryExt as _;
 use ployz_types::model::{OverlayIp, StorageParticipation, StorageReplicaPolicy};
+use ployz_wireguard_backends::driver as mesh_backends;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecutionBackend {

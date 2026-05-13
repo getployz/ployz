@@ -1,0 +1,15 @@
+[package]
+name = "ployz-storage-zfs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ployz-storage-api = { path = "../ployz-storage-api" }
+ployz-types = { path = "../ployz-types" }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["process"] }
+
+[lints]
+workspace = true

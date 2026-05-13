@@ -35,5 +35,11 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --exclude ployz-bpfctl
 
-      - name: Run tests
+      - name: Run default tests
+        run: just test
+
+      - name: Check crate boundaries
+        run: just test-boundaries
+
+      - name: Run full tests
         run: just test-all

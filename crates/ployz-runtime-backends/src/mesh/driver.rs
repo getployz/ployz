@@ -2,10 +2,10 @@
 use crate::mesh::wireguard::DockerWireGuard;
 use crate::mesh::wireguard::HostWireGuard;
 use async_trait::async_trait;
-use ployz_orchestrator::WireguardDriver;
-use ployz_orchestrator::mesh::driver::{WireguardBackend, WireguardBackendMode};
-use ployz_orchestrator::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use ployz_runtime_api::Identity;
+use ployz_runtime_api::mesh::WireguardDriver;
+use ployz_runtime_api::mesh::driver::{WireguardBackend, WireguardBackendMode};
+use ployz_runtime_api::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use ployz_types::Result;
 use ployz_types::model::{OverlayIp, PublicKey, WireGuardPeerSpec};
 #[cfg(feature = "docker")]

@@ -1,5 +1,5 @@
 use futures_util::StreamExt;
-use ployz_nats::{decode_daemon_request, encode_daemon_response};
+use ployz_nats::{decode_node_request, encode_node_response};
 use ployz_runtime_api::RuntimeHandle;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -343,7 +343,7 @@ async fn handle_message(
         warn!("nats node rpc request missing reply subject");
         return Ok(());
     };
-    let request = match decode_daemon_request(message.payload.as_ref()) {
+    let request = match decode_node_request(message.payload.as_ref()) {
         Ok(request) => request,
         Err(error) => {
             publish_error_response(client, reply, "INVALID_REQUEST", error.to_string()).await?;
@@ -355,10 +355,10 @@ async fn handle_message(
     let (response_flushed_tx, response_flushed_rx) = oneshot::channel();
     if tx
         .send(IncomingCommand {
-            request,
             reply: reply_tx,
             response_flushed: Some(response_flushed_rx),
             stream: None,
+            request: request.into(),
         })
         .await
         .is_err()
@@ -385,7 +385,7 @@ async fn handle_message(
             return Err("daemon dropped response".into());
         }
     };
-    let payload = encode_daemon_response(&response).map_err(|error| error.to_string())?;
+    let payload = encode_node_response(&response).map_err(|error| error.to_string())?;
     client
         .publish(reply, payload.into())
         .await
@@ -405,7 +405,7 @@ async fn publish_error_response(
     message: impl Into<String>,
 ) -> Result<(), String> {
     let response = ployz_api::DaemonResponse::error(code, message, None);
-    let payload = encode_daemon_response(&response).map_err(|error| error.to_string())?;
+    let payload = encode_node_response(&response).map_err(|error| error.to_string())?;
     client
         .publish(reply, payload.into())
         .await

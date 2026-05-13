@@ -32,12 +32,12 @@ use crate::model::{
     VolumeClonePreflightAction, VolumeClonePreflightScope, VolumeMovementRecord, VolumeRecord,
 };
 use async_trait::async_trait;
-use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{
     CertificateStore, DeployCommit, DeployStore, ImageAvailabilityStore, InstanceStatusStore,
     InviteStore, MachineMembershipStore, MachineSubscription, PeerRttStore,
     RoutingEventSubscription, RoutingStateStore, StoreDriver, StoreRuntimeControl, SyncProbe,
 };
+use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
 use ployz_types::Result as PloyzResult;
 use ployz_types::spec::{
     ContainerSpec, DeployIntent, DeployManifest, DeployPhaseIntent, HttpRoute, Mount, MountSource,

@@ -10,7 +10,10 @@ name = "ployz-bpfctl"
 path = "src/main.rs"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-aya = "0.13"
-ipnet = "2"
-libc = "0.2"
+aya = { workspace = true }
+ipnet = { workspace = true }
+libc = { workspace = true }
 ployz-ebpf-common = { path = "../ebpf-common" }
+
+[lints]
+workspace = true

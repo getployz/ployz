@@ -3,6 +3,7 @@ use ployz_api::{
     MeshSelfRecordPayload, StatusPayload,
 };
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject};
+use ployz_node_api::NodeRequest;
 use ployz_sdk::Transport;
 use ployz_store_api::{MachineMembershipStore, StoreDriver};
 use ployz_types::model::{MachineEvent, MachineId, MachineLifecycle, MachineMembership, PublicKey};
@@ -155,7 +156,7 @@ pub(super) async fn nats_self_record(
     let response = client
         .request(
             NodeCommandSubject::mesh_self_record(&machine.id),
-            &DaemonRequest::MeshSelfRecord,
+            &NodeRequest::MeshSelfRecord,
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -172,7 +173,7 @@ pub(super) async fn nats_self_record(
 pub(super) async fn nats_rpc_expect_ok(
     client: &NatsNodeRpcClient,
     subject: NodeCommandSubject,
-    request: DaemonRequest,
+    request: NodeRequest,
 ) -> Result<(), String> {
     let response = client
         .request(subject, &request)
@@ -195,7 +196,7 @@ pub(super) async fn wait_for_nats_command_responder(
         attempt += 1;
         let last_error = match timeout(
             REMOTE_READY_RPC_TIMEOUT,
-            client.request(NodeCommandSubject::ping(&machine.id), &DaemonRequest::Ping),
+            client.request(NodeCommandSubject::ping(&machine.id), &NodeRequest::Ping),
         )
         .await
         {
@@ -255,7 +256,7 @@ pub(super) async fn log_nats_enable_rollback(
     machine: &MachineMembership,
     original_error: &str,
 ) {
-    let request = DaemonRequest::MachineTransitionSelf {
+    let request = NodeRequest::MachineTransitionSelf {
         transition: MachineSelfTransition::Standby { force: true },
     };
     if let Err(rollback_error) = nats_rpc_expect_ok(
@@ -287,7 +288,7 @@ pub(super) async fn wait_for_nats_ready(
             REMOTE_READY_RPC_TIMEOUT,
             client.request(
                 NodeCommandSubject::mesh_ready(&machine.id),
-                &DaemonRequest::MeshReady { json: false },
+                &NodeRequest::MeshReady { json: false },
             ),
         )
         .await

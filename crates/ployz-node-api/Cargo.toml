@@ -1,0 +1,15 @@
+[package]
+name = "ployz-node-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ployz-api = { path = "../ployz-api" }
+ployz-types = { path = "../ployz-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

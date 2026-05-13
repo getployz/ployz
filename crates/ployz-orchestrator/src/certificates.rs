@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use ployz_store_api::{CertificateStore, StoreDriver};
 use ployz_types::error::{CertificateError, Error, Result};
 use ployz_types::model::{
@@ -8,273 +7,27 @@ use ployz_types::model::{
 use ployz_types::time::now_unix_secs;
 use std::collections::BTreeSet;
 use std::future::Future;
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use x509_parser::parse_x509_certificate;
 use x509_parser::pem::parse_x509_pem;
 
-pub const DEFAULT_ACME_DIRECTORY_URL: &str = "https://acme-v02.api.letsencrypt.org/directory";
+pub use ployz_cert_api::{
+    AccountAcquisition, AcmeAccountCoordinator, AcmeIssuer, AcmeIssuerFactory, CHALLENGE_TTL_SECS,
+    CertificateManagerConfig, DEFAULT_ACME_DIRECTORY_URL, HTTP01_CHALLENGE_VISIBILITY_POLL,
+    HTTP01_CHALLENGE_VISIBILITY_TIMEOUT, HTTP01_GATEWAY_SNAPSHOT_SETTLE, Http01ChallengeReadiness,
+    IssuanceAcquisition, IssuanceCoordinator, IssuanceHold, IssuedCertificate,
+    LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, NoopAcmeIssuer,
+    NoopAcmeIssuerFactory, NoopIssuanceCoordinator, StartedOrder, account_id_for_issuer_url,
+    wait_for_http01_challenge_visible,
+};
+
 const CERT_VALIDITY_FALLBACK_SECS: u64 = 90 * 24 * 60 * 60;
-pub const CHALLENGE_TTL_SECS: u64 = 15 * 60;
 // Finalization runs in the background, so this can cover unusually slow store
 // propagation before reachable peers must observe the HTTP-01 record.
-pub const HTTP01_CHALLENGE_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2 * 60);
-const HTTP01_CHALLENGE_VISIBILITY_POLL: Duration = Duration::from_millis(100);
-pub const HTTP01_GATEWAY_SNAPSHOT_SETTLE: Duration = Duration::from_secs(1);
 const STUCK_ISSUING_MAX_AGE_SECS: u64 = 24 * 60 * 60;
-
-#[derive(Debug, Clone)]
-pub struct CertificateManagerConfig {
-    pub issuer_url: String,
-    pub contact_email: Option<String>,
-    pub root_ca_path: Option<PathBuf>,
-}
-
-impl Default for CertificateManagerConfig {
-    fn default() -> Self {
-        Self {
-            issuer_url: DEFAULT_ACME_DIRECTORY_URL.to_string(),
-            contact_email: None,
-            root_ca_path: None,
-        }
-    }
-}
-
-impl CertificateManagerConfig {
-    #[must_use]
-    pub fn from_env() -> Self {
-        let issuer_url = std::env::var("PLOYZ_ACME_DIRECTORY_URL")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_ACME_DIRECTORY_URL.to_string());
-        let contact_email = std::env::var("PLOYZ_ACME_CONTACT_EMAIL")
-            .ok()
-            .filter(|value| !value.trim().is_empty());
-        let root_ca_path = std::env::var_os("PLOYZ_ACME_ROOT_CA_PATH")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from);
-        Self {
-            issuer_url,
-            contact_email,
-            root_ca_path,
-        }
-    }
-}
-
-#[must_use]
-pub fn account_id_for_issuer_url(issuer_url: &str) -> String {
-    issuer_url.to_string()
-}
-
-#[derive(Debug, Clone)]
-pub struct StartedOrder {
-    pub order_url: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct IssuedCertificate {
-    pub fullchain_pem: String,
-    pub private_key_pem: String,
-}
-
-#[async_trait]
-pub trait AcmeIssuer: Send + Sync {
-    async fn start_order(&self, store: &StoreDriver, hostname: &str) -> Result<StartedOrder>;
-    async fn finalize_order(
-        &self,
-        store: &StoreDriver,
-        hostname: &str,
-        order_url: &str,
-    ) -> Result<IssuedCertificate>;
-}
-
-#[async_trait]
-pub trait Http01ChallengeReadiness: Send + Sync {
-    async fn wait_ready(&self, store: &StoreDriver, hostname: &str, token: &str) -> Result<()>;
-}
-
-/// Issuer-scoped coordination for ACME account creation. Orders are tied to
-/// the account key that created them, so concurrent first-use account creation
-/// must be serialized per issuer URL before any order is opened.
-#[async_trait]
-pub trait AcmeAccountCoordinator: Send + Sync {
-    async fn try_acquire_account(&self, issuer_url: &str) -> AccountAcquisition;
-}
-
-pub enum AccountAcquisition {
-    Allowed(IssuanceHold),
-    VetoedByPeer(String),
-    CoordinationFailed(String),
-}
-
-pub struct NoopAcmeAccountCoordinator;
-
-#[async_trait]
-impl AcmeAccountCoordinator for NoopAcmeAccountCoordinator {
-    async fn try_acquire_account(&self, _issuer_url: &str) -> AccountAcquisition {
-        AccountAcquisition::Allowed(IssuanceHold::noop())
-    }
-}
-
-pub struct LocalHttp01ChallengeReadiness;
-
-#[async_trait]
-impl Http01ChallengeReadiness for LocalHttp01ChallengeReadiness {
-    async fn wait_ready(&self, store: &StoreDriver, hostname: &str, token: &str) -> Result<()> {
-        wait_for_http01_challenge_visible(store, hostname, token).await
-    }
-}
-
-/// Cluster-wide coordination for ACME order placement. Implementations fan
-/// out a connection-bound lock to peer machines before `start_order` runs;
-/// explicit deny from any reachable peer vetoes this pass, unreachable peers
-/// abstain. The guard is held until both the ACME order side effect and the
-/// resulting certificate-record state transition have been persisted.
-#[async_trait]
-pub trait IssuanceCoordinator: Send + Sync {
-    async fn try_acquire(&self, hostname: &str) -> IssuanceAcquisition;
-}
-
-pub enum IssuanceAcquisition {
-    Allowed(IssuanceHold),
-    VetoedByPeer(String),
-    CoordinationFailed(String),
-}
-
-pub struct IssuanceHold {
-    #[allow(clippy::type_complexity)]
-    releaser: Option<
-        Box<dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send>,
-    >,
-}
-
-impl IssuanceHold {
-    #[must_use]
-    pub fn new<F, Fut>(release: F) -> Self
-    where
-        F: FnOnce() -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = ()> + Send + 'static,
-    {
-        Self {
-            releaser: Some(Box::new(move || Box::pin(release()))),
-        }
-    }
-
-    #[must_use]
-    pub fn noop() -> Self {
-        Self::new(|| async {})
-    }
-
-    pub async fn release(mut self) {
-        if let Some(releaser) = self.releaser.take() {
-            releaser().await;
-        }
-    }
-}
-
-impl Drop for IssuanceHold {
-    fn drop(&mut self) {
-        if let Some(releaser) = self.releaser.take() {
-            tracing::warn!(
-                "ACME issuance/account hold dropped without explicit release; releasing asynchronously"
-            );
-            match tokio::runtime::Handle::try_current() {
-                Ok(handle) => {
-                    handle.spawn(releaser());
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        ?error,
-                        "ACME issuance/account hold could not release because no Tokio runtime is active"
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// Coordinator that always allows. Used in memory-mode tests and in single-
-/// machine setups where cluster fanout isn't needed.
-pub struct NoopIssuanceCoordinator;
-
-#[async_trait]
-impl IssuanceCoordinator for NoopIssuanceCoordinator {
-    async fn try_acquire(&self, _hostname: &str) -> IssuanceAcquisition {
-        IssuanceAcquisition::Allowed(IssuanceHold::noop())
-    }
-}
-
-/// Builds `AcmeIssuer` instances bound to a specific ACME directory. The
-/// concrete implementation lives in `ployz-cert-backends`; orchestrator and
-/// tests only ever see this trait, which keeps `instant-acme` and `reqwest`
-/// out of the orchestrator dependency graph.
-pub trait AcmeIssuerFactory: Send + Sync {
-    fn issuer_url(&self) -> &str;
-    fn create(
-        &self,
-        readiness: Arc<dyn Http01ChallengeReadiness>,
-        account_coordinator: Arc<dyn AcmeAccountCoordinator>,
-    ) -> Arc<dyn AcmeIssuer>;
-}
-
-/// Issuer that always errors. Returned by `NoopAcmeIssuerFactory` for tests
-/// and single-machine setups that never trigger ACME issuance.
-pub struct NoopAcmeIssuer;
-
-#[async_trait]
-impl AcmeIssuer for NoopAcmeIssuer {
-    async fn start_order(&self, _store: &StoreDriver, _hostname: &str) -> Result<StartedOrder> {
-        Err(CertificateError::AcmeDisabled.into())
-    }
-
-    async fn finalize_order(
-        &self,
-        _store: &StoreDriver,
-        _hostname: &str,
-        _order_url: &str,
-    ) -> Result<IssuedCertificate> {
-        Err(CertificateError::AcmeDisabled.into())
-    }
-}
-
-/// Factory that returns `NoopAcmeIssuer` instances. Use in tests and in
-/// single-machine setups that have no managed certificates configured.
-pub struct NoopAcmeIssuerFactory {
-    issuer_url: String,
-}
-
-impl NoopAcmeIssuerFactory {
-    #[must_use]
-    pub fn new(issuer_url: impl Into<String>) -> Self {
-        Self {
-            issuer_url: issuer_url.into(),
-        }
-    }
-}
-
-impl Default for NoopAcmeIssuerFactory {
-    fn default() -> Self {
-        Self::new(DEFAULT_ACME_DIRECTORY_URL)
-    }
-}
-
-impl AcmeIssuerFactory for NoopAcmeIssuerFactory {
-    fn issuer_url(&self) -> &str {
-        &self.issuer_url
-    }
-
-    fn create(
-        &self,
-        _readiness: Arc<dyn Http01ChallengeReadiness>,
-        _account_coordinator: Arc<dyn AcmeAccountCoordinator>,
-    ) -> Arc<dyn AcmeIssuer> {
-        Arc::new(NoopAcmeIssuer)
-    }
-}
 
 pub fn spawn_certificate_finalization(
     store: StoreDriver,
@@ -740,32 +493,6 @@ fn is_retryable_challenge_visibility(error: &Error) -> bool {
     )
 }
 
-async fn wait_for_http01_challenge_visible(
-    store: &StoreDriver,
-    hostname: &str,
-    token: &str,
-) -> Result<()> {
-    let start = tokio::time::Instant::now();
-    loop {
-        let visible = store
-            .list_acme_challenges()
-            .await?
-            .iter()
-            .any(|challenge| challenge.hostname == hostname && challenge.token == token);
-        if visible {
-            return Ok(());
-        }
-        if start.elapsed() >= HTTP01_CHALLENGE_VISIBILITY_TIMEOUT {
-            return Err(CertificateError::Http01LocalChallengeNotVisible {
-                hostname: hostname.to_string(),
-                token: token.to_string(),
-            }
-            .into());
-        }
-        tokio::time::sleep(HTTP01_CHALLENGE_VISIBILITY_POLL).await;
-    }
-}
-
 fn leaf_validity(fullchain_pem: &str) -> Option<(Option<u64>, Option<u64>)> {
     let (_, pem) = parse_x509_pem(fullchain_pem.as_bytes()).ok()?;
     let (_, leaf) = parse_x509_certificate(&pem.contents).ok()?;
@@ -908,8 +635,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use ployz_store_memory::StoreDriverMemoryExt as _;
     use ployz_types::model::{AcmeChallengeRecord, CertificateLifecycle, CertificateRecord};
     use std::sync::Mutex;
+    use std::time::Duration;
 
     fn set_issuing(record: &mut CertificateRecord, order_url: &str) {
         record.lifecycle = CertificateLifecycle::Issuing {

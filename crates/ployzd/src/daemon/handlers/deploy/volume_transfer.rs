@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use ployz_api::{DaemonPayload, DaemonResponse, VolumeZfsTransferPayload, VolumeZfsTransferState};
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcFailure, RpcPolicy};
+use ployz_node_api::NodeRequest;
 use ployz_orchestrator::deploy::participant::{MoveVolumeRequest, MoveVolumeResult};
 use ployz_types::Error as PloyzError;
 use ployz_types::error::DeployError;
@@ -15,7 +16,7 @@ pub(super) trait DeployMoveRpcClient: Clone + Send + Sync {
     async fn request(
         &self,
         subject: NodeCommandSubject,
-        request: &ployz_api::DaemonRequest,
+        request: &NodeRequest,
     ) -> std::result::Result<DaemonResponse, RpcFailure>;
 }
 
@@ -28,7 +29,7 @@ impl DeployMoveRpcClient for NatsNodeRpcClient {
     async fn request(
         &self,
         subject: NodeCommandSubject,
-        request: &ployz_api::DaemonRequest,
+        request: &NodeRequest,
     ) -> std::result::Result<DaemonResponse, RpcFailure> {
         NatsNodeRpcClient::request(self, subject, request).await
     }
@@ -63,7 +64,7 @@ pub(super) async fn run_volume_move_rpc<R: DeployMoveRpcClient>(
     let response = move_client
         .request(
             NodeCommandSubject::volume_zfs_send(machine_id),
-            &ployz_api::DaemonRequest::VolumeZfsSend {
+            &NodeRequest::VolumeZfsSend {
                 namespace: namespace.as_str().to_string(),
                 volume,
                 snapshot,
@@ -120,7 +121,7 @@ async fn wait_for_volume_transfer<R: DeployMoveRpcClient>(
             remaining,
             poll_client.request(
                 NodeCommandSubject::volume_zfs_transfer_get(machine_id),
-                &ployz_api::DaemonRequest::VolumeZfsTransferGet {
+                &NodeRequest::VolumeZfsTransferGet {
                     id: transfer_id.clone(),
                 },
             ),

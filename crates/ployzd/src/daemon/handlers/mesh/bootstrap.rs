@@ -6,7 +6,7 @@ use ployz_api::{
     DaemonPayload, DaemonResponse, MachineSelfTransition, MeshBootstrapRequest,
     MeshSelfRecordPayload,
 };
-use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
+use ployz_host_backends::network::endpoints::detect_advertised_endpoints;
 use ployz_types::model::{
     NetworkLifecycleGoal, NetworkLifecycleTransition, NetworkName, NetworkTransitionEvidence,
     RegionRole, StorageParticipation,

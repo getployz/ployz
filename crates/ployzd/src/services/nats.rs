@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use ployz_nats::NatsScope;
 use ployz_nats::NatsStore;
 use ployz_nats::config::{self, CLIENT_PORT, PeerRoute, ServerConfig};
-use ployz_runtime_backends::runtime::labels::build_system_labels;
-use ployz_runtime_backends::runtime::{
+use ployz_runtime_docker::runtime::labels::build_system_labels;
+use ployz_runtime_docker::runtime::{
     ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec,
 };
 use ployz_store_api::{
@@ -980,7 +980,7 @@ impl StoreRuntimeControl for DockerNats {
     async fn healthy(&self) -> bool {
         match self.engine.inspect(&self.container_name).await {
             Ok(Some(observed)) => {
-                observed.running == ployz_runtime_backends::runtime::Observation::Observed(true)
+                observed.running == ployz_runtime_docker::runtime::Observation::Observed(true)
             }
             Ok(None) => false,
             Err(_) => false,

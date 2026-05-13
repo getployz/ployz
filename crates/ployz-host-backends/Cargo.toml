@@ -1,0 +1,19 @@
+[package]
+name = "ployz-host-backends"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+if-addrs = { workspace = true }
+libc = { workspace = true }
+reqwest = { workspace = true, features = ["rustls-tls"] }
+tokio = { workspace = true, features = ["time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+
+[lints]
+workspace = true

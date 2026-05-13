@@ -15,11 +15,11 @@ use ployz_dns::project_dns;
 use ployz_gateway::routes;
 use ployz_orchestrator::mesh::MeshNetwork;
 use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
-use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{
     DeployCommit, DeployStore, InstanceStatusStore, MachineMembershipStore, RoutingStateStore,
     StoreDriver,
 };
+use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DeployRecord, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use ployz_metrics::register_metric;
-use ployz_runtime_backends::runtime::{ContainerEngine, WorkloadResourceSnapshot};
+use ployz_runtime_docker::runtime::{ContainerEngine, WorkloadResourceSnapshot};
 use prometheus::{
     CounterVec, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts,
 };

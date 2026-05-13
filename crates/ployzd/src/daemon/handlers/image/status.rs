@@ -89,7 +89,7 @@ fn image_presence_label(record: &ImageAvailabilityRecord) -> &'static str {
 #[cfg(test)]
 mod tests {
     use ployz_store_api::ImageAvailabilityStore;
-    use ployz_store_api::memory::MemoryStore;
+    use ployz_store_memory::MemoryStore;
     use ployz_types::model::{
         BuildLocation, BuildMethod, ImageArtifact, ImageArtifactProvenance,
         ImageAvailabilityRecord, ImageDigest, ImagePresence, ImageRef, MachineId,

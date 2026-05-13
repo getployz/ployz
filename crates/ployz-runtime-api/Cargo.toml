@@ -6,15 +6,16 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-hostname = "0.4.2"
+hostname = { workspace = true }
+ipnet = { workspace = true }
 ployz-types = { path = "../ployz-types" }
 async-trait = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
-x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
+tokio = { workspace = true, features = ["io-util", "time"] }
+x25519-dalek = { workspace = true }
 
 [lints]
 workspace = true

@@ -448,7 +448,7 @@ mod tests {
     use async_trait::async_trait;
     use ployz_api::DaemonRequest;
     use ployz_config::{RuntimeTarget, ServiceMode, StorageConfig};
-    use ployz_runtime_backends::runtime::WorkloadResourceSnapshot;
+    use ployz_runtime_docker::runtime::WorkloadResourceSnapshot;
     use ployz_sdk::{Transport, UnixSocketTransport};
     use std::path::PathBuf;
     use std::sync::Arc;

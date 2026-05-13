@@ -326,8 +326,8 @@ mod tests {
     use ployz_orchestrator::mesh::driver::WireguardDriver;
     use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_runtime_api::Identity;
-    use ployz_store_api::memory::{MemoryService, MemoryStore};
     use ployz_store_api::{ImageAvailabilityStore, MachineMembershipStore, StoreDriver};
+    use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
     use ployz_types::model::{
         ImagePlatform, ImagePresence, MachineLifecycle, MachineMembership, MachineTopology,
         NetworkLifecycle, NetworkName, OverlayIp, RegionRole, StorageParticipation,

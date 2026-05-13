@@ -1,6 +1,5 @@
 mod deploy_commit_facts;
 mod driver;
-pub mod memory;
 mod traits;
 
 pub use deploy_commit_facts::DeployCommitFacts;

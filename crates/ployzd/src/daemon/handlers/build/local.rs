@@ -14,6 +14,8 @@ use ployz_api::{
 };
 use ployz_runtime_api::{RuntimeImage, RuntimeImageBackend, RuntimeImageError};
 use ployz_store_api::ImageAvailabilityStore;
+#[cfg(test)]
+use ployz_store_memory::StoreDriverMemoryExt as _;
 use ployz_types::model::{
     BuildInputSummary, BuildLocation, BuildMethod, BuildOperationKind, BuildSecretSummary,
     ImageArtifact, ImageArtifactProvenance, ImageAvailabilityRecord, ImageDigest, ImagePlatform,

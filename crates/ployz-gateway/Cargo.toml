@@ -23,11 +23,11 @@ ployz-types = { path = "../ployz-types" }
 backon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-pingora = { version = "0.8.0", features = ["lb", "boringssl"] }
-tokio = { workspace = true }
+pingora = { workspace = true, features = ["lb", "boringssl"] }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "net", "io-util"] }
 # TODO: remove when upstream pingora drops async_trait
 async-trait = { workspace = true }
-bytes = "1"
+bytes = { workspace = true }
 http = { workspace = true }
 prometheus = { workspace = true }
 thiserror = { workspace = true }
@@ -38,7 +38,7 @@ tracing-subscriber = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
-rcgen = "0.14"
+rcgen = { workspace = true }
 
 [lints]
 workspace = true

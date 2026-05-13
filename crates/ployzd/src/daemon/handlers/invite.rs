@@ -4,7 +4,7 @@ use crate::mesh_state::invite::{
 use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signer, SigningKey};
-use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
+use ployz_host_backends::network::endpoints::detect_advertised_endpoints;
 use ployz_store_api::{InviteStore, MachineMembershipStore};
 use ployz_types::model::{InviteRecord, InviteStatus};
 use ployz_types::time::now_unix_secs;
@@ -225,8 +225,8 @@ mod tests {
     use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_orchestrator::{Mesh, WireguardDriver};
     use ployz_runtime_api::Identity;
-    use ployz_store_api::memory::{MemoryService, MemoryStore};
     use ployz_store_api::{InviteStore, StoreDriver};
+    use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
     use ployz_types::model::{MachineId, NetworkId};
     use std::path::PathBuf;
     use std::sync::Arc;

@@ -4,15 +4,18 @@ use std::path::Path;
 use std::time::Duration;
 
 use ployz_api::{
-    DaemonPayload, DaemonRequest, ImageDistributePayload, ImageDistributeRequest,
+    DaemonPayload, ImageDistributePayload, ImageDistributeRequest,
     ImageDistributeValidationFailure, ImageDistributeValidationPayload, ImagePushPayload,
     ImagePushRequest, ImageReceiveSessionPayload, ImageReceiveSessionRequest,
     ImageReceivedImportPayload, ImageReceivedImportRequest, ImageTransferFailure,
     ImageTransferFailureStage, ImageTransferTargetResult, ImageTransferTargetStatus,
 };
 use ployz_nats::{NodeCommandSubject, RpcPolicy};
+use ployz_node_api::NodeRequest;
 use ployz_runtime_api::{ImageArchiveReader, RuntimeImage, RuntimeImageBackend, RuntimeImageError};
 use ployz_store_api::{ImageAvailabilityStore, MachineMembershipStore};
+#[cfg(test)]
+use ployz_store_memory::StoreDriverMemoryExt as _;
 use ployz_types::model::{
     ImageArtifact, ImageArtifactProvenance, ImageAvailabilityRecord, ImageOperationKind,
     ImageOperationRecord, ImageOperationTargetOutcome, ImagePresence, ImageRef, MachineId,
@@ -1152,7 +1155,7 @@ impl DaemonState {
             client
                 .request(
                     NodeCommandSubject::image_receive_session(target_machine),
-                    &DaemonRequest::ImageReceiveSession { request },
+                    &NodeRequest::ImageReceiveSession { request },
                 )
                 .await
                 .map_err(|error| {
@@ -1461,7 +1464,7 @@ impl DaemonState {
                 })
                 .request(
                     NodeCommandSubject::image_distribute(source_machine),
-                    &DaemonRequest::ImageDistribute { request },
+                    &NodeRequest::ImageDistribute { request },
                 )
                 .await
             {
@@ -1523,7 +1526,7 @@ impl DaemonState {
                 })
                 .request(
                     NodeCommandSubject::image_received_import(target_machine),
-                    &DaemonRequest::ImageReceivedImport { request },
+                    &NodeRequest::ImageReceivedImport { request },
                 )
                 .await
                 .map_err(|error| format!("request image import from {target_machine}: {error}"))?

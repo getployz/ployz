@@ -16,10 +16,17 @@ build-release:
     cargo build --release -p ployzd --bins -p ployzctl -p ployz-gateway -p ployz-dns
 
 test:
-    cargo test --workspace --exclude ployzd --exclude ployz-runtime-backends
+    cargo test
+
+test-boundaries:
+    cargo check -p ployz-runtime-backends --no-default-features
+    cargo check -p ployz-cert-api -p ployz-storage-api -p ployz-runtime-api -p ployz-store-api
+    cargo check -p ployz-cert-acme -p ployz-storage-zfs -p ployz-host-backends
+    cargo check -p ployz-runtime-docker -p ployz-wireguard-backends
 
 test-all:
-    cargo test
+    cargo test --workspace
+    just test-boundaries
     just verify-deploy-types
 
 deploy-types:

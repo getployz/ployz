@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use ployz_host_backends::network::endpoints::detect_advertised_endpoints;
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
-use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 #[cfg(target_os = "linux")]

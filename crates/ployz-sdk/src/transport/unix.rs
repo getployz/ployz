@@ -1,4 +1,4 @@
-use ployz_api::{DaemonRequest, DaemonResponse};
+use crate::{ControlRequest, ControlResponse};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -14,7 +14,7 @@ impl UnixSocketTransport {
 }
 
 impl super::Transport for UnixSocketTransport {
-    async fn request(&self, request: DaemonRequest) -> std::io::Result<DaemonResponse> {
+    async fn request(&self, request: ControlRequest) -> std::io::Result<ControlResponse> {
         let stream = UnixStream::connect(&self.path).await?;
         let (reader, mut writer) = stream.into_split();
 
@@ -36,8 +36,8 @@ impl super::Transport for UnixSocketTransport {
 #[cfg(test)]
 mod tests {
     use super::UnixSocketTransport;
+    use crate::ControlRequest;
     use crate::transport::Transport;
-    use ployz_api::DaemonRequest;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -61,7 +61,7 @@ mod tests {
         });
 
         let response = UnixSocketTransport::new(socket.to_string_lossy().into_owned())
-            .request(DaemonRequest::Status)
+            .request(ControlRequest::Status)
             .await
             .expect("request over unix socket");
 
@@ -88,7 +88,7 @@ mod tests {
         });
 
         let error = UnixSocketTransport::new(socket.to_string_lossy().into_owned())
-            .request(DaemonRequest::Status)
+            .request(ControlRequest::Status)
             .await
             .expect_err("malformed daemon output should fail");
 

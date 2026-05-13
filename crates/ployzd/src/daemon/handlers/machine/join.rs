@@ -10,6 +10,7 @@ use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions,
     MachineSelfTransition,
 };
+use ployz_node_api::NodeRequest;
 use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership};
 use tokio::task::JoinSet;
 
@@ -352,7 +353,7 @@ impl DaemonState {
         if let Err(err) = nats_rpc_expect_ok(
             nats_client,
             NodeCommandSubject::machine_transition_self(&record.id),
-            DaemonRequest::MachineTransitionSelf {
+            NodeRequest::MachineTransitionSelf {
                 transition: MachineSelfTransition::Activate { assigned_subnet },
             },
         )
@@ -446,7 +447,7 @@ impl DaemonState {
         let transition = nats_client
             .request(
                 NodeCommandSubject::machine_transition_self(&record.id),
-                &DaemonRequest::MachineTransitionSelf {
+                &NodeRequest::MachineTransitionSelf {
                     transition: MachineSelfTransition::Drain,
                 },
             )
@@ -557,7 +558,7 @@ impl DaemonState {
         let transition = nats_client
             .request(
                 NodeCommandSubject::machine_transition_self(&record.id),
-                &DaemonRequest::MachineTransitionSelf {
+                &NodeRequest::MachineTransitionSelf {
                     transition: MachineSelfTransition::Standby { force },
                 },
             )

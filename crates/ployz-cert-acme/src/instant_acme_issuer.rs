@@ -3,7 +3,7 @@ use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, NewAccount,
     NewOrder, OrderStatus, RetryPolicy,
 };
-use ployz_orchestrator::certificates::{
+use ployz_cert_api::{
     AccountAcquisition, AcmeAccountCoordinator, AcmeIssuer, AcmeIssuerFactory, CHALLENGE_TTL_SECS,
     CertificateManagerConfig, HTTP01_GATEWAY_SNAPSHOT_SETTLE, Http01ChallengeReadiness,
     IssuedCertificate, LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, StartedOrder,
@@ -372,10 +372,9 @@ fn ensure_order_url_matches_directory(directory_url: &str, order_url: &str) -> R
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use ployz_orchestrator::certificates::{
-        AccountAcquisition, AcmeAccountCoordinator, CertificateManagerConfig,
-    };
+    use ployz_cert_api::{AccountAcquisition, AcmeAccountCoordinator, CertificateManagerConfig};
     use ployz_store_api::StoreDriver;
+    use ployz_store_memory::StoreDriverMemoryExt as _;
     use ployz_types::error::Error;
     use ployz_types::model::AcmeAccountRecord;
 

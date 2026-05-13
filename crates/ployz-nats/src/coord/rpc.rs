@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ployz_api::{DaemonRequest, DaemonResponse};
+use ployz_node_api::{NodeRequest, NodeResponse};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::MachineId;
 
@@ -295,8 +295,8 @@ impl NatsNodeRpcClient {
     pub async fn request(
         &self,
         subject: NodeCommandSubject,
-        request: &DaemonRequest,
-    ) -> std::result::Result<DaemonResponse, RpcFailure> {
+        request: &NodeRequest,
+    ) -> std::result::Result<NodeResponse, RpcFailure> {
         let subject_name = subject.subject_in(&self.scope);
         let payload = serde_json::to_vec(request).map_err(|error| {
             RpcFailure::new(
@@ -328,7 +328,7 @@ impl NatsNodeRpcClient {
     pub async fn request_expect_ok(
         &self,
         subject: NodeCommandSubject,
-        request: &DaemonRequest,
+        request: &NodeRequest,
     ) -> std::result::Result<(), RpcFailure> {
         let response = self.request(subject, request).await?;
         if response.is_ok() {
@@ -375,14 +375,12 @@ impl From<RpcFailure> for Error {
     }
 }
 
-pub fn decode_daemon_request(payload: &[u8]) -> Result<DaemonRequest> {
-    serde_json::from_slice(payload)
-        .map_err(|error| Error::operation("nats_rpc_decode_request", error.to_string()))
+pub fn decode_node_request(payload: &[u8]) -> Result<NodeRequest> {
+    ployz_node_api::decode_node_request(payload)
 }
 
-pub fn encode_daemon_response(response: &DaemonResponse) -> Result<Vec<u8>> {
-    serde_json::to_vec(response)
-        .map_err(|error| Error::operation("nats_rpc_encode_response", error.to_string()))
+pub fn encode_node_response(response: &NodeResponse) -> Result<Vec<u8>> {
+    ployz_node_api::encode_node_response(response)
 }
 
 #[cfg(test)]

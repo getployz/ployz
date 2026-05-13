@@ -1,7 +1,8 @@
 use crate::mesh_state::network::NetworkConfig;
-use ployz_api::{DaemonRequest, MachineSelfTransition};
+use ployz_api::MachineSelfTransition;
 use ployz_nats::{NodeCommandSubject, RpcPolicy};
-use ployz_orchestrator::ipam::pick_candidate_subnet;
+use ployz_node_api::NodeRequest;
+use ployz_runtime_api::ipam::pick_candidate_subnet;
 use ployz_store_api::MachineMembershipStore;
 use ployz_types::model::MachineMembership;
 use ployz_types::model::{
@@ -275,7 +276,7 @@ impl DaemonState {
             let response = rpc_client
                 .request(
                     NodeCommandSubject::mesh_prepare_destroy(&peer.id),
-                    &DaemonRequest::MeshPeerPrepareDestroy {
+                    &NodeRequest::MeshPeerPrepareDestroy {
                         operation_id: operation_id.clone(),
                         network_id: network_id.clone(),
                         coordinator_id: self.identity.machine_id.clone(),
@@ -300,7 +301,7 @@ impl DaemonState {
                 if let Err(error) = rpc_client
                     .request_expect_ok(
                         NodeCommandSubject::mesh_cancel_destroy(&peer.id),
-                        &DaemonRequest::MeshPeerCancelDestroy {
+                        &NodeRequest::MeshPeerCancelDestroy {
                             operation_id: operation_id.clone(),
                         },
                     )
@@ -326,7 +327,7 @@ impl DaemonState {
             if let Err(error) = execute_client
                 .request_expect_ok(
                     NodeCommandSubject::mesh_execute_destroy(&peer.id),
-                    &DaemonRequest::MeshPeerExecuteDestroy {
+                    &NodeRequest::MeshPeerExecuteDestroy {
                         operation_id: operation_id.clone(),
                         network_id: network_id.clone(),
                     },

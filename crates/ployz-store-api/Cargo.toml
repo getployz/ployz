@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 ployz-types = { path = "../ployz-types" }
 serde = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 

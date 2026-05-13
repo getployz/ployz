@@ -3,11 +3,12 @@ use ployz_api::{
     DaemonPayload, DaemonResponse, DeployCandidateStartedPayload, DeployNamespaceSnapshotPayload,
 };
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
+use ployz_node_api::NodeRequest;
 use ployz_orchestrator::deploy::participant::{
     CleanupVolumeCloneRequest, CloneVolumeRequest, CloneVolumeResult, DeployParticipantClient,
     MoveVolumeRequest, MoveVolumeResult, StartCandidateRequest,
 };
-use ployz_runtime_backends::deploy::remote::DeployAgent;
+use ployz_runtime_docker::deploy::remote::DeployAgent;
 use ployz_types::Error as PloyzError;
 use ployz_types::error::DeployError;
 use ployz_types::model::SlotId;
@@ -206,7 +207,7 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             .client
             .request(
                 NodeCommandSubject::deploy_inspect_namespace(&machine.id),
-                &ployz_api::DaemonRequest::DeployNodeInspectNamespace {
+                &NodeRequest::DeployNodeInspectNamespace {
                     namespace: namespace.as_str().to_string(),
                     deploy_id: deploy_id.as_str().to_string(),
                 },
@@ -239,7 +240,7 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             .client
             .request(
                 NodeCommandSubject::deploy_start_candidate(machine_id),
-                &ployz_api::DaemonRequest::DeployNodeStartCandidate {
+                &NodeRequest::DeployNodeStartCandidate {
                     namespace: namespace.as_str().to_string(),
                     deploy_id: deploy_id.as_str().to_string(),
                     service: request.service,
@@ -301,7 +302,7 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             })
             .request(
                 NodeCommandSubject::deploy_clone_volume(machine_id),
-                &ployz_api::DaemonRequest::DeployNodeCloneVolume {
+                &NodeRequest::DeployNodeCloneVolume {
                     namespace: namespace.as_str().to_string(),
                     deploy_id: deploy_id.as_str().to_string(),
                     volume: request.volume,
@@ -349,7 +350,7 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
             })
             .request(
                 NodeCommandSubject::deploy_clone_volume(machine_id),
-                &ployz_api::DaemonRequest::DeployNodeCleanupUncommittedVolumeClone {
+                &NodeRequest::DeployNodeCleanupUncommittedVolumeClone {
                     namespace: namespace.as_str().to_string(),
                     deploy_id: deploy_id.as_str().to_string(),
                     volume: request.volume,
@@ -379,7 +380,7 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
     ) -> ployz_types::Result<()> {
         self.expect_ok(
             NodeCommandSubject::deploy_drain_instance(machine_id),
-            ployz_api::DaemonRequest::DeployNodeDrainInstance {
+            NodeRequest::DeployNodeDrainInstance {
                 namespace: namespace.as_str().to_string(),
                 deploy_id: deploy_id.as_str().to_string(),
                 instance_id: instance_id.as_str().to_string(),
@@ -398,7 +399,7 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
     ) -> ployz_types::Result<()> {
         self.expect_ok(
             NodeCommandSubject::deploy_remove_instance(machine_id),
-            ployz_api::DaemonRequest::DeployNodeRemoveInstance {
+            NodeRequest::DeployNodeRemoveInstance {
                 namespace: namespace.as_str().to_string(),
                 deploy_id: deploy_id.as_str().to_string(),
                 instance_id: instance_id.as_str().to_string(),
@@ -413,7 +414,7 @@ impl NatsDeployParticipantClient {
     async fn expect_ok(
         &self,
         subject: NodeCommandSubject,
-        request: ployz_api::DaemonRequest,
+        request: NodeRequest,
         operation: &'static str,
     ) -> ployz_types::Result<()> {
         let response = self

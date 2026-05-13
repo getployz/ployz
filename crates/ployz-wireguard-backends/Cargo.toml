@@ -1,0 +1,12 @@
+[package]
+name = "ployz-wireguard-backends"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ployz-runtime-backends = { path = "../ployz-runtime-backends", features = ["userspace-wg"] }
+
+[lints]
+workspace = true
