@@ -19,9 +19,9 @@ use crate::mesh::wireguard::config::decode_key;
 impl DockerWireGuard {
     pub(super) async fn pull_image(&self) -> Result<()> {
         let parsed = parse_docker_image_ref(&self.image);
-        let builder = CreateImageOptionsBuilder::default().from_image(parsed.from_image);
+        let builder = CreateImageOptionsBuilder::default().from_image(&parsed.from_image);
         let options = match parsed.tag {
-            Some(tag) => builder.tag(tag).build(),
+            Some(tag) => builder.tag(&tag).build(),
             None => builder.build(),
         };
 

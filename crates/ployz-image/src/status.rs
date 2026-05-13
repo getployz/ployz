@@ -1,5 +1,4 @@
-use ployz_api::ImageStatusRequest;
-use ployz_model::ImageAvailabilityRecord;
+use ployz_model::{ImageAvailabilityRecord, ImageStatusRequest};
 use ployz_store_api::ImageAvailabilityStore;
 
 pub async fn image_status_records(

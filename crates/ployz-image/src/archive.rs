@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use ployz_api::ImageReceiveSessionPayload;
+use ployz_model::ImageReceiveSessionPayload;
 use ployz_runtime_api::ImageArchiveReader;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};

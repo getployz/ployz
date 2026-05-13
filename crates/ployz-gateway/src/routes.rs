@@ -286,6 +286,7 @@ pub fn normalize_request_host(host: &str) -> String {
     }
 }
 
+#[cfg(test)]
 #[must_use]
 fn match_http_route<'a>(
     snapshot: &'a GatewaySnapshot,
@@ -1074,6 +1075,7 @@ fn parse_tls_material(
     })
 }
 
+#[cfg(test)]
 #[must_use]
 fn match_acme_challenge<'a>(
     snapshot: &'a GatewaySnapshot,
@@ -1241,6 +1243,7 @@ fn validate_tcp_conflicts<'a>(
     Ok(())
 }
 
+#[cfg(test)]
 fn route_matches_host(route: &HttpRouteView, host: Option<&str>) -> bool {
     if route.hostnames.is_empty() {
         return true;

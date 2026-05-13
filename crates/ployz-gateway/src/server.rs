@@ -59,10 +59,10 @@ pub(crate) fn resolve_tls_material(
     }
 }
 
-struct GatewayTlsListener<'a> {
-    listen_addr: &'a str,
-    static_cert_path: Option<&'a str>,
-    static_key_path: Option<&'a str>,
+pub struct GatewayTlsListener {
+    pub listen_addr: String,
+    pub static_cert_path: Option<String>,
+    pub static_key_path: Option<String>,
 }
 
 struct ManagedTlsCallbacks {
@@ -159,7 +159,7 @@ impl ShutdownSignalWatch for EmbeddedShutdownWatch {
 pub fn run_server(
     opt: Opt,
     listen_addr: &str,
-    tls_listener: Option<GatewayTlsListener<'_>>,
+    tls_listener: Option<GatewayTlsListener>,
     threads: usize,
     metrics_listen_addr: Option<&str>,
     shared_snapshot: SharedSnapshot,
@@ -188,9 +188,10 @@ pub fn run_server(
     );
     service.add_tcp(listen_addr);
     if let Some(tls_listener) = tls_listener {
-        let mut tls_settings = if let (Some(cert_path), Some(key_path)) =
-            (tls_listener.static_cert_path, tls_listener.static_key_path)
-        {
+        let mut tls_settings = if let (Some(cert_path), Some(key_path)) = (
+            tls_listener.static_cert_path.as_deref(),
+            tls_listener.static_key_path.as_deref(),
+        ) {
             TlsSettings::intermediate(cert_path, key_path)
                 .map_err(|err| GatewayError::Runtime(format!("tls settings: {err}")))?
         } else {
@@ -200,7 +201,7 @@ pub fn run_server(
             .map_err(|err| GatewayError::Runtime(format!("tls settings: {err}")))?
         };
         tls_settings.enable_h2();
-        service.add_tls_with_settings(tls_listener.listen_addr, None, tls_settings);
+        service.add_tls_with_settings(&tls_listener.listen_addr, None, tls_settings);
         info!(
             listen = tls_listener.listen_addr,
             "gateway https listener running"
@@ -339,20 +340,22 @@ enum InitialSnapshotAttempt {
     AttemptTimedOut,
 }
 
-fn gateway_tls_listener(config: &GatewayConfig) -> Option<GatewayTlsListener<'_>> {
+fn gateway_tls_listener(config: &GatewayConfig) -> Option<GatewayTlsListener> {
     let Some(listen_addr) = config.https_listen_addr.as_deref() else {
         return None;
     };
     Some(GatewayTlsListener {
-        listen_addr,
+        listen_addr: listen_addr.into(),
         static_cert_path: config
             .tls_cert_path
             .as_deref()
-            .and_then(std::path::Path::to_str),
+            .and_then(std::path::Path::to_str)
+            .map(str::to_string),
         static_key_path: config
             .tls_key_path
             .as_deref()
-            .and_then(std::path::Path::to_str),
+            .and_then(std::path::Path::to_str)
+            .map(str::to_string),
     })
 }
 

@@ -6,14 +6,52 @@ use instant_acme::{
 use ployz_cert_api::{
     AccountAcquisition, AcmeAccountCoordinator, AcmeIssuer, AcmeIssuerFactory, CHALLENGE_TTL_SECS,
     CertificateManagerConfig, HTTP01_GATEWAY_SNAPSHOT_SETTLE, Http01ChallengeReadiness,
-    IssuedCertificate, LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, StartedOrder,
-    account_id_for_issuer_url,
+    IssuedCertificate, NoopAcmeAccountCoordinator, StartedOrder, account_id_for_issuer_url,
 };
 use ployz_error::{AcmeAuthorizationStatus, AcmeOrderStatus, CertificateError, Error, Result};
 use ployz_model::{AcmeAccountRecord, AcmeChallengeRecord};
 use ployz_store_api::{CertificateStore, StoreDriver};
 use ployz_time::now_unix_secs;
 use std::sync::Arc;
+use std::time::Duration;
+
+pub const HTTP01_CHALLENGE_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+pub const HTTP01_CHALLENGE_VISIBILITY_POLL: Duration = Duration::from_millis(100);
+
+pub struct LocalHttp01ChallengeReadiness;
+
+#[async_trait]
+impl Http01ChallengeReadiness for LocalHttp01ChallengeReadiness {
+    async fn wait_ready(&self, store: &StoreDriver, hostname: &str, token: &str) -> Result<()> {
+        wait_for_http01_challenge_visible(store, hostname, token).await
+    }
+}
+
+pub async fn wait_for_http01_challenge_visible(
+    store: &StoreDriver,
+    hostname: &str,
+    token: &str,
+) -> Result<()> {
+    let start = tokio::time::Instant::now();
+    loop {
+        let visible = store
+            .list_acme_challenges()
+            .await?
+            .iter()
+            .any(|challenge| challenge.hostname == hostname && challenge.token == token);
+        if visible {
+            return Ok(());
+        }
+        if start.elapsed() >= HTTP01_CHALLENGE_VISIBILITY_TIMEOUT {
+            return Err(CertificateError::Http01LocalChallengeNotVisible {
+                hostname: hostname.to_string(),
+                token: token.to_string(),
+            }
+            .into());
+        }
+        tokio::time::sleep(HTTP01_CHALLENGE_VISIBILITY_POLL).await;
+    }
+}
 
 pub struct InstantAcmeIssuer {
     config: CertificateManagerConfig,
@@ -518,5 +556,40 @@ mod tests {
             );
         };
         assert_eq!(operation, "acme_account_decode");
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn http01_challenge_visibility_returns_immediately_when_already_present() {
+        let store = StoreDriver::memory();
+        store
+            .upsert_acme_challenge(&AcmeChallengeRecord {
+                hostname: "example.com".into(),
+                token: "tok-A".into(),
+                key_authorization: "tok-A.keyauth".into(),
+                expires_at: now_unix_secs() + CHALLENGE_TTL_SECS,
+                created_at: now_unix_secs(),
+            })
+            .await
+            .expect("seed challenge");
+
+        let started = tokio::time::Instant::now();
+        wait_for_http01_challenge_visible(&store, "example.com", "tok-A")
+            .await
+            .expect("already-visible challenge should return Ok");
+        assert_eq!(started.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn http01_challenge_visibility_times_out() {
+        let store = StoreDriver::memory();
+
+        let error = wait_for_http01_challenge_visible(&store, "example.com", "tok-missing")
+            .await
+            .expect_err("missing challenge should time out");
+
+        assert!(matches!(
+            &error,
+            Error::Certificate(CertificateError::Http01LocalChallengeNotVisible { .. })
+        ));
     }
 }

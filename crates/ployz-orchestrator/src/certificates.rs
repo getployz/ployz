@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use ployz_error::{CertificateError, Error, Result};
 use ployz_model::{
     CertificateRecord, CertificateState, CertificateStateGoal, CertificateStateTransition,
@@ -8,6 +9,7 @@ use ployz_time::now_unix_secs;
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -16,18 +18,53 @@ use x509_parser::pem::parse_x509_pem;
 
 pub use ployz_cert_api::{
     AccountAcquisition, AcmeAccountCoordinator, AcmeIssuer, AcmeIssuerFactory, CHALLENGE_TTL_SECS,
-    CertificateManagerConfig, DEFAULT_ACME_DIRECTORY_URL, HTTP01_CHALLENGE_VISIBILITY_POLL,
-    HTTP01_CHALLENGE_VISIBILITY_TIMEOUT, HTTP01_GATEWAY_SNAPSHOT_SETTLE, Http01ChallengeReadiness,
-    IssuanceAcquisition, IssuanceCoordinator, IssuanceHold, IssuedCertificate,
-    LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, NoopAcmeIssuer,
-    NoopAcmeIssuerFactory, NoopIssuanceCoordinator, StartedOrder, account_id_for_issuer_url,
-    wait_for_http01_challenge_visible,
+    CertificateManagerConfig, DEFAULT_ACME_DIRECTORY_URL, HTTP01_GATEWAY_SNAPSHOT_SETTLE,
+    Http01ChallengeReadiness, IssuanceAcquisition, IssuanceCoordinator, IssuanceHold,
+    IssuedCertificate, NoopAcmeAccountCoordinator, NoopAcmeIssuer, NoopAcmeIssuerFactory,
+    NoopHttp01ChallengeReadiness, NoopIssuanceCoordinator, StartedOrder, account_id_for_issuer_url,
 };
 
 const CERT_VALIDITY_FALLBACK_SECS: u64 = 90 * 24 * 60 * 60;
 // Finalization runs in the background, so this can cover unusually slow store
 // propagation before reachable peers must observe the HTTP-01 record.
 const STUCK_ISSUING_MAX_AGE_SECS: u64 = 24 * 60 * 60;
+pub const HTTP01_CHALLENGE_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+pub const HTTP01_CHALLENGE_VISIBILITY_POLL: Duration = Duration::from_millis(100);
+
+pub struct LocalHttp01ChallengeReadiness;
+
+#[async_trait]
+impl Http01ChallengeReadiness for LocalHttp01ChallengeReadiness {
+    async fn wait_ready(&self, store: &StoreDriver, hostname: &str, token: &str) -> Result<()> {
+        wait_for_http01_challenge_visible(store, hostname, token).await
+    }
+}
+
+pub async fn wait_for_http01_challenge_visible(
+    store: &StoreDriver,
+    hostname: &str,
+    token: &str,
+) -> Result<()> {
+    let start = tokio::time::Instant::now();
+    loop {
+        let visible = store
+            .list_acme_challenges()
+            .await?
+            .iter()
+            .any(|challenge| challenge.hostname == hostname && challenge.token == token);
+        if visible {
+            return Ok(());
+        }
+        if start.elapsed() >= HTTP01_CHALLENGE_VISIBILITY_TIMEOUT {
+            return Err(CertificateError::Http01LocalChallengeNotVisible {
+                hostname: hostname.to_string(),
+                token: token.to_string(),
+            }
+            .into());
+        }
+        tokio::time::sleep(HTTP01_CHALLENGE_VISIBILITY_POLL).await;
+    }
+}
 
 pub fn spawn_certificate_finalization(
     store: StoreDriver,

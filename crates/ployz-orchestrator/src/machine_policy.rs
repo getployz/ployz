@@ -50,6 +50,7 @@ pub fn is_coordination_peer(machine: &PlacementCandidate, self_id: &MachineId) -
         )
 }
 
+#[cfg(test)]
 #[must_use]
 fn coordination_peers<'a>(
     machines: &'a [PlacementCandidate],

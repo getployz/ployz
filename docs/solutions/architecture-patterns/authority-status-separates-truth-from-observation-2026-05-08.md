@@ -1,6 +1,7 @@
 ---
 title: Authority Status Separates Truth From Observation
 date: 2026-05-08
+last_updated: 2026-05-13
 category: docs/solutions/architecture-patterns/
 module: authority status surfaces
 problem_type: architecture_pattern
@@ -112,7 +113,7 @@ Unused public enum variants create false API promises. Downstream consumers may 
 
 `crates/ployzd/src/daemon/handlers/status.rs` now derives local posture from `active.mesh.authoritative_self_record()` and leaves `local_authority` empty when that record is missing.
 
-`crates/ployz-types/src/model.rs` now exposes `AuthorityNodePosture::from_machine_membership`, so status and machine inventory share the same membership-to-posture mapping.
+`crates/ployz-model/src/lib.rs` now exposes `AuthorityNodePosture::from_machine_membership`, so status and machine inventory share the same membership-to-posture mapping.
 
 `crates/ployz-nats/src/lib.rs` now exposes `NatsStore::asset_manifest_for_scope`, allowing status code to build the expected manifest before a live NATS connection exists.
 

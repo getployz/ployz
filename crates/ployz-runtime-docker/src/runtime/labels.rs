@@ -68,11 +68,6 @@ pub(crate) fn build_workload_labels(
     labels
 }
 
-#[must_use]
-pub(crate) fn parse_key(labels: &HashMap<String, String>) -> Option<&str> {
-    labels.get(LABEL_KEY).map(String::as_str)
-}
-
 /// Extract workload labels from an observed container's label map.
 /// Returns `None` if any required label is missing.
 #[must_use]

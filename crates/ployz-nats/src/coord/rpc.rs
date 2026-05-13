@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use ployz_api::DaemonResponse;
 use ployz_error::{Error, Result};
 use ployz_model::MachineId;
 use ployz_node_api::{NodeRequest, NodeResponse};
@@ -296,7 +297,7 @@ impl NatsNodeRpcClient {
         &self,
         subject: NodeCommandSubject,
         request: &NodeRequest,
-    ) -> std::result::Result<NodeResponse, RpcFailure> {
+    ) -> std::result::Result<DaemonResponse, RpcFailure> {
         let subject_name = subject.subject_in(&self.scope);
         let payload = serde_json::to_vec(request).map_err(|error| {
             RpcFailure::new(
@@ -317,10 +318,17 @@ impl NatsNodeRpcClient {
             )
         })?
         .map_err(classify_request_error)?;
-        serde_json::from_slice(response.payload.as_ref()).map_err(|error| {
+        let response: NodeResponse =
+            serde_json::from_slice(response.payload.as_ref()).map_err(|error| {
+                RpcFailure::new(
+                    RpcFailureKind::Decode,
+                    format!("decode node rpc response from '{subject_name}': {error}"),
+                )
+            })?;
+        node_response_to_daemon_response(response).map_err(|error| {
             RpcFailure::new(
                 RpcFailureKind::Decode,
-                format!("decode node rpc response from '{subject_name}': {error}"),
+                format!("decode node rpc response payload from '{subject_name}': {error}"),
             )
         })
     }
@@ -379,8 +387,27 @@ pub fn decode_node_request(payload: &[u8]) -> Result<NodeRequest> {
     ployz_node_api::decode_node_request(payload)
 }
 
-pub fn encode_node_response(response: &NodeResponse) -> Result<Vec<u8>> {
-    ployz_node_api::encode_node_response(response)
+pub fn encode_node_response(response: &DaemonResponse) -> Result<Vec<u8>> {
+    let response = daemon_response_to_node_response(response)?;
+    ployz_node_api::encode_node_response(&response)
+}
+
+fn node_response_to_daemon_response(response: NodeResponse) -> Result<DaemonResponse> {
+    serde_json::from_value(
+        serde_json::to_value(response).map_err(|error| {
+            Error::operation("node_rpc_encode_response_bridge", error.to_string())
+        })?,
+    )
+    .map_err(|error| Error::operation("node_rpc_decode_response_bridge", error.to_string()))
+}
+
+fn daemon_response_to_node_response(response: &DaemonResponse) -> Result<NodeResponse> {
+    serde_json::from_value(
+        serde_json::to_value(response).map_err(|error| {
+            Error::operation("node_rpc_encode_response_bridge", error.to_string())
+        })?,
+    )
+    .map_err(|error| Error::operation("node_rpc_decode_response_bridge", error.to_string()))
 }
 
 #[cfg(test)]

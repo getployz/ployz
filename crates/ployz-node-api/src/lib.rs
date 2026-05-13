@@ -1,14 +1,48 @@
-use ployz_api::image::{
-    ImageDistributeRequest, ImageReceiveSessionRequest, ImageReceivedImportRequest,
-};
-use ployz_api::machine::{MachineSelfTransition, MachineStorageAuthorityPeer};
 use ployz_error::{Error, Result};
 use ployz_model::{
-    MachineId, MachineMembership, NetworkId, StorageParticipation, StorageReplicaPolicy,
+    ImageDistributeRequest, ImageReceiveSessionRequest, ImageReceivedImportRequest, MachineId,
+    MachineMembership, MachineSelfTransition, MachineStorageAuthorityPeer, NetworkId,
+    StorageParticipation, StorageReplicaPolicy,
 };
 use serde::{Deserialize, Serialize};
 
-pub type NodeResponse = ployz_api::DaemonResponse;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum NodeResponse {
+    Success {
+        code: String,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload: Option<serde_json::Value>,
+    },
+    Error {
+        code: String,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload: Option<serde_json::Value>,
+    },
+}
+
+impl NodeResponse {
+    #[must_use]
+    pub fn is_ok(&self) -> bool {
+        matches!(self, Self::Success { .. })
+    }
+
+    #[must_use]
+    pub fn code(&self) -> &str {
+        match self {
+            Self::Success { code, .. } | Self::Error { code, .. } => code,
+        }
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Success { message, .. } | Self::Error { message, .. } => message,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NodeRequest {

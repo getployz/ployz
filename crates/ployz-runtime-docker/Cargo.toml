@@ -10,7 +10,6 @@ default = ["docker"]
 docker = []
 
 [dependencies]
-ployz-api = { path = "../ployz-api" }
 ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-storage-api = { path = "../ployz-storage-api" }
 ployz-storage-zfs = { path = "../ployz-storage-zfs" }

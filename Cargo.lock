@@ -3167,7 +3167,6 @@ name = "ployz-build"
 version = "0.6.1"
 dependencies = [
  "async-trait",
- "ployz-api",
  "ployz-model",
  "ployz-runtime-api",
  "ployz-store-api",
@@ -3310,7 +3309,6 @@ dependencies = [
  "async-trait",
  "axum",
  "futures-util",
- "ployz-api",
  "ployz-model",
  "ployz-runtime-api",
  "ployz-store-api",
@@ -3389,7 +3387,6 @@ dependencies = [
 name = "ployz-node-api"
 version = "0.6.1"
 dependencies = [
- "ployz-api",
  "ployz-error",
  "ployz-model",
  "serde",
@@ -3456,7 +3453,6 @@ dependencies = [
  "http",
  "ipnet",
  "libc",
- "ployz-api",
  "ployz-error",
  "ployz-model",
  "ployz-runtime-api",
@@ -3526,9 +3522,14 @@ version = "0.6.1"
 dependencies = [
  "async-trait",
  "ployz-error",
+ "ployz-model",
  "ployz-spec",
  "ployz-storage-api",
+ "ployz-time",
+ "serde",
+ "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

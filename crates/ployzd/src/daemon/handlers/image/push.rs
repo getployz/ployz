@@ -2,10 +2,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ployz_api::{
-    DaemonResponse, ImageDistributeRequest, ImagePushRequest, ImageReceiveSessionRequest,
-    ImageReceivedImportRequest,
+    DaemonPayload, DaemonResponse, ImageDistributeRequest, ImagePushRequest,
+    ImageReceiveSessionRequest, ImageReceivedImportRequest,
 };
 use ployz_image::push::{ImagePeerClient, ImageService, validate_image_distribute_request};
+use ployz_image::response::{ImageServicePayload, ImageServiceResponse};
 use ployz_model::MachineId;
 use ployz_nats::{NodeCommandSubject, RpcPolicy};
 use ployz_node_api::NodeRequest;
@@ -54,9 +55,11 @@ impl DaemonState {
             Ok(active) => active,
             Err(response) => return *response,
         };
-        self.image_service(active)
-            .handle_image_push_with_backend(request, backend, self)
-            .await
+        image_response_to_daemon_response(
+            self.image_service(active)
+                .handle_image_push_with_backend(request, backend, self)
+                .await,
+        )
     }
 
     pub(crate) async fn handle_image_distribute(
@@ -65,7 +68,7 @@ impl DaemonState {
     ) -> DaemonResponse {
         if let Err(response) = validate_image_distribute_request(&self.identity.machine_id, request)
         {
-            return response;
+            return image_response_to_daemon_response(response);
         }
         let backend = match self.runtime_image_backend().await {
             Ok(backend) => backend,
@@ -82,7 +85,7 @@ impl DaemonState {
     ) -> DaemonResponse {
         if let Err(response) = validate_image_distribute_request(&self.identity.machine_id, request)
         {
-            return response;
+            return image_response_to_daemon_response(response);
         }
         let active = match self.require_active(
             "IMAGE_DISTRIBUTE_INACTIVE",
@@ -91,9 +94,11 @@ impl DaemonState {
             Ok(active) => active,
             Err(response) => return *response,
         };
-        self.image_service(active)
-            .handle_image_distribute_with_backend(request, backend, self)
-            .await
+        image_response_to_daemon_response(
+            self.image_service(active)
+                .handle_image_distribute_with_backend(request, backend, self)
+                .await,
+        )
     }
 
     pub(crate) async fn handle_image_receive_session(
@@ -107,9 +112,11 @@ impl DaemonState {
             Ok(active) => active,
             Err(response) => return *response,
         };
-        self.image_service(active)
-            .handle_image_receive_session(request)
-            .await
+        image_response_to_daemon_response(
+            self.image_service(active)
+                .handle_image_receive_session(request)
+                .await,
+        )
     }
 
     pub(crate) async fn handle_image_received_import(
@@ -136,9 +143,11 @@ impl DaemonState {
             Ok(active) => active,
             Err(response) => return *response,
         };
-        self.image_service(active)
-            .handle_image_received_import_with_backend(request, backend)
-            .await
+        image_response_to_daemon_response(
+            self.image_service(active)
+                .handle_image_received_import_with_backend(request, backend)
+                .await,
+        )
     }
 }
 
@@ -148,7 +157,7 @@ impl ImagePeerClient for DaemonState {
         &self,
         target_machine: &MachineId,
         request: ImageReceiveSessionRequest,
-    ) -> Result<DaemonResponse, String> {
+    ) -> Result<ImageServiceResponse, String> {
         let client = self
             .nats_node_rpc_client()
             .await
@@ -159,6 +168,7 @@ impl ImagePeerClient for DaemonState {
                 &NodeRequest::ImageReceiveSession { request },
             )
             .await
+            .map(daemon_response_to_image_response)
             .map_err(|error| {
                 format!("request image receive session from {target_machine}: {error}")
             })
@@ -168,7 +178,7 @@ impl ImagePeerClient for DaemonState {
         &self,
         source_machine: &MachineId,
         request: ImageDistributeRequest,
-    ) -> Result<DaemonResponse, String> {
+    ) -> Result<ImageServiceResponse, String> {
         let client = self
             .nats_node_rpc_client()
             .await
@@ -182,6 +192,7 @@ impl ImagePeerClient for DaemonState {
                 &NodeRequest::ImageDistribute { request },
             )
             .await
+            .map(daemon_response_to_image_response)
             .map_err(|error| format!("request image distribute from {source_machine}: {error}"))
     }
 
@@ -189,7 +200,7 @@ impl ImagePeerClient for DaemonState {
         &self,
         target_machine: &MachineId,
         request: ImageReceivedImportRequest,
-    ) -> Result<DaemonResponse, String> {
+    ) -> Result<ImageServiceResponse, String> {
         let client = self
             .nats_node_rpc_client()
             .await
@@ -203,7 +214,112 @@ impl ImagePeerClient for DaemonState {
                 &NodeRequest::ImageReceivedImport { request },
             )
             .await
+            .map(daemon_response_to_image_response)
             .map_err(|error| format!("request image import from {target_machine}: {error}"))
+    }
+}
+
+pub(super) fn image_response_to_daemon_response(response: ImageServiceResponse) -> DaemonResponse {
+    match response {
+        ImageServiceResponse::Success {
+            message, payload, ..
+        } => DaemonResponse::success(message, payload.map(image_payload_to_daemon_payload)),
+        ImageServiceResponse::Error {
+            code,
+            message,
+            payload,
+        } => DaemonResponse::error(code, message, payload.map(image_payload_to_daemon_payload)),
+    }
+}
+
+fn daemon_response_to_image_response(response: DaemonResponse) -> ImageServiceResponse {
+    match response {
+        DaemonResponse::Success {
+            message, payload, ..
+        } => ImageServiceResponse::success(
+            message,
+            payload.and_then(daemon_payload_to_image_payload),
+        ),
+        DaemonResponse::Error {
+            code,
+            message,
+            payload,
+        } => ImageServiceResponse::error(
+            code,
+            message,
+            payload.and_then(daemon_payload_to_image_payload),
+        ),
+    }
+}
+
+fn image_payload_to_daemon_payload(payload: ImageServicePayload) -> DaemonPayload {
+    match payload {
+        ImageServicePayload::ImageInspect(payload) => DaemonPayload::ImageInspect(payload),
+        ImageServicePayload::ImagePush(payload) => DaemonPayload::ImagePush(payload),
+        ImageServicePayload::ImageDistribute(payload) => DaemonPayload::ImageDistribute(payload),
+        ImageServicePayload::ImageDistributeValidation(payload) => {
+            DaemonPayload::ImageDistributeValidation(payload)
+        }
+        ImageServicePayload::ImageReceiveSession(payload) => {
+            DaemonPayload::ImageReceiveSession(payload)
+        }
+        ImageServicePayload::ImageReceivedImport(payload) => {
+            DaemonPayload::ImageReceivedImport(payload)
+        }
+    }
+}
+
+fn daemon_payload_to_image_payload(payload: DaemonPayload) -> Option<ImageServicePayload> {
+    match payload {
+        DaemonPayload::ImageInspect(payload) => Some(ImageServicePayload::ImageInspect(payload)),
+        DaemonPayload::ImagePush(payload) => Some(ImageServicePayload::ImagePush(payload)),
+        DaemonPayload::ImageDistribute(payload) => {
+            Some(ImageServicePayload::ImageDistribute(payload))
+        }
+        DaemonPayload::ImageDistributeValidation(payload) => {
+            Some(ImageServicePayload::ImageDistributeValidation(payload))
+        }
+        DaemonPayload::ImageReceiveSession(payload) => {
+            Some(ImageServicePayload::ImageReceiveSession(payload))
+        }
+        DaemonPayload::ImageReceivedImport(payload) => {
+            Some(ImageServicePayload::ImageReceivedImport(payload))
+        }
+        DaemonPayload::Doctor(_)
+        | DaemonPayload::Status(_)
+        | DaemonPayload::MachineList(_)
+        | DaemonPayload::MachineRtt(_)
+        | DaemonPayload::MachineAdd(_)
+        | DaemonPayload::MachineStoragePromotion(_)
+        | DaemonPayload::MachineUpdate(_)
+        | DaemonPayload::MachineRemove(_)
+        | DaemonPayload::MeshList(_)
+        | DaemonPayload::MeshStatus(_)
+        | DaemonPayload::MeshReady(_)
+        | DaemonPayload::MeshSelfRecord(_)
+        | DaemonPayload::MachineInviteList(_)
+        | DaemonPayload::MachineOperationList(_)
+        | DaemonPayload::MachineOperation(_)
+        | DaemonPayload::AcmeHttp01Status(_)
+        | DaemonPayload::DeployNamespaceSnapshot(_)
+        | DaemonPayload::DeployPrepare(_)
+        | DaemonPayload::BranchEnvironment(_)
+        | DaemonPayload::BranchEnvironmentList(_)
+        | DaemonPayload::DeployCandidateStarted(_)
+        | DaemonPayload::DeployFailure(_)
+        | DaemonPayload::ImageStatus(_)
+        | DaemonPayload::ImageOperation(_)
+        | DaemonPayload::ImageOperationList(_)
+        | DaemonPayload::BuildResult(_)
+        | DaemonPayload::BuildOperation(_)
+        | DaemonPayload::BuildOperationList(_)
+        | DaemonPayload::VolumeZfsInspect(_)
+        | DaemonPayload::VolumeZfsSnapshot(_)
+        | DaemonPayload::VolumeZfsClone(_)
+        | DaemonPayload::VolumeZfsPeerSend(_)
+        | DaemonPayload::VolumeZfsTransfer(_)
+        | DaemonPayload::VolumeZfsTransferList(_)
+        | DaemonPayload::RuntimeState(_) => None,
     }
 }
 

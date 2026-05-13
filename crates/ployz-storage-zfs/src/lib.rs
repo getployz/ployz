@@ -1,5 +1,6 @@
 pub mod resolve;
 pub mod shell;
+pub mod transfer;
 pub mod zfs;
 
 pub(crate) mod error {
@@ -15,4 +16,9 @@ pub use ployz_storage_api::{
 };
 pub use resolve::resolve_volumes;
 pub use shell::{ShellOutput, ShellRunner, ShellStdio, ShellStreamer, TokioShellRunner};
+pub use transfer::{
+    ClaimedTransfer, MoveClaimOutcome, SendResult, TransferRecord, TransferState, TransferStatus,
+    TransferStore, move_claim_key, unique_transfer_id, validate_transfer_id,
+    wait_for_claimed_transfer_record,
+};
 pub use zfs::ZfsDriver;

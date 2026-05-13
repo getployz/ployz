@@ -20,6 +20,7 @@ instant-acme = { workspace = true, features = ["hyper-rustls", "ring"] }
 
 [dev-dependencies]
 ployz-store-memory = { path = "../ployz-store-memory" }
+tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }
 
 [lints]
 workspace = true

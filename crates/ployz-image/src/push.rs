@@ -1,18 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use crate::response::{ImageServicePayload, ImageServiceResponse};
 use async_trait::async_trait;
-use ployz_api::{
-    DaemonPayload, DaemonResponse, ImageDistributePayload, ImageDistributeRequest,
-    ImageDistributeValidationFailure, ImageDistributeValidationPayload, ImagePushPayload,
-    ImagePushRequest, ImageReceiveSessionPayload, ImageReceiveSessionRequest,
-    ImageReceivedImportPayload, ImageReceivedImportRequest, ImageTransferFailure,
-    ImageTransferFailureStage, ImageTransferTargetResult, ImageTransferTargetStatus,
-};
 use ployz_model::{
-    ImageArtifact, ImageArtifactProvenance, ImageAvailabilityRecord, ImageOperationKind,
-    ImageOperationRecord, ImageOperationTargetOutcome, ImagePresence, ImageRef, MachineId,
+    ImageArtifact, ImageArtifactProvenance, ImageAvailabilityRecord, ImageDistributePayload,
+    ImageDistributeRequest, ImageDistributeValidationFailure, ImageDistributeValidationPayload,
+    ImageOperationKind, ImageOperationRecord, ImageOperationTargetOutcome, ImagePresence,
+    ImagePushPayload, ImagePushRequest, ImageReceiveSessionPayload, ImageReceiveSessionRequest,
+    ImageReceivedImportPayload, ImageReceivedImportRequest, ImageRef, ImageTransferFailure,
+    ImageTransferFailureStage, ImageTransferTargetResult, ImageTransferTargetStatus, MachineId,
     OperationStatus,
 };
 use ployz_runtime_api::{ImageArchiveReader, RuntimeImage, RuntimeImageBackend, RuntimeImageError};
@@ -44,41 +42,41 @@ pub trait ImagePeerClient: Send + Sync {
         &self,
         target_machine: &MachineId,
         request: ImageReceiveSessionRequest,
-    ) -> Result<DaemonResponse, String>;
+    ) -> Result<ImageServiceResponse, String>;
 
     async fn image_distribute(
         &self,
         source_machine: &MachineId,
         request: ImageDistributeRequest,
-    ) -> Result<DaemonResponse, String>;
+    ) -> Result<ImageServiceResponse, String>;
 
     async fn image_received_import(
         &self,
         target_machine: &MachineId,
         request: ImageReceivedImportRequest,
-    ) -> Result<DaemonResponse, String>;
+    ) -> Result<ImageServiceResponse, String>;
 }
 
 impl ImageService {
     fn ok_with_payload(
         &self,
         message: impl Into<String>,
-        payload: Option<DaemonPayload>,
-    ) -> DaemonResponse {
-        DaemonResponse::success(message, payload)
+        payload: Option<ImageServicePayload>,
+    ) -> ImageServiceResponse {
+        ImageServiceResponse::success(message, payload)
     }
 
-    fn err(&self, code: impl Into<String>, message: impl Into<String>) -> DaemonResponse {
-        DaemonResponse::error(code, message, None)
+    fn err(&self, code: impl Into<String>, message: impl Into<String>) -> ImageServiceResponse {
+        ImageServiceResponse::error(code, message, None)
     }
 
     fn err_with_payload(
         &self,
         code: impl Into<String>,
         message: impl Into<String>,
-        payload: Option<DaemonPayload>,
-    ) -> DaemonResponse {
-        DaemonResponse::error(code, message, payload)
+        payload: Option<ImageServicePayload>,
+    ) -> ImageServiceResponse {
+        ImageServiceResponse::error(code, message, payload)
     }
 
     pub async fn handle_image_push_with_backend(
@@ -86,7 +84,7 @@ impl ImageService {
         request: &ImagePushRequest,
         backend: &dyn RuntimeImageBackend,
         peer_client: &dyn ImagePeerClient,
-    ) -> DaemonResponse {
+    ) -> ImageServiceResponse {
         let [first_target, rest_targets @ ..] = request.target_machines.as_slice() else {
             return self.err(
                 "IMAGE_PUSH_TARGET_REQUIRED",
@@ -292,7 +290,7 @@ impl ImageService {
             return self.err_with_payload(
                 "IMAGE_PUSH_PARTIAL_FAILED",
                 message,
-                Some(DaemonPayload::ImagePush(payload)),
+                Some(ImageServicePayload::ImagePush(payload)),
             );
         }
         if let Err(error) =
@@ -306,7 +304,7 @@ impl ImageService {
                 digest.as_str(),
                 payload.targets.len()
             ),
-            Some(DaemonPayload::ImagePush(payload)),
+            Some(ImageServicePayload::ImagePush(payload)),
         )
     }
 
@@ -315,11 +313,11 @@ impl ImageService {
         request: &ImageDistributeRequest,
         backend: &dyn RuntimeImageBackend,
         peer_client: &dyn ImagePeerClient,
-    ) -> DaemonResponse {
-        if let Err(response) = validate_image_distribute_request(self.local_machine, request) {
+    ) -> ImageServiceResponse {
+        if let Err(response) = validate_image_distribute_request(&self.local_machine, request) {
             return response;
         }
-        self.handle_validated_image_distribute_with_backend(request, backend)
+        self.handle_validated_image_distribute_with_backend(request, backend, peer_client)
             .await
     }
 
@@ -327,7 +325,8 @@ impl ImageService {
         &self,
         request: &ImageDistributeRequest,
         backend: &dyn RuntimeImageBackend,
-    ) -> DaemonResponse {
+        peer_client: &dyn ImagePeerClient,
+    ) -> ImageServiceResponse {
         let image_store = &self.store;
 
         let operation_store = self.operation_store.clone();
@@ -402,12 +401,14 @@ impl ImageService {
                     request.digest.as_str(),
                     targets.len()
                 ),
-                Some(DaemonPayload::ImageDistribute(ImageDistributePayload {
-                    operation_id: operation.id,
-                    digest: request.digest.clone(),
-                    source_machine: request.source_machine.clone(),
-                    targets,
-                })),
+                Some(ImageServicePayload::ImageDistribute(
+                    ImageDistributePayload {
+                        operation_id: operation.id,
+                        digest: request.digest.clone(),
+                        source_machine: request.source_machine.clone(),
+                        targets,
+                    },
+                )),
             );
         }
 
@@ -437,7 +438,7 @@ impl ImageService {
         let mut local_failures = BTreeMap::new();
         if missing_targets
             .iter()
-            .any(|target_machine| target_machine == self.local_machine)
+            .any(|target_machine| *target_machine == self.local_machine)
         {
             match self
                 .record_local_distributed_image_availability(
@@ -459,7 +460,7 @@ impl ImageService {
 
         let transfer_targets = missing_targets
             .iter()
-            .filter(|target_machine| *target_machine != self.local_machine)
+            .filter(|target_machine| **target_machine != self.local_machine)
             .cloned()
             .collect::<Vec<_>>();
         let mut archive = None;
@@ -547,7 +548,7 @@ impl ImageService {
                     ),
                     None,
                 )
-            } else if target_machine == self.local_machine {
+            } else if *target_machine == self.local_machine {
                 match self
                     .record_local_distributed_image_availability(
                         image_store,
@@ -647,7 +648,7 @@ impl ImageService {
             return self.err_with_payload(
                 code,
                 message,
-                Some(DaemonPayload::ImageDistribute(payload)),
+                Some(ImageServicePayload::ImageDistribute(payload)),
             );
         }
         if let Err(error) =
@@ -662,14 +663,14 @@ impl ImageService {
                 request.digest.as_str(),
                 payload.targets.len()
             ),
-            Some(DaemonPayload::ImageDistribute(payload)),
+            Some(ImageServicePayload::ImageDistribute(payload)),
         )
     }
 
     pub async fn handle_image_receive_session(
         &self,
         request: &ImageReceiveSessionRequest,
-    ) -> DaemonResponse {
+    ) -> ImageServiceResponse {
         let Some(bind_addr) = self.receiver_bind_addr else {
             return self.err(
                 "IMAGE_RECEIVER_INACTIVE",
@@ -704,7 +705,7 @@ impl ImageService {
                 ),
             );
         }
-        if bind_addr.ip().is_loopback() && &request.source_machine != self.local_machine {
+        if bind_addr.ip().is_loopback() && request.source_machine != self.local_machine {
             return self.err(
                 "IMAGE_RECEIVER_SOURCE_NOT_LOCAL",
                 format!(
@@ -741,7 +742,7 @@ impl ImageService {
 
         self.ok_with_payload(
             "image receive session created",
-            Some(DaemonPayload::ImageReceiveSession(payload)),
+            Some(ImageServicePayload::ImageReceiveSession(payload)),
         )
     }
 
@@ -749,7 +750,7 @@ impl ImageService {
         &self,
         request: &ImageReceivedImportRequest,
         backend: &dyn RuntimeImageBackend,
-    ) -> DaemonResponse {
+    ) -> ImageServiceResponse {
         if let Err(error) = validate_operation_id(&request.operation_id) {
             return self.err("IMAGE_RECEIVED_IMPORT_INVALID_OPERATION", error);
         }
@@ -855,7 +856,7 @@ impl ImageService {
                 request.expected_digest.as_str(),
                 self.local_machine
             ),
-            Some(DaemonPayload::ImageReceivedImport(
+            Some(ImageServicePayload::ImageReceivedImport(
                 ImageReceivedImportPayload {
                     target_machine: self.local_machine.clone(),
                     record,
@@ -870,7 +871,7 @@ impl ImageService {
         operation: &mut ImageOperationRecord,
         target_machine: MachineId,
         message: String,
-    ) -> DaemonResponse {
+    ) -> ImageServiceResponse {
         if let Err(error) = operation_store.update_target(
             operation,
             ImageOperationTargetOutcome::failed(target_machine, message.clone()),
@@ -902,7 +903,7 @@ impl ImageService {
         stage: ImageTransferFailureStage,
         code: &'static str,
         message: String,
-    ) -> DaemonResponse {
+    ) -> ImageServiceResponse {
         let mut targets = Vec::with_capacity(request.target_machines.len());
         for target_machine in &request.target_machines {
             let (result, status, last_error) =
@@ -987,12 +988,14 @@ impl ImageService {
         self.err_with_payload(
             code,
             message,
-            Some(DaemonPayload::ImageDistribute(ImageDistributePayload {
-                operation_id: operation.id.clone(),
-                digest: request.digest.clone(),
-                source_machine: request.source_machine.clone(),
-                targets,
-            })),
+            Some(ImageServicePayload::ImageDistribute(
+                ImageDistributePayload {
+                    operation_id: operation.id.clone(),
+                    digest: request.digest.clone(),
+                    source_machine: request.source_machine.clone(),
+                    targets,
+                },
+            )),
         )
     }
 
@@ -1002,7 +1005,7 @@ impl ImageService {
         operation: &mut ImageOperationRecord,
         target_machine: MachineId,
         message: String,
-    ) -> DaemonResponse {
+    ) -> ImageServiceResponse {
         if let Err(error) = operation_store.update_target(
             operation,
             ImageOperationTargetOutcome::failed(target_machine, message.clone()),
@@ -1033,7 +1036,7 @@ impl ImageService {
         operation: &mut ImageOperationRecord,
         stage: &str,
         target_machine: &MachineId,
-    ) -> Result<(), DaemonResponse> {
+    ) -> Result<(), ImageServiceResponse> {
         operation_store
             .update_stage(operation, stage)
             .map_err(|error| {
@@ -1052,7 +1055,7 @@ impl ImageService {
         operation: &mut ImageOperationRecord,
         stage: &str,
         target_machine: &MachineId,
-    ) -> Result<(), DaemonResponse> {
+    ) -> Result<(), ImageServiceResponse> {
         operation_store
             .update_stage(operation, stage)
             .map_err(|error| {
@@ -1077,10 +1080,12 @@ impl ImageService {
             source_machine: self.local_machine.clone(),
             repository: Some(repository),
         };
-        let response = if target_machine == self.local_machine {
+        let response = if *target_machine == self.local_machine {
             self.handle_image_receive_session(&request).await
         } else {
-            peer_client.image_receive_session(target_machine, request).await?
+            peer_client
+                .image_receive_session(target_machine, request)
+                .await?
         };
         if !response.is_ok() {
             return Err(format!(
@@ -1089,7 +1094,7 @@ impl ImageService {
                 response.message().to_string()
             ));
         }
-        let Some(DaemonPayload::ImageReceiveSession(payload)) = response.payload() else {
+        let Some(ImageServicePayload::ImageReceiveSession(payload)) = response.payload() else {
             return Err("target receive session response did not include a session payload".into());
         };
         Ok(payload)
@@ -1280,7 +1285,7 @@ impl ImageService {
         archive: &ParsedImageArchive,
         backend: &dyn RuntimeImageBackend,
         peer_client: &dyn ImagePeerClient,
-    ) -> Result<(ImageAvailabilityRecord, ReceiverUploadReport), DaemonResponse> {
+    ) -> Result<(ImageAvailabilityRecord, ReceiverUploadReport), ImageServiceResponse> {
         self.update_image_push_stage(
             operation_store,
             operation,
@@ -1377,7 +1382,7 @@ impl ImageService {
             target_machines: vec![target_machine.clone()],
             platform,
         };
-        let response = if source_machine == self.local_machine {
+        let response = if *source_machine == self.local_machine {
             self.handle_image_distribute_with_backend(&request, backend, peer_client)
                 .await
         } else {
@@ -1391,7 +1396,7 @@ impl ImageService {
             }
         };
         if !response.is_ok() {
-            if let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() {
+            if let Some(ImageServicePayload::ImageDistribute(payload)) = response.payload() {
                 let [target] = payload.targets.as_slice() else {
                     return failure(format!(
                         "target image distribute failed [{}] with {} target results: {}",
@@ -1408,7 +1413,7 @@ impl ImageService {
                 response.message().to_string()
             ));
         }
-        let Some(DaemonPayload::ImageDistribute(payload)) = response.payload() else {
+        let Some(ImageServicePayload::ImageDistribute(payload)) = response.payload() else {
             return failure("target image distribute response did not include a payload".into());
         };
         let [target] = payload.targets.as_slice() else {
@@ -1427,7 +1432,7 @@ impl ImageService {
         backend: &dyn RuntimeImageBackend,
         peer_client: &dyn ImagePeerClient,
     ) -> Result<ImageAvailabilityRecord, String> {
-        let response = if target_machine == self.local_machine {
+        let response = if *target_machine == self.local_machine {
             self.handle_image_received_import_with_backend(&request, backend)
                 .await
         } else {
@@ -1442,7 +1447,7 @@ impl ImageService {
                 response.message().to_string()
             ));
         }
-        let Some(DaemonPayload::ImageReceivedImport(payload)) = response.payload() else {
+        let Some(ImageServicePayload::ImageReceivedImport(payload)) = response.payload() else {
             return Err("target image import response did not include an import payload".into());
         };
         Ok(payload.record)
@@ -1452,12 +1457,12 @@ impl ImageService {
 pub fn validate_image_distribute_request(
     local_machine: &MachineId,
     request: &ImageDistributeRequest,
-) -> Result<(), DaemonResponse> {
+) -> Result<(), ImageServiceResponse> {
     if request.target_machines.is_empty() {
-        return Err(DaemonResponse::error(
+        return Err(ImageServiceResponse::error(
             "IMAGE_DISTRIBUTE_TARGET_REQUIRED",
             "image distribute requires at least one target machine",
-            Some(DaemonPayload::ImageDistributeValidation(
+            Some(ImageServicePayload::ImageDistributeValidation(
                 image_distribute_validation_payload(
                     request,
                     ImageDistributeValidationFailure::TargetRequired {
@@ -1468,10 +1473,10 @@ pub fn validate_image_distribute_request(
         ));
     }
     if let Some(duplicate) = first_duplicate_machine(&request.target_machines) {
-        return Err(DaemonResponse::error(
+        return Err(ImageServiceResponse::error(
             "IMAGE_DISTRIBUTE_DUPLICATE_TARGET",
             format!("image distribute target '{duplicate}' was provided more than once"),
-            Some(DaemonPayload::ImageDistributeValidation(
+            Some(ImageServicePayload::ImageDistributeValidation(
                 image_distribute_validation_payload(
                     request,
                     ImageDistributeValidationFailure::DuplicateTarget {
@@ -1482,13 +1487,13 @@ pub fn validate_image_distribute_request(
         ));
     }
     if &request.source_machine != local_machine {
-        return Err(DaemonResponse::error(
+        return Err(ImageServiceResponse::error(
             "IMAGE_DISTRIBUTE_SOURCE_NOT_LOCAL",
             format!(
                 "image distribute source '{}' must match local machine '{}'",
                 request.source_machine, local_machine
             ),
-            Some(DaemonPayload::ImageDistributeValidation(
+            Some(ImageServicePayload::ImageDistributeValidation(
                 image_distribute_validation_payload(
                     request,
                     ImageDistributeValidationFailure::SourceNotLocal {
@@ -1621,8 +1626,8 @@ async fn cleanup_image_work_dir(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_api::ImageDistributeValidationFailure;
     use ployz_model::ImageDigest;
+    use ployz_model::ImageDistributeValidationFailure;
 
     fn machine(id: &str) -> MachineId {
         MachineId::new(id)
@@ -1644,8 +1649,9 @@ mod tests {
         }
     }
 
-    fn validation_failure(response: &DaemonResponse) -> ImageDistributeValidationFailure {
-        let Some(DaemonPayload::ImageDistributeValidation(payload)) = response.payload() else {
+    fn validation_failure(response: &ImageServiceResponse) -> ImageDistributeValidationFailure {
+        let Some(ImageServicePayload::ImageDistributeValidation(payload)) = response.payload()
+        else {
             panic!("expected image distribute validation payload");
         };
         payload.failure.clone()

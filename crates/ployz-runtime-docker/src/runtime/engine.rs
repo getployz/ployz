@@ -316,9 +316,9 @@ impl ContainerEngine {
         }
 
         let parsed = parse_docker_image_ref(image);
-        let builder = CreateImageOptionsBuilder::default().from_image(parsed.from_image);
+        let builder = CreateImageOptionsBuilder::default().from_image(&parsed.from_image);
         let options = match parsed.tag {
-            Some(tag) => builder.tag(tag).build(),
+            Some(tag) => builder.tag(&tag).build(),
             None => builder.build(),
         };
 

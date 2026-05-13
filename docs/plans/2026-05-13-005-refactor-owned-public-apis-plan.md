@@ -1,7 +1,7 @@
 ---
 title: "refactor: Remove Borrowed Data from Public APIs"
 type: refactor
-status: active
+status: completed
 date: 2026-05-13
 ---
 

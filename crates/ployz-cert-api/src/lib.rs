@@ -1,14 +1,12 @@
 use async_trait::async_trait;
 use ployz_error::{CertificateError, Result};
-use ployz_store_api::{CertificateStore, StoreDriver};
+use ployz_store_api::StoreDriver;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 pub const DEFAULT_ACME_DIRECTORY_URL: &str = "https://acme-v02.api.letsencrypt.org/directory";
 pub const CHALLENGE_TTL_SECS: u64 = 15 * 60;
-pub const HTTP01_CHALLENGE_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2 * 60);
-pub const HTTP01_CHALLENGE_VISIBILITY_POLL: Duration = Duration::from_millis(100);
 pub const HTTP01_GATEWAY_SNAPSHOT_SETTLE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
@@ -101,12 +99,13 @@ impl AcmeAccountCoordinator for NoopAcmeAccountCoordinator {
     }
 }
 
-pub struct LocalHttp01ChallengeReadiness;
+pub struct NoopHttp01ChallengeReadiness;
 
 #[async_trait]
-impl Http01ChallengeReadiness for LocalHttp01ChallengeReadiness {
+impl Http01ChallengeReadiness for NoopHttp01ChallengeReadiness {
     async fn wait_ready(&self, store: &StoreDriver, hostname: &str, token: &str) -> Result<()> {
-        wait_for_http01_challenge_visible(store, hostname, token).await
+        let _ = (store, hostname, token);
+        Ok(())
     }
 }
 
@@ -239,31 +238,5 @@ impl AcmeIssuerFactory for NoopAcmeIssuerFactory {
         _account_coordinator: Arc<dyn AcmeAccountCoordinator>,
     ) -> Arc<dyn AcmeIssuer> {
         Arc::new(NoopAcmeIssuer)
-    }
-}
-
-pub async fn wait_for_http01_challenge_visible(
-    store: &StoreDriver,
-    hostname: &str,
-    token: &str,
-) -> Result<()> {
-    let start = tokio::time::Instant::now();
-    loop {
-        let visible = store
-            .list_acme_challenges()
-            .await?
-            .iter()
-            .any(|challenge| challenge.hostname == hostname && challenge.token == token);
-        if visible {
-            return Ok(());
-        }
-        if start.elapsed() >= HTTP01_CHALLENGE_VISIBILITY_TIMEOUT {
-            return Err(CertificateError::Http01LocalChallengeNotVisible {
-                hostname: hostname.to_string(),
-                token: token.to_string(),
-            }
-            .into());
-        }
-        tokio::time::sleep(HTTP01_CHALLENGE_VISIBILITY_POLL).await;
     }
 }

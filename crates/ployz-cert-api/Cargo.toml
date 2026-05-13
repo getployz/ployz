@@ -9,7 +9,7 @@ publish = false
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-error = { path = "../ployz-error" }
 async-trait = { workspace = true }
-tokio = { workspace = true, features = ["rt", "time"] }
+tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 
 [lints]

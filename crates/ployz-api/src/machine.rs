@@ -1,8 +1,7 @@
-use ipnet::Ipv4Net;
-use ployz_model::{
-    AuthorityNodePosture, MachineId, OverlayIp, PublicKey, RegionRole, StorageReplicaPolicy,
-};
+use ployz_model::{AuthorityNodePosture, MachineId, StorageReplicaPolicy};
 use serde::{Deserialize, Serialize};
+
+pub use ployz_model::{MachineSelfTransition, MachineStorageAuthorityPeer, MachineTransitionGoal};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MachineAddOptions {
@@ -45,33 +44,6 @@ pub enum MachineStoragePromotionFailureCause {
     RpcUnavailable,
     UnexpectedStatusPayload,
     PublishPromotedMembershipFailed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MachineStorageAuthorityPeer {
-    pub machine_id: MachineId,
-    pub public_key: PublicKey,
-    pub overlay_ip: OverlayIp,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subnet: Option<Ipv4Net>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bridge_ip: Option<OverlayIp>,
-    pub region_role: RegionRole,
-    pub endpoints: Vec<String>,
-}
-
-impl From<&ployz_model::MachineMembership> for MachineStorageAuthorityPeer {
-    fn from(record: &ployz_model::MachineMembership) -> Self {
-        Self {
-            machine_id: record.id.clone(),
-            public_key: record.public_key.clone(),
-            overlay_ip: record.overlay_ip,
-            subnet: record.subnet,
-            bridge_ip: record.bridge_ip,
-            region_role: record.region_role,
-            endpoints: record.endpoints.clone(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,33 +217,6 @@ pub struct MachineUpdateRow {
     pub id: String,
     pub version: String,
     pub message: String,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum MachineTransitionGoal {
-    Activate,
-    Drain,
-    Standby,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "goal")]
-pub enum MachineSelfTransition {
-    Activate { assigned_subnet: ipnet::Ipv4Net },
-    Drain,
-    Standby { force: bool },
-}
-
-impl MachineSelfTransition {
-    #[must_use]
-    pub fn goal(self) -> MachineTransitionGoal {
-        match self {
-            Self::Activate { .. } => MachineTransitionGoal::Activate,
-            Self::Drain => MachineTransitionGoal::Drain,
-            Self::Standby { .. } => MachineTransitionGoal::Standby,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

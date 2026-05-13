@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
-use ployz_api::{DaemonPayload, DaemonResponse, ImageInspectPayload, ImageInspectRequest};
 use ployz_model::{
     ImageArtifact, ImageArtifactProvenance, ImageAvailabilityRecord, ImageDigest,
-    ImageOperationKind, ImageOperationTargetOutcome, ImagePresence, ImageRef, MachineId,
-    OperationStatus,
+    ImageInspectPayload, ImageInspectRequest, ImageOperationKind, ImageOperationTargetOutcome,
+    ImagePresence, ImageRef, MachineId, OperationStatus,
 };
 use ployz_runtime_api::{RuntimeImage, RuntimeImageBackend, RuntimeImageError};
 use ployz_store_api::ImageAvailabilityStore;
 use ployz_time::now_unix_secs;
 
 use crate::operations::ImageOperationStore;
+use crate::response::{ImageServicePayload, ImageServiceResponse};
 
 pub async fn inspect_image_with_backend(
     store: &dyn ImageAvailabilityStore,
@@ -18,10 +18,10 @@ pub async fn inspect_image_with_backend(
     local_machine: &MachineId,
     request: &ImageInspectRequest,
     backend_result: Result<Arc<dyn RuntimeImageBackend>, String>,
-) -> DaemonResponse {
+) -> ImageServiceResponse {
     let target_machine = match inspect_target_machine(local_machine, request) {
         Ok(machine_id) => machine_id,
-        Err(error) => return DaemonResponse::error(error.code, error.message, None),
+        Err(error) => return ImageServiceResponse::error(error.code, error.message, None),
     };
     let reference = image_inspect_reference(request);
     let mut operation = match operation_store.begin(
@@ -32,7 +32,9 @@ pub async fn inspect_image_with_backend(
         vec![target_machine.clone()],
     ) {
         Ok(operation) => operation,
-        Err(error) => return DaemonResponse::error("IMAGE_INSPECT_OPERATION_FAILED", error, None),
+        Err(error) => {
+            return ImageServiceResponse::error("IMAGE_INSPECT_OPERATION_FAILED", error, None);
+        }
     };
 
     let record = match backend_result {
@@ -69,7 +71,7 @@ pub async fn inspect_image_with_backend(
             OperationStatus::Failed,
             Some(message.clone()),
         );
-        return DaemonResponse::error(
+        return ImageServiceResponse::error(
             "IMAGE_INSPECT_STORE_FAILED",
             message,
             Some(image_inspect_payload(operation.id, record)),
@@ -81,14 +83,14 @@ pub async fn inspect_image_with_backend(
         &mut operation,
         image_operation_target(target_machine.clone(), status, last_error.clone()),
     ) {
-        return DaemonResponse::error(
+        return ImageServiceResponse::error(
             "IMAGE_INSPECT_OPERATION_FAILED",
             error,
             Some(image_inspect_payload(operation.id, record)),
         );
     }
     if let Err(error) = operation_store.update_status(&mut operation, status, last_error.clone()) {
-        return DaemonResponse::error(
+        return ImageServiceResponse::error(
             "IMAGE_INSPECT_OPERATION_FAILED",
             error,
             Some(image_inspect_payload(operation.id, record)),
@@ -96,16 +98,18 @@ pub async fn inspect_image_with_backend(
     }
 
     match &record.presence {
-        ImagePresence::Present { .. } | ImagePresence::Absent { .. } => DaemonResponse::success(
-            render_image_inspect_record(&operation.id, &record),
-            Some(image_inspect_payload(operation.id, record)),
-        ),
-        ImagePresence::Failed { reason, .. } => DaemonResponse::error(
+        ImagePresence::Present { .. } | ImagePresence::Absent { .. } => {
+            ImageServiceResponse::success(
+                render_image_inspect_record(&operation.id, &record),
+                Some(image_inspect_payload(operation.id, record)),
+            )
+        }
+        ImagePresence::Failed { reason, .. } => ImageServiceResponse::error(
             "IMAGE_INSPECT_FAILED",
             format!("{}  {}", operation.id, reason),
             Some(image_inspect_payload(operation.id, record)),
         ),
-        ImagePresence::Transferring { .. } => DaemonResponse::error(
+        ImagePresence::Transferring { .. } => ImageServiceResponse::error(
             "IMAGE_INSPECT_FAILED",
             "image inspect produced an invalid transferring record",
             Some(image_inspect_payload(operation.id, record)),
@@ -259,8 +263,11 @@ fn image_operation_target(
     }
 }
 
-fn image_inspect_payload(operation_id: String, record: ImageAvailabilityRecord) -> DaemonPayload {
-    DaemonPayload::ImageInspect(ImageInspectPayload {
+fn image_inspect_payload(
+    operation_id: String,
+    record: ImageAvailabilityRecord,
+) -> ImageServicePayload {
+    ImageServicePayload::ImageInspect(ImageInspectPayload {
         operation_id,
         records: vec![record],
     })

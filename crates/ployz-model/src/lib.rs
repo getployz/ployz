@@ -178,6 +178,393 @@ pub enum VolumeScope {
     Shared,
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BuildEnvValue {
+    Plain {
+        value: String,
+    },
+    Secret {
+        value: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fingerprint: Option<String>,
+    },
+}
+
+impl fmt::Debug for BuildEnvValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Plain { .. } => f
+                .debug_struct("Plain")
+                .field("value", &"<redacted>")
+                .finish(),
+            Self::Secret { fingerprint, .. } => f
+                .debug_struct("Secret")
+                .field("value", &"<redacted>")
+                .field("fingerprint", fingerprint)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildInputs {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, BuildEnvValue>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub docker_build_args: BTreeMap<String, String>,
+}
+
+impl BuildInputs {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.env.is_empty() && self.docker_build_args.is_empty()
+    }
+}
+
+impl fmt::Debug for BuildInputs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let docker_build_args = self
+            .docker_build_args
+            .keys()
+            .map(|key| (key, "<redacted>"))
+            .collect::<Vec<_>>();
+        f.debug_struct("BuildInputs")
+            .field("env", &self.env)
+            .field("docker_build_args", &docker_build_args)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildLocalRequest {
+    pub method: BuildMethod,
+    pub context_dir: String,
+    pub image_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<ImagePlatform>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_target: Option<MachineId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub distribute_targets: Vec<MachineId>,
+    #[serde(default, skip_serializing_if = "BuildInputs::is_empty")]
+    pub inputs: BuildInputs,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildMachineRequest {
+    pub method: BuildMethod,
+    pub context_path: String,
+    pub image_name: String,
+    pub machine_id: MachineId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<ImagePlatform>,
+    #[serde(default, skip_serializing_if = "BuildInputs::is_empty")]
+    pub inputs: BuildInputs,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildResultPayload {
+    pub operation_id: String,
+    pub artifact: ImageArtifact,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability: Option<ImageAvailabilityRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildOperationPayload {
+    pub operation: BuildOperationRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildOperationListPayload {
+    pub operations: Vec<BuildOperationRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageDistributeRequest {
+    pub digest: ImageDigest,
+    pub source_machine: MachineId,
+    pub target_machines: Vec<MachineId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<ImagePlatform>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageReceiveSessionRequest {
+    pub operation_id: String,
+    pub source_machine: MachineId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageReceivedImportRequest {
+    pub operation_id: String,
+    pub source_machine: MachineId,
+    pub repository: String,
+    pub reference: String,
+    pub expected_digest: ImageDigest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<ImagePlatform>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repo_tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageStatusRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<ImageDigest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<MachineId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageInspectRequest {
+    pub digest: ImageDigest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub machines: Vec<MachineId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImagePushRequest {
+    pub source_image: String,
+    pub target_machines: Vec<MachineId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<ImagePlatform>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_digest: Option<ImageDigest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageStatusPayload {
+    pub records: Vec<ImageAvailabilityRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageInspectPayload {
+    pub operation_id: String,
+    pub records: Vec<ImageAvailabilityRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImagePushPayload {
+    pub operation_id: String,
+    pub artifact: ImageArtifact,
+    pub targets: Vec<ImageTransferTargetResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageDistributePayload {
+    pub operation_id: String,
+    pub digest: ImageDigest,
+    pub source_machine: MachineId,
+    pub targets: Vec<ImageTransferTargetResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageDistributeValidationPayload {
+    #[serde(flatten)]
+    pub request: ImageDistributeRequest,
+    pub failure: ImageDistributeValidationFailure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ImageDistributeValidationFailure {
+    TargetRequired {
+        target_count: usize,
+    },
+    DuplicateTarget {
+        duplicate_target: MachineId,
+    },
+    SourceNotLocal {
+        source_machine: MachineId,
+        local_machine: MachineId,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageReceiveSessionPayload {
+    pub target_machine: MachineId,
+    pub endpoint: String,
+    pub token: String,
+    pub expires_at_unix_secs: u64,
+    pub headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageReceivedImportPayload {
+    pub target_machine: MachineId,
+    pub record: ImageAvailabilityRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageOperationPayload {
+    pub operation: ImageOperationRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageOperationListPayload {
+    pub operations: Vec<ImageOperationRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageTransferTargetResult {
+    Present {
+        machine_id: MachineId,
+        record: ImageAvailabilityRecord,
+    },
+    SkippedPresent {
+        machine_id: MachineId,
+        record: ImageAvailabilityRecord,
+    },
+    Failed {
+        machine_id: MachineId,
+        failure: ImageTransferFailure,
+    },
+}
+
+impl ImageTransferTargetResult {
+    #[must_use]
+    pub fn present(machine_id: MachineId, record: ImageAvailabilityRecord) -> Self {
+        Self::Present { machine_id, record }
+    }
+
+    #[must_use]
+    pub fn skipped_present(machine_id: MachineId, record: ImageAvailabilityRecord) -> Self {
+        Self::SkippedPresent { machine_id, record }
+    }
+
+    #[must_use]
+    pub fn failed(machine_id: MachineId, failure: ImageTransferFailure) -> Self {
+        Self::Failed {
+            machine_id,
+            failure,
+        }
+    }
+
+    #[must_use]
+    pub fn machine_id(&self) -> &MachineId {
+        match self {
+            Self::Present { machine_id, .. }
+            | Self::SkippedPresent { machine_id, .. }
+            | Self::Failed { machine_id, .. } => machine_id,
+        }
+    }
+
+    #[must_use]
+    pub fn status(&self) -> ImageTransferTargetStatus {
+        match self {
+            Self::Present { .. } => ImageTransferTargetStatus::Present,
+            Self::SkippedPresent { .. } => ImageTransferTargetStatus::SkippedPresent,
+            Self::Failed { .. } => ImageTransferTargetStatus::Failed,
+        }
+    }
+
+    #[must_use]
+    pub fn record(&self) -> Option<&ImageAvailabilityRecord> {
+        match self {
+            Self::Present { record, .. } | Self::SkippedPresent { record, .. } => Some(record),
+            Self::Failed { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn failure(&self) -> Option<&ImageTransferFailure> {
+        match self {
+            Self::Failed { failure, .. } => Some(failure),
+            Self::Present { .. } | Self::SkippedPresent { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageTransferFailure {
+    pub code: String,
+    pub stage: ImageTransferFailureStage,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageTransferFailureStage {
+    AvailabilityRead,
+    SourceVerify,
+    SourceExport,
+    ArchiveParse,
+    ReceiveSession,
+    Upload,
+    Import,
+    LocalAvailability,
+    DistributingPushedImage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageTransferTargetStatus {
+    Present,
+    SkippedPresent,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachineStorageAuthorityPeer {
+    pub machine_id: MachineId,
+    pub public_key: PublicKey,
+    pub overlay_ip: OverlayIp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subnet: Option<Ipv4Net>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_ip: Option<OverlayIp>,
+    pub region_role: RegionRole,
+    pub endpoints: Vec<String>,
+}
+
+impl From<&MachineMembership> for MachineStorageAuthorityPeer {
+    fn from(record: &MachineMembership) -> Self {
+        Self {
+            machine_id: record.id.clone(),
+            public_key: record.public_key.clone(),
+            overlay_ip: record.overlay_ip,
+            subnet: record.subnet,
+            bridge_ip: record.bridge_ip,
+            region_role: record.region_role,
+            endpoints: record.endpoints.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MachineTransitionGoal {
+    Activate,
+    Drain,
+    Standby,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "goal")]
+pub enum MachineSelfTransition {
+    Activate { assigned_subnet: Ipv4Net },
+    Drain,
+    Standby { force: bool },
+}
+
+impl MachineSelfTransition {
+    #[must_use]
+    pub fn goal(self) -> MachineTransitionGoal {
+        match self {
+            Self::Activate { .. } => MachineTransitionGoal::Activate,
+            Self::Drain => MachineTransitionGoal::Drain,
+            Self::Standby { .. } => MachineTransitionGoal::Standby,
+        }
+    }
+}
+
 #[must_use]
 pub fn stable_hash_hex(bytes: &[u8]) -> String {
     const OFFSET: u64 = 0xcbf29ce484222325;

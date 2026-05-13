@@ -12,7 +12,7 @@ GENERATOR_VERSION="15.0.4"
 
 mkdir -p "${PACKAGE_DIR}"
 
-cargo run -p ployz-types --example deploy_schema > "${SCHEMA_PATH}"
+cargo run -p ployz-spec --example deploy_schema > "${SCHEMA_PATH}"
 cargo run -p ployz-api --example runtime_schema > "${RUNTIME_SCHEMA_PATH}"
 
 npm pkg set "version=${VERSION}" --prefix "${PACKAGE_DIR}" >/dev/null

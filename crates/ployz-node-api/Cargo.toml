@@ -6,7 +6,6 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-ployz-api = { path = "../ployz-api" }
 ployz-error = { path = "../ployz-error" }
 ployz-model = { path = "../ployz-model" }
 serde = { workspace = true }
