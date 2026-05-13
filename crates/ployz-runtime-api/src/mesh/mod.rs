@@ -12,10 +12,7 @@ use tokio::time::Instant;
 pub trait MeshNetwork: Send + Sync {
     fn up(&self) -> impl Future<Output = Result<()>> + Send + '_;
     fn down(&self) -> impl Future<Output = Result<()>> + Send + '_;
-    fn set_peers<'a>(
-        &'a self,
-        peers: &'a [WireGuardPeerSpec],
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    fn set_peers(&self, peers: &[WireGuardPeerSpec]) -> impl Future<Output = Result<()>> + Send + '_;
 
     /// Returns true if at least one remote mesh peer has completed a WG handshake.
     /// Must exclude local peers (bridge, sidecars) that handshake immediately.
@@ -38,9 +35,9 @@ pub struct DevicePeer {
 
 pub trait WireGuardDevice: Send + Sync {
     fn read_peers(&self) -> impl Future<Output = Result<Vec<DevicePeer>>> + Send + '_;
-    fn set_peer_endpoint<'a>(
-        &'a self,
-        key: &'a PublicKey,
-        endpoint: &'a str,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    fn set_peer_endpoint(
+        &self,
+        key: &PublicKey,
+        endpoint: &str,
+    ) -> impl Future<Output = Result<()>> + Send + '_;
 }

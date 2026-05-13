@@ -345,7 +345,7 @@ impl WireGuardDevice for DockerWireGuard {
         self.read_device_peers().await
     }
 
-    async fn set_peer_endpoint<'a>(&'a self, key: &'a PublicKey, endpoint: &'a str) -> Result<()> {
+    async fn set_peer_endpoint(&self, key: &PublicKey, endpoint: &str) -> Result<()> {
         let key = encode_key(&key.0);
         self.exec_in_container(&[
             "wg",

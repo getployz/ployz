@@ -1,8 +1,8 @@
 use ployz_model::ImageDigest;
 
-pub struct DockerImageRef<'a> {
-    pub from_image: &'a str,
-    pub tag: Option<&'a str>,
+pub struct DockerImageRef {
+    pub from_image: String,
+    pub tag: Option<String>,
 }
 
 #[must_use]
@@ -18,10 +18,10 @@ pub fn require_digest_from_image_ref(image: &str) -> Result<ImageDigest, String>
 }
 
 #[must_use]
-pub fn parse_docker_image_ref(image: &str) -> DockerImageRef<'_> {
+pub fn parse_docker_image_ref(image: &str) -> DockerImageRef {
     if image.contains('@') {
         return DockerImageRef {
-            from_image: image,
+            from_image: image.into(),
             tag: None,
         };
     }
@@ -33,14 +33,14 @@ pub fn parse_docker_image_ref(image: &str) -> DockerImageRef<'_> {
         && last_slash.is_none_or(|slash_index| colon_index > slash_index)
     {
         return DockerImageRef {
-            from_image: &image[..colon_index],
-            tag: Some(&image[colon_index + 1..]),
+            from_image: image[..colon_index].into(),
+            tag: Some(image[colon_index + 1..].into()),
         };
     }
 
     DockerImageRef {
-        from_image: image,
-        tag: Some("latest"),
+        from_image: image.into(),
+        tag: Some("latest".into()),
     }
 }
 
@@ -53,7 +53,7 @@ mod tests {
         let parsed = parse_docker_image_ref("ghcr.io/getployz/ployz-dns");
 
         assert_eq!(parsed.from_image, "ghcr.io/getployz/ployz-dns");
-        assert_eq!(parsed.tag, Some("latest"));
+        assert_eq!(parsed.tag.as_deref(), Some("latest"));
     }
 
     #[test]
@@ -61,7 +61,7 @@ mod tests {
         let parsed = parse_docker_image_ref("ghcr.io/getployz/ployz-dns:v1");
 
         assert_eq!(parsed.from_image, "ghcr.io/getployz/ployz-dns");
-        assert_eq!(parsed.tag, Some("v1"));
+        assert_eq!(parsed.tag.as_deref(), Some("v1"));
     }
 
     #[test]
@@ -69,7 +69,7 @@ mod tests {
         let parsed = parse_docker_image_ref("localhost:5000/ployz-dns:v1");
 
         assert_eq!(parsed.from_image, "localhost:5000/ployz-dns");
-        assert_eq!(parsed.tag, Some("v1"));
+        assert_eq!(parsed.tag.as_deref(), Some("v1"));
     }
 
     #[test]

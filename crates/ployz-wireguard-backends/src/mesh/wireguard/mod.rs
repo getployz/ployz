@@ -1,14 +1,17 @@
 #[cfg(feature = "docker")]
 pub(crate) mod bridge;
+#[cfg(any(feature = "docker", feature = "userspace-wg"))]
 pub(crate) mod config;
 #[cfg(feature = "docker")]
 pub(crate) mod docker;
+#[cfg(feature = "userspace-wg")]
 pub(crate) mod host;
 #[cfg(feature = "docker")]
 pub(crate) mod sidecar;
 
 #[cfg(feature = "docker")]
 pub use docker::DockerWireGuard;
+#[cfg(feature = "userspace-wg")]
 pub use host::HostWireGuard;
 #[cfg(feature = "docker")]
 pub use sidecar::WgSidecar;

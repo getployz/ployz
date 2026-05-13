@@ -51,7 +51,7 @@ pub fn is_coordination_peer(machine: &PlacementCandidate, self_id: &MachineId) -
 }
 
 #[must_use]
-pub fn coordination_peers<'a>(
+fn coordination_peers<'a>(
     machines: &'a [PlacementCandidate],
     self_id: &MachineId,
 ) -> Vec<&'a PlacementCandidate> {

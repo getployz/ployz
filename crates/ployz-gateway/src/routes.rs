@@ -287,7 +287,7 @@ pub fn normalize_request_host(host: &str) -> String {
 }
 
 #[must_use]
-pub fn match_http_route<'a>(
+fn match_http_route<'a>(
     snapshot: &'a GatewaySnapshot,
     host: Option<&str>,
     path: &str,
@@ -1075,7 +1075,7 @@ fn parse_tls_material(
 }
 
 #[must_use]
-pub fn match_acme_challenge<'a>(
+fn match_acme_challenge<'a>(
     snapshot: &'a GatewaySnapshot,
     host: Option<&str>,
     path: &str,

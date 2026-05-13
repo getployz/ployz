@@ -5129,7 +5129,7 @@ async fn apply_rejects_empty_deploy_baseline_before_participant_inspect() {
         Arc::new(NoopAcmeIssuerFactory::default()),
         &NoopParticipantProbe,
         DeployApplyPreconditions {
-            expected_baseline: Some(&empty_baseline),
+            expected_baseline: Some(empty_baseline),
         },
     )
     .await
@@ -5203,7 +5203,7 @@ async fn apply_rejects_stale_service_source_baseline_before_participant_inspect(
         Arc::new(NoopAcmeIssuerFactory::default()),
         &NoopParticipantProbe,
         DeployApplyPreconditions {
-            expected_baseline: Some(&expected_baseline),
+            expected_baseline: Some(expected_baseline.clone()),
         },
     )
     .await
@@ -5258,7 +5258,7 @@ async fn apply_rejects_stale_participant_baseline_before_participant_inspect() {
         Arc::new(NoopAcmeIssuerFactory::default()),
         &NoopParticipantProbe,
         DeployApplyPreconditions {
-            expected_baseline: Some(&expected_baseline),
+            expected_baseline: Some(expected_baseline.clone()),
         },
     )
     .await
@@ -5322,7 +5322,7 @@ async fn apply_accepts_matching_service_source_baseline_and_commits_branch_linea
         Arc::new(NoopAcmeIssuerFactory::default()),
         &NoopParticipantProbe,
         DeployApplyPreconditions {
-            expected_baseline: Some(&expected_baseline),
+            expected_baseline: Some(expected_baseline.clone()),
         },
     )
     .await
@@ -6271,7 +6271,7 @@ async fn apply_commits_branch_lineage_when_only_source_revision_changes() {
         Arc::new(NoopAcmeIssuerFactory::default()),
         &NoopParticipantProbe,
         DeployApplyPreconditions {
-            expected_baseline: Some(&expected_baseline),
+            expected_baseline: Some(expected_baseline.clone()),
         },
     )
     .await
@@ -6329,7 +6329,7 @@ async fn apply_preserves_checkpointed_branch_lineage_after_final_commit() {
         Arc::new(NoopAcmeIssuerFactory::default()),
         &NoopParticipantProbe,
         DeployApplyPreconditions {
-            expected_baseline: Some(&expected_baseline),
+            expected_baseline: Some(expected_baseline.clone()),
         },
     )
     .await

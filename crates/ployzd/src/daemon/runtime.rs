@@ -108,10 +108,10 @@ impl RuntimeImageBackend for UnsupportedRuntimeImageBackend {
         Err(RuntimeImageError::unsupported("memory", "image inspect"))
     }
 
-    async fn export_image_archive<'a>(
-        &'a self,
-        reference: &'a str,
-    ) -> Result<ImageArchiveReader<'a>, RuntimeImageError> {
+    async fn export_image_archive(
+        &self,
+        reference: &str,
+    ) -> Result<ImageArchiveReader, RuntimeImageError> {
         let _ = reference;
         Err(RuntimeImageError::unsupported(
             "memory",
@@ -121,7 +121,7 @@ impl RuntimeImageBackend for UnsupportedRuntimeImageBackend {
 
     async fn import_image_archive(
         &self,
-        archive: ImageArchiveReader<'static>,
+        archive: ImageArchiveReader,
     ) -> Result<RuntimeImageImportResult, RuntimeImageError> {
         let _ = archive;
         Err(RuntimeImageError::unsupported(

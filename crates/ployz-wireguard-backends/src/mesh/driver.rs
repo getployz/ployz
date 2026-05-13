@@ -1,17 +1,26 @@
 #[cfg(feature = "docker")]
 use crate::mesh::wireguard::DockerWireGuard;
+#[cfg(feature = "userspace-wg")]
 use crate::mesh::wireguard::HostWireGuard;
+#[cfg(any(feature = "docker", feature = "userspace-wg"))]
 use async_trait::async_trait;
+#[cfg(any(feature = "docker", feature = "userspace-wg"))]
 use ployz_error::Result;
+#[cfg(any(feature = "docker", feature = "userspace-wg"))]
 use ployz_model::{OverlayIp, PublicKey, WireGuardPeerSpec};
+#[cfg(any(feature = "docker", feature = "userspace-wg"))]
 use ployz_runtime_api::Identity;
+#[cfg(any(feature = "docker", feature = "userspace-wg"))]
 use ployz_runtime_api::mesh::WireguardDriver;
+#[cfg(any(feature = "docker", feature = "userspace-wg"))]
 use ployz_runtime_api::mesh::driver::{WireguardBackend, WireguardBackendMode};
+#[cfg(any(feature = "docker", feature = "userspace-wg"))]
 use ployz_runtime_api::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 #[cfg(feature = "docker")]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 #[cfg(feature = "docker")]
 use std::path::Path;
+#[cfg(any(feature = "docker", feature = "userspace-wg"))]
 use std::sync::Arc;
 
 #[cfg(feature = "docker")]
@@ -49,6 +58,7 @@ pub async fn docker(
     )))
 }
 
+#[cfg(feature = "userspace-wg")]
 pub fn host(
     identity: &Identity,
     overlay_ip: OverlayIp,
@@ -113,10 +123,12 @@ impl WireguardBackend for DockerWireguardBackend {
     }
 }
 
+#[cfg(feature = "userspace-wg")]
 struct HostWireguardBackend {
     inner: Arc<HostWireGuard>,
 }
 
+#[cfg(feature = "userspace-wg")]
 #[async_trait]
 impl WireguardBackend for HostWireguardBackend {
     fn mode(&self) -> WireguardBackendMode {

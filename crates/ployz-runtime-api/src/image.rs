@@ -5,7 +5,7 @@ use ployz_model::{ImageDigest, ImagePlatform};
 use thiserror::Error;
 use tokio::io::AsyncRead;
 
-pub type ImageArchiveReader<'a> = Pin<Box<dyn AsyncRead + Send + 'a>>;
+pub type ImageArchiveReader = Pin<Box<dyn AsyncRead + Send + 'static>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeImage {
@@ -102,10 +102,10 @@ pub trait RuntimeImageBackend: Send + Sync {
         reference: &str,
     ) -> Result<Option<RuntimeImage>, RuntimeImageError>;
 
-    async fn export_image_archive<'a>(
-        &'a self,
-        reference: &'a str,
-    ) -> Result<ImageArchiveReader<'a>, RuntimeImageError> {
+    async fn export_image_archive(
+        &self,
+        reference: &str,
+    ) -> Result<ImageArchiveReader, RuntimeImageError> {
         let _ = reference;
         Err(RuntimeImageError::unsupported(
             "unknown",
@@ -115,7 +115,7 @@ pub trait RuntimeImageBackend: Send + Sync {
 
     async fn import_image_archive(
         &self,
-        archive: ImageArchiveReader<'static>,
+        archive: ImageArchiveReader,
     ) -> Result<RuntimeImageImportResult, RuntimeImageError> {
         let _ = archive;
         Err(RuntimeImageError::unsupported(

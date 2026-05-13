@@ -100,7 +100,7 @@ impl WireGuardDevice for MemoryWireGuard {
         Ok(self.lock_inner().device_peers.clone())
     }
 
-    async fn set_peer_endpoint<'a>(&'a self, key: &'a PublicKey, endpoint: &'a str) -> Result<()> {
+    async fn set_peer_endpoint(&self, key: &PublicKey, endpoint: &str) -> Result<()> {
         let mut inner = self.lock_inner();
         for peer in &mut inner.device_peers {
             if peer.public_key == *key {

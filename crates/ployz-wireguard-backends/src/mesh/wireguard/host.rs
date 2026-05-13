@@ -390,7 +390,7 @@ impl WireGuardDevice for HostWireGuard {
         Ok(device_peers)
     }
 
-    async fn set_peer_endpoint<'a>(&'a self, key: &'a PublicKey, endpoint: &'a str) -> Result<()> {
+    async fn set_peer_endpoint(&self, key: &PublicKey, endpoint: &str) -> Result<()> {
         let endpoint: SocketAddr = endpoint
             .parse()
             .map_err(|e| Error::operation("set peer endpoint", format!("{e}")))?;

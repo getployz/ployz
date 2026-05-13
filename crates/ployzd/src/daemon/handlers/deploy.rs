@@ -609,7 +609,7 @@ impl DaemonState {
         active: &ActiveMesh,
         manifest: &DeployManifest,
         runtime: DeployApplyRuntime,
-        preconditions: DeployApplyPreconditions<'_>,
+        preconditions: DeployApplyPreconditions,
     ) -> DaemonResponse {
         let certificate_coordinator = Arc::new(
             crate::daemon::cert_coordination::NatsIssuanceCoordinator::new(
@@ -1414,9 +1414,7 @@ async fn mark_running_deploy_phases_failed_after_lock_loss(
     Ok(())
 }
 
-fn deploy_apply_preconditions(
-    options: &DeployOptions,
-) -> Result<DeployApplyPreconditions<'_>, &'static str> {
+fn deploy_apply_preconditions(options: &DeployOptions) -> Result<DeployApplyPreconditions, &'static str> {
     Ok(DeployApplyPreconditions {
         expected_baseline: expected_baseline(options)?,
     })
@@ -1424,7 +1422,7 @@ fn deploy_apply_preconditions(
 
 fn expected_baseline(
     options: &DeployOptions,
-) -> Result<Option<&ployz_model::DeployPreviewBaseline>, &'static str> {
+) -> Result<Option<ployz_model::DeployPreviewBaseline>, &'static str> {
     match options.expected_baseline.as_ref() {
         Some(baseline) if baseline.is_empty() => {
             Err("expected_baseline must be omitted or non-empty")
@@ -1432,7 +1430,7 @@ fn expected_baseline(
         Some(baseline) if !baseline.is_canonical() => {
             Err("expected_baseline fingerprint must match baseline components")
         }
-        Some(baseline) => Ok(Some(baseline)),
+        Some(baseline) => Ok(Some(baseline.clone())),
         None => Ok(None),
     }
 }
@@ -3859,7 +3857,7 @@ mod tests {
         };
         assert_eq!(
             expected_baseline(&baseline).expect("baseline"),
-            Some(&expected)
+            Some(expected)
         );
     }
 
@@ -3873,7 +3871,7 @@ mod tests {
 
         let preconditions = deploy_apply_preconditions(&options).expect("preconditions");
 
-        assert_eq!(preconditions.expected_baseline, Some(&expected));
+        assert_eq!(preconditions.expected_baseline, Some(expected));
     }
 
     #[tokio::test]

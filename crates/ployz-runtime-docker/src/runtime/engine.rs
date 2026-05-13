@@ -504,10 +504,10 @@ impl RuntimeImageBackend for ContainerEngine {
         }
     }
 
-    async fn export_image_archive<'a>(
-        &'a self,
-        reference: &'a str,
-    ) -> std::result::Result<ImageArchiveReader<'a>, RuntimeImageError> {
+    async fn export_image_archive(
+        &self,
+        reference: &str,
+    ) -> std::result::Result<ImageArchiveReader, RuntimeImageError> {
         if self.inspect_image(reference).await?.is_none() {
             return Err(RuntimeImageError::NotFound {
                 reference: reference.into(),
@@ -524,7 +524,7 @@ impl RuntimeImageBackend for ContainerEngine {
 
     async fn import_image_archive(
         &self,
-        archive: ImageArchiveReader<'static>,
+        archive: ImageArchiveReader,
     ) -> std::result::Result<RuntimeImageImportResult, RuntimeImageError> {
         let byte_stream = FramedRead::new(archive, BytesCodec::new())
             .map_ok(|bytes| bytes.freeze())

@@ -123,7 +123,7 @@ struct DockerLoadManifestEntry<'a> {
 }
 
 pub async fn parse_image_archive(
-    mut reader: ImageArchiveReader<'_>,
+    mut reader: ImageArchiveReader,
     work_dir: &Path,
 ) -> Result<ParsedImageArchive, ImageArchiveError> {
     tokio::fs::create_dir_all(work_dir)

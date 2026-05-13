@@ -16,14 +16,14 @@ pub const LABEL_INSTANCE: &str = "dev.ployz.instance";
 pub const LABEL_SLOT: &str = "dev.ployz.slot";
 pub const LABEL_MACHINE: &str = "dev.ployz.machine";
 
-pub struct WorkloadMeta<'a> {
-    pub namespace: &'a str,
-    pub service: &'a str,
-    pub revision: &'a str,
-    pub deploy_id: &'a str,
-    pub instance_id: &'a str,
-    pub slot_id: &'a str,
-    pub machine_id: &'a str,
+pub(crate) struct WorkloadMeta<'a> {
+    pub(crate) namespace: &'a str,
+    pub(crate) service: &'a str,
+    pub(crate) revision: &'a str,
+    pub(crate) deploy_id: &'a str,
+    pub(crate) instance_id: &'a str,
+    pub(crate) slot_id: &'a str,
+    pub(crate) machine_id: &'a str,
 }
 
 #[must_use]
@@ -46,7 +46,7 @@ pub fn build_system_labels(
 }
 
 #[must_use]
-pub fn build_workload_labels(
+pub(crate) fn build_workload_labels(
     key: &str,
     meta: &WorkloadMeta<'_>,
     extra: &BTreeMap<String, String>,
@@ -69,7 +69,7 @@ pub fn build_workload_labels(
 }
 
 #[must_use]
-pub fn parse_key(labels: &HashMap<String, String>) -> Option<&str> {
+pub(crate) fn parse_key(labels: &HashMap<String, String>) -> Option<&str> {
     labels.get(LABEL_KEY).map(String::as_str)
 }
 

@@ -247,7 +247,7 @@ pub async fn apply_with_deploy_id_and_preconditions(
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
     prober: &dyn ParticipantProbe,
-    preconditions: DeployApplyPreconditions<'_>,
+    preconditions: DeployApplyPreconditions,
 ) -> Result<DeployApplyResult> {
     execute::apply_with_deploy_id_and_preconditions(
         store,

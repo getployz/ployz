@@ -1,4 +1,4 @@
-pub(crate) use ployz_image::{archive, registry};
+pub(crate) use ployz_image::registry;
 
 #[path = "../daemon/handlers/image/inspect.rs"]
 mod inspect;

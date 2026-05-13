@@ -208,9 +208,9 @@ impl ParticipantSet {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DeployApplyPreconditions<'a> {
-    pub expected_baseline: Option<&'a DeployPreviewBaseline>,
+#[derive(Debug, Clone, Default)]
+pub struct DeployApplyPreconditions {
+    pub expected_baseline: Option<DeployPreviewBaseline>,
 }
 
 pub(super) async fn apply(
@@ -322,7 +322,7 @@ pub(super) async fn apply_with_deploy_id_and_preconditions(
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
     prober: &dyn ParticipantProbe,
-    preconditions: DeployApplyPreconditions<'_>,
+    preconditions: DeployApplyPreconditions,
 ) -> Result<DeployApplyResult> {
     apply_with_deploy_id_and_preconditions_for_prepared(
         store,
@@ -352,13 +352,13 @@ async fn apply_with_deploy_id_and_preconditions_for_prepared(
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
     prober: &dyn ParticipantProbe,
-    preconditions: DeployApplyPreconditions<'_>,
+    preconditions: DeployApplyPreconditions,
     prepared_record: Option<&PreparedDeployRecord>,
 ) -> Result<DeployApplyResult> {
     let initial_plan = resolve_plan(store, local_machine_id, manifest).await?;
-    ensure_deploy_baseline(preconditions.expected_baseline, &initial_plan)?;
+    ensure_deploy_baseline(preconditions.expected_baseline.as_ref(), &initial_plan)?;
     preflight_image_availability(store, &initial_plan).await?;
-    let expected_baseline = preconditions.expected_baseline.cloned();
+    let expected_baseline = preconditions.expected_baseline.clone();
     ensure_volume_move_execution_supported(participant_client, &initial_plan)?;
     ensure_volume_clone_execution_supported(participant_client, &initial_plan)?;
     let reachability = probe_participants(
@@ -449,7 +449,7 @@ pub(super) async fn apply_prepared_with_certificate_coordination(
         issuer_factory,
         prober,
         DeployApplyPreconditions {
-            expected_baseline: Some(&prepared.baseline),
+            expected_baseline: Some(prepared.baseline.clone()),
         },
         Some(&prepared),
     )

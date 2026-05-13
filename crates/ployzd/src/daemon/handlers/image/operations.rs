@@ -1,5 +1,5 @@
 use ployz_api::{DaemonPayload, ImageOperationListPayload, ImageOperationPayload};
-pub(crate) use ployz_image::operations::{ImageOperationStore, validate_operation_id};
+pub(crate) use ployz_image::operations::ImageOperationStore;
 use ployz_model::{ImageDigest, OperationStatus};
 
 use crate::daemon::DaemonState;

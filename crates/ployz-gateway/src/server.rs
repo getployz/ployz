@@ -59,10 +59,10 @@ pub(crate) fn resolve_tls_material(
     }
 }
 
-pub struct GatewayTlsListener<'a> {
-    pub listen_addr: &'a str,
-    pub static_cert_path: Option<&'a str>,
-    pub static_key_path: Option<&'a str>,
+struct GatewayTlsListener<'a> {
+    listen_addr: &'a str,
+    static_cert_path: Option<&'a str>,
+    static_key_path: Option<&'a str>,
 }
 
 struct ManagedTlsCallbacks {
