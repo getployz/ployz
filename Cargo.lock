@@ -3401,6 +3401,7 @@ dependencies = [
  "aya",
  "futures-util",
  "ipnet",
+ "libc",
  "ployz-cert-api",
  "ployz-ebpf-common",
  "ployz-error",

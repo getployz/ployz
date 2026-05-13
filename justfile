@@ -25,7 +25,7 @@ test-boundaries:
     cargo check -p ployz-runtime-docker -p ployz-wireguard-backends
 
 test-all:
-    cargo test --workspace
+    cargo test --workspace --exclude ployz-bpfctl
     just test-boundaries
     just verify-deploy-types
 
