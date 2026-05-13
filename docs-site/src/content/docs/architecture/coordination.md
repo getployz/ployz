@@ -6,6 +6,44 @@ llms:
 ---
 Ployz uses NATS as its native control-plane substrate. NATS provides durable facts, coordination, request/reply commands, work queues, and scheduled work — but its presence does not justify hidden reconcilers. Every NATS mechanism in Ployz is a vehicle for explicit operations and visible failure surfaces, not a justification for background state rewriting.
 
+```mermaid
+%%{init: {"theme": "neutral"}}%%
+flowchart LR
+    accTitle: Peer cluster with NATS JetStream and the storage trust boundary
+    accDescr: Five peer machines all participate in the WireGuard mesh and run workloads. Three machines with storage equals true host NATS JetStream replicas and hold durable control-plane state. Two machines with storage equals false connect to NATS as clients only.
+
+    subgraph JS["NATS JetStream replication ring"]
+        direction LR
+        N1["nats · node-1"]
+        N2["nats · node-2"]
+        N3["nats · node-3"]
+        N1 --- N2
+        N2 --- N3
+        N3 --- N1
+    end
+
+    M1["node-1<br/>storage=true<br/>workloads + wg0"]
+    M2["node-2<br/>storage=true<br/>workloads + wg0"]
+    M3["node-3<br/>storage=true<br/>workloads + wg0"]
+    M4["node-4<br/>storage=false<br/>workloads + wg0"]
+    M5["node-5<br/>storage=false<br/>workloads + wg0"]
+
+    M1 -- "hosts replica" --- N1
+    M2 -- "hosts replica" --- N2
+    M3 -- "hosts replica" --- N3
+    M4 -. "client only" .-> JS
+    M5 -. "client only" .-> JS
+
+    classDef trusted fill:#e2f2ed,stroke:#0b4f4a,stroke-width:1.5px,color:#1f2320;
+    classDef untrusted fill:#fffdf8,stroke:#d8d5c9,stroke-width:1.5px,color:#1f2320;
+    classDef nats fill:#f7f5ef,stroke:#0b4f4a,stroke-width:2px,color:#1f2320;
+    class M1,M2,M3 trusted;
+    class M4,M5 untrusted;
+    class N1,N2,N3 nats;
+```
+
+Every node is a peer — same WireGuard mesh, same workload runtime, same operator surface. The `storage` flag is the only thing that decides which peers hold durable control-plane state. There is no master and no leader for the cluster as a whole.
+
 ## What NATS provides
 
 NATS JetStream gives Ployz four coordination building blocks:
