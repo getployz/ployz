@@ -3385,41 +3385,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ployz-runtime-backends"
-version = "0.6.1"
-dependencies = [
- "async-trait",
- "backon",
- "base64",
- "bollard",
- "chrono",
- "defguard_boringtun",
- "defguard_wireguard_rs",
- "derive_more",
- "futures-util",
- "http",
- "ipnet",
- "libc",
- "ployz-api",
- "ployz-runtime-api",
- "ployz-storage-api",
- "ployz-storage-zfs",
- "ployz-store-api",
- "ployz-types",
- "rand 0.10.0",
- "reqwest",
- "serde",
- "serde_json",
- "smoltcp",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
- "x25519-dalek",
-]
-
-[[package]]
 name = "ployz-runtime-docker"
 version = "0.6.1"
 dependencies = [
