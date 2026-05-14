@@ -7,6 +7,7 @@ use ployz_api::{DaemonPayload, DaemonResponse, MachineUpdatePayload, MachineUpda
 use ployz_model::{MachineId, MachineMembership};
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject};
 use ployz_node_api::NodeRequest;
+use ployz_node_runtime::MachineUpdateNodeClient;
 use tokio::process::Command;
 use tokio::sync::oneshot;
 use tokio::time::{Instant, sleep};
@@ -17,6 +18,7 @@ use crate::daemon::handlers::machine::operations::{
     MachineOperationArtifacts, MachineOperationKind, MachineOperationRecord,
     MachineOperationStatus, MachineOperationStore,
 };
+use crate::daemon::node_rpc::NatsMachineUpdateRpcTransport;
 
 const UPDATE_READINESS_TIMEOUT: Duration = Duration::from_secs(120);
 const UPDATE_READINESS_INTERVAL: Duration = Duration::from_secs(1);
@@ -296,16 +298,11 @@ impl DaemonState {
             Ok(client) => client,
             Err(error) => return Err(update_row(&machine_id, version, error)),
         };
+        let update_client =
+            MachineUpdateNodeClient::new(NatsMachineUpdateRpcTransport::new(client.clone()));
 
-        let prepare = NodeRequest::MeshPeerPrepareUpdate {
-            operation_id: operation_id.to_string(),
-            version: version.to_string(),
-        };
-        if let Err(error) = client
-            .request_expect_ok(
-                NodeCommandSubject::machine_update_prepare(&record.id),
-                &prepare,
-            )
+        if let Err(error) = update_client
+            .prepare_update(&record.id, operation_id, version)
             .await
         {
             return Err(update_row(
@@ -315,15 +312,8 @@ impl DaemonState {
             ));
         }
 
-        let execute = NodeRequest::MeshPeerExecuteUpdate {
-            operation_id: operation_id.to_string(),
-            version: version.to_string(),
-        };
-        if let Err(error) = client
-            .request_expect_ok(
-                NodeCommandSubject::machine_update_execute(&record.id),
-                &execute,
-            )
+        if let Err(error) = update_client
+            .execute_update(&record.id, operation_id, version)
             .await
         {
             return Err(update_row(

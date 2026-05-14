@@ -9,12 +9,9 @@ use std::net::IpAddr;
 
 use super::render::{format_lifecycle, format_timestamp, render_machine_list_report};
 use super::types::{MachineListReport, MachineListReportRow};
+use crate::daemon::node_rpc::NatsMeshRpcTransport;
 use crate::mesh_state::bootstrap::refresh_bootstrap_peer_records_from_store;
-use ployz_nats::{NodeCommandSubject, RpcPolicy};
-use ployz_node_api::NodeRequest;
-use std::time::Duration;
-
-const MACHINE_REMOVE_RPC_TIMEOUT: Duration = Duration::from_secs(120);
+use ployz_node_runtime::{MESH_MACHINE_REMOVE_RPC_POLICY, MeshNodeClient, NodeRpcErrorKind};
 
 impl DaemonState {
     pub(crate) async fn handle_machine_list(&self) -> DaemonResponse {
@@ -138,9 +135,8 @@ impl DaemonState {
 
         if !force {
             let rpc_client = match self.nats_node_rpc_client().await {
-                Ok(client) => client.with_policy(RpcPolicy {
-                    timeout: MACHINE_REMOVE_RPC_TIMEOUT,
-                }),
+                Ok(client) => MeshNodeClient::new(NatsMeshRpcTransport::new(client))
+                    .with_policy(MESH_MACHINE_REMOVE_RPC_POLICY),
                 Err(error) => {
                     return self.err(
                         "MACHINE_REMOVE_PEER_UNREACHABLE",
@@ -152,23 +148,16 @@ impl DaemonState {
             };
             let operation_id = format!("machine-rm-{}", ployz_model::NetworkId::random());
             let response = rpc_client
-                .request(
-                    NodeCommandSubject::mesh_remove_machine(&record.id),
-                    &NodeRequest::MeshPeerRemoveMachine {
-                        operation_id,
-                        network_id: active.config.id.clone(),
-                        machine_id: record.id.clone(),
-                    },
-                )
+                .remove_machine(&record.id, &operation_id, &active.config.id, &record.id)
                 .await;
             match response {
-                Ok(response) if response.is_ok() => {}
-                Ok(response) => {
+                Ok(()) => {}
+                Err(error) if error.kind == NodeRpcErrorKind::Remote => {
                     return self.err(
                         "MACHINE_REMOVE_PEER_REJECTED",
                         format!(
                             "machine '{id}' rejected coordinated removal [{}]: {}; resolve the remote failure or rerun with --force only if you intend membership-record-only removal",
-                            response.code(), response.message()
+                            error.code, error.message
                         ),
                     );
                 }

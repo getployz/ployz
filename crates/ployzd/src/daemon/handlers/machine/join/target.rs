@@ -4,8 +4,6 @@ use ployz_model::{
     MachineLifecycle, MachineMembership, MachineStorageRole, RegionRole, StorageParticipation,
     management_ip_from_key,
 };
-use ployz_nats::NodeCommandSubject;
-use ployz_node_api::NodeRequest;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_store_api::MachineMembershipStore;
 
@@ -20,7 +18,7 @@ use super::coordination::{
     BootstrapSubnetClaim, assert_subnet_unique, consume_invite, release_reserved_subnet,
 };
 use super::remote::{
-    ExpectedMachineRecord, ExpectedSubnetState, nats_rpc_expect_ok, nats_self_record,
+    ExpectedMachineRecord, ExpectedSubnetState, nats_self_record, nats_transition_self,
     remote_daemon_identity, remote_rpc_expect_ok, remote_self_record, wait_for_machine_record,
     wait_for_nats_command_responder, wait_for_nats_ready, wait_for_remote_ready,
 };
@@ -499,14 +497,11 @@ async fn activate_joiner_lifecycle(
     record: &MachineMembership,
     assigned_subnet: Ipv4Net,
 ) -> Result<(), String> {
-    let request = NodeRequest::MachineTransitionSelf {
-        transition: MachineSelfTransition::Activate { assigned_subnet },
-    };
     if let Some(client) = &context.nats_rpc {
-        return nats_rpc_expect_ok(
+        return nats_transition_self(
             client,
-            NodeCommandSubject::machine_transition_self(&record.id),
-            request,
+            record,
+            MachineSelfTransition::Activate { assigned_subnet },
         )
         .await;
     }

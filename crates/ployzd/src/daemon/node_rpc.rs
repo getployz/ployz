@@ -6,8 +6,10 @@ use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcFailure, RpcPolicy};
 use ployz_node_api::{NodeRequest, NodeResponse};
 use ployz_node_runtime::{
     DeployRpcOperation, DeployRpcTransport, ImageNodeClient, ImageNodeResponse, ImageRpcOperation,
-    ImageRpcTransport, MachineStorageRpcOperation, MachineStorageRpcTransport, MeshRpcOperation,
-    MeshRpcTransport, NodeRpcError, NodeRpcPolicy, VolumeZfsRpcOperation, VolumeZfsRpcTransport,
+    ImageRpcTransport, MachineLifecycleRpcOperation, MachineLifecycleRpcTransport,
+    MachineStorageRpcOperation, MachineStorageRpcTransport, MachineUpdateRpcOperation,
+    MachineUpdateRpcTransport, MeshRpcOperation, MeshRpcTransport, NodeRpcError, NodeRpcPolicy,
+    VolumeZfsRpcOperation, VolumeZfsRpcTransport,
 };
 
 use super::DaemonState;
@@ -128,6 +130,76 @@ impl DaemonState {
             .received_import(target_machine, request)
             .await
             .map_err(|error| format!("request image import from {target_machine}: {error}"))
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct NatsMachineLifecycleRpcTransport {
+    client: NatsNodeRpcClient,
+}
+
+impl NatsMachineLifecycleRpcTransport {
+    #[must_use]
+    pub(crate) fn new(client: NatsNodeRpcClient) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl MachineLifecycleRpcTransport for NatsMachineLifecycleRpcTransport {
+    fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self {
+        Self {
+            client: self.client.clone().with_policy(RpcPolicy {
+                timeout: policy.timeout,
+            }),
+        }
+    }
+
+    async fn machine_lifecycle_request(
+        &self,
+        machine_id: &MachineId,
+        operation: MachineLifecycleRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError> {
+        self.client
+            .request_node_response(machine_lifecycle_subject(machine_id, operation), request)
+            .await
+            .map_err(|error| machine_lifecycle_node_rpc_error(operation, error))
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct NatsMachineUpdateRpcTransport {
+    client: NatsNodeRpcClient,
+}
+
+impl NatsMachineUpdateRpcTransport {
+    #[must_use]
+    pub(crate) fn new(client: NatsNodeRpcClient) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl MachineUpdateRpcTransport for NatsMachineUpdateRpcTransport {
+    fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self {
+        Self {
+            client: self.client.clone().with_policy(RpcPolicy {
+                timeout: policy.timeout,
+            }),
+        }
+    }
+
+    async fn machine_update_request(
+        &self,
+        machine_id: &MachineId,
+        operation: MachineUpdateRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError> {
+        self.client
+            .request_node_response(machine_update_subject(machine_id, operation), request)
+            .await
+            .map_err(|error| machine_update_node_rpc_error(operation, error))
     }
 }
 
@@ -276,11 +348,37 @@ fn machine_storage_subject(
     }
 }
 
+fn machine_lifecycle_subject(
+    machine_id: &MachineId,
+    operation: MachineLifecycleRpcOperation,
+) -> NodeCommandSubject {
+    match operation {
+        MachineLifecycleRpcOperation::TransitionSelf => {
+            NodeCommandSubject::machine_transition_self(machine_id)
+        }
+    }
+}
+
+fn machine_update_subject(
+    machine_id: &MachineId,
+    operation: MachineUpdateRpcOperation,
+) -> NodeCommandSubject {
+    match operation {
+        MachineUpdateRpcOperation::PrepareUpdate => {
+            NodeCommandSubject::machine_update_prepare(machine_id)
+        }
+        MachineUpdateRpcOperation::ExecuteUpdate => {
+            NodeCommandSubject::machine_update_execute(machine_id)
+        }
+    }
+}
+
 fn mesh_subject(machine_id: &MachineId, operation: MeshRpcOperation) -> NodeCommandSubject {
     match operation {
         MeshRpcOperation::PrepareDestroy => NodeCommandSubject::mesh_prepare_destroy(machine_id),
         MeshRpcOperation::CancelDestroy => NodeCommandSubject::mesh_cancel_destroy(machine_id),
         MeshRpcOperation::ExecuteDestroy => NodeCommandSubject::mesh_execute_destroy(machine_id),
+        MeshRpcOperation::RemoveMachine => NodeCommandSubject::mesh_remove_machine(machine_id),
     }
 }
 
@@ -311,6 +409,20 @@ fn deploy_node_rpc_error(operation: DeployRpcOperation, error: RpcFailure) -> No
 }
 
 fn image_node_rpc_error(operation: ImageRpcOperation, error: RpcFailure) -> NodeRpcError {
+    NodeRpcError::new(operation.operation_name(), error.code(), error.message)
+}
+
+fn machine_lifecycle_node_rpc_error(
+    operation: MachineLifecycleRpcOperation,
+    error: RpcFailure,
+) -> NodeRpcError {
+    NodeRpcError::new(operation.operation_name(), error.code(), error.message)
+}
+
+fn machine_update_node_rpc_error(
+    operation: MachineUpdateRpcOperation,
+    error: RpcFailure,
+) -> NodeRpcError {
     NodeRpcError::new(operation.operation_name(), error.code(), error.message)
 }
 
@@ -391,6 +503,58 @@ mod tests {
     }
 
     #[test]
+    fn machine_lifecycle_operation_maps_to_expected_nats_subject_constructor() {
+        let machine_id = MachineId::new("machine-a");
+
+        for (operation, expected) in [(
+            MachineLifecycleRpcOperation::TransitionSelf,
+            NodeCommandSubject::machine_transition_self(&machine_id),
+        )] {
+            assert_eq!(machine_lifecycle_subject(&machine_id, operation), expected);
+        }
+    }
+
+    #[test]
+    fn machine_update_operation_maps_to_expected_nats_subject_constructor() {
+        let machine_id = MachineId::new("machine-a");
+
+        for (operation, expected) in [
+            (
+                MachineUpdateRpcOperation::PrepareUpdate,
+                NodeCommandSubject::machine_update_prepare(&machine_id),
+            ),
+            (
+                MachineUpdateRpcOperation::ExecuteUpdate,
+                NodeCommandSubject::machine_update_execute(&machine_id),
+            ),
+        ] {
+            assert_eq!(machine_update_subject(&machine_id, operation), expected);
+        }
+    }
+
+    #[test]
+    fn machine_lifecycle_rpc_transport_error_maps_operation_and_failure_context() {
+        let error = machine_lifecycle_node_rpc_error(
+            MachineLifecycleRpcOperation::TransitionSelf,
+            RpcFailure::new(RpcFailureKind::NoResponders, "no subscribers"),
+        );
+        assert_eq!(error.operation, "machine_transition_self");
+        assert_eq!(error.code, "NATS_RPC_NO_RESPONDERS");
+        assert_eq!(error.message, "no subscribers");
+    }
+
+    #[test]
+    fn machine_update_rpc_transport_error_maps_operation_and_failure_context() {
+        let error = machine_update_node_rpc_error(
+            MachineUpdateRpcOperation::ExecuteUpdate,
+            RpcFailure::new(RpcFailureKind::NoResponders, "no subscribers"),
+        );
+        assert_eq!(error.operation, "machine_update_execute");
+        assert_eq!(error.code, "NATS_RPC_NO_RESPONDERS");
+        assert_eq!(error.message, "no subscribers");
+    }
+
+    #[test]
     fn mesh_operation_maps_to_expected_nats_subject_constructor() {
         let machine_id = MachineId::new("machine-a");
 
@@ -406,6 +570,10 @@ mod tests {
             (
                 MeshRpcOperation::ExecuteDestroy,
                 NodeCommandSubject::mesh_execute_destroy(&machine_id),
+            ),
+            (
+                MeshRpcOperation::RemoveMachine,
+                NodeCommandSubject::mesh_remove_machine(&machine_id),
             ),
         ] {
             assert_eq!(mesh_subject(&machine_id, operation), expected);

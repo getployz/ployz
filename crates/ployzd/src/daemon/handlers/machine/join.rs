@@ -11,28 +11,27 @@ use ployz_api::{
     MachineSelfTransition,
 };
 use ployz_model::{MachineId, MachineLifecycle, MachineMembership};
-use ployz_node_api::NodeRequest;
+use ployz_node_runtime::{
+    MACHINE_TRANSITION_RPC_POLICY, MachineLifecycleNodeClient, NodeRpcError, NodeRpcErrorKind,
+};
 use tokio::task::JoinSet;
 
 use crate::daemon::DaemonState;
+use crate::daemon::node_rpc::NatsMachineLifecycleRpcTransport;
 use crate::daemon::ssh::{EphemeralSshIdentityFile, SshOptions};
 
 use self::bootstrap::bootstrap_remote_machine;
 use self::coordination::BootstrapSubnetClaim;
 use self::remote::{
-    ExpectedMachineRecord, ExpectedSubnetState, log_nats_enable_rollback, nats_rpc_expect_ok,
-    nats_self_record, remote_response_error, remote_rpc_expect_ok, wait_for_machine_record,
-    wait_for_nats_ready,
+    ExpectedMachineRecord, ExpectedSubnetState, log_nats_enable_rollback, nats_self_record,
+    remote_rpc_expect_ok, wait_for_machine_record, wait_for_nats_ready,
 };
 use self::target::run_machine_add_target;
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
 use super::render::render_machine_add_report;
 use super::types::{MachineAddContext, MachineAddFailure, MachineAddReport};
-use ployz_nats::{NodeCommandSubject, RpcPolicy};
-use std::time::Duration;
 
 const INVITE_TTL_SECS: u64 = 600;
-const MACHINE_TRANSITION_RPC_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl DaemonState {
     pub(crate) async fn handle_machine_init(
@@ -130,8 +129,8 @@ impl DaemonState {
                     None
                 } else {
                     match self.nats_node_rpc_client().await {
-                        Ok(client) => Some(client.with_policy(RpcPolicy {
-                            timeout: MACHINE_TRANSITION_RPC_TIMEOUT,
+                        Ok(client) => Some(client.with_policy(ployz_nats::RpcPolicy {
+                            timeout: MACHINE_TRANSITION_RPC_POLICY.timeout,
                         })),
                         Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
                     }
@@ -301,8 +300,8 @@ impl DaemonState {
             );
         }
         let nats_client = match self.nats_node_rpc_client().await {
-            Ok(client) => client.with_policy(RpcPolicy {
-                timeout: MACHINE_TRANSITION_RPC_TIMEOUT,
+            Ok(client) => client.with_policy(ployz_nats::RpcPolicy {
+                timeout: MACHINE_TRANSITION_RPC_POLICY.timeout,
             }),
             Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
         };
@@ -350,17 +349,15 @@ impl DaemonState {
         subnet_claim: BootstrapSubnetClaim,
     ) -> DaemonResponse {
         let assigned_subnet = subnet_claim.subnet();
-        if let Err(err) = nats_rpc_expect_ok(
+        if let Err(err) = request_remote_machine_transition(
             nats_client,
-            NodeCommandSubject::machine_transition_self(&record.id),
-            NodeRequest::MachineTransitionSelf {
-                transition: MachineSelfTransition::Activate { assigned_subnet },
-            },
+            &record.id,
+            MachineSelfTransition::Activate { assigned_subnet },
         )
         .await
         {
             let _ = release_reserved_subnet(subnet_claim).await;
-            return self.err("REMOTE_ACTIVATE_FAILED", err);
+            return self.err("REMOTE_ACTIVATE_FAILED", remote_node_rpc_error(&err));
         }
 
         let remote_record = match nats_self_record(nats_client, record).await {
@@ -439,23 +436,21 @@ impl DaemonState {
             return self.ok(format!("machine '{}' already draining", machine_id));
         }
         let nats_client = match self.nats_node_rpc_client().await {
-            Ok(client) => client.with_policy(RpcPolicy {
-                timeout: MACHINE_TRANSITION_RPC_TIMEOUT,
+            Ok(client) => client.with_policy(ployz_nats::RpcPolicy {
+                timeout: MACHINE_TRANSITION_RPC_POLICY.timeout,
             }),
             Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
         };
-        let transition = nats_client
-            .request(
-                NodeCommandSubject::machine_transition_self(&record.id),
-                &NodeRequest::MachineTransitionSelf {
-                    transition: MachineSelfTransition::Drain,
-                },
-            )
-            .await;
+        let transition = request_remote_machine_transition(
+            &nats_client,
+            &record.id,
+            MachineSelfTransition::Drain,
+        )
+        .await;
         match transition {
-            Ok(response) if response.is_ok() => {}
-            Ok(response) => {
-                return self.err("REMOTE_DRAIN_FAILED", remote_response_error(&response));
+            Ok(()) => {}
+            Err(err) if err.kind == NodeRpcErrorKind::Remote => {
+                return self.err("REMOTE_DRAIN_FAILED", remote_node_rpc_error(&err));
             }
             Err(err) => {
                 let record_wait = wait_for_machine_record(
@@ -479,7 +474,10 @@ impl DaemonState {
                     Err(record_err) => {
                         return self.err(
                             "REMOTE_DRAIN_FAILED",
-                            format!("{err}; observed machine record did not confirm draining: {record_err}"),
+                            format!(
+                                "{}; observed machine record did not confirm draining: {record_err}",
+                                remote_node_rpc_error(&err)
+                            ),
                         );
                     }
                 }
@@ -550,23 +548,21 @@ impl DaemonState {
             return self.ok(format!("machine '{}' already standby", machine_id));
         }
         let nats_client = match self.nats_node_rpc_client().await {
-            Ok(client) => client.with_policy(RpcPolicy {
-                timeout: MACHINE_TRANSITION_RPC_TIMEOUT,
+            Ok(client) => client.with_policy(ployz_nats::RpcPolicy {
+                timeout: MACHINE_TRANSITION_RPC_POLICY.timeout,
             }),
             Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
         };
-        let transition = nats_client
-            .request(
-                NodeCommandSubject::machine_transition_self(&record.id),
-                &NodeRequest::MachineTransitionSelf {
-                    transition: MachineSelfTransition::Standby { force },
-                },
-            )
-            .await;
+        let transition = request_remote_machine_transition(
+            &nats_client,
+            &record.id,
+            MachineSelfTransition::Standby { force },
+        )
+        .await;
         match transition {
-            Ok(response) if response.is_ok() => {}
-            Ok(response) => {
-                return self.err("REMOTE_STANDBY_FAILED", remote_response_error(&response));
+            Ok(()) => {}
+            Err(err) if err.kind == NodeRpcErrorKind::Remote => {
+                return self.err("REMOTE_STANDBY_FAILED", remote_node_rpc_error(&err));
             }
             Err(err) => {
                 let record_wait = wait_for_machine_record(
@@ -590,7 +586,10 @@ impl DaemonState {
                     Err(record_err) => {
                         return self.err(
                             "REMOTE_STANDBY_FAILED",
-                            format!("{err}; observed machine record did not confirm standby: {record_err}"),
+                            format!(
+                                "{}; observed machine record did not confirm standby: {record_err}",
+                                remote_node_rpc_error(&err)
+                            ),
                         );
                     }
                 }
@@ -608,4 +607,21 @@ impl DaemonState {
             Err(err) => self.err("MACHINE_STANDBY_SYNC_FAILED", err),
         }
     }
+}
+
+async fn request_remote_machine_transition(
+    client: &ployz_nats::NatsNodeRpcClient,
+    machine_id: &MachineId,
+    transition: MachineSelfTransition,
+) -> Result<(), NodeRpcError> {
+    MachineLifecycleNodeClient::new(NatsMachineLifecycleRpcTransport::new(client.clone()))
+        .transition_self(machine_id, transition)
+        .await
+}
+
+fn remote_node_rpc_error(error: &NodeRpcError) -> String {
+    if error.kind == NodeRpcErrorKind::Remote {
+        return format!("remote daemon error [{}]: {}", error.code, error.message);
+    }
+    error.to_string()
 }

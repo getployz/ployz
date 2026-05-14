@@ -10,12 +10,15 @@ pub use node_clients::{
     DEPLOY_VOLUME_MOVE_WAIT_TIMEOUT, DeployNodeClient, DeployRpcOperation, DeployRpcTransport,
     IMAGE_DISTRIBUTE_RPC_POLICY, IMAGE_RECEIVE_SESSION_RPC_POLICY,
     IMAGE_RECEIVED_IMPORT_RPC_POLICY, ImageNodeClient, ImageNodePayload, ImageNodeResponse,
-    ImageRpcOperation, ImageRpcTransport, MACHINE_STORAGE_RPC_POLICY, MESH_DESTRUCTIVE_RPC_POLICY,
+    ImageRpcOperation, ImageRpcTransport, MACHINE_STORAGE_RPC_POLICY,
+    MACHINE_TRANSITION_RPC_POLICY, MESH_DESTRUCTIVE_RPC_POLICY, MESH_MACHINE_REMOVE_RPC_POLICY,
+    MachineLifecycleNodeClient, MachineLifecycleRpcOperation, MachineLifecycleRpcTransport,
     MachineStorageNodeClient, MachineStorageRpcOperation, MachineStorageRpcTransport,
-    MeshNodeClient, MeshRpcOperation, MeshRpcTransport, NodeClientError, NodeClientRegistry,
-    NodeCommand, NodePeerClient, NodeRpcError, NodeRpcErrorKind, NodeRpcPolicy,
-    NodeServiceResponse, VolumeZfsNodeClient, VolumeZfsNodePayload, VolumeZfsNodeResponse,
-    VolumeZfsRpcOperation, VolumeZfsRpcTransport,
+    MachineUpdateNodeClient, MachineUpdateRpcOperation, MachineUpdateRpcTransport, MeshNodeClient,
+    MeshRpcOperation, MeshRpcTransport, NodeClientError, NodeClientRegistry, NodeCommand,
+    NodePeerClient, NodeRpcError, NodeRpcErrorKind, NodeRpcPolicy, NodeServiceResponse,
+    VolumeZfsNodeClient, VolumeZfsNodePayload, VolumeZfsNodeResponse, VolumeZfsRpcOperation,
+    VolumeZfsRpcTransport,
 };
 use ployz_supervision::{HealthRegistry, Supervisor};
 use tokio_util::sync::CancellationToken;

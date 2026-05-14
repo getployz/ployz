@@ -5,10 +5,12 @@ use ployz_api::{
 use ployz_model::{MachineEvent, MachineId, MachineLifecycle, MachineMembership, PublicKey};
 use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject};
 use ployz_node_api::NodeRequest;
+use ployz_node_runtime::MachineLifecycleNodeClient;
 use ployz_sdk::Transport;
 use ployz_store_api::{MachineMembershipStore, StoreDriver};
 use tokio::time::{Duration, Instant, sleep, timeout};
 
+use crate::daemon::node_rpc::NatsMachineLifecycleRpcTransport;
 use crate::daemon::ssh::{SshOptions, ssh_stdio_transport};
 
 use super::super::types::RemoteReadyWaitPolicy;
@@ -170,19 +172,15 @@ pub(super) async fn nats_self_record(
     }
 }
 
-pub(super) async fn nats_rpc_expect_ok(
+pub(super) async fn nats_transition_self(
     client: &NatsNodeRpcClient,
-    subject: NodeCommandSubject,
-    request: NodeRequest,
+    machine: &MachineMembership,
+    transition: MachineSelfTransition,
 ) -> Result<(), String> {
-    let response = client
-        .request(subject, &request)
+    MachineLifecycleNodeClient::new(NatsMachineLifecycleRpcTransport::new(client.clone()))
+        .transition_self(&machine.id, transition)
         .await
-        .map_err(|error| error.to_string())?;
-    if response.is_ok() {
-        return Ok(());
-    }
-    Err(remote_response_error(&response))
+        .map_err(|error| error.to_string())
 }
 
 pub(super) async fn wait_for_nats_command_responder(
@@ -256,13 +254,10 @@ pub(super) async fn log_nats_enable_rollback(
     machine: &MachineMembership,
     original_error: &str,
 ) {
-    let request = NodeRequest::MachineTransitionSelf {
-        transition: MachineSelfTransition::Standby { force: true },
-    };
-    if let Err(rollback_error) = nats_rpc_expect_ok(
+    if let Err(rollback_error) = nats_transition_self(
         client,
-        NodeCommandSubject::machine_transition_self(&machine.id),
-        request,
+        machine,
+        MachineSelfTransition::Standby { force: true },
     )
     .await
     {

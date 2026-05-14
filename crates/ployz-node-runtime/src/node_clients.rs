@@ -5,8 +5,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use ployz_model::{
     DeployId, ImageDistributeRequest, ImageReceiveSessionRequest, ImageReceivedImportRequest,
-    InstanceId, MachineId, MachineStorageAuthorityPeer, NetworkId, SlotId, StorageParticipation,
-    StorageReplicaPolicy,
+    InstanceId, MachineId, MachineSelfTransition, MachineStorageAuthorityPeer, NetworkId, SlotId,
+    StorageParticipation, StorageReplicaPolicy,
 };
 use ployz_node_api::{
     DEPLOY_CANDIDATE_STARTED_PAYLOAD_KIND, DEPLOY_NAMESPACE_SNAPSHOT_PAYLOAD_KIND,
@@ -105,7 +105,9 @@ pub const DEPLOY_VOLUME_MOVE_POLL_INTERVAL: Duration = Duration::from_secs(2);
 pub const IMAGE_RECEIVE_SESSION_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(15);
 pub const IMAGE_DISTRIBUTE_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(30 * 60);
 pub const IMAGE_RECEIVED_IMPORT_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(30 * 60);
+pub const MESH_MACHINE_REMOVE_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(120);
 pub const MESH_DESTRUCTIVE_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(120);
+pub const MACHINE_TRANSITION_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(120);
 pub const MACHINE_STORAGE_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(15);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,6 +264,177 @@ impl<P> NodeServiceResponse<P> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineLifecycleRpcOperation {
+    TransitionSelf,
+}
+
+impl MachineLifecycleRpcOperation {
+    #[must_use]
+    pub fn operation_name(self) -> &'static str {
+        match self {
+            Self::TransitionSelf => "machine_transition_self",
+        }
+    }
+}
+
+#[async_trait]
+pub trait MachineLifecycleRpcTransport: Clone + Send + Sync {
+    fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self;
+
+    async fn machine_lifecycle_request(
+        &self,
+        machine_id: &MachineId,
+        operation: MachineLifecycleRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError>;
+}
+
+#[derive(Clone)]
+pub struct MachineLifecycleNodeClient<T> {
+    transport: T,
+}
+
+impl<T> MachineLifecycleNodeClient<T>
+where
+    T: MachineLifecycleRpcTransport,
+{
+    #[must_use]
+    pub fn new(transport: T) -> Self {
+        Self { transport }
+    }
+
+    #[must_use]
+    pub fn with_policy(&self, policy: NodeRpcPolicy) -> Self {
+        Self {
+            transport: self.transport.with_node_rpc_policy(policy),
+        }
+    }
+
+    pub async fn transition_self(
+        &self,
+        machine_id: &MachineId,
+        transition: MachineSelfTransition,
+    ) -> Result<(), NodeRpcError> {
+        self.request_expect_ok(
+            machine_id,
+            MachineLifecycleRpcOperation::TransitionSelf,
+            &NodeRequest::MachineTransitionSelf { transition },
+        )
+        .await
+    }
+
+    async fn request_expect_ok(
+        &self,
+        machine_id: &MachineId,
+        operation: MachineLifecycleRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<(), NodeRpcError> {
+        let response = self
+            .transport
+            .machine_lifecycle_request(machine_id, operation, request)
+            .await?;
+        ensure_success(operation.operation_name(), &response)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineUpdateRpcOperation {
+    PrepareUpdate,
+    ExecuteUpdate,
+}
+
+impl MachineUpdateRpcOperation {
+    #[must_use]
+    pub fn operation_name(self) -> &'static str {
+        match self {
+            Self::PrepareUpdate => "machine_update_prepare",
+            Self::ExecuteUpdate => "machine_update_execute",
+        }
+    }
+}
+
+#[async_trait]
+pub trait MachineUpdateRpcTransport: Clone + Send + Sync {
+    fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self;
+
+    async fn machine_update_request(
+        &self,
+        machine_id: &MachineId,
+        operation: MachineUpdateRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError>;
+}
+
+#[derive(Clone)]
+pub struct MachineUpdateNodeClient<T> {
+    transport: T,
+}
+
+impl<T> MachineUpdateNodeClient<T>
+where
+    T: MachineUpdateRpcTransport,
+{
+    #[must_use]
+    pub fn new(transport: T) -> Self {
+        Self { transport }
+    }
+
+    #[must_use]
+    pub fn with_policy(&self, policy: NodeRpcPolicy) -> Self {
+        Self {
+            transport: self.transport.with_node_rpc_policy(policy),
+        }
+    }
+
+    pub async fn prepare_update(
+        &self,
+        machine_id: &MachineId,
+        operation_id: &str,
+        version: &str,
+    ) -> Result<(), NodeRpcError> {
+        self.request_expect_ok(
+            machine_id,
+            MachineUpdateRpcOperation::PrepareUpdate,
+            &NodeRequest::MeshPeerPrepareUpdate {
+                operation_id: operation_id.to_string(),
+                version: version.to_string(),
+            },
+        )
+        .await
+    }
+
+    pub async fn execute_update(
+        &self,
+        machine_id: &MachineId,
+        operation_id: &str,
+        version: &str,
+    ) -> Result<(), NodeRpcError> {
+        self.request_expect_ok(
+            machine_id,
+            MachineUpdateRpcOperation::ExecuteUpdate,
+            &NodeRequest::MeshPeerExecuteUpdate {
+                operation_id: operation_id.to_string(),
+                version: version.to_string(),
+            },
+        )
+        .await
+    }
+
+    async fn request_expect_ok(
+        &self,
+        machine_id: &MachineId,
+        operation: MachineUpdateRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<(), NodeRpcError> {
+        let response = self
+            .transport
+            .machine_update_request(machine_id, operation, request)
+            .await?;
+        ensure_success(operation.operation_name(), &response)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MachineStorageRpcOperation {
     StoragePromoteSelf,
     StorageRestoreSelf,
@@ -365,6 +538,7 @@ pub enum MeshRpcOperation {
     PrepareDestroy,
     CancelDestroy,
     ExecuteDestroy,
+    RemoveMachine,
 }
 
 impl MeshRpcOperation {
@@ -374,6 +548,7 @@ impl MeshRpcOperation {
             Self::PrepareDestroy => "mesh_peer_prepare_destroy",
             Self::CancelDestroy => "mesh_peer_cancel_destroy",
             Self::ExecuteDestroy => "mesh_peer_execute_destroy",
+            Self::RemoveMachine => "mesh_peer_remove_machine",
         }
     }
 }
@@ -459,6 +634,25 @@ where
             &NodeRequest::MeshPeerExecuteDestroy {
                 operation_id: operation_id.to_string(),
                 network_id: network_id.clone(),
+            },
+        )
+        .await
+    }
+
+    pub async fn remove_machine(
+        &self,
+        machine_id: &MachineId,
+        operation_id: &str,
+        network_id: &NetworkId,
+        removed_machine_id: &MachineId,
+    ) -> Result<(), NodeRpcError> {
+        self.request_expect_ok(
+            machine_id,
+            MeshRpcOperation::RemoveMachine,
+            &NodeRequest::MeshPeerRemoveMachine {
+                operation_id: operation_id.to_string(),
+                network_id: network_id.clone(),
+                machine_id: removed_machine_id.clone(),
             },
         )
         .await
@@ -1201,6 +1395,247 @@ where
 }
 
 #[cfg(test)]
+mod machine_lifecycle_tests {
+    use std::collections::VecDeque;
+
+    use ployz_model::MachineSelfTransition;
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct FakeMachineLifecycleTransport {
+        responses: Arc<Mutex<VecDeque<Result<NodeResponse, NodeRpcError>>>>,
+        requests: Arc<Mutex<Vec<(MachineId, MachineLifecycleRpcOperation, NodeRequest)>>>,
+        policies: Arc<Mutex<Vec<NodeRpcPolicy>>>,
+    }
+
+    impl FakeMachineLifecycleTransport {
+        fn with_responses(responses: Vec<Result<NodeResponse, NodeRpcError>>) -> Self {
+            Self {
+                responses: Arc::new(Mutex::new(responses.into())),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                policies: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl MachineLifecycleRpcTransport for FakeMachineLifecycleTransport {
+        fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self {
+            self.policies.lock().expect("policies").push(policy);
+            self.clone()
+        }
+
+        async fn machine_lifecycle_request(
+            &self,
+            machine_id: &MachineId,
+            operation: MachineLifecycleRpcOperation,
+            request: &NodeRequest,
+        ) -> Result<NodeResponse, NodeRpcError> {
+            self.requests.lock().expect("requests").push((
+                machine_id.clone(),
+                operation,
+                request.clone(),
+            ));
+            self.responses
+                .lock()
+                .expect("responses")
+                .pop_front()
+                .unwrap_or_else(|| Ok(NodeResponse::success("ok", None)))
+        }
+    }
+
+    #[tokio::test]
+    async fn machine_lifecycle_node_client_builds_transition_request_and_applies_policy() {
+        let transport = FakeMachineLifecycleTransport::default();
+        let client =
+            MachineLifecycleNodeClient::new(transport.clone()).with_policy(NodeRpcPolicy {
+                timeout: Duration::from_secs(11),
+            });
+        let machine_id = MachineId::new("machine-a");
+
+        client
+            .transition_self(&machine_id, MachineSelfTransition::Drain)
+            .await
+            .expect("transition self");
+
+        let requests = transport.requests.lock().expect("requests");
+        let [transition] = requests.as_slice() else {
+            panic!("expected one request");
+        };
+        assert_eq!(transition.0, machine_id);
+        assert_eq!(transition.1, MachineLifecycleRpcOperation::TransitionSelf);
+        assert!(matches!(
+            &transition.2,
+            NodeRequest::MachineTransitionSelf {
+                transition: MachineSelfTransition::Drain,
+            }
+        ));
+        assert_eq!(
+            transport.policies.lock().expect("policies").as_slice(),
+            &[NodeRpcPolicy {
+                timeout: Duration::from_secs(11)
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn machine_lifecycle_node_client_preserves_remote_error_and_transport_error() {
+        let machine_id = MachineId::new("machine-a");
+
+        let transport = FakeMachineLifecycleTransport::with_responses(vec![Ok(
+            NodeResponse::error("REMOTE_REFUSED", "peer refused", None),
+        )]);
+        let error = MachineLifecycleNodeClient::new(transport)
+            .transition_self(&machine_id, MachineSelfTransition::Drain)
+            .await
+            .expect_err("remote response should fail");
+        assert_eq!(error.kind, NodeRpcErrorKind::Remote);
+        assert_eq!(error.operation, "machine_transition_self");
+        assert_eq!(error.code, "REMOTE_REFUSED");
+        assert_eq!(error.message, "peer refused");
+
+        let transport = FakeMachineLifecycleTransport::with_responses(vec![Err(
+            NodeRpcError::transport("machine_transition_self", "NATS_RPC_TIMEOUT", "timed out"),
+        )]);
+        let error = MachineLifecycleNodeClient::new(transport)
+            .transition_self(&machine_id, MachineSelfTransition::Drain)
+            .await
+            .expect_err("transport error should fail");
+        assert_eq!(error.kind, NodeRpcErrorKind::Transport);
+        assert_eq!(error.operation, "machine_transition_self");
+        assert_eq!(error.code, "NATS_RPC_TIMEOUT");
+    }
+}
+
+#[cfg(test)]
+mod machine_update_tests {
+    use std::collections::VecDeque;
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct FakeMachineUpdateTransport {
+        responses: Arc<Mutex<VecDeque<Result<NodeResponse, NodeRpcError>>>>,
+        requests: Arc<Mutex<Vec<(MachineId, MachineUpdateRpcOperation, NodeRequest)>>>,
+        policies: Arc<Mutex<Vec<NodeRpcPolicy>>>,
+    }
+
+    impl FakeMachineUpdateTransport {
+        fn with_responses(responses: Vec<Result<NodeResponse, NodeRpcError>>) -> Self {
+            Self {
+                responses: Arc::new(Mutex::new(responses.into())),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                policies: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl MachineUpdateRpcTransport for FakeMachineUpdateTransport {
+        fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self {
+            self.policies.lock().expect("policies").push(policy);
+            self.clone()
+        }
+
+        async fn machine_update_request(
+            &self,
+            machine_id: &MachineId,
+            operation: MachineUpdateRpcOperation,
+            request: &NodeRequest,
+        ) -> Result<NodeResponse, NodeRpcError> {
+            self.requests.lock().expect("requests").push((
+                machine_id.clone(),
+                operation,
+                request.clone(),
+            ));
+            self.responses
+                .lock()
+                .expect("responses")
+                .pop_front()
+                .unwrap_or_else(|| Ok(NodeResponse::success("ok", None)))
+        }
+    }
+
+    #[tokio::test]
+    async fn machine_update_node_client_builds_update_requests_and_applies_policy() {
+        let transport = FakeMachineUpdateTransport::default();
+        let client = MachineUpdateNodeClient::new(transport.clone()).with_policy(NodeRpcPolicy {
+            timeout: Duration::from_secs(11),
+        });
+        let machine_id = MachineId::new("machine-a");
+
+        client
+            .prepare_update(&machine_id, "operation-1", "v1.2.3")
+            .await
+            .expect("prepare update");
+        client
+            .execute_update(&machine_id, "operation-1", "v1.2.3")
+            .await
+            .expect("execute update");
+
+        let requests = transport.requests.lock().expect("requests");
+        let [prepare, execute] = requests.as_slice() else {
+            panic!("expected two requests");
+        };
+        assert_eq!(prepare.0, machine_id);
+        assert_eq!(prepare.1, MachineUpdateRpcOperation::PrepareUpdate);
+        assert!(matches!(
+            &prepare.2,
+            NodeRequest::MeshPeerPrepareUpdate {
+                operation_id,
+                version,
+            } if operation_id == "operation-1" && version == "v1.2.3"
+        ));
+        assert_eq!(execute.0, machine_id);
+        assert_eq!(execute.1, MachineUpdateRpcOperation::ExecuteUpdate);
+        assert!(matches!(
+            &execute.2,
+            NodeRequest::MeshPeerExecuteUpdate {
+                operation_id,
+                version,
+            } if operation_id == "operation-1" && version == "v1.2.3"
+        ));
+        assert_eq!(
+            transport.policies.lock().expect("policies").as_slice(),
+            &[NodeRpcPolicy {
+                timeout: Duration::from_secs(11)
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn machine_update_node_client_preserves_remote_error_and_transport_error() {
+        let machine_id = MachineId::new("machine-a");
+
+        let transport = FakeMachineUpdateTransport::with_responses(vec![Ok(NodeResponse::error(
+            "REMOTE_REFUSED",
+            "peer refused",
+            None,
+        ))]);
+        let error = MachineUpdateNodeClient::new(transport)
+            .prepare_update(&machine_id, "operation-1", "v1.2.3")
+            .await
+            .expect_err("remote response should fail");
+        assert_eq!(error.kind, NodeRpcErrorKind::Remote);
+        assert_eq!(error.operation, "machine_update_prepare");
+        assert_eq!(error.code, "REMOTE_REFUSED");
+        assert_eq!(error.message, "peer refused");
+
+        let transport = FakeMachineUpdateTransport::with_responses(vec![Err(
+            NodeRpcError::transport("machine_update_execute", "NATS_RPC_TIMEOUT", "timed out"),
+        )]);
+        let error = MachineUpdateNodeClient::new(transport)
+            .execute_update(&machine_id, "operation-1", "v1.2.3")
+            .await
+            .expect_err("transport error should fail");
+        assert_eq!(error.kind, NodeRpcErrorKind::Transport);
+        assert_eq!(error.operation, "machine_update_execute");
+        assert_eq!(error.code, "NATS_RPC_TIMEOUT");
+    }
+}
+
+#[cfg(test)]
 mod machine_tests {
     use std::collections::VecDeque;
 
@@ -1261,7 +1696,7 @@ mod machine_tests {
             timeout: Duration::from_secs(9),
         });
         let machine_id = MachineId::new("machine-a");
-        let peers = vec![machine_record("machine-a"), machine_record("machine-b")];
+        let peers = [machine_record("machine-a"), machine_record("machine-b")];
         let peer_payloads = peers
             .iter()
             .map(MachineStorageAuthorityPeer::from)
@@ -1448,7 +1883,7 @@ mod mesh_tests {
     }
 
     #[tokio::test]
-    async fn mesh_node_client_builds_destroy_requests_and_applies_policy() {
+    async fn mesh_node_client_builds_mesh_membership_requests_and_applies_policy() {
         let transport = FakeMeshTransport::default();
         let client = MeshNodeClient::new(transport.clone()).with_policy(NodeRpcPolicy {
             timeout: Duration::from_secs(7),
@@ -1457,6 +1892,7 @@ mod mesh_tests {
         let network_id = NetworkId::new("network-a");
         let coordinator_id = MachineId::new("coordinator-a");
         let expected_machine_ids = vec![MachineId::new("machine-a"), MachineId::new("machine-b")];
+        let removed_machine_id = MachineId::new("machine-b");
 
         client
             .prepare_destroy(
@@ -1476,10 +1912,14 @@ mod mesh_tests {
             .execute_destroy(&machine_id, "destroy-1", &network_id)
             .await
             .expect("execute destroy");
+        client
+            .remove_machine(&machine_id, "remove-1", &network_id, &removed_machine_id)
+            .await
+            .expect("remove machine");
 
         let requests = transport.requests.lock().expect("requests");
-        let [prepare, cancel, execute] = requests.as_slice() else {
-            panic!("expected three requests");
+        let [prepare, cancel, execute, remove] = requests.as_slice() else {
+            panic!("expected four requests");
         };
         assert_eq!(prepare.0, machine_id);
         assert_eq!(prepare.1, MeshRpcOperation::PrepareDestroy);
@@ -1509,6 +1949,18 @@ mod mesh_tests {
                 operation_id,
                 network_id: request_network_id,
             } if operation_id == "destroy-1" && request_network_id == &network_id
+        ));
+        assert_eq!(remove.0, machine_id);
+        assert_eq!(remove.1, MeshRpcOperation::RemoveMachine);
+        assert!(matches!(
+            &remove.2,
+            NodeRequest::MeshPeerRemoveMachine {
+                operation_id,
+                network_id: request_network_id,
+                machine_id: request_machine_id,
+            } if operation_id == "remove-1"
+                && request_network_id == &network_id
+                && request_machine_id == &removed_machine_id
         ));
         assert_eq!(
             transport.policies.lock().expect("policies").as_slice(),
@@ -1555,6 +2007,20 @@ mod mesh_tests {
         assert_eq!(error.kind, NodeRpcErrorKind::Transport);
         assert_eq!(error.operation, "mesh_peer_prepare_destroy");
         assert_eq!(error.code, "NATS_RPC_TIMEOUT");
+
+        let transport = FakeMeshTransport::with_responses(vec![Ok(NodeResponse::error(
+            "REMOTE_REMOVE_REFUSED",
+            "remove refused",
+            None,
+        ))]);
+        let error = MeshNodeClient::new(transport)
+            .remove_machine(&machine_id, "remove-1", &network_id, &machine_id)
+            .await
+            .expect_err("remote remove response should fail");
+        assert_eq!(error.kind, NodeRpcErrorKind::Remote);
+        assert_eq!(error.operation, "mesh_peer_remove_machine");
+        assert_eq!(error.code, "REMOTE_REMOVE_REFUSED");
+        assert_eq!(error.message, "remove refused");
     }
 }
 
