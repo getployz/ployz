@@ -1,14 +1,13 @@
 use ployz_api::{
     DaemonPayload, DaemonResponse, MachineStorageAuthorityPeer, MachineStoragePromoteRequest,
     MachineStoragePromotionFailure, MachineStoragePromotionFailureCause,
-    MachineStoragePromotionPayload, StatusPayload,
+    MachineStoragePromotionPayload,
 };
 use ployz_model::{
     AuthorityId, MachineId, MachineLifecycle, MachineMembership, MachineStorageRole,
     StorageParticipation, StorageReplicaPolicy,
 };
-use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
-use ployz_node_api::NodeRequest;
+use ployz_node_runtime::{MACHINE_STORAGE_RPC_POLICY, MachineStorageNodeClient};
 use ployz_store_api::MachineMembershipStore;
 use std::collections::BTreeSet;
 use tokio::sync::oneshot;
@@ -19,6 +18,7 @@ use crate::mesh_state::bootstrap::{
 use crate::mesh_state::network::NetworkConfig;
 
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
+use crate::daemon::node_rpc::NatsMachineStorageRpcTransport;
 use crate::daemon::{DaemonState, RuntimeRestartMode};
 
 mod promotion;
@@ -237,7 +237,10 @@ impl DaemonState {
             });
         }
 
-        let previous_authority_peers = authorities.clone();
+        let previous_authority_peers = authorities
+            .iter()
+            .map(MachineStorageAuthorityPeer::from)
+            .collect::<Vec<_>>();
         let previous_remote_replicas = self
             .active
             .as_ref()
@@ -248,6 +251,10 @@ impl DaemonState {
             target.storage_role = MachineStorageRole::default_authority();
             target
         }));
+        let authority_peer_payloads = authority_peers
+            .iter()
+            .map(MachineStorageAuthorityPeer::from)
+            .collect::<Vec<_>>();
 
         let mut promoted = Vec::new();
         let mut remote_rollbacks = Vec::new();
@@ -316,13 +323,16 @@ impl DaemonState {
                 .machine_operation_store()
                 .update_stage(operation, "preflighting-authority-members");
             let client = match self.nats_node_rpc_client().await {
-                Ok(client) => client.with_policy(RpcPolicy::default()),
+                Ok(client) => client,
                 Err(error) => {
                     return Err(StoragePromotionError::RpcUnavailable {
                         error: error.to_string(),
                     });
                 }
             };
+            let machine_client =
+                MachineStorageNodeClient::new(NatsMachineStorageRpcTransport::new(client.clone()))
+                    .with_policy(MACHINE_STORAGE_RPC_POLICY);
 
             let remote_authorities = authority_peers
                 .iter()
@@ -378,9 +388,13 @@ impl DaemonState {
                 .machine_operation_store()
                 .update_stage(operation, "promoting-authority-members");
             for target in remote_authorities {
-                if let Err(error) =
-                    promote_remote_storage(&client, target, request.replicas, &authority_peers)
-                        .await
+                if let Err(error) = promote_remote_storage(
+                    &machine_client,
+                    target,
+                    request.replicas,
+                    &authority_peer_payloads,
+                )
+                .await
                 {
                     failed.push(MachineStoragePromotionFailure {
                         machine_id: target.id.as_str().to_string(),
@@ -401,7 +415,7 @@ impl DaemonState {
             }
             if !failed.is_empty() {
                 let rollback_failed =
-                    rollback_remote_storage_promotions(&client, &remote_rollbacks).await;
+                    rollback_remote_storage_promotions(&machine_client, &remote_rollbacks).await;
                 if rollback_failed.is_empty() {
                     promoted.clear();
                 } else {
@@ -627,7 +641,7 @@ impl DaemonState {
         &mut self,
         participation: StorageParticipation,
         replicas: StorageReplicaPolicy,
-        authority_peers: &[MachineMembership],
+        authority_peers: &[MachineStorageAuthorityPeer],
     ) -> DaemonResponse {
         let (network_name, config_path, network_dir) = {
             let Some(active) = self.active.as_ref() else {
@@ -662,7 +676,7 @@ impl DaemonState {
 
         let peer_records = authority_peers
             .iter()
-            .map(BootstrapPeerRecord::from_machine_record)
+            .map(BootstrapPeerRecord::from)
             .collect::<Vec<_>>();
         if let Err(error) = write_bootstrap_peer_records(&network_dir, &peer_records) {
             return self.err("IO_ERROR", format!("write bootstrap peers: {error}"));

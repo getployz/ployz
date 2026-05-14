@@ -5,7 +5,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use ployz_model::{
     DeployId, ImageDistributeRequest, ImageReceiveSessionRequest, ImageReceivedImportRequest,
-    InstanceId, MachineId, NetworkId, SlotId,
+    InstanceId, MachineId, MachineStorageAuthorityPeer, NetworkId, SlotId, StorageParticipation,
+    StorageReplicaPolicy,
 };
 use ployz_node_api::{
     DEPLOY_CANDIDATE_STARTED_PAYLOAD_KIND, DEPLOY_NAMESPACE_SNAPSHOT_PAYLOAD_KIND,
@@ -105,6 +106,7 @@ pub const IMAGE_RECEIVE_SESSION_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_
 pub const IMAGE_DISTRIBUTE_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(30 * 60);
 pub const IMAGE_RECEIVED_IMPORT_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(30 * 60);
 pub const MESH_DESTRUCTIVE_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(120);
+pub const MACHINE_STORAGE_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(15);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeRpcErrorKind {
@@ -256,6 +258,105 @@ impl<P> NodeServiceResponse<P> {
     #[must_use]
     pub fn into_payload(self) -> Option<P> {
         self.payload
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineStorageRpcOperation {
+    StoragePromoteSelf,
+    StorageRestoreSelf,
+}
+
+impl MachineStorageRpcOperation {
+    #[must_use]
+    pub fn operation_name(self) -> &'static str {
+        match self {
+            Self::StoragePromoteSelf => "machine_storage_promote_self",
+            Self::StorageRestoreSelf => "machine_storage_restore_self",
+        }
+    }
+}
+
+#[async_trait]
+pub trait MachineStorageRpcTransport: Clone + Send + Sync {
+    fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self;
+
+    async fn machine_request(
+        &self,
+        machine_id: &MachineId,
+        operation: MachineStorageRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError>;
+}
+
+#[derive(Clone)]
+pub struct MachineStorageNodeClient<T> {
+    transport: T,
+}
+
+impl<T> MachineStorageNodeClient<T>
+where
+    T: MachineStorageRpcTransport,
+{
+    #[must_use]
+    pub fn new(transport: T) -> Self {
+        Self { transport }
+    }
+
+    #[must_use]
+    pub fn with_policy(&self, policy: NodeRpcPolicy) -> Self {
+        Self {
+            transport: self.transport.with_node_rpc_policy(policy),
+        }
+    }
+
+    pub async fn promote_storage_self(
+        &self,
+        machine_id: &MachineId,
+        replicas: StorageReplicaPolicy,
+        authority_peers: &[MachineStorageAuthorityPeer],
+    ) -> Result<(), NodeRpcError> {
+        self.request_expect_ok(
+            machine_id,
+            MachineStorageRpcOperation::StoragePromoteSelf,
+            &NodeRequest::MachineStoragePromoteSelf {
+                replicas,
+                authority_peers: authority_peers.to_vec(),
+            },
+        )
+        .await
+    }
+
+    pub async fn restore_storage_self(
+        &self,
+        machine_id: &MachineId,
+        participation: &StorageParticipation,
+        replicas: StorageReplicaPolicy,
+        authority_peers: &[MachineStorageAuthorityPeer],
+    ) -> Result<(), NodeRpcError> {
+        self.request_expect_ok(
+            machine_id,
+            MachineStorageRpcOperation::StorageRestoreSelf,
+            &NodeRequest::MachineStorageRestoreSelf {
+                participation: participation.clone(),
+                replicas,
+                authority_peers: authority_peers.to_vec(),
+            },
+        )
+        .await
+    }
+
+    async fn request_expect_ok(
+        &self,
+        machine_id: &MachineId,
+        operation: MachineStorageRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<(), NodeRpcError> {
+        let response = self
+            .transport
+            .machine_request(machine_id, operation, request)
+            .await?;
+        ensure_success(operation.operation_name(), &response)
     }
 }
 
@@ -1097,6 +1198,204 @@ where
     }
     serde_json::from_value(payload.clone())
         .map_err(|error| NodeRpcError::decode(operation_name, expected_kind, error.to_string()))
+}
+
+#[cfg(test)]
+mod machine_tests {
+    use std::collections::VecDeque;
+
+    use ployz_model::{
+        MachineLifecycle, MachineMembership, MachineStorageRole, MachineTopology, OverlayIp,
+        PublicKey, RegionRole,
+    };
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct FakeMachineTransport {
+        responses: Arc<Mutex<VecDeque<Result<NodeResponse, NodeRpcError>>>>,
+        requests: Arc<Mutex<Vec<(MachineId, MachineStorageRpcOperation, NodeRequest)>>>,
+        policies: Arc<Mutex<Vec<NodeRpcPolicy>>>,
+    }
+
+    impl FakeMachineTransport {
+        fn with_responses(responses: Vec<Result<NodeResponse, NodeRpcError>>) -> Self {
+            Self {
+                responses: Arc::new(Mutex::new(responses.into())),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                policies: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl MachineStorageRpcTransport for FakeMachineTransport {
+        fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self {
+            self.policies.lock().expect("policies").push(policy);
+            self.clone()
+        }
+
+        async fn machine_request(
+            &self,
+            machine_id: &MachineId,
+            operation: MachineStorageRpcOperation,
+            request: &NodeRequest,
+        ) -> Result<NodeResponse, NodeRpcError> {
+            self.requests.lock().expect("requests").push((
+                machine_id.clone(),
+                operation,
+                request.clone(),
+            ));
+            self.responses
+                .lock()
+                .expect("responses")
+                .pop_front()
+                .unwrap_or_else(|| Ok(NodeResponse::success("ok", None)))
+        }
+    }
+
+    #[tokio::test]
+    async fn machine_storage_node_client_builds_storage_requests_and_applies_policy() {
+        let transport = FakeMachineTransport::default();
+        let client = MachineStorageNodeClient::new(transport.clone()).with_policy(NodeRpcPolicy {
+            timeout: Duration::from_secs(9),
+        });
+        let machine_id = MachineId::new("machine-a");
+        let peers = vec![machine_record("machine-a"), machine_record("machine-b")];
+        let peer_payloads = peers
+            .iter()
+            .map(MachineStorageAuthorityPeer::from)
+            .collect::<Vec<_>>();
+
+        client
+            .promote_storage_self(&machine_id, StorageReplicaPolicy::R3, &peer_payloads)
+            .await
+            .expect("promote storage self");
+        client
+            .restore_storage_self(
+                &machine_id,
+                &StorageParticipation::Candidate,
+                StorageReplicaPolicy::R3,
+                &peer_payloads,
+            )
+            .await
+            .expect("restore storage self");
+
+        let requests = transport.requests.lock().expect("requests");
+        let [promote, restore] = requests.as_slice() else {
+            panic!("expected two requests");
+        };
+        assert_eq!(promote.0, machine_id);
+        assert_eq!(promote.1, MachineStorageRpcOperation::StoragePromoteSelf);
+        assert!(matches!(
+            &promote.2,
+            NodeRequest::MachineStoragePromoteSelf {
+                replicas,
+                authority_peers,
+            } if replicas == &StorageReplicaPolicy::R3
+                && authority_peers == &peer_payloads
+        ));
+        assert_eq!(restore.0, machine_id);
+        assert_eq!(restore.1, MachineStorageRpcOperation::StorageRestoreSelf);
+        assert!(matches!(
+            &restore.2,
+            NodeRequest::MachineStorageRestoreSelf {
+                participation,
+                replicas,
+                authority_peers,
+            } if participation == &StorageParticipation::Candidate
+                && replicas == &StorageReplicaPolicy::R3
+                && authority_peers == &peer_payloads
+        ));
+        assert_eq!(
+            transport.policies.lock().expect("policies").as_slice(),
+            &[NodeRpcPolicy {
+                timeout: Duration::from_secs(9)
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn machine_storage_node_client_preserves_remote_error_and_transport_error() {
+        let machine_id = MachineId::new("machine-a");
+        let peers = [machine_record("machine-a")];
+        let peer_payloads = peers
+            .iter()
+            .map(MachineStorageAuthorityPeer::from)
+            .collect::<Vec<_>>();
+
+        let transport = FakeMachineTransport::with_responses(vec![Ok(NodeResponse::error(
+            "REMOTE_REFUSED",
+            "peer refused",
+            None,
+        ))]);
+        let error = MachineStorageNodeClient::new(transport)
+            .promote_storage_self(&machine_id, StorageReplicaPolicy::R3, &peer_payloads)
+            .await
+            .expect_err("remote response should fail");
+        assert_eq!(error.kind, NodeRpcErrorKind::Remote);
+        assert_eq!(error.operation, "machine_storage_promote_self");
+        assert_eq!(error.code, "REMOTE_REFUSED");
+        assert_eq!(error.message, "peer refused");
+
+        let transport = FakeMachineTransport::with_responses(vec![Ok(NodeResponse::error(
+            "REMOTE_RESTORE_REFUSED",
+            "restore refused",
+            None,
+        ))]);
+        let error = MachineStorageNodeClient::new(transport)
+            .restore_storage_self(
+                &machine_id,
+                &StorageParticipation::Candidate,
+                StorageReplicaPolicy::R3,
+                &peer_payloads,
+            )
+            .await
+            .expect_err("remote restore response should fail");
+        assert_eq!(error.kind, NodeRpcErrorKind::Remote);
+        assert_eq!(error.operation, "machine_storage_restore_self");
+        assert_eq!(error.code, "REMOTE_RESTORE_REFUSED");
+        assert_eq!(error.message, "restore refused");
+
+        let transport = FakeMachineTransport::with_responses(vec![Err(NodeRpcError::transport(
+            "machine_storage_restore_self",
+            "NATS_RPC_TIMEOUT",
+            "timed out",
+        ))]);
+        let error = MachineStorageNodeClient::new(transport)
+            .restore_storage_self(
+                &machine_id,
+                &StorageParticipation::Candidate,
+                StorageReplicaPolicy::R3,
+                &peer_payloads,
+            )
+            .await
+            .expect_err("transport error should fail");
+        assert_eq!(error.kind, NodeRpcErrorKind::Transport);
+        assert_eq!(error.operation, "machine_storage_restore_self");
+        assert_eq!(error.code, "NATS_RPC_TIMEOUT");
+    }
+
+    fn machine_record(id: &str) -> MachineMembership {
+        MachineMembership {
+            id: MachineId::new(id),
+            public_key: PublicKey([id.len() as u8; 32]),
+            overlay_ip: format!("fd00::{id_len:x}", id_len = id.len())
+                .parse()
+                .map(OverlayIp)
+                .expect("valid overlay"),
+            topology: MachineTopology::local(),
+            region_role: RegionRole::HomeData,
+            subnet: Some("10.42.0.0/24".parse().expect("valid subnet")),
+            bridge_ip: None,
+            endpoints: vec!["127.0.0.1:51820".into()],
+            lifecycle: MachineLifecycle::Active,
+            storage_role: MachineStorageRole::default_authority(),
+            created_at: 0,
+            updated_at: 0,
+            labels: std::collections::BTreeMap::new(),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1575,7 +1575,7 @@ async fn machine_storage_restore_self_restores_config_bootstrap_peers_and_self_r
         .handle_machine_storage_restore_self(
             StorageParticipation::Candidate,
             StorageReplicaPolicy::Single,
-            &[founder],
+            &[MachineStorageAuthorityPeer::from(&founder)],
         )
         .await;
 

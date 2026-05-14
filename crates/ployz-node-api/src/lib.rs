@@ -6,8 +6,8 @@ use ployz_model::{
     ImageDistributeValidationFailure, ImageDistributeValidationPayload, ImagePlatform,
     ImageReceiveSessionPayload, ImageReceiveSessionRequest, ImageReceivedImportPayload,
     ImageReceivedImportRequest, ImageTransferTargetResult, InstanceStatusRecord, MachineId,
-    MachineMembership, MachineSelfTransition, MachineStorageAuthorityPeer, NetworkId,
-    StorageParticipation, StorageReplicaPolicy,
+    MachineSelfTransition, MachineStorageAuthorityPeer, NetworkId, StorageParticipation,
+    StorageReplicaPolicy,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -366,7 +366,7 @@ pub enum NodeRequest {
     MachineStorageRestoreSelf {
         participation: StorageParticipation,
         replicas: StorageReplicaPolicy,
-        authority_peers: Vec<MachineMembership>,
+        authority_peers: Vec<MachineStorageAuthorityPeer>,
     },
     MachineOperationGet {
         id: String,

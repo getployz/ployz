@@ -6,8 +6,8 @@ use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcFailure, RpcPolicy};
 use ployz_node_api::{NodeRequest, NodeResponse};
 use ployz_node_runtime::{
     DeployRpcOperation, DeployRpcTransport, ImageNodeClient, ImageNodeResponse, ImageRpcOperation,
-    ImageRpcTransport, MeshRpcOperation, MeshRpcTransport, NodeRpcError, NodeRpcPolicy,
-    VolumeZfsRpcOperation, VolumeZfsRpcTransport,
+    ImageRpcTransport, MachineStorageRpcOperation, MachineStorageRpcTransport, MeshRpcOperation,
+    MeshRpcTransport, NodeRpcError, NodeRpcPolicy, VolumeZfsRpcOperation, VolumeZfsRpcTransport,
 };
 
 use super::DaemonState;
@@ -132,6 +132,41 @@ impl DaemonState {
 }
 
 #[derive(Clone)]
+pub(crate) struct NatsMachineStorageRpcTransport {
+    client: NatsNodeRpcClient,
+}
+
+impl NatsMachineStorageRpcTransport {
+    #[must_use]
+    pub(crate) fn new(client: NatsNodeRpcClient) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl MachineStorageRpcTransport for NatsMachineStorageRpcTransport {
+    fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self {
+        Self {
+            client: self.client.clone().with_policy(RpcPolicy {
+                timeout: policy.timeout,
+            }),
+        }
+    }
+
+    async fn machine_request(
+        &self,
+        machine_id: &MachineId,
+        operation: MachineStorageRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError> {
+        self.client
+            .request_node_response(machine_storage_subject(machine_id, operation), request)
+            .await
+            .map_err(|error| machine_storage_node_rpc_error(operation, error))
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct NatsMeshRpcTransport {
     client: NatsNodeRpcClient,
 }
@@ -227,6 +262,20 @@ fn image_subject(machine_id: &MachineId, operation: ImageRpcOperation) -> NodeCo
     }
 }
 
+fn machine_storage_subject(
+    machine_id: &MachineId,
+    operation: MachineStorageRpcOperation,
+) -> NodeCommandSubject {
+    match operation {
+        MachineStorageRpcOperation::StoragePromoteSelf => {
+            NodeCommandSubject::machine_storage_promote_self(machine_id)
+        }
+        MachineStorageRpcOperation::StorageRestoreSelf => {
+            NodeCommandSubject::machine_storage_restore_self(machine_id)
+        }
+    }
+}
+
 fn mesh_subject(machine_id: &MachineId, operation: MeshRpcOperation) -> NodeCommandSubject {
     match operation {
         MeshRpcOperation::PrepareDestroy => NodeCommandSubject::mesh_prepare_destroy(machine_id),
@@ -262,6 +311,13 @@ fn deploy_node_rpc_error(operation: DeployRpcOperation, error: RpcFailure) -> No
 }
 
 fn image_node_rpc_error(operation: ImageRpcOperation, error: RpcFailure) -> NodeRpcError {
+    NodeRpcError::new(operation.operation_name(), error.code(), error.message)
+}
+
+fn machine_storage_node_rpc_error(
+    operation: MachineStorageRpcOperation,
+    error: RpcFailure,
+) -> NodeRpcError {
     NodeRpcError::new(operation.operation_name(), error.code(), error.message)
 }
 
@@ -354,6 +410,35 @@ mod tests {
         ] {
             assert_eq!(mesh_subject(&machine_id, operation), expected);
         }
+    }
+
+    #[test]
+    fn machine_storage_operation_maps_to_expected_nats_subject_constructor() {
+        let machine_id = MachineId::new("machine-a");
+
+        for (operation, expected) in [
+            (
+                MachineStorageRpcOperation::StoragePromoteSelf,
+                NodeCommandSubject::machine_storage_promote_self(&machine_id),
+            ),
+            (
+                MachineStorageRpcOperation::StorageRestoreSelf,
+                NodeCommandSubject::machine_storage_restore_self(&machine_id),
+            ),
+        ] {
+            assert_eq!(machine_storage_subject(&machine_id, operation), expected);
+        }
+    }
+
+    #[test]
+    fn machine_storage_rpc_transport_error_maps_operation_and_failure_context() {
+        let error = machine_storage_node_rpc_error(
+            MachineStorageRpcOperation::StoragePromoteSelf,
+            RpcFailure::new(RpcFailureKind::NoResponders, "no subscribers"),
+        );
+        assert_eq!(error.operation, "machine_storage_promote_self");
+        assert_eq!(error.code, "NATS_RPC_NO_RESPONDERS");
+        assert_eq!(error.message, "no subscribers");
     }
 
     #[test]
