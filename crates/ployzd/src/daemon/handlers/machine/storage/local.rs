@@ -1,6 +1,10 @@
 use ployz_api::{DaemonResponse, MachineStorageAuthorityPeer};
-use ployz_model::{AuthorityId, MachineStorageRole, StorageParticipation, StorageReplicaPolicy};
+use ployz_model::{
+    AuthorityId, MachineMembership, MachineStorageRole, StorageParticipation, StorageReplicaPolicy,
+};
 use ployz_store_api::MachineMembershipStore;
+use std::collections::BTreeSet;
+use std::path::Path;
 
 use crate::daemon::{DaemonState, RuntimeRestartMode};
 use crate::mesh_state::bootstrap::{
@@ -8,10 +12,7 @@ use crate::mesh_state::bootstrap::{
 };
 use crate::mesh_state::network::NetworkConfig;
 
-use super::promotion::{
-    promote_self_record_rollback_message, promote_self_rollback_message, restore_storage_config,
-    validate_authority_peer_payload, validate_authority_peers_match_membership,
-};
+use super::promotion::append_rollback_error;
 
 impl DaemonState {
     pub(super) fn record_storage_replica_intent(
@@ -269,4 +270,144 @@ impl DaemonState {
             replicas.replicas()
         ))
     }
+}
+
+impl From<&MachineStorageAuthorityPeer> for BootstrapPeerRecord {
+    fn from(peer: &MachineStorageAuthorityPeer) -> Self {
+        Self {
+            machine_id: peer.machine_id.clone(),
+            public_key: peer.public_key.clone(),
+            overlay_ip: peer.overlay_ip,
+            subnet: peer.subnet,
+            bridge_ip: peer.bridge_ip,
+            storage: true,
+            storage_participation: StorageParticipation::default_authority(),
+            region_role: peer.region_role,
+            endpoints: peer.endpoints.clone(),
+        }
+    }
+}
+
+fn validate_authority_peer_payload(
+    replicas: StorageReplicaPolicy,
+    authority_peers: &[MachineStorageAuthorityPeer],
+    local_machine_id: &ployz_model::MachineId,
+) -> Result<(), String> {
+    if authority_peers.len() != replicas.replicas() {
+        return Err(format!(
+            "storage promotion self payload for {replicas} must contain exactly {} authority peers, got {}",
+            replicas.replicas(),
+            authority_peers.len()
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    let mut has_local = false;
+    for peer in authority_peers {
+        if !seen.insert(peer.machine_id.clone()) {
+            return Err(format!(
+                "storage promotion self payload contains duplicate authority peer '{}'",
+                peer.machine_id
+            ));
+        }
+        if peer.machine_id == *local_machine_id {
+            has_local = true;
+        }
+        if peer.endpoints.is_empty() {
+            return Err(format!(
+                "storage promotion self payload authority peer '{}' has no endpoints",
+                peer.machine_id
+            ));
+        }
+    }
+    if !has_local {
+        return Err(format!(
+            "storage promotion self payload must include local authority peer '{}'",
+            local_machine_id
+        ));
+    }
+    Ok(())
+}
+
+fn validate_authority_peers_match_membership(
+    authority_peers: &[MachineStorageAuthorityPeer],
+    machines: &[MachineMembership],
+    local_machine_id: &ployz_model::MachineId,
+) -> Result<(), String> {
+    let Some(local_peer) = authority_peers
+        .iter()
+        .find(|peer| peer.machine_id == *local_machine_id)
+    else {
+        return Err(format!(
+            "storage promotion self payload must include local authority peer '{}'",
+            local_machine_id
+        ));
+    };
+    let Some(machine) = machines
+        .iter()
+        .find(|machine| machine.id == local_peer.machine_id)
+    else {
+        return Err(format!(
+            "storage promotion self payload local authority peer '{}' is not in machine membership",
+            local_peer.machine_id
+        ));
+    };
+    if machine.public_key != local_peer.public_key
+        || machine.overlay_ip != local_peer.overlay_ip
+        || machine.subnet != local_peer.subnet
+        || machine.bridge_ip != local_peer.bridge_ip
+        || machine.region_role != local_peer.region_role
+        || machine.endpoints != local_peer.endpoints
+    {
+        return Err(format!(
+            "storage promotion self payload local authority peer '{}' does not match machine membership",
+            local_peer.machine_id
+        ));
+    }
+    if machine.lifecycle != ployz_model::MachineLifecycle::Active || !machine.storage() {
+        return Err(format!(
+            "storage promotion self payload local authority peer '{}' is not active storage membership",
+            local_peer.machine_id
+        ));
+    }
+    Ok(())
+}
+
+fn restore_storage_config(
+    path: &Path,
+    config: &mut NetworkConfig,
+    storage: bool,
+    participation: StorageParticipation,
+    replicas: StorageReplicaPolicy,
+) -> Result<(), String> {
+    config.storage = storage;
+    config.storage_participation = participation;
+    config.storage_replicas = replicas;
+    config
+        .save(path)
+        .map_err(|error| format!("restore network config: {error}"))
+}
+
+fn promote_self_rollback_message(
+    error: String,
+    config_rollback_error: Option<String>,
+    peer_rollback_error: Option<String>,
+) -> String {
+    let message = append_rollback_error(
+        format!("failed to promote storage authority: {error}"),
+        config_rollback_error.as_deref(),
+    );
+    append_rollback_error(message, peer_rollback_error.as_deref())
+}
+
+fn promote_self_record_rollback_message(
+    config_rollback_error: Option<String>,
+    peer_rollback_error: Option<String>,
+    restart_rollback_error: Option<String>,
+) -> String {
+    let message = append_rollback_error(
+        String::from("mesh self record unavailable after storage promotion restart"),
+        config_rollback_error.as_deref(),
+    );
+    let message = append_rollback_error(message, peer_rollback_error.as_deref());
+    append_rollback_error(message, restart_rollback_error.as_deref())
 }

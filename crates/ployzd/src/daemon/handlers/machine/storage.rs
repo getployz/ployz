@@ -15,14 +15,12 @@ use ployz_store_api::MachineMembershipStore;
 use std::collections::BTreeSet;
 use tokio::sync::oneshot;
 
-use crate::mesh_state::bootstrap::{
-    BootstrapPeerRecord, load_bootstrap_peer_records, write_bootstrap_peer_records,
-};
-use crate::mesh_state::network::NetworkConfig;
-
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
 use crate::daemon::node_rpc::{NatsMachineStorageRpcTransport, NatsNodeProbeRpcTransport};
 use crate::daemon::{DaemonState, RuntimeRestartMode};
+use crate::mesh_state::bootstrap::{
+    BootstrapPeerRecord, load_bootstrap_peer_records, write_bootstrap_peer_records,
+};
 
 mod local;
 mod promotion;
