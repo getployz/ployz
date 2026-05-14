@@ -19,6 +19,7 @@ pub const IMAGE_DISTRIBUTE_VALIDATION_PAYLOAD_KIND: &str = "image-distribute-val
 pub const IMAGE_RECEIVE_SESSION_PAYLOAD_KIND: &str = "image-receive-session";
 pub const IMAGE_RECEIVED_IMPORT_PAYLOAD_KIND: &str = "image-received-import";
 pub const VOLUME_ZFS_CLONE_PAYLOAD_KIND: &str = "volume-zfs-clone";
+pub const VOLUME_ZFS_INSPECT_PAYLOAD_KIND: &str = "volume-zfs-inspect";
 pub const VOLUME_ZFS_SNAPSHOT_PAYLOAD_KIND: &str = "volume-zfs-snapshot";
 pub const VOLUME_ZFS_PEER_SEND_PAYLOAD_KIND: &str = "volume-zfs-peer-send";
 pub const VOLUME_ZFS_TRANSFER_PAYLOAD_KIND: &str = "volume-zfs-transfer";
@@ -219,6 +220,25 @@ pub struct NodeVolumeZfsClonePayload {
     pub source_dataset: String,
     pub target_dataset: String,
     pub snapshot: String,
+    pub guid: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeVolumeZfsInspectPayload {
+    pub namespace: String,
+    pub volume: String,
+    pub machine_id: MachineId,
+    pub dataset: String,
+    pub mountpoint: String,
+    pub quota: String,
+    pub used_bytes: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snapshots: Vec<NodeVolumeZfsSnapshotInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeVolumeZfsSnapshotInfo {
+    pub name: String,
     pub guid: u64,
 }
 
@@ -626,6 +646,36 @@ mod tests {
             .expect("volume clone payload should decode");
         assert_eq!(clone.target_dataset, "pool/prod/data");
         assert_eq!(clone.guid, 42);
+    }
+
+    #[test]
+    fn node_volume_zfs_inspect_payload_preserves_tagged_wire_shape() {
+        let response = NodeResponse::success(
+            "ok",
+            Some(serde_json::json!({
+                "kind": VOLUME_ZFS_INSPECT_PAYLOAD_KIND,
+                "namespace": "prod",
+                "volume": "data",
+                "machine_id": "machine-a",
+                "dataset": "pool/prod/data",
+                "mountpoint": "/var/lib/ployz/volumes/prod/data",
+                "quota": "10G",
+                "used_bytes": 4096,
+                "snapshots": [
+                    {
+                        "name": "snap",
+                        "guid": 42
+                    }
+                ]
+            })),
+        );
+
+        let payload: NodeVolumeZfsInspectPayload = response
+            .payload_as(VOLUME_ZFS_INSPECT_PAYLOAD_KIND)
+            .expect("volume inspect payload should decode");
+        assert_eq!(payload.machine_id, MachineId::new("machine-a"));
+        assert_eq!(payload.snapshots.len(), 1);
+        assert_eq!(payload.snapshots[0].guid, 42);
     }
 
     #[test]

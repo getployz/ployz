@@ -196,11 +196,14 @@ fn volume_zfs_subject(
     operation: VolumeZfsRpcOperation,
 ) -> NodeCommandSubject {
     match operation {
+        VolumeZfsRpcOperation::Inspect => NodeCommandSubject::volume_zfs_inspect(machine_id),
+        VolumeZfsRpcOperation::Snapshot | VolumeZfsRpcOperation::PeerSnapshot => {
+            NodeCommandSubject::volume_zfs_snapshot(machine_id)
+        }
         VolumeZfsRpcOperation::Send => NodeCommandSubject::volume_zfs_send(machine_id),
         VolumeZfsRpcOperation::TransferGet => {
             NodeCommandSubject::volume_zfs_transfer_get(machine_id)
         }
-        VolumeZfsRpcOperation::PeerSnapshot => NodeCommandSubject::volume_zfs_snapshot(machine_id),
         VolumeZfsRpcOperation::PeerSnapshotGuid => {
             NodeCommandSubject::volume_zfs_snapshot_guid(machine_id)
         }
@@ -287,6 +290,14 @@ mod tests {
         let machine_id = MachineId::new("machine-a");
 
         for (operation, expected) in [
+            (
+                VolumeZfsRpcOperation::Inspect,
+                NodeCommandSubject::volume_zfs_inspect(&machine_id),
+            ),
+            (
+                VolumeZfsRpcOperation::Snapshot,
+                NodeCommandSubject::volume_zfs_snapshot(&machine_id),
+            ),
             (
                 VolumeZfsRpcOperation::Send,
                 NodeCommandSubject::volume_zfs_send(&machine_id),

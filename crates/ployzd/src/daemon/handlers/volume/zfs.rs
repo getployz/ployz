@@ -9,9 +9,10 @@ use ployz_api::{
     VolumeZfsTransferListPayload, VolumeZfsTransferPayload,
 };
 use ployz_model::{MachineId, MachineLifecycle, MachineMembership, VolumeRecord};
-use ployz_nats::NodeCommandSubject;
-use ployz_node_api::NodeRequest;
-use ployz_node_runtime::{NodeRpcPolicy, VolumeZfsNodeClient};
+use ployz_node_api::{NodeVolumeZfsInspectPayload, NodeVolumeZfsSnapshotPayload};
+use ployz_node_runtime::{
+    NodeRpcPolicy, VolumeZfsNodeClient, VolumeZfsNodePayload, VolumeZfsNodeResponse,
+};
 use ployz_spec::{Namespace, VolumeScope};
 use ployz_storage_api::{CloneMetadata, DatasetSpec};
 use ployz_store_api::{DeployStore, MachineMembershipStore};
@@ -852,18 +853,11 @@ impl DaemonState {
             Ok(client) => client,
             Err(error) => return self.err("VOLUME_ZFS_INSPECT_FAILED", error),
         };
-        match client
-            .request(
-                NodeCommandSubject::volume_zfs_inspect(&machine.id),
-                &NodeRequest::VolumeZfsInspect {
-                    namespace: namespace.to_string(),
-                    volume: volume.to_string(),
-                    machine: None,
-                },
-            )
+        match VolumeZfsNodeClient::new(NatsVolumeZfsRpcTransport::new(client))
+            .inspect(&machine.id, namespace, volume, None)
             .await
         {
-            Ok(response) => response,
+            Ok(response) => volume_zfs_node_response_to_daemon_response(response),
             Err(error) => self.err("VOLUME_ZFS_INSPECT_FAILED", error.to_string()),
         }
     }
@@ -885,18 +879,11 @@ impl DaemonState {
             Ok(client) => client,
             Err(error) => return self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error),
         };
-        match client
-            .request(
-                NodeCommandSubject::volume_zfs_snapshot(&machine.id),
-                &NodeRequest::VolumeZfsSnapshot {
-                    namespace: namespace.as_str().to_string(),
-                    volume: volume.to_string(),
-                    snapshot: snapshot.to_string(),
-                },
-            )
+        match VolumeZfsNodeClient::new(NatsVolumeZfsRpcTransport::new(client))
+            .snapshot(&machine.id, namespace.as_str(), volume, snapshot)
             .await
         {
-            Ok(response) => response,
+            Ok(response) => volume_zfs_node_response_to_daemon_response(response),
             Err(error) => self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error.to_string()),
         }
     }
@@ -941,6 +928,61 @@ impl DaemonState {
             ));
         }
         Ok(record)
+    }
+}
+
+fn volume_zfs_node_response_to_daemon_response(response: VolumeZfsNodeResponse) -> DaemonResponse {
+    let success = response.is_ok();
+    let code = response.code().to_string();
+    let message = response.message().to_string();
+    let payload = response
+        .into_payload()
+        .map(volume_zfs_node_payload_to_daemon_payload);
+    if success {
+        return DaemonResponse::success(message, payload);
+    }
+    DaemonResponse::error(code, message, payload)
+}
+
+fn volume_zfs_node_payload_to_daemon_payload(payload: VolumeZfsNodePayload) -> DaemonPayload {
+    match payload {
+        VolumeZfsNodePayload::Inspect(payload) => {
+            DaemonPayload::VolumeZfsInspect(volume_zfs_inspect_payload(payload))
+        }
+        VolumeZfsNodePayload::Snapshot(payload) => {
+            DaemonPayload::VolumeZfsSnapshot(volume_zfs_snapshot_payload(payload))
+        }
+    }
+}
+
+fn volume_zfs_inspect_payload(payload: NodeVolumeZfsInspectPayload) -> VolumeZfsInspectPayload {
+    VolumeZfsInspectPayload {
+        namespace: payload.namespace,
+        volume: payload.volume,
+        machine_id: payload.machine_id,
+        dataset: payload.dataset,
+        mountpoint: payload.mountpoint,
+        quota: payload.quota,
+        used_bytes: payload.used_bytes,
+        snapshots: payload
+            .snapshots
+            .into_iter()
+            .map(|snapshot| VolumeZfsSnapshotInfo {
+                name: snapshot.name,
+                guid: snapshot.guid,
+            })
+            .collect(),
+    }
+}
+
+fn volume_zfs_snapshot_payload(payload: NodeVolumeZfsSnapshotPayload) -> VolumeZfsSnapshotPayload {
+    VolumeZfsSnapshotPayload {
+        namespace: payload.namespace,
+        volume: payload.volume,
+        machine_id: payload.machine_id,
+        dataset: payload.dataset,
+        snapshot: payload.snapshot,
+        guid: payload.guid,
     }
 }
 

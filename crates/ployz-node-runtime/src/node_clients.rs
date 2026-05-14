@@ -14,8 +14,9 @@ use ployz_node_api::{
     NodeDeployCandidateStartedPayload, NodeDeployNamespaceSnapshotPayload,
     NodeImageDistributePayload, NodeImageDistributeValidationPayload,
     NodeImageReceiveSessionPayload, NodeImageReceivedImportPayload, NodeRequest, NodeResponse,
-    NodeVolumeZfsClonePayload, NodeVolumeZfsPeerSendPayload, NodeVolumeZfsSnapshotPayload,
-    NodeVolumeZfsTransferPayload, VOLUME_ZFS_CLONE_PAYLOAD_KIND, VOLUME_ZFS_PEER_SEND_PAYLOAD_KIND,
+    NodeVolumeZfsClonePayload, NodeVolumeZfsInspectPayload, NodeVolumeZfsPeerSendPayload,
+    NodeVolumeZfsSnapshotPayload, NodeVolumeZfsTransferPayload, VOLUME_ZFS_CLONE_PAYLOAD_KIND,
+    VOLUME_ZFS_INSPECT_PAYLOAD_KIND, VOLUME_ZFS_PEER_SEND_PAYLOAD_KIND,
     VOLUME_ZFS_SNAPSHOT_PAYLOAD_KIND, VOLUME_ZFS_TRANSFER_PAYLOAD_KIND,
 };
 
@@ -193,6 +194,69 @@ impl std::fmt::Display for NodeRpcError {
 }
 
 impl std::error::Error for NodeRpcError {}
+
+#[derive(Debug, Clone)]
+pub struct NodeServiceResponse<P> {
+    success: bool,
+    code: String,
+    message: String,
+    payload: Option<P>,
+}
+
+impl<P> NodeServiceResponse<P> {
+    fn from_node_response<F>(
+        response: NodeResponse,
+        decode_payload: F,
+    ) -> Result<Self, NodeRpcError>
+    where
+        F: Fn(serde_json::Value) -> Result<P, NodeRpcError>,
+    {
+        let (success, code, message, payload) = match response {
+            NodeResponse::Success {
+                code,
+                message,
+                payload,
+            } => (true, code, message, payload),
+            NodeResponse::Error {
+                code,
+                message,
+                payload,
+            } => (false, code, message, payload),
+        };
+        let payload = match (success, payload) {
+            (true, Some(payload)) => Some(decode_payload(payload)?),
+            (true, None) => None,
+            (false, Some(payload)) => decode_payload(payload).ok(),
+            (false, None) => None,
+        };
+        Ok(Self {
+            success,
+            code,
+            message,
+            payload,
+        })
+    }
+
+    #[must_use]
+    pub fn is_ok(&self) -> bool {
+        self.success
+    }
+
+    #[must_use]
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    #[must_use]
+    pub fn into_payload(self) -> Option<P> {
+        self.payload
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeployRpcOperation {
@@ -527,66 +591,13 @@ where
         let response = transport
             .image_request(machine_id, operation, request)
             .await?;
-        ImageNodeResponse::from_node_response(operation, response)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ImageNodeResponse {
-    success: bool,
-    code: String,
-    message: String,
-    payload: Option<ImageNodePayload>,
-}
-
-impl ImageNodeResponse {
-    fn from_node_response(
-        operation: ImageRpcOperation,
-        response: NodeResponse,
-    ) -> Result<Self, NodeRpcError> {
-        let (success, code, message, payload) = match response {
-            NodeResponse::Success {
-                code,
-                message,
-                payload,
-            } => (true, code, message, payload),
-            NodeResponse::Error {
-                code,
-                message,
-                payload,
-            } => (false, code, message, payload),
-        };
-        let payload = payload
-            .map(|payload| decode_image_payload(operation.operation_name(), payload))
-            .transpose()?;
-        Ok(Self {
-            success,
-            code,
-            message,
-            payload,
+        NodeServiceResponse::from_node_response(response, |payload| {
+            decode_image_payload(operation.operation_name(), payload)
         })
     }
-
-    #[must_use]
-    pub fn is_ok(&self) -> bool {
-        self.success
-    }
-
-    #[must_use]
-    pub fn code(&self) -> &str {
-        &self.code
-    }
-
-    #[must_use]
-    pub fn message(&self) -> &str {
-        &self.message
-    }
-
-    #[must_use]
-    pub fn into_payload(self) -> Option<ImageNodePayload> {
-        self.payload
-    }
 }
+
+pub type ImageNodeResponse = NodeServiceResponse<ImageNodePayload>;
 
 #[derive(Debug, Clone)]
 pub enum ImageNodePayload {
@@ -644,8 +655,27 @@ where
         .map_err(|error| NodeRpcError::decode(operation_name, expected_kind, error.to_string()))
 }
 
+fn decode_payload_kind<P>(
+    operation_name: &'static str,
+    expected_kind: &'static str,
+    payload: serde_json::Value,
+) -> Result<P, NodeRpcError>
+where
+    P: serde::de::DeserializeOwned,
+{
+    let Some(kind) = payload.get("kind").and_then(serde_json::Value::as_str) else {
+        return Err(NodeRpcError::missing_payload(operation_name, expected_kind));
+    };
+    if kind != expected_kind {
+        return Err(NodeRpcError::missing_payload(operation_name, expected_kind));
+    }
+    decode_payload_variant(operation_name, expected_kind, payload)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VolumeZfsRpcOperation {
+    Inspect,
+    Snapshot,
     Send,
     TransferGet,
     PeerSnapshot,
@@ -657,6 +687,8 @@ impl VolumeZfsRpcOperation {
     #[must_use]
     pub fn operation_name(self) -> &'static str {
         match self {
+            Self::Inspect => "volume_zfs_inspect",
+            Self::Snapshot => "volume_zfs_snapshot",
             Self::Send => "volume_zfs_send",
             Self::TransferGet => "volume_zfs_transfer_get",
             Self::PeerSnapshot => "volume_zfs_peer_snapshot",
@@ -697,6 +729,44 @@ where
         Self {
             transport: self.transport.with_node_rpc_policy(policy),
         }
+    }
+
+    pub async fn inspect(
+        &self,
+        machine_id: &MachineId,
+        namespace: &str,
+        volume: &str,
+        machine: Option<&str>,
+    ) -> Result<VolumeZfsNodeResponse, NodeRpcError> {
+        self.request_response(
+            machine_id,
+            VolumeZfsRpcOperation::Inspect,
+            &NodeRequest::VolumeZfsInspect {
+                namespace: namespace.to_string(),
+                volume: volume.to_string(),
+                machine: machine.map(str::to_string),
+            },
+        )
+        .await
+    }
+
+    pub async fn snapshot(
+        &self,
+        machine_id: &MachineId,
+        namespace: &str,
+        volume: &str,
+        snapshot: &str,
+    ) -> Result<VolumeZfsNodeResponse, NodeRpcError> {
+        self.request_response(
+            machine_id,
+            VolumeZfsRpcOperation::Snapshot,
+            &NodeRequest::VolumeZfsSnapshot {
+                namespace: namespace.to_string(),
+                volume: volume.to_string(),
+                snapshot: snapshot.to_string(),
+            },
+        )
+        .await
     }
 
     pub async fn send(
@@ -823,6 +893,54 @@ where
             .volume_zfs_request(machine_id, operation, request)
             .await?;
         decode_typed_payload(operation.operation_name(), response, expected_kind)
+    }
+
+    async fn request_response(
+        &self,
+        machine_id: &MachineId,
+        operation: VolumeZfsRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<VolumeZfsNodeResponse, NodeRpcError> {
+        let response = self
+            .transport
+            .volume_zfs_request(machine_id, operation, request)
+            .await?;
+        NodeServiceResponse::from_node_response(response, |payload| {
+            decode_volume_zfs_payload(operation, payload)
+        })
+    }
+}
+
+pub type VolumeZfsNodeResponse = NodeServiceResponse<VolumeZfsNodePayload>;
+
+#[derive(Debug, Clone)]
+pub enum VolumeZfsNodePayload {
+    Inspect(NodeVolumeZfsInspectPayload),
+    Snapshot(NodeVolumeZfsSnapshotPayload),
+}
+
+fn decode_volume_zfs_payload(
+    operation: VolumeZfsRpcOperation,
+    payload: serde_json::Value,
+) -> Result<VolumeZfsNodePayload, NodeRpcError> {
+    let operation_name = operation.operation_name();
+    match operation {
+        VolumeZfsRpcOperation::Inspect => {
+            decode_payload_kind(operation_name, VOLUME_ZFS_INSPECT_PAYLOAD_KIND, payload)
+                .map(VolumeZfsNodePayload::Inspect)
+        }
+        VolumeZfsRpcOperation::Snapshot => {
+            decode_payload_kind(operation_name, VOLUME_ZFS_SNAPSHOT_PAYLOAD_KIND, payload)
+                .map(VolumeZfsNodePayload::Snapshot)
+        }
+        VolumeZfsRpcOperation::Send
+        | VolumeZfsRpcOperation::TransferGet
+        | VolumeZfsRpcOperation::PeerSnapshot
+        | VolumeZfsRpcOperation::PeerSnapshotGuid
+        | VolumeZfsRpcOperation::PeerStartSend => Err(NodeRpcError::missing_payload(
+            operation_name,
+            "volume zfs payload",
+        )),
     }
 }
 
@@ -1639,6 +1757,16 @@ mod volume_tests {
         policies: Arc<Mutex<Vec<NodeRpcPolicy>>>,
     }
 
+    impl FakeVolumeTransport {
+        fn with_responses(responses: Vec<Result<NodeResponse, NodeRpcError>>) -> Self {
+            Self {
+                responses: Arc::new(Mutex::new(responses.into())),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                policies: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
     #[async_trait]
     impl VolumeZfsRpcTransport for FakeVolumeTransport {
         fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self {
@@ -1672,6 +1800,23 @@ mod volume_tests {
             timeout: Duration::from_secs(9),
         });
 
+        client
+            .inspect(&MachineId::new("machine-a"), "prod", "data", None)
+            .await
+            .expect("inspect request");
+        client
+            .inspect(
+                &MachineId::new("machine-a"),
+                "prod",
+                "data",
+                Some("machine-b"),
+            )
+            .await
+            .expect("inspect request with machine filter");
+        client
+            .snapshot(&MachineId::new("machine-a"), "prod", "data", "snap")
+            .await
+            .expect("snapshot request");
         client
             .send(
                 &MachineId::new("machine-a"),
@@ -1711,6 +1856,9 @@ mod volume_tests {
 
         let requests = transport.requests.lock().expect("requests");
         let [
+            inspect,
+            inspect_filtered,
+            snapshot,
             send,
             transfer_get,
             peer_snapshot,
@@ -1718,8 +1866,38 @@ mod volume_tests {
             peer_start_send,
         ] = requests.as_slice()
         else {
-            panic!("expected five requests");
+            panic!("expected eight requests");
         };
+        assert_eq!(inspect.0, MachineId::new("machine-a"));
+        assert_eq!(inspect.1, VolumeZfsRpcOperation::Inspect);
+        assert!(matches!(
+            &inspect.2,
+            NodeRequest::VolumeZfsInspect {
+                namespace,
+                volume,
+                machine: None,
+            } if namespace == "prod" && volume == "data"
+        ));
+        assert_eq!(inspect_filtered.0, MachineId::new("machine-a"));
+        assert_eq!(inspect_filtered.1, VolumeZfsRpcOperation::Inspect);
+        assert!(matches!(
+            &inspect_filtered.2,
+            NodeRequest::VolumeZfsInspect {
+                namespace,
+                volume,
+                machine: Some(machine),
+            } if namespace == "prod" && volume == "data" && machine == "machine-b"
+        ));
+        assert_eq!(snapshot.0, MachineId::new("machine-a"));
+        assert_eq!(snapshot.1, VolumeZfsRpcOperation::Snapshot);
+        assert!(matches!(
+            &snapshot.2,
+            NodeRequest::VolumeZfsSnapshot {
+                namespace,
+                volume,
+                snapshot,
+            } if namespace == "prod" && volume == "data" && snapshot == "snap"
+        ));
         assert_eq!(send.0, MachineId::new("machine-a"));
         assert_eq!(send.1, VolumeZfsRpcOperation::Send);
         assert!(matches!(
@@ -1793,8 +1971,89 @@ mod volume_tests {
         );
     }
 
+    #[tokio::test]
+    async fn volume_zfs_client_preserves_remote_error_envelope_and_payload_best_effort() {
+        let transport = FakeVolumeTransport::with_responses(vec![Ok(NodeResponse::error(
+            "VOLUME_ZFS_SNAPSHOT_FAILED",
+            "snapshot failed",
+            Some(snapshot_payload()),
+        ))]);
+        let response = VolumeZfsNodeClient::new(transport)
+            .snapshot(&MachineId::new("machine-a"), "prod", "data", "snap")
+            .await
+            .expect("remote error should preserve response");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "VOLUME_ZFS_SNAPSHOT_FAILED");
+        assert_eq!(response.message(), "snapshot failed");
+        let Some(VolumeZfsNodePayload::Snapshot(payload)) = response.into_payload() else {
+            panic!("expected snapshot payload");
+        };
+        assert_eq!(payload.machine_id, MachineId::new("machine-a"));
+        assert_eq!(payload.guid, 42);
+
+        let transport = FakeVolumeTransport::with_responses(vec![Ok(NodeResponse::error(
+            "VOLUME_ZFS_INSPECT_FAILED",
+            "inspect failed",
+            Some(serde_json::json!({
+                "kind": VOLUME_ZFS_INSPECT_PAYLOAD_KIND,
+                "namespace": "prod"
+            })),
+        ))]);
+        let response = VolumeZfsNodeClient::new(transport)
+            .inspect(&MachineId::new("machine-a"), "prod", "data", None)
+            .await
+            .expect("malformed remote error payload should preserve response");
+        assert!(!response.is_ok());
+        assert_eq!(response.code(), "VOLUME_ZFS_INSPECT_FAILED");
+        assert_eq!(response.message(), "inspect failed");
+        assert!(response.into_payload().is_none());
+    }
+
+    #[tokio::test]
+    async fn volume_zfs_client_rejects_success_payload_shape_errors() {
+        for payload in [
+            serde_json::json!({
+                "namespace": "prod",
+                "volume": "data"
+            }),
+            serde_json::json!({
+                "kind": "wrong-volume-payload",
+                "namespace": "prod",
+                "volume": "data"
+            }),
+            inspect_payload(),
+        ] {
+            let transport = FakeVolumeTransport::with_responses(vec![Ok(NodeResponse::success(
+                "ok",
+                Some(payload),
+            ))]);
+            let error = VolumeZfsNodeClient::new(transport)
+                .snapshot(&MachineId::new("machine-a"), "prod", "data", "snap")
+                .await
+                .expect_err("missing, unknown, or mismatched payload kind should fail");
+            assert_eq!(error.kind, NodeRpcErrorKind::MissingPayload);
+            assert_eq!(error.operation, "volume_zfs_snapshot");
+        }
+
+        let transport = FakeVolumeTransport::with_responses(vec![Ok(NodeResponse::success(
+            "ok",
+            Some(serde_json::json!({
+                "kind": VOLUME_ZFS_INSPECT_PAYLOAD_KIND,
+                "namespace": "prod"
+            })),
+        ))]);
+        let error = VolumeZfsNodeClient::new(transport)
+            .inspect(&MachineId::new("machine-a"), "prod", "data", None)
+            .await
+            .expect_err("structurally invalid inspect payload should fail");
+        assert_eq!(error.kind, NodeRpcErrorKind::Decode);
+        assert_eq!(error.operation, "volume_zfs_inspect");
+    }
+
     fn default_response(operation: VolumeZfsRpcOperation) -> NodeResponse {
         let payload = match operation {
+            VolumeZfsRpcOperation::Inspect => inspect_payload(),
+            VolumeZfsRpcOperation::Snapshot => snapshot_payload(),
             VolumeZfsRpcOperation::Send | VolumeZfsRpcOperation::TransferGet => {
                 serde_json::json!({
                     "kind": VOLUME_ZFS_TRANSFER_PAYLOAD_KIND,
@@ -1834,5 +2093,31 @@ mod volume_tests {
             }
         };
         NodeResponse::success("ok", Some(payload))
+    }
+
+    fn inspect_payload() -> serde_json::Value {
+        serde_json::json!({
+            "kind": VOLUME_ZFS_INSPECT_PAYLOAD_KIND,
+            "namespace": "prod",
+            "volume": "data",
+            "machine_id": "machine-a",
+            "dataset": "pool/prod/data",
+            "mountpoint": "/var/lib/ployz/volumes/prod/data",
+            "quota": "10G",
+            "used_bytes": 4096,
+            "snapshots": []
+        })
+    }
+
+    fn snapshot_payload() -> serde_json::Value {
+        serde_json::json!({
+            "kind": VOLUME_ZFS_SNAPSHOT_PAYLOAD_KIND,
+            "namespace": "prod",
+            "volume": "data",
+            "machine_id": "machine-a",
+            "dataset": "pool/prod/data",
+            "snapshot": "snap",
+            "guid": 42
+        })
     }
 }

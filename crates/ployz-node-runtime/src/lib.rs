@@ -11,8 +11,9 @@ pub use node_clients::{
     IMAGE_DISTRIBUTE_RPC_POLICY, IMAGE_RECEIVE_SESSION_RPC_POLICY,
     IMAGE_RECEIVED_IMPORT_RPC_POLICY, ImageNodeClient, ImageNodePayload, ImageNodeResponse,
     ImageRpcOperation, ImageRpcTransport, NodeClientError, NodeClientRegistry, NodeCommand,
-    NodePeerClient, NodeRpcError, NodeRpcErrorKind, NodeRpcPolicy, VolumeZfsNodeClient,
-    VolumeZfsRpcOperation, VolumeZfsRpcTransport,
+    NodePeerClient, NodeRpcError, NodeRpcErrorKind, NodeRpcPolicy, NodeServiceResponse,
+    VolumeZfsNodeClient, VolumeZfsNodePayload, VolumeZfsNodeResponse, VolumeZfsRpcOperation,
+    VolumeZfsRpcTransport,
 };
 use ployz_supervision::{HealthRegistry, Supervisor};
 use tokio_util::sync::CancellationToken;
