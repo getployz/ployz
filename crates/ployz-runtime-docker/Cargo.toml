@@ -12,7 +12,7 @@ docker = []
 [dependencies]
 ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-storage-api = { path = "../ployz-storage-api" }
-ployz-storage-zfs = { path = "../ployz-storage-zfs" }
+ployz-volume-zfs = { path = "../ployz-volume-zfs" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-error = { path = "../ployz-error" }
 ployz-model = { path = "../ployz-model" }

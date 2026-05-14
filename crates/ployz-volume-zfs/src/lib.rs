@@ -1,7 +1,7 @@
-pub mod resolve;
-pub mod shell;
-pub mod transfer;
-pub mod zfs;
+mod resolve;
+mod shell;
+mod transfer;
+mod zfs;
 
 pub(crate) mod error {
     pub use ployz_error::*;

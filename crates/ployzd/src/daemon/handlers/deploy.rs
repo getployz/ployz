@@ -24,6 +24,7 @@ use ployz_api::{
     MigrateServiceRequest,
 };
 use ployz_cert_acme::InstantAcmeIssuerFactory;
+use ployz_cert_api::{AcmeAccountCoordinator, CertificateManagerConfig};
 use ployz_config::RuntimeTarget;
 use ployz_error::DeployError;
 use ployz_error::Error as PloyzError;
@@ -37,7 +38,6 @@ use ployz_model::{
 };
 use ployz_nats::RpcPolicy;
 use ployz_nats::{NatsDeployLock, NatsLocks, NatsStore};
-use ployz_orchestrator::certificates::{AcmeAccountCoordinator, CertificateManagerConfig};
 use ployz_orchestrator::coordination::ReservationId;
 use ployz_orchestrator::deploy::{
     DeployApplyPreconditions, apply_prepared_with_certificate_coordination,

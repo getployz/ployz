@@ -1,16 +1,14 @@
 use super::execute::{
-    DeployApplyPreconditions, ParticipantSet, apply_prepared_with_certificate_coordination,
+    DeployApplyPreconditions, apply_prepared_with_certificate_coordination,
     apply_with_certificate_coordination, apply_with_deploy_id_and_preconditions,
     apply_with_initial_plan, ensure_plan_stable, run_phase_startup,
 };
 use super::lifecycle::PreparedDeploy;
+use super::participant_set::ParticipantSet;
 use super::plan::{deployable_machines, desired_slots, resolve_plan};
 use super::probe::{NoopParticipantProbe, ParticipantProbe, ProbeError, ProbeErrorKind};
 use super::{prepare, preview};
-use crate::certificates::{
-    LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, NoopAcmeIssuerFactory,
-    NoopIssuanceCoordinator,
-};
+use crate::certificates::LocalHttp01ChallengeReadiness;
 use crate::deploy::participant::{
     CleanupVolumeCloneRequest, CloneVolumeRequest, CloneVolumeResult, DeployParticipantClient,
     MoveVolumeRequest, MoveVolumeResult, StartCandidateRequest,
@@ -32,6 +30,7 @@ use crate::model::{
     VolumeClonePreflightAction, VolumeClonePreflightScope, VolumeMovementRecord, VolumeRecord,
 };
 use async_trait::async_trait;
+use ployz_cert_api::{NoopAcmeAccountCoordinator, NoopAcmeIssuerFactory, NoopIssuanceCoordinator};
 use ployz_error::Result as PloyzResult;
 use ployz_spec::{
     ContainerSpec, DeployIntent, DeployManifest, DeployPhaseIntent, HttpRoute, Mount, MountSource,

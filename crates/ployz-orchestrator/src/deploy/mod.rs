@@ -1,4 +1,6 @@
 pub mod participant;
+mod participant_set;
+mod volume_execution;
 
 mod execute;
 mod lifecycle;
@@ -9,15 +11,15 @@ mod probe;
 #[cfg(test)]
 mod tests;
 
-use crate::certificates::{
-    AcmeAccountCoordinator, AcmeIssuerFactory, Http01ChallengeReadiness, IssuanceCoordinator,
-};
 use crate::deploy::participant::DeployParticipantClient;
 use crate::error::{DeployError, Error, Result};
 use crate::model::{
     DeployApplyResult, DeployPreview, MachineId, PreparedDeployRecord, PreparedDeployState,
 };
 use plan::{preflight_image_availability, resolve_plan};
+use ployz_cert_api::{
+    AcmeAccountCoordinator, AcmeIssuerFactory, Http01ChallengeReadiness, IssuanceCoordinator,
+};
 use ployz_spec::{DeployManifest, stable_hash_hex};
 use ployz_store_api::{DeployStore, StoreDriver};
 use ployz_time::now_unix_secs;

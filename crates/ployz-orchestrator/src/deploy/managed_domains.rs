@@ -7,9 +7,9 @@ use ployz_model::{
 use ployz_spec::{Namespace, RouteSpec, ServiceSpec};
 use ployz_store_api::{CertificateStore, RoutingStateStore, StoreDriver};
 
-use crate::certificates::account_id_for_issuer_url;
 use crate::deploy::plan::ResolvedPlan;
 use crate::error::{DeployError, Error, Result};
+use ployz_cert_api::account_id_for_issuer_url;
 
 pub(super) async fn warnings_for_plan(
     store: &StoreDriver,

@@ -11,15 +11,15 @@ use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
 use ployz_node_api::NodeRequest;
 use ployz_spec::{Namespace, VolumeScope};
 use ployz_storage_api::{CloneMetadata, DatasetSpec};
-use ployz_storage_zfs::{
+use ployz_store_api::{DeployStore, MachineMembershipStore};
+use ployz_time::now_unix_secs;
+use ployz_volume_zfs::{
     ClaimedTransfer, MoveClaimOutcome, SendResult, TokioShellRunner, TransferRecord,
     TransferStatus, TransferStore, ZfsDriver, validate_transfer_id,
     wait_for_claimed_transfer_record,
 };
 #[cfg(test)]
-use ployz_storage_zfs::{move_claim_key, unique_transfer_id};
-use ployz_store_api::{DeployStore, MachineMembershipStore};
-use ployz_time::now_unix_secs;
+use ployz_volume_zfs::{move_claim_key, unique_transfer_id};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
@@ -45,9 +45,9 @@ fn transfer_info(record: &TransferRecord) -> VolumeZfsTransferInfo {
     }
 }
 
-fn transfer_state(state: &ployz_storage_zfs::TransferState) -> VolumeZfsTransferState {
+fn transfer_state(state: &ployz_volume_zfs::TransferState) -> VolumeZfsTransferState {
     match state {
-        ployz_storage_zfs::TransferState::Running {
+        ployz_volume_zfs::TransferState::Running {
             stage,
             snapshot_guid,
             from_snapshot_guid,
@@ -60,7 +60,7 @@ fn transfer_state(state: &ployz_storage_zfs::TransferState) -> VolumeZfsTransfer
             bytes_transferred: *bytes_transferred,
             last_error: last_error.clone(),
         },
-        ployz_storage_zfs::TransferState::Succeeded {
+        ployz_volume_zfs::TransferState::Succeeded {
             stage,
             snapshot_guid,
             from_snapshot_guid,
@@ -71,7 +71,7 @@ fn transfer_state(state: &ployz_storage_zfs::TransferState) -> VolumeZfsTransfer
             from_snapshot_guid: *from_snapshot_guid,
             bytes_transferred: *bytes_transferred,
         },
-        ployz_storage_zfs::TransferState::Failed {
+        ployz_volume_zfs::TransferState::Failed {
             stage,
             last_error,
             snapshot_guid,
@@ -84,7 +84,7 @@ fn transfer_state(state: &ployz_storage_zfs::TransferState) -> VolumeZfsTransfer
             from_snapshot_guid: *from_snapshot_guid,
             bytes_transferred: *bytes_transferred,
         },
-        ployz_storage_zfs::TransferState::Interrupted {
+        ployz_volume_zfs::TransferState::Interrupted {
             stage,
             last_error,
             snapshot_guid,

@@ -80,7 +80,7 @@ flowchart TB
     model["Domain model\nployz-model / ployz-spec / ployz-error / ployz-time"]
     contracts["Contracts\nstore/runtime/storage/cert APIs"]
     feature["Feature workflows\nployz-build / ployz-image / ployz-orchestrator"]
-    backends["Concrete backends\nruntime-docker / storage-zfs / cert-acme / host / wireguard"]
+    backends["Concrete backends\nruntime-docker / volume-zfs / cert-acme / host / wireguard"]
     protocol["Protocols\nployz-api / ployz-node-api"]
     transport["Transport\nployz-nats"]
     edges["Edges\nployzd / ployzctl / sdk / gateway / dns / sim / e2e"]
@@ -133,7 +133,7 @@ depending on `ployz-api`.
 
 **Test scenarios:**
 - Cert API compiles without runtime polling code.
-- `ployz-storage-zfs` compiles without depending on `ployz-api`.
+- `ployz-volume-zfs` compiles without depending on `ployz-api`.
 - Deploy, ZFS, machine storage, and dispatcher route tests keep passing.
 
 **Verification:** Current targeted verification plus `just test-boundaries`.

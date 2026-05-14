@@ -1,7 +1,5 @@
 use crate::certificates::{
-    AcmeAccountCoordinator, AcmeIssuerFactory, Http01ChallengeReadiness, IssuanceCoordinator,
-    LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, NoopAcmeIssuerFactory,
-    NoopIssuanceCoordinator, spawn_certificate_finalization_with_coordination,
+    LocalHttp01ChallengeReadiness, spawn_certificate_finalization_with_coordination,
     start_pending_orders,
 };
 use crate::deploy::lifecycle::{
@@ -9,21 +7,30 @@ use crate::deploy::lifecycle::{
 };
 use crate::deploy::managed_domains;
 use crate::deploy::participant::{self, DeployParticipantClient};
+use crate::deploy::participant_set::ParticipantSet;
 use crate::deploy::plan::{
     ResolvedPlan, VolumeChange, preflight_image_availability, resolve_plan, volume_record_change,
 };
 use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_participants};
+use crate::deploy::volume_execution::{
+    ExecutedVolumeClone, ExecutedVolumeMove, cleanup_uncommitted_volume_clones,
+    ensure_volume_clone_execution_supported, ensure_volume_move_execution_supported,
+    error_with_clone_cleanup_failures, execute_volume_clones, execute_volume_moves,
+};
 use crate::error::{DeployError, Error, Result, StoreError};
 use crate::model::{
     DeployApplyResult, DeployBaselineDiff, DeployChangeKind, DeployEvent, DeployId,
     DeployPhaseCommitPolicy, DeployPhaseCommitRecord, DeployPhaseFailure, DeployPhaseId,
     DeployPhasePlan, DeployPhaseRecord, DeployPhaseRecordState, DeployPhaseState, DeployPhaseWork,
-    DeployPreview, DeployPreviewBaseline, DeployRecord, DeployState, InstanceId, InstancePhase,
+    DeployPreview, DeployPreviewBaseline, DeployRecord, DeployState, InstanceId,
     InstanceStatusRecord, MachineId, MachineMembership, PreparedDeployRecord, PreparedDeployState,
     VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use futures_util::stream::{self, FuturesUnordered, StreamExt, TryStreamExt};
-use ployz_spec::{VolumeCloneConsistency, VolumeCloneDataPolicy};
+use ployz_cert_api::{
+    AcmeAccountCoordinator, AcmeIssuerFactory, Http01ChallengeReadiness, IssuanceCoordinator,
+    NoopAcmeAccountCoordinator, NoopAcmeIssuerFactory, NoopIssuanceCoordinator,
+};
 use ployz_store_api::{
     DeployCommit, DeployStore, InstanceStatusStore, MachineMembershipStore, StoreDriver,
 };
@@ -33,7 +40,6 @@ use std::sync::Arc;
 use tracing::warn;
 use uuid::Uuid;
 
-const PARTICIPANT_INSPECT_CONCURRENCY: usize = 64;
 const PHASE_MACHINE_CONCURRENCY: usize = 64;
 
 pub(super) fn new_deploy_id() -> DeployId {
@@ -93,119 +99,6 @@ struct PhaseStartupFailure {
 struct CleanupResult {
     events: Vec<DeployEvent>,
     errors: Vec<String>,
-}
-
-struct InspectedParticipant {
-    participant: MachineId,
-    instances: Vec<InstanceStatusRecord>,
-}
-
-pub(super) struct ParticipantSet {
-    machines: BTreeMap<MachineId, MachineMembership>,
-    instances: Vec<InstanceStatusRecord>,
-    namespace: ployz_spec::Namespace,
-    deploy_id: DeployId,
-}
-
-impl ParticipantSet {
-    pub(super) async fn inspect(
-        participant_client: &dyn DeployParticipantClient,
-        plan: &ResolvedPlan,
-        local_machine_id: &MachineId,
-        deploy_id: &DeployId,
-    ) -> Result<(Self, Vec<DeployEvent>)> {
-        let namespace = plan.namespace().clone();
-        Self::inspect_participants(
-            participant_client,
-            namespace,
-            plan.machine_map().clone(),
-            plan.participants().clone(),
-            local_machine_id,
-            deploy_id,
-        )
-        .await
-    }
-
-    async fn inspect_participants(
-        participant_client: &dyn DeployParticipantClient,
-        namespace: ployz_spec::Namespace,
-        machine_map: HashMap<MachineId, MachineMembership>,
-        participant_ids: BTreeSet<MachineId>,
-        local_machine_id: &MachineId,
-        deploy_id: &DeployId,
-    ) -> Result<(Self, Vec<DeployEvent>)> {
-        let sorted_participants = participant_ids.iter().cloned().collect::<Vec<_>>();
-        let inspected: Vec<InspectedParticipant> = stream::iter(sorted_participants.into_iter())
-            .map(|participant| {
-                let machine = machine_map.get(&participant).cloned();
-                let namespace = namespace.clone();
-                let deploy_id = deploy_id.clone();
-                async move {
-                    let Some(machine) = machine else {
-                        return Err(Error::Deploy(DeployError::ParticipantMissing {
-                            machine_id: participant.as_str().to_string(),
-                        }));
-                    };
-                    let instances = participant_client
-                        .inspect_namespace(&machine, &namespace, &deploy_id, local_machine_id)
-                        .await?;
-                    Ok(InspectedParticipant {
-                        participant,
-                        instances,
-                    })
-                }
-            })
-            .buffer_unordered(PARTICIPANT_INSPECT_CONCURRENCY)
-            .try_collect()
-            .await?;
-
-        let mut inspected = inspected;
-        inspected.sort_by(|left, right| left.participant.as_str().cmp(right.participant.as_str()));
-
-        let machines = participant_ids
-            .iter()
-            .map(|machine_id| {
-                let machine = machine_map.get(machine_id).cloned().ok_or_else(|| {
-                    Error::Deploy(DeployError::ParticipantMissing {
-                        machine_id: machine_id.as_str().to_string(),
-                    })
-                })?;
-                Ok((machine_id.clone(), machine))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?;
-        let mut events = Vec::new();
-        let mut instances = Vec::new();
-        for inspected in inspected {
-            let instance_count = inspected.instances.len();
-            events.push(DeployEvent {
-                step: "inspect".into(),
-                message: format!(
-                    "inspected '{}' ({} instances)",
-                    inspected.participant, instance_count
-                ),
-            });
-            instances.extend(inspected.instances);
-        }
-        instances.sort_by(|left, right| left.instance_id.as_str().cmp(right.instance_id.as_str()));
-
-        Ok((
-            Self {
-                machines,
-                instances,
-                namespace,
-                deploy_id: deploy_id.clone(),
-            },
-            events,
-        ))
-    }
-
-    fn get(&self, machine_id: &MachineId) -> Result<&MachineMembership> {
-        self.machines.get(machine_id).ok_or_else(|| {
-            Error::Deploy(DeployError::ParticipantMissing {
-                machine_id: machine_id.as_str().to_string(),
-            })
-        })
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1530,7 +1423,7 @@ async fn cleanup_uncommitted_volume_clones_after_failure(
         if let Err(error) = participant_client
             .cleanup_volume_clone(
                 &clone.target_machine,
-                &participants.namespace,
+                participants.namespace(),
                 deploy_id,
                 participant::CleanupVolumeCloneRequest {
                     volume: clone.volume_name.clone(),
@@ -1628,32 +1521,6 @@ struct PhaseExecutionError {
 struct PhaseWorkError {
     error: Error,
     started_or_attempted_services: BTreeSet<String>,
-}
-
-#[derive(Debug, Clone)]
-struct ExecutedVolumeMove {
-    volume_name: String,
-    from_machine: MachineId,
-    to_machine: MachineId,
-    phase_id: DeployPhaseId,
-    snapshot_name: String,
-    snapshot_guid: u64,
-    bytes_transferred: u64,
-}
-
-#[derive(Debug, Clone)]
-struct ExecutedVolumeClone {
-    volume_name: String,
-    source_namespace: ployz_spec::Namespace,
-    source_volume: String,
-    source_machine: MachineId,
-    target_machine: MachineId,
-    data_policy: VolumeCloneDataPolicy,
-    consistency: VolumeCloneConsistency,
-    phase_id: DeployPhaseId,
-    snapshot_name: String,
-    snapshot_guid: u64,
-    target_dataset: String,
 }
 
 async fn execute_phase(
@@ -2048,45 +1915,6 @@ fn phase_commit_timestamp(prepared: &PreparedDeploy, phase: &DeployPhasePlan) ->
     prepared.applying_record().started_at + u64::from(phase.order) + 1
 }
 
-fn ensure_volume_move_execution_supported(
-    participant_client: &dyn DeployParticipantClient,
-    plan: &ResolvedPlan,
-) -> Result<()> {
-    if participant_client.supports_volume_moves() {
-        return Ok(());
-    }
-    if let Some(volume) = plan
-        .volumes()
-        .iter()
-        .find(|volume| matches!(volume_record_change(volume), VolumeChange::Move))
-    {
-        return Err(Error::Deploy(DeployError::VolumeMoveExecutionUnsupported {
-            volume: volume.declaration.name.clone(),
-        }));
-    }
-    Ok(())
-}
-
-fn ensure_volume_clone_execution_supported(
-    participant_client: &dyn DeployParticipantClient,
-    plan: &ResolvedPlan,
-) -> Result<()> {
-    if participant_client.supports_volume_clones() {
-        return Ok(());
-    }
-    if let Some(volume) = plan.volumes().iter().find(|volume| {
-        volume.clone_source().is_some()
-            && matches!(volume_record_change(volume), VolumeChange::Create)
-    }) {
-        return Err(Error::Deploy(
-            DeployError::VolumeCloneExecutionUnsupported {
-                volume: volume.declaration.name.clone(),
-            },
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 pub(super) async fn run_phase_startup(
     store: &StoreDriver,
@@ -2289,465 +2117,6 @@ fn deploy_baseline_changed_error(
     })
 }
 
-async fn execute_volume_moves(
-    participant_client: &dyn DeployParticipantClient,
-    participants: &ParticipantSet,
-    plan: &ResolvedPlan,
-    phase_id: &DeployPhaseId,
-    included_volumes: Option<&BTreeSet<String>>,
-) -> Result<VolumeMoveExecution> {
-    let mut events = Vec::new();
-    let mut movements = BTreeMap::new();
-    for volume in plan
-        .volumes()
-        .iter()
-        .filter(|volume| matches!(volume_record_change(volume), VolumeChange::Move))
-    {
-        if let Some(included_volumes) = included_volumes
-            && !included_volumes.contains(&volume.declaration.name)
-        {
-            continue;
-        }
-        let Some(movement) = volume.movement() else {
-            continue;
-        };
-        participants.get(&movement.from_machine)?;
-        participants.get(&movement.to_machine)?;
-
-        let mut stopped_writer_events =
-            stop_volume_writers(participant_client, participants, plan, volume, "moving").await?;
-        events.append(&mut stopped_writer_events);
-
-        let snapshot = volume_move_snapshot_name(plan.manifest_hash(), &volume.declaration.name);
-        events.push(DeployEvent {
-            step: "move_volume".into(),
-            message: format!(
-                "moving volume {} from {} to {} using snapshot {}",
-                volume.declaration.name, movement.from_machine, movement.to_machine, snapshot
-            ),
-        });
-
-        let result = participant_client
-            .move_volume(
-                &movement.from_machine,
-                plan.namespace(),
-                &participants.deploy_id,
-                participant::MoveVolumeRequest {
-                    volume: volume.declaration.name.clone(),
-                    from_machine: movement.from_machine.clone(),
-                    to_machine: movement.to_machine.clone(),
-                    snapshot: snapshot.clone(),
-                },
-            )
-            .await?;
-        events.push(DeployEvent {
-            step: "move_volume".into(),
-            message: format!(
-                "moved volume {} to {} with snapshot {} guid {} ({} bytes)",
-                volume.declaration.name,
-                movement.to_machine,
-                result.snapshot,
-                result.snapshot_guid,
-                result.bytes_transferred
-            ),
-        });
-        movements.insert(
-            volume.declaration.name.clone(),
-            ExecutedVolumeMove {
-                volume_name: volume.declaration.name.clone(),
-                from_machine: movement.from_machine.clone(),
-                to_machine: movement.to_machine.clone(),
-                phase_id: phase_id.clone(),
-                snapshot_name: result.snapshot,
-                snapshot_guid: result.snapshot_guid,
-                bytes_transferred: result.bytes_transferred,
-            },
-        );
-    }
-    Ok(VolumeMoveExecution { events, movements })
-}
-
-async fn execute_volume_clones(
-    participant_client: &dyn DeployParticipantClient,
-    participants: &ParticipantSet,
-    plan: &ResolvedPlan,
-    phase_id: &DeployPhaseId,
-    included_volumes: Option<&BTreeSet<String>>,
-    stopped_uncommitted_instance_ids: &mut BTreeSet<String>,
-) -> Result<VolumeCloneExecution> {
-    let mut events = Vec::new();
-    let mut branches = BTreeMap::new();
-    let clone_volumes = plan
-        .volumes()
-        .iter()
-        .filter(|volume| {
-            volume.clone_source().is_some()
-                && matches!(volume_record_change(volume), VolumeChange::Create)
-        })
-        .filter(|volume| {
-            included_volumes
-                .map(|included| included.contains(&volume.declaration.name))
-                .unwrap_or(true)
-        })
-        .collect::<Vec<_>>();
-    let clone_volume_names = clone_volumes
-        .iter()
-        .map(|volume| volume.declaration.name.clone())
-        .collect::<Vec<_>>();
-    if !clone_volume_names.is_empty() {
-        events.push(DeployEvent {
-            step: "preflight_clone_replacement".into(),
-            message: format!(
-                "preflighting clone replacement for volumes {} by draining uncommitted namespace instances",
-                clone_volume_names.join(", ")
-            ),
-        });
-        let mut stopped_instance_events =
-            stop_uncommitted_namespace_instances_before_volume_clones(
-                participant_client,
-                participants,
-                plan,
-                &clone_volume_names,
-                stopped_uncommitted_instance_ids,
-            )
-            .await?;
-        events.append(&mut stopped_instance_events);
-    }
-
-    for volume in clone_volumes {
-        let Some(clone_source) = volume.clone_source() else {
-            continue;
-        };
-        participants.get(&clone_source.source_machine)?;
-        participants.get(&volume.machine_id)?;
-
-        let snapshot = volume_clone_snapshot_name(
-            &participants.deploy_id,
-            plan.manifest_hash(),
-            &volume.declaration.name,
-        );
-        events.push(DeployEvent {
-            step: "clone_volume".into(),
-            message: format!(
-                "cloning volume {} from {}/{} on {} using snapshot {} ({:?}, {:?})",
-                volume.declaration.name,
-                clone_source.source_namespace,
-                clone_source.source_volume,
-                clone_source.source_machine,
-                snapshot,
-                clone_source.data_policy,
-                clone_source.consistency
-            ),
-        });
-
-        let result = match participant_client
-            .clone_volume(
-                &clone_source.source_machine,
-                plan.namespace(),
-                &participants.deploy_id,
-                participant::CloneVolumeRequest {
-                    volume: volume.declaration.name.clone(),
-                    source_namespace: clone_source.source_namespace.clone(),
-                    source_volume: clone_source.source_volume.clone(),
-                    snapshot: snapshot.clone(),
-                    quota: volume.declaration.quota.to_string(),
-                    mode: volume.declaration.mode.to_string(),
-                    owner: volume.declaration.owner.to_string(),
-                },
-            )
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                let mut cleanup_branches = branches.clone();
-                cleanup_branches.insert(
-                    volume.declaration.name.clone(),
-                    ExecutedVolumeClone {
-                        volume_name: volume.declaration.name.clone(),
-                        source_namespace: clone_source.source_namespace.clone(),
-                        source_volume: clone_source.source_volume.clone(),
-                        source_machine: clone_source.source_machine.clone(),
-                        target_machine: volume.machine_id.clone(),
-                        data_policy: clone_source.data_policy,
-                        consistency: clone_source.consistency,
-                        phase_id: phase_id.clone(),
-                        snapshot_name: snapshot.clone(),
-                        snapshot_guid: 0,
-                        target_dataset: String::new(),
-                    },
-                );
-                let cleanup_errors = cleanup_uncommitted_volume_clones(
-                    participant_client,
-                    participants,
-                    plan.namespace(),
-                    &participants.deploy_id,
-                    &cleanup_branches,
-                )
-                .await;
-                return Err(error_with_clone_cleanup_failures(error, cleanup_errors));
-            }
-        };
-        events.push(DeployEvent {
-            step: "clone_volume".into(),
-            message: format!(
-                "cloned volume {} from {}/{} with snapshot {} guid {}",
-                volume.declaration.name,
-                clone_source.source_namespace,
-                clone_source.source_volume,
-                result.snapshot,
-                result.snapshot_guid
-            ),
-        });
-        branches.insert(
-            volume.declaration.name.clone(),
-            ExecutedVolumeClone {
-                volume_name: volume.declaration.name.clone(),
-                source_namespace: clone_source.source_namespace.clone(),
-                source_volume: clone_source.source_volume.clone(),
-                source_machine: clone_source.source_machine.clone(),
-                target_machine: volume.machine_id.clone(),
-                data_policy: clone_source.data_policy,
-                consistency: clone_source.consistency,
-                phase_id: phase_id.clone(),
-                snapshot_name: result.snapshot,
-                snapshot_guid: result.snapshot_guid,
-                target_dataset: result.target_dataset,
-            },
-        );
-    }
-    Ok(VolumeCloneExecution { events, branches })
-}
-
-struct VolumeMoveExecution {
-    events: Vec<DeployEvent>,
-    movements: BTreeMap<String, ExecutedVolumeMove>,
-}
-
-struct VolumeCloneExecution {
-    events: Vec<DeployEvent>,
-    branches: BTreeMap<String, ExecutedVolumeClone>,
-}
-
-async fn cleanup_uncommitted_volume_clones(
-    participant_client: &dyn DeployParticipantClient,
-    participants: &ParticipantSet,
-    namespace: &ployz_spec::Namespace,
-    deploy_id: &DeployId,
-    branches: &BTreeMap<String, ExecutedVolumeClone>,
-) -> Vec<String> {
-    let mut cleanup_errors = Vec::new();
-    for branch in branches.values() {
-        if let Err(error) = participant_client
-            .cleanup_volume_clone(
-                &branch.target_machine,
-                namespace,
-                deploy_id,
-                participant::CleanupVolumeCloneRequest {
-                    volume: branch.volume_name.clone(),
-                    source_namespace: branch.source_namespace.clone(),
-                    source_volume: branch.source_volume.clone(),
-                    snapshot: branch.snapshot_name.clone(),
-                },
-            )
-            .await
-        {
-            warn!(
-                ?error,
-                deploy_id = %deploy_id,
-                volume = %branch.volume_name,
-                machine_id = %branch.target_machine,
-                "failed to clean up uncommitted cloned volume after phase failure"
-            );
-            cleanup_errors.push(format!("{}: {error}", branch.volume_name));
-        } else if participants.get(&branch.target_machine).is_err() {
-            warn!(
-                deploy_id = %deploy_id,
-                volume = %branch.volume_name,
-                machine_id = %branch.target_machine,
-                "cleaned up cloned volume on machine outside participant set"
-            );
-        }
-    }
-    cleanup_errors
-}
-
-fn error_with_clone_cleanup_failures(error: Error, cleanup_errors: Vec<String>) -> Error {
-    if cleanup_errors.is_empty() {
-        return error;
-    }
-    Error::operation(
-        "deploy_apply",
-        format!(
-            "{error}; uncommitted volume clone cleanup failed: {}",
-            cleanup_errors.join("; ")
-        ),
-    )
-}
-
-async fn stop_volume_writers(
-    participant_client: &dyn DeployParticipantClient,
-    participants: &ParticipantSet,
-    plan: &ResolvedPlan,
-    moving_volume: &crate::deploy::plan::PlannedVolume,
-    operation: &str,
-) -> Result<Vec<DeployEvent>> {
-    let mut current_instances = BTreeMap::new();
-    let writer_services = moving_volume
-        .attached_services
-        .iter()
-        .chain(
-            moving_volume
-                .current()
-                .into_iter()
-                .flat_map(|record| record.attached_services.iter()),
-        )
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    for status in &participants.instances {
-        if status.namespace == *plan.namespace()
-            && writer_services.contains(&status.service)
-            && !matches!(status.phase, InstancePhase::Failed | InstancePhase::Removed)
-        {
-            current_instances.insert(
-                status.instance_id.as_str().to_string(),
-                (
-                    status.instance_id.clone(),
-                    status.machine_id.clone(),
-                    status.service.clone(),
-                ),
-            );
-        }
-    }
-    for writer in &moving_volume.current_writer_slots {
-        current_instances.insert(
-            writer.slot.active_instance_id.as_str().to_string(),
-            (
-                writer.slot.active_instance_id.clone(),
-                writer.slot.machine_id.clone(),
-                writer.service.clone(),
-            ),
-        );
-    }
-
-    let mut events = Vec::new();
-    for (_instance_id_key, (instance_id, machine_id, service)) in current_instances {
-        participants.get(&machine_id)?;
-        participant_client
-            .drain_instance(
-                &machine_id,
-                plan.namespace(),
-                &participants.deploy_id,
-                &instance_id,
-            )
-            .await?;
-        events.push(DeployEvent {
-            step: "stop_volume_writer".into(),
-            message: format!(
-                "drained writer instance {} for service {} before {} volume {}",
-                instance_id, service, operation, moving_volume.declaration.name
-            ),
-        });
-        participant_client
-            .remove_instance(
-                &machine_id,
-                plan.namespace(),
-                &participants.deploy_id,
-                &instance_id,
-            )
-            .await?;
-        events.push(DeployEvent {
-            step: "stop_volume_writer".into(),
-            message: format!(
-                "removed writer instance {} for service {} before {} volume {}",
-                instance_id, service, operation, moving_volume.declaration.name
-            ),
-        });
-    }
-    Ok(events)
-}
-
-async fn stop_uncommitted_namespace_instances_before_volume_clones(
-    participant_client: &dyn DeployParticipantClient,
-    participants: &ParticipantSet,
-    plan: &ResolvedPlan,
-    cloned_volume_names: &[String],
-    stopped_uncommitted_instance_ids: &mut BTreeSet<String>,
-) -> Result<Vec<DeployEvent>> {
-    let cloned_volumes = cloned_volume_names.join(", ");
-    let committed_instance_ids = plan
-        .services()
-        .iter()
-        .flat_map(|service| service.slots.iter())
-        .filter_map(|slot| slot.current())
-        .map(|slot| slot.active_instance_id.as_str())
-        .collect::<BTreeSet<_>>();
-    let mut current_instances = BTreeMap::new();
-    for status in &participants.instances {
-        if status.namespace == *plan.namespace()
-            && !committed_instance_ids.contains(status.instance_id.as_str())
-            && !stopped_uncommitted_instance_ids.contains(status.instance_id.as_str())
-            && !matches!(status.phase, InstancePhase::Failed | InstancePhase::Removed)
-        {
-            current_instances.insert(
-                status.instance_id.as_str().to_string(),
-                (
-                    status.instance_id.clone(),
-                    status.machine_id.clone(),
-                    status.service.clone(),
-                ),
-            );
-        }
-    }
-    let mut events = Vec::new();
-    for (_instance_id_key, (instance_id, machine_id, service)) in current_instances {
-        participants.get(&machine_id)?;
-        participant_client
-            .drain_instance(
-                &machine_id,
-                plan.namespace(),
-                &participants.deploy_id,
-                &instance_id,
-            )
-            .await?;
-        stopped_uncommitted_instance_ids.insert(instance_id.as_str().to_string());
-        events.push(DeployEvent {
-            step: "stop_uncommitted_instance".into(),
-            message: format!(
-                "drained uncommitted instance {} for service {} before cloning volumes {}",
-                instance_id, service, cloned_volumes
-            ),
-        });
-        participant_client
-            .remove_instance(
-                &machine_id,
-                plan.namespace(),
-                &participants.deploy_id,
-                &instance_id,
-            )
-            .await?;
-        stopped_uncommitted_instance_ids.insert(instance_id.as_str().to_string());
-        events.push(DeployEvent {
-            step: "stop_uncommitted_instance".into(),
-            message: format!(
-                "removed uncommitted instance {} for service {} before cloning volumes {}",
-                instance_id, service, cloned_volumes
-            ),
-        });
-    }
-    Ok(events)
-}
-
-fn volume_move_snapshot_name(manifest_hash: &str, volume: &str) -> String {
-    format!("ployz-move-{manifest_hash}-{volume}")
-}
-
-fn volume_clone_snapshot_name(deploy_id: &DeployId, manifest_hash: &str, volume: &str) -> String {
-    format!(
-        "ployz-clone-{}-{manifest_hash}-{volume}",
-        deploy_id.as_str()
-    )
-}
-
 async fn run_machine_start_queue(
     store: &StoreDriver,
     participant_client: &dyn DeployParticipantClient,
@@ -2778,8 +2147,8 @@ async fn run_machine_start_queue(
         let status = match participant_client
             .start_candidate(
                 &machine.id,
-                &participants.namespace,
-                &participants.deploy_id,
+                participants.namespace(),
+                participants.deploy_id(),
                 participant::StartCandidateRequest {
                     service: task.service.clone(),
                     slot_id: task.slot_id.clone(),
@@ -3187,7 +2556,7 @@ async fn cleanup_stale_instances(
 
     let cleanup_results: Vec<CleanupResult> = stream::iter(stale_by_machine.into_iter())
         .map(|(machine_id, statuses)| async move {
-            let Some(machine) = participants.machines.get(&machine_id) else {
+            let Some(machine) = participants.get(&machine_id).ok() else {
                 return Ok(CleanupResult {
                     events: Vec::new(),
                     errors: Vec::new(),
@@ -3227,8 +2596,8 @@ async fn run_machine_cleanup(
         let drain_result = participant_client
             .drain_instance(
                 &machine.id,
-                &participants.namespace,
-                &participants.deploy_id,
+                participants.namespace(),
+                participants.deploy_id(),
                 &status.instance_id,
             )
             .await;
@@ -3240,8 +2609,8 @@ async fn run_machine_cleanup(
         let remove_result = participant_client
             .remove_instance(
                 &machine.id,
-                &participants.namespace,
-                &participants.deploy_id,
+                participants.namespace(),
+                participants.deploy_id(),
                 &status.instance_id,
             )
             .await;

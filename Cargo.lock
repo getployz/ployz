@@ -3459,9 +3459,9 @@ dependencies = [
  "ployz-runtime-api",
  "ployz-spec",
  "ployz-storage-api",
- "ployz-storage-zfs",
  "ployz-store-api",
  "ployz-time",
+ "ployz-volume-zfs",
  "rand 0.10.0",
  "reqwest",
  "serde",
@@ -3518,22 +3518,6 @@ name = "ployz-storage-api"
 version = "0.6.1"
 
 [[package]]
-name = "ployz-storage-zfs"
-version = "0.6.1"
-dependencies = [
- "async-trait",
- "ployz-error",
- "ployz-model",
- "ployz-spec",
- "ployz-storage-api",
- "ployz-time",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "ployz-store-api"
 version = "0.6.1"
 dependencies = [
@@ -3562,6 +3546,22 @@ dependencies = [
 [[package]]
 name = "ployz-time"
 version = "0.6.1"
+
+[[package]]
+name = "ployz-volume-zfs"
+version = "0.6.1"
+dependencies = [
+ "async-trait",
+ "ployz-error",
+ "ployz-model",
+ "ployz-spec",
+ "ployz-storage-api",
+ "ployz-time",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "ployz-wireguard-backends"
@@ -3614,6 +3614,7 @@ dependencies = [
  "ployz-api",
  "ployz-build",
  "ployz-cert-acme",
+ "ployz-cert-api",
  "ployz-config",
  "ployz-dns",
  "ployz-error",
@@ -3631,10 +3632,10 @@ dependencies = [
  "ployz-sdk",
  "ployz-spec",
  "ployz-storage-api",
- "ployz-storage-zfs",
  "ployz-store-api",
  "ployz-store-memory",
  "ployz-time",
+ "ployz-volume-zfs",
  "ployz-wireguard-backends",
  "prometheus",
  "rand 0.10.0",

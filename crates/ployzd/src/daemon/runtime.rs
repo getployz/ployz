@@ -9,7 +9,7 @@ use ployz_runtime_api::{
     RuntimeImageImportResult,
 };
 use ployz_runtime_docker::runtime::ContainerEngine;
-use ployz_storage_zfs::{TokioShellRunner, ZfsDriver};
+use ployz_volume_zfs::{TokioShellRunner, ZfsDriver};
 
 use super::DaemonState;
 use crate::runtime_profile::{MeshBuildRequest, MeshRuntimeComponents};

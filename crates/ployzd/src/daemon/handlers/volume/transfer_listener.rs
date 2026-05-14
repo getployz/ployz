@@ -6,8 +6,8 @@ use std::time::Duration;
 use ployz_model::MachineId;
 use ployz_runtime_api::RuntimeHandle;
 use ployz_spec::Namespace;
-use ployz_storage_zfs::{ShellRunner, TokioShellRunner, ZfsDriver};
 use ployz_store_api::{DeployStore, MachineMembershipStore, StoreDriver};
+use ployz_volume_zfs::{ShellRunner, TokioShellRunner, ZfsDriver};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -620,9 +620,9 @@ mod tests {
         MachineTopology, OverlayIp, PublicKey, StorageParticipation, VolumeRecord,
     };
     use ployz_spec::{Namespace, VolumeScope};
-    use ployz_storage_zfs::{ShellOutput, ShellRunner, ZfsDriver};
     use ployz_store_api::{DeployCommit, DeployStore, MachineMembershipStore, StoreDriver};
     use ployz_store_memory::StoreDriverMemoryExt as _;
+    use ployz_volume_zfs::{ShellOutput, ShellRunner, ZfsDriver};
     use std::collections::{BTreeMap, VecDeque};
     use std::net::{IpAddr, Ipv6Addr, SocketAddr};
     use std::sync::{Arc, Mutex};

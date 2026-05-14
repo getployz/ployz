@@ -17,7 +17,7 @@ members = [
     "crates/ployz-runtime-api",
     "crates/ployz-runtime-docker",
     "crates/ployz-storage-api",
-    "crates/ployz-storage-zfs",
+    "crates/ployz-volume-zfs",
     "crates/ployz-store-api",
     "crates/ployz-store-memory",
     "crates/ployz-sim",

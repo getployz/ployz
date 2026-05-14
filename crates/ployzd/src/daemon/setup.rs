@@ -10,6 +10,10 @@ use crate::mesh_state::bootstrap::{
 };
 use crate::mesh_state::network::NetworkConfig;
 use ployz_cert_acme::InstantAcmeIssuerFactory;
+use ployz_cert_api::{
+    AcmeAccountCoordinator, AcmeIssuerFactory, CertificateManagerConfig, Http01ChallengeReadiness,
+    IssuanceCoordinator,
+};
 use ployz_config::RuntimeTarget;
 use ployz_dns::DnsConfig;
 use ployz_error::Error as PloyzError;
@@ -21,9 +25,8 @@ use ployz_nats::config as nats_config;
 use ployz_nats::{CertRenewalConsumerPolicy, NatsCertRenewalJobConsumer};
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::certificates::{
-    AcmeAccountCoordinator, AcmeIssuerFactory, CertificateManagerConfig, CertificateRenewalTask,
-    Http01ChallengeReadiness, IssuanceCoordinator, LocalHttp01ChallengeReadiness,
-    finalize_due_certificates, process_renewal_job,
+    CertificateRenewalTask, LocalHttp01ChallengeReadiness, finalize_due_certificates,
+    process_renewal_job,
 };
 use ployz_orchestrator::coordination::SubnetReservationCoordinator;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;

@@ -16,6 +16,7 @@ ebpf-native = ["ployz-orchestrator/ebpf-native"]
 ployz-api = { path = "../ployz-api" }
 ployz-build = { path = "../ployz-build" }
 ployz-image = { path = "../ployz-image" }
+ployz-cert-api = { path = "../ployz-cert-api" }
 ployz-cert-acme = { path = "../ployz-cert-acme" }
 ployz-config = { path = "../ployz-config" }
 ployz-host-backends = { path = "../ployz-host-backends" }
@@ -27,7 +28,7 @@ ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-runtime-docker = { path = "../ployz-runtime-docker" }
 ployz-sdk = { path = "../ployz-sdk" }
 ployz-storage-api = { path = "../ployz-storage-api" }
-ployz-storage-zfs = { path = "../ployz-storage-zfs" }
+ployz-volume-zfs = { path = "../ployz-volume-zfs" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-store-memory = { path = "../ployz-store-memory" }
 ployz-error = { path = "../ployz-error" }

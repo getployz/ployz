@@ -1,1 +1,1 @@
-pub use ployz_storage_zfs::*;
+pub use ployz_volume_zfs::*;

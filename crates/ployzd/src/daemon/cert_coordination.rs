@@ -3,6 +3,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ployz_api::{AcmeHttp01ChallengeStatus, AcmeHttp01StatusPayload, DaemonPayload};
+use ployz_cert_api::{
+    AccountAcquisition, AcmeAccountCoordinator, Http01ChallengeReadiness, IssuanceAcquisition,
+    IssuanceCoordinator, IssuanceHold,
+};
 use ployz_error::{CertificateError, Error, Result};
 use ployz_model::{
     MachineId, MachineLifecycle, MachineMembership, RoutingState, ServiceReleaseRecord,
@@ -10,10 +14,7 @@ use ployz_model::{
 };
 use ployz_nats::{Lease, LockAcquireError, NatsLocks};
 use ployz_nats::{acme_account_lock, cert_lock};
-use ployz_orchestrator::certificates::{
-    AccountAcquisition, AcmeAccountCoordinator, HTTP01_CHALLENGE_VISIBILITY_TIMEOUT,
-    Http01ChallengeReadiness, IssuanceAcquisition, IssuanceCoordinator, IssuanceHold,
-};
+use ployz_orchestrator::certificates::HTTP01_CHALLENGE_VISIBILITY_TIMEOUT;
 use ployz_orchestrator::coordination::ReservationId;
 use ployz_spec::{RouteSpec, ServiceSpec};
 use ployz_store_api::{CertificateStore, RoutingStateStore, StoreDriver};
