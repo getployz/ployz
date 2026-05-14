@@ -47,18 +47,19 @@ impl DaemonState {
                     Ok(runtime) => runtime,
                     Err(response) => return response,
                 };
-                let manifest =
-                    match render_migrate_service_manifest(&active.mesh.store, &request).await {
-                        Ok(manifest) => manifest,
-                        Err(error) => {
-                            runtime
-                                .release(
-                                    "failed to release NATS deploy lock after migrate render failure",
-                                )
-                                .await;
-                            return self.err(error.code(), error.to_string());
-                        }
-                    };
+                let manifest_result =
+                    render_migrate_service_manifest(&active.mesh.store, &request).await;
+                let manifest = match manifest_result {
+                    Ok(manifest) => manifest,
+                    Err(error) => {
+                        runtime
+                            .release(
+                                "failed to release NATS deploy lock after migrate render failure",
+                            )
+                            .await;
+                        return self.err(error.code(), error.to_string());
+                    }
+                };
                 self.apply_manifest_with_runtime(
                     active,
                     &manifest,
