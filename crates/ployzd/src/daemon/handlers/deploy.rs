@@ -36,7 +36,6 @@ use ployz_model::{
     DeployPhaseFailure, DeployPhaseState, DeployRecordState, PreparedDeployRecord,
     PreparedDeployState,
 };
-use ployz_nats::RpcPolicy;
 use ployz_nats::{NatsDeployLock, NatsLocks, NatsStore};
 use ployz_orchestrator::coordination::ReservationId;
 use ployz_orchestrator::deploy::{
@@ -57,13 +56,6 @@ use volume_transfer::{run_volume_move_rpc, volume_move_result_from_transfer};
 
 const DEPLOY_LOCK_TTL: Duration = Duration::from_secs(30 * 60);
 const DEPLOY_LOCK_RENEW_INTERVAL: Duration = Duration::from_secs(10 * 60);
-const DEPLOY_PARTICIPANT_RPC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-const DEPLOY_VOLUME_MOVE_START_RPC_TIMEOUT: Duration = Duration::from_secs(60);
-const DEPLOY_VOLUME_MOVE_POLL_RPC_TIMEOUT: Duration = Duration::from_secs(60);
-const DEPLOY_VOLUME_MOVE_RPC_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
-const DEPLOY_VOLUME_MOVE_POLL_INTERVAL: Duration = Duration::from_secs(2);
-const DEPLOY_VOLUME_CLONE_RPC_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
-const DEPLOY_VOLUME_CLONE_CLEANUP_RPC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const DEPLOY_PREPARE_TTL_SECS: u64 = 24 * 60 * 60;
 struct DeployApplyRuntime {
     nats_store: NatsStore,
@@ -630,9 +622,7 @@ impl DaemonState {
             ployz_nats::NatsNodeRpcClient::for_store(&runtime.nats_store),
         );
         let participant_client = NatsDeployParticipantClient::new(
-            ployz_nats::NatsNodeRpcClient::for_store(&runtime.nats_store).with_policy(RpcPolicy {
-                timeout: DEPLOY_PARTICIPANT_RPC_TIMEOUT,
-            }),
+            ployz_nats::NatsNodeRpcClient::for_store(&runtime.nats_store),
         );
 
         let deploy_id = new_deploy_id();
@@ -686,9 +676,7 @@ impl DaemonState {
             ployz_nats::NatsNodeRpcClient::for_store(&runtime.nats_store),
         );
         let participant_client = NatsDeployParticipantClient::new(
-            ployz_nats::NatsNodeRpcClient::for_store(&runtime.nats_store).with_policy(RpcPolicy {
-                timeout: DEPLOY_PARTICIPANT_RPC_TIMEOUT,
-            }),
+            ployz_nats::NatsNodeRpcClient::for_store(&runtime.nats_store),
         );
 
         let deploy_id = prepared_deploy_id.clone();

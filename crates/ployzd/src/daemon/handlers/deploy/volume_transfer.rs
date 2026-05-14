@@ -5,7 +5,8 @@ use ployz_error::Error as PloyzError;
 use ployz_model::{DeployId, MachineId};
 use ployz_node_api::{NodeVolumeZfsTransferPayload, NodeVolumeZfsTransferState};
 use ployz_node_runtime::{
-    NodeRpcError, NodeRpcErrorKind, NodeRpcPolicy, VolumeZfsNodeClient, VolumeZfsRpcTransport,
+    DEPLOY_VOLUME_MOVE_POLL_RPC_POLICY, NodeRpcError, NodeRpcErrorKind, NodeRpcPolicy,
+    VolumeZfsNodeClient, VolumeZfsRpcTransport,
 };
 use ployz_orchestrator::deploy::participant::{MoveVolumeRequest, MoveVolumeResult};
 use ployz_spec::Namespace;
@@ -54,7 +55,7 @@ pub(super) async fn run_volume_move_rpc<R: VolumeZfsRpcTransport>(
         machine_id,
         response.transfer.id,
         wait_timeout,
-        super::DEPLOY_VOLUME_MOVE_POLL_RPC_TIMEOUT,
+        DEPLOY_VOLUME_MOVE_POLL_RPC_POLICY.timeout,
         poll_interval,
     )
     .await

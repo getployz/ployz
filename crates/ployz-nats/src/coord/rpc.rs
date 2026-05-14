@@ -464,8 +464,24 @@ mod tests {
         let scope = NatsScope::local_default();
 
         assert_eq!(
+            NodeCommandSubject::deploy_inspect_namespace(&machine_id).subject_in(&scope),
+            "ployz.v1.local.auth-default.rpc.node.machine-a.deploy.inspect_namespace"
+        );
+        assert_eq!(
             NodeCommandSubject::deploy_start_candidate(&machine_id).subject_in(&scope),
             "ployz.v1.local.auth-default.rpc.node.machine-a.deploy.start_candidate"
+        );
+        assert_eq!(
+            NodeCommandSubject::deploy_clone_volume(&machine_id).subject_in(&scope),
+            "ployz.v1.local.auth-default.rpc.node.machine-a.deploy.clone_volume"
+        );
+        assert_eq!(
+            NodeCommandSubject::deploy_drain_instance(&machine_id).subject_in(&scope),
+            "ployz.v1.local.auth-default.rpc.node.machine-a.deploy.drain_instance"
+        );
+        assert_eq!(
+            NodeCommandSubject::deploy_remove_instance(&machine_id).subject_in(&scope),
+            "ployz.v1.local.auth-default.rpc.node.machine-a.deploy.remove_instance"
         );
     }
 

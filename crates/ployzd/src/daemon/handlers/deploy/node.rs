@@ -6,8 +6,13 @@ use ployz_error::DeployError;
 use ployz_error::Error as PloyzError;
 use ployz_model::SlotId;
 use ployz_model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineMembership};
-use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
-use ployz_node_api::NodeRequest;
+use ployz_nats::NatsNodeRpcClient;
+use ployz_node_runtime::{
+    DEPLOY_PARTICIPANT_RPC_POLICY, DEPLOY_VOLUME_CLONE_CLEANUP_RPC_POLICY,
+    DEPLOY_VOLUME_CLONE_RPC_POLICY, DEPLOY_VOLUME_MOVE_POLL_INTERVAL,
+    DEPLOY_VOLUME_MOVE_START_RPC_POLICY, DEPLOY_VOLUME_MOVE_WAIT_TIMEOUT, DeployNodeClient,
+    NodeRpcError, NodeRpcErrorKind,
+};
 use ployz_orchestrator::deploy::participant::{
     CleanupVolumeCloneRequest, CloneVolumeRequest, CloneVolumeResult, DeployParticipantClient,
     MoveVolumeRequest, MoveVolumeResult, StartCandidateRequest,
@@ -16,7 +21,7 @@ use ployz_runtime_docker::deploy::remote::DeployAgent;
 use ployz_spec::Namespace;
 
 use super::volume_transfer::run_volume_move_rpc;
-use crate::daemon::node_rpc::NatsVolumeZfsRpcTransport;
+use crate::daemon::node_rpc::{NatsDeployRpcTransport, NatsVolumeZfsRpcTransport};
 
 impl DaemonState {
     pub async fn handle_deploy_node_inspect_namespace(
@@ -175,13 +180,19 @@ enum DeployNodeOp {
 
 #[derive(Clone)]
 pub(super) struct NatsDeployParticipantClient {
-    client: NatsNodeRpcClient,
+    deploy_client: DeployNodeClient<NatsDeployRpcTransport>,
+    volume_transport: NatsVolumeZfsRpcTransport,
 }
 
 impl NatsDeployParticipantClient {
     #[must_use]
     pub(super) fn new(client: NatsNodeRpcClient) -> Self {
-        Self { client }
+        let deploy_client = DeployNodeClient::new(NatsDeployRpcTransport::new(client.clone()))
+            .with_policy(DEPLOY_PARTICIPANT_RPC_POLICY);
+        Self {
+            deploy_client,
+            volume_transport: NatsVolumeZfsRpcTransport::new(client),
+        }
     }
 }
 
@@ -202,29 +213,11 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         deploy_id: &DeployId,
         _coordinator_id: &MachineId,
     ) -> ployz_error::Result<Vec<InstanceStatusRecord>> {
-        let response = self
-            .client
-            .request(
-                NodeCommandSubject::deploy_inspect_namespace(&machine.id),
-                &NodeRequest::DeployNodeInspectNamespace {
-                    namespace: namespace.as_str().to_string(),
-                    deploy_id: deploy_id.as_str().to_string(),
-                },
-            )
+        let payload = self
+            .deploy_client
+            .inspect_namespace(&machine.id, namespace.as_str(), deploy_id)
             .await
-            .map_err(PloyzError::from)?;
-        if !response.is_ok() {
-            return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
-                operation: "deploy_node_inspect",
-                code: response.code().to_string(),
-                message: response.message().to_string(),
-            }));
-        }
-        let Some(DaemonPayload::DeployNamespaceSnapshot(payload)) = response.payload() else {
-            return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
-                payload: "namespace snapshot",
-            }));
-        };
+            .map_err(|error| deploy_rpc_error(error, "namespace snapshot"))?;
         Ok(payload.instances)
     }
 
@@ -235,34 +228,20 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         deploy_id: &DeployId,
         request: StartCandidateRequest,
     ) -> ployz_error::Result<InstanceStatusRecord> {
-        let response = self
-            .client
-            .request(
-                NodeCommandSubject::deploy_start_candidate(machine_id),
-                &NodeRequest::DeployNodeStartCandidate {
-                    namespace: namespace.as_str().to_string(),
-                    deploy_id: deploy_id.as_str().to_string(),
-                    service: request.service,
-                    slot_id: request.slot_id.as_str().to_string(),
-                    instance_id: request.instance_id.as_str().to_string(),
-                    spec_json: request.spec_json,
-                    volumes_json: request.volumes_json,
-                },
+        let payload = self
+            .deploy_client
+            .start_candidate(
+                machine_id,
+                namespace.as_str(),
+                deploy_id,
+                &request.service,
+                &request.slot_id,
+                &request.instance_id,
+                &request.spec_json,
+                &request.volumes_json,
             )
             .await
-            .map_err(PloyzError::from)?;
-        if !response.is_ok() {
-            return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
-                operation: "deploy_node_start_candidate",
-                code: response.code().to_string(),
-                message: response.message().to_string(),
-            }));
-        }
-        let Some(DaemonPayload::DeployCandidateStarted(payload)) = response.payload() else {
-            return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
-                payload: "candidate",
-            }));
-        };
+            .map_err(|error| deploy_rpc_error(error, "candidate"))?;
         Ok(payload.status)
     }
 
@@ -273,16 +252,15 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         deploy_id: &DeployId,
         request: MoveVolumeRequest,
     ) -> ployz_error::Result<MoveVolumeResult> {
-        let volume_transport = NatsVolumeZfsRpcTransport::new(self.client.clone());
         run_volume_move_rpc(
-            &volume_transport,
+            &self.volume_transport,
             machine_id,
             namespace,
             deploy_id,
             request,
-            super::DEPLOY_VOLUME_MOVE_START_RPC_TIMEOUT,
-            super::DEPLOY_VOLUME_MOVE_RPC_TIMEOUT,
-            super::DEPLOY_VOLUME_MOVE_POLL_INTERVAL,
+            DEPLOY_VOLUME_MOVE_START_RPC_POLICY.timeout,
+            DEPLOY_VOLUME_MOVE_WAIT_TIMEOUT,
+            DEPLOY_VOLUME_MOVE_POLL_INTERVAL,
         )
         .await
     }
@@ -294,40 +272,23 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         deploy_id: &DeployId,
         request: CloneVolumeRequest,
     ) -> ployz_error::Result<CloneVolumeResult> {
-        let response = self
-            .client
-            .clone()
-            .with_policy(RpcPolicy {
-                timeout: super::DEPLOY_VOLUME_CLONE_RPC_TIMEOUT,
-            })
-            .request(
-                NodeCommandSubject::deploy_clone_volume(machine_id),
-                &NodeRequest::DeployNodeCloneVolume {
-                    namespace: namespace.as_str().to_string(),
-                    deploy_id: deploy_id.as_str().to_string(),
-                    volume: request.volume,
-                    source_namespace: request.source_namespace.as_str().to_string(),
-                    source_volume: request.source_volume,
-                    snapshot: request.snapshot,
-                    quota: request.quota,
-                    mode: request.mode,
-                    owner: request.owner,
-                },
+        let payload = self
+            .deploy_client
+            .with_policy(DEPLOY_VOLUME_CLONE_RPC_POLICY)
+            .clone_volume(
+                machine_id,
+                namespace.as_str(),
+                deploy_id,
+                &request.volume,
+                request.source_namespace.as_str(),
+                &request.source_volume,
+                &request.snapshot,
+                &request.quota,
+                &request.mode,
+                &request.owner,
             )
             .await
-            .map_err(PloyzError::from)?;
-        if !response.is_ok() {
-            return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
-                operation: "deploy_node_clone_volume",
-                code: response.code().to_string(),
-                message: response.message().to_string(),
-            }));
-        }
-        let Some(DaemonPayload::VolumeZfsClone(payload)) = response.payload() else {
-            return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
-                payload: "volume zfs clone",
-            }));
-        };
+            .map_err(|error| deploy_rpc_error(error, "volume zfs clone"))?;
         Ok(CloneVolumeResult {
             snapshot: payload.snapshot,
             snapshot_guid: payload.guid,
@@ -342,33 +303,19 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         deploy_id: &DeployId,
         request: CleanupVolumeCloneRequest,
     ) -> ployz_error::Result<()> {
-        let response = self
-            .client
-            .clone()
-            .with_policy(RpcPolicy {
-                timeout: super::DEPLOY_VOLUME_CLONE_CLEANUP_RPC_TIMEOUT,
-            })
-            .request(
-                NodeCommandSubject::deploy_clone_volume(machine_id),
-                &NodeRequest::DeployNodeCleanupUncommittedVolumeClone {
-                    namespace: namespace.as_str().to_string(),
-                    deploy_id: deploy_id.as_str().to_string(),
-                    volume: request.volume,
-                    source_namespace: request.source_namespace.as_str().to_string(),
-                    source_volume: request.source_volume,
-                    snapshot: request.snapshot,
-                },
+        self.deploy_client
+            .with_policy(DEPLOY_VOLUME_CLONE_CLEANUP_RPC_POLICY)
+            .cleanup_volume_clone(
+                machine_id,
+                namespace.as_str(),
+                deploy_id,
+                &request.volume,
+                request.source_namespace.as_str(),
+                &request.source_volume,
+                &request.snapshot,
             )
             .await
-            .map_err(PloyzError::from)?;
-        if response.is_ok() {
-            return Ok(());
-        }
-        Err(PloyzError::Deploy(DeployError::RemoteNodeError {
-            operation: "deploy_node_cleanup_uncommitted_volume_clone",
-            code: response.code().to_string(),
-            message: response.message().to_string(),
-        }))
+            .map_err(|error| deploy_rpc_error(error, "cleanup volume clone"))
     }
 
     async fn drain_instance(
@@ -378,16 +325,10 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         deploy_id: &DeployId,
         instance_id: &InstanceId,
     ) -> ployz_error::Result<()> {
-        self.expect_ok(
-            NodeCommandSubject::deploy_drain_instance(machine_id),
-            NodeRequest::DeployNodeDrainInstance {
-                namespace: namespace.as_str().to_string(),
-                deploy_id: deploy_id.as_str().to_string(),
-                instance_id: instance_id.as_str().to_string(),
-            },
-            "deploy_node_drain",
-        )
-        .await
+        self.deploy_client
+            .drain_instance(machine_id, namespace.as_str(), deploy_id, instance_id)
+            .await
+            .map_err(|error| deploy_rpc_error(error, "drain instance"))
     }
 
     async fn remove_instance(
@@ -397,38 +338,85 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         deploy_id: &DeployId,
         instance_id: &InstanceId,
     ) -> ployz_error::Result<()> {
-        self.expect_ok(
-            NodeCommandSubject::deploy_remove_instance(machine_id),
-            NodeRequest::DeployNodeRemoveInstance {
-                namespace: namespace.as_str().to_string(),
-                deploy_id: deploy_id.as_str().to_string(),
-                instance_id: instance_id.as_str().to_string(),
-            },
-            "deploy_node_remove",
-        )
-        .await
+        self.deploy_client
+            .remove_instance(machine_id, namespace.as_str(), deploy_id, instance_id)
+            .await
+            .map_err(|error| deploy_rpc_error(error, "remove instance"))
     }
 }
 
-impl NatsDeployParticipantClient {
-    async fn expect_ok(
-        &self,
-        subject: NodeCommandSubject,
-        request: NodeRequest,
-        operation: &'static str,
-    ) -> ployz_error::Result<()> {
-        let response = self
-            .client
-            .request(subject, &request)
-            .await
-            .map_err(PloyzError::from)?;
-        if response.is_ok() {
-            return Ok(());
+fn deploy_rpc_error(error: NodeRpcError, payload: &'static str) -> PloyzError {
+    match error.kind {
+        NodeRpcErrorKind::MissingPayload | NodeRpcErrorKind::Decode => {
+            PloyzError::Deploy(DeployError::MissingNodePayload { payload })
         }
-        Err(PloyzError::Deploy(DeployError::RemoteNodeError {
-            operation,
-            code: response.code().to_string(),
-            message: response.message().to_string(),
-        }))
+        NodeRpcErrorKind::Transport | NodeRpcErrorKind::Remote => {
+            PloyzError::Deploy(DeployError::RemoteNodeError {
+                operation: error.operation,
+                code: error.code,
+                message: error.message,
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deploy_rpc_error_maps_payload_shape_errors_to_missing_payload() {
+        assert_eq!(
+            deploy_rpc_error(
+                NodeRpcError::missing_payload("deploy_node_inspect", "namespace snapshot"),
+                "namespace snapshot",
+            ),
+            PloyzError::Deploy(DeployError::MissingNodePayload {
+                payload: "namespace snapshot",
+            })
+        );
+        assert_eq!(
+            deploy_rpc_error(
+                NodeRpcError::decode(
+                    "deploy_node_start_candidate",
+                    "candidate",
+                    "missing field status",
+                ),
+                "candidate",
+            ),
+            PloyzError::Deploy(DeployError::MissingNodePayload {
+                payload: "candidate",
+            })
+        );
+    }
+
+    #[test]
+    fn deploy_rpc_error_maps_transport_and_remote_errors_to_remote_node_error() {
+        assert_eq!(
+            deploy_rpc_error(
+                NodeRpcError::transport("deploy_node_drain", "NATS_RPC_TIMEOUT", "timed out"),
+                "unused",
+            ),
+            PloyzError::Deploy(DeployError::RemoteNodeError {
+                operation: "deploy_node_drain",
+                code: "NATS_RPC_TIMEOUT".into(),
+                message: "timed out".into(),
+            })
+        );
+        assert_eq!(
+            deploy_rpc_error(
+                NodeRpcError::remote(
+                    "deploy_node_cleanup_uncommitted_volume_clone",
+                    "REMOTE_FAILED",
+                    "remote failed",
+                ),
+                "unused",
+            ),
+            PloyzError::Deploy(DeployError::RemoteNodeError {
+                operation: "deploy_node_cleanup_uncommitted_volume_clone",
+                code: "REMOTE_FAILED".into(),
+                message: "remote failed".into(),
+            })
+        );
     }
 }

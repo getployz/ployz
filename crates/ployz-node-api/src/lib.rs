@@ -1,12 +1,15 @@
 use ployz_error::{Error, Result};
 use ployz_model::{
-    ImageDistributeRequest, ImageReceiveSessionRequest, ImageReceivedImportRequest, MachineId,
-    MachineMembership, MachineSelfTransition, MachineStorageAuthorityPeer, NetworkId,
-    StorageParticipation, StorageReplicaPolicy,
+    ImageDistributeRequest, ImageReceiveSessionRequest, ImageReceivedImportRequest,
+    InstanceStatusRecord, MachineId, MachineMembership, MachineSelfTransition,
+    MachineStorageAuthorityPeer, NetworkId, StorageParticipation, StorageReplicaPolicy,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+pub const DEPLOY_NAMESPACE_SNAPSHOT_PAYLOAD_KIND: &str = "deploy-namespace-snapshot";
+pub const DEPLOY_CANDIDATE_STARTED_PAYLOAD_KIND: &str = "deploy-candidate-started";
+pub const VOLUME_ZFS_CLONE_PAYLOAD_KIND: &str = "volume-zfs-clone";
 pub const VOLUME_ZFS_SNAPSHOT_PAYLOAD_KIND: &str = "volume-zfs-snapshot";
 pub const VOLUME_ZFS_PEER_SEND_PAYLOAD_KIND: &str = "volume-zfs-peer-send";
 pub const VOLUME_ZFS_TRANSFER_PAYLOAD_KIND: &str = "volume-zfs-transfer";
@@ -106,6 +109,29 @@ impl NodeResponse {
             )
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeDeployNamespaceSnapshotPayload {
+    pub instances: Vec<InstanceStatusRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeDeployCandidateStartedPayload {
+    pub status: InstanceStatusRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeVolumeZfsClonePayload {
+    pub namespace: String,
+    pub volume: String,
+    pub source_namespace: String,
+    pub source_volume: String,
+    pub machine_id: MachineId,
+    pub source_dataset: String,
+    pub target_dataset: String,
+    pub snapshot: String,
+    pub guid: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -476,5 +502,41 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn node_deploy_and_clone_payloads_preserve_tagged_wire_shape() {
+        let snapshot_response = NodeResponse::success(
+            "ok",
+            Some(serde_json::json!({
+                "kind": DEPLOY_NAMESPACE_SNAPSHOT_PAYLOAD_KIND,
+                "instances": []
+            })),
+        );
+        let snapshot: NodeDeployNamespaceSnapshotPayload = snapshot_response
+            .payload_as(DEPLOY_NAMESPACE_SNAPSHOT_PAYLOAD_KIND)
+            .expect("deploy namespace snapshot should decode");
+        assert!(snapshot.instances.is_empty());
+
+        let clone_response = NodeResponse::success(
+            "ok",
+            Some(serde_json::json!({
+                "kind": VOLUME_ZFS_CLONE_PAYLOAD_KIND,
+                "namespace": "prod",
+                "volume": "data",
+                "source_namespace": "staging",
+                "source_volume": "source-data",
+                "machine_id": "machine-a",
+                "source_dataset": "pool/staging/source-data",
+                "target_dataset": "pool/prod/data",
+                "snapshot": "snap",
+                "guid": 42
+            })),
+        );
+        let clone: NodeVolumeZfsClonePayload = clone_response
+            .payload_as(VOLUME_ZFS_CLONE_PAYLOAD_KIND)
+            .expect("volume clone payload should decode");
+        assert_eq!(clone.target_dataset, "pool/prod/data");
+        assert_eq!(clone.guid, 42);
     }
 }
