@@ -1,14 +1,23 @@
+use std::collections::BTreeMap;
+
 use ployz_error::{Error, Result};
 use ployz_model::{
-    ImageDistributeRequest, ImageReceiveSessionRequest, ImageReceivedImportRequest,
-    InstanceStatusRecord, MachineId, MachineMembership, MachineSelfTransition,
-    MachineStorageAuthorityPeer, NetworkId, StorageParticipation, StorageReplicaPolicy,
+    ImageAvailabilityRecord, ImageDigest, ImageDistributePayload, ImageDistributeRequest,
+    ImageDistributeValidationFailure, ImageDistributeValidationPayload, ImagePlatform,
+    ImageReceiveSessionPayload, ImageReceiveSessionRequest, ImageReceivedImportPayload,
+    ImageReceivedImportRequest, ImageTransferTargetResult, InstanceStatusRecord, MachineId,
+    MachineMembership, MachineSelfTransition, MachineStorageAuthorityPeer, NetworkId,
+    StorageParticipation, StorageReplicaPolicy,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub const DEPLOY_NAMESPACE_SNAPSHOT_PAYLOAD_KIND: &str = "deploy-namespace-snapshot";
 pub const DEPLOY_CANDIDATE_STARTED_PAYLOAD_KIND: &str = "deploy-candidate-started";
+pub const IMAGE_DISTRIBUTE_PAYLOAD_KIND: &str = "image-distribute";
+pub const IMAGE_DISTRIBUTE_VALIDATION_PAYLOAD_KIND: &str = "image-distribute-validation";
+pub const IMAGE_RECEIVE_SESSION_PAYLOAD_KIND: &str = "image-receive-session";
+pub const IMAGE_RECEIVED_IMPORT_PAYLOAD_KIND: &str = "image-received-import";
 pub const VOLUME_ZFS_CLONE_PAYLOAD_KIND: &str = "volume-zfs-clone";
 pub const VOLUME_ZFS_SNAPSHOT_PAYLOAD_KIND: &str = "volume-zfs-snapshot";
 pub const VOLUME_ZFS_PEER_SEND_PAYLOAD_KIND: &str = "volume-zfs-peer-send";
@@ -119,6 +128,85 @@ pub struct NodeDeployNamespaceSnapshotPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeDeployCandidateStartedPayload {
     pub status: InstanceStatusRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeImageDistributePayload {
+    pub operation_id: String,
+    pub digest: ImageDigest,
+    pub source_machine: MachineId,
+    pub targets: Vec<ImageTransferTargetResult>,
+}
+
+impl From<NodeImageDistributePayload> for ImageDistributePayload {
+    fn from(payload: NodeImageDistributePayload) -> Self {
+        Self {
+            operation_id: payload.operation_id,
+            digest: payload.digest,
+            source_machine: payload.source_machine,
+            targets: payload.targets,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeImageDistributeValidationPayload {
+    pub digest: ImageDigest,
+    pub source_machine: MachineId,
+    pub target_machines: Vec<MachineId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<ImagePlatform>,
+    pub failure: ImageDistributeValidationFailure,
+}
+
+impl From<NodeImageDistributeValidationPayload> for ImageDistributeValidationPayload {
+    fn from(payload: NodeImageDistributeValidationPayload) -> Self {
+        Self {
+            request: ImageDistributeRequest {
+                digest: payload.digest,
+                source_machine: payload.source_machine,
+                target_machines: payload.target_machines,
+                platform: payload.platform,
+            },
+            failure: payload.failure,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeImageReceiveSessionPayload {
+    pub target_machine: MachineId,
+    pub endpoint: String,
+    pub token: String,
+    pub expires_at_unix_secs: u64,
+    pub headers: BTreeMap<String, String>,
+}
+
+impl From<NodeImageReceiveSessionPayload> for ImageReceiveSessionPayload {
+    fn from(payload: NodeImageReceiveSessionPayload) -> Self {
+        Self {
+            target_machine: payload.target_machine,
+            endpoint: payload.endpoint,
+            token: payload.token,
+            expires_at_unix_secs: payload.expires_at_unix_secs,
+            headers: payload.headers,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeImageReceivedImportPayload {
+    pub target_machine: MachineId,
+    pub record: ImageAvailabilityRecord,
+}
+
+impl From<NodeImageReceivedImportPayload> for ImageReceivedImportPayload {
+    fn from(payload: NodeImageReceivedImportPayload) -> Self {
+        Self {
+            target_machine: payload.target_machine,
+            record: payload.record,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -538,5 +626,28 @@ mod tests {
             .expect("volume clone payload should decode");
         assert_eq!(clone.target_dataset, "pool/prod/data");
         assert_eq!(clone.guid, 42);
+    }
+
+    #[test]
+    fn node_image_payloads_preserve_tagged_wire_shape() {
+        let response = NodeResponse::success(
+            "created",
+            Some(serde_json::json!({
+                "kind": IMAGE_RECEIVE_SESSION_PAYLOAD_KIND,
+                "target_machine": "machine-b",
+                "endpoint": "http://127.0.0.1:4320/v2/ployz/image-push-1",
+                "token": "token-1",
+                "expires_at_unix_secs": 1_777_646_000_u64,
+                "headers": {
+                    "x-ployz-image-operation": "image-push-1"
+                }
+            })),
+        );
+
+        let payload: NodeImageReceiveSessionPayload = response
+            .payload_as(IMAGE_RECEIVE_SESSION_PAYLOAD_KIND)
+            .expect("image receive session payload should decode");
+        assert_eq!(payload.target_machine, MachineId::new("machine-b"));
+        assert_eq!(payload.token, "token-1");
     }
 }

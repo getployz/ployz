@@ -8,9 +8,11 @@ pub use node_clients::{
     DEPLOY_VOLUME_CLONE_RPC_POLICY, DEPLOY_VOLUME_MOVE_POLL_INTERVAL,
     DEPLOY_VOLUME_MOVE_POLL_RPC_POLICY, DEPLOY_VOLUME_MOVE_START_RPC_POLICY,
     DEPLOY_VOLUME_MOVE_WAIT_TIMEOUT, DeployNodeClient, DeployRpcOperation, DeployRpcTransport,
-    NodeClientError, NodeClientRegistry, NodeCommand, NodePeerClient, NodeRpcError,
-    NodeRpcErrorKind, NodeRpcPolicy, VolumeZfsNodeClient, VolumeZfsRpcOperation,
-    VolumeZfsRpcTransport,
+    IMAGE_DISTRIBUTE_RPC_POLICY, IMAGE_RECEIVE_SESSION_RPC_POLICY,
+    IMAGE_RECEIVED_IMPORT_RPC_POLICY, ImageNodeClient, ImageNodePayload, ImageNodeResponse,
+    ImageRpcOperation, ImageRpcTransport, NodeClientError, NodeClientRegistry, NodeCommand,
+    NodePeerClient, NodeRpcError, NodeRpcErrorKind, NodeRpcPolicy, VolumeZfsNodeClient,
+    VolumeZfsRpcOperation, VolumeZfsRpcTransport,
 };
 use ployz_supervision::{HealthRegistry, Supervisor};
 use tokio_util::sync::CancellationToken;
