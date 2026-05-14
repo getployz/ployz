@@ -1,7 +1,23 @@
-use ployz_api::DeployFailurePayload;
+use crate::daemon::DaemonState;
+use ployz_api::{DaemonPayload, DaemonResponse, DeployFailurePayload};
 use ployz_error::DeployError;
 use ployz_error::Error as PloyzError;
 use ployz_model::{DeployId, PreparedDeployState};
+
+impl DaemonState {
+    pub(super) fn deploy_error_response(&self, code: &str, error: PloyzError) -> DaemonResponse {
+        let code = deploy_error_code(code, &error);
+        if let Some(payload) = deploy_failure_payload_for_error(&error) {
+            self.err_with_payload(
+                code,
+                error.to_string(),
+                Some(DaemonPayload::DeployFailure(payload)),
+            )
+        } else {
+            self.err(code, error.to_string())
+        }
+    }
+}
 
 pub(super) fn deploy_error_code<'a>(default_code: &'a str, error: &PloyzError) -> &'a str {
     match error {

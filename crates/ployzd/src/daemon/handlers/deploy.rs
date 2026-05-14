@@ -10,9 +10,8 @@ mod volume_transfer;
 
 use crate::daemon::DaemonState;
 use manifest_render::export_manifest;
-use ployz_api::{DaemonPayload, DaemonResponse, DeployOptions};
+use ployz_api::{DaemonResponse, DeployOptions};
 use ployz_config::RuntimeTarget;
-use ployz_error::Error as PloyzError;
 #[cfg(test)]
 use ployz_model::DeployPhaseRecordState;
 use ployz_orchestrator::deploy::DeployApplyPreconditions;
@@ -24,7 +23,6 @@ use ployz_store_memory::StoreDriverMemoryExt as _;
 use manifest_render::{BranchRenderError, MigrateRenderError, stable_fingerprint};
 #[cfg(test)]
 pub(super) use planning::DEPLOY_PREPARE_TTL_SECS;
-use responses::{deploy_error_code, deploy_failure_payload_for_error};
 #[cfg(test)]
 use volume_transfer::{run_volume_move_rpc, volume_move_result_from_transfer};
 
@@ -70,19 +68,6 @@ impl DaemonState {
         };
         self.apply_manifest_with_runtime(active, &manifest, runtime, preconditions)
             .await
-    }
-
-    fn deploy_error_response(&self, code: &str, error: PloyzError) -> DaemonResponse {
-        let code = deploy_error_code(code, &error);
-        if let Some(payload) = deploy_failure_payload_for_error(&error) {
-            self.err_with_payload(
-                code,
-                error.to_string(),
-                Some(DaemonPayload::DeployFailure(payload)),
-            )
-        } else {
-            self.err(code, error.to_string())
-        }
     }
 
     pub async fn handle_deploy_export(&self, namespace: &str) -> DaemonResponse {
