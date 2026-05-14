@@ -3,7 +3,11 @@ mod node_clients;
 use std::future::Future;
 use std::time::Duration;
 
-pub use node_clients::{NodeClientError, NodeClientRegistry, NodeCommand, NodePeerClient};
+pub use node_clients::{
+    NodeClientError, NodeClientRegistry, NodeCommand, NodePeerClient, NodeRpcError,
+    NodeRpcErrorKind, NodeRpcPolicy, VolumeZfsNodeClient, VolumeZfsRpcOperation,
+    VolumeZfsRpcTransport,
+};
 use ployz_supervision::{HealthRegistry, Supervisor};
 use tokio_util::sync::CancellationToken;
 

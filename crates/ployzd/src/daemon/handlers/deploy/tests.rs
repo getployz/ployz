@@ -1,10 +1,7 @@
 use super::*;
 use crate::daemon::RetainedSubnet;
 use crate::mesh_state::network::NetworkConfig;
-use ployz_api::{
-    BranchResourceMode, DaemonRequest, DeployFailurePayload, VolumeZfsTransferInfo,
-    VolumeZfsTransferPayload, VolumeZfsTransferState,
-};
+use ployz_api::{BranchResourceMode, DaemonRequest, DeployFailurePayload};
 use ployz_model::{
     DeployBaselineComponent, DeployBaselineDiff, DeployId, DeployPhaseCommitPolicy, DeployPhaseId,
     DeployPhaseRecord, DeployPhaseRollbackPolicy, DeployPreview, DeployPreviewBaseline,
@@ -13,8 +10,13 @@ use ployz_model::{
     PreparedDeployState, PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord,
     VolumeRecord,
 };
-use ployz_nats::{NodeCommandSubject, RpcFailure, RpcFailureKind, RpcPolicy};
-use ployz_node_api::NodeRequest;
+use ployz_node_api::{
+    NodeRequest, NodeResponse, NodeVolumeZfsTransferInfo, NodeVolumeZfsTransferPayload,
+    NodeVolumeZfsTransferState, VOLUME_ZFS_TRANSFER_PAYLOAD_KIND,
+};
+use ployz_node_runtime::{
+    NodeRpcError, NodeRpcPolicy, VolumeZfsRpcOperation, VolumeZfsRpcTransport,
+};
 use ployz_orchestrator::deploy::participant::MoveVolumeRequest;
 use ployz_orchestrator::{Mesh, WireguardDriver};
 use ployz_runtime_api::Identity;
@@ -1785,7 +1787,7 @@ fn volume_move_result_requires_success_evidence() {
             "bytes_transferred": 4096
         }
     });
-    serde_json::from_value::<VolumeZfsTransferInfo>(missing_guid)
+    serde_json::from_value::<NodeVolumeZfsTransferInfo>(missing_guid)
         .expect_err("success state requires snapshot guid");
 
     let missing_bytes = serde_json::json!({
@@ -1803,7 +1805,7 @@ fn volume_move_result_requires_success_evidence() {
             "snapshot_guid": 42
         }
     });
-    serde_json::from_value::<VolumeZfsTransferInfo>(missing_bytes)
+    serde_json::from_value::<NodeVolumeZfsTransferInfo>(missing_bytes)
         .expect_err("success state requires bytes");
 }
 
@@ -1839,16 +1841,13 @@ async fn volume_move_rpc_waits_for_terminal_transfer_success() {
     let [send, first_poll, second_poll] = requests.as_slice() else {
         panic!("expected send plus two polls, got {requests:?}");
     };
-    assert!(send.0.contains("volume.zfs.send"), "{send:?}");
-    assert!(
-        first_poll.0.contains("volume.zfs.transfer_get"),
-        "{first_poll:?}"
-    );
-    assert!(
-        second_poll.0.contains("volume.zfs.transfer_get"),
-        "{second_poll:?}"
-    );
-    match &send.1 {
+    assert_eq!(send.0, MachineId::new("machine-a"));
+    assert_eq!(send.1, VolumeZfsRpcOperation::Send);
+    assert_eq!(first_poll.0, MachineId::new("machine-a"));
+    assert_eq!(first_poll.1, VolumeZfsRpcOperation::TransferGet);
+    assert_eq!(second_poll.0, MachineId::new("machine-a"));
+    assert_eq!(second_poll.1, VolumeZfsRpcOperation::TransferGet);
+    match &send.2 {
         NodeRequest::VolumeZfsSend {
             namespace,
             volume,
@@ -1876,8 +1875,9 @@ async fn volume_move_rpc_waits_for_terminal_transfer_success() {
 
 #[tokio::test]
 async fn volume_move_rpc_classifies_transport_failure_as_volume_move_failure() {
-    let client = FakeMoveRpcClient::with_responses(vec![Err(RpcFailure::new(
-        RpcFailureKind::NoResponders,
+    let client = FakeMoveRpcClient::with_responses(vec![Err(NodeRpcError::new(
+        "volume_zfs_send",
+        "NATS_RPC_NO_RESPONDERS",
         "no responder",
     ))]);
 
@@ -1943,7 +1943,7 @@ async fn volume_move_rpc_rejects_source_machine_mismatch_before_rpc() {
 
 #[tokio::test]
 async fn volume_move_rpc_surfaces_start_response_failure() {
-    let client = FakeMoveRpcClient::with_responses(vec![Ok(DaemonResponse::error(
+    let client = FakeMoveRpcClient::with_responses(vec![Ok(NodeResponse::error(
         "START_FAILED",
         "cannot snapshot",
         None,
@@ -1979,7 +1979,7 @@ async fn volume_move_rpc_surfaces_start_response_failure() {
 
 #[tokio::test]
 async fn volume_move_rpc_requires_start_payload() {
-    let client = FakeMoveRpcClient::with_responses(vec![Ok(DaemonResponse::success("ok", None))]);
+    let client = FakeMoveRpcClient::with_responses(vec![Ok(NodeResponse::success("ok", None))]);
 
     let error = run_volume_move_rpc(
         &client,
@@ -2011,8 +2011,9 @@ async fn volume_move_rpc_requires_start_payload() {
 async fn volume_move_rpc_retries_transient_transfer_poll_failure() {
     let client = FakeMoveRpcClient::with_responses(vec![
         Ok(transfer_response("running", None, None, None)),
-        Err(RpcFailure::new(
-            RpcFailureKind::NoResponders,
+        Err(NodeRpcError::new(
+            "volume_zfs_transfer_get",
+            "NATS_RPC_NO_RESPONDERS",
             "no responder",
         )),
         Ok(transfer_response("succeeded", Some(42), Some(4096), None)),
@@ -2044,7 +2045,7 @@ async fn volume_move_rpc_retries_transient_transfer_poll_failure() {
 async fn volume_move_rpc_surfaces_terminal_poll_response_failure() {
     let client = FakeMoveRpcClient::with_responses(vec![
         Ok(transfer_response("running", None, None, None)),
-        Ok(DaemonResponse::error(
+        Ok(NodeResponse::error(
             "TRANSFER_FAILED",
             "receiver disconnected",
             None,
@@ -2083,7 +2084,7 @@ async fn volume_move_rpc_surfaces_terminal_poll_response_failure() {
 async fn volume_move_rpc_requires_poll_payload() {
     let client = FakeMoveRpcClient::with_responses(vec![
         Ok(transfer_response("running", None, None, None)),
-        Ok(DaemonResponse::success("ok", None)),
+        Ok(NodeResponse::success("ok", None)),
     ]);
 
     let error = run_volume_move_rpc(
@@ -2947,13 +2948,13 @@ async fn export_manifest_surfaces_stored_spec_service_mismatch() {
 
 #[derive(Clone, Default)]
 struct FakeMoveRpcClient {
-    responses: Arc<Mutex<VecDeque<std::result::Result<DaemonResponse, RpcFailure>>>>,
-    requests: Arc<Mutex<Vec<(String, NodeRequest)>>>,
-    policies: Arc<Mutex<Vec<RpcPolicy>>>,
+    responses: Arc<Mutex<VecDeque<std::result::Result<NodeResponse, NodeRpcError>>>>,
+    requests: Arc<Mutex<Vec<(MachineId, VolumeZfsRpcOperation, NodeRequest)>>>,
+    policies: Arc<Mutex<Vec<NodeRpcPolicy>>>,
 }
 
 impl FakeMoveRpcClient {
-    fn with_responses(responses: Vec<std::result::Result<DaemonResponse, RpcFailure>>) -> Self {
+    fn with_responses(responses: Vec<std::result::Result<NodeResponse, NodeRpcError>>) -> Self {
         Self {
             responses: Arc::new(Mutex::new(responses.into())),
             requests: Arc::new(Mutex::new(Vec::new())),
@@ -2961,31 +2962,33 @@ impl FakeMoveRpcClient {
         }
     }
 
-    fn requests(&self) -> Vec<(String, NodeRequest)> {
+    fn requests(&self) -> Vec<(MachineId, VolumeZfsRpcOperation, NodeRequest)> {
         self.requests.lock().expect("requests").clone()
     }
 
-    fn policies(&self) -> Vec<RpcPolicy> {
+    fn policies(&self) -> Vec<NodeRpcPolicy> {
         self.policies.lock().expect("policies").clone()
     }
 }
 
 #[async_trait::async_trait]
-impl DeployMoveRpcClient for FakeMoveRpcClient {
-    fn with_rpc_policy(&self, policy: RpcPolicy) -> Self {
+impl VolumeZfsRpcTransport for FakeMoveRpcClient {
+    fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self {
         self.policies.lock().expect("policies").push(policy);
         self.clone()
     }
 
-    async fn request(
+    async fn volume_zfs_request(
         &self,
-        subject: NodeCommandSubject,
+        machine_id: &MachineId,
+        operation: VolumeZfsRpcOperation,
         request: &NodeRequest,
-    ) -> std::result::Result<DaemonResponse, RpcFailure> {
-        self.requests
-            .lock()
-            .expect("requests")
-            .push((format!("{subject:?}"), request.clone()));
+    ) -> std::result::Result<NodeResponse, NodeRpcError> {
+        self.requests.lock().expect("requests").push((
+            machine_id.clone(),
+            operation,
+            request.clone(),
+        ));
         self.responses
             .lock()
             .expect("responses")
@@ -2999,16 +3002,22 @@ fn transfer_response(
     snapshot_guid: Option<u64>,
     bytes_transferred: Option<u64>,
     last_error: Option<String>,
-) -> DaemonResponse {
-    DaemonResponse::success(
-        "ok",
-        Some(DaemonPayload::VolumeZfsTransfer(transfer_payload(
-            status,
-            snapshot_guid,
-            bytes_transferred,
-            last_error,
-        ))),
-    )
+) -> NodeResponse {
+    let mut payload = serde_json::to_value(transfer_payload(
+        status,
+        snapshot_guid,
+        bytes_transferred,
+        last_error,
+    ))
+    .expect("transfer payload to json");
+    payload
+        .as_object_mut()
+        .expect("transfer payload object")
+        .insert(
+            "kind".into(),
+            serde_json::Value::String(VOLUME_ZFS_TRANSFER_PAYLOAD_KIND.into()),
+        );
+    NodeResponse::success("ok", Some(payload))
 }
 
 fn transfer_payload(
@@ -3016,9 +3025,9 @@ fn transfer_payload(
     snapshot_guid: Option<u64>,
     bytes_transferred: Option<u64>,
     last_error: Option<String>,
-) -> VolumeZfsTransferPayload {
-    VolumeZfsTransferPayload {
-        transfer: VolumeZfsTransferInfo {
+) -> NodeVolumeZfsTransferPayload {
+    NodeVolumeZfsTransferPayload {
+        transfer: NodeVolumeZfsTransferInfo {
             id: "transfer-1".into(),
             namespace: "prod".into(),
             volume: "data".into(),
@@ -3029,27 +3038,27 @@ fn transfer_payload(
             started_at: 1,
             updated_at: 2,
             state: match status {
-                "succeeded" => VolumeZfsTransferState::Succeeded {
+                "succeeded" => NodeVolumeZfsTransferState::Succeeded {
                     stage: "finished".into(),
                     snapshot_guid: snapshot_guid.expect("test success snapshot guid"),
                     from_snapshot_guid: None,
                     bytes_transferred: bytes_transferred.expect("test success bytes"),
                 },
-                "failed" => VolumeZfsTransferState::Failed {
+                "failed" => NodeVolumeZfsTransferState::Failed {
                     stage: "finished".into(),
                     last_error: last_error.unwrap_or_else(|| "transfer failed".into()),
                     snapshot_guid,
                     from_snapshot_guid: None,
                     bytes_transferred,
                 },
-                "interrupted" => VolumeZfsTransferState::Interrupted {
+                "interrupted" => NodeVolumeZfsTransferState::Interrupted {
                     stage: "finished".into(),
                     last_error,
                     snapshot_guid,
                     from_snapshot_guid: None,
                     bytes_transferred,
                 },
-                "running" => VolumeZfsTransferState::Running {
+                "running" => NodeVolumeZfsTransferState::Running {
                     stage: "finished".into(),
                     snapshot_guid,
                     from_snapshot_guid: None,

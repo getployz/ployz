@@ -3440,7 +3440,11 @@ name = "ployz-node-runtime"
 version = "0.6.1"
 dependencies = [
  "async-trait",
+ "ployz-model",
+ "ployz-node-api",
  "ployz-supervision",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-util",
 ]
@@ -3734,6 +3738,7 @@ dependencies = [
  "ployz-model",
  "ployz-nats",
  "ployz-node-api",
+ "ployz-node-runtime",
  "ployz-operation-store",
  "ployz-orchestrator",
  "ployz-runtime-api",

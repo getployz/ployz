@@ -25,6 +25,7 @@ ployz-host-backends = { path = "../ployz-host-backends" }
 ployz-metrics = { path = "../ployz-metrics" }
 ployz-nats = { path = "../ployz-nats" }
 ployz-node-api = { path = "../ployz-node-api" }
+ployz-node-runtime = { path = "../ployz-node-runtime" }
 ployz-operation-store = { path = "../ployz-operation-store" }
 ployz-orchestrator = { path = "../ployz-orchestrator" }
 ployz-runtime-api = { path = "../ployz-runtime-api" }

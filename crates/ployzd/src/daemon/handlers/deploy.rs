@@ -53,7 +53,7 @@ use ployz_store_memory::StoreDriverMemoryExt as _;
 use manifest_render::{BranchRenderError, MigrateRenderError, stable_fingerprint};
 use responses::{deploy_error_code, deploy_failure_payload_for_error};
 #[cfg(test)]
-use volume_transfer::{DeployMoveRpcClient, run_volume_move_rpc, volume_move_result_from_transfer};
+use volume_transfer::{run_volume_move_rpc, volume_move_result_from_transfer};
 
 const DEPLOY_LOCK_TTL: Duration = Duration::from_secs(30 * 60);
 const DEPLOY_LOCK_RENEW_INTERVAL: Duration = Duration::from_secs(10 * 60);

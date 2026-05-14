@@ -1,41 +1,17 @@
 use std::time::Duration;
 
-use ployz_api::{DaemonPayload, DaemonResponse, VolumeZfsTransferPayload, VolumeZfsTransferState};
 use ployz_error::DeployError;
 use ployz_error::Error as PloyzError;
 use ployz_model::{DeployId, MachineId};
-use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcFailure, RpcPolicy};
-use ployz_node_api::NodeRequest;
+use ployz_node_api::{NodeVolumeZfsTransferPayload, NodeVolumeZfsTransferState};
+use ployz_node_runtime::{
+    NodeRpcError, NodeRpcErrorKind, NodeRpcPolicy, VolumeZfsNodeClient, VolumeZfsRpcTransport,
+};
 use ployz_orchestrator::deploy::participant::{MoveVolumeRequest, MoveVolumeResult};
 use ployz_spec::Namespace;
 
-#[async_trait::async_trait]
-pub(super) trait DeployMoveRpcClient: Clone + Send + Sync {
-    fn with_rpc_policy(&self, policy: RpcPolicy) -> Self;
-
-    async fn request(
-        &self,
-        subject: NodeCommandSubject,
-        request: &NodeRequest,
-    ) -> std::result::Result<DaemonResponse, RpcFailure>;
-}
-
-#[async_trait::async_trait]
-impl DeployMoveRpcClient for NatsNodeRpcClient {
-    fn with_rpc_policy(&self, policy: RpcPolicy) -> Self {
-        self.clone().with_policy(policy)
-    }
-
-    async fn request(
-        &self,
-        subject: NodeCommandSubject,
-        request: &NodeRequest,
-    ) -> std::result::Result<DaemonResponse, RpcFailure> {
-        NatsNodeRpcClient::request(self, subject, request).await
-    }
-}
-pub(super) async fn run_volume_move_rpc<R: DeployMoveRpcClient>(
-    client: &R,
+pub(super) async fn run_volume_move_rpc<R: VolumeZfsRpcTransport>(
+    transport: &R,
     machine_id: &MachineId,
     namespace: &Namespace,
     _deploy_id: &DeployId,
@@ -58,38 +34,25 @@ pub(super) async fn run_volume_move_rpc<R: DeployMoveRpcClient>(
             ),
         ));
     }
-    let move_client = client.with_rpc_policy(RpcPolicy {
+    let client = VolumeZfsNodeClient::new(transport.clone());
+    let move_client = client.with_policy(NodeRpcPolicy {
         timeout: start_timeout,
     });
     let response = move_client
-        .request(
-            NodeCommandSubject::volume_zfs_send(machine_id),
-            &NodeRequest::VolumeZfsSend {
-                namespace: namespace.as_str().to_string(),
-                volume,
-                snapshot,
-                target_machine: to_machine.as_str().to_string(),
-                from_snapshot: None,
-            },
+        .send(
+            machine_id,
+            namespace.as_str(),
+            &volume,
+            &snapshot,
+            &to_machine,
+            None,
         )
         .await
-        .map_err(|error| volume_move_rpc_error("volume_zfs_send", error))?;
-    if !response.is_ok() {
-        return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
-            operation: "volume_zfs_send",
-            code: response.code().to_string(),
-            message: response.message().to_string(),
-        }));
-    }
-    let Some(DaemonPayload::VolumeZfsTransfer(payload)) = response.payload() else {
-        return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
-            payload: "volume zfs transfer",
-        }));
-    };
+        .map_err(volume_move_rpc_error)?;
     wait_for_volume_transfer(
-        client,
+        &client,
         machine_id,
-        payload.transfer.id,
+        response.transfer.id,
         wait_timeout,
         super::DEPLOY_VOLUME_MOVE_POLL_RPC_TIMEOUT,
         poll_interval,
@@ -97,8 +60,8 @@ pub(super) async fn run_volume_move_rpc<R: DeployMoveRpcClient>(
     .await
 }
 
-async fn wait_for_volume_transfer<R: DeployMoveRpcClient>(
-    client: &R,
+async fn wait_for_volume_transfer<R: VolumeZfsRpcTransport>(
+    client: &VolumeZfsNodeClient<R>,
     machine_id: &MachineId,
     transfer_id: String,
     timeout: Duration,
@@ -114,24 +77,22 @@ async fn wait_for_volume_transfer<R: DeployMoveRpcClient>(
                 format!("timed out waiting for zfs transfer '{transfer_id}'"),
             ));
         };
-        let poll_client = client.with_rpc_policy(RpcPolicy {
+        let poll_client = client.with_policy(NodeRpcPolicy {
             timeout: std::cmp::min(poll_rpc_timeout, remaining),
         });
         let response = match tokio::time::timeout(
             remaining,
-            poll_client.request(
-                NodeCommandSubject::volume_zfs_transfer_get(machine_id),
-                &NodeRequest::VolumeZfsTransferGet {
-                    id: transfer_id.clone(),
-                },
-            ),
+            poll_client.transfer_get(machine_id, &transfer_id),
         )
         .await
         {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {
+                if error.kind != NodeRpcErrorKind::Transport {
+                    return Err(volume_move_rpc_error(error));
+                }
                 if started.elapsed() >= timeout {
-                    return Err(volume_move_rpc_error("volume_zfs_transfer_get", error));
+                    return Err(volume_move_rpc_error(error));
                 }
                 tracing::warn!(
                     %error,
@@ -151,19 +112,7 @@ async fn wait_for_volume_transfer<R: DeployMoveRpcClient>(
             }
         };
         retry_delay = poll_interval;
-        if !response.is_ok() {
-            return Err(PloyzError::Deploy(DeployError::RemoteNodeError {
-                operation: "volume_zfs_transfer_get",
-                code: response.code().to_string(),
-                message: response.message().to_string(),
-            }));
-        }
-        let Some(DaemonPayload::VolumeZfsTransfer(payload)) = response.payload() else {
-            return Err(PloyzError::Deploy(DeployError::MissingNodePayload {
-                payload: "volume zfs transfer",
-            }));
-        };
-        if let Some(result) = volume_move_result_from_transfer(payload)? {
+        if let Some(result) = volume_move_result_from_transfer(response)? {
             return Ok(result);
         }
         if started.elapsed() >= timeout {
@@ -185,19 +134,27 @@ fn retry_jitter(delay: Duration) -> Duration {
     }
 }
 
-fn volume_move_rpc_error(operation: &'static str, error: RpcFailure) -> PloyzError {
+fn volume_move_rpc_error(error: NodeRpcError) -> PloyzError {
+    if matches!(
+        error.kind,
+        NodeRpcErrorKind::MissingPayload | NodeRpcErrorKind::Decode
+    ) {
+        return PloyzError::Deploy(DeployError::MissingNodePayload {
+            payload: "volume zfs transfer",
+        });
+    }
     PloyzError::Deploy(DeployError::RemoteNodeError {
-        operation,
-        code: error.code().into(),
+        operation: error.operation,
+        code: error.code,
         message: error.message,
     })
 }
 
 pub(super) fn volume_move_result_from_transfer(
-    payload: VolumeZfsTransferPayload,
+    payload: NodeVolumeZfsTransferPayload,
 ) -> ployz_error::Result<Option<MoveVolumeResult>> {
     match payload.transfer.state {
-        VolumeZfsTransferState::Succeeded {
+        NodeVolumeZfsTransferState::Succeeded {
             snapshot_guid,
             bytes_transferred,
             ..
@@ -206,14 +163,14 @@ pub(super) fn volume_move_result_from_transfer(
             snapshot_guid,
             bytes_transferred,
         })),
-        VolumeZfsTransferState::Failed { last_error, .. } => {
+        NodeVolumeZfsTransferState::Failed { last_error, .. } => {
             Err(PloyzError::Deploy(DeployError::RemoteNodeError {
                 operation: "volume_zfs_transfer",
                 code: "failed".into(),
                 message: last_error,
             }))
         }
-        VolumeZfsTransferState::Interrupted { last_error, .. } => {
+        NodeVolumeZfsTransferState::Interrupted { last_error, .. } => {
             Err(PloyzError::Deploy(DeployError::RemoteNodeError {
                 operation: "volume_zfs_transfer",
                 code: "interrupted".into(),
@@ -222,6 +179,6 @@ pub(super) fn volume_move_result_from_transfer(
                 }),
             }))
         }
-        VolumeZfsTransferState::Running { .. } => Ok(None),
+        NodeVolumeZfsTransferState::Running { .. } => Ok(None),
     }
 }

@@ -16,6 +16,7 @@ use ployz_runtime_docker::deploy::remote::DeployAgent;
 use ployz_spec::Namespace;
 
 use super::volume_transfer::run_volume_move_rpc;
+use crate::daemon::node_rpc::NatsVolumeZfsRpcTransport;
 
 impl DaemonState {
     pub async fn handle_deploy_node_inspect_namespace(
@@ -272,8 +273,9 @@ impl DeployParticipantClient for NatsDeployParticipantClient {
         deploy_id: &DeployId,
         request: MoveVolumeRequest,
     ) -> ployz_error::Result<MoveVolumeResult> {
+        let volume_transport = NatsVolumeZfsRpcTransport::new(self.client.clone());
         run_volume_move_rpc(
-            &self.client,
+            &volume_transport,
             machine_id,
             namespace,
             deploy_id,

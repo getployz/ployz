@@ -298,6 +298,20 @@ impl NatsNodeRpcClient {
         subject: NodeCommandSubject,
         request: &NodeRequest,
     ) -> std::result::Result<DaemonResponse, RpcFailure> {
+        let response = self.request_node_response(subject, request).await?;
+        node_response_to_daemon_response(response).map_err(|error| {
+            RpcFailure::new(
+                RpcFailureKind::Decode,
+                format!("decode node rpc response payload: {error}"),
+            )
+        })
+    }
+
+    pub async fn request_node_response(
+        &self,
+        subject: NodeCommandSubject,
+        request: &NodeRequest,
+    ) -> std::result::Result<NodeResponse, RpcFailure> {
         let subject_name = subject.subject_in(&self.scope);
         let payload = serde_json::to_vec(request).map_err(|error| {
             RpcFailure::new(
@@ -325,12 +339,7 @@ impl NatsNodeRpcClient {
                     format!("decode node rpc response from '{subject_name}': {error}"),
                 )
             })?;
-        node_response_to_daemon_response(response).map_err(|error| {
-            RpcFailure::new(
-                RpcFailureKind::Decode,
-                format!("decode node rpc response payload from '{subject_name}': {error}"),
-            )
-        })
+        Ok(response)
     }
 
     pub async fn request_expect_ok(
@@ -472,6 +481,18 @@ mod tests {
         assert_eq!(
             NodeCommandSubject::volume_zfs_transfer_get(&machine_id).subject_in(&scope),
             "ployz.v1.local.auth-default.rpc.node.machine%2Ea.volume.zfs.transfer_get"
+        );
+        assert_eq!(
+            NodeCommandSubject::volume_zfs_snapshot(&machine_id).subject_in(&scope),
+            "ployz.v1.local.auth-default.rpc.node.machine%2Ea.volume.zfs.snapshot"
+        );
+        assert_eq!(
+            NodeCommandSubject::volume_zfs_snapshot_guid(&machine_id).subject_in(&scope),
+            "ployz.v1.local.auth-default.rpc.node.machine%2Ea.volume.zfs.snapshot_guid"
+        );
+        assert_eq!(
+            NodeCommandSubject::volume_zfs_start_send(&machine_id).subject_in(&scope),
+            "ployz.v1.local.auth-default.rpc.node.machine%2Ea.volume.zfs.start_send"
         );
     }
 

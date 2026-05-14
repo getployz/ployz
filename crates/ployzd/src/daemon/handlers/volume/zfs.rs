@@ -9,8 +9,9 @@ use ployz_api::{
     VolumeZfsTransferListPayload, VolumeZfsTransferPayload,
 };
 use ployz_model::{MachineId, MachineLifecycle, MachineMembership, VolumeRecord};
-use ployz_nats::{NodeCommandSubject, RpcPolicy};
+use ployz_nats::NodeCommandSubject;
 use ployz_node_api::NodeRequest;
+use ployz_node_runtime::{NodeRpcPolicy, VolumeZfsNodeClient};
 use ployz_spec::{Namespace, VolumeScope};
 use ployz_storage_api::{CloneMetadata, DatasetSpec};
 use ployz_store_api::{DeployStore, MachineMembershipStore};
@@ -23,6 +24,7 @@ use ployz_volume_zfs::{
 use ployz_volume_zfs::{TransferRecord, TransferStatus, move_claim_key, unique_transfer_id};
 
 use crate::daemon::DaemonState;
+use crate::daemon::node_rpc::NatsVolumeZfsRpcTransport;
 use responses::transfer_info;
 use transfer_execution::{
     finalize_zfs_transfer, run_coordinated_zfs_transfer_inner, send_zfs_stream_from_local,
@@ -223,11 +225,15 @@ impl DaemonState {
         let transfer_port = self.zfs_transfer_port;
         let needs_nats_rpc = source.id != self.identity.machine_id
             || (from_snapshot.is_some() && target.id != self.identity.machine_id);
-        let nats_rpc = if needs_nats_rpc {
+        let volume_rpc = if needs_nats_rpc {
             match self.nats_node_rpc_client().await {
-                Ok(client) => Some(client.with_policy(RpcPolicy {
-                    timeout: ZFS_SEND_RPC_TIMEOUT,
-                })),
+                Ok(client) => Some(
+                    VolumeZfsNodeClient::new(NatsVolumeZfsRpcTransport::new(client)).with_policy(
+                        NodeRpcPolicy {
+                            timeout: ZFS_SEND_RPC_TIMEOUT,
+                        },
+                    ),
+                ),
                 Err(error) => return self.err("VOLUME_ZFS_SEND_FAILED", error),
             }
         } else {
@@ -391,7 +397,7 @@ impl DaemonState {
                 &task_source,
                 &task_target,
                 task_local_driver.as_ref(),
-                nats_rpc,
+                volume_rpc,
                 transfer_port,
                 &task_local,
                 &task_snapshot,
