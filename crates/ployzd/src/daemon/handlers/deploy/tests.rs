@@ -1,15 +1,24 @@
 use super::apply::{DeployLockLossOutcome, mark_deploy_failed_after_lock_loss};
+use super::branch::{
+    BranchApplyingReplayAction, branch_applying_replay_action, record_branch_apply_prepared_outcome,
+};
+use super::manifest_render::render_branch_namespace_manifest;
 use super::*;
 use crate::daemon::{ActiveMesh, RetainedSubnet};
 use crate::mesh_state::network::NetworkConfig;
-use ployz_api::{BranchResourceMode, DaemonRequest, DeployFailurePayload};
+use ployz_api::{
+    BranchApplyPreparedRequest, BranchNamespaceMode, BranchNamespaceRequest, BranchResourceMode,
+    DaemonRequest, DeployApplyPreparedRequest, DeployFailurePayload,
+};
+use ployz_error::DeployError;
 use ployz_model::{
+    BranchEnvironmentRecord, BranchEnvironmentResourceMode, BranchEnvironmentState,
     DeployBaselineComponent, DeployBaselineDiff, DeployId, DeployPhaseCommitPolicy, DeployPhaseId,
     DeployPhaseRecord, DeployPhaseRollbackPolicy, DeployPhaseState, DeployPreview,
-    DeployPreviewBaseline, DeployPreviewBaselineComponents, DeployRecord, DeployState, MachineId,
-    MachineLifecycle, MachineMembership, NetworkLifecycle, NetworkName, OverlayIp,
-    PreparedDeployRecord, PreparedDeployState, PublicKey, ServiceRelease, ServiceReleaseRecord,
-    ServiceRevisionRecord, VolumeRecord,
+    DeployPreviewBaseline, DeployPreviewBaselineComponents, DeployRecord, DeployRecordState,
+    DeployState, MachineId, MachineLifecycle, MachineMembership, NetworkLifecycle, NetworkName,
+    OverlayIp, PreparedDeployRecord, PreparedDeployState, PublicKey, ServiceRelease,
+    ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_node_api::{
     NodeRequest, NodeResponse, NodeVolumeZfsTransferInfo, NodeVolumeZfsTransferPayload,
@@ -26,7 +35,7 @@ use ployz_spec::{
     RestartPolicy, RolloutStrategy, ServiceIntent, ServiceSpec, VolumeCloneConsistency,
     VolumeCloneDataPolicy, VolumeIntent, VolumeScope,
 };
-use ployz_store_api::{DeployCommit, DeployStore, MachineMembershipStore};
+use ployz_store_api::{DeployCommit, DeployStore, MachineMembershipStore, StoreDriver};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
