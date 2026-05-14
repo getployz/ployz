@@ -2,13 +2,17 @@ use super::apply::{DeployLockLossOutcome, mark_deploy_failed_after_lock_loss};
 use super::branch::{
     BranchApplyingReplayAction, branch_applying_replay_action, record_branch_apply_prepared_outcome,
 };
-use super::manifest_render::render_branch_namespace_manifest;
+use super::manifest_render::{
+    render_branch_namespace_manifest, render_migrate_service_manifest,
+    validate_migrate_service_request,
+};
 use super::*;
 use crate::daemon::{ActiveMesh, RetainedSubnet};
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::{
     BranchApplyPreparedRequest, BranchNamespaceMode, BranchNamespaceRequest, BranchResourceMode,
-    DaemonRequest, DeployApplyPreparedRequest, DeployFailurePayload,
+    DaemonRequest, DeployApplyPreparedRequest, DeployFailurePayload, MigrateServiceMode,
+    MigrateServiceRequest,
 };
 use ployz_error::DeployError;
 use ployz_model::{

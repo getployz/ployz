@@ -1,19 +1,14 @@
 mod apply;
 mod branch;
 mod manifest_render;
+mod migrate;
 mod node;
 mod responses;
 mod volume_transfer;
 
 use crate::daemon::DaemonState;
-use manifest_render::{
-    encode_migrate_manifest_json, export_manifest, render_migrate_service_manifest,
-    validate_migrate_service_request,
-};
-use ployz_api::{
-    DaemonPayload, DaemonResponse, DeployOptions, DeployPreparePayload, MigrateServiceMode,
-    MigrateServiceRequest,
-};
+use manifest_render::export_manifest;
+use ployz_api::{DaemonPayload, DaemonResponse, DeployOptions, DeployPreparePayload};
 use ployz_config::RuntimeTarget;
 use ployz_error::Error as PloyzError;
 #[cfg(test)]
@@ -200,68 +195,6 @@ impl DaemonState {
             Err(err) => return self.err("DEPLOY_EXPORT_FAILED", format!("{err}")),
         };
         self.ok_json_pretty(&manifest, "ENCODE_MANIFEST", "encode manifest")
-    }
-
-    pub async fn handle_migrate_service(&self, request: MigrateServiceRequest) -> DaemonResponse {
-        if let Err(error) = validate_migrate_service_request(&request) {
-            return self.err(error.code(), error.to_string());
-        }
-        let active = match self.require_active("NO_MESH", "no mesh is running") {
-            Ok(active) => active,
-            Err(response) => return *response,
-        };
-        match request.mode {
-            MigrateServiceMode::RenderManifest => {
-                let manifest =
-                    match render_migrate_service_manifest(&active.mesh.store, &request).await {
-                        Ok(manifest) => manifest,
-                        Err(error) => return self.err(error.code(), error.to_string()),
-                    };
-                self.ok_json_pretty(&manifest, "ENCODE_MANIFEST", "encode migration manifest")
-            }
-            MigrateServiceMode::Preview => {
-                let manifest =
-                    match render_migrate_service_manifest(&active.mesh.store, &request).await {
-                        Ok(manifest) => manifest,
-                        Err(error) => return self.err(error.code(), error.to_string()),
-                    };
-                let manifest_json = match encode_migrate_manifest_json(&manifest) {
-                    Ok(manifest_json) => manifest_json,
-                    Err(error) => return self.err(error.code(), error.to_string()),
-                };
-                self.handle_deploy_preview(&manifest_json, &DeployOptions::default())
-                    .await
-            }
-            MigrateServiceMode::Apply => {
-                let namespace = Namespace::new(request.namespace.clone());
-                let runtime = match self
-                    .prepare_deploy_apply_runtime(active, &namespace, "DEPLOY_APPLY_FAILED")
-                    .await
-                {
-                    Ok(runtime) => runtime,
-                    Err(response) => return response,
-                };
-                let manifest =
-                    match render_migrate_service_manifest(&active.mesh.store, &request).await {
-                        Ok(manifest) => manifest,
-                        Err(error) => {
-                            runtime
-                            .release(
-                                "failed to release NATS deploy lock after migrate render failure",
-                            )
-                            .await;
-                            return self.err(error.code(), error.to_string());
-                        }
-                    };
-                self.apply_manifest_with_runtime(
-                    active,
-                    &manifest,
-                    runtime,
-                    DeployApplyPreconditions::default(),
-                )
-                .await
-            }
-        }
     }
 }
 
