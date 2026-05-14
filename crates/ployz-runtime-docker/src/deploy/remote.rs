@@ -9,8 +9,8 @@ use crate::model::{
     InstanceStatusRecord, InstanceStatusTransition, MachineId, SlotId,
 };
 use crate::spec::{Namespace, ServiceSpec, VolumeDeclaration};
-use crate::storage::{TokioShellRunner, ZfsDriver};
 use ployz_store_api::InstanceStatusStore;
+use ployz_volume_api::VolumeBackend;
 
 use super::local::{
     LocalDeployRuntime, StartCandidate, adopt_instances, build_instance_status_record,
@@ -23,7 +23,7 @@ pub struct DeployAgent {
     local_machine_id: MachineId,
     overlay_network_name: Option<String>,
     overlay_dns_server: Option<Ipv4Addr>,
-    storage_driver: Option<Arc<ZfsDriver<TokioShellRunner>>>,
+    volume_backend: Option<Arc<dyn VolumeBackend>>,
 }
 
 /// Runtime context for one deploy participant command. Coordination locks are
@@ -39,14 +39,14 @@ impl DeployAgent {
         local_machine_id: MachineId,
         overlay_network_name: Option<String>,
         overlay_dns_server: Option<Ipv4Addr>,
-        storage_driver: Option<Arc<ZfsDriver<TokioShellRunner>>>,
+        volume_backend: Option<Arc<dyn VolumeBackend>>,
     ) -> Self {
         Self {
             store,
             local_machine_id,
             overlay_network_name,
             overlay_dns_server,
-            storage_driver,
+            volume_backend,
         }
     }
 
@@ -190,7 +190,7 @@ impl DeployAgent {
         LocalDeployRuntime::new(
             self.overlay_network_name.clone(),
             self.overlay_dns_server,
-            self.storage_driver.clone(),
+            self.volume_backend.clone(),
         )
     }
 

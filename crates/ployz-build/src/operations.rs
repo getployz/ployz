@@ -1,24 +1,26 @@
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
 
 use ployz_model::{
     BuildInputSummary, BuildLocation, BuildMethod, BuildOperationKind, BuildOperationRecord,
     BuildOperationState, ImageArtifact, OperationStatus,
 };
+use ployz_operation_store::FileOperationStore;
 use ployz_time::now_unix_secs;
 
 const OPERATIONS_DIR_NAME: &str = "build-operations";
-pub const MAX_OPERATION_ID_LEN: usize = 128;
+pub use ployz_operation_store::MAX_OPERATION_ID_LEN;
 
 #[derive(Debug, Clone)]
 pub struct BuildOperationStore {
-    root: PathBuf,
+    files: FileOperationStore,
 }
 
 impl BuildOperationStore {
     #[must_use]
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            files: FileOperationStore::new(root, OPERATIONS_DIR_NAME, "build operation"),
+        }
     }
 
     #[allow(dead_code)]
@@ -116,70 +118,18 @@ impl BuildOperationStore {
     }
 
     pub fn save(&self, record: &BuildOperationRecord) -> Result<(), String> {
-        validate_operation_id(&record.id)?;
-        let path = self.path_for(&record.id);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| {
-                format!("create build operations dir '{}': {err}", parent.display())
-            })?;
-        }
-        let body = serde_json::to_vec_pretty(record)
-            .map_err(|err| format!("encode build operation '{}': {err}", record.id))?;
-        std::fs::write(&path, body)
-            .map_err(|err| format!("write build operation '{}': {err}", path.display()))
+        self.files.save(&record.id, record)
     }
 
     pub fn load(&self, id: &str) -> Result<Option<BuildOperationRecord>, String> {
-        validate_operation_id(id)?;
-        let path = self.path_for(id);
-        match read_build_operation(&path) {
-            Ok(record) => Ok(Some(record)),
-            Err(ReadBuildOperationError::NotFound) => Ok(None),
-            Err(ReadBuildOperationError::Other(message)) => Err(message),
-        }
+        self.files.load(id)
     }
 
     pub fn list(&self) -> Result<Vec<BuildOperationRecord>, String> {
-        let dir = self.dir();
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => {
-                return Err(format!(
-                    "read build operations dir '{}': {err}",
-                    dir.display()
-                ));
-            }
-        };
-
-        let mut records = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|err| format!("read build operation entry: {err}"))?;
-            let path = entry.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("json") {
-                continue;
-            }
-            match read_build_operation(&path) {
-                Ok(record) => records.push(record),
-                Err(ReadBuildOperationError::NotFound) => continue,
-                Err(ReadBuildOperationError::Other(message)) => return Err(message),
-            }
-        }
-        records.sort_by(|left, right| {
-            right
-                .started_at
-                .cmp(&left.started_at)
-                .then(left.id.cmp(&right.id))
-        });
-        Ok(records)
-    }
-
-    fn dir(&self) -> PathBuf {
-        self.root.join(OPERATIONS_DIR_NAME)
-    }
-
-    fn path_for(&self, id: &str) -> PathBuf {
-        self.dir().join(format!("{id}.json"))
+        self.files.list(
+            |record: &BuildOperationRecord| record.started_at,
+            |record| &record.id,
+        )
     }
 }
 
@@ -209,57 +159,11 @@ fn apply_status_transition(
 
 #[allow(dead_code)]
 pub fn unique_operation_id(kind: BuildOperationKind, now: u64) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time after epoch")
-        .as_nanos();
-    format!("build-{kind}-{now}-{nanos}")
+    ployz_operation_store::unique_operation_id("build", kind, now)
 }
 
 pub fn validate_operation_id(id: &str) -> Result<(), String> {
-    if id.is_empty() {
-        return Err("build operation id cannot be empty".into());
-    }
-    if id.len() > MAX_OPERATION_ID_LEN {
-        return Err(format!(
-            "build operation id exceeds {MAX_OPERATION_ID_LEN} characters"
-        ));
-    }
-    if !id
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-    {
-        return Err(format!(
-            "build operation id '{id}' contains characters outside [A-Za-z0-9_-]"
-        ));
-    }
-    Ok(())
-}
-
-enum ReadBuildOperationError {
-    NotFound,
-    Other(String),
-}
-
-fn read_build_operation(path: &Path) -> Result<BuildOperationRecord, ReadBuildOperationError> {
-    let body = match std::fs::read(path) {
-        Ok(body) => body,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(ReadBuildOperationError::NotFound);
-        }
-        Err(error) => {
-            return Err(ReadBuildOperationError::Other(format!(
-                "read build operation '{}': {error}",
-                path.display()
-            )));
-        }
-    };
-    serde_json::from_slice(&body).map_err(|err| {
-        ReadBuildOperationError::Other(format!(
-            "decode build operation '{}': {err}",
-            path.display()
-        ))
-    })
+    ployz_operation_store::validate_operation_id("build operation", id)
 }
 
 #[cfg(test)]

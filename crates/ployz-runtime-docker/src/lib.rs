@@ -7,4 +7,3 @@ pub(crate) use ployz_time as time;
 pub mod deploy;
 pub mod network;
 pub mod runtime;
-pub mod storage;

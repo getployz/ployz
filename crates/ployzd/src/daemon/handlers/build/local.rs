@@ -3,17 +3,32 @@ use std::sync::Arc;
 
 use ployz_api::{BuildLocalRequest, BuildOperationPayload, BuildResultPayload, DaemonPayload};
 use ployz_build::local::{
-    BuildCommandRunner, TokioBuildCommandRunner, build_command_failure_message, build_command_plan,
-    build_image_artifact, normalize_build_image_name, plan_build_invocation,
-    prepare_build_command_paths, present_build_availability, render_build_result,
+    BuildCommandPaths, BuildCommandPlan, BuildCommandRunner, BuildInvocationPlan,
+    TokioBuildCommandRunner, build_command_failure_message, build_image_artifact,
+    normalize_build_image_name, plan_build_invocation, prepare_build_command_paths,
+    present_build_availability, render_build_result,
 };
 use ployz_model::{
-    BuildLocation, BuildOperationKind, ImageArtifact, ImageAvailabilityRecord, OperationStatus,
+    BuildLocation, BuildMethod, BuildOperationKind, ImageArtifact, ImageAvailabilityRecord,
+    OperationStatus,
 };
 use ployz_runtime_api::RuntimeImageBackend;
 use ployz_store_api::ImageAvailabilityStore;
 
 use crate::daemon::DaemonState;
+
+fn build_command_plan(
+    request: &BuildLocalRequest,
+    invocation: &BuildInvocationPlan,
+    paths: BuildCommandPaths,
+) -> Result<BuildCommandPlan, String> {
+    match request.method {
+        BuildMethod::Dockerfile => {
+            ployz_builder_dockerfile::command_plan(request, invocation, paths)
+        }
+        BuildMethod::Railpack => ployz_builder_railpack::command_plan(request, invocation, paths),
+    }
+}
 
 impl DaemonState {
     pub(crate) async fn handle_build_local(

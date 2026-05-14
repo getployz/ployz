@@ -1,0 +1,13 @@
+[package]
+name = "ployz-supervision"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio-util = { workspace = true }
+
+[lints]
+workspace = true

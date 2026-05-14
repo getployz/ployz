@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ployz_model::MachineId;
+use ployz_operation_store::{FileOperationStore, try_unique_operation_id, validate_operation_id};
 use ployz_spec::Namespace;
 use ployz_time::now_unix_secs;
 use serde::{Deserialize, Serialize};
@@ -318,12 +319,14 @@ impl TransferRecord {
 
 #[derive(Debug, Clone)]
 pub struct TransferStore {
-    root: PathBuf,
+    records: FileOperationStore,
 }
 
 impl TransferStore {
-    pub fn new(root: PathBuf) -> Self {
-        Self { root }
+    pub fn new(root: std::path::PathBuf) -> Self {
+        Self {
+            records: FileOperationStore::new(root, TRANSFERS_DIR_NAME, "zfs transfer"),
+        }
     }
 
     pub fn begin(
@@ -516,48 +519,18 @@ impl TransferStore {
     }
 
     pub fn save(&self, record: &TransferRecord) -> Result<(), String> {
-        let path = self.path_for(&record.id);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|err| format!("create zfs transfer dir '{}': {err}", parent.display()))?;
-        }
-        let body = serde_json::to_vec_pretty(record)
-            .map_err(|err| format!("encode zfs transfer '{}': {err}", record.id))?;
-        std::fs::write(&path, body)
-            .map_err(|err| format!("write zfs transfer '{}': {err}", path.display()))
+        self.records.save(&record.id, record)
     }
 
     pub fn load(&self, id: &str) -> Result<Option<TransferRecord>, String> {
-        validate_transfer_id(id)?;
-        let path = self.path_for(id);
-        if !path.exists() {
-            return Ok(None);
-        }
-        read_transfer(&path).map(Some)
+        self.records.load(id)
     }
 
     pub fn list(&self) -> Result<Vec<TransferRecord>, String> {
-        let dir = self.dir();
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => return Err(format!("read zfs transfer dir '{}': {err}", dir.display())),
-        };
-        let mut records = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|err| format!("read zfs transfer entry: {err}"))?;
-            let path = entry.path();
-            if path.extension().and_then(|value| value.to_str()) == Some("json") {
-                records.push(read_transfer(&path)?);
-            }
-        }
-        records.sort_by(|left, right| {
-            right
-                .started_at
-                .cmp(&left.started_at)
-                .then(left.id.cmp(&right.id))
-        });
-        Ok(records)
+        self.records.list(
+            |record: &TransferRecord| record.started_at,
+            |record| &record.id,
+        )
     }
 
     pub fn recover_startup(&self) -> Result<usize, String> {
@@ -573,7 +546,7 @@ impl TransferStore {
     }
 
     fn dir(&self) -> PathBuf {
-        self.root.join(TRANSFERS_DIR_NAME)
+        self.records.dir()
     }
 
     pub fn claim_dir(&self) -> PathBuf {
@@ -608,10 +581,6 @@ impl TransferStore {
                 "failed to delete zfs transfer claim"
             );
         }
-    }
-
-    fn path_for(&self, id: &str) -> PathBuf {
-        self.dir().join(format!("{id}.json"))
     }
 }
 
@@ -665,31 +634,9 @@ pub fn move_claim_key(
 }
 
 pub fn validate_transfer_id(id: &str) -> Result<(), String> {
-    if id.is_empty() || id.len() > 128 {
-        return Err(format!("transfer id must be 1-128 chars, got {}", id.len()));
-    }
-    if !id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(format!(
-            "transfer id '{id}' must contain only [A-Za-z0-9_-]"
-        ));
-    }
-    Ok(())
-}
-
-fn read_transfer(path: &std::path::Path) -> Result<TransferRecord, String> {
-    let body = std::fs::read(path)
-        .map_err(|err| format!("read zfs transfer '{}': {err}", path.display()))?;
-    serde_json::from_slice(&body)
-        .map_err(|err| format!("decode zfs transfer '{}': {err}", path.display()))
+    validate_operation_id("zfs transfer", id)
 }
 
 pub fn unique_transfer_id(now: u64) -> Result<String, String> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .map_err(|err| format!("system clock is before UNIX epoch: {err}"))?;
-    Ok(format!("zfs-transfer-{now}-{}-{nanos}", std::process::id()))
+    try_unique_operation_id("zfs-transfer", std::process::id(), now)
 }

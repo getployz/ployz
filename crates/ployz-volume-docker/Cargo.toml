@@ -1,0 +1,17 @@
+[package]
+name = "ployz-volume-docker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+async-trait = { workspace = true }
+ployz-volume-api = { path = "../ployz-volume-api" }
+tokio = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

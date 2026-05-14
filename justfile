@@ -19,8 +19,8 @@ test:
     cargo test
 
 test-boundaries:
-    cargo check -p ployz-cert-api -p ployz-storage-api -p ployz-runtime-api -p ployz-store-api
-    cargo check -p ployz-cert-acme -p ployz-volume-zfs -p ployz-host-backends
+    cargo check -p ployz-cert-api -p ployz-build-api -p ployz-volume-api -p ployz-storage-api -p ployz-runtime-api -p ployz-store-api
+    cargo check -p ployz-cert-acme -p ployz-cert-static -p ployz-builder-dockerfile -p ployz-builder-railpack -p ployz-volume -p ployz-volume-zfs -p ployz-volume-docker -p ployz-volume-btrfs -p ployz-supervision -p ployz-node-runtime -p ployz-host-backends
     cargo check -p ployz-wireguard-backends --no-default-features
     cargo check -p ployz-runtime-docker -p ployz-wireguard-backends
 

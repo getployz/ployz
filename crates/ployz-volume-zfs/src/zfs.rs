@@ -4,6 +4,10 @@ use std::time::Duration;
 use crate::error::{Error, Result, StorageError};
 use crate::spec::parse_quota_bytes;
 use ployz_storage_api::{CloneMetadata, DatasetInspection, DatasetSpec, MountInfo, SnapshotInfo};
+use ployz_volume_api::{
+    EnsureVolumeRequest, SnapshotRequest, VolumeBackend, VolumeBackendInfo, VolumeBackendKind,
+    VolumeCapabilities, VolumeError, VolumeIdentity, VolumeInspection, VolumeMount, VolumeSnapshot,
+};
 
 use super::{ShellOutput, ShellRunner, ShellStdio, ShellStreamer, TokioShellRunner};
 
@@ -471,6 +475,19 @@ impl<R: ShellRunner> ZfsDriver<R> {
         &self.zfs_root_mountpoint
     }
 
+    fn dataset_for_identity(&self, identity: &VolumeIdentity) -> String {
+        format!(
+            "{}/{}/{}",
+            self.zfs_root_dataset, identity.namespace, identity.name
+        )
+    }
+
+    fn mountpoint_for_identity(&self, identity: &VolumeIdentity) -> PathBuf {
+        self.zfs_root_mountpoint
+            .join(&identity.namespace)
+            .join(&identity.name)
+    }
+
     async fn read_dataset(&self, dataset: &str) -> Result<Option<ExistingDataset>> {
         let output = self
             .runner
@@ -732,6 +749,93 @@ impl<R: ShellRunner> ZfsDriver<R> {
     }
 }
 
+#[async_trait::async_trait]
+impl<R> VolumeBackend for ZfsDriver<R>
+where
+    R: ShellRunner,
+{
+    fn info(&self) -> VolumeBackendInfo {
+        VolumeBackendInfo {
+            id: format!("zfs:{}", self.zfs_root_dataset),
+            kind: VolumeBackendKind::Zfs,
+            capabilities: VolumeCapabilities::zfs_like(),
+        }
+    }
+
+    async fn ensure(&self, request: EnsureVolumeRequest) -> ployz_volume_api::Result<VolumeMount> {
+        let identity = request.identity;
+        let mountpoint = request
+            .mountpoint
+            .unwrap_or_else(|| self.mountpoint_for_identity(&identity));
+        let spec = DatasetSpec {
+            dataset: self.dataset_for_identity(&identity),
+            mountpoint,
+            quota: required_volume_field(&request.quota, "quota")?,
+            mode: required_volume_field(&request.mode, "mode")?,
+            owner: required_volume_field(&request.owner, "owner")?,
+        };
+        let info = ZfsDriver::ensure(self, &spec)
+            .await
+            .map_err(|error| zfs_volume_error("ensure", error))?;
+        Ok(VolumeMount::host_path(identity, info.mountpoint))
+    }
+
+    async fn remove(&self, identity: VolumeIdentity) -> ployz_volume_api::Result<()> {
+        let dataset = self.dataset_for_identity(&identity);
+        self.destroy_dataset_recursive(&dataset)
+            .await
+            .map_err(|error| zfs_volume_error("remove", error))
+    }
+
+    async fn mount(&self, identity: VolumeIdentity) -> ployz_volume_api::Result<VolumeMount> {
+        let dataset = self.dataset_for_identity(&identity);
+        let inspection = self
+            .inspect_dataset(&dataset)
+            .await
+            .map_err(|error| zfs_volume_error("mount", error))?;
+        Ok(VolumeMount::host_path(identity, inspection.mountpoint))
+    }
+
+    async fn inspect(
+        &self,
+        identity: VolumeIdentity,
+    ) -> ployz_volume_api::Result<Option<VolumeInspection>> {
+        let dataset = self.dataset_for_identity(&identity);
+        if !self
+            .dataset_exists(&dataset)
+            .await
+            .map_err(|error| zfs_volume_error("inspect", error))?
+        {
+            return Ok(None);
+        }
+        let inspection = self
+            .inspect_dataset(&dataset)
+            .await
+            .map_err(|error| zfs_volume_error("inspect", error))?;
+        Ok(Some(VolumeInspection {
+            identity,
+            mountpoint: Some(inspection.mountpoint),
+            used_bytes: Some(inspection.used_bytes),
+            snapshots: inspection
+                .snapshots
+                .into_iter()
+                .map(|snapshot| snapshot.name)
+                .collect(),
+        }))
+    }
+
+    async fn snapshot(&self, request: SnapshotRequest) -> ployz_volume_api::Result<VolumeSnapshot> {
+        let dataset = self.dataset_for_identity(&request.identity);
+        self.create_snapshot(&dataset, &request.snapshot)
+            .await
+            .map_err(|error| zfs_volume_error("snapshot", error))?;
+        Ok(VolumeSnapshot {
+            identity: request.identity,
+            snapshot: request.snapshot,
+        })
+    }
+}
+
 impl ZfsDriver<TokioShellRunner> {
     pub fn spawn_send_full(&self, dataset: &str, snapshot: &str) -> Result<tokio::process::Child> {
         let full = snapshot_name(dataset, snapshot);
@@ -760,6 +864,24 @@ impl ZfsDriver<TokioShellRunner> {
     pub fn spawn_recv(&self, dataset: &str) -> Result<tokio::process::Child> {
         self.runner
             .spawn("zfs", &["recv", dataset], ShellStdio::PipedStdin)
+    }
+}
+
+fn required_volume_field(
+    value: &Option<String>,
+    field: &'static str,
+) -> ployz_volume_api::Result<String> {
+    value.clone().ok_or_else(|| VolumeError::InvalidRequest {
+        field: field.to_string(),
+        message: "field is required by the ZFS volume backend".to_string(),
+    })
+}
+
+fn zfs_volume_error(operation: &'static str, error: Error) -> VolumeError {
+    VolumeError::Backend {
+        backend: "zfs".to_string(),
+        operation,
+        message: error.to_string(),
     }
 }
 
@@ -838,6 +960,7 @@ mod tests {
 
     use super::*;
     use crate::ShellOutput;
+    use ployz_volume_api::VolumeCapability;
 
     #[derive(Debug, Clone, Default)]
     struct FakeShellRunner {
@@ -906,6 +1029,67 @@ mod tests {
 
     async fn driver(fake: &FakeShellRunner) -> ZfsDriver<FakeShellRunner> {
         driver_with_ratio(fake, 1.0).await
+    }
+
+    #[tokio::test]
+    async fn volume_backend_info_advertises_zfs_snapshot_capability() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+
+        let info = VolumeBackend::info(&driver);
+
+        assert_eq!(info.kind, VolumeBackendKind::Zfs);
+        assert!(info.capabilities.contains(VolumeCapability::Ensure));
+        assert!(info.capabilities.contains(VolumeCapability::Snapshot));
+        assert!(!info.capabilities.contains(VolumeCapability::Clone));
+    }
+
+    #[tokio::test]
+    async fn volume_backend_ensure_derives_dataset_and_mountpoint() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        fake.push(1, "", "dataset does not exist");
+        push_overcommit_lookup(&fake, 1024_u64.pow(4), "tank/ployz\t0\n");
+        fake.push(0, "", "");
+        fake.push(0, "", "");
+        fake.push(0, "", "");
+
+        let mount = VolumeBackend::ensure(
+            &driver,
+            EnsureVolumeRequest {
+                identity: VolumeIdentity::new("prod", "data"),
+                mountpoint: None,
+                quota: Some("1G".to_string()),
+                mode: Some("0750".to_string()),
+                owner: Some("999:999".to_string()),
+            },
+        )
+        .await
+        .expect("ensure volume");
+
+        assert_eq!(
+            mount.mountpoint(),
+            Some(&PathBuf::from("/tank/ployz/prod/data"))
+        );
+        let calls = fake.calls();
+        assert_eq!(calls[1][5], "tank/ployz/prod/data");
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.iter().map(String::as_str).collect::<Vec<_>>()
+                    == [
+                        "zfs",
+                        "create",
+                        "-p",
+                        "-o",
+                        "quota=1G",
+                        "-o",
+                        "mountpoint=/tank/ployz/prod/data",
+                        "-o",
+                        "compression=lz4",
+                        "tank/ployz/prod/data",
+                    ])
+        );
     }
 
     fn push_overcommit_lookup(fake: &FakeShellRunner, pool_size_bytes: u64, quota_list: &str) {

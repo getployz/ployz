@@ -1,0 +1,13 @@
+[package]
+name = "ployz-builder-railpack"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ployz-build-api = { path = "../ployz-build-api" }
+ployz-model = { path = "../ployz-model" }
+
+[lints]
+workspace = true

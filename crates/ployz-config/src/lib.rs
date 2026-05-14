@@ -83,6 +83,10 @@ pub struct DaemonConfig {
     #[serde(default)]
     pub storage: StorageConfig,
     #[serde(default)]
+    pub build: BuildConfig,
+    #[serde(default)]
+    pub certificates: CertificateConfig,
+    #[serde(default)]
     pub builtin_images_manifest: Option<PathBuf>,
     #[serde(default)]
     pub daemon_metrics_listen_addr: Option<String>,
@@ -110,8 +114,12 @@ pub struct DaemonConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageConfig {
+    #[serde(default)]
+    pub backend: VolumeBackend,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zfs_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub btrfs_root: Option<PathBuf>,
     #[serde(default = "default_overcommit_ratio")]
     pub overcommit_ratio: f64,
 }
@@ -119,10 +127,73 @@ pub struct StorageConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
+            backend: VolumeBackend::default(),
             zfs_root: None,
+            btrfs_root: None,
             overcommit_ratio: default_overcommit_ratio(),
         }
     }
+}
+
+impl StorageConfig {
+    #[must_use]
+    pub fn is_zfs_backend(&self) -> bool {
+        self.backend == VolumeBackend::Zfs
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VolumeBackend {
+    #[default]
+    Zfs,
+    DockerVolume,
+    Btrfs,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BuildConfig {
+    #[serde(default)]
+    pub default_backend: BuildBackend,
+}
+
+impl Default for BuildConfig {
+    fn default() -> Self {
+        Self {
+            default_backend: BuildBackend::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BuildBackend {
+    #[default]
+    Dockerfile,
+    Railpack,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CertificateConfig {
+    #[serde(default)]
+    pub issuer: CertificateIssuerBackend,
+}
+
+impl Default for CertificateConfig {
+    fn default() -> Self {
+        Self {
+            issuer: CertificateIssuerBackend::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CertificateIssuerBackend {
+    #[default]
+    Acme,
+    Static,
+    Imported,
 }
 
 fn default_overcommit_ratio() -> f64 {
@@ -154,6 +225,8 @@ struct RuntimeDefaults {
     data_dir: PathBuf,
     socket: String,
     storage: StorageConfig,
+    build: BuildConfig,
+    certificates: CertificateConfig,
     #[serde(skip_serializing_if = "Option::is_none")]
     builtin_images_manifest: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -189,6 +262,10 @@ struct DaemonOverrides {
     socket: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     storage: Option<StorageConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    build: Option<BuildConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    certificates: Option<CertificateConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     builtin_images_manifest: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -301,6 +378,8 @@ pub fn load_daemon_config(
         data_dir: cli_data_dir,
         socket: cli_socket,
         storage: None,
+        build: None,
+        certificates: None,
         builtin_images_manifest: None,
         daemon_metrics_listen_addr: None,
         dns_metrics_listen_addr: None,
@@ -326,6 +405,8 @@ fn build_figment(cli_config_path: Option<PathBuf>, context: &HostPathsContext) -
         data_dir: default_data_dir(context),
         socket: default_socket_path(context),
         storage: StorageConfig::default(),
+        build: BuildConfig::default(),
+        certificates: CertificateConfig::default(),
         builtin_images_manifest: None,
         daemon_metrics_listen_addr: None,
         dns_metrics_listen_addr: None,
@@ -481,6 +562,39 @@ mod tests {
             Some(Path::new("tank/ployz"))
         );
         assert!((loaded.storage.overcommit_ratio - 1.0).abs() < f64::EPSILON);
+
+        std::fs::remove_file(path).expect("remove config");
+    }
+
+    #[test]
+    fn daemon_config_reads_backend_selection_from_toml() {
+        let path = std::env::temp_dir().join(format!(
+            "ployz-backend-selection-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "[storage]\nbackend = \"docker-volume\"\nbtrfs_root = \"/var/lib/ployz/btrfs\"\n\n[build]\ndefault_backend = \"railpack\"\n\n[certificates]\nissuer = \"static\"\n",
+        )
+        .expect("write config");
+
+        let loaded = load_daemon_config(
+            Some(path.clone()),
+            None,
+            None,
+            None,
+            &context(Os::Darwin, false),
+        )
+        .expect("daemon config should load");
+
+        assert_eq!(loaded.storage.backend, VolumeBackend::DockerVolume);
+        assert!(!loaded.storage.is_zfs_backend());
+        assert_eq!(
+            loaded.storage.btrfs_root.as_deref(),
+            Some(Path::new("/var/lib/ployz/btrfs"))
+        );
+        assert_eq!(loaded.build.default_backend, BuildBackend::Railpack);
+        assert_eq!(loaded.certificates.issuer, CertificateIssuerBackend::Static);
 
         std::fs::remove_file(path).expect("remove config");
     }

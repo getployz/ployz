@@ -3167,7 +3167,9 @@ name = "ployz-build"
 version = "0.6.1"
 dependencies = [
  "async-trait",
+ "ployz-build-api",
  "ployz-model",
+ "ployz-operation-store",
  "ployz-runtime-api",
  "ployz-store-api",
  "ployz-time",
@@ -3175,6 +3177,32 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+]
+
+[[package]]
+name = "ployz-build-api"
+version = "0.6.1"
+dependencies = [
+ "async-trait",
+ "ployz-model",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "ployz-builder-dockerfile"
+version = "0.6.1"
+dependencies = [
+ "ployz-build-api",
+ "ployz-model",
+]
+
+[[package]]
+name = "ployz-builder-railpack"
+version = "0.6.1"
+dependencies = [
+ "ployz-build-api",
+ "ployz-model",
 ]
 
 [[package]]
@@ -3202,8 +3230,21 @@ dependencies = [
  "async-trait",
  "ployz-error",
  "ployz-store-api",
+ "serde",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "ployz-cert-static"
+version = "0.6.1"
+dependencies = [
+ "async-trait",
+ "ployz-cert-api",
+ "ployz-error",
+ "ployz-store-api",
+ "ployz-store-memory",
+ "tokio",
 ]
 
 [[package]]
@@ -3310,6 +3351,7 @@ dependencies = [
  "axum",
  "futures-util",
  "ployz-model",
+ "ployz-operation-store",
  "ployz-runtime-api",
  "ployz-store-api",
  "ployz-store-memory",
@@ -3394,6 +3436,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-node-runtime"
+version = "0.6.1"
+dependencies = [
+ "async-trait",
+ "ployz-supervision",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "ployz-operation-store"
+version = "0.6.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ployz-orchestrator"
 version = "0.6.1"
 dependencies = [
@@ -3461,7 +3521,7 @@ dependencies = [
  "ployz-storage-api",
  "ployz-store-api",
  "ployz-time",
- "ployz-volume-zfs",
+ "ployz-volume-api",
  "rand 0.10.0",
  "reqwest",
  "serde",
@@ -3544,8 +3604,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-supervision"
+version = "0.6.1"
+dependencies = [
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "ployz-time"
 version = "0.6.1"
+
+[[package]]
+name = "ployz-volume"
+version = "0.6.1"
+dependencies = [
+ "async-trait",
+ "ployz-volume-api",
+ "tokio",
+]
+
+[[package]]
+name = "ployz-volume-api"
+version = "0.6.1"
+dependencies = [
+ "async-trait",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "ployz-volume-btrfs"
+version = "0.6.1"
+dependencies = [
+ "async-trait",
+ "ployz-volume-api",
+ "tokio",
+]
+
+[[package]]
+name = "ployz-volume-docker"
+version = "0.6.1"
+dependencies = [
+ "async-trait",
+ "ployz-volume-api",
+ "tokio",
+]
 
 [[package]]
 name = "ployz-volume-zfs"
@@ -3554,9 +3658,11 @@ dependencies = [
  "async-trait",
  "ployz-error",
  "ployz-model",
+ "ployz-operation-store",
  "ployz-spec",
  "ployz-storage-api",
  "ployz-time",
+ "ployz-volume-api",
  "serde",
  "serde_json",
  "tokio",
@@ -3613,6 +3719,8 @@ dependencies = [
  "libc",
  "ployz-api",
  "ployz-build",
+ "ployz-builder-dockerfile",
+ "ployz-builder-railpack",
  "ployz-cert-acme",
  "ployz-cert-api",
  "ployz-config",
@@ -3626,6 +3734,7 @@ dependencies = [
  "ployz-model",
  "ployz-nats",
  "ployz-node-api",
+ "ployz-operation-store",
  "ployz-orchestrator",
  "ployz-runtime-api",
  "ployz-runtime-docker",
@@ -3635,6 +3744,9 @@ dependencies = [
  "ployz-store-api",
  "ployz-store-memory",
  "ployz-time",
+ "ployz-volume-api",
+ "ployz-volume-btrfs",
+ "ployz-volume-docker",
  "ployz-volume-zfs",
  "ployz-wireguard-backends",
  "prometheus",

@@ -451,6 +451,8 @@ impl fmt::Display for AcmeOrderStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum CertificateError {
+    #[error("certificate issuer '{issuer}' is disabled")]
+    IssuerDisabled { issuer: String },
     #[error("no ACME issuer is configured for this orchestrator")]
     AcmeDisabled,
     #[error("no HTTP-01 challenge found for {hostname}")]

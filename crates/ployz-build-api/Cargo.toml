@@ -1,0 +1,15 @@
+[package]
+name = "ployz-build-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+async-trait = { workspace = true }
+ployz-model = { path = "../ployz-model" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

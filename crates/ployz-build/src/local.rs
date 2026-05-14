@@ -7,10 +7,14 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
+pub use ployz_build_api::{
+    BuildCommand, BuildCommandOutput, BuildCommandPaths, BuildCommandPlan, BuildCommandStep,
+    BuildCommandStepKind, BuildInvocationPlan, DOCKER_BUILDKIT_ENV,
+};
 use ployz_model::{
     BuildEnvValue, BuildInputSummary, BuildInputs, BuildLocalRequest, BuildLocation, BuildMethod,
     BuildSecretSummary, ImageArtifact, ImageArtifactProvenance, ImageAvailabilityRecord,
-    ImageDigest, ImagePlatform, ImagePresence, ImageRef,
+    ImageDigest, ImagePresence, ImageRef,
 };
 use ployz_runtime_api::{RuntimeImage, RuntimeImageError};
 use ployz_time::now_unix_secs;
@@ -21,187 +25,9 @@ use tokio::time::timeout;
 
 const BUILD_COMMAND_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const BUILD_OUTPUT_TAIL_BYTES: usize = 64 * 1024;
-const DOCKER_BUILDKIT_ENV: &str = "DOCKER_BUILDKIT";
-const RAILPACK_FRONTEND: &str = "ghcr.io/railwayapp/railpack-frontend";
-const RAILPACK_SECRET_PLACEHOLDER: &str = "__PLOYZ_BUILDKIT_SECRET__";
 const BUILD_CACHE_KEY_RETRY_ATTEMPTS: usize = 20;
 const BUILD_CACHE_KEY_RETRY_DELAY: Duration = Duration::from_millis(10);
 const BUILD_CACHE_KEY_REPAIR_LOCK_STALE: Duration = Duration::from_secs(30);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BuildCommandStepKind {
-    RailpackPrepare,
-    ImageBuild,
-}
-
-impl BuildCommandStepKind {
-    pub fn stage(self) -> &'static str {
-        match self {
-            Self::RailpackPrepare => "preparing railpack build plan",
-            Self::ImageBuild => "running image build command",
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct BuildCommandStep {
-    pub kind: BuildCommandStepKind,
-    pub command: BuildCommand,
-}
-
-#[derive(Debug)]
-pub struct BuildCommandPlan {
-    pub pre_build_steps: Vec<BuildCommandStep>,
-    pub image_build: BuildCommandStep,
-    pub cleanup_dirs: Vec<PathBuf>,
-}
-
-impl BuildCommandPlan {
-    fn new(
-        pre_build_steps: Vec<BuildCommandStep>,
-        image_build: BuildCommandStep,
-        cleanup_dirs: Vec<PathBuf>,
-    ) -> Self {
-        Self {
-            pre_build_steps,
-            image_build,
-            cleanup_dirs,
-        }
-    }
-
-    pub fn steps(&self) -> impl Iterator<Item = &BuildCommandStep> {
-        self.pre_build_steps
-            .iter()
-            .chain(std::iter::once(&self.image_build))
-    }
-
-    pub fn image_build_command(&self) -> &BuildCommand {
-        &self.image_build.command
-    }
-
-    pub fn redact_text(&self, text: &str) -> String {
-        self.steps().fold(text.to_string(), |text, step| {
-            step.command.redact_text(&text)
-        })
-    }
-
-    fn cleanup(&self) {
-        for path in &self.cleanup_dirs {
-            let _ = std::fs::remove_dir_all(path);
-        }
-    }
-}
-
-impl Drop for BuildCommandPlan {
-    fn drop(&mut self) {
-        self.cleanup();
-    }
-}
-
-pub struct BuildCommand {
-    program: &'static str,
-    args: Vec<String>,
-    env: Vec<(String, String)>,
-    redaction_values: Vec<String>,
-}
-
-impl std::fmt::Debug for BuildCommand {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let env = self
-            .env
-            .iter()
-            .map(|(key, _value)| (key, "<redacted>"))
-            .collect::<Vec<_>>();
-        f.debug_struct("BuildCommand")
-            .field("program", &self.program)
-            .field("args", &self.redacted_args())
-            .field("env", &env)
-            .finish()
-    }
-}
-
-impl BuildCommand {
-    fn redacted_args(&self) -> Vec<String> {
-        let mut redacted = Vec::with_capacity(self.args.len());
-        let mut redact_next = false;
-        for arg in &self.args {
-            if redact_next {
-                let key = arg
-                    .split_once('=')
-                    .map_or(arg.as_str(), |(key, _value)| key);
-                redacted.push(format!("{key}=<redacted>"));
-                redact_next = false;
-                continue;
-            }
-            if arg == "--build-arg" || arg == "--env" {
-                redacted.push(arg.clone());
-                redact_next = true;
-                continue;
-            }
-            redacted.push(arg.clone());
-        }
-        redacted
-    }
-
-    pub fn redact_text(&self, text: &str) -> String {
-        let mut values = self.sensitive_values();
-        values.sort_by_key(|value| std::cmp::Reverse(value.len()));
-        values.dedup();
-
-        let mut redacted = text.to_string();
-        for value in values {
-            if !value.is_empty() {
-                redacted = redacted.replace(&value, "<redacted>");
-            }
-        }
-        redacted
-    }
-
-    fn redact_captured_output(&self, text: &str) -> String {
-        if self
-            .sensitive_values()
-            .iter()
-            .any(|value| !value.is_empty())
-        {
-            "[output omitted because build inputs contain redacted values]".into()
-        } else {
-            self.redact_text(text)
-        }
-    }
-
-    fn sensitive_values(&self) -> Vec<String> {
-        let mut values = self
-            .env
-            .iter()
-            .filter(|(key, _value)| key != DOCKER_BUILDKIT_ENV)
-            .map(|(_key, value)| value.clone())
-            .collect::<Vec<_>>();
-        values.extend(self.redaction_values.iter().cloned());
-        let mut capture_next = false;
-        for arg in &self.args {
-            if capture_next {
-                match arg.split_once('=') {
-                    Some((_key, value)) => values.push(value.into()),
-                    None => values.push(arg.clone()),
-                }
-                capture_next = false;
-                continue;
-            }
-            if arg == "--build-arg" || arg == "--env" {
-                capture_next = true;
-            }
-        }
-        values
-    }
-}
-
-#[derive(Debug)]
-pub struct BuildCommandOutput {
-    pub status_success: bool,
-    pub timed_out: bool,
-    pub stdout: String,
-    pub stderr: String,
-}
 
 #[async_trait]
 pub trait BuildCommandRunner: Send + Sync {
@@ -302,53 +128,6 @@ where
         format!("[output truncated to last {limit} bytes]\n{body}")
     } else {
         body
-    }
-}
-
-pub struct BuildInvocationPlan {
-    pub summary: BuildInputSummary,
-    env: Vec<(String, String)>,
-    plain_env: Vec<(String, String)>,
-    secret_env: Vec<(String, String)>,
-    docker_build_args: Vec<(String, String)>,
-    buildkit_secret_env: Vec<String>,
-    railpack_secret_cache_required: bool,
-}
-
-impl std::fmt::Debug for BuildInvocationPlan {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let env = self
-            .env
-            .iter()
-            .map(|(key, _value)| (key, "<redacted>"))
-            .collect::<Vec<_>>();
-        let plain_env = self
-            .plain_env
-            .iter()
-            .map(|(key, _value)| (key, "<redacted>"))
-            .collect::<Vec<_>>();
-        let docker_build_args = self
-            .docker_build_args
-            .iter()
-            .map(|(key, _value)| (key, "<redacted>"))
-            .collect::<Vec<_>>();
-        let secret_env = self
-            .secret_env
-            .iter()
-            .map(|(key, _value)| (key, "<redacted>"))
-            .collect::<Vec<_>>();
-        f.debug_struct("BuildInvocationPlan")
-            .field("summary", &self.summary)
-            .field("env", &env)
-            .field("plain_env", &plain_env)
-            .field("secret_env", &secret_env)
-            .field("docker_build_args", &docker_build_args)
-            .field("buildkit_secret_env", &self.buildkit_secret_env)
-            .field(
-                "railpack_secret_cache_required",
-                &self.railpack_secret_cache_required,
-            )
-            .finish()
     }
 }
 
@@ -537,14 +316,6 @@ fn hex_lower(bytes: &[u8]) -> String {
     output
 }
 
-pub struct BuildCommandPaths {
-    pub cleanup_dirs: Vec<PathBuf>,
-    railpack_plan_path: Option<PathBuf>,
-    railpack_info_path: Option<PathBuf>,
-    buildkit_secret_files: Vec<(String, PathBuf)>,
-    railpack_secret_cache_token: Option<String>,
-}
-
 struct CleanupDirsOnError {
     dirs: Vec<PathBuf>,
 }
@@ -610,159 +381,6 @@ pub fn prepare_build_command_paths(
     }
     cleanup_on_error.disarm();
     Ok(paths)
-}
-
-pub fn build_command_plan(
-    request: &BuildLocalRequest,
-    invocation: &BuildInvocationPlan,
-    paths: BuildCommandPaths,
-) -> Result<BuildCommandPlan, String> {
-    match request.method {
-        BuildMethod::Dockerfile => dockerfile_command_plan(request, invocation, paths),
-        BuildMethod::Railpack => railpack_command_plan(request, invocation, paths),
-    }
-}
-
-fn dockerfile_command_plan(
-    request: &BuildLocalRequest,
-    invocation: &BuildInvocationPlan,
-    paths: BuildCommandPaths,
-) -> Result<BuildCommandPlan, String> {
-    let mut args = vec!["build".into(), "-t".into(), request.image_name.clone()];
-    if let Some(platform) = &request.platform {
-        args.push("--platform".into());
-        args.push(format_platform(platform));
-    };
-    for (key, value) in &invocation.plain_env {
-        args.push("--build-arg".into());
-        args.push(format!("{key}={value}"));
-    }
-    for (key, value) in &invocation.docker_build_args {
-        args.push("--build-arg".into());
-        args.push(format!("{key}={value}"));
-    }
-    for (key, path) in &paths.buildkit_secret_files {
-        args.push("--secret".into());
-        args.push(format!("id={key},src={}", path.display()));
-    }
-    args.push(".".into());
-    let env = if invocation.buildkit_secret_env.is_empty() {
-        Vec::new()
-    } else {
-        vec![(DOCKER_BUILDKIT_ENV.into(), "1".into())]
-    };
-    Ok(BuildCommandPlan::new(
-        Vec::new(),
-        BuildCommandStep {
-            kind: BuildCommandStepKind::ImageBuild,
-            command: BuildCommand {
-                program: "docker",
-                args,
-                env,
-                redaction_values: command_redaction_values(invocation, &paths),
-            },
-        },
-        paths.cleanup_dirs,
-    ))
-}
-
-fn railpack_command_plan(
-    request: &BuildLocalRequest,
-    invocation: &BuildInvocationPlan,
-    paths: BuildCommandPaths,
-) -> Result<BuildCommandPlan, String> {
-    let Some(plan_path) = paths.railpack_plan_path.as_ref() else {
-        return Err("railpack command plan missing plan output path".into());
-    };
-    let Some(info_path) = paths.railpack_info_path.as_ref() else {
-        return Err("railpack command plan missing info output path".into());
-    };
-
-    let mut prepare_args = vec![
-        "prepare".into(),
-        "--plan-out".into(),
-        plan_path.display().to_string(),
-        "--info-out".into(),
-        info_path.display().to_string(),
-    ];
-    for (key, value) in &invocation.plain_env {
-        prepare_args.push("--env".into());
-        prepare_args.push(format!("{key}={value}"));
-    }
-    for (key, _value) in &invocation.secret_env {
-        prepare_args.push("--env".into());
-        prepare_args.push(format!("{key}={RAILPACK_SECRET_PLACEHOLDER}"));
-    }
-    prepare_args.push(".".into());
-
-    let mut build_args = vec![
-        "buildx".into(),
-        "build".into(),
-        "-t".into(),
-        request.image_name.clone(),
-        "--build-arg".into(),
-        format!("BUILDKIT_SYNTAX={RAILPACK_FRONTEND}"),
-        "-f".into(),
-        plan_path.display().to_string(),
-    ];
-    if let Some(platform) = &request.platform {
-        build_args.push("--platform".into());
-        build_args.push(format_platform(platform));
-    }
-    build_args.push("--load".into());
-    for (key, value) in &invocation.plain_env {
-        build_args.push("--build-arg".into());
-        build_args.push(format!("{key}={value}"));
-    }
-    for (key, path) in &paths.buildkit_secret_files {
-        build_args.push("--secret".into());
-        build_args.push(format!("id={key},src={}", path.display()));
-    }
-    if let Some(token) = &paths.railpack_secret_cache_token {
-        build_args.push("--build-arg".into());
-        build_args.push(format!("secrets-hash={token}"));
-    }
-    build_args.push(".".into());
-
-    let docker_env = vec![(DOCKER_BUILDKIT_ENV.into(), "1".into())];
-    let redaction_values = command_redaction_values(invocation, &paths);
-    Ok(BuildCommandPlan::new(
-        vec![BuildCommandStep {
-            kind: BuildCommandStepKind::RailpackPrepare,
-            command: BuildCommand {
-                program: "railpack",
-                args: prepare_args,
-                env: Vec::new(),
-                redaction_values: redaction_values.clone(),
-            },
-        }],
-        BuildCommandStep {
-            kind: BuildCommandStepKind::ImageBuild,
-            command: BuildCommand {
-                program: "docker",
-                args: build_args,
-                env: docker_env,
-                redaction_values,
-            },
-        },
-        paths.cleanup_dirs,
-    ))
-}
-
-fn command_redaction_values(
-    invocation: &BuildInvocationPlan,
-    paths: &BuildCommandPaths,
-) -> Vec<String> {
-    let mut values = invocation
-        .env
-        .iter()
-        .chain(invocation.docker_build_args.iter())
-        .map(|(_key, value)| value.clone())
-        .collect::<Vec<_>>();
-    if let Some(token) = &paths.railpack_secret_cache_token {
-        values.push(token.clone());
-    }
-    values
 }
 
 fn railpack_metadata_dir(data_dir: &Path, operation_id: &str) -> PathBuf {
@@ -1056,13 +674,6 @@ fn image_reference_has_tag(reference: &str) -> bool {
     reference.rfind(':').is_some_and(|index| {
         index + 1 < reference.len() && last_slash.is_none_or(|slash| index > slash)
     })
-}
-
-fn format_platform(platform: &ImagePlatform) -> String {
-    match platform.variant.as_deref() {
-        Some(variant) => format!("{}/{}/{}", platform.os, platform.architecture, variant),
-        None => format!("{}/{}", platform.os, platform.architecture),
-    }
 }
 
 pub fn build_image_artifact(

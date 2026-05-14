@@ -1,0 +1,18 @@
+[package]
+name = "ployz-node-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+async-trait = { workspace = true }
+ployz-supervision = { path = "../ployz-supervision" }
+tokio = { workspace = true, features = ["sync", "time"] }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+
+[lints]
+workspace = true

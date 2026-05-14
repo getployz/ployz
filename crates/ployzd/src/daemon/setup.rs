@@ -484,6 +484,10 @@ impl MeshStartAttempt {
             self.zfs_transfer = Box::new(transfer_listener::ZfsTransferListenerHandle::noop());
             return Ok(());
         }
+        if !state.storage.is_zfs_backend() {
+            self.zfs_transfer = Box::new(transfer_listener::ZfsTransferListenerHandle::noop());
+            return Ok(());
+        }
         let Some(zfs_root) = state.storage.zfs_root.clone() else {
             self.zfs_transfer = Box::new(transfer_listener::ZfsTransferListenerHandle::noop());
             return Ok(());

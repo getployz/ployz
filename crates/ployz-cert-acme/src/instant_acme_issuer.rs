@@ -5,8 +5,10 @@ use instant_acme::{
 };
 use ployz_cert_api::{
     AccountAcquisition, AcmeAccountCoordinator, AcmeIssuer, AcmeIssuerFactory, CHALLENGE_TTL_SECS,
-    CertificateManagerConfig, HTTP01_GATEWAY_SNAPSHOT_SETTLE, Http01ChallengeReadiness,
-    IssuedCertificate, NoopAcmeAccountCoordinator, StartedOrder, account_id_for_issuer_url,
+    CertificateIssueRequest, CertificateIssuer, CertificateIssuerInfo, CertificateIssuerKind,
+    CertificateManagerConfig, CertificateRenewRequest, HTTP01_GATEWAY_SNAPSHOT_SETTLE,
+    Http01ChallengeReadiness, IssuedCertificate, NoopAcmeAccountCoordinator, StartedOrder,
+    account_id_for_issuer_url,
 };
 use ployz_error::{AcmeAuthorizationStatus, AcmeOrderStatus, CertificateError, Error, Result};
 use ployz_model::{AcmeAccountRecord, AcmeChallengeRecord};
@@ -224,6 +226,41 @@ impl AcmeIssuer for InstantAcmeIssuer {
             fullchain_pem,
             private_key_pem,
         })
+    }
+}
+
+#[async_trait]
+impl CertificateIssuer for InstantAcmeIssuer {
+    fn info(&self) -> CertificateIssuerInfo {
+        CertificateIssuerInfo {
+            id: self.config.issuer_url.clone(),
+            kind: CertificateIssuerKind::Acme,
+        }
+    }
+
+    async fn issue(
+        &self,
+        store: &StoreDriver,
+        request: CertificateIssueRequest,
+    ) -> Result<IssuedCertificate> {
+        let order = self.start_order(store, &request.hostname).await?;
+        self.finalize_order(store, &request.hostname, &order.order_url)
+            .await
+    }
+
+    async fn renew(
+        &self,
+        store: &StoreDriver,
+        request: CertificateRenewRequest,
+    ) -> Result<IssuedCertificate> {
+        let _ = request.existing_version_id;
+        self.issue(
+            store,
+            CertificateIssueRequest {
+                hostname: request.hostname,
+            },
+        )
+        .await
     }
 }
 

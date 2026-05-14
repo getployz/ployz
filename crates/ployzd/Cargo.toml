@@ -14,6 +14,8 @@ ebpf-native = ["ployz-orchestrator/ebpf-native"]
 
 [dependencies]
 ployz-api = { path = "../ployz-api" }
+ployz-builder-dockerfile = { path = "../ployz-builder-dockerfile" }
+ployz-builder-railpack = { path = "../ployz-builder-railpack" }
 ployz-build = { path = "../ployz-build" }
 ployz-image = { path = "../ployz-image" }
 ployz-cert-api = { path = "../ployz-cert-api" }
@@ -23,11 +25,15 @@ ployz-host-backends = { path = "../ployz-host-backends" }
 ployz-metrics = { path = "../ployz-metrics" }
 ployz-nats = { path = "../ployz-nats" }
 ployz-node-api = { path = "../ployz-node-api" }
+ployz-operation-store = { path = "../ployz-operation-store" }
 ployz-orchestrator = { path = "../ployz-orchestrator" }
 ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-runtime-docker = { path = "../ployz-runtime-docker" }
 ployz-sdk = { path = "../ployz-sdk" }
 ployz-storage-api = { path = "../ployz-storage-api" }
+ployz-volume-api = { path = "../ployz-volume-api" }
+ployz-volume-btrfs = { path = "../ployz-volume-btrfs" }
+ployz-volume-docker = { path = "../ployz-volume-docker" }
 ployz-volume-zfs = { path = "../ployz-volume-zfs" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-store-memory = { path = "../ployz-store-memory" }

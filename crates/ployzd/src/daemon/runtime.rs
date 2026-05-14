@@ -9,6 +9,9 @@ use ployz_runtime_api::{
     RuntimeImageImportResult,
 };
 use ployz_runtime_docker::runtime::ContainerEngine;
+use ployz_volume_api::VolumeBackend;
+use ployz_volume_btrfs::BtrfsVolumeBackend;
+use ployz_volume_docker::DockerVolumeBackend;
 use ployz_volume_zfs::{TokioShellRunner, ZfsDriver};
 
 use super::DaemonState;
@@ -70,6 +73,9 @@ impl DaemonState {
     pub(crate) async fn zfs_storage_driver(
         &self,
     ) -> Result<Option<Arc<ZfsDriver<TokioShellRunner>>>, String> {
+        if !self.storage.is_zfs_backend() {
+            return Ok(None);
+        }
         let Some(root) = self.storage.zfs_root.as_ref() else {
             return Ok(None);
         };
@@ -81,6 +87,29 @@ impl DaemonState {
             .map(Arc::new)
             .map(Some)
             .map_err(|error| error.to_string())
+    }
+
+    pub(crate) async fn volume_storage_backend(
+        &self,
+    ) -> Result<Option<Arc<dyn VolumeBackend>>, String> {
+        match self.storage.backend {
+            ployz_config::VolumeBackend::Zfs => self
+                .zfs_storage_driver()
+                .await
+                .map(|driver| driver.map(|driver| driver as Arc<dyn VolumeBackend>)),
+            ployz_config::VolumeBackend::DockerVolume => {
+                Ok(Some(Arc::new(DockerVolumeBackend::local_default())))
+            }
+            ployz_config::VolumeBackend::Btrfs => {
+                let Some(root) = self.storage.btrfs_root.clone() else {
+                    return Err(
+                        "storage backend 'btrfs' requires [storage].btrfs_root configured"
+                            .to_string(),
+                    );
+                };
+                Ok(Some(Arc::new(BtrfsVolumeBackend::local(root))))
+            }
+        }
     }
 
     pub(crate) async fn runtime_image_backend(

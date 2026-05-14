@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +9,7 @@ use ployz_api::{
     DaemonPayload, MachineOperationInfo, MachineOperationListPayload, MachineOperationPayload,
 };
 use ployz_model::{MachineId, MachineLifecycle};
+use ployz_operation_store::FileOperationStore;
 use ployz_store_api::MachineMembershipStore;
 use ployz_time::now_unix_secs;
 
@@ -218,13 +218,15 @@ impl MachineOperationRecord {
 
 #[derive(Debug, Clone)]
 pub(super) struct MachineOperationStore {
-    root: PathBuf,
+    files: FileOperationStore,
 }
 
 impl MachineOperationStore {
     #[must_use]
     pub(super) fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            files: FileOperationStore::new(root, OPERATIONS_DIR_NAME, "machine operation"),
+        }
     }
 
     pub(super) fn begin(
@@ -313,67 +315,18 @@ impl MachineOperationStore {
     }
 
     pub(super) fn save(&self, record: &MachineOperationRecord) -> Result<(), String> {
-        let path = self.path_for(&record.id);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| {
-                format!(
-                    "create machine operations dir '{}': {err}",
-                    parent.display()
-                )
-            })?;
-        }
-        let body = serde_json::to_vec_pretty(record)
-            .map_err(|err| format!("encode machine operation '{}': {err}", record.id))?;
-        std::fs::write(&path, body)
-            .map_err(|err| format!("write machine operation '{}': {err}", path.display()))
+        self.files.save(&record.id, record)
     }
 
     pub(super) fn load(&self, id: &str) -> Result<Option<MachineOperationRecord>, String> {
-        validate_operation_id(id)?;
-        let path = self.path_for(id);
-        if !path.exists() {
-            return Ok(None);
-        }
-        read_machine_operation(&path).map(Some)
+        self.files.load(id)
     }
 
     pub(super) fn list(&self) -> Result<Vec<MachineOperationRecord>, String> {
-        let dir = self.dir();
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => {
-                return Err(format!(
-                    "read machine operations dir '{}': {err}",
-                    dir.display()
-                ));
-            }
-        };
-
-        let mut records = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|err| format!("read machine operation entry: {err}"))?;
-            let path = entry.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("json") {
-                continue;
-            }
-            records.push(read_machine_operation(&path)?);
-        }
-        records.sort_by(|left, right| {
-            right
-                .started_at
-                .cmp(&left.started_at)
-                .then(left.id.cmp(&right.id))
-        });
-        Ok(records)
-    }
-
-    fn dir(&self) -> PathBuf {
-        self.root.join(OPERATIONS_DIR_NAME)
-    }
-
-    fn path_for(&self, id: &str) -> PathBuf {
-        self.dir().join(format!("{id}.json"))
+        self.files.list(
+            |record: &MachineOperationRecord| record.started_at,
+            |record| &record.id,
+        )
     }
 }
 
@@ -604,40 +557,14 @@ impl DaemonState {
 }
 
 fn unique_operation_id(kind: MachineOperationKind, now: u64) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time after epoch")
-        .as_nanos();
-    format!("machine-{}-{now}-{nanos}", kind.as_str())
+    ployz_operation_store::unique_operation_id("machine", kind.as_str(), now)
 }
 
-const MAX_OPERATION_ID_LEN: usize = 128;
+#[cfg(test)]
+const MAX_OPERATION_ID_LEN: usize = ployz_operation_store::MAX_OPERATION_ID_LEN;
 
 fn validate_operation_id(id: &str) -> Result<(), String> {
-    if id.is_empty() {
-        return Err("machine operation id cannot be empty".into());
-    }
-    if id.len() > MAX_OPERATION_ID_LEN {
-        return Err(format!(
-            "machine operation id exceeds {MAX_OPERATION_ID_LEN} characters"
-        ));
-    }
-    if !id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(format!(
-            "machine operation id '{id}' contains characters outside [A-Za-z0-9_-]"
-        ));
-    }
-    Ok(())
-}
-
-fn read_machine_operation(path: &Path) -> Result<MachineOperationRecord, String> {
-    let body = std::fs::read(path)
-        .map_err(|err| format!("read machine operation '{}': {err}", path.display()))?;
-    serde_json::from_slice(&body)
-        .map_err(|err| format!("decode machine operation '{}': {err}", path.display()))
+    ployz_operation_store::validate_operation_id("machine operation", id)
 }
 
 fn merge_operation_notes(existing: Option<&str>, next: &str) -> String {

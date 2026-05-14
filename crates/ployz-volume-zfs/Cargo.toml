@@ -7,7 +7,9 @@ publish = false
 
 [dependencies]
 ployz-model = { path = "../ployz-model" }
+ployz-operation-store = { path = "../ployz-operation-store" }
 ployz-storage-api = { path = "../ployz-storage-api" }
+ployz-volume-api = { path = "../ployz-volume-api" }
 ployz-error = { path = "../ployz-error" }
 ployz-spec = { path = "../ployz-spec" }
 ployz-time = { path = "../ployz-time" }

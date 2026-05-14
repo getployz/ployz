@@ -142,6 +142,10 @@ as ephemeral children of a single daemon process.
 
 ## Runtime Model
 
+Capability backend roles are documented in
+`docs/architecture/capability-backends.md`. Node runtime ownership and
+supervision rules are documented in `docs/architecture/node-runtime.md`.
+
 The public runtime surface is split across two axes:
 
 | Runtime target | Service mode | Meaning |

@@ -1,0 +1,19 @@
+[package]
+name = "ployz-cert-static"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+async-trait = { workspace = true }
+ployz-cert-api = { path = "../ployz-cert-api" }
+ployz-error = { path = "../ployz-error" }
+ployz-store-api = { path = "../ployz-store-api" }
+
+[dev-dependencies]
+ployz-store-memory = { path = "../ployz-store-memory" }
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

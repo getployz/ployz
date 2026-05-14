@@ -156,7 +156,7 @@ impl DaemonState {
         let machine_id = self.identity.machine_id.clone();
         let overlay_network_name = self.overlay_network_name();
         let overlay_dns_server = self.overlay_dns_server();
-        let storage_driver = self.zfs_storage_driver().await?;
+        let storage_driver = self.volume_storage_backend().await?;
         Ok(DeployAgent::new(
             store,
             machine_id,
