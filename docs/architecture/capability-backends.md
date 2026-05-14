@@ -9,9 +9,9 @@ capabilities and report unsupported operations before mutation.
 
 | Backend | Crate | Role | Capabilities |
 |---|---|---|---|
-| ZFS | `crates/ployz-volume-zfs` | Product-grade Linux storage backend | ensure, remove, mount, inspect, snapshot. Existing ZFS transfer/clone mechanics remain ZFS-specific until the transfer protocol is lifted cleanly. |
-| Docker volume | `crates/ployz-volume-docker` | Local/macOS/simple runtime backend | ensure, remove, mount, inspect through Docker named volumes. No snapshot, clone, send, or receive semantics. |
-| Btrfs | `crates/ployz-volume-btrfs` | Future small-machine Linux backend | ensure, remove, mount, inspect, snapshot, clone. No ZFS send/receive equivalent is advertised. |
+| ZFS | `crates/ployz-volume-zfs` | Product-grade Linux storage backend | ensure, remove, mount, inspect, snapshot, custom mountpoints, quota enforcement, mode enforcement, and owner enforcement. Existing ZFS transfer/clone mechanics remain ZFS-specific until the transfer protocol is lifted cleanly. |
+| Docker volume | `crates/ployz-volume-docker` | Local/macOS/simple runtime backend | ensure, remove, mount, inspect through Docker named volumes. No custom mountpoint, filesystem constraint enforcement, snapshot, clone, send, or receive semantics. |
+| Btrfs | `crates/ployz-volume-btrfs` | Future small-machine Linux backend | ensure, remove, mount, inspect, snapshot, clone, mode enforcement, and owner enforcement. Quota enforcement waits until the backend owns qgroup setup. No custom mountpoint or ZFS send/receive equivalent is advertised. |
 
 `crates/ployz-volume-api` models the common contract. `crates/ployz-volume`
 owns workflow preflight over those capabilities. Handlers should call workflow

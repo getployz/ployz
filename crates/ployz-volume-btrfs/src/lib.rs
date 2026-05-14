@@ -138,6 +138,8 @@ where
                 VolumeCapability::Remove,
                 VolumeCapability::Mount,
                 VolumeCapability::Inspect,
+                VolumeCapability::EnforceMode,
+                VolumeCapability::EnforceOwner,
                 VolumeCapability::Snapshot,
                 VolumeCapability::Clone,
             ]),
@@ -145,9 +147,19 @@ where
     }
 
     async fn ensure(&self, request: EnsureVolumeRequest) -> Result<VolumeMount> {
-        let path = request
-            .mountpoint
-            .unwrap_or_else(|| self.path_for(&request.identity));
+        if request.mountpoint.is_some() {
+            return Err(VolumeError::InvalidRequest {
+                field: "mountpoint".to_string(),
+                message: "btrfs backend derives mountpoints from volume identity".to_string(),
+            });
+        }
+        if request.quota.is_some() {
+            return Err(VolumeError::InvalidRequest {
+                field: "quota".to_string(),
+                message: "btrfs backend does not own qgroup setup yet".to_string(),
+            });
+        }
+        let path = self.path_for(&request.identity);
         self.ensure_parent(&path).await?;
         if !path.exists() {
             let path_text = path.to_string_lossy();
@@ -158,14 +170,14 @@ where
             )
             .await?;
         }
-        if let Some(mode) = request.mode {
+        if let Some(mode) = request.mode.as_deref() {
             let path_text = path.to_string_lossy();
-            self.run_success("chmod btrfs volume", "chmod", &[&mode, &path_text])
+            self.run_success("chmod btrfs volume", "chmod", &[mode, &path_text])
                 .await?;
         }
-        if let Some(owner) = request.owner {
+        if let Some(owner) = request.owner.as_deref() {
             let path_text = path.to_string_lossy();
-            self.run_success("chown btrfs volume", "chown", &[&owner, &path_text])
+            self.run_success("chown btrfs volume", "chown", &[owner, &path_text])
                 .await?;
         }
         Ok(VolumeMount::host_path(request.identity, path))
@@ -317,6 +329,14 @@ mod tests {
         assert_eq!(info.kind, VolumeBackendKind::Btrfs);
         assert!(info.capabilities.contains(VolumeCapability::Snapshot));
         assert!(info.capabilities.contains(VolumeCapability::Clone));
+        assert!(
+            !info
+                .capabilities
+                .contains(VolumeCapability::CustomMountpoint)
+        );
+        assert!(!info.capabilities.contains(VolumeCapability::EnforceQuota));
+        assert!(info.capabilities.contains(VolumeCapability::EnforceMode));
+        assert!(info.capabilities.contains(VolumeCapability::EnforceOwner));
         assert!(!info.capabilities.contains(VolumeCapability::Send));
     }
 
@@ -361,5 +381,146 @@ mod tests {
             "got: {error}"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn ensure_applies_mode_and_owner_constraints() {
+        let root = std::env::temp_dir().join(format!(
+            "ployz-btrfs-constraint-test-{}",
+            std::process::id()
+        ));
+        let runner = FakeBtrfsRunner::default();
+        let backend = BtrfsVolumeBackend::new(runner, root.clone());
+
+        let mount = backend
+            .ensure(EnsureVolumeRequest {
+                identity: VolumeIdentity::new("prod", "data"),
+                mountpoint: None,
+                quota: None,
+                mode: Some("0750".to_string()),
+                owner: Some("999:999".to_string()),
+            })
+            .await
+            .expect("ensure btrfs volume");
+
+        assert_eq!(mount.mountpoint(), Some(&root.join("prod").join("data")));
+        let calls = backend.runner.calls.lock().expect("calls").clone();
+        assert_eq!(
+            calls,
+            vec![
+                vec![
+                    "btrfs".to_string(),
+                    "subvolume".to_string(),
+                    "create".to_string(),
+                    root.join("prod").join("data").display().to_string(),
+                ],
+                vec![
+                    "chmod".to_string(),
+                    "0750".to_string(),
+                    root.join("prod").join("data").display().to_string(),
+                ],
+                vec![
+                    "chown".to_string(),
+                    "999:999".to_string(),
+                    root.join("prod").join("data").display().to_string(),
+                ],
+            ]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn ensure_rejects_custom_mountpoint_before_mutation() {
+        let root = std::env::temp_dir().join(format!(
+            "ployz-btrfs-mountpoint-test-{}",
+            std::process::id()
+        ));
+        let runner = FakeBtrfsRunner::default();
+        let backend = BtrfsVolumeBackend::new(runner, root);
+
+        let error = backend
+            .ensure(EnsureVolumeRequest {
+                identity: VolumeIdentity::new("prod", "data"),
+                mountpoint: Some("/custom/path".into()),
+                quota: None,
+                mode: None,
+                owner: None,
+            })
+            .await
+            .expect_err("custom mountpoint is not identity-stable");
+
+        assert_eq!(
+            error.to_string(),
+            "invalid volume request field 'mountpoint': btrfs backend derives mountpoints from volume identity"
+        );
+        assert!(backend.runner.calls.lock().expect("calls").is_empty());
+    }
+
+    #[tokio::test]
+    async fn ensure_rejects_quota_before_mutation() {
+        let root =
+            std::env::temp_dir().join(format!("ployz-btrfs-quota-test-{}", std::process::id()));
+        let runner = FakeBtrfsRunner::default();
+        let backend = BtrfsVolumeBackend::new(runner, root);
+
+        let error = backend
+            .ensure(EnsureVolumeRequest {
+                identity: VolumeIdentity::new("prod", "data"),
+                mountpoint: None,
+                quota: Some("1G".to_string()),
+                mode: None,
+                owner: None,
+            })
+            .await
+            .expect_err("quota support needs explicit qgroup setup");
+
+        assert_eq!(
+            error.to_string(),
+            "invalid volume request field 'quota': btrfs backend does not own qgroup setup yet"
+        );
+        assert!(backend.runner.calls.lock().expect("calls").is_empty());
+    }
+
+    #[tokio::test]
+    async fn ensure_stops_when_mode_or_owner_constraint_fails() {
+        for (label, failing_call, expected_operation) in [
+            ("mode", 1_usize, "chmod btrfs volume"),
+            ("owner", 2_usize, "chown btrfs volume"),
+        ] {
+            let root = std::env::temp_dir().join(format!(
+                "ployz-btrfs-{label}-failure-test-{}",
+                std::process::id()
+            ));
+            let runner = FakeBtrfsRunner::default();
+            for call in 0..=failing_call {
+                if call == failing_call {
+                    runner.push_status(1, "constraint failed");
+                } else {
+                    runner.push_status(0, "");
+                }
+            }
+            let backend = BtrfsVolumeBackend::new(runner, root.clone());
+
+            let error = backend
+                .ensure(EnsureVolumeRequest {
+                    identity: VolumeIdentity::new("prod", "data"),
+                    mountpoint: None,
+                    quota: None,
+                    mode: Some("0750".to_string()),
+                    owner: Some("999:999".to_string()),
+                })
+                .await
+                .expect_err("constraint failure should stop ensure");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("{expected_operation}: constraint failed")),
+                "got: {error}"
+            );
+            let calls = backend.runner.calls.lock().expect("calls");
+            assert_eq!(calls.len(), failing_call + 1);
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 }

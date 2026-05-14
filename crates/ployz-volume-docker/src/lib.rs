@@ -101,6 +101,7 @@ where
     }
 
     async fn ensure(&self, request: EnsureVolumeRequest) -> Result<VolumeMount> {
+        reject_unsupported_constraints(&request)?;
         let name = self.volume_name(&request.identity);
         self.run_success("docker volume create", &["volume", "create", &name])
             .await?;
@@ -172,6 +173,41 @@ fn docker_volume_error(operation: &'static str, message: String) -> VolumeError 
         backend: "docker-volume".to_string(),
         operation,
         message,
+    }
+}
+
+fn reject_unsupported_constraints(request: &EnsureVolumeRequest) -> Result<()> {
+    if request.mountpoint.is_some() {
+        return Err(unsupported_constraint(
+            "mountpoint",
+            "docker-volume backend uses Docker-managed named volume mountpoints",
+        ));
+    }
+    if request.quota.is_some() {
+        return Err(unsupported_constraint(
+            "quota",
+            "docker-volume backend cannot enforce volume quotas",
+        ));
+    }
+    if request.mode.is_some() {
+        return Err(unsupported_constraint(
+            "mode",
+            "docker-volume backend cannot enforce volume modes",
+        ));
+    }
+    if request.owner.is_some() {
+        return Err(unsupported_constraint(
+            "owner",
+            "docker-volume backend cannot enforce volume owners",
+        ));
+    }
+    Ok(())
+}
+
+fn unsupported_constraint(field: &str, message: &str) -> VolumeError {
+    VolumeError::InvalidRequest {
+        field: field.to_string(),
+        message: message.to_string(),
     }
 }
 
@@ -248,9 +284,9 @@ mod tests {
             .ensure(EnsureVolumeRequest {
                 identity: VolumeIdentity::new("prod", "data"),
                 mountpoint: None,
-                quota: Some("1G".to_string()),
-                mode: Some("0750".to_string()),
-                owner: Some("999:999".to_string()),
+                quota: None,
+                mode: None,
+                owner: None,
             })
             .await
             .expect("ensure docker volume");
@@ -264,6 +300,12 @@ mod tests {
                 .info()
                 .capabilities
                 .contains(ployz_volume_api::VolumeCapability::Snapshot)
+        );
+        assert!(
+            !backend
+                .info()
+                .capabilities
+                .contains(ployz_volume_api::VolumeCapability::EnforceQuota)
         );
     }
 
@@ -290,6 +332,77 @@ mod tests {
                 .contains("docker volume create: permission denied"),
             "got: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_rejects_custom_mountpoint() {
+        let backend = DockerVolumeBackend::new(FakeDockerRunner::default(), "ployz");
+
+        let error = backend
+            .ensure(EnsureVolumeRequest {
+                identity: VolumeIdentity::new("prod", "data"),
+                mountpoint: Some("/custom/path".into()),
+                quota: None,
+                mode: None,
+                owner: None,
+            })
+            .await
+            .expect_err("docker named volumes cannot honor custom mountpoints");
+
+        assert_eq!(
+            error.to_string(),
+            "invalid volume request field 'mountpoint': docker-volume backend uses Docker-managed named volume mountpoints"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_rejects_unenforced_filesystem_constraints() {
+        let backend = DockerVolumeBackend::new(FakeDockerRunner::default(), "ployz");
+
+        for (field, mut request) in [
+            (
+                "quota",
+                EnsureVolumeRequest {
+                    identity: VolumeIdentity::new("prod", "data"),
+                    mountpoint: None,
+                    quota: Some("1G".to_string()),
+                    mode: None,
+                    owner: None,
+                },
+            ),
+            (
+                "mode",
+                EnsureVolumeRequest {
+                    identity: VolumeIdentity::new("prod", "data"),
+                    mountpoint: None,
+                    quota: None,
+                    mode: Some("0750".to_string()),
+                    owner: None,
+                },
+            ),
+            (
+                "owner",
+                EnsureVolumeRequest {
+                    identity: VolumeIdentity::new("prod", "data"),
+                    mountpoint: None,
+                    quota: None,
+                    mode: None,
+                    owner: Some("999:999".to_string()),
+                },
+            ),
+        ] {
+            request.identity = VolumeIdentity::new("prod", field);
+            let error = backend
+                .ensure(request)
+                .await
+                .expect_err("docker named volumes cannot enforce filesystem constraints");
+
+            assert!(
+                error.to_string().contains(&format!("'{field}'")),
+                "got: {error}"
+            );
+        }
+        assert!(backend.runner.calls.lock().expect("calls").is_empty());
     }
 
     #[tokio::test]

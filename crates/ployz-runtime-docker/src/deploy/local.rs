@@ -19,7 +19,8 @@ use crate::spec::{
 };
 use ployz_store_api::InstanceStatusStore;
 use ployz_volume_api::{
-    EnsureVolumeRequest, VolumeBackend, VolumeError, VolumeIdentity, VolumeMountSource,
+    EnsureVolumeRequest, VolumeBackend, VolumeCapability, VolumeError, VolumeIdentity,
+    VolumeMountSource,
 };
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
@@ -433,13 +434,21 @@ async fn resolve_mounts_with_backend(
             )
         })?;
         let identity = VolumeIdentity::new(namespace.as_str(), declaration.name.clone());
+        let info = backend.info();
+        let capabilities = &info.capabilities;
         let volume_mount = backend
             .ensure(EnsureVolumeRequest {
                 identity,
                 mountpoint: None,
-                quota: Some(declaration.quota.to_string()),
-                mode: Some(declaration.mode.to_string()),
-                owner: Some(declaration.owner.to_string()),
+                quota: capabilities
+                    .contains(VolumeCapability::EnforceQuota)
+                    .then(|| declaration.quota.to_string()),
+                mode: capabilities
+                    .contains(VolumeCapability::EnforceMode)
+                    .then(|| declaration.mode.to_string()),
+                owner: capabilities
+                    .contains(VolumeCapability::EnforceOwner)
+                    .then(|| declaration.owner.to_string()),
             })
             .await
             .map_err(volume_error)?;
@@ -673,6 +682,7 @@ mod tests {
     #[derive(Clone)]
     struct FakeVolumeBackend {
         source: FakeVolumeSource,
+        capabilities: VolumeCapabilities,
         requests: Arc<Mutex<Vec<EnsureVolumeRequest>>>,
     }
 
@@ -686,6 +696,7 @@ mod tests {
         fn host_path(path: impl Into<std::path::PathBuf>) -> Self {
             Self {
                 source: FakeVolumeSource::HostPath(path.into()),
+                capabilities: VolumeCapabilities::zfs_like(),
                 requests: Arc::new(Mutex::new(Vec::new())),
             }
         }
@@ -693,6 +704,7 @@ mod tests {
         fn docker_volume(name: impl Into<String>) -> Self {
             Self {
                 source: FakeVolumeSource::DockerVolume(name.into()),
+                capabilities: VolumeCapabilities::docker_local(),
                 requests: Arc::new(Mutex::new(Vec::new())),
             }
         }
@@ -708,7 +720,7 @@ mod tests {
             VolumeBackendInfo {
                 id: "fake".to_string(),
                 kind: VolumeBackendKind::Other("fake".to_string()),
-                capabilities: VolumeCapabilities::zfs_like(),
+                capabilities: self.capabilities.clone(),
             }
         }
 
@@ -836,6 +848,16 @@ mod tests {
         assert_eq!(
             build_binds(&container, &resolved).expect("build binds"),
             vec!["ployz-test-data:/var/lib/postgresql/data"]
+        );
+        assert_eq!(
+            backend.requests(),
+            vec![EnsureVolumeRequest {
+                identity: VolumeIdentity::new("test", "data"),
+                mountpoint: None,
+                quota: None,
+                mode: None,
+                owner: None,
+            }]
         );
     }
 

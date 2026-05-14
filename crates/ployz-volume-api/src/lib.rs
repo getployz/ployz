@@ -23,6 +23,10 @@ pub enum VolumeCapability {
     Remove,
     Mount,
     Inspect,
+    CustomMountpoint,
+    EnforceQuota,
+    EnforceMode,
+    EnforceOwner,
     Snapshot,
     Clone,
     Send,
@@ -54,6 +58,10 @@ impl VolumeCapabilities {
             VolumeCapability::Remove,
             VolumeCapability::Mount,
             VolumeCapability::Inspect,
+            VolumeCapability::CustomMountpoint,
+            VolumeCapability::EnforceQuota,
+            VolumeCapability::EnforceMode,
+            VolumeCapability::EnforceOwner,
             VolumeCapability::Snapshot,
         ])
     }
@@ -246,8 +254,22 @@ mod tests {
 
         assert!(capabilities.contains(VolumeCapability::Ensure));
         assert!(capabilities.contains(VolumeCapability::Mount));
+        assert!(!capabilities.contains(VolumeCapability::CustomMountpoint));
+        assert!(!capabilities.contains(VolumeCapability::EnforceQuota));
+        assert!(!capabilities.contains(VolumeCapability::EnforceMode));
+        assert!(!capabilities.contains(VolumeCapability::EnforceOwner));
         assert!(!capabilities.contains(VolumeCapability::Snapshot));
         assert!(!capabilities.contains(VolumeCapability::Send));
+    }
+
+    #[test]
+    fn zfs_like_capabilities_include_filesystem_constraints() {
+        let capabilities = VolumeCapabilities::zfs_like();
+
+        assert!(capabilities.contains(VolumeCapability::CustomMountpoint));
+        assert!(capabilities.contains(VolumeCapability::EnforceQuota));
+        assert!(capabilities.contains(VolumeCapability::EnforceMode));
+        assert!(capabilities.contains(VolumeCapability::EnforceOwner));
     }
 
     #[test]

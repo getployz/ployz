@@ -17,13 +17,17 @@ pub use lane::RequestLane;
 mod tests {
     use super::RequestLane;
     use crate::daemon::DaemonState;
+    use crate::ipc::listener::IncomingRequest;
     use ployz_api::{
         BuildInputs, BuildLocalRequest, BuildMachineRequest, DaemonRequest, DebugTickTask,
         DeployApplyPreparedRequest, ImageDistributeRequest, ImagePushRequest,
         ImageReceiveSessionRequest, ImageReceivedImportRequest,
     };
-    use ployz_model::{BuildMethod, DeployId, ImageDigest, MachineId};
+    use ployz_model::{BuildMethod, DeployId, ImageDigest, MachineId, MachineSelfTransition};
     use ployz_node_api::NodeRequest;
+    use ployz_runtime_api::Identity;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn debug_tick_routes_to_exclusive_lane() {
@@ -163,7 +167,103 @@ mod tests {
         assert_eq!(received_import_lane, RequestLane::Shared);
     }
 
+    #[tokio::test]
+    async fn command_shared_entrypoint_rejects_exclusive_control_and_node_requests() {
+        let state = test_state("dispatch-shared-rejects-exclusive");
+
+        let control = state
+            .handle_command_shared(IncomingRequest::control(DaemonRequest::DebugTick {
+                task: DebugTickTask::All,
+                repeat: 1,
+            }))
+            .await;
+        assert_eq!(control.code(), "INTERNAL");
+        assert_eq!(
+            control.message(),
+            "exclusive request routed to shared handler"
+        );
+
+        let node = state
+            .handle_command_shared(IncomingRequest::node(NodeRequest::MachineTransitionSelf {
+                transition: MachineSelfTransition::Drain,
+            }))
+            .await;
+        assert_eq!(node.code(), "INTERNAL");
+        assert_eq!(
+            node.message(),
+            "exclusive node request routed to shared handler"
+        );
+    }
+
+    #[tokio::test]
+    async fn command_exclusive_entrypoint_rejects_shared_control_and_node_requests() {
+        let mut state = test_state("dispatch-exclusive-rejects-shared");
+
+        let control = state
+            .handle_command_exclusive(IncomingRequest::control(DaemonRequest::Ping), None)
+            .await;
+        assert_eq!(control.code(), "INTERNAL");
+        assert_eq!(
+            control.message(),
+            "shared request routed to exclusive handler"
+        );
+
+        let node = state
+            .handle_command_exclusive(IncomingRequest::node(NodeRequest::Ping), None)
+            .await;
+        assert_eq!(node.code(), "INTERNAL");
+        assert_eq!(
+            node.message(),
+            "shared node request routed to exclusive handler"
+        );
+    }
+
+    #[tokio::test]
+    async fn node_entrypoints_reject_wrong_lane_requests_directly() {
+        let mut state = test_state("node-dispatch-rejects-wrong-lane");
+
+        let shared = state
+            .handle_node_shared(NodeRequest::MachineTransitionSelf {
+                transition: MachineSelfTransition::Drain,
+            })
+            .await;
+        assert_eq!(shared.code(), "INTERNAL");
+        assert_eq!(
+            shared.message(),
+            "exclusive node request routed to shared handler"
+        );
+
+        let exclusive = state.handle_node_exclusive(NodeRequest::Ping, None).await;
+        assert_eq!(exclusive.code(), "INTERNAL");
+        assert_eq!(
+            exclusive.message(),
+            "shared node request routed to exclusive handler"
+        );
+    }
+
     fn digest() -> ImageDigest {
         ImageDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("valid digest")
+    }
+
+    fn test_state(label: &str) -> DaemonState {
+        let identity = Identity::generate(MachineId::new("dispatcher"), [7; 32]);
+        DaemonState::new_for_tests(
+            &unique_temp_dir(label),
+            identity,
+            "10.210.0.0/16".into(),
+            24,
+            4319,
+            "127.0.0.1:8080".into(),
+            None,
+            1,
+        )
+    }
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{label}-{}-{nanos}", std::process::id()))
     }
 }
