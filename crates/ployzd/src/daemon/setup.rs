@@ -10,7 +10,7 @@ use crate::mesh_state::bootstrap::{
 };
 use crate::mesh_state::network::NetworkConfig;
 use ployz_cert_acme::InstantAcmeIssuerFactory;
-use ployz_cert_api::{
+use ployz_cert_acme_api::{
     AcmeAccountCoordinator, AcmeIssuerFactory, CertificateManagerConfig, Http01ChallengeReadiness,
     IssuanceCoordinator,
 };

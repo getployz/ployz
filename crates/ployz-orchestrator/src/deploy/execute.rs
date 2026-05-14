@@ -27,7 +27,7 @@ use crate::model::{
     VolumeBranchLineageRecord, VolumeMovementRecord, VolumeRecord,
 };
 use futures_util::stream::{self, FuturesUnordered, StreamExt, TryStreamExt};
-use ployz_cert_api::{
+use ployz_cert_acme_api::{
     AcmeAccountCoordinator, AcmeIssuerFactory, Http01ChallengeReadiness, IssuanceCoordinator,
     NoopAcmeAccountCoordinator, NoopAcmeIssuerFactory, NoopIssuanceCoordinator,
 };

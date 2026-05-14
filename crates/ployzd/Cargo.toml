@@ -19,6 +19,7 @@ ployz-builder-railpack = { path = "../ployz-builder-railpack" }
 ployz-build = { path = "../ployz-build" }
 ployz-image = { path = "../ployz-image" }
 ployz-cert-api = { path = "../ployz-cert-api" }
+ployz-cert-acme-api = { path = "../ployz-cert-acme-api" }
 ployz-cert-acme = { path = "../ployz-cert-acme" }
 ployz-config = { path = "../ployz-config" }
 ployz-host-backends = { path = "../ployz-host-backends" }

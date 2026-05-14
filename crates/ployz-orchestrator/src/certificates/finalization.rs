@@ -1,5 +1,5 @@
 use super::{CERT_VALIDITY_FALLBACK_SECS, LocalHttp01ChallengeReadiness};
-use ployz_cert_api::{
+use ployz_cert_acme_api::{
     AcmeAccountCoordinator, AcmeIssuer, AcmeIssuerFactory, Http01ChallengeReadiness,
     IssuanceAcquisition, IssuanceCoordinator, NoopAcmeAccountCoordinator, NoopIssuanceCoordinator,
 };
@@ -56,9 +56,6 @@ pub fn spawn_certificate_finalization_with_coordination(
         }
     });
 }
-
-/// Hot-path: for every certificate that needs a new ACME order (`Pending`,
-/// `Failed`, or `RenewalDue`), call `start_order`. Errors are returned as
 
 /// Background: for every certificate with an open order (`Issuing` + stored
 /// `order_url`), resume the order and finalize. Runs after every apply and —

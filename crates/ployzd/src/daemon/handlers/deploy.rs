@@ -24,7 +24,7 @@ use ployz_api::{
     MigrateServiceRequest,
 };
 use ployz_cert_acme::InstantAcmeIssuerFactory;
-use ployz_cert_api::{AcmeAccountCoordinator, CertificateManagerConfig};
+use ployz_cert_acme_api::{AcmeAccountCoordinator, CertificateManagerConfig};
 use ployz_config::RuntimeTarget;
 use ployz_error::DeployError;
 use ployz_error::Error as PloyzError;

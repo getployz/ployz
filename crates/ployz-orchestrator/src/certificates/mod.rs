@@ -27,11 +27,12 @@ mod tests {
     use super::orders::start_one;
     use super::*;
     use async_trait::async_trait;
-    use ployz_cert_api::{
+    use ployz_cert_acme_api::{
         AcmeIssuer, CHALLENGE_TTL_SECS, DEFAULT_ACME_DIRECTORY_URL, IssuanceAcquisition,
-        IssuanceCoordinator, IssuanceHold, IssuedCertificate, NoopIssuanceCoordinator,
-        StartedOrder, account_id_for_issuer_url,
+        IssuanceCoordinator, IssuanceHold, NoopIssuanceCoordinator, StartedOrder,
+        account_id_for_issuer_url,
     };
+    use ployz_cert_api::IssuedCertificate;
     use ployz_error::{CertificateError, Error, Result};
     use ployz_model::{
         AcmeChallengeRecord, CertificateLifecycle, CertificateRecord, CertificateState,

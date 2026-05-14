@@ -1,6 +1,6 @@
 use super::{HTTP01_CHALLENGE_VISIBILITY_POLL, HTTP01_CHALLENGE_VISIBILITY_TIMEOUT};
 use async_trait::async_trait;
-use ployz_cert_api::Http01ChallengeReadiness;
+use ployz_cert_acme_api::Http01ChallengeReadiness;
 use ployz_error::{CertificateError, Result};
 use ployz_store_api::{CertificateStore, StoreDriver};
 

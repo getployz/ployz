@@ -3211,6 +3211,7 @@ version = "0.6.1"
 dependencies = [
  "async-trait",
  "instant-acme",
+ "ployz-cert-acme-api",
  "ployz-cert-api",
  "ployz-error",
  "ployz-model",
@@ -3224,6 +3225,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-cert-acme-api"
+version = "0.6.1"
+dependencies = [
+ "async-trait",
+ "ployz-cert-api",
+ "ployz-error",
+ "ployz-store-api",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ployz-cert-api"
 version = "0.6.1"
 dependencies = [
@@ -3231,8 +3244,6 @@ dependencies = [
  "ployz-error",
  "ployz-store-api",
  "serde",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -3466,6 +3477,7 @@ dependencies = [
  "futures-util",
  "ipnet",
  "libc",
+ "ployz-cert-acme-api",
  "ployz-cert-api",
  "ployz-ebpf-common",
  "ployz-error",
@@ -3726,6 +3738,7 @@ dependencies = [
  "ployz-builder-dockerfile",
  "ployz-builder-railpack",
  "ployz-cert-acme",
+ "ployz-cert-acme-api",
  "ployz-cert-api",
  "ployz-config",
  "ployz-dns",

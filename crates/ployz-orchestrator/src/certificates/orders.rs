@@ -1,4 +1,4 @@
-use ployz_cert_api::{AcmeIssuer, IssuanceAcquisition, IssuanceCoordinator};
+use ployz_cert_acme_api::{AcmeIssuer, IssuanceAcquisition, IssuanceCoordinator};
 use ployz_error::{CertificateError, Result};
 use ployz_model::{
     CertificateRecord, CertificateState, CertificateStateGoal, CertificateStateTransition,

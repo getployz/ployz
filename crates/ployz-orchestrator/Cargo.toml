@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 ployz-ebpf-common = { path = "../ebpf-common" }
 ployz-cert-api = { path = "../ployz-cert-api" }
+ployz-cert-acme-api = { path = "../ployz-cert-acme-api" }
 ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-error = { path = "../ployz-error" }

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ployz_api::{AcmeHttp01ChallengeStatus, AcmeHttp01StatusPayload, DaemonPayload};
-use ployz_cert_api::{
+use ployz_cert_acme_api::{
     AccountAcquisition, AcmeAccountCoordinator, Http01ChallengeReadiness, IssuanceAcquisition,
     IssuanceCoordinator, IssuanceHold,
 };

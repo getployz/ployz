@@ -1,6 +1,6 @@
 use super::STUCK_ISSUING_MAX_AGE_SECS;
 use super::orders::start_pending_orders_checked;
-use ployz_cert_api::{AcmeIssuer, IssuanceCoordinator};
+use ployz_cert_acme_api::{AcmeIssuer, IssuanceCoordinator};
 use ployz_error::{Error, Result};
 use ployz_model::{
     CertificateState, CertificateStateGoal, CertificateStateTransition,

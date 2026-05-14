@@ -17,7 +17,7 @@ use crate::model::{
     DeployApplyResult, DeployPreview, MachineId, PreparedDeployRecord, PreparedDeployState,
 };
 use plan::{preflight_image_availability, resolve_plan};
-use ployz_cert_api::{
+use ployz_cert_acme_api::{
     AcmeAccountCoordinator, AcmeIssuerFactory, Http01ChallengeReadiness, IssuanceCoordinator,
 };
 use ployz_spec::{DeployManifest, stable_hash_hex};

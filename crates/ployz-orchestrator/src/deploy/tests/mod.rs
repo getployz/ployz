@@ -30,7 +30,9 @@ use crate::model::{
     VolumeClonePreflightAction, VolumeClonePreflightScope, VolumeMovementRecord, VolumeRecord,
 };
 use async_trait::async_trait;
-use ployz_cert_api::{NoopAcmeAccountCoordinator, NoopAcmeIssuerFactory, NoopIssuanceCoordinator};
+use ployz_cert_acme_api::{
+    NoopAcmeAccountCoordinator, NoopAcmeIssuerFactory, NoopIssuanceCoordinator,
+};
 use ployz_error::Result as PloyzResult;
 use ployz_spec::{
     ContainerSpec, DeployIntent, DeployManifest, DeployPhaseIntent, HttpRoute, Mount, MountSource,

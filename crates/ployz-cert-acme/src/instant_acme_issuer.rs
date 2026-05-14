@@ -3,12 +3,14 @@ use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, NewAccount,
     NewOrder, OrderStatus, RetryPolicy,
 };
-use ployz_cert_api::{
+use ployz_cert_acme_api::{
     AccountAcquisition, AcmeAccountCoordinator, AcmeIssuer, AcmeIssuerFactory, CHALLENGE_TTL_SECS,
+    CertificateManagerConfig, HTTP01_GATEWAY_SNAPSHOT_SETTLE, Http01ChallengeReadiness,
+    NoopAcmeAccountCoordinator, StartedOrder, account_id_for_issuer_url,
+};
+use ployz_cert_api::{
     CertificateIssueRequest, CertificateIssuer, CertificateIssuerInfo, CertificateIssuerKind,
-    CertificateManagerConfig, CertificateRenewRequest, HTTP01_GATEWAY_SNAPSHOT_SETTLE,
-    Http01ChallengeReadiness, IssuedCertificate, NoopAcmeAccountCoordinator, StartedOrder,
-    account_id_for_issuer_url,
+    CertificateRenewRequest, IssuedCertificate,
 };
 use ployz_error::{AcmeAuthorizationStatus, AcmeOrderStatus, CertificateError, Error, Result};
 use ployz_model::{AcmeAccountRecord, AcmeChallengeRecord};
@@ -445,7 +447,9 @@ fn ensure_order_url_matches_directory(directory_url: &str, order_url: &str) -> R
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use ployz_cert_api::{AccountAcquisition, AcmeAccountCoordinator, CertificateManagerConfig};
+    use ployz_cert_acme_api::{
+        AccountAcquisition, AcmeAccountCoordinator, CertificateManagerConfig,
+    };
     use ployz_error::Error;
     use ployz_model::AcmeAccountRecord;
     use ployz_store_api::StoreDriver;

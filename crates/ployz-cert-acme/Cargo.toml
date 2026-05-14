@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 ployz-cert-api = { path = "../ployz-cert-api" }
+ployz-cert-acme-api = { path = "../ployz-cert-acme-api" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-error = { path = "../ployz-error" }
 ployz-model = { path = "../ployz-model" }
