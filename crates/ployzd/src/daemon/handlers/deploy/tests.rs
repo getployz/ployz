@@ -1,14 +1,15 @@
+use super::apply::{DeployLockLossOutcome, mark_deploy_failed_after_lock_loss};
 use super::*;
-use crate::daemon::RetainedSubnet;
+use crate::daemon::{ActiveMesh, RetainedSubnet};
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::{BranchResourceMode, DaemonRequest, DeployFailurePayload};
 use ployz_model::{
     DeployBaselineComponent, DeployBaselineDiff, DeployId, DeployPhaseCommitPolicy, DeployPhaseId,
-    DeployPhaseRecord, DeployPhaseRollbackPolicy, DeployPreview, DeployPreviewBaseline,
-    DeployPreviewBaselineComponents, DeployRecord, DeployState, MachineId, MachineLifecycle,
-    MachineMembership, NetworkLifecycle, NetworkName, OverlayIp, PreparedDeployRecord,
-    PreparedDeployState, PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord,
-    VolumeRecord,
+    DeployPhaseRecord, DeployPhaseRollbackPolicy, DeployPhaseState, DeployPreview,
+    DeployPreviewBaseline, DeployPreviewBaselineComponents, DeployRecord, DeployState, MachineId,
+    MachineLifecycle, MachineMembership, NetworkLifecycle, NetworkName, OverlayIp,
+    PreparedDeployRecord, PreparedDeployState, PublicKey, ServiceRelease, ServiceReleaseRecord,
+    ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_node_api::{
     NodeRequest, NodeResponse, NodeVolumeZfsTransferInfo, NodeVolumeZfsTransferPayload,
@@ -29,7 +30,7 @@ use ployz_store_api::{DeployCommit, DeployStore, MachineMembershipStore};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn test_daemon_state() -> DaemonState {
     DaemonState::new_for_tests(
