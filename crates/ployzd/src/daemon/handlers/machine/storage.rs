@@ -7,7 +7,10 @@ use ployz_model::{
     AuthorityId, MachineId, MachineLifecycle, MachineMembership, MachineStorageRole,
     StorageParticipation, StorageReplicaPolicy,
 };
-use ployz_node_runtime::{MACHINE_STORAGE_RPC_POLICY, MachineStorageNodeClient};
+use ployz_node_runtime::{
+    MACHINE_STORAGE_RPC_POLICY, MachineStorageNodeClient, NODE_STATUS_RPC_POLICY,
+    NodeProbeNodeClient,
+};
 use ployz_store_api::MachineMembershipStore;
 use std::collections::BTreeSet;
 use tokio::sync::oneshot;
@@ -18,7 +21,7 @@ use crate::mesh_state::bootstrap::{
 use crate::mesh_state::network::NetworkConfig;
 
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
-use crate::daemon::node_rpc::NatsMachineStorageRpcTransport;
+use crate::daemon::node_rpc::{NatsMachineStorageRpcTransport, NatsNodeProbeRpcTransport};
 use crate::daemon::{DaemonState, RuntimeRestartMode};
 
 mod promotion;
@@ -333,13 +336,16 @@ impl DaemonState {
             let machine_client =
                 MachineStorageNodeClient::new(NatsMachineStorageRpcTransport::new(client.clone()))
                     .with_policy(MACHINE_STORAGE_RPC_POLICY);
+            let probe_client =
+                NodeProbeNodeClient::new(NatsNodeProbeRpcTransport::new(client.clone()))
+                    .with_policy(NODE_STATUS_RPC_POLICY);
 
             let remote_authorities = authority_peers
                 .iter()
                 .filter(|machine| machine.id != local_record.id)
                 .collect::<Vec<_>>();
             if let Err(failed) =
-                preflight_remote_storage_promotion(&client, &remote_authorities).await
+                preflight_remote_storage_promotion(&probe_client, &remote_authorities).await
             {
                 return Err(StoragePromotionError::Preflight { failed });
             }

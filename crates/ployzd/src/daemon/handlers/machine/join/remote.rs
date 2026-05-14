@@ -3,14 +3,20 @@ use ployz_api::{
     MeshSelfRecordPayload, StatusPayload,
 };
 use ployz_model::{MachineEvent, MachineId, MachineLifecycle, MachineMembership, PublicKey};
-use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject};
-use ployz_node_api::NodeRequest;
-use ployz_node_runtime::MachineLifecycleNodeClient;
+use ployz_nats::NatsNodeRpcClient;
+use ployz_node_api::NodeResponse;
+use ployz_node_runtime::{
+    MachineLifecycleNodeClient, MeshReadinessNodeClient, MeshReadinessRpcOperation,
+    NODE_READINESS_RPC_POLICY, NodeProbeNodeClient, NodeRpcError,
+};
 use ployz_sdk::Transport;
 use ployz_store_api::{MachineMembershipStore, StoreDriver};
 use tokio::time::{Duration, Instant, sleep, timeout};
 
-use crate::daemon::node_rpc::NatsMachineLifecycleRpcTransport;
+use crate::daemon::node_rpc::{
+    MESH_READY_PAYLOAD_KIND, MESH_SELF_RECORD_PAYLOAD_KIND, NatsMachineLifecycleRpcTransport,
+    NatsMeshReadinessRpcTransport, NatsNodeProbeRpcTransport, decode_daemon_node_payload,
+};
 use crate::daemon::ssh::{SshOptions, ssh_stdio_transport};
 
 use super::super::types::RemoteReadyWaitPolicy;
@@ -155,21 +161,11 @@ pub(super) async fn nats_self_record(
     client: &NatsNodeRpcClient,
     machine: &MachineMembership,
 ) -> Result<MachineMembership, String> {
-    let response = client
-        .request(
-            NodeCommandSubject::mesh_self_record(&machine.id),
-            &NodeRequest::MeshSelfRecord,
-        )
+    let response = MeshReadinessNodeClient::new(NatsMeshReadinessRpcTransport::new(client.clone()))
+        .self_record(&machine.id)
         .await
-        .map_err(|error| error.to_string())?;
-    if !response.is_ok() {
-        return Err(remote_response_error(&response));
-    }
-    match response.payload() {
-        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record })) => Ok(record),
-        Some(payload) => Err(format!("unexpected self-record payload: {payload:?}")),
-        None => Err("self-record response missing structured payload".to_string()),
-    }
+        .map_err(node_rpc_remote_error)?;
+    nats_self_record_payload(response)
 }
 
 pub(super) async fn nats_transition_self(
@@ -189,21 +185,19 @@ pub(super) async fn wait_for_nats_command_responder(
 ) -> Result<(), String> {
     let deadline = Instant::now() + REMOTE_READY_TIMEOUT;
     let mut attempt: u32 = 0;
+    let probe_client = NodeProbeNodeClient::new(NatsNodeProbeRpcTransport::new(client.clone()))
+        .with_policy(NODE_READINESS_RPC_POLICY);
 
     loop {
         attempt += 1;
-        let last_error = match timeout(
-            REMOTE_READY_RPC_TIMEOUT,
-            client.request(NodeCommandSubject::ping(&machine.id), &NodeRequest::Ping),
-        )
-        .await
+        let last_error = match timeout(REMOTE_READY_RPC_TIMEOUT, probe_client.ping(&machine.id))
+            .await
         {
-            Ok(Ok(response)) if response.is_ok() => {
+            Ok(Ok(())) => {
                 tracing::debug!(machine = %machine.id, attempt, "NATS command responder confirmed");
                 return Ok(());
             }
-            Ok(Ok(response)) => remote_response_error(&response),
-            Ok(Err(err)) => err.to_string(),
+            Ok(Err(err)) => node_rpc_remote_error(err),
             Err(_) => format!(
                 "NATS command responder probe exceeded {:?}",
                 REMOTE_READY_RPC_TIMEOUT
@@ -225,8 +219,31 @@ fn mesh_ready_payload(response: &DaemonResponse) -> Result<MeshReadyPayload, Str
     match &response.payload() {
         Some(DaemonPayload::MeshReady(payload)) => Ok(payload.clone()),
         Some(payload) => Err(format!("unexpected readiness payload: {payload:?}")),
-        None => parse_remote_ready_payload(&response.message()),
+        None => parse_remote_ready_payload(response.message()),
     }
+}
+
+fn nats_mesh_ready_payload(response: NodeResponse) -> Result<MeshReadyPayload, String> {
+    decode_daemon_node_payload::<MeshReadyPayload>(
+        MeshReadinessRpcOperation::Ready.operation_name(),
+        response,
+        MESH_READY_PAYLOAD_KIND,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn nats_self_record_payload(response: NodeResponse) -> Result<MachineMembership, String> {
+    let payload = decode_daemon_node_payload::<MeshSelfRecordPayload>(
+        MeshReadinessRpcOperation::SelfRecord.operation_name(),
+        response,
+        MESH_SELF_RECORD_PAYLOAD_KIND,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(payload.record)
+}
+
+fn node_rpc_remote_error(error: NodeRpcError) -> String {
+    format!("remote daemon error [{}]: {}", error.code, error.message)
 }
 
 fn parse_remote_ready_payload(output: &str) -> Result<MeshReadyPayload, String> {
@@ -276,29 +293,32 @@ pub(super) async fn wait_for_nats_ready(
 ) -> Result<(), String> {
     let deadline = Instant::now() + REMOTE_READY_TIMEOUT;
     let mut attempt: u32 = 0;
+    let readiness_client =
+        MeshReadinessNodeClient::new(NatsMeshReadinessRpcTransport::new(client.clone()))
+            .with_policy(NODE_READINESS_RPC_POLICY);
 
     loop {
         attempt += 1;
         let last_error = match timeout(
             REMOTE_READY_RPC_TIMEOUT,
-            client.request(
-                NodeCommandSubject::mesh_ready(&machine.id),
-                &NodeRequest::MeshReady { json: false },
-            ),
+            readiness_client.ready(&machine.id, false),
         )
         .await
         {
-            Ok(Ok(response)) => match mesh_ready_payload(&response) {
-                Ok(payload) => {
-                    if remote_join_ready(&payload) {
-                        tracing::debug!(machine = %machine.id, attempt, "NATS mesh ready confirmed");
-                        return Ok(());
+            Ok(Ok(response)) => {
+                let response_message = response.message().to_string();
+                match nats_mesh_ready_payload(response) {
+                    Ok(payload) => {
+                        if remote_join_ready(&payload) {
+                            tracing::debug!(machine = %machine.id, attempt, "NATS mesh ready confirmed");
+                            return Ok(());
+                        }
+                        format!("mesh reported not ready yet: {response_message}")
                     }
-                    format!("mesh reported not ready yet: {}", response.message())
+                    Err(err) => err,
                 }
-                Err(err) => err,
-            },
-            Ok(Err(err)) => err.to_string(),
+            }
+            Ok(Err(err)) => node_rpc_remote_error(err),
             Err(_) => format!(
                 "NATS readiness probe exceeded {:?}",
                 REMOTE_READY_RPC_TIMEOUT

@@ -7,12 +7,135 @@ use ployz_node_api::{NodeRequest, NodeResponse};
 use ployz_node_runtime::{
     DeployRpcOperation, DeployRpcTransport, ImageNodeClient, ImageNodeResponse, ImageRpcOperation,
     ImageRpcTransport, MachineLifecycleRpcOperation, MachineLifecycleRpcTransport,
-    MachineStorageRpcOperation, MachineStorageRpcTransport, MachineUpdateRpcOperation,
-    MachineUpdateRpcTransport, MeshRpcOperation, MeshRpcTransport, NodeRpcError, NodeRpcPolicy,
-    VolumeZfsRpcOperation, VolumeZfsRpcTransport,
+    MachineOperationRpcOperation, MachineOperationRpcTransport, MachineStorageRpcOperation,
+    MachineStorageRpcTransport, MachineUpdateRpcOperation, MachineUpdateRpcTransport,
+    MeshReadinessRpcOperation, MeshReadinessRpcTransport, MeshRpcOperation, MeshRpcTransport,
+    NodeProbeRpcOperation, NodeProbeRpcTransport, NodeRpcError, NodeRpcPolicy,
+    VolumeZfsRpcOperation, VolumeZfsRpcTransport, decode_node_response_payload,
 };
 
 use super::DaemonState;
+
+pub(crate) const STATUS_PAYLOAD_KIND: &str = "status";
+pub(crate) const MESH_READY_PAYLOAD_KIND: &str = "mesh-ready";
+pub(crate) const MESH_SELF_RECORD_PAYLOAD_KIND: &str = "mesh-self-record";
+pub(crate) const MACHINE_OPERATION_PAYLOAD_KIND: &str = "machine-operation";
+
+pub(crate) fn decode_daemon_node_payload<P>(
+    operation_name: &'static str,
+    response: NodeResponse,
+    expected_kind: &'static str,
+) -> Result<P, NodeRpcError>
+where
+    P: serde::de::DeserializeOwned,
+{
+    decode_node_response_payload(operation_name, response, expected_kind)
+}
+
+#[derive(Clone)]
+pub(crate) struct NatsNodeProbeRpcTransport {
+    client: NatsNodeRpcClient,
+}
+
+impl NatsNodeProbeRpcTransport {
+    #[must_use]
+    pub(crate) fn new(client: NatsNodeRpcClient) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl NodeProbeRpcTransport for NatsNodeProbeRpcTransport {
+    fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self {
+        Self {
+            client: self.client.clone().with_policy(RpcPolicy {
+                timeout: policy.timeout,
+            }),
+        }
+    }
+
+    async fn node_probe_request(
+        &self,
+        machine_id: &MachineId,
+        operation: NodeProbeRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError> {
+        self.client
+            .request_node_response(node_probe_subject(machine_id, operation), request)
+            .await
+            .map_err(|error| node_probe_rpc_error(operation, error))
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct NatsMeshReadinessRpcTransport {
+    client: NatsNodeRpcClient,
+}
+
+impl NatsMeshReadinessRpcTransport {
+    #[must_use]
+    pub(crate) fn new(client: NatsNodeRpcClient) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl MeshReadinessRpcTransport for NatsMeshReadinessRpcTransport {
+    fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self {
+        Self {
+            client: self.client.clone().with_policy(RpcPolicy {
+                timeout: policy.timeout,
+            }),
+        }
+    }
+
+    async fn mesh_readiness_request(
+        &self,
+        machine_id: &MachineId,
+        operation: MeshReadinessRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError> {
+        self.client
+            .request_node_response(mesh_readiness_subject(machine_id, operation), request)
+            .await
+            .map_err(|error| mesh_readiness_rpc_error(operation, error))
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct NatsMachineOperationRpcTransport {
+    client: NatsNodeRpcClient,
+}
+
+impl NatsMachineOperationRpcTransport {
+    #[must_use]
+    pub(crate) fn new(client: NatsNodeRpcClient) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl MachineOperationRpcTransport for NatsMachineOperationRpcTransport {
+    fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self {
+        Self {
+            client: self.client.clone().with_policy(RpcPolicy {
+                timeout: policy.timeout,
+            }),
+        }
+    }
+
+    async fn machine_operation_request(
+        &self,
+        machine_id: &MachineId,
+        operation: MachineOperationRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError> {
+        self.client
+            .request_node_response(machine_operation_subject(machine_id, operation), request)
+            .await
+            .map_err(|error| machine_operation_rpc_error(operation, error))
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct NatsDeployRpcTransport {
@@ -308,6 +431,35 @@ impl VolumeZfsRpcTransport for NatsVolumeZfsRpcTransport {
     }
 }
 
+fn node_probe_subject(
+    machine_id: &MachineId,
+    operation: NodeProbeRpcOperation,
+) -> NodeCommandSubject {
+    match operation {
+        NodeProbeRpcOperation::Ping => NodeCommandSubject::ping(machine_id),
+        NodeProbeRpcOperation::Status => NodeCommandSubject::status(machine_id),
+    }
+}
+
+fn mesh_readiness_subject(
+    machine_id: &MachineId,
+    operation: MeshReadinessRpcOperation,
+) -> NodeCommandSubject {
+    match operation {
+        MeshReadinessRpcOperation::Ready => NodeCommandSubject::mesh_ready(machine_id),
+        MeshReadinessRpcOperation::SelfRecord => NodeCommandSubject::mesh_self_record(machine_id),
+    }
+}
+
+fn machine_operation_subject(
+    machine_id: &MachineId,
+    operation: MachineOperationRpcOperation,
+) -> NodeCommandSubject {
+    match operation {
+        MachineOperationRpcOperation::Get => NodeCommandSubject::machine_operation_get(machine_id),
+    }
+}
+
 fn deploy_subject(machine_id: &MachineId, operation: DeployRpcOperation) -> NodeCommandSubject {
     match operation {
         DeployRpcOperation::InspectNamespace => {
@@ -412,6 +564,24 @@ fn image_node_rpc_error(operation: ImageRpcOperation, error: RpcFailure) -> Node
     NodeRpcError::new(operation.operation_name(), error.code(), error.message)
 }
 
+fn node_probe_rpc_error(operation: NodeProbeRpcOperation, error: RpcFailure) -> NodeRpcError {
+    NodeRpcError::new(operation.operation_name(), error.code(), error.message)
+}
+
+fn mesh_readiness_rpc_error(
+    operation: MeshReadinessRpcOperation,
+    error: RpcFailure,
+) -> NodeRpcError {
+    NodeRpcError::new(operation.operation_name(), error.code(), error.message)
+}
+
+fn machine_operation_rpc_error(
+    operation: MachineOperationRpcOperation,
+    error: RpcFailure,
+) -> NodeRpcError {
+    NodeRpcError::new(operation.operation_name(), error.code(), error.message)
+}
+
 fn machine_lifecycle_node_rpc_error(
     operation: MachineLifecycleRpcOperation,
     error: RpcFailure,
@@ -500,6 +670,87 @@ mod tests {
         ] {
             assert_eq!(image_subject(&machine_id, operation), expected);
         }
+    }
+
+    #[test]
+    fn node_probe_operation_maps_to_expected_nats_subject_constructor() {
+        let machine_id = MachineId::new("machine-a");
+
+        for (operation, expected) in [
+            (
+                NodeProbeRpcOperation::Ping,
+                NodeCommandSubject::ping(&machine_id),
+            ),
+            (
+                NodeProbeRpcOperation::Status,
+                NodeCommandSubject::status(&machine_id),
+            ),
+        ] {
+            assert_eq!(node_probe_subject(&machine_id, operation), expected);
+        }
+    }
+
+    #[test]
+    fn mesh_readiness_operation_maps_to_expected_nats_subject_constructor() {
+        let machine_id = MachineId::new("machine-a");
+
+        for (operation, expected) in [
+            (
+                MeshReadinessRpcOperation::Ready,
+                NodeCommandSubject::mesh_ready(&machine_id),
+            ),
+            (
+                MeshReadinessRpcOperation::SelfRecord,
+                NodeCommandSubject::mesh_self_record(&machine_id),
+            ),
+        ] {
+            assert_eq!(mesh_readiness_subject(&machine_id, operation), expected);
+        }
+    }
+
+    #[test]
+    fn machine_operation_maps_to_expected_nats_subject_constructor() {
+        let machine_id = MachineId::new("machine-a");
+
+        for (operation, expected) in [(
+            MachineOperationRpcOperation::Get,
+            NodeCommandSubject::machine_operation_get(&machine_id),
+        )] {
+            assert_eq!(machine_operation_subject(&machine_id, operation), expected);
+        }
+    }
+
+    #[test]
+    fn node_probe_rpc_transport_error_maps_operation_and_failure_context() {
+        let error = node_probe_rpc_error(
+            NodeProbeRpcOperation::Status,
+            RpcFailure::new(RpcFailureKind::NoResponders, "no subscribers"),
+        );
+        assert_eq!(error.operation, "node_status");
+        assert_eq!(error.code, "NATS_RPC_NO_RESPONDERS");
+        assert_eq!(error.message, "no subscribers");
+    }
+
+    #[test]
+    fn mesh_readiness_rpc_transport_error_maps_operation_and_failure_context() {
+        let error = mesh_readiness_rpc_error(
+            MeshReadinessRpcOperation::Ready,
+            RpcFailure::new(RpcFailureKind::NoResponders, "no subscribers"),
+        );
+        assert_eq!(error.operation, "mesh_ready");
+        assert_eq!(error.code, "NATS_RPC_NO_RESPONDERS");
+        assert_eq!(error.message, "no subscribers");
+    }
+
+    #[test]
+    fn machine_operation_rpc_transport_error_maps_operation_and_failure_context() {
+        let error = machine_operation_rpc_error(
+            MachineOperationRpcOperation::Get,
+            RpcFailure::new(RpcFailureKind::NoResponders, "no subscribers"),
+        );
+        assert_eq!(error.operation, "machine_operation_get");
+        assert_eq!(error.code, "NATS_RPC_NO_RESPONDERS");
+        assert_eq!(error.message, "no subscribers");
     }
 
     #[test]

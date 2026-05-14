@@ -109,6 +109,9 @@ pub const MESH_MACHINE_REMOVE_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_se
 pub const MESH_DESTRUCTIVE_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(120);
 pub const MACHINE_TRANSITION_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(120);
 pub const MACHINE_STORAGE_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(15);
+pub const NODE_READINESS_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(10);
+pub const NODE_STATUS_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(15);
+pub const MACHINE_OPERATION_RPC_POLICY: NodeRpcPolicy = NodeRpcPolicy::from_secs(15);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeRpcErrorKind {
@@ -260,6 +263,260 @@ impl<P> NodeServiceResponse<P> {
     #[must_use]
     pub fn into_payload(self) -> Option<P> {
         self.payload
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeProbeRpcOperation {
+    Ping,
+    Status,
+}
+
+impl NodeProbeRpcOperation {
+    #[must_use]
+    pub fn operation_name(self) -> &'static str {
+        match self {
+            Self::Ping => "node_ping",
+            Self::Status => "node_status",
+        }
+    }
+}
+
+#[async_trait]
+pub trait NodeProbeRpcTransport: Clone + Send + Sync {
+    fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self;
+
+    async fn node_probe_request(
+        &self,
+        machine_id: &MachineId,
+        operation: NodeProbeRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError>;
+}
+
+#[derive(Clone)]
+pub struct NodeProbeNodeClient<T> {
+    transport: T,
+}
+
+impl<T> NodeProbeNodeClient<T>
+where
+    T: NodeProbeRpcTransport,
+{
+    #[must_use]
+    pub fn new(transport: T) -> Self {
+        Self { transport }
+    }
+
+    #[must_use]
+    pub fn with_policy(&self, policy: NodeRpcPolicy) -> Self {
+        Self {
+            transport: self.transport.with_node_rpc_policy(policy),
+        }
+    }
+
+    pub async fn ping(&self, machine_id: &MachineId) -> Result<(), NodeRpcError> {
+        self.request_expect_ok(machine_id, NodeProbeRpcOperation::Ping, &NodeRequest::Ping)
+            .await
+    }
+
+    pub async fn status(&self, machine_id: &MachineId) -> Result<NodeResponse, NodeRpcError> {
+        self.request_expect_response(
+            machine_id,
+            NodeProbeRpcOperation::Status,
+            &NodeRequest::Status,
+        )
+        .await
+    }
+
+    async fn request_expect_ok(
+        &self,
+        machine_id: &MachineId,
+        operation: NodeProbeRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<(), NodeRpcError> {
+        let response = self
+            .transport
+            .node_probe_request(machine_id, operation, request)
+            .await?;
+        ensure_success(operation.operation_name(), &response)
+    }
+
+    async fn request_expect_response(
+        &self,
+        machine_id: &MachineId,
+        operation: NodeProbeRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError> {
+        let response = self
+            .transport
+            .node_probe_request(machine_id, operation, request)
+            .await?;
+        ensure_success(operation.operation_name(), &response)?;
+        Ok(response)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeshReadinessRpcOperation {
+    Ready,
+    SelfRecord,
+}
+
+impl MeshReadinessRpcOperation {
+    #[must_use]
+    pub fn operation_name(self) -> &'static str {
+        match self {
+            Self::Ready => "mesh_ready",
+            Self::SelfRecord => "mesh_self_record",
+        }
+    }
+}
+
+#[async_trait]
+pub trait MeshReadinessRpcTransport: Clone + Send + Sync {
+    fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self;
+
+    async fn mesh_readiness_request(
+        &self,
+        machine_id: &MachineId,
+        operation: MeshReadinessRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError>;
+}
+
+#[derive(Clone)]
+pub struct MeshReadinessNodeClient<T> {
+    transport: T,
+}
+
+impl<T> MeshReadinessNodeClient<T>
+where
+    T: MeshReadinessRpcTransport,
+{
+    #[must_use]
+    pub fn new(transport: T) -> Self {
+        Self { transport }
+    }
+
+    #[must_use]
+    pub fn with_policy(&self, policy: NodeRpcPolicy) -> Self {
+        Self {
+            transport: self.transport.with_node_rpc_policy(policy),
+        }
+    }
+
+    pub async fn ready(
+        &self,
+        machine_id: &MachineId,
+        json: bool,
+    ) -> Result<NodeResponse, NodeRpcError> {
+        self.request_expect_response(
+            machine_id,
+            MeshReadinessRpcOperation::Ready,
+            &NodeRequest::MeshReady { json },
+        )
+        .await
+    }
+
+    pub async fn self_record(&self, machine_id: &MachineId) -> Result<NodeResponse, NodeRpcError> {
+        self.request_expect_response(
+            machine_id,
+            MeshReadinessRpcOperation::SelfRecord,
+            &NodeRequest::MeshSelfRecord,
+        )
+        .await
+    }
+
+    async fn request_expect_response(
+        &self,
+        machine_id: &MachineId,
+        operation: MeshReadinessRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError> {
+        let response = self
+            .transport
+            .mesh_readiness_request(machine_id, operation, request)
+            .await?;
+        ensure_success(operation.operation_name(), &response)?;
+        Ok(response)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineOperationRpcOperation {
+    Get,
+}
+
+impl MachineOperationRpcOperation {
+    #[must_use]
+    pub fn operation_name(self) -> &'static str {
+        match self {
+            Self::Get => "machine_operation_get",
+        }
+    }
+}
+
+#[async_trait]
+pub trait MachineOperationRpcTransport: Clone + Send + Sync {
+    fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self;
+
+    async fn machine_operation_request(
+        &self,
+        machine_id: &MachineId,
+        operation: MachineOperationRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError>;
+}
+
+#[derive(Clone)]
+pub struct MachineOperationNodeClient<T> {
+    transport: T,
+}
+
+impl<T> MachineOperationNodeClient<T>
+where
+    T: MachineOperationRpcTransport,
+{
+    #[must_use]
+    pub fn new(transport: T) -> Self {
+        Self { transport }
+    }
+
+    #[must_use]
+    pub fn with_policy(&self, policy: NodeRpcPolicy) -> Self {
+        Self {
+            transport: self.transport.with_node_rpc_policy(policy),
+        }
+    }
+
+    pub async fn get(
+        &self,
+        machine_id: &MachineId,
+        operation_id: &str,
+    ) -> Result<NodeResponse, NodeRpcError> {
+        self.request_expect_response(
+            machine_id,
+            MachineOperationRpcOperation::Get,
+            &NodeRequest::MachineOperationGet {
+                id: operation_id.to_string(),
+            },
+        )
+        .await
+    }
+
+    async fn request_expect_response(
+        &self,
+        machine_id: &MachineId,
+        operation: MachineOperationRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError> {
+        let response = self
+            .transport
+            .machine_operation_request(machine_id, operation, request)
+            .await?;
+        ensure_success(operation.operation_name(), &response)?;
+        Ok(response)
     }
 }
 
@@ -1392,6 +1649,350 @@ where
     }
     serde_json::from_value(payload.clone())
         .map_err(|error| NodeRpcError::decode(operation_name, expected_kind, error.to_string()))
+}
+
+pub fn decode_node_response_payload<P>(
+    operation_name: &'static str,
+    response: NodeResponse,
+    expected_kind: &'static str,
+) -> Result<P, NodeRpcError>
+where
+    P: serde::de::DeserializeOwned,
+{
+    decode_typed_payload(operation_name, response, expected_kind)
+}
+
+#[cfg(test)]
+mod node_probe_tests {
+    use std::collections::VecDeque;
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct FakeNodeProbeTransport {
+        responses: Arc<Mutex<VecDeque<Result<NodeResponse, NodeRpcError>>>>,
+        requests: Arc<Mutex<Vec<(MachineId, NodeProbeRpcOperation, NodeRequest)>>>,
+        policies: Arc<Mutex<Vec<NodeRpcPolicy>>>,
+    }
+
+    impl FakeNodeProbeTransport {
+        fn with_responses(responses: Vec<Result<NodeResponse, NodeRpcError>>) -> Self {
+            Self {
+                responses: Arc::new(Mutex::new(responses.into())),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                policies: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl NodeProbeRpcTransport for FakeNodeProbeTransport {
+        fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self {
+            self.policies.lock().expect("policies").push(policy);
+            self.clone()
+        }
+
+        async fn node_probe_request(
+            &self,
+            machine_id: &MachineId,
+            operation: NodeProbeRpcOperation,
+            request: &NodeRequest,
+        ) -> Result<NodeResponse, NodeRpcError> {
+            self.requests.lock().expect("requests").push((
+                machine_id.clone(),
+                operation,
+                request.clone(),
+            ));
+            self.responses
+                .lock()
+                .expect("responses")
+                .pop_front()
+                .unwrap_or_else(|| Ok(NodeResponse::success("ok", None)))
+        }
+    }
+
+    #[tokio::test]
+    async fn node_probe_client_builds_ping_and_status_requests_and_applies_policy() {
+        let transport = FakeNodeProbeTransport::default();
+        let client = NodeProbeNodeClient::new(transport.clone()).with_policy(NodeRpcPolicy {
+            timeout: Duration::from_secs(11),
+        });
+        let machine_id = MachineId::new("machine-a");
+
+        client.ping(&machine_id).await.expect("ping");
+        client.status(&machine_id).await.expect("status");
+
+        let requests = transport.requests.lock().expect("requests");
+        let [ping, status] = requests.as_slice() else {
+            panic!("expected two requests");
+        };
+        assert_eq!(ping.0, machine_id);
+        assert_eq!(ping.1, NodeProbeRpcOperation::Ping);
+        assert!(matches!(&ping.2, NodeRequest::Ping));
+        assert_eq!(status.0, machine_id);
+        assert_eq!(status.1, NodeProbeRpcOperation::Status);
+        assert!(matches!(&status.2, NodeRequest::Status));
+        assert_eq!(
+            transport.policies.lock().expect("policies").as_slice(),
+            &[NodeRpcPolicy {
+                timeout: Duration::from_secs(11)
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn node_probe_client_preserves_remote_error_and_transport_error() {
+        let machine_id = MachineId::new("machine-a");
+
+        let transport = FakeNodeProbeTransport::with_responses(vec![Ok(NodeResponse::error(
+            "REMOTE_REFUSED",
+            "peer refused",
+            None,
+        ))]);
+        let error = NodeProbeNodeClient::new(transport)
+            .ping(&machine_id)
+            .await
+            .expect_err("remote response should fail");
+        assert_eq!(error.kind, NodeRpcErrorKind::Remote);
+        assert_eq!(error.operation, "node_ping");
+        assert_eq!(error.code, "REMOTE_REFUSED");
+        assert_eq!(error.message, "peer refused");
+
+        let transport = FakeNodeProbeTransport::with_responses(vec![Err(NodeRpcError::transport(
+            "node_status",
+            "NATS_RPC_TIMEOUT",
+            "timed out",
+        ))]);
+        let error = NodeProbeNodeClient::new(transport)
+            .status(&machine_id)
+            .await
+            .expect_err("transport error should fail");
+        assert_eq!(error.kind, NodeRpcErrorKind::Transport);
+        assert_eq!(error.operation, "node_status");
+        assert_eq!(error.code, "NATS_RPC_TIMEOUT");
+    }
+}
+
+#[cfg(test)]
+mod mesh_readiness_tests {
+    use std::collections::VecDeque;
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct FakeMeshReadinessTransport {
+        responses: Arc<Mutex<VecDeque<Result<NodeResponse, NodeRpcError>>>>,
+        requests: Arc<Mutex<Vec<(MachineId, MeshReadinessRpcOperation, NodeRequest)>>>,
+        policies: Arc<Mutex<Vec<NodeRpcPolicy>>>,
+    }
+
+    impl FakeMeshReadinessTransport {
+        fn with_responses(responses: Vec<Result<NodeResponse, NodeRpcError>>) -> Self {
+            Self {
+                responses: Arc::new(Mutex::new(responses.into())),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                policies: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl MeshReadinessRpcTransport for FakeMeshReadinessTransport {
+        fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self {
+            self.policies.lock().expect("policies").push(policy);
+            self.clone()
+        }
+
+        async fn mesh_readiness_request(
+            &self,
+            machine_id: &MachineId,
+            operation: MeshReadinessRpcOperation,
+            request: &NodeRequest,
+        ) -> Result<NodeResponse, NodeRpcError> {
+            self.requests.lock().expect("requests").push((
+                machine_id.clone(),
+                operation,
+                request.clone(),
+            ));
+            self.responses
+                .lock()
+                .expect("responses")
+                .pop_front()
+                .unwrap_or_else(|| Ok(NodeResponse::success("ok", None)))
+        }
+    }
+
+    #[tokio::test]
+    async fn mesh_readiness_client_builds_ready_and_self_record_requests_and_applies_policy() {
+        let transport = FakeMeshReadinessTransport::default();
+        let client = MeshReadinessNodeClient::new(transport.clone()).with_policy(NodeRpcPolicy {
+            timeout: Duration::from_secs(11),
+        });
+        let machine_id = MachineId::new("machine-a");
+
+        client.ready(&machine_id, false).await.expect("mesh ready");
+        client
+            .self_record(&machine_id)
+            .await
+            .expect("mesh self record");
+
+        let requests = transport.requests.lock().expect("requests");
+        let [ready, self_record] = requests.as_slice() else {
+            panic!("expected two requests");
+        };
+        assert_eq!(ready.0, machine_id);
+        assert_eq!(ready.1, MeshReadinessRpcOperation::Ready);
+        assert!(matches!(&ready.2, NodeRequest::MeshReady { json: false }));
+        assert_eq!(self_record.0, machine_id);
+        assert_eq!(self_record.1, MeshReadinessRpcOperation::SelfRecord);
+        assert!(matches!(&self_record.2, NodeRequest::MeshSelfRecord));
+        assert_eq!(
+            transport.policies.lock().expect("policies").as_slice(),
+            &[NodeRpcPolicy {
+                timeout: Duration::from_secs(11)
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn mesh_readiness_client_preserves_remote_error_and_transport_error() {
+        let machine_id = MachineId::new("machine-a");
+
+        let transport = FakeMeshReadinessTransport::with_responses(vec![Ok(NodeResponse::error(
+            "REMOTE_REFUSED",
+            "peer refused",
+            None,
+        ))]);
+        let error = MeshReadinessNodeClient::new(transport)
+            .ready(&machine_id, false)
+            .await
+            .expect_err("remote response should fail");
+        assert_eq!(error.kind, NodeRpcErrorKind::Remote);
+        assert_eq!(error.operation, "mesh_ready");
+        assert_eq!(error.code, "REMOTE_REFUSED");
+        assert_eq!(error.message, "peer refused");
+
+        let transport = FakeMeshReadinessTransport::with_responses(vec![Err(
+            NodeRpcError::transport("mesh_self_record", "NATS_RPC_TIMEOUT", "timed out"),
+        )]);
+        let error = MeshReadinessNodeClient::new(transport)
+            .self_record(&machine_id)
+            .await
+            .expect_err("transport error should fail");
+        assert_eq!(error.kind, NodeRpcErrorKind::Transport);
+        assert_eq!(error.operation, "mesh_self_record");
+        assert_eq!(error.code, "NATS_RPC_TIMEOUT");
+    }
+}
+
+#[cfg(test)]
+mod machine_operation_tests {
+    use std::collections::VecDeque;
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct FakeMachineOperationTransport {
+        responses: Arc<Mutex<VecDeque<Result<NodeResponse, NodeRpcError>>>>,
+        requests: Arc<Mutex<Vec<(MachineId, MachineOperationRpcOperation, NodeRequest)>>>,
+        policies: Arc<Mutex<Vec<NodeRpcPolicy>>>,
+    }
+
+    impl FakeMachineOperationTransport {
+        fn with_responses(responses: Vec<Result<NodeResponse, NodeRpcError>>) -> Self {
+            Self {
+                responses: Arc::new(Mutex::new(responses.into())),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                policies: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl MachineOperationRpcTransport for FakeMachineOperationTransport {
+        fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self {
+            self.policies.lock().expect("policies").push(policy);
+            self.clone()
+        }
+
+        async fn machine_operation_request(
+            &self,
+            machine_id: &MachineId,
+            operation: MachineOperationRpcOperation,
+            request: &NodeRequest,
+        ) -> Result<NodeResponse, NodeRpcError> {
+            self.requests.lock().expect("requests").push((
+                machine_id.clone(),
+                operation,
+                request.clone(),
+            ));
+            self.responses
+                .lock()
+                .expect("responses")
+                .pop_front()
+                .unwrap_or_else(|| Ok(NodeResponse::success("ok", None)))
+        }
+    }
+
+    #[tokio::test]
+    async fn machine_operation_client_builds_get_request_and_applies_policy() {
+        let transport = FakeMachineOperationTransport::default();
+        let client =
+            MachineOperationNodeClient::new(transport.clone()).with_policy(NodeRpcPolicy {
+                timeout: Duration::from_secs(11),
+            });
+        let machine_id = MachineId::new("machine-a");
+
+        client
+            .get(&machine_id, "operation-1")
+            .await
+            .expect("machine operation get");
+
+        let requests = transport.requests.lock().expect("requests");
+        let [get] = requests.as_slice() else {
+            panic!("expected one request");
+        };
+        assert_eq!(get.0, machine_id);
+        assert_eq!(get.1, MachineOperationRpcOperation::Get);
+        assert!(matches!(
+            &get.2,
+            NodeRequest::MachineOperationGet { id } if id == "operation-1"
+        ));
+        assert_eq!(
+            transport.policies.lock().expect("policies").as_slice(),
+            &[NodeRpcPolicy {
+                timeout: Duration::from_secs(11)
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn machine_operation_client_preserves_remote_error_and_transport_error() {
+        let machine_id = MachineId::new("machine-a");
+
+        let transport = FakeMachineOperationTransport::with_responses(vec![Ok(
+            NodeResponse::error("REMOTE_REFUSED", "peer refused", None),
+        )]);
+        let error = MachineOperationNodeClient::new(transport)
+            .get(&machine_id, "operation-1")
+            .await
+            .expect_err("remote response should fail");
+        assert_eq!(error.kind, NodeRpcErrorKind::Remote);
+        assert_eq!(error.operation, "machine_operation_get");
+        assert_eq!(error.code, "REMOTE_REFUSED");
+        assert_eq!(error.message, "peer refused");
+
+        let transport = FakeMachineOperationTransport::with_responses(vec![Err(
+            NodeRpcError::transport("machine_operation_get", "NATS_RPC_TIMEOUT", "timed out"),
+        )]);
+        let error = MachineOperationNodeClient::new(transport)
+            .get(&machine_id, "operation-1")
+            .await
+            .expect_err("transport error should fail");
+        assert_eq!(error.kind, NodeRpcErrorKind::Transport);
+        assert_eq!(error.operation, "machine_operation_get");
+        assert_eq!(error.code, "NATS_RPC_TIMEOUT");
+    }
 }
 
 #[cfg(test)]

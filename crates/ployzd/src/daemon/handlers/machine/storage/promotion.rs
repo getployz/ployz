@@ -1,9 +1,11 @@
 use super::*;
-use ployz_api::{DaemonPayload, StatusPayload};
-use ployz_nats::NatsNodeRpcClient;
-use ployz_nats::NodeCommandSubject;
-use ployz_node_api::NodeRequest;
-use ployz_node_runtime::{MachineStorageNodeClient, MachineStorageRpcTransport, NodeRpcError};
+use ployz_api::StatusPayload;
+use ployz_node_runtime::{
+    MachineStorageNodeClient, MachineStorageRpcTransport, NODE_STATUS_RPC_POLICY,
+    NodeProbeNodeClient, NodeProbeRpcOperation, NodeProbeRpcTransport, NodeRpcError,
+};
+
+use crate::daemon::node_rpc::{STATUS_PAYLOAD_KIND, decode_daemon_node_payload};
 
 pub(super) fn promotion_payload(
     operation_id: &str,
@@ -215,10 +217,13 @@ where
         .map_err(|error| machine_storage_rpc_error_message(&error))
 }
 
-pub(super) async fn preflight_remote_storage_promotion(
-    client: &NatsNodeRpcClient,
+pub(super) async fn preflight_remote_storage_promotion<T>(
+    client: &NodeProbeNodeClient<T>,
     targets: &[&MachineMembership],
-) -> Result<(), Vec<MachineStoragePromotionFailure>> {
+) -> Result<(), Vec<MachineStoragePromotionFailure>>
+where
+    T: NodeProbeRpcTransport,
+{
     let mut failed = Vec::new();
     for target in targets {
         match remote_status(client, target).await {
@@ -249,29 +254,31 @@ pub(super) async fn preflight_remote_storage_promotion(
     }
 }
 
-pub(super) async fn remote_status(
-    client: &NatsNodeRpcClient,
+pub(super) async fn remote_status<T>(
+    client: &NodeProbeNodeClient<T>,
     target: &MachineMembership,
-) -> Result<StatusPayload, String> {
+) -> Result<StatusPayload, String>
+where
+    T: NodeProbeRpcTransport,
+{
     let response = client
-        .request(NodeCommandSubject::status(&target.id), &NodeRequest::Status)
+        .with_policy(NODE_STATUS_RPC_POLICY)
+        .status(&target.id)
         .await
-        .map_err(|error| error.to_string())?;
-    if !response.is_ok() {
-        return Err(format!("{}: {}", response.code(), response.message()));
-    }
-    match response.payload() {
-        Some(DaemonPayload::Status(status)) if status.machine_id == target.id.as_str() => {
-            Ok(status)
-        }
-        Some(DaemonPayload::Status(status)) => Err(format!(
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let status = decode_daemon_node_payload::<StatusPayload>(
+        NodeProbeRpcOperation::Status.operation_name(),
+        response,
+        STATUS_PAYLOAD_KIND,
+    )
+    .map_err(|error| error.to_string())?;
+    if status.machine_id == target.id.as_str() {
+        Ok(status)
+    } else {
+        Err(format!(
             "remote status reported machine {} instead of {}",
             status.machine_id, target.id
-        )),
-        Some(payload) => Err(format!(
-            "remote status returned unexpected payload: {payload:?}"
-        )),
-        None => Err("remote status returned no payload".into()),
+        ))
     }
 }
 
@@ -289,7 +296,7 @@ mod tests {
     use ployz_model::{
         MachineLifecycle, MachineStorageRole, MachineTopology, OverlayIp, PublicKey, RegionRole,
     };
-    use ployz_node_api::NodeResponse;
+    use ployz_node_api::{NodeRequest, NodeResponse};
     use ployz_node_runtime::{
         MachineStorageRpcOperation, NodeRpcError, NodeRpcErrorKind, NodeRpcPolicy,
     };

@@ -3,11 +3,16 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use ployz_api::{DaemonPayload, DaemonResponse, MachineUpdatePayload, MachineUpdateRow};
+use ployz_api::{
+    DaemonPayload, DaemonResponse, MachineOperationPayload, MachineUpdatePayload, MachineUpdateRow,
+    StatusPayload,
+};
 use ployz_model::{MachineId, MachineMembership};
-use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject};
-use ployz_node_api::NodeRequest;
-use ployz_node_runtime::MachineUpdateNodeClient;
+use ployz_node_runtime::{
+    MACHINE_OPERATION_RPC_POLICY, MachineOperationNodeClient, MachineOperationRpcOperation,
+    MachineOperationRpcTransport, MachineUpdateNodeClient, NODE_STATUS_RPC_POLICY,
+    NodeProbeNodeClient, NodeProbeRpcOperation, NodeProbeRpcTransport,
+};
 use tokio::process::Command;
 use tokio::sync::oneshot;
 use tokio::time::{Instant, sleep};
@@ -18,7 +23,11 @@ use crate::daemon::handlers::machine::operations::{
     MachineOperationArtifacts, MachineOperationKind, MachineOperationRecord,
     MachineOperationStatus, MachineOperationStore,
 };
-use crate::daemon::node_rpc::NatsMachineUpdateRpcTransport;
+use crate::daemon::node_rpc::{
+    MACHINE_OPERATION_PAYLOAD_KIND, NatsMachineOperationRpcTransport,
+    NatsMachineUpdateRpcTransport, NatsNodeProbeRpcTransport, STATUS_PAYLOAD_KIND,
+    decode_daemon_node_payload,
+};
 
 const UPDATE_READINESS_TIMEOUT: Duration = Duration::from_secs(120);
 const UPDATE_READINESS_INTERVAL: Duration = Duration::from_secs(1);
@@ -300,6 +309,11 @@ impl DaemonState {
         };
         let update_client =
             MachineUpdateNodeClient::new(NatsMachineUpdateRpcTransport::new(client.clone()));
+        let operation_client =
+            MachineOperationNodeClient::new(NatsMachineOperationRpcTransport::new(client.clone()))
+                .with_policy(MACHINE_OPERATION_RPC_POLICY);
+        let probe_client = NodeProbeNodeClient::new(NatsNodeProbeRpcTransport::new(client))
+            .with_policy(NODE_STATUS_RPC_POLICY);
 
         if let Err(error) = update_client
             .prepare_update(&record.id, operation_id, version)
@@ -323,7 +337,15 @@ impl DaemonState {
             ));
         }
 
-        match wait_for_remote_update(client, record, operation_id, version).await {
+        match wait_for_remote_update(
+            &operation_client,
+            &probe_client,
+            record,
+            operation_id,
+            version,
+        )
+        .await
+        {
             Ok(message) => Ok(update_row(&machine_id, version, message)),
             Err(error) => Err(update_row(&machine_id, version, error)),
         }
@@ -367,39 +389,41 @@ async fn ensure_installer_reports_existing_install(installer: &Path) -> Result<(
     }
 }
 
-async fn wait_for_remote_update(
-    client: NatsNodeRpcClient,
+async fn wait_for_remote_update<O, P>(
+    operation_client: &MachineOperationNodeClient<O>,
+    probe_client: &NodeProbeNodeClient<P>,
     record: MachineMembership,
     operation_id: &str,
     version: &str,
-) -> Result<String, String> {
+) -> Result<String, String>
+where
+    O: MachineOperationRpcTransport,
+    P: NodeProbeRpcTransport,
+{
     sleep(Duration::from_secs(2)).await;
     let deadline = Instant::now() + UPDATE_READINESS_TIMEOUT;
     let mut last_error = String::from("remote update operation did not complete");
     while Instant::now() < deadline {
-        match client
-            .request(
-                NodeCommandSubject::machine_operation_get(&record.id),
-                &NodeRequest::MachineOperationGet {
-                    id: operation_id.to_string(),
-                },
-            )
-            .await
-        {
-            Ok(response) if response.is_ok() => {
-                let Some(DaemonPayload::MachineOperation(payload)) = response.payload() else {
-                    last_error =
-                        "remote operation response did not include machine operation payload"
-                            .into();
-                    sleep(UPDATE_READINESS_INTERVAL).await;
-                    continue;
+        match operation_client.get(&record.id, operation_id).await {
+            Ok(response) => {
+                let payload = match decode_daemon_node_payload::<MachineOperationPayload>(
+                    MachineOperationRpcOperation::Get.operation_name(),
+                    response,
+                    MACHINE_OPERATION_PAYLOAD_KIND,
+                ) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        last_error = error.to_string();
+                        sleep(UPDATE_READINESS_INTERVAL).await;
+                        continue;
+                    }
                 };
                 match payload.operation.status.as_str() {
                     "succeeded" => {
                         if version == "latest" {
                             return Ok("remote update operation succeeded".into());
                         }
-                        verify_remote_version(&client, &record, version).await?;
+                        verify_remote_version(probe_client, &record, version).await?;
                         return Ok(format!("ready with version {version}"));
                     }
                     "failed" | "interrupted" => {
@@ -415,13 +439,6 @@ async fn wait_for_remote_update(
                     }
                 }
             }
-            Ok(response) => {
-                last_error = format!(
-                    "remote status failed [{}]: {}",
-                    response.code(),
-                    response.message()
-                );
-            }
             Err(error) => {
                 last_error = error.to_string();
             }
@@ -431,25 +448,24 @@ async fn wait_for_remote_update(
     Err(last_error)
 }
 
-async fn verify_remote_version(
-    client: &NatsNodeRpcClient,
+async fn verify_remote_version<P>(
+    client: &NodeProbeNodeClient<P>,
     record: &MachineMembership,
     version: &str,
-) -> Result<(), String> {
+) -> Result<(), String>
+where
+    P: NodeProbeRpcTransport,
+{
     let response = client
-        .request(NodeCommandSubject::status(&record.id), &NodeRequest::Status)
+        .status(&record.id)
         .await
-        .map_err(|error| error.to_string())?;
-    if !response.is_ok() {
-        return Err(format!(
-            "remote status failed [{}]: {}",
-            response.code(),
-            response.message()
-        ));
-    }
-    let Some(DaemonPayload::Status(status)) = response.payload() else {
-        return Err("remote status response did not include status payload".into());
-    };
+        .map_err(|error| format!("remote status failed [{}]: {}", error.code, error.message))?;
+    let status = decode_daemon_node_payload::<StatusPayload>(
+        NodeProbeRpcOperation::Status.operation_name(),
+        response,
+        STATUS_PAYLOAD_KIND,
+    )
+    .map_err(|error| error.to_string())?;
     if status.version == version {
         Ok(())
     } else {
@@ -587,10 +603,13 @@ fn first_duplicate(values: &[String]) -> Option<String> {
 fn update_targets_with_self_last(ids: &[String], local_machine_id: &MachineId) -> Vec<String> {
     let mut targets: Vec<String> = ids
         .iter()
-        .filter(|id| *id != &local_machine_id.as_str())
+        .filter(|id| id.as_str() != local_machine_id.as_str())
         .cloned()
         .collect();
-    if ids.iter().any(|id| id == &local_machine_id.as_str()) {
+    if ids
+        .iter()
+        .any(|id| id.as_str() == local_machine_id.as_str())
+    {
         targets.push(local_machine_id.as_str().to_string());
     }
     targets
