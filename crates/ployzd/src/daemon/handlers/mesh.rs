@@ -43,6 +43,7 @@ mod tests {
     use axum::http::{HeaderValue, Method, Request, StatusCode};
     use ployz_api::{MachineSelfTransition, MeshBootstrapRequest};
     use ployz_model::{MachineId, MachineLifecycle, MachineTopology};
+    use ployz_node_runtime::{NodeRpcError, NodeRpcErrorKind};
     use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_orchestrator::{Mesh, WireguardDriver};
     use ployz_runtime_api::Identity;
@@ -280,6 +281,31 @@ mod tests {
 
         let persisted = NetworkConfig::load(&config_path).expect("load restored config");
         assert_eq!(persisted.subnet, Some(previous_subnet));
+    }
+
+    #[test]
+    fn mesh_prepare_failure_message_distinguishes_rejection_from_transport() {
+        let peer_id = MachineId::new("peer-a");
+        let remote = NodeRpcError::remote(
+            "mesh_peer_prepare_destroy",
+            "MACHINE_SET_MISMATCH",
+            "machine set changed",
+        );
+        assert_eq!(
+            lifecycle::mesh_prepare_failure_message(&peer_id, &remote),
+            "peer-a rejected prepare [MACHINE_SET_MISMATCH]: machine set changed"
+        );
+
+        let transport = NodeRpcError {
+            kind: NodeRpcErrorKind::Transport,
+            operation: "mesh_peer_prepare_destroy",
+            code: "NATS_RPC_NO_RESPONDERS".into(),
+            message: "no subscribers".into(),
+        };
+        assert!(
+            lifecycle::mesh_prepare_failure_message(&peer_id, &transport)
+                .starts_with("peer-a unreachable: mesh_peer_prepare_destroy")
+        );
     }
 
     async fn make_active_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {

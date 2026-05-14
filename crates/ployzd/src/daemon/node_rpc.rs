@@ -6,7 +6,8 @@ use ployz_nats::{NatsNodeRpcClient, NodeCommandSubject, RpcFailure, RpcPolicy};
 use ployz_node_api::{NodeRequest, NodeResponse};
 use ployz_node_runtime::{
     DeployRpcOperation, DeployRpcTransport, ImageNodeClient, ImageNodeResponse, ImageRpcOperation,
-    ImageRpcTransport, NodeRpcError, NodeRpcPolicy, VolumeZfsRpcOperation, VolumeZfsRpcTransport,
+    ImageRpcTransport, MeshRpcOperation, MeshRpcTransport, NodeRpcError, NodeRpcPolicy,
+    VolumeZfsRpcOperation, VolumeZfsRpcTransport,
 };
 
 use super::DaemonState;
@@ -131,6 +132,41 @@ impl DaemonState {
 }
 
 #[derive(Clone)]
+pub(crate) struct NatsMeshRpcTransport {
+    client: NatsNodeRpcClient,
+}
+
+impl NatsMeshRpcTransport {
+    #[must_use]
+    pub(crate) fn new(client: NatsNodeRpcClient) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl MeshRpcTransport for NatsMeshRpcTransport {
+    fn with_node_rpc_policy(&self, policy: NodeRpcPolicy) -> Self {
+        Self {
+            client: self.client.clone().with_policy(RpcPolicy {
+                timeout: policy.timeout,
+            }),
+        }
+    }
+
+    async fn mesh_request(
+        &self,
+        machine_id: &MachineId,
+        operation: MeshRpcOperation,
+        request: &NodeRequest,
+    ) -> Result<NodeResponse, NodeRpcError> {
+        self.client
+            .request_node_response(mesh_subject(machine_id, operation), request)
+            .await
+            .map_err(|error| mesh_node_rpc_error(operation, error))
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct NatsVolumeZfsRpcTransport {
     client: NatsNodeRpcClient,
 }
@@ -191,6 +227,14 @@ fn image_subject(machine_id: &MachineId, operation: ImageRpcOperation) -> NodeCo
     }
 }
 
+fn mesh_subject(machine_id: &MachineId, operation: MeshRpcOperation) -> NodeCommandSubject {
+    match operation {
+        MeshRpcOperation::PrepareDestroy => NodeCommandSubject::mesh_prepare_destroy(machine_id),
+        MeshRpcOperation::CancelDestroy => NodeCommandSubject::mesh_cancel_destroy(machine_id),
+        MeshRpcOperation::ExecuteDestroy => NodeCommandSubject::mesh_execute_destroy(machine_id),
+    }
+}
+
 fn volume_zfs_subject(
     machine_id: &MachineId,
     operation: VolumeZfsRpcOperation,
@@ -221,6 +265,10 @@ fn image_node_rpc_error(operation: ImageRpcOperation, error: RpcFailure) -> Node
     NodeRpcError::new(operation.operation_name(), error.code(), error.message)
 }
 
+fn mesh_node_rpc_error(operation: MeshRpcOperation, error: RpcFailure) -> NodeRpcError {
+    NodeRpcError::new(operation.operation_name(), error.code(), error.message)
+}
+
 fn node_rpc_error(operation: VolumeZfsRpcOperation, error: RpcFailure) -> NodeRpcError {
     NodeRpcError::new(operation.operation_name(), error.code(), error.message)
 }
@@ -228,6 +276,7 @@ fn node_rpc_error(operation: VolumeZfsRpcOperation, error: RpcFailure) -> NodeRp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_nats::RpcFailureKind;
 
     #[test]
     fn deploy_operation_maps_to_expected_nats_subject_constructor() {
@@ -283,6 +332,39 @@ mod tests {
         ] {
             assert_eq!(image_subject(&machine_id, operation), expected);
         }
+    }
+
+    #[test]
+    fn mesh_operation_maps_to_expected_nats_subject_constructor() {
+        let machine_id = MachineId::new("machine-a");
+
+        for (operation, expected) in [
+            (
+                MeshRpcOperation::PrepareDestroy,
+                NodeCommandSubject::mesh_prepare_destroy(&machine_id),
+            ),
+            (
+                MeshRpcOperation::CancelDestroy,
+                NodeCommandSubject::mesh_cancel_destroy(&machine_id),
+            ),
+            (
+                MeshRpcOperation::ExecuteDestroy,
+                NodeCommandSubject::mesh_execute_destroy(&machine_id),
+            ),
+        ] {
+            assert_eq!(mesh_subject(&machine_id, operation), expected);
+        }
+    }
+
+    #[test]
+    fn mesh_rpc_transport_error_maps_operation_and_failure_context() {
+        let error = mesh_node_rpc_error(
+            MeshRpcOperation::ExecuteDestroy,
+            RpcFailure::new(RpcFailureKind::NoResponders, "no subscribers"),
+        );
+        assert_eq!(error.operation, "mesh_peer_execute_destroy");
+        assert_eq!(error.code, "NATS_RPC_NO_RESPONDERS");
+        assert_eq!(error.message, "no subscribers");
     }
 
     #[test]
