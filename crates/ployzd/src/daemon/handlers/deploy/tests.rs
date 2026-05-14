@@ -31,7 +31,7 @@ use ployz_node_api::{
 use ployz_node_runtime::{
     NodeRpcError, NodeRpcPolicy, VolumeZfsRpcOperation, VolumeZfsRpcTransport,
 };
-use ployz_orchestrator::deploy::participant::MoveVolumeRequest;
+use ployz_orchestrator::deploy::{participant::MoveVolumeRequest, prepare};
 use ployz_orchestrator::{Mesh, WireguardDriver};
 use ployz_runtime_api::Identity;
 use ployz_spec::{

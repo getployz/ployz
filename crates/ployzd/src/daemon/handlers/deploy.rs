@@ -2,30 +2,31 @@ mod apply;
 mod branch;
 mod manifest_render;
 mod migrate;
+mod nats;
 mod node;
+mod planning;
 mod responses;
 mod volume_transfer;
 
 use crate::daemon::DaemonState;
 use manifest_render::export_manifest;
-use ployz_api::{DaemonPayload, DaemonResponse, DeployOptions, DeployPreparePayload};
+use ployz_api::{DaemonPayload, DaemonResponse, DeployOptions};
 use ployz_config::RuntimeTarget;
 use ployz_error::Error as PloyzError;
 #[cfg(test)]
 use ployz_model::DeployPhaseRecordState;
-use ployz_orchestrator::deploy::{DeployApplyPreconditions, new_deploy_id, prepare, preview};
+use ployz_orchestrator::deploy::DeployApplyPreconditions;
 use ployz_spec::{DeployManifest, Namespace};
-use ployz_store_api::StoreRuntimeControl;
 #[cfg(test)]
 use ployz_store_memory::StoreDriverMemoryExt as _;
 
 #[cfg(test)]
 use manifest_render::{BranchRenderError, MigrateRenderError, stable_fingerprint};
+#[cfg(test)]
+pub(super) use planning::DEPLOY_PREPARE_TTL_SECS;
 use responses::{deploy_error_code, deploy_failure_payload_for_error};
 #[cfg(test)]
 use volume_transfer::{run_volume_move_rpc, volume_move_result_from_transfer};
-
-const DEPLOY_PREPARE_TTL_SECS: u64 = 24 * 60 * 60;
 
 impl DaemonState {
     fn overlay_network_name(&self) -> Option<String> {
@@ -41,103 +42,6 @@ impl DaemonState {
         self.active
             .as_ref()
             .and_then(|active| active.mesh.container_dns_server())
-    }
-
-    pub async fn handle_deploy_preview(
-        &self,
-        manifest_json: &str,
-        _options: &DeployOptions,
-    ) -> DaemonResponse {
-        let manifest = match decode_manifest(manifest_json) {
-            Ok(manifest) => manifest,
-            Err(response) => return *response,
-        };
-        let active = match self.require_active("NO_MESH", "no mesh is running") {
-            Ok(active) => active,
-            Err(response) => return *response,
-        };
-
-        let nats_client_url = if self.runtime_target == RuntimeTarget::Docker {
-            crate::services::nats::local_client_url()
-        } else {
-            crate::services::nats::overlay_client_url(active.config.overlay_ip)
-        };
-        let nats_scope = ployz_nats::NatsScope::local_for_storage_participation(
-            &active.config.storage_participation,
-        );
-        let nats_store =
-            match ployz_nats::NatsStore::connect_with_scope(&nats_client_url, nats_scope).await {
-                Ok(store) => store.with_asset_policy(active.config.storage_replicas),
-                Err(error) => return self.err("DEPLOY_PREVIEW_FAILED", error.to_string()),
-            };
-        if let Err(error) = nats_store.start().await {
-            return self.err("DEPLOY_PREVIEW_FAILED", error.to_string());
-        }
-        let prober = crate::daemon::deploy_probe::NatsRpcProbe::new(
-            ployz_nats::NatsNodeRpcClient::for_store(&nats_store),
-        );
-
-        match preview(
-            &active.mesh.store,
-            &self.identity.machine_id,
-            &manifest,
-            &prober,
-        )
-        .await
-        {
-            Ok(plan) => self.ok_json_pretty(&plan, "ENCODE_PREVIEW", "encode preview"),
-            Err(err) => self.deploy_error_response("DEPLOY_PREVIEW_FAILED", err),
-        }
-    }
-
-    pub async fn handle_deploy_prepare(&self, manifest_json: &str) -> DaemonResponse {
-        let manifest = match decode_manifest(manifest_json) {
-            Ok(manifest) => manifest,
-            Err(response) => return *response,
-        };
-        let active = match self.require_active("NO_MESH", "no mesh is running") {
-            Ok(active) => active,
-            Err(response) => return *response,
-        };
-
-        let nats_client_url = if self.runtime_target == RuntimeTarget::Docker {
-            crate::services::nats::local_client_url()
-        } else {
-            crate::services::nats::overlay_client_url(active.config.overlay_ip)
-        };
-        let nats_scope = ployz_nats::NatsScope::local_for_storage_participation(
-            &active.config.storage_participation,
-        );
-        let nats_store =
-            match ployz_nats::NatsStore::connect_with_scope(&nats_client_url, nats_scope).await {
-                Ok(store) => store.with_asset_policy(active.config.storage_replicas),
-                Err(error) => return self.err("DEPLOY_PREPARE_FAILED", error.to_string()),
-            };
-        if let Err(error) = nats_store.start().await {
-            return self.err("DEPLOY_PREPARE_FAILED", error.to_string());
-        }
-        let prober = crate::daemon::deploy_probe::NatsRpcProbe::new(
-            ployz_nats::NatsNodeRpcClient::for_store(&nats_store),
-        );
-
-        match prepare(
-            &active.mesh.store,
-            &self.identity.machine_id,
-            &manifest,
-            &prober,
-            new_deploy_id(),
-            DEPLOY_PREPARE_TTL_SECS,
-        )
-        .await
-        {
-            Ok(prepared) => self.ok_with_payload(
-                "prepared deploy",
-                Some(DaemonPayload::DeployPrepare(DeployPreparePayload {
-                    prepared,
-                })),
-            ),
-            Err(err) => self.deploy_error_response("DEPLOY_PREPARE_FAILED", err),
-        }
     }
 
     pub async fn handle_deploy_apply(
