@@ -1,5 +1,4 @@
 use std::path::Path;
-use tracing::{debug, warn};
 
 pub const NATS_CERT_RENEWAL_HEALTH_FILE: &str = "nats-cert-renewal-health.json";
 
@@ -9,32 +8,10 @@ pub async fn load_health(path: impl AsRef<Path>) -> std::io::Result<CertRenewalW
     ployz_supervision::load_component_health(path).await
 }
 
-pub async fn record_healthy(path: &Path) {
-    write_health(path, &ployz_supervision::healthy_component_health()).await;
-}
-
-pub async fn record_unhealthy(
-    path: &Path,
-    health_state: &mut Option<CertRenewalWorkerHealth>,
-    error: impl Into<String>,
-) {
-    let next =
-        CertRenewalWorkerHealth::stale(ployz_time::now_unix_secs(), health_state.as_ref(), error);
-    *health_state = Some(next.clone());
-    write_health(path, &next).await;
-}
-
-async fn write_health(path: &Path, health: &CertRenewalWorkerHealth) {
-    if let Err(error) = ployz_supervision::write_component_health(path, health).await {
-        warn!(path = %path.display(), %error, "failed to write cert renewal health");
-    } else {
-        debug!(path = %path.display(), "wrote cert renewal health");
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{CertRenewalWorkerHealth, load_health, record_unhealthy, write_health};
+    use super::{CertRenewalWorkerHealth, load_health};
+    use ployz_supervision::FileHealthRecorder;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -47,7 +24,9 @@ mod tests {
         let first = CertRenewalWorkerHealth::stale(1_777_646_000, None, "first");
         let health = CertRenewalWorkerHealth::stale(1_777_646_100, Some(&first), "fetch failed");
 
-        write_health(&path, &health).await;
+        ployz_supervision::write_component_health(&path, &health)
+            .await
+            .expect("write health");
 
         let loaded = load_health(path).await.expect("load health");
         assert_eq!(loaded, health);
@@ -56,11 +35,17 @@ mod tests {
     #[tokio::test]
     async fn cert_renewal_unhealthy_keeps_original_stale_since() {
         let path = temp_path("cert-renewal-health-stale").join("health.json");
-        let mut health_state = None;
+        let recorder = FileHealthRecorder::new(path.clone());
 
-        record_unhealthy(&path, &mut health_state, "first").await;
+        recorder
+            .record_unhealthy("first")
+            .await
+            .expect("record first");
         let first = load_health(path.clone()).await.expect("load first health");
-        record_unhealthy(&path, &mut health_state, "second").await;
+        recorder
+            .record_unhealthy("second")
+            .await
+            .expect("record second");
         let second = load_health(path).await.expect("load second health");
 
         let ployz_supervision::ComponentHealthState::Stale {

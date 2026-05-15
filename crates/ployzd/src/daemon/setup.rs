@@ -33,6 +33,7 @@ use ployz_orchestrator::coordination::SubnetReservationCoordinator;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
 use ployz_store_api::{CertificateStore, StoreDriver, StoreRuntimeControl};
+use ployz_supervision::FileHealthRecorder;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -153,9 +154,9 @@ async fn start_nats_certificate_renewal_worker(
             let finalization_issuer =
                 issuer_factory.create(readiness.clone(), account_coordinator.clone());
             let mut fetch_error_backoff = CERT_RENEWAL_FETCH_ERROR_BACKOFF_MIN;
-            let mut health_state = None;
+            let health = FileHealthRecorder::new(health_path);
             let mut last_failure_kind = None;
-            crate::daemon::cert_renewal_health::record_healthy(&health_path).await;
+            record_cert_renewal_healthy(&health).await;
             loop {
                 tokio::select! {
                     () = cancel.cancelled() => break,
@@ -182,30 +183,26 @@ async fn start_nats_certificate_renewal_worker(
                                     Ok(()) => {
                                         if let Err(error) = job.ack().await {
                                             last_failure_kind = Some(CertRenewalFailureKind::Job);
-                                            crate::daemon::cert_renewal_health::record_unhealthy(
-                                                &health_path,
-                                                &mut health_state,
+                                            record_cert_renewal_unhealthy(
+                                                &health,
                                                 format!("certificate renewal job ack failed for {hostname}: {error}"),
                                             ).await;
                                             tracing::warn!(?error, hostname, "certificate renewal job ack failed");
                                         } else {
-                                            health_state = None;
                                             last_failure_kind = None;
-                                            crate::daemon::cert_renewal_health::record_healthy(&health_path).await;
+                                            record_cert_renewal_healthy(&health).await;
                                         }
                                     }
                                     Err(error) => {
                                         last_failure_kind = Some(CertRenewalFailureKind::Job);
-                                        crate::daemon::cert_renewal_health::record_unhealthy(
-                                            &health_path,
-                                            &mut health_state,
+                                        record_cert_renewal_unhealthy(
+                                            &health,
                                             format!("certificate renewal job failed for {hostname}: {error}"),
                                         ).await;
                                         tracing::warn!(?error, hostname, "certificate renewal job failed");
                                         if let Err(nak_error) = job.nak_after(Some(CERT_RENEWAL_JOB_RETRY_DELAY)).await {
-                                            crate::daemon::cert_renewal_health::record_unhealthy(
-                                                &health_path,
-                                                &mut health_state,
+                                            record_cert_renewal_unhealthy(
+                                                &health,
                                                 format!("certificate renewal job nak failed for {hostname}: {nak_error}"),
                                             ).await;
                                             tracing::warn!(
@@ -220,16 +217,14 @@ async fn start_nats_certificate_renewal_worker(
                             Ok(None) => {
                                 fetch_error_backoff = CERT_RENEWAL_FETCH_ERROR_BACKOFF_MIN;
                                 if last_failure_kind != Some(CertRenewalFailureKind::Job) {
-                                    health_state = None;
                                     last_failure_kind = None;
-                                    crate::daemon::cert_renewal_health::record_healthy(&health_path).await;
+                                    record_cert_renewal_healthy(&health).await;
                                 }
                             }
                             Err(error) => {
                                 last_failure_kind = Some(CertRenewalFailureKind::Fetch);
-                                crate::daemon::cert_renewal_health::record_unhealthy(
-                                    &health_path,
-                                    &mut health_state,
+                                record_cert_renewal_unhealthy(
+                                    &health,
                                     format!("certificate renewal worker fetch failed: {error}"),
                                 ).await;
                                 let delay = fetch_error_backoff;
@@ -254,6 +249,39 @@ async fn start_nats_certificate_renewal_worker(
 enum CertRenewalFailureKind {
     Fetch,
     Job,
+}
+
+async fn record_cert_renewal_healthy(health: &FileHealthRecorder) {
+    if let Err(error) = health.force_healthy_forgetting_stale().await {
+        tracing::warn!(
+            path = %health.path().display(),
+            %error,
+            "failed to write cert renewal healthy state"
+        );
+    } else {
+        tracing::debug!(
+            path = %health.path().display(),
+            "wrote cert renewal healthy state"
+        );
+    }
+}
+
+async fn record_cert_renewal_unhealthy(health: &FileHealthRecorder, error: impl Into<String>) {
+    if let Err(error) = health
+        .record_unhealthy_remembering_write_failure(error)
+        .await
+    {
+        tracing::warn!(
+            path = %health.path().display(),
+            %error,
+            "failed to write cert renewal stale state"
+        );
+    } else {
+        tracing::debug!(
+            path = %health.path().display(),
+            "wrote cert renewal stale state"
+        );
+    }
 }
 
 async fn renewal_job_is_complete(store: &StoreDriver, hostname: &str) -> ployz_error::Result<()> {

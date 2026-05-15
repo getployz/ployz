@@ -297,6 +297,12 @@ impl FileHealthRecorder {
         Ok(())
     }
 
+    pub async fn force_healthy_forgetting_stale(&self) -> std::io::Result<()> {
+        let mut state = self.state.lock().await;
+        *state = None;
+        write_component_health(&self.path, &healthy_component_health()).await
+    }
+
     pub async fn record_healthy_if_stale(&self) -> std::io::Result<()> {
         let mut state = self.state.lock().await;
         if state.is_none() {
@@ -313,6 +319,16 @@ impl FileHealthRecorder {
         write_component_health(&self.path, &next).await?;
         *state = Some(next.clone());
         Ok(())
+    }
+
+    pub async fn record_unhealthy_remembering_write_failure(
+        &self,
+        error: impl Into<String>,
+    ) -> std::io::Result<()> {
+        let mut state = self.state.lock().await;
+        let next = ComponentHealth::stale(now_unix_secs(), state.as_ref(), error);
+        *state = Some(next.clone());
+        write_component_health(&self.path, &next).await
     }
 
     #[cfg(test)]
@@ -681,6 +697,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_health_recorder_can_forget_stale_when_recovery_write_fails() {
+        let root = temp_path("file-health-recorder-forget-recovery-fail");
+        std::fs::create_dir_all(&root).expect("create root");
+        let blocked_parent = root.join("not-a-directory");
+        std::fs::write(&blocked_parent, b"file").expect("write blocker");
+        let recorder = FileHealthRecorder::new(root.join("health.json"));
+
+        recorder
+            .record_unhealthy("subscription closed")
+            .await
+            .expect("record stale");
+        let bad_path = FileHealthRecorder::new(blocked_parent.join("health.json"));
+        *bad_path.state.lock().await = recorder.health_for_tests().await;
+
+        assert!(bad_path.force_healthy_forgetting_stale().await.is_err());
+
+        assert_eq!(bad_path.health_for_tests().await, None);
+    }
+
+    #[tokio::test]
     async fn file_health_recorder_does_not_count_failed_unhealthy_write() {
         let root = temp_path("file-health-recorder-unhealthy-fail");
         std::fs::create_dir_all(&root).expect("create root");
@@ -691,6 +727,51 @@ mod tests {
         assert!(recorder.record_unhealthy("first").await.is_err());
 
         assert_eq!(recorder.health_for_tests().await, None);
+    }
+
+    #[tokio::test]
+    async fn file_health_recorder_can_count_failed_unhealthy_write() {
+        let root = temp_path("file-health-recorder-count-unhealthy-fail");
+        std::fs::create_dir_all(&root).expect("create root");
+        let blocked_parent = root.join("not-a-directory");
+        std::fs::write(&blocked_parent, b"file").expect("write blocker");
+        let bad_path = FileHealthRecorder::new(blocked_parent.join("health.json"));
+
+        assert!(
+            bad_path
+                .record_unhealthy_remembering_write_failure("first")
+                .await
+                .is_err()
+        );
+        let first = bad_path.health_for_tests().await.expect("first state");
+        let recorder = FileHealthRecorder::new(root.join("health.json"));
+        *recorder.state.lock().await = Some(first.clone());
+        recorder
+            .record_unhealthy_remembering_write_failure("second")
+            .await
+            .expect("record second");
+        let second = load_component_health(recorder.path())
+            .await
+            .expect("load second");
+
+        let ComponentHealthState::Stale {
+            stale_since_unix_secs: first_stale_since,
+            ..
+        } = first.state
+        else {
+            panic!("first health should be stale");
+        };
+        let ComponentHealthState::Stale {
+            stale_since_unix_secs: second_stale_since,
+            consecutive_failures,
+            last_error,
+        } = second.state
+        else {
+            panic!("second health should be stale");
+        };
+        assert_eq!(first_stale_since, second_stale_since);
+        assert_eq!(consecutive_failures, 2);
+        assert_eq!(last_error, "second");
     }
 
     #[test]
