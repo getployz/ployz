@@ -30,7 +30,8 @@ use ployz_node_api::{
     NodeVolumeZfsTransferState, VOLUME_ZFS_TRANSFER_PAYLOAD_KIND,
 };
 use ployz_node_runtime::{
-    NodeRpcError, NodeRpcPolicy, VolumeZfsRpcOperation, VolumeZfsRpcTransport,
+    NodeRpcError, NodeRpcPolicy, VolumeZfsMoveError, VolumeZfsRpcOperation, VolumeZfsRpcTransport,
+    volume_move_result_from_transfer,
 };
 use ployz_orchestrator::deploy::{participant::MoveVolumeRequest, prepare};
 use ployz_orchestrator::{Mesh, WireguardDriver};
@@ -1777,11 +1778,10 @@ fn volume_move_result_rejects_terminal_failed_transfer() {
 
     assert_eq!(
         error,
-        PloyzError::Deploy(DeployError::RemoteNodeError {
-            operation: "volume_zfs_transfer",
+        VolumeZfsMoveError::TransferFailed {
             code: "failed".into(),
             message: "receiver disconnected".into(),
-        })
+        }
     );
 }
 

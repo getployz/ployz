@@ -35,8 +35,9 @@ pub use mesh::{
 };
 pub use probe::{NodeProbeNodeClient, NodeProbeRpcOperation, NodeProbeRpcTransport};
 pub use volume_zfs::{
-    VolumeZfsNodeClient, VolumeZfsNodePayload, VolumeZfsNodeResponse, VolumeZfsRpcOperation,
-    VolumeZfsRpcTransport,
+    VolumeZfsMoveError, VolumeZfsMoveRequest, VolumeZfsMoveResult, VolumeZfsNodeClient,
+    VolumeZfsNodePayload, VolumeZfsNodeResponse, VolumeZfsRpcOperation, VolumeZfsRpcTransport,
+    volume_move_result_from_transfer,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

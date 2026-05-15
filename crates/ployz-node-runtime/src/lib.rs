@@ -20,8 +20,9 @@ pub use node_clients::{
     MeshRpcOperation, MeshRpcTransport, NODE_READINESS_RPC_POLICY, NODE_STATUS_RPC_POLICY,
     NodeClientError, NodeClientRegistry, NodeCommand, NodePeerClient, NodeProbeNodeClient,
     NodeProbeRpcOperation, NodeProbeRpcTransport, NodeRpcError, NodeRpcErrorKind, NodeRpcPolicy,
-    NodeServiceResponse, VolumeZfsNodeClient, VolumeZfsNodePayload, VolumeZfsNodeResponse,
-    VolumeZfsRpcOperation, VolumeZfsRpcTransport, decode_node_response_payload,
+    NodeServiceResponse, VolumeZfsMoveError, VolumeZfsMoveRequest, VolumeZfsMoveResult,
+    VolumeZfsNodeClient, VolumeZfsNodePayload, VolumeZfsNodeResponse, VolumeZfsRpcOperation,
+    VolumeZfsRpcTransport, decode_node_response_payload, volume_move_result_from_transfer,
 };
 use ployz_supervision::{HealthRegistry, Supervisor};
 use tokio_util::sync::CancellationToken;

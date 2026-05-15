@@ -1,14 +1,17 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use ployz_model::MachineId;
 use ployz_node_api::{
     NodeRequest, NodeResponse, NodeVolumeZfsInspectPayload, NodeVolumeZfsPeerSendPayload,
-    NodeVolumeZfsSnapshotPayload, NodeVolumeZfsTransferPayload, VOLUME_ZFS_INSPECT_PAYLOAD_KIND,
-    VOLUME_ZFS_PEER_SEND_PAYLOAD_KIND, VOLUME_ZFS_SNAPSHOT_PAYLOAD_KIND,
-    VOLUME_ZFS_TRANSFER_PAYLOAD_KIND,
+    NodeVolumeZfsSnapshotPayload, NodeVolumeZfsTransferPayload, NodeVolumeZfsTransferState,
+    VOLUME_ZFS_INSPECT_PAYLOAD_KIND, VOLUME_ZFS_PEER_SEND_PAYLOAD_KIND,
+    VOLUME_ZFS_SNAPSHOT_PAYLOAD_KIND, VOLUME_ZFS_TRANSFER_PAYLOAD_KIND,
 };
 
 use super::{
-    NodeRpcError, NodeRpcPolicy, NodeServiceResponse, decode_payload_kind, decode_typed_payload,
+    NodeRpcError, NodeRpcErrorKind, NodeRpcPolicy, NodeServiceResponse, decode_payload_kind,
+    decode_typed_payload,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,6 +151,112 @@ where
         .await
     }
 
+    pub async fn move_volume_and_wait(
+        &self,
+        machine_id: &MachineId,
+        namespace: &str,
+        request: VolumeZfsMoveRequest,
+        start_timeout: Duration,
+        wait_timeout: Duration,
+        poll_rpc_timeout: Duration,
+        poll_interval: Duration,
+    ) -> Result<VolumeZfsMoveResult, VolumeZfsMoveError> {
+        if *machine_id != request.from_machine {
+            return Err(VolumeZfsMoveError::SourceMismatch {
+                volume: request.volume,
+                machine_id: machine_id.clone(),
+                from_machine: request.from_machine,
+            });
+        }
+        let move_client = self.with_policy(NodeRpcPolicy {
+            timeout: start_timeout,
+        });
+        let response = move_client
+            .send(
+                machine_id,
+                namespace,
+                &request.volume,
+                &request.snapshot,
+                &request.to_machine,
+                None,
+            )
+            .await
+            .map_err(VolumeZfsMoveError::Rpc)?;
+        self.wait_for_transfer(
+            machine_id,
+            response.transfer.id,
+            wait_timeout,
+            poll_rpc_timeout,
+            poll_interval,
+        )
+        .await
+    }
+
+    async fn wait_for_transfer(
+        &self,
+        machine_id: &MachineId,
+        transfer_id: String,
+        timeout: Duration,
+        poll_rpc_timeout: Duration,
+        poll_interval: Duration,
+    ) -> Result<VolumeZfsMoveResult, VolumeZfsMoveError> {
+        let started = tokio::time::Instant::now();
+        let mut retry_delay = poll_interval;
+        loop {
+            let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+                return Err(VolumeZfsMoveError::Timeout {
+                    transfer_id,
+                    detail: None,
+                });
+            };
+            let poll_client = self.with_policy(NodeRpcPolicy {
+                timeout: std::cmp::min(poll_rpc_timeout, remaining),
+            });
+            let response = match tokio::time::timeout(
+                remaining,
+                poll_client.transfer_get(machine_id, &transfer_id),
+            )
+            .await
+            {
+                Ok(Ok(response)) => response,
+                Ok(Err(error)) => {
+                    if error.kind != NodeRpcErrorKind::Transport {
+                        return Err(VolumeZfsMoveError::Rpc(error));
+                    }
+                    if started.elapsed() >= timeout {
+                        return Err(VolumeZfsMoveError::Rpc(error));
+                    }
+                    tracing::warn!(
+                        %error,
+                        transfer_id,
+                        machine_id = %machine_id,
+                        "retrying zfs transfer status read after transient RPC failure"
+                    );
+                    tokio::time::sleep(retry_delay + retry_jitter(retry_delay)).await;
+                    retry_delay = std::cmp::min(retry_delay + retry_delay, Duration::from_secs(30));
+                    continue;
+                }
+                Err(error) => {
+                    return Err(VolumeZfsMoveError::Timeout {
+                        transfer_id,
+                        detail: Some(error.to_string()),
+                    });
+                }
+            };
+            retry_delay = poll_interval;
+            if let Some(result) = volume_move_result_from_transfer(response)? {
+                return Ok(result);
+            }
+            if started.elapsed() >= timeout {
+                return Err(VolumeZfsMoveError::Timeout {
+                    transfer_id,
+                    detail: None,
+                });
+            }
+            tokio::time::sleep(poll_interval).await;
+        }
+    }
+
     pub async fn peer_snapshot(
         &self,
         machine_id: &MachineId,
@@ -256,6 +365,79 @@ pub type VolumeZfsNodeResponse = NodeServiceResponse<VolumeZfsNodePayload>;
 pub enum VolumeZfsNodePayload {
     Inspect(NodeVolumeZfsInspectPayload),
     Snapshot(NodeVolumeZfsSnapshotPayload),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeZfsMoveRequest {
+    pub volume: String,
+    pub from_machine: MachineId,
+    pub to_machine: MachineId,
+    pub snapshot: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeZfsMoveResult {
+    pub snapshot: String,
+    pub snapshot_guid: u64,
+    pub bytes_transferred: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VolumeZfsMoveError {
+    SourceMismatch {
+        volume: String,
+        machine_id: MachineId,
+        from_machine: MachineId,
+    },
+    Rpc(NodeRpcError),
+    Timeout {
+        transfer_id: String,
+        detail: Option<String>,
+    },
+    TransferFailed {
+        code: &'static str,
+        message: String,
+    },
+}
+
+fn retry_jitter(delay: Duration) -> Duration {
+    let max_millis = (delay.as_millis() as u64 / 2).min(1_000);
+    if max_millis == 0 {
+        Duration::ZERO
+    } else {
+        Duration::from_millis(rand::random::<u64>() % (max_millis + 1))
+    }
+}
+
+pub fn volume_move_result_from_transfer(
+    payload: NodeVolumeZfsTransferPayload,
+) -> Result<Option<VolumeZfsMoveResult>, VolumeZfsMoveError> {
+    match payload.transfer.state {
+        NodeVolumeZfsTransferState::Succeeded {
+            snapshot_guid,
+            bytes_transferred,
+            ..
+        } => Ok(Some(VolumeZfsMoveResult {
+            snapshot: payload.transfer.snapshot_name,
+            snapshot_guid,
+            bytes_transferred,
+        })),
+        NodeVolumeZfsTransferState::Failed { last_error, .. } => {
+            Err(VolumeZfsMoveError::TransferFailed {
+                code: "failed",
+                message: last_error,
+            })
+        }
+        NodeVolumeZfsTransferState::Interrupted { last_error, .. } => {
+            Err(VolumeZfsMoveError::TransferFailed {
+                code: "interrupted",
+                message: last_error.unwrap_or_else(|| {
+                    format!("zfs transfer '{}' did not succeed", payload.transfer.id)
+                }),
+            })
+        }
+        NodeVolumeZfsTransferState::Running { .. } => Ok(None),
+    }
 }
 
 fn decode_volume_zfs_payload(
@@ -594,6 +776,133 @@ mod tests {
         assert_eq!(error.operation, "volume_zfs_inspect");
     }
 
+    #[tokio::test]
+    async fn move_volume_and_wait_sends_then_polls_until_success() {
+        let transport = FakeVolumeTransport::with_responses(vec![
+            Ok(transfer_response("running", None, None, None)),
+            Ok(transfer_response("running", None, None, None)),
+            Ok(transfer_response("succeeded", Some(42), Some(4096), None)),
+        ]);
+        let client = VolumeZfsNodeClient::new(transport.clone());
+
+        let result = client
+            .move_volume_and_wait(
+                &MachineId::new("machine-a"),
+                "prod",
+                VolumeZfsMoveRequest {
+                    volume: "data".into(),
+                    from_machine: MachineId::new("machine-a"),
+                    to_machine: MachineId::new("machine-b"),
+                    snapshot: "ployz-move-manifest-data".into(),
+                },
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(1),
+                Duration::from_millis(1),
+            )
+            .await
+            .expect("move result");
+
+        assert_eq!(
+            result,
+            VolumeZfsMoveResult {
+                snapshot: "ployz-move-manifest-data".into(),
+                snapshot_guid: 42,
+                bytes_transferred: 4096,
+            }
+        );
+        let requests = transport.requests.lock().expect("requests");
+        let [send, first_poll, second_poll] = requests.as_slice() else {
+            panic!("expected send plus two polls, got {requests:?}");
+        };
+        assert_eq!(send.1, VolumeZfsRpcOperation::Send);
+        assert_eq!(first_poll.1, VolumeZfsRpcOperation::TransferGet);
+        assert_eq!(second_poll.1, VolumeZfsRpcOperation::TransferGet);
+        assert!(matches!(
+            &send.2,
+            NodeRequest::VolumeZfsSend {
+                namespace,
+                volume,
+                snapshot,
+                target_machine,
+                from_snapshot,
+            } if namespace == "prod"
+                && volume == "data"
+                && snapshot == "ployz-move-manifest-data"
+                && target_machine == "machine-b"
+                && from_snapshot.is_none()
+        ));
+    }
+
+    #[tokio::test]
+    async fn move_volume_and_wait_rejects_source_mismatch_before_rpc() {
+        let transport = FakeVolumeTransport::default();
+        let client = VolumeZfsNodeClient::new(transport.clone());
+
+        let error = client
+            .move_volume_and_wait(
+                &MachineId::new("machine-a"),
+                "prod",
+                VolumeZfsMoveRequest {
+                    volume: "data".into(),
+                    from_machine: MachineId::new("machine-other"),
+                    to_machine: MachineId::new("machine-b"),
+                    snapshot: "ployz-move-manifest-data".into(),
+                },
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(1),
+                Duration::from_millis(1),
+            )
+            .await
+            .expect_err("source mismatch should fail before rpc");
+
+        assert_eq!(
+            error,
+            VolumeZfsMoveError::SourceMismatch {
+                volume: "data".into(),
+                machine_id: MachineId::new("machine-a"),
+                from_machine: MachineId::new("machine-other"),
+            }
+        );
+        assert!(transport.requests.lock().expect("requests").is_empty());
+    }
+
+    #[tokio::test]
+    async fn move_volume_and_wait_retries_transient_poll_failure() {
+        let transport = FakeVolumeTransport::with_responses(vec![
+            Ok(transfer_response("running", None, None, None)),
+            Err(NodeRpcError::new(
+                "volume_zfs_transfer_get",
+                "NATS_RPC_NO_RESPONDERS",
+                "no responder",
+            )),
+            Ok(transfer_response("succeeded", Some(42), Some(4096), None)),
+        ]);
+        let client = VolumeZfsNodeClient::new(transport.clone());
+
+        let result = client
+            .move_volume_and_wait(
+                &MachineId::new("machine-a"),
+                "prod",
+                VolumeZfsMoveRequest {
+                    volume: "data".into(),
+                    from_machine: MachineId::new("machine-a"),
+                    to_machine: MachineId::new("machine-b"),
+                    snapshot: "ployz-move-manifest-data".into(),
+                },
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(1),
+                Duration::from_millis(1),
+            )
+            .await
+            .expect("move result");
+
+        assert_eq!(result.snapshot_guid, 42);
+        assert_eq!(transport.requests.lock().expect("requests").len(), 3);
+    }
+
     fn default_response(operation: VolumeZfsRpcOperation) -> NodeResponse {
         let payload = match operation {
             VolumeZfsRpcOperation::Inspect => inspect_payload(),
@@ -637,6 +946,53 @@ mod tests {
             }
         };
         NodeResponse::success("ok", Some(payload))
+    }
+
+    fn transfer_response(
+        status: &str,
+        snapshot_guid: Option<u64>,
+        bytes_transferred: Option<u64>,
+        last_error: Option<String>,
+    ) -> NodeResponse {
+        NodeResponse::success(
+            "ok",
+            Some(serde_json::json!({
+                "kind": VOLUME_ZFS_TRANSFER_PAYLOAD_KIND,
+                "transfer": transfer_payload(status, snapshot_guid, bytes_transferred, last_error)
+            })),
+        )
+    }
+
+    fn transfer_payload(
+        status: &str,
+        snapshot_guid: Option<u64>,
+        bytes_transferred: Option<u64>,
+        last_error: Option<String>,
+    ) -> serde_json::Value {
+        let mut state = serde_json::json!({
+            "status": status,
+            "stage": "send",
+        });
+        if let Some(snapshot_guid) = snapshot_guid {
+            state["snapshot_guid"] = serde_json::json!(snapshot_guid);
+        }
+        if let Some(bytes_transferred) = bytes_transferred {
+            state["bytes_transferred"] = serde_json::json!(bytes_transferred);
+        }
+        if let Some(last_error) = last_error {
+            state["last_error"] = serde_json::json!(last_error);
+        }
+        serde_json::json!({
+            "id": "transfer-1",
+            "namespace": "prod",
+            "volume": "data",
+            "source_machine": "machine-a",
+            "target_machine": "machine-b",
+            "snapshot_name": "ployz-move-manifest-data",
+            "started_at": 1,
+            "updated_at": 2,
+            "state": state,
+        })
     }
 
     fn inspect_payload() -> serde_json::Value {

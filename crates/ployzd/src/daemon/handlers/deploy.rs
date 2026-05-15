@@ -24,7 +24,7 @@ use manifest_render::{BranchRenderError, MigrateRenderError, stable_fingerprint}
 #[cfg(test)]
 pub(super) use planning::DEPLOY_PREPARE_TTL_SECS;
 #[cfg(test)]
-use volume_transfer::{run_volume_move_rpc, volume_move_result_from_transfer};
+use volume_transfer::run_volume_move_rpc;
 
 impl DaemonState {
     fn overlay_network_name(&self) -> Option<String> {
