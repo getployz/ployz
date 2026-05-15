@@ -1,5 +1,4 @@
 mod branch;
-mod export;
 mod migrate;
 
 #[cfg(test)]
@@ -10,7 +9,6 @@ pub(super) use branch::{
     encode_branch_manifest_json, render_branch_namespace_manifest,
     validate_branch_namespace_request,
 };
-pub(super) use export::export_manifest;
 #[cfg(test)]
 pub(super) use migrate::MigrateRenderError;
 pub(super) use migrate::{

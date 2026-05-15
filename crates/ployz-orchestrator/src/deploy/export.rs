@@ -8,7 +8,7 @@ use ployz_spec::{
 };
 use ployz_store_api::{DeployStore, StoreDriver};
 
-pub(in crate::daemon::handlers::deploy) async fn export_manifest(
+pub async fn export_manifest(
     store: &StoreDriver,
     namespace: &Namespace,
 ) -> ployz_error::Result<DeployManifest> {
@@ -17,13 +17,30 @@ pub(in crate::daemon::handlers::deploy) async fn export_manifest(
         .manifest)
 }
 
-pub(super) struct ExportedManifest {
-    pub(super) manifest: DeployManifest,
-    pub(super) service_revision_hashes: BTreeMap<String, String>,
-    pub(super) volume_records: BTreeMap<String, VolumeRecord>,
+pub struct ExportedManifest {
+    manifest: DeployManifest,
+    service_revision_hashes: BTreeMap<String, String>,
+    volume_records: BTreeMap<String, VolumeRecord>,
 }
 
-pub(in crate::daemon::handlers::deploy) async fn export_manifest_with_evidence(
+impl ExportedManifest {
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        DeployManifest,
+        BTreeMap<String, String>,
+        BTreeMap<String, VolumeRecord>,
+    ) {
+        (
+            self.manifest,
+            self.service_revision_hashes,
+            self.volume_records,
+        )
+    }
+}
+
+pub async fn export_manifest_with_evidence(
     store: &StoreDriver,
     namespace: &Namespace,
 ) -> ployz_error::Result<ExportedManifest> {

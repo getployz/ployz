@@ -8,7 +8,7 @@ use ployz_spec::{
 };
 use ployz_store_api::StoreDriver;
 
-use super::export::export_manifest_with_evidence;
+use ployz_orchestrator::deploy::export_manifest_with_evidence;
 
 #[derive(Debug, thiserror::Error)]
 pub(in crate::daemon::handlers::deploy) enum BranchRenderError {
@@ -108,7 +108,7 @@ pub(in crate::daemon::handlers::deploy) async fn render_branch_namespace_manifes
             namespace: request.source_namespace.clone(),
             message: error.to_string(),
         })?;
-    let mut manifest = exported.manifest;
+    let (mut manifest, service_revision_hashes, volume_records) = exported.into_parts();
     if manifest.services.is_empty() && manifest.volumes.is_empty() {
         return Err(BranchRenderError::EmptySource {
             namespace: request.source_namespace.clone(),
@@ -128,8 +128,7 @@ pub(in crate::daemon::handlers::deploy) async fn render_branch_namespace_manifes
                 intent: ServiceIntent::Branch {
                     source_namespace: source_namespace.clone(),
                     source_service: service.name.clone(),
-                    expected_source_revision_hash: exported
-                        .service_revision_hashes
+                    expected_source_revision_hash: service_revision_hashes
                         .get(&service.name)
                         .cloned(),
                 },
@@ -148,8 +147,7 @@ pub(in crate::daemon::handlers::deploy) async fn render_branch_namespace_manifes
                     source_volume: volume.name.clone(),
                     data_policy: VolumeCloneDataPolicy::Raw,
                     consistency: VolumeCloneConsistency::CrashConsistent,
-                    expected_source_record_fingerprint: exported
-                        .volume_records
+                    expected_source_record_fingerprint: volume_records
                         .get(&volume.name)
                         .map(stable_fingerprint),
                 },

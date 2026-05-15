@@ -1,13 +1,12 @@
 use std::collections::BTreeSet;
 
 use ployz_api::MigrateServiceRequest;
+use ployz_orchestrator::deploy::export_manifest;
 use ployz_spec::{
     DeployIntent, DeployManifest, MountSource, Namespace, VolumeIntent, VolumeIntentHint,
     VolumeScope,
 };
 use ployz_store_api::{DeployStore, StoreDriver};
-
-use super::export::export_manifest;
 
 #[derive(Debug, thiserror::Error)]
 pub(in crate::daemon::handlers::deploy) enum MigrateRenderError {

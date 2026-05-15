@@ -3,6 +3,7 @@ mod participant_set;
 mod volume_execution;
 
 mod execute;
+mod export;
 mod lifecycle;
 mod managed_domains;
 mod plan;
@@ -27,6 +28,7 @@ use probe::{probe_participants, warnings_from_reachability};
 use std::sync::Arc;
 
 pub use execute::DeployApplyPreconditions;
+pub use export::{ExportedManifest, export_manifest, export_manifest_with_evidence};
 pub use probe::{NoopParticipantProbe, ParticipantProbe, ProbeError, ProbeErrorKind};
 
 pub fn new_deploy_id() -> crate::model::DeployId {

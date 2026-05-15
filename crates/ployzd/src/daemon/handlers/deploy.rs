@@ -9,12 +9,11 @@ mod responses;
 mod volume_transfer;
 
 use crate::daemon::DaemonState;
-use manifest_render::export_manifest;
 use ployz_api::{DaemonResponse, DeployOptions};
 use ployz_config::RuntimeTarget;
 #[cfg(test)]
 use ployz_model::DeployPhaseRecordState;
-use ployz_orchestrator::deploy::DeployApplyPreconditions;
+use ployz_orchestrator::deploy::{DeployApplyPreconditions, export_manifest};
 use ployz_spec::{DeployManifest, Namespace};
 #[cfg(test)]
 use ployz_store_memory::StoreDriverMemoryExt as _;
