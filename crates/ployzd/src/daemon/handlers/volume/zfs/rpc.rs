@@ -7,9 +7,9 @@ use ployz_node_api::{NodeVolumeZfsInspectPayload, NodeVolumeZfsSnapshotPayload};
 use ployz_node_runtime::{VolumeZfsNodeClient, VolumeZfsNodePayload, VolumeZfsNodeResponse};
 use ployz_spec::Namespace;
 
-use super::transfer_execution::send_zfs_stream_from_local;
 use crate::daemon::DaemonState;
 use crate::daemon::node_rpc::NatsVolumeZfsRpcTransport;
+use ployz_volume_zfs::send_zfs_stream_from_local;
 
 impl DaemonState {
     pub(crate) async fn handle_volume_zfs_peer_snapshot(

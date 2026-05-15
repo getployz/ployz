@@ -3,121 +3,9 @@ use std::net::{IpAddr, SocketAddr};
 use ployz_model::MachineId;
 use ployz_spec::Namespace;
 use ployz_store_api::{DeployStore, MachineMembershipStore, StoreDriver};
-
-use super::protocol::ZfsTransferOpen;
-
-const VOLUME_NOT_AUTHORIZED: &str = "zfs transfer not authorized";
-
-#[derive(Debug, thiserror::Error)]
-pub(super) enum ZfsTransferValidationError {
-    #[error("connection closed before zfs transfer header")]
-    HeaderClosed,
-    #[error("zfs transfer header exceeded {max_bytes} bytes")]
-    HeaderTooLarge { max_bytes: usize },
-    #[error("zfs transfer header missing newline")]
-    HeaderMissingNewline,
-    #[error("zfs transfer header was not UTF-8: {message}")]
-    HeaderNotUtf8 { message: String },
-    #[error("zfs transfer header missing source_machine_id")]
-    MissingSourceMachineId,
-    #[error("list machines for zfs transfer source validation: {message}")]
-    SourceMachineLookupFailed { message: String },
-    #[error("source machine '{machine_id}' not found")]
-    SourceMachineNotFound { machine_id: MachineId },
-    #[error("zfs transfer source '{machine_id}' connected from {actual}, expected {expected}")]
-    SourceOverlayIpMismatch {
-        machine_id: MachineId,
-        actual: IpAddr,
-        expected: IpAddr,
-    },
-    #[error("{VOLUME_NOT_AUTHORIZED}")]
-    InvalidNamespace { message: String },
-    #[error("{VOLUME_NOT_AUTHORIZED}")]
-    VolumeNotAuthorized {
-        namespace: Namespace,
-        volume: String,
-        source_machine_id: MachineId,
-        reason: VolumeAuthorizationRejection,
-    },
-    #[error(
-        "snapshot '{dataset}@{snapshot}' already exists on target with guid {actual_guid}, source claims {expected_guid}"
-    )]
-    ExistingSnapshotGuidMismatch {
-        dataset: String,
-        snapshot: String,
-        actual_guid: u64,
-        expected_guid: u64,
-    },
-    #[error("incremental base snapshot '{dataset}@{snapshot}' missing on target")]
-    IncrementalBaseMissing { dataset: String, snapshot: String },
-    #[error(
-        "incremental base snapshot '{dataset}@{snapshot}' guid {actual_guid} did not match source {expected_guid}"
-    )]
-    IncrementalBaseGuidMismatch {
-        dataset: String,
-        snapshot: String,
-        actual_guid: u64,
-        expected_guid: u64,
-    },
-    #[error("{operation}: {message}")]
-    Backend {
-        operation: &'static str,
-        message: String,
-    },
-}
-
-#[derive(Debug)]
-pub(super) enum VolumeAuthorizationRejection {
-    OwnedByOtherMachine { owner: MachineId },
-    VolumeNotFound,
-    LookupFailed { message: String },
-}
-
-impl ZfsTransferValidationError {
-    pub(super) fn backend(operation: &'static str, error: impl std::fmt::Display) -> Self {
-        Self::Backend {
-            operation,
-            message: error.to_string(),
-        }
-    }
-
-    fn log_context(&self) {
-        if let Self::VolumeNotAuthorized {
-            namespace,
-            volume,
-            source_machine_id,
-            reason,
-        } = self
-        {
-            match reason {
-                VolumeAuthorizationRejection::OwnedByOtherMachine { owner } => tracing::warn!(
-                    namespace = %namespace.as_str(),
-                    volume,
-                    source = %source_machine_id,
-                    owner = %owner,
-                    "zfs transfer rejected: source is not the volume owner",
-                ),
-                VolumeAuthorizationRejection::VolumeNotFound => tracing::warn!(
-                    namespace = %namespace.as_str(),
-                    volume,
-                    source = %source_machine_id,
-                    "zfs transfer rejected: volume not found",
-                ),
-                VolumeAuthorizationRejection::LookupFailed { message } => tracing::warn!(
-                    error = %message,
-                    namespace = %namespace.as_str(),
-                    volume,
-                    "zfs transfer authorization lookup failed",
-                ),
-            }
-        } else if let Self::InvalidNamespace { message } = self {
-            tracing::warn!(
-                error = %message,
-                "zfs transfer rejected: invalid namespace",
-            );
-        }
-    }
-}
+use ployz_volume_zfs::{
+    VolumeAuthorizationRejection, ZfsReceiveRequest, ZfsTransferOpen, ZfsTransferValidationError,
+};
 
 pub(super) async fn validate_open_source(
     store: &StoreDriver,
@@ -131,10 +19,61 @@ pub(super) async fn validate_open_source(
     if let Err(error) =
         validate_volume_ownership(store, source, &open.namespace, &open.volume).await
     {
-        error.log_context();
+        log_validation_context(&error);
         return Err(error);
     }
     Ok(source.clone())
+}
+
+pub(super) async fn authorized_receive_request(
+    store: &StoreDriver,
+    open: &ZfsTransferOpen,
+    remote_addr: SocketAddr,
+) -> Result<(MachineId, ZfsReceiveRequest), ZfsTransferValidationError> {
+    let source = validate_open_source(store, open, remote_addr).await?;
+    let namespace = Namespace::try_new(&open.namespace)
+        .map_err(|message| ZfsTransferValidationError::InvalidNamespace { message })?;
+    Ok((
+        source,
+        ZfsReceiveRequest::from_authorized_open(open, namespace),
+    ))
+}
+
+fn log_validation_context(error: &ZfsTransferValidationError) {
+    if let ZfsTransferValidationError::VolumeNotAuthorized {
+        namespace,
+        volume,
+        source_machine_id,
+        reason,
+    } = error
+    {
+        match reason {
+            VolumeAuthorizationRejection::OwnedByOtherMachine { owner } => tracing::warn!(
+                namespace = %namespace.as_str(),
+                volume,
+                source = %source_machine_id,
+                owner = %owner,
+                "zfs transfer rejected: source is not the volume owner",
+            ),
+            VolumeAuthorizationRejection::VolumeNotFound => tracing::warn!(
+                namespace = %namespace.as_str(),
+                volume,
+                source = %source_machine_id,
+                "zfs transfer rejected: volume not found",
+            ),
+            VolumeAuthorizationRejection::LookupFailed { message } => tracing::warn!(
+                error = %message,
+                namespace = %namespace.as_str(),
+                volume,
+                "zfs transfer authorization lookup failed",
+            ),
+        }
+    } else if let ZfsTransferValidationError::InvalidNamespace { message } = error {
+        tracing::warn!(
+            error = %message,
+            "zfs transfer rejected: invalid namespace",
+        );
+    }
 }
 
 /// Verify the claimed source machine actually owns the namespace/volume the
@@ -225,7 +164,7 @@ mod tests {
         ZfsTransferValidationError, validate_open_source, validate_source_overlay,
         validate_volume_ownership,
     };
-    use crate::daemon::handlers::volume::transfer_listener::protocol::ZfsTransferOpen;
+    use ployz_volume_zfs::ZfsTransferOpen;
 
     fn open(snapshot: &str, expected_guid: u64) -> ZfsTransferOpen {
         ZfsTransferOpen {

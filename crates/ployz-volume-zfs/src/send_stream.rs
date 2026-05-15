@@ -1,8 +1,7 @@
 use std::time::Duration;
 
-use crate::daemon::handlers::volume::transfer_listener::{ZfsTransferOpen, ZfsTransferReceived};
+use crate::{SendResult, TokioShellRunner, ZfsDriver, ZfsTransferOpen, ZfsTransferReceived};
 use ployz_model::{MachineId, MachineMembership, VolumeRecord};
-use ployz_volume_zfs::{SendResult, TokioShellRunner, ZfsDriver};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
@@ -10,7 +9,7 @@ const ACK_READ_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_ACK_BYTES: usize = 16 * 1024;
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::daemon::handlers::volume::zfs) async fn send_zfs_stream_from_local(
+pub async fn send_zfs_stream_from_local(
     record: &VolumeRecord,
     target: &MachineMembership,
     driver: &ZfsDriver<TokioShellRunner>,
@@ -21,7 +20,7 @@ pub(in crate::daemon::handlers::volume::zfs) async fn send_zfs_stream_from_local
     from_snapshot: Option<&str>,
     from_snapshot_guid: Option<u64>,
 ) -> Result<SendResult, String> {
-    let dataset = super::super::volume_dataset(
+    let dataset = volume_dataset(
         driver.root_dataset(),
         &record.namespace,
         &record.volume_name,
@@ -139,4 +138,8 @@ pub(in crate::daemon::handlers::volume::zfs) async fn send_zfs_stream_from_local
         bytes_transferred: bytes,
         snapshot_guid,
     })
+}
+
+fn volume_dataset(root: &str, namespace: &ployz_spec::Namespace, volume: &str) -> String {
+    format!("{root}/{}/{}", namespace.as_str(), volume)
 }

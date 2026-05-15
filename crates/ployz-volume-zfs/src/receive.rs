@@ -1,9 +1,8 @@
 use std::path::PathBuf;
 
-use ployz_volume_zfs::{ShellRunner, TokioShellRunner, ZfsDriver};
-
-use super::protocol::ZfsTransferOpen;
-use super::validation::ZfsTransferValidationError;
+use crate::{
+    ShellRunner, TokioShellRunner, ZfsDriver, ZfsReceiveRequest, ZfsTransferValidationError,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 enum ReceiveDecision {
@@ -16,11 +15,11 @@ enum ReceiveFailureCleanup {
     SnapshotOnly,
 }
 
-pub(super) async fn receive_stream<R: tokio::io::AsyncRead + Unpin>(
+pub async fn receive_stream<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut R,
     zfs_root: &PathBuf,
     overcommit_ratio: f64,
-    open: &ZfsTransferOpen,
+    request: &ZfsReceiveRequest,
 ) -> Result<u64, String> {
     let root = zfs_root
         .to_str()
@@ -28,9 +27,13 @@ pub(super) async fn receive_stream<R: tokio::io::AsyncRead + Unpin>(
     let driver = ZfsDriver::new(TokioShellRunner, root, overcommit_ratio)
         .await
         .map_err(|error| error.to_string())?;
-    let dataset = format!("{root}/{}/{}", open.namespace, open.volume);
+    let dataset = format!(
+        "{root}/{}/{}",
+        request.namespace().as_str(),
+        request.volume()
+    );
 
-    let cleanup = match prepare_receive(&driver, &dataset, open)
+    let cleanup = match prepare_receive(&driver, &dataset, request)
         .await
         .map_err(|error| error.to_string())?
     {
@@ -56,18 +59,18 @@ pub(super) async fn receive_stream<R: tokio::io::AsyncRead + Unpin>(
         .await
         .map_err(|error| format!("wait for zfs recv: {error}"))?;
     if let Err(error) = copy_result {
-        cleanup_partial(&driver, &dataset, open, cleanup).await;
+        cleanup_partial(&driver, &dataset, request, cleanup).await;
         return Err(format!("copy stream into zfs recv: {error}"));
     }
     if !output.status.success() {
-        cleanup_partial(&driver, &dataset, open, cleanup).await;
+        cleanup_partial(&driver, &dataset, request, cleanup).await;
         return Err(format!(
             "zfs recv failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
     driver
-        .snapshot_guid(&dataset, &open.snapshot)
+        .snapshot_guid(&dataset, request.snapshot())
         .await
         .map_err(|error| error.to_string())
 }
@@ -78,28 +81,28 @@ pub(super) async fn receive_stream<R: tokio::io::AsyncRead + Unpin>(
 async fn prepare_receive<R: ShellRunner>(
     driver: &ZfsDriver<R>,
     dataset: &str,
-    open: &ZfsTransferOpen,
+    request: &ZfsReceiveRequest,
 ) -> Result<ReceiveDecision, ZfsTransferValidationError> {
     // Idempotency: if a previous attempt already landed this snapshot with
     // the right GUID, the caller drains the source stream and returns the
     // guid without touching ZFS.
     if driver
-        .snapshot_exists(dataset, &open.snapshot)
+        .snapshot_exists(dataset, request.snapshot())
         .await
         .map_err(|error| ZfsTransferValidationError::backend("snapshot_exists", error))?
     {
         let guid = driver
-            .snapshot_guid(dataset, &open.snapshot)
+            .snapshot_guid(dataset, request.snapshot())
             .await
             .map_err(|error| ZfsTransferValidationError::backend("snapshot_guid", error))?;
-        if guid == open.expected_guid {
+        if guid == request.expected_guid() {
             return Ok(ReceiveDecision::AlreadyHave(guid));
         }
         return Err(ZfsTransferValidationError::ExistingSnapshotGuidMismatch {
             dataset: dataset.to_string(),
-            snapshot: open.snapshot.clone(),
+            snapshot: request.snapshot().to_string(),
             actual_guid: guid,
-            expected_guid: open.expected_guid,
+            expected_guid: request.expected_guid(),
         });
     }
 
@@ -107,7 +110,7 @@ async fn prepare_receive<R: ShellRunner>(
     // already on disk with the GUID the source claims it had. Catches the
     // "wrong base" footgun that `zfs recv` would otherwise surface as a
     // confusing checksum/lineage error mid-stream.
-    let cleanup = if let Some(from_snapshot) = open.from_snapshot.as_deref() {
+    let cleanup = if let Some(from_snapshot) = request.from_snapshot() {
         if !driver
             .snapshot_exists(dataset, from_snapshot)
             .await
@@ -118,7 +121,7 @@ async fn prepare_receive<R: ShellRunner>(
                 snapshot: from_snapshot.to_string(),
             });
         }
-        if let Some(expected_from_guid) = open.from_snapshot_guid {
+        if let Some(expected_from_guid) = request.from_snapshot_guid() {
             let actual = driver
                 .snapshot_guid(dataset, from_snapshot)
                 .await
@@ -153,14 +156,14 @@ async fn prepare_receive<R: ShellRunner>(
 async fn cleanup_partial<R: ShellRunner>(
     driver: &ZfsDriver<R>,
     dataset: &str,
-    open: &ZfsTransferOpen,
+    request: &ZfsReceiveRequest,
     cleanup: ReceiveFailureCleanup,
 ) {
-    if let Err(error) = driver.destroy_snapshot(dataset, &open.snapshot).await {
+    if let Err(error) = driver.destroy_snapshot(dataset, request.snapshot()).await {
         tracing::warn!(
             %error,
             dataset,
-            snapshot = %open.snapshot,
+            snapshot = %request.snapshot(),
             "failed to clean up partial snapshot after recv failure"
         );
     }
@@ -172,14 +175,15 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
+    use crate::{
+        ShellOutput, ShellRunner, ZfsDriver, ZfsReceiveRequest, ZfsTransferOpen,
+        ZfsTransferValidationError,
+    };
     use async_trait::async_trait;
     use ployz_error::{Error, Result};
     use ployz_model::MachineId;
-    use ployz_volume_zfs::{ShellOutput, ShellRunner, ZfsDriver};
 
     use super::{ReceiveDecision, ReceiveFailureCleanup, cleanup_partial, prepare_receive};
-    use crate::daemon::handlers::volume::transfer_listener::protocol::ZfsTransferOpen;
-    use crate::daemon::handlers::volume::transfer_listener::validation::ZfsTransferValidationError;
 
     #[derive(Debug, Clone, Default)]
     struct FakeShellRunner {
@@ -239,6 +243,17 @@ mod tests {
         }
     }
 
+    fn request(snapshot: &str, expected_guid: u64) -> ZfsReceiveRequest {
+        receive_request(open(snapshot, expected_guid))
+    }
+
+    fn receive_request(open: ZfsTransferOpen) -> ZfsReceiveRequest {
+        ZfsReceiveRequest::from_authorized_open(
+            &open,
+            ployz_spec::Namespace::try_new("default").expect("namespace"),
+        )
+    }
+
     #[tokio::test]
     async fn cleanup_partial_full_receive_keeps_dataset() {
         let fake = FakeShellRunner::default();
@@ -248,7 +263,7 @@ mod tests {
         cleanup_partial(
             &driver,
             "tank/ployz/default/data",
-            &open("snap", 42),
+            &request("snap", 42),
             ReceiveFailureCleanup::SnapshotOnly,
         )
         .await;
@@ -266,11 +281,12 @@ mod tests {
         let mut transfer = open("snap", 42);
         transfer.from_snapshot = Some("base".into());
         transfer.from_snapshot_guid = Some(11);
+        let request = receive_request(transfer);
 
         cleanup_partial(
             &driver,
             "tank/ployz/default/data",
-            &transfer,
+            &request,
             ReceiveFailureCleanup::SnapshotOnly,
         )
         .await;
@@ -289,7 +305,7 @@ mod tests {
         // snapshot_guid -> stdout is the guid
         fake.push(0, "42\n", "");
 
-        let decision = prepare_receive(&driver, "tank/ployz/default/data", &open("snap", 42))
+        let decision = prepare_receive(&driver, "tank/ployz/default/data", &request("snap", 42))
             .await
             .expect("prepare");
 
@@ -303,7 +319,7 @@ mod tests {
         fake.push(0, "tank/ployz/default/data@snap\n", "");
         fake.push(0, "7\n", "");
 
-        let err = prepare_receive(&driver, "tank/ployz/default/data", &open("snap", 42))
+        let err = prepare_receive(&driver, "tank/ployz/default/data", &request("snap", 42))
             .await
             .expect_err("mismatched guid should fail");
 
@@ -328,8 +344,9 @@ mod tests {
         let mut o = open("snap", 42);
         o.from_snapshot = Some("base".into());
         o.from_snapshot_guid = Some(11);
+        let request = receive_request(o);
 
-        let err = prepare_receive(&driver, "tank/ployz/default/data", &o)
+        let err = prepare_receive(&driver, "tank/ployz/default/data", &request)
             .await
             .expect_err("missing base should fail");
 
@@ -352,8 +369,9 @@ mod tests {
         let mut o = open("snap", 42);
         o.from_snapshot = Some("base".into());
         o.from_snapshot_guid = Some(11);
+        let request = receive_request(o);
 
-        let err = prepare_receive(&driver, "tank/ployz/default/data", &o)
+        let err = prepare_receive(&driver, "tank/ployz/default/data", &request)
             .await
             .expect_err("mismatched base guid should fail");
 
@@ -376,7 +394,7 @@ mod tests {
         // parent lookup performed by ensure_parent_dataset
         fake.push(0, "tank/ployz/default\t1G\t/tank/ployz/default\n", "");
 
-        let decision = prepare_receive(&driver, "tank/ployz/default/data", &open("snap", 42))
+        let decision = prepare_receive(&driver, "tank/ployz/default/data", &request("snap", 42))
             .await
             .expect("prepare");
 
@@ -397,7 +415,7 @@ mod tests {
         // parent lookup performed by ensure_parent_dataset
         fake.push(0, "tank/ployz/default\t1G\t/tank/ployz/default\n", "");
 
-        let decision = prepare_receive(&driver, "tank/ployz/default/data", &open("snap", 42))
+        let decision = prepare_receive(&driver, "tank/ployz/default/data", &request("snap", 42))
             .await
             .expect("prepare");
 

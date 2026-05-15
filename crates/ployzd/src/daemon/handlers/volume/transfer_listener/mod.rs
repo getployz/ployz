@@ -1,5 +1,3 @@
-mod protocol;
-mod receive;
 mod validation;
 
 use std::net::SocketAddr;
@@ -15,10 +13,10 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use protocol::read_transfer_header;
-pub(crate) use protocol::{ZfsTransferOpen, ZfsTransferReceived};
-use receive::receive_stream;
-use validation::validate_open_source;
+use ployz_volume_zfs::{
+    ZfsTransferOpen, ZfsTransferReceived, read_transfer_header, receive_stream,
+};
+use validation::authorized_receive_request;
 
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_CONCURRENT_TRANSFERS: usize = 4;
@@ -123,7 +121,7 @@ async fn handle_transfer(
     let line = line.map_err(|error| format!("read zfs transfer header: {error}"))?;
     let open: ZfsTransferOpen =
         serde_json::from_str(&line).map_err(|error| format!("decode transfer header: {error}"))?;
-    let source = validate_open_source(&store, &open, remote_addr)
+    let (source, receive_request) = authorized_receive_request(&store, &open, remote_addr)
         .await
         .map_err(|error| error.to_string())?;
     tracing::info!(
@@ -135,7 +133,7 @@ async fn handle_transfer(
         "zfs transfer accepted",
     );
 
-    let result = receive_stream(&mut reader, &zfs_root, overcommit_ratio, &open).await;
+    let result = receive_stream(&mut reader, &zfs_root, overcommit_ratio, &receive_request).await;
     let response = match result {
         Ok(guid) if guid == open.expected_guid => ZfsTransferReceived {
             ok: true,

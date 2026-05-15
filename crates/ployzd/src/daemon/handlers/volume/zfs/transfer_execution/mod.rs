@@ -1,12 +1,10 @@
 mod finalization;
-mod local_send;
 mod machine;
 
 #[cfg(test)]
 mod tests;
 
 pub(super) use finalization::finalize_zfs_transfer;
-pub(super) use local_send::send_zfs_stream_from_local;
 
 use ployz_model::{MachineId, MachineMembership, VolumeRecord};
 use ployz_node_runtime::{VolumeZfsNodeClient, VolumeZfsRpcTransport};

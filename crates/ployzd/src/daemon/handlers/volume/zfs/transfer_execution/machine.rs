@@ -1,9 +1,8 @@
-use super::local_send::send_zfs_stream_from_local;
 use ployz_model::{MachineId, MachineMembership, VolumeRecord};
 use ployz_node_api::NodeVolumeZfsSnapshotPayload;
 use ployz_node_runtime::{VolumeZfsNodeClient, VolumeZfsRpcTransport};
 use ployz_spec::Namespace;
-use ployz_volume_zfs::{SendResult, TokioShellRunner, ZfsDriver};
+use ployz_volume_zfs::{SendResult, TokioShellRunner, ZfsDriver, send_zfs_stream_from_local};
 
 pub(super) async fn snapshot_on_machine<R>(
     machine: &MachineMembership,

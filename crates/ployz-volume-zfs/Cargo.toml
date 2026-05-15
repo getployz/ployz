@@ -15,11 +15,13 @@ ployz-spec = { path = "../ployz-spec" }
 ployz-time = { path = "../ployz-time" }
 async-trait = { workspace = true }
 serde = { workspace = true }
-tokio = { workspace = true, features = ["process", "time"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net", "process", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "time", "process"] }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "time"] }
 
 [lints]
 workspace = true
