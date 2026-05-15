@@ -9,6 +9,7 @@ publish = false
 async-trait = { workspace = true }
 ployz-model = { path = "../ployz-model" }
 ployz-node-api = { path = "../ployz-node-api" }
+ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-supervision = { path = "../ployz-supervision" }
 rand = { workspace = true }
 serde = { workspace = true }

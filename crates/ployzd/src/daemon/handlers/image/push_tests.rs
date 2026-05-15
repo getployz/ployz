@@ -1598,12 +1598,9 @@ async fn install_active_mesh(state: &mut DaemonState) {
         retained_subnet: RetainedSubnet::from_running_config(config.subnet),
         config,
         mesh,
-        nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        image_receiver: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        runtime: ployz_node_runtime::RuntimeComponents::noop(),
         image_receiver_bind_addr: Some("127.0.0.1:4320".parse().expect("valid address")),
-        gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+
         certificate_renewal: None,
         bootstrap_peer_seed: None,
     });

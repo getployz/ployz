@@ -125,7 +125,7 @@ mod tests {
             .register_session("image-push-1", MachineId::new("founder"), "apps/web")
             .await;
         let active = state.active.as_mut().expect("active mesh");
-        active.image_receiver = Box::new(image_receiver);
+        active.runtime.set_image_receiver(Box::new(image_receiver));
         active.image_receiver_bind_addr = Some(bind_addr);
 
         state.stop_started_mesh_after_transition_failure().await;
@@ -199,12 +199,9 @@ mod tests {
                 machine_id,
                 51820,
             ),
-            nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-            zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-            image_receiver: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            runtime: ployz_node_runtime::RuntimeComponents::noop(),
             image_receiver_bind_addr: None,
-            gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-            dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+
             certificate_renewal: None,
             bootstrap_peer_seed: None,
         });
@@ -361,12 +358,9 @@ mod tests {
             config,
             retained_subnet,
             mesh,
-            zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-            image_receiver: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            runtime: ployz_node_runtime::RuntimeComponents::noop(),
             image_receiver_bind_addr: None,
-            nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-            gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-            dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+
             certificate_renewal: None,
             bootstrap_peer_seed: None,
         });

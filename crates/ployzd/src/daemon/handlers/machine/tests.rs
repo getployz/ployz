@@ -817,9 +817,9 @@ async fn mesh_stop_restores_local_record_when_destroy_fails() {
 async fn mesh_stop_persists_stopped_lifecycle_before_gateway_shutdown_failure() {
     let (mut state, _, _) = make_state(true).await;
     let active = state.active.as_mut().expect("active mesh");
-    active.gateway = Box::new(FailingShutdownHandle {
+    active.runtime.set_gateway(Box::new(FailingShutdownHandle {
         message: "injected gateway shutdown failure".into(),
-    });
+    }));
 
     let response = state.handle_mesh_stop(true).await;
 
@@ -1939,12 +1939,9 @@ async fn make_state_with_zfs_transfer_port(
         config,
         retained_subnet,
         mesh,
-        nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        image_receiver: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        runtime: ployz_node_runtime::RuntimeComponents::noop(),
         image_receiver_bind_addr: None,
-        gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+
         certificate_renewal: None,
         bootstrap_peer_seed: None,
     });

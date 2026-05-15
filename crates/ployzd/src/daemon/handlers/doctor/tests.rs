@@ -208,12 +208,9 @@ async fn make_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
         config,
         retained_subnet,
         mesh,
-        nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        image_receiver: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        runtime: ployz_node_runtime::RuntimeComponents::noop(),
         image_receiver_bind_addr: None,
-        gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+
         certificate_renewal: None,
         bootstrap_peer_seed: None,
     });
@@ -268,12 +265,9 @@ fn test_active_mesh() -> ActiveMesh {
         config,
         retained_subnet,
         mesh,
-        nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        image_receiver: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        runtime: ployz_node_runtime::RuntimeComponents::noop(),
         image_receiver_bind_addr: None,
-        gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+
         certificate_renewal: None,
         bootstrap_peer_seed: None,
     }

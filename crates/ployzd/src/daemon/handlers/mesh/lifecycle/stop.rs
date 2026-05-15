@@ -65,20 +65,15 @@ impl DaemonState {
             );
         }
 
-        let _ = active.nats_control.shutdown().await;
-        if let Err(error) = active.dns.shutdown().await {
-            warn!(?error, "dns stop failed during mesh stop");
-        }
-        let gateway_error = active.gateway.shutdown().await.err();
-        if let Err(error) = active.image_receiver.shutdown().await {
-            warn!(?error, "image receiver stop failed during mesh stop");
-        }
+        active.runtime.shutdown_nats_control().await;
+        let gateway_error = active
+            .runtime
+            .shutdown_edge_and_image_receiver("mesh stop")
+            .await;
         if let Err(error) = self.image_registry.revoke_all_sessions().await {
             warn!(%error, "image receive session cleanup failed during mesh stop");
         }
-        if let Err(error) = active.zfs_transfer.shutdown().await {
-            warn!(?error, "zfs transfer listener stop failed during mesh stop");
-        }
+        active.runtime.shutdown_zfs_transfer("mesh stop").await;
         if let Some(error) = gateway_error {
             return self.err(
                 "NETWORK_STOP_FAILED",

@@ -23,6 +23,7 @@ use ployz_nats::NatsLocks;
 use ployz_nats::NatsStore;
 use ployz_nats::config as nats_config;
 use ployz_nats::{CertRenewalConsumerPolicy, NatsCertRenewalJobConsumer};
+use ployz_node_runtime::RuntimeComponents;
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::certificates::{
     CertificateRenewalTask, LocalHttp01ChallengeReadiness, finalize_due_certificates,
@@ -97,7 +98,7 @@ async fn prepare_image_receiver_listener_for_runtime_restart(
 }
 
 async fn commit_prepared_image_receiver_listener(
-    image_receiver: &mut Box<dyn RuntimeHandle>,
+    runtime: &mut RuntimeComponents,
     current_bind_addr: &mut Option<SocketAddr>,
     new_bind_addr: Option<SocketAddr>,
     prepared_receiver: Option<Box<dyn RuntimeHandle>>,
@@ -106,7 +107,7 @@ async fn commit_prepared_image_receiver_listener(
         return;
     };
 
-    let previous = std::mem::replace(image_receiver, prepared_receiver);
+    let previous = runtime.replace_image_receiver(prepared_receiver);
     if let Err(error) = previous.shutdown().await {
         tracing::warn!(?error, "runtime restart: image receiver stop failed");
     }
@@ -310,11 +311,7 @@ struct StartPlan {
 struct MeshStartAttempt {
     config: NetworkConfig,
     mesh: Option<Mesh>,
-    nats_control: Box<dyn RuntimeHandle>,
-    zfs_transfer: Box<dyn RuntimeHandle>,
-    image_receiver: Box<dyn RuntimeHandle>,
-    gateway: Box<dyn RuntimeHandle>,
-    dns: Box<dyn RuntimeHandle>,
+    runtime: RuntimeComponents,
 }
 
 impl MeshStartAttempt {
@@ -322,11 +319,7 @@ impl MeshStartAttempt {
         Self {
             config,
             mesh: None,
-            nats_control: Box::new(NoopRuntimeHandle),
-            zfs_transfer: Box::new(NoopRuntimeHandle),
-            image_receiver: Box::new(NoopRuntimeHandle),
-            gateway: Box::new(NoopRuntimeHandle),
-            dns: Box::new(NoopRuntimeHandle),
+            runtime: RuntimeComponents::noop(),
         }
     }
 
@@ -407,16 +400,16 @@ impl MeshStartAttempt {
         let (gateway_result, dns_result) = tokio::join!(gateway, dns);
         match (gateway_result, dns_result) {
             (Ok(gateway), Ok(dns)) => {
-                self.gateway = gateway;
-                self.dns = dns;
+                self.runtime.set_gateway(gateway);
+                self.runtime.set_dns(dns);
                 Ok(())
             }
             (Err(error), Ok(dns)) => {
-                self.dns = dns;
+                self.runtime.set_dns(dns);
                 Err(StartMeshError::Gateway(error))
             }
             (Ok(gateway), Err(error)) => {
-                self.gateway = gateway;
+                self.runtime.set_gateway(gateway);
                 Err(StartMeshError::Dns(error))
             }
             (Err(gateway_error), Err(dns_error)) => Err(StartMeshError::Gateway(format!(
@@ -427,7 +420,8 @@ impl MeshStartAttempt {
 
     async fn start_nats_control(&mut self, state: &DaemonState) -> Result<(), StartMeshError> {
         if state.runtime_is_memory_test() {
-            self.nats_control = Box::new(nats_listener::NatsListenerHandle::noop());
+            self.runtime
+                .set_nats_control(Box::new(nats_listener::NatsListenerHandle::noop()));
             return Ok(());
         }
         let Some(mesh) = self.mesh.as_ref() else {
@@ -471,7 +465,7 @@ impl MeshStartAttempt {
         .await
         .map_err(StartMeshError::MeshUp)?;
         let _ = mesh;
-        self.nats_control = Box::new(handle);
+        self.runtime.set_nats_control(Box::new(handle));
         Ok(())
     }
 
@@ -481,19 +475,27 @@ impl MeshStartAttempt {
         plan: &StartPlan,
     ) -> Result<(), StartMeshError> {
         if state.runtime_is_memory_test() {
-            self.zfs_transfer = Box::new(transfer_listener::ZfsTransferListenerHandle::noop());
+            self.runtime.set_zfs_transfer(Box::new(
+                transfer_listener::ZfsTransferListenerHandle::noop(),
+            ));
             return Ok(());
         }
         if !state.storage.is_zfs_backend() {
-            self.zfs_transfer = Box::new(transfer_listener::ZfsTransferListenerHandle::noop());
+            self.runtime.set_zfs_transfer(Box::new(
+                transfer_listener::ZfsTransferListenerHandle::noop(),
+            ));
             return Ok(());
         }
         let Some(zfs_root) = state.storage.zfs_root.clone() else {
-            self.zfs_transfer = Box::new(transfer_listener::ZfsTransferListenerHandle::noop());
+            self.runtime.set_zfs_transfer(Box::new(
+                transfer_listener::ZfsTransferListenerHandle::noop(),
+            ));
             return Ok(());
         };
         let Some(mesh) = self.mesh.as_ref() else {
-            self.zfs_transfer = Box::new(transfer_listener::ZfsTransferListenerHandle::noop());
+            self.runtime.set_zfs_transfer(Box::new(
+                transfer_listener::ZfsTransferListenerHandle::noop(),
+            ));
             return Ok(());
         };
         let handle = transfer_listener::serve(
@@ -507,7 +509,7 @@ impl MeshStartAttempt {
             bind: plan.zfs_transfer_bind_addr,
             error,
         })?;
-        self.zfs_transfer = Box::new(handle);
+        self.runtime.set_zfs_transfer(Box::new(handle));
         Ok(())
     }
 
@@ -517,11 +519,13 @@ impl MeshStartAttempt {
         plan: &StartPlan,
     ) -> Result<(), StartMeshError> {
         if state.runtime_is_memory_test() {
-            self.image_receiver = Box::new(registry::ImageRegistryListenerHandle::noop());
+            self.runtime
+                .set_image_receiver(Box::new(registry::ImageRegistryListenerHandle::noop()));
             return Ok(());
         }
         let Some(_mesh) = self.mesh.as_ref() else {
-            self.image_receiver = Box::new(registry::ImageRegistryListenerHandle::noop());
+            self.runtime
+                .set_image_receiver(Box::new(registry::ImageRegistryListenerHandle::noop()));
             return Ok(());
         };
         let handle = registry::serve(plan.image_receiver_bind_addr, state.image_registry.clone())
@@ -530,7 +534,7 @@ impl MeshStartAttempt {
                 bind: plan.image_receiver_bind_addr,
                 error,
             })?;
-        self.image_receiver = Box::new(handle);
+        self.runtime.set_image_receiver(Box::new(handle));
         Ok(())
     }
 
@@ -617,12 +621,7 @@ impl MeshStartAttempt {
                 "startup attempt missing mesh at publish".into(),
             ));
         };
-        let nats_control = std::mem::replace(&mut self.nats_control, Box::new(NoopRuntimeHandle));
-        let zfs_transfer = std::mem::replace(&mut self.zfs_transfer, Box::new(NoopRuntimeHandle));
-        let image_receiver =
-            std::mem::replace(&mut self.image_receiver, Box::new(NoopRuntimeHandle));
-        let gateway = std::mem::replace(&mut self.gateway, Box::new(NoopRuntimeHandle));
-        let dns = std::mem::replace(&mut self.dns, Box::new(NoopRuntimeHandle));
+        let runtime = std::mem::take(&mut self.runtime);
         if let Some(subnet_coord) = subnet_coord {
             state.subnet_coord = subnet_coord;
         }
@@ -635,12 +634,8 @@ impl MeshStartAttempt {
             config: self.config.clone(),
             retained_subnet: crate::daemon::RetainedSubnet::from_running_config(self.config.subnet),
             mesh,
-            nats_control,
-            zfs_transfer,
-            image_receiver,
+            runtime,
             image_receiver_bind_addr,
-            gateway,
-            dns,
             certificate_renewal,
             bootstrap_peer_seed,
         });
@@ -648,23 +643,7 @@ impl MeshStartAttempt {
     }
 
     async fn rollback_startup(&mut self) {
-        let dns = std::mem::replace(&mut self.dns, Box::new(NoopRuntimeHandle));
-        if let Err(error) = dns.shutdown().await {
-            warn!(?error, "dns rollback failed");
-        }
-
-        let gateway = std::mem::replace(&mut self.gateway, Box::new(NoopRuntimeHandle));
-        if let Err(error) = gateway.shutdown().await {
-            warn!(?error, "gateway rollback failed");
-        }
-
-        let nats_control = std::mem::replace(&mut self.nats_control, Box::new(NoopRuntimeHandle));
-        let _ = nats_control.shutdown().await;
-        let zfs_transfer = std::mem::replace(&mut self.zfs_transfer, Box::new(NoopRuntimeHandle));
-        let _ = zfs_transfer.shutdown().await;
-        let image_receiver =
-            std::mem::replace(&mut self.image_receiver, Box::new(NoopRuntimeHandle));
-        let _ = image_receiver.shutdown().await;
+        self.runtime.rollback_startup().await;
 
         if let Some(mut mesh) = self.mesh.take()
             && let Err(error) = mesh.detach().await
@@ -875,12 +854,12 @@ impl DaemonState {
             tracing::warn!(%error, "runtime restart: image receive session cleanup failed");
         }
 
-        let dns = std::mem::replace(&mut active.dns, Box::new(NoopRuntimeHandle));
+        let dns = active.runtime.replace_dns(Box::new(NoopRuntimeHandle));
         if let Err(error) = dns.shutdown().await {
             tracing::warn!(?error, "runtime restart: dns stop failed");
         }
 
-        let gateway = std::mem::replace(&mut active.gateway, Box::new(NoopRuntimeHandle));
+        let gateway = active.runtime.replace_gateway(Box::new(NoopRuntimeHandle));
         if let Err(error) = gateway.shutdown().await {
             tracing::warn!(?error, "runtime restart: gateway stop failed");
         }
@@ -922,15 +901,15 @@ impl DaemonState {
             })
             .await;
         commit_prepared_image_receiver_listener(
-            &mut active.image_receiver,
+            &mut active.runtime,
             &mut active.image_receiver_bind_addr,
             new_image_receiver_bind_addr,
             prepared_image_receiver,
         )
         .await;
         active.config = net_config;
-        active.gateway = new_gateway;
-        active.dns = new_dns;
+        active.runtime.set_gateway(new_gateway);
+        active.runtime.set_dns(new_dns);
         Ok(())
     }
 

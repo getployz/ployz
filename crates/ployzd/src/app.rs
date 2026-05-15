@@ -419,12 +419,8 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
             config: _config,
             retained_subnet: _retained_subnet,
             mut mesh,
-            nats_control,
-            zfs_transfer,
-            image_receiver,
+            runtime,
             image_receiver_bind_addr: _image_receiver_bind_addr,
-            gateway,
-            dns,
             certificate_renewal,
             bootstrap_peer_seed,
         } = active;
@@ -437,11 +433,7 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
         if let Err(error) = state.image_registry.revoke_all_sessions().await {
             tracing::warn!(%error, "image receive session cleanup failed during daemon shutdown");
         }
-        let _ = dns.detach().await;
-        let _ = gateway.detach().await;
-        let _ = image_receiver.shutdown().await;
-        let _ = zfs_transfer.shutdown().await;
-        let _ = nats_control.shutdown().await;
+        runtime.shutdown_for_daemon_stop().await;
         let _ = mesh.detach().await;
     }
 }

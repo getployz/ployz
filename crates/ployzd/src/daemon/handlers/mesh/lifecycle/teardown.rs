@@ -25,17 +25,15 @@ async fn perform_mesh_teardown_before_control_shutdown(
     let ActiveMesh {
         config,
         mut mesh,
-        nats_control,
-        zfs_transfer,
-        image_receiver,
-        gateway,
-        dns,
+        mut runtime,
         mut certificate_renewal,
         mut bootstrap_peer_seed,
         ..
     } = active;
     let network_name = config.name.0;
-    let control_handles = MeshControlHandles { nats_control };
+    let control_handles = MeshControlHandles {
+        nats_control: runtime.take_nats_control(),
+    };
 
     let result = async move {
         if let Some(task) = certificate_renewal.take() {
@@ -47,19 +45,10 @@ async fn perform_mesh_teardown_before_control_shutdown(
         if let Err(error) = mesh.destroy_and_wipe_store_data().await {
             return Err(format!("mesh runtime destroy and wipe failed: {error}"));
         }
-        if let Err(error) = dns.shutdown().await {
-            warn!(?error, "dns stop failed during mesh destroy");
-        }
-        let gateway_error = gateway.shutdown().await.err();
-        if let Err(error) = image_receiver.shutdown().await {
-            warn!(?error, "image receiver stop failed during mesh destroy");
-        }
-        if let Err(error) = zfs_transfer.shutdown().await {
-            warn!(
-                ?error,
-                "zfs transfer listener stop failed during mesh destroy"
-            );
-        }
+        let gateway_error = runtime
+            .shutdown_edge_and_image_receiver("mesh destroy")
+            .await;
+        runtime.shutdown_zfs_transfer("mesh destroy").await;
         if let Some(error) = gateway_error {
             return Err(format!("gateway stop failed: {error}"));
         }
@@ -102,27 +91,20 @@ impl DaemonState {
         if let Err(error) = active.mesh.destroy().await {
             warn!(?error, "failed to stop mesh after transition error");
         }
-        let _ = active.nats_control.shutdown().await;
-        if let Err(error) = active.dns.shutdown().await {
-            warn!(?error, "failed to stop dns after transition error");
-        }
-        if let Err(error) = active.gateway.shutdown().await {
-            warn!(?error, "failed to stop gateway after transition error");
-        }
-        if let Err(error) = active.image_receiver.shutdown().await {
-            warn!(
-                ?error,
-                "failed to stop image receiver after transition error"
-            );
+        active.runtime.shutdown_nats_control().await;
+        let gateway_error = active
+            .runtime
+            .shutdown_edge_and_image_receiver("transition failure")
+            .await;
+        if let Some(error) = gateway_error {
+            warn!(%error, "failed to stop gateway after transition error");
         }
         if let Err(error) = self.image_registry.revoke_all_sessions().await {
             warn!(%error, "image receive session cleanup failed after transition error");
         }
-        if let Err(error) = active.zfs_transfer.shutdown().await {
-            warn!(
-                ?error,
-                "failed to stop zfs transfer listener after transition error"
-            );
-        }
+        active
+            .runtime
+            .shutdown_zfs_transfer("transition failure")
+            .await;
     }
 }

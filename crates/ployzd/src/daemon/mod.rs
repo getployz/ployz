@@ -23,11 +23,11 @@ use ipnet::Ipv4Net;
 use ployz_api::{DaemonPayload, DaemonResponse};
 use ployz_config::{RuntimeTarget, ServiceMode, StorageConfig};
 use ployz_model::MachineTopology;
+use ployz_node_runtime::RuntimeComponents;
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::certificates::CertificateRenewalTask;
 use ployz_orchestrator::coordination::{MemorySubnetCoordinator, SubnetReservationCoordinator};
 use ployz_runtime_api::Identity;
-use ployz_runtime_api::RuntimeHandle;
 use serde::Serialize;
 use tokio::sync::{Mutex, mpsc};
 
@@ -41,12 +41,8 @@ pub struct ActiveMesh {
     pub config: NetworkConfig,
     pub retained_subnet: RetainedSubnet,
     pub mesh: Mesh,
-    pub nats_control: Box<dyn RuntimeHandle>,
-    pub zfs_transfer: Box<dyn RuntimeHandle>,
-    pub image_receiver: Box<dyn RuntimeHandle>,
+    pub runtime: RuntimeComponents,
     pub image_receiver_bind_addr: Option<SocketAddr>,
-    pub gateway: Box<dyn RuntimeHandle>,
-    pub dns: Box<dyn RuntimeHandle>,
     pub certificate_renewal: Option<CertificateRenewalTask>,
     pub bootstrap_peer_seed: Option<BootstrapPeerSeedTask>,
 }
