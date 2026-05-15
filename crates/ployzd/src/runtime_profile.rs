@@ -2,7 +2,6 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 
 use crate::built_in_images::{BuiltInImage, BuiltInImages};
-use crate::services::gateway::{GatewayHandle, start_managed_gateway};
 use crate::services::nats::{nats_docker, nats_host};
 use ipnet::Ipv4Net;
 use ployz_config::{RuntimeTarget, ServiceMode};
@@ -11,7 +10,7 @@ use ployz_gateway::GatewayConfig;
 use ployz_model::{OverlayIp, StorageParticipation, StorageReplicaPolicy};
 use ployz_nats::config as nats_config;
 use ployz_node_runtime::sidecar::ServiceSupervision;
-use ployz_node_runtime::{DnsHandle, start_managed_dns};
+use ployz_node_runtime::{DnsHandle, GatewayHandle, start_managed_dns, start_managed_gateway};
 use ployz_orchestrator::WireguardDriver;
 use ployz_runtime_api::Identity;
 use ployz_runtime_docker::network::docker_bridge_network;

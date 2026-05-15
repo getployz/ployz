@@ -9,6 +9,7 @@ publish = false
 async-trait = { workspace = true }
 libc = { workspace = true }
 ployz-dns = { path = "../ployz-dns" }
+ployz-gateway = { path = "../ployz-gateway" }
 ployz-model = { path = "../ployz-model" }
 ployz-node-api = { path = "../ployz-node-api" }
 ployz-runtime-api = { path = "../ployz-runtime-api" }

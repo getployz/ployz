@@ -1,5 +1,6 @@
 mod components;
 mod dns;
+mod gateway;
 mod node_clients;
 pub mod sidecar;
 
@@ -8,6 +9,7 @@ use std::time::Duration;
 
 pub use components::RuntimeComponents;
 pub use dns::{DnsHandle, start_managed_dns};
+pub use gateway::{GatewayHandle, start_managed_gateway};
 pub use node_clients::{
     DEPLOY_PARTICIPANT_RPC_POLICY, DEPLOY_VOLUME_CLONE_CLEANUP_RPC_POLICY,
     DEPLOY_VOLUME_CLONE_RPC_POLICY, DEPLOY_VOLUME_MOVE_POLL_INTERVAL,

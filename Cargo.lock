@@ -3445,6 +3445,7 @@ dependencies = [
  "async-trait",
  "libc",
  "ployz-dns",
+ "ployz-gateway",
  "ployz-model",
  "ployz-node-api",
  "ployz-runtime-api",

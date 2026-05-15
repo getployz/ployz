@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
-use crate::mesh_state::network::NetworkConfig;
+#[cfg(target_os = "linux")]
+use crate::sidecar::{find_binary, systemd_quote};
 use async_trait::async_trait;
 use ployz_gateway::{GatewayConfig, GatewayError};
-use ployz_node_runtime::sidecar::{ServiceSupervision, SidecarHandle, SidecarSpec};
-#[cfg(target_os = "linux")]
-use ployz_node_runtime::sidecar::{find_binary, systemd_quote};
 use ployz_runtime_api::RuntimeHandle;
+
+use crate::sidecar::{ServiceSupervision, SidecarHandle, SidecarSpec};
 
 // ---------------------------------------------------------------------------
 // GatewayHandle — supervision wrapper
@@ -178,7 +178,11 @@ struct GatewayPaths {
 
 impl GatewayPaths {
     fn for_config(config: &GatewayConfig) -> Self {
-        let gateway_dir = NetworkConfig::dir(&config.data_dir, &config.network).join("gateway");
+        let gateway_dir = config
+            .data_dir
+            .join("networks")
+            .join(&config.network)
+            .join("gateway");
         Self {
             pingora_config: gateway_dir.join("pingora.yaml"),
             pid_file: gateway_dir.join("pingora.pid"),
@@ -254,6 +258,39 @@ mod tests {
                 .env
                 .iter()
                 .any(|(key, _)| key == "PLOYZ_GATEWAY_METRICS_LISTEN_ADDR")
+        );
+    }
+
+    #[test]
+    fn gateway_paths_match_network_gateway_layout() {
+        let config = GatewayConfig::for_network(
+            Path::new("/tmp/ployz"),
+            "alpha",
+            "founder".into(),
+            "0.0.0.0:80".into(),
+            None,
+            None,
+            None,
+            2,
+            None,
+        );
+
+        let paths = GatewayPaths::for_config(&config);
+
+        assert_eq!(
+            paths.gateway_dir,
+            Path::new("/tmp/ployz")
+                .join("networks")
+                .join("alpha")
+                .join("gateway")
+        );
+        assert_eq!(
+            paths.pingora_config,
+            Path::new("/tmp/ployz")
+                .join("networks")
+                .join("alpha")
+                .join("gateway")
+                .join("pingora.yaml")
         );
     }
 }
