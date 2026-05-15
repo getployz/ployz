@@ -18,6 +18,7 @@ ployz-store-api = { path = "../ployz-store-api" }
 ployz-error = { path = "../ployz-error" }
 ployz-model = { path = "../ployz-model" }
 ployz-spec = { path = "../ployz-spec" }
+ployz-supervision = { path = "../ployz-supervision" }
 ployz-time = { path = "../ployz-time" }
 async-trait = { workspace = true }
 futures-util = { workspace = true }

@@ -17,9 +17,7 @@ pub(crate) use self_record::run_self_record_writer_task;
 pub(crate) use subnet_claim_monitor::run_subnet_claim_monitor_task;
 
 use crate::error::Error;
-use ployz_time::now_unix_secs;
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use ployz_supervision::{ComponentHealthRegistry, ComponentHealthState, NamedComponentHealth};
 use thiserror::Error;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -36,7 +34,7 @@ pub enum TaskSetError {
 pub(crate) struct TaskSet {
     tasks: JoinSet<()>,
     cancel: CancellationToken,
-    health: Arc<Mutex<BTreeMap<String, MeshTaskHealth>>>,
+    health: ComponentHealthRegistry,
 }
 
 impl TaskSet {
@@ -45,7 +43,7 @@ impl TaskSet {
         let set = Self {
             tasks: JoinSet::new(),
             cancel: cancel.clone(),
-            health: Arc::new(Mutex::new(BTreeMap::new())),
+            health: ComponentHealthRegistry::default(),
         };
         (set, cancel)
     }
@@ -56,7 +54,7 @@ impl TaskSet {
         future: impl std::future::Future<Output = ()> + Send + 'static,
     ) {
         let cancel = self.cancel.clone();
-        mark_task_healthy(&self.health, name);
+        self.health.mark_healthy(name);
         let health = self.health.clone();
         self.tasks.spawn(async move {
             future.await;
@@ -65,19 +63,14 @@ impl TaskSet {
                     task = name,
                     "mesh background task exited; cancelling task set"
                 );
-                mark_task_unhealthy(&health, name, "task exited unexpectedly");
+                health.mark_stale(name, "task exited unexpectedly");
                 cancel.cancel();
             }
         });
     }
 
     pub(crate) fn health(&self) -> Vec<MeshTaskHealth> {
-        self.health
-            .lock()
-            .expect("mesh task health lock poisoned")
-            .values()
-            .cloned()
-            .collect()
+        self.health.snapshot()
     }
 
     pub(crate) async fn stop(&mut self) -> Result<(), TaskSetError> {
@@ -96,105 +89,8 @@ impl TaskSet {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MeshTaskHealth {
-    pub name: String,
-    pub updated_at_unix_secs: u64,
-    pub state: MeshTaskHealthState,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MeshTaskHealthState {
-    Healthy,
-    Stale {
-        stale_since_unix_secs: u64,
-        consecutive_failures: u64,
-        last_error: String,
-    },
-}
-
-impl MeshTaskHealth {
-    #[must_use]
-    pub fn is_healthy(&self) -> bool {
-        matches!(self.state, MeshTaskHealthState::Healthy)
-    }
-
-    #[must_use]
-    pub fn stale_since_unix_secs(&self) -> Option<u64> {
-        match self.state {
-            MeshTaskHealthState::Healthy => None,
-            MeshTaskHealthState::Stale {
-                stale_since_unix_secs,
-                ..
-            } => Some(stale_since_unix_secs),
-        }
-    }
-
-    #[must_use]
-    pub fn consecutive_failures(&self) -> u64 {
-        match self.state {
-            MeshTaskHealthState::Healthy => 0,
-            MeshTaskHealthState::Stale {
-                consecutive_failures,
-                ..
-            } => consecutive_failures,
-        }
-    }
-
-    #[must_use]
-    pub fn last_error(&self) -> Option<&str> {
-        match self.state {
-            MeshTaskHealthState::Healthy => None,
-            MeshTaskHealthState::Stale { ref last_error, .. } => Some(last_error),
-        }
-    }
-}
-
-fn mark_task_healthy(health: &Arc<Mutex<BTreeMap<String, MeshTaskHealth>>>, name: &str) {
-    let now = now_unix_secs();
-    health
-        .lock()
-        .expect("mesh task health lock poisoned")
-        .insert(
-            name.to_string(),
-            MeshTaskHealth {
-                name: name.to_string(),
-                updated_at_unix_secs: now,
-                state: MeshTaskHealthState::Healthy,
-            },
-        );
-}
-
-fn mark_task_unhealthy(
-    health: &Arc<Mutex<BTreeMap<String, MeshTaskHealth>>>,
-    name: &str,
-    error: impl Into<String>,
-) {
-    let now = now_unix_secs();
-    let mut health = health.lock().expect("mesh task health lock poisoned");
-    let current = health.entry(name.to_string()).or_insert(MeshTaskHealth {
-        name: name.to_string(),
-        updated_at_unix_secs: now,
-        state: MeshTaskHealthState::Healthy,
-    });
-    let (stale_since_unix_secs, consecutive_failures) = match current.state {
-        MeshTaskHealthState::Healthy => (now, 1),
-        MeshTaskHealthState::Stale {
-            stale_since_unix_secs,
-            consecutive_failures,
-            ..
-        } => (
-            stale_since_unix_secs,
-            consecutive_failures.saturating_add(1),
-        ),
-    };
-    current.updated_at_unix_secs = now;
-    current.state = MeshTaskHealthState::Stale {
-        stale_since_unix_secs,
-        consecutive_failures,
-        last_error: error.into(),
-    };
-}
+pub type MeshTaskHealth = NamedComponentHealth;
+pub type MeshTaskHealthState = ComponentHealthState;
 
 #[cfg(test)]
 mod tests {
@@ -238,5 +134,24 @@ mod tests {
         };
         assert_eq!(*consecutive_failures, 1);
         assert_eq!(last_error, "task exited unexpectedly");
+    }
+
+    #[tokio::test]
+    async fn cancelled_named_task_remains_healthy() {
+        let (mut task_set, cancel) = TaskSet::new();
+        let task_cancel = cancel.clone();
+
+        task_set.spawn_named("peer_sync", async move {
+            task_cancel.cancelled().await;
+        });
+
+        task_set.stop().await.expect("task set should stop cleanly");
+
+        let health = task_set.health();
+        let [peer_sync] = health.as_slice() else {
+            panic!("expected one health row, got {health:?}");
+        };
+        assert_eq!(peer_sync.name, "peer_sync");
+        assert_eq!(peer_sync.state, MeshTaskHealthState::Healthy);
     }
 }

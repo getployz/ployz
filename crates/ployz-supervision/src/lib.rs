@@ -25,6 +25,210 @@ pub enum ComponentHealthState {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ComponentId(String);
+
+impl ComponentId {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for ComponentId {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for ComponentId {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedComponentHealth {
+    pub name: String,
+    pub updated_at_unix_secs: u64,
+    pub state: ComponentHealthState,
+}
+
+impl NamedComponentHealth {
+    #[must_use]
+    pub fn is_healthy(&self) -> bool {
+        matches!(self.state, ComponentHealthState::Healthy)
+    }
+
+    #[must_use]
+    pub fn stale_since_unix_secs(&self) -> Option<u64> {
+        match self.state {
+            ComponentHealthState::Healthy => None,
+            ComponentHealthState::Stale {
+                stale_since_unix_secs,
+                ..
+            } => Some(stale_since_unix_secs),
+        }
+    }
+
+    #[must_use]
+    pub fn consecutive_failures(&self) -> u64 {
+        match self.state {
+            ComponentHealthState::Healthy => 0,
+            ComponentHealthState::Stale {
+                consecutive_failures,
+                ..
+            } => consecutive_failures,
+        }
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        match self.state {
+            ComponentHealthState::Healthy => None,
+            ComponentHealthState::Stale { ref last_error, .. } => Some(last_error),
+        }
+    }
+
+    fn as_component_health(&self) -> ComponentHealth {
+        ComponentHealth {
+            updated_at_unix_secs: self.updated_at_unix_secs,
+            state: self.state.clone(),
+        }
+    }
+
+    fn from_component_health(id: &ComponentId, health: ComponentHealth) -> Self {
+        Self {
+            name: id.as_str().to_string(),
+            updated_at_unix_secs: health.updated_at_unix_secs,
+            state: health.state,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ComponentHealthRegistry {
+    components: Arc<Mutex<BTreeMap<ComponentId, NamedComponentHealth>>>,
+}
+
+impl ComponentHealthRegistry {
+    pub fn mark_healthy(&self, id: impl Into<ComponentId>) {
+        let id = id.into();
+        let health = healthy_component_health();
+        self.components
+            .lock()
+            .expect("component health registry")
+            .insert(
+                id.clone(),
+                NamedComponentHealth::from_component_health(&id, health),
+            );
+    }
+
+    pub fn mark_stale(&self, id: impl Into<ComponentId>, error: impl Into<String>) {
+        let id = id.into();
+        let mut components = self.components.lock().expect("component health registry");
+        let previous = components
+            .get(&id)
+            .map(NamedComponentHealth::as_component_health);
+        let health = stale_component_health(previous.as_ref(), error);
+        components.insert(
+            id.clone(),
+            NamedComponentHealth::from_component_health(&id, health),
+        );
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<NamedComponentHealth> {
+        self.components
+            .lock()
+            .expect("component health registry")
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    #[must_use]
+    pub fn get(&self, id: &ComponentId) -> Option<NamedComponentHealth> {
+        self.components
+            .lock()
+            .expect("component health registry")
+            .get(id)
+            .cloned()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryPolicy {
+    initial_delay: Duration,
+    max_delay: Duration,
+    max_attempts: Option<u64>,
+}
+
+impl RetryPolicy {
+    #[must_use]
+    pub fn new(initial_delay: Duration, max_delay: Duration) -> Self {
+        Self {
+            initial_delay,
+            max_delay,
+            max_attempts: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_max_attempts(mut self, max_attempts: u64) -> Self {
+        self.max_attempts = Some(max_attempts);
+        self
+    }
+
+    #[must_use]
+    pub fn record_failure(
+        &self,
+        previous: Option<&RetryState>,
+        error: impl Into<String>,
+    ) -> RetryDecision {
+        let consecutive_failures =
+            previous.map_or(1, |state| state.consecutive_failures.saturating_add(1));
+        let exhausted = self
+            .max_attempts
+            .is_some_and(|max_attempts| consecutive_failures >= max_attempts);
+        RetryDecision {
+            state: RetryState {
+                consecutive_failures,
+                last_error: error.into(),
+            },
+            next_delay: self.delay_for_failure(consecutive_failures),
+            exhausted,
+        }
+    }
+
+    #[must_use]
+    pub fn delay_for_failure(&self, consecutive_failures: u64) -> Duration {
+        let exponent = consecutive_failures.saturating_sub(1).min(31);
+        let multiplier = 1_u32 << exponent;
+        self.initial_delay
+            .saturating_mul(multiplier)
+            .min(self.max_delay)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryState {
+    pub consecutive_failures: u64,
+    pub last_error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryDecision {
+    pub state: RetryState,
+    pub next_delay: Duration,
+    pub exhausted: bool,
+}
+
 impl ComponentHealth {
     #[must_use]
     pub fn healthy(updated_at_unix_secs: u64) -> Self {
@@ -120,6 +324,14 @@ impl FileHealthRecorder {
 #[must_use]
 pub fn healthy_component_health() -> ComponentHealth {
     ComponentHealth::healthy(now_unix_secs())
+}
+
+#[must_use]
+pub fn stale_component_health(
+    previous: Option<&ComponentHealth>,
+    last_error: impl Into<String>,
+) -> ComponentHealth {
+    ComponentHealth::stale(now_unix_secs(), previous, last_error)
 }
 
 pub async fn load_component_health(path: impl AsRef<Path>) -> std::io::Result<ComponentHealth> {
@@ -335,6 +547,95 @@ mod tests {
         assert_eq!(stale_since_unix_secs, 100);
         assert_eq!(consecutive_failures, 2);
         assert_eq!(last_error, "second");
+    }
+
+    #[test]
+    fn stale_component_health_preserves_previous_stale_state() {
+        let first = stale_component_health(None, "first");
+        let second = stale_component_health(Some(&first), "second");
+
+        let ComponentHealthState::Stale {
+            stale_since_unix_secs,
+            consecutive_failures,
+            last_error,
+        } = second.state
+        else {
+            panic!("expected stale health");
+        };
+        assert_eq!(stale_since_unix_secs, first.updated_at_unix_secs);
+        assert_eq!(consecutive_failures, 2);
+        assert_eq!(last_error, "second");
+    }
+
+    #[test]
+    fn component_health_registry_marks_component_healthy() {
+        let registry = ComponentHealthRegistry::default();
+
+        registry.mark_healthy("mesh_peer_sync");
+
+        let health = registry
+            .get(&ComponentId::from("mesh_peer_sync"))
+            .expect("component health");
+        assert_eq!(health.name, "mesh_peer_sync");
+        assert_eq!(health.state, ComponentHealthState::Healthy);
+        assert_eq!(registry.snapshot(), vec![health]);
+    }
+
+    #[test]
+    fn component_health_registry_preserves_stale_since_and_counts_failures() {
+        let registry = ComponentHealthRegistry::default();
+
+        registry.mark_stale("mesh_peer_sync", "first");
+        let first = registry
+            .get(&ComponentId::from("mesh_peer_sync"))
+            .expect("first stale health");
+        registry.mark_stale("mesh_peer_sync", "second");
+
+        let second = registry
+            .get(&ComponentId::from("mesh_peer_sync"))
+            .expect("second stale health");
+        let ComponentHealthState::Stale {
+            stale_since_unix_secs,
+            consecutive_failures,
+            last_error,
+        } = second.state
+        else {
+            panic!("expected stale health");
+        };
+        assert_eq!(stale_since_unix_secs, first.updated_at_unix_secs);
+        assert_eq!(consecutive_failures, 2);
+        assert_eq!(last_error, "second");
+    }
+
+    #[test]
+    fn retry_policy_backs_off_to_cap_and_preserves_last_failure() {
+        let policy = RetryPolicy::new(Duration::from_secs(1), Duration::from_secs(5));
+
+        let first = policy.record_failure(None, "subscribe failed");
+        let second = policy.record_failure(Some(&first.state), "publish failed");
+        let third = policy.record_failure(Some(&second.state), "flush failed");
+        let fourth = policy.record_failure(Some(&third.state), "still down");
+
+        assert_eq!(first.next_delay, Duration::from_secs(1));
+        assert_eq!(second.next_delay, Duration::from_secs(2));
+        assert_eq!(third.next_delay, Duration::from_secs(4));
+        assert_eq!(fourth.next_delay, Duration::from_secs(5));
+        assert_eq!(fourth.state.consecutive_failures, 4);
+        assert_eq!(fourth.state.last_error, "still down");
+        assert!(!fourth.exhausted);
+    }
+
+    #[test]
+    fn retry_policy_marks_attempt_limit_exhausted() {
+        let policy =
+            RetryPolicy::new(Duration::from_secs(1), Duration::from_secs(30)).with_max_attempts(2);
+
+        let first = policy.record_failure(None, "first");
+        let second = policy.record_failure(Some(&first.state), "second");
+
+        assert!(!first.exhausted);
+        assert!(second.exhausted);
+        assert_eq!(second.state.last_error, "second");
     }
 
     #[tokio::test]
