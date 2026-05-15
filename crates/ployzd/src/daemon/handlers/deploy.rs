@@ -19,7 +19,7 @@ use ployz_spec::{DeployManifest, Namespace};
 use ployz_store_memory::StoreDriverMemoryExt as _;
 
 #[cfg(test)]
-use manifest_render::{BranchRenderError, MigrateRenderError, stable_fingerprint};
+use manifest_render::{BranchRenderError, stable_fingerprint};
 #[cfg(test)]
 pub(super) use planning::DEPLOY_PREPARE_TTL_SECS;
 #[cfg(test)]

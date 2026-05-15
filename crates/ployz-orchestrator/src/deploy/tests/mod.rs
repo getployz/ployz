@@ -60,6 +60,7 @@ mod branch;
 mod export;
 mod image_availability;
 mod managed_domains;
+mod migrate_manifest;
 mod prepared;
 mod preview;
 mod volume_moves;

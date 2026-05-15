@@ -6,6 +6,7 @@ mod execute;
 mod export;
 mod lifecycle;
 mod managed_domains;
+mod migrate_manifest;
 mod plan;
 mod probe;
 
@@ -29,6 +30,10 @@ use std::sync::Arc;
 
 pub use execute::DeployApplyPreconditions;
 pub use export::{ExportedManifest, export_manifest, export_manifest_with_evidence};
+pub use migrate_manifest::{
+    MigrateRenderError, MigrateServiceManifestRequest, encode_migrate_manifest_json,
+    render_migrate_service_manifest, validate_migrate_service_manifest_request,
+};
 pub use probe::{NoopParticipantProbe, ParticipantProbe, ProbeError, ProbeErrorKind};
 
 pub fn new_deploy_id() -> crate::model::DeployId {
