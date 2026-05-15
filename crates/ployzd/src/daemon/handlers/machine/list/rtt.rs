@@ -1,42 +1,11 @@
 use crate::daemon::DaemonState;
-use ployz_api::{
-    DaemonPayload, DaemonResponse, MachineRemovePayload, MachineRttPayload, MachineRttRow,
-};
+use ployz_api::{DaemonPayload, DaemonResponse, MachineRttPayload, MachineRttRow};
 use ployz_model::{MachineId, MachineMembership};
 use ployz_store_api::{MachineMembershipStore, PeerRttObservation, PeerRttStore, StoreDriver};
 use std::collections::HashMap;
 use std::net::IpAddr;
 
-use super::render::{format_lifecycle, format_timestamp, render_machine_list_report};
-use super::types::{MachineListReport, MachineListReportRow};
-use crate::daemon::node_rpc::NatsMeshRpcTransport;
-use crate::mesh_state::bootstrap::refresh_bootstrap_peer_records_from_store;
-use ployz_node_runtime::{MESH_MACHINE_REMOVE_RPC_POLICY, MeshNodeClient, NodeRpcErrorKind};
-
 impl DaemonState {
-    pub(crate) async fn handle_machine_list(&self) -> DaemonResponse {
-        let active = match self.require_active("NO_RUNNING_NETWORK", "no mesh running") {
-            Ok(active) => active,
-            Err(response) => return *response,
-        };
-
-        let report = match machine_list_report(active.mesh.store.clone()).await {
-            Ok(report) => report,
-            Err(err) => return self.err("LIST_FAILED", err),
-        };
-        if report.rows.is_empty() {
-            return self.ok_with_payload(
-                "no machines",
-                Some(DaemonPayload::MachineList(report.payload())),
-            );
-        }
-
-        self.ok_with_payload(
-            render_machine_list_report(&report),
-            Some(DaemonPayload::MachineList(report.payload())),
-        )
-    }
-
     pub(crate) async fn handle_machine_rtt(&self) -> DaemonResponse {
         let active = match self.require_active("NO_RUNNING_NETWORK", "no mesh running") {
             Ok(active) => active,
@@ -104,100 +73,6 @@ impl DaemonState {
             render_machine_rtt_report(&payload, &[]),
             Some(DaemonPayload::MachineRtt(payload)),
         )
-    }
-
-    pub(crate) async fn handle_machine_remove(&self, id: &str, force: bool) -> DaemonResponse {
-        let active = match self.require_active("NO_RUNNING_NETWORK", "no mesh running") {
-            Ok(active) => active,
-            Err(response) => return *response,
-        };
-
-        let machine_id = match MachineId::try_new(id) {
-            Ok(machine_id) => machine_id,
-            Err(error) => return self.err("MACHINE_INVALID_TARGET", error),
-        };
-        let record = match find_machine_record(&active.mesh.store, &machine_id).await {
-            Ok(Some(record)) => record,
-            Ok(None) => {
-                return self.err("MACHINE_NOT_FOUND", format!("machine '{id}' not found"));
-            }
-            Err(err) => {
-                return self.err("LIST_FAILED", format!("failed to read machines: {err}"));
-            }
-        };
-
-        if record.id == self.identity.machine_id {
-            return self.err(
-                "CANNOT_REMOVE_SELF",
-                "cannot remove the local machine with `machine rm`; use `mesh destroy` for whole-mesh teardown",
-            );
-        }
-
-        if !force {
-            let rpc_client = match self.nats_node_rpc_client().await {
-                Ok(client) => MeshNodeClient::new(NatsMeshRpcTransport::new(client))
-                    .with_policy(MESH_MACHINE_REMOVE_RPC_POLICY),
-                Err(error) => {
-                    return self.err(
-                        "MACHINE_REMOVE_PEER_UNREACHABLE",
-                        format!(
-                            "machine '{id}' did not confirm online removal; rerun with --force for membership-record-only removal: {error}"
-                        ),
-                    );
-                }
-            };
-            let operation_id = format!("machine-rm-{}", ployz_model::NetworkId::random());
-            let response = rpc_client
-                .remove_machine(&record.id, &operation_id, &active.config.id, &record.id)
-                .await;
-            match response {
-                Ok(()) => {}
-                Err(error) if error.kind == NodeRpcErrorKind::Remote => {
-                    return self.err(
-                        "MACHINE_REMOVE_PEER_REJECTED",
-                        format!(
-                            "machine '{id}' rejected coordinated removal [{}]: {}; resolve the remote failure or rerun with --force only if you intend membership-record-only removal",
-                            error.code, error.message
-                        ),
-                    );
-                }
-                Err(error) => {
-                    return self.err(
-                        "MACHINE_REMOVE_PEER_UNREACHABLE",
-                        format!(
-                            "machine '{id}' did not confirm online removal; rerun with --force for membership-record-only removal: {error}"
-                        ),
-                    );
-                }
-            }
-        }
-
-        match active.mesh.store.delete_machine(&machine_id).await {
-            Ok(()) => {
-                let network_dir = self.network_dir(&active.config.name.0);
-                if let Err(error) = refresh_bootstrap_peer_records_from_store(
-                    &network_dir,
-                    &active.mesh.store,
-                    &self.identity.machine_id,
-                )
-                .await
-                {
-                    tracing::warn!(
-                        %machine_id,
-                        %error,
-                        "failed to refresh bootstrap peer seed after machine remove"
-                    );
-                }
-                self.ok_with_payload(
-                    format!("machine '{id}' removed"),
-                    Some(DaemonPayload::MachineRemove(MachineRemovePayload {
-                        id: id.to_string(),
-                        force,
-                    })),
-                )
-            }
-            Err(err) => self.err("DELETE_FAILED", format!("failed to remove machine: {err}")),
-        }
     }
 }
 
@@ -274,10 +149,7 @@ fn rtt_stats(samples: &[u64]) -> Option<(f64, f64)> {
     Some((median, variance.sqrt()))
 }
 
-pub(super) fn render_machine_rtt_report(
-    payload: &MachineRttPayload,
-    warnings: &[String],
-) -> String {
+fn render_machine_rtt_report(payload: &MachineRttPayload, warnings: &[String]) -> String {
     let mut lines = Vec::new();
     if payload.rows.is_empty() {
         lines.push(String::from("no rtt samples"));
@@ -335,58 +207,6 @@ fn format_ms(value: f64) -> String {
 
 fn format_ms_one_decimal(value: f64) -> String {
     format!("{value:.1}ms")
-}
-
-pub(super) async fn find_machine_record(
-    store: &StoreDriver,
-    machine_id: &MachineId,
-) -> Result<Option<MachineMembership>, String> {
-    let machines = store
-        .list_machines()
-        .await
-        .map_err(|err| format!("{err}"))?;
-    Ok(machines
-        .into_iter()
-        .find(|machine| machine.id == *machine_id))
-}
-
-pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineListReport, String> {
-    let machines = store
-        .list_machines()
-        .await
-        .map_err(|err| format!("failed to list machines: {err}"))?;
-
-    Ok(MachineListReport {
-        rows: machines
-            .iter()
-            .map(|machine| MachineListReportRow {
-                id: machine.id.as_str().to_string(),
-                lifecycle: format_lifecycle(machine),
-                authority: ployz_model::AuthorityNodePosture::from_machine_membership(machine),
-                region: machine.topology.region.0.clone(),
-                region_role: machine.region_role.to_string(),
-                availability_zone: machine
-                    .topology
-                    .availability_zone
-                    .as_ref()
-                    .map(|zone| zone.0.clone()),
-                availability_zone_display: machine
-                    .topology
-                    .availability_zone
-                    .as_ref()
-                    .map(|zone| zone.0.clone())
-                    .unwrap_or_else(|| "—".into()),
-                overlay: machine.overlay_ip.0.to_string(),
-                subnet: machine.subnet,
-                subnet_display: machine
-                    .subnet
-                    .map(|subnet| subnet.to_string())
-                    .unwrap_or_else(|| "—".into()),
-                created_at: machine.created_at,
-                created_display: format_timestamp(machine.created_at),
-            })
-            .collect(),
-    })
 }
 
 #[cfg(test)]
