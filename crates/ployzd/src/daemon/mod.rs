@@ -27,7 +27,7 @@ use ployz_node_runtime::RuntimeComponents;
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::certificates::CertificateRenewalTask;
 use ployz_orchestrator::coordination::{MemorySubnetCoordinator, SubnetReservationCoordinator};
-use ployz_runtime_api::Identity;
+use ployz_runtime_api::{Identity, RuntimeHandle};
 use serde::Serialize;
 use tokio::sync::{Mutex, mpsc};
 
@@ -43,8 +43,6 @@ pub struct ActiveMesh {
     pub mesh: Mesh,
     pub runtime: RuntimeComponents,
     pub image_receiver_bind_addr: Option<SocketAddr>,
-    pub certificate_renewal: Option<CertificateRenewalTask>,
-    pub bootstrap_peer_seed: Option<BootstrapPeerSeedTask>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -76,16 +74,40 @@ impl ActiveMesh {
         self.config.subnet.or(self.retained_subnet.value())
     }
 
-    pub async fn stop_certificate_renewal(&mut self) {
-        if let Some(task) = self.certificate_renewal.take() {
-            task.shutdown().await;
-        }
+    pub async fn stop_background_tasks(&mut self) {
+        self.runtime.shutdown_background_tasks().await;
     }
+}
 
-    pub async fn stop_bootstrap_peer_seed(&mut self) {
-        if let Some(task) = self.bootstrap_peer_seed.take() {
-            task.shutdown().await;
-        }
+pub(crate) fn certificate_renewal_runtime_handle(
+    task: CertificateRenewalTask,
+) -> Box<dyn RuntimeHandle> {
+    Box::new(CertificateRenewalRuntimeHandle(task))
+}
+
+pub(crate) fn bootstrap_peer_seed_runtime_handle(
+    task: BootstrapPeerSeedTask,
+) -> Box<dyn RuntimeHandle> {
+    Box::new(BootstrapPeerSeedRuntimeHandle(task))
+}
+
+struct CertificateRenewalRuntimeHandle(CertificateRenewalTask);
+
+#[async_trait::async_trait]
+impl RuntimeHandle for CertificateRenewalRuntimeHandle {
+    async fn shutdown(self: Box<Self>) -> Result<(), String> {
+        self.0.shutdown().await;
+        Ok(())
+    }
+}
+
+struct BootstrapPeerSeedRuntimeHandle(BootstrapPeerSeedTask);
+
+#[async_trait::async_trait]
+impl RuntimeHandle for BootstrapPeerSeedRuntimeHandle {
+    async fn shutdown(self: Box<Self>) -> Result<(), String> {
+        self.0.shutdown().await;
+        Ok(())
     }
 }
 

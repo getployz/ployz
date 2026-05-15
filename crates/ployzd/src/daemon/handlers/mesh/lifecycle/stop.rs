@@ -36,8 +36,7 @@ impl DaemonState {
         let Some(mut active) = self.active.take() else {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
-        active.stop_certificate_renewal().await;
-        active.stop_bootstrap_peer_seed().await;
+        active.stop_background_tasks().await;
         if let Err(error) = active.mesh.destroy().await {
             self.active = Some(active);
             return self.err("NETWORK_STOP_FAILED", format!("mesh stop failed: {error}"));

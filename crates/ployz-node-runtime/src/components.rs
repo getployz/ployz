@@ -2,6 +2,8 @@ use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
 use tracing::warn;
 
 pub struct RuntimeComponents {
+    certificate_renewal: Box<dyn RuntimeHandle>,
+    bootstrap_peer_seed: Box<dyn RuntimeHandle>,
     nats_control: Box<dyn RuntimeHandle>,
     zfs_transfer: Box<dyn RuntimeHandle>,
     image_receiver: Box<dyn RuntimeHandle>,
@@ -19,12 +21,22 @@ impl RuntimeComponents {
     #[must_use]
     pub fn noop() -> Self {
         Self {
+            certificate_renewal: Box::new(NoopRuntimeHandle),
+            bootstrap_peer_seed: Box::new(NoopRuntimeHandle),
             nats_control: Box::new(NoopRuntimeHandle),
             zfs_transfer: Box::new(NoopRuntimeHandle),
             image_receiver: Box::new(NoopRuntimeHandle),
             gateway: Box::new(NoopRuntimeHandle),
             dns: Box::new(NoopRuntimeHandle),
         }
+    }
+
+    pub fn set_certificate_renewal(&mut self, handle: Box<dyn RuntimeHandle>) {
+        self.certificate_renewal = handle;
+    }
+
+    pub fn set_bootstrap_peer_seed(&mut self, handle: Box<dyn RuntimeHandle>) {
+        self.bootstrap_peer_seed = handle;
     }
 
     pub fn set_nats_control(&mut self, handle: Box<dyn RuntimeHandle>) {
@@ -71,6 +83,16 @@ impl RuntimeComponents {
         let _ = nats_control.shutdown().await;
     }
 
+    pub async fn shutdown_background_tasks(&mut self) {
+        let certificate_renewal =
+            std::mem::replace(&mut self.certificate_renewal, Box::new(NoopRuntimeHandle));
+        let _ = certificate_renewal.shutdown().await;
+
+        let bootstrap_peer_seed =
+            std::mem::replace(&mut self.bootstrap_peer_seed, Box::new(NoopRuntimeHandle));
+        let _ = bootstrap_peer_seed.shutdown().await;
+    }
+
     pub async fn shutdown_edge_and_image_receiver(
         &mut self,
         context: &'static str,
@@ -99,6 +121,8 @@ impl RuntimeComponents {
     }
 
     pub async fn rollback_startup(&mut self) {
+        self.shutdown_background_tasks().await;
+
         let dns = self.replace_dns(Box::new(NoopRuntimeHandle));
         if let Err(error) = dns.shutdown().await {
             warn!(?error, "dns rollback failed");
@@ -120,7 +144,8 @@ impl RuntimeComponents {
         let _ = image_receiver.shutdown().await;
     }
 
-    pub async fn shutdown_for_daemon_stop(self) {
+    pub async fn shutdown_for_daemon_stop(mut self) {
+        self.shutdown_background_tasks().await;
         let _ = self.dns.detach().await;
         let _ = self.gateway.detach().await;
         let _ = self.image_receiver.shutdown().await;
@@ -139,6 +164,8 @@ mod tests {
     async fn startup_rollback_shuts_down_started_components_in_dependency_order() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let mut components = RuntimeComponents::noop();
+        components.set_certificate_renewal(recording_handle("cert_shutdown", events.clone()));
+        components.set_bootstrap_peer_seed(recording_handle("seed_shutdown", events.clone()));
         components.set_nats_control(recording_handle("nats_shutdown", events.clone()));
         components.set_zfs_transfer(recording_handle("zfs_shutdown", events.clone()));
         components.set_image_receiver(recording_handle("image_shutdown", events.clone()));
@@ -150,6 +177,8 @@ mod tests {
         assert_eq!(
             recorded(&events),
             vec![
+                "cert_shutdown",
+                "seed_shutdown",
                 "dns_shutdown",
                 "gateway_shutdown",
                 "nats_shutdown",
@@ -163,6 +192,8 @@ mod tests {
     async fn daemon_stop_detaches_edge_and_stops_control_components_in_order() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let mut components = RuntimeComponents::noop();
+        components.set_certificate_renewal(recording_handle("cert_shutdown", events.clone()));
+        components.set_bootstrap_peer_seed(recording_handle("seed_shutdown", events.clone()));
         components.set_nats_control(recording_handle("nats_shutdown", events.clone()));
         components.set_zfs_transfer(recording_handle("zfs_shutdown", events.clone()));
         components.set_image_receiver(recording_handle("image_shutdown", events.clone()));
@@ -174,6 +205,8 @@ mod tests {
         assert_eq!(
             recorded(&events),
             vec![
+                "cert_shutdown",
+                "seed_shutdown",
                 "dns_detach",
                 "gateway_detach",
                 "image_shutdown",

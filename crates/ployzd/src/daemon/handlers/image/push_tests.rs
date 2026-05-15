@@ -1600,9 +1600,6 @@ async fn install_active_mesh(state: &mut DaemonState) {
         mesh,
         runtime: ployz_node_runtime::RuntimeComponents::noop(),
         image_receiver_bind_addr: Some("127.0.0.1:4320".parse().expect("valid address")),
-
-        certificate_renewal: None,
-        bootstrap_peer_seed: None,
     });
 }
 

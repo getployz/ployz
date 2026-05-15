@@ -201,9 +201,6 @@ mod tests {
             ),
             runtime: ployz_node_runtime::RuntimeComponents::noop(),
             image_receiver_bind_addr: None,
-
-            certificate_renewal: None,
-            bootstrap_peer_seed: None,
         });
 
         let error = state
@@ -360,9 +357,6 @@ mod tests {
             mesh,
             runtime: ployz_node_runtime::RuntimeComponents::noop(),
             image_receiver_bind_addr: None,
-
-            certificate_renewal: None,
-            bootstrap_peer_seed: None,
         });
         (state, store, network)
     }

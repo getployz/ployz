@@ -210,9 +210,6 @@ async fn make_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
         mesh,
         runtime: ployz_node_runtime::RuntimeComponents::noop(),
         image_receiver_bind_addr: None,
-
-        certificate_renewal: None,
-        bootstrap_peer_seed: None,
     });
 
     (state, store, network)
@@ -267,9 +264,6 @@ fn test_active_mesh() -> ActiveMesh {
         mesh,
         runtime: ployz_node_runtime::RuntimeComponents::noop(),
         image_receiver_bind_addr: None,
-
-        certificate_renewal: None,
-        bootstrap_peer_seed: None,
     }
 }
 

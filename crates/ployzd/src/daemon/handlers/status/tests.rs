@@ -534,9 +534,6 @@ async fn make_status_state(start_mesh: bool) -> DaemonState {
         mesh,
         runtime: ployz_node_runtime::RuntimeComponents::noop(),
         image_receiver_bind_addr: None,
-
-        certificate_renewal: None,
-        bootstrap_peer_seed: None,
     });
     state
 }

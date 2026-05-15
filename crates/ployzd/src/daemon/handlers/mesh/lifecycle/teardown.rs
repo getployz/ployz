@@ -26,8 +26,6 @@ async fn perform_mesh_teardown_before_control_shutdown(
         config,
         mut mesh,
         mut runtime,
-        mut certificate_renewal,
-        mut bootstrap_peer_seed,
         ..
     } = active;
     let network_name = config.name.0;
@@ -36,12 +34,7 @@ async fn perform_mesh_teardown_before_control_shutdown(
     };
 
     let result = async move {
-        if let Some(task) = certificate_renewal.take() {
-            task.shutdown().await;
-        }
-        if let Some(task) = bootstrap_peer_seed.take() {
-            task.shutdown().await;
-        }
+        runtime.shutdown_background_tasks().await;
         if let Err(error) = mesh.destroy_and_wipe_store_data().await {
             return Err(format!("mesh runtime destroy and wipe failed: {error}"));
         }
@@ -86,8 +79,7 @@ impl DaemonState {
         let Some(mut active) = self.active.take() else {
             return;
         };
-        active.stop_certificate_renewal().await;
-        active.stop_bootstrap_peer_seed().await;
+        active.stop_background_tasks().await;
         if let Err(error) = active.mesh.destroy().await {
             warn!(?error, "failed to stop mesh after transition error");
         }

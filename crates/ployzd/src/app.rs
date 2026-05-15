@@ -421,15 +421,7 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
             mut mesh,
             runtime,
             image_receiver_bind_addr: _image_receiver_bind_addr,
-            certificate_renewal,
-            bootstrap_peer_seed,
         } = active;
-        if let Some(task) = certificate_renewal {
-            task.shutdown().await;
-        }
-        if let Some(task) = bootstrap_peer_seed {
-            task.shutdown().await;
-        }
         if let Err(error) = state.image_registry.revoke_all_sessions().await {
             tracing::warn!(%error, "image receive session cleanup failed during daemon shutdown");
         }

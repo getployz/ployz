@@ -585,7 +585,7 @@ impl MeshStartAttempt {
             None
         };
 
-        let certificate_renewal = if spawn_renewal_ticker {
+        if spawn_renewal_ticker {
             let store = mesh_ref.store.clone();
             let nats_client_url = if state.runtime_target == RuntimeTarget::Docker {
                 crate::services::nats::local_client_url()
@@ -620,29 +620,32 @@ impl MeshStartAttempt {
             let issuer_factory = std::sync::Arc::new(InstantAcmeIssuerFactory::new(
                 CertificateManagerConfig::from_env(),
             ));
-            Some(
-                start_nats_certificate_renewal_worker(
-                    store,
-                    nats_store,
-                    issuer_factory,
-                    coordinator,
-                    readiness,
-                    account_coordinator,
-                    state
-                        .network_dir(&self.config.name.0)
-                        .join(crate::daemon::cert_renewal_health::NATS_CERT_RENEWAL_HEALTH_FILE),
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
+            self.runtime.set_certificate_renewal(
+                crate::daemon::certificate_renewal_runtime_handle(
+                    start_nats_certificate_renewal_worker(
+                        store,
+                        nats_store,
+                        issuer_factory,
+                        coordinator,
+                        readiness,
+                        account_coordinator,
+                        state.network_dir(&self.config.name.0).join(
+                            crate::daemon::cert_renewal_health::NATS_CERT_RENEWAL_HEALTH_FILE,
+                        ),
+                    )
+                    .await?,
+                ),
+            );
+        }
 
-        let bootstrap_peer_seed = Some(BootstrapPeerSeedTask::spawn(
-            NetworkConfig::dir(&state.data_dir, &self.config.name.0),
-            mesh_ref.store.clone(),
-            state.identity.machine_id.clone(),
-        ));
+        self.runtime
+            .set_bootstrap_peer_seed(crate::daemon::bootstrap_peer_seed_runtime_handle(
+                BootstrapPeerSeedTask::spawn(
+                    NetworkConfig::dir(&state.data_dir, &self.config.name.0),
+                    mesh_ref.store.clone(),
+                    state.identity.machine_id.clone(),
+                ),
+            ));
 
         let Some(mesh) = self.mesh.take() else {
             return Err(StartMeshError::MeshUp(
@@ -664,8 +667,6 @@ impl MeshStartAttempt {
             mesh,
             runtime,
             image_receiver_bind_addr,
-            certificate_renewal,
-            bootstrap_peer_seed,
         });
         Ok(())
     }
@@ -1353,7 +1354,7 @@ mod tests {
             return;
         };
 
-        active.stop_bootstrap_peer_seed().await;
+        active.stop_background_tasks().await;
         active.mesh.destroy().await.expect("destroy mesh");
     }
 
