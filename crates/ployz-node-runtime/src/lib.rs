@@ -7,7 +7,7 @@ pub mod sidecar;
 use std::future::Future;
 use std::time::Duration;
 
-pub use components::RuntimeComponents;
+pub use components::{RuntimeComponents, RuntimeHealthSnapshot};
 pub use dns::{DnsHandle, start_managed_dns};
 pub use gateway::{GatewayHandle, start_managed_gateway};
 pub use node_clients::{

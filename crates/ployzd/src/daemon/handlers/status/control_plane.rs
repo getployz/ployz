@@ -55,6 +55,9 @@ impl DaemonState {
                 },
             }),
         }
+        for health in active.runtime.health_snapshot().components {
+            status.push(named_component_health_status(health));
+        }
         for health in active.mesh.task_health() {
             status.push(ControlPlaneStatus {
                 component: health.name,
@@ -180,4 +183,17 @@ pub(super) fn component_health_status(
         component: component.into(),
         state,
     }
+}
+
+pub(super) fn named_component_health_status(
+    health: ployz_supervision::NamedComponentHealth,
+) -> ControlPlaneStatus {
+    let component = health.name.clone();
+    component_health_status(
+        component,
+        &ployz_supervision::ComponentHealth {
+            updated_at_unix_secs: health.updated_at_unix_secs,
+            state: health.state,
+        },
+    )
 }

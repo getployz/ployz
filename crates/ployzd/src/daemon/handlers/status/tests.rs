@@ -1,4 +1,6 @@
-use super::control_plane::{component_health_status, storage_replica_intent_status};
+use super::control_plane::{
+    component_health_status, named_component_health_status, storage_replica_intent_status,
+};
 use super::edge_sync::{SyncMetric, metric_status, parse_sync_metric, parse_sync_metric_u64};
 use super::nats::{
     nats_asset_is_healthy, nats_asset_probe_error, nats_current_replicas, nats_max_lag,
@@ -24,7 +26,7 @@ use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
 use ployz_runtime_api::Identity;
 use ployz_store_api::{MachineMembershipStore, StoreDriver};
 use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
-use ployz_supervision::ComponentHealth;
+use ployz_supervision::{ComponentHealth, NamedComponentHealth};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -284,6 +286,32 @@ fn component_health_status_preserves_stale_failure_details() {
     let status = component_health_status("node_rpc_listener", &health);
 
     assert_eq!(status.component, "node_rpc_listener");
+    match status.state {
+        ControlPlaneHealthState::Stale {
+            stale_since_unix_secs,
+            consecutive_failures,
+            error,
+        } => {
+            assert_eq!(stale_since_unix_secs, 1_777_646_000);
+            assert_eq!(consecutive_failures, 2);
+            assert_eq!(error, "ack failed");
+        }
+        other => panic!("expected stale component health, got {other:?}"),
+    }
+}
+
+#[test]
+fn named_component_health_status_uses_runtime_component_name() {
+    let first = ComponentHealth::stale(1_777_646_000, None, "subscription closed");
+    let health = ComponentHealth::stale(1_777_646_100, Some(&first), "ack failed");
+
+    let status = named_component_health_status(NamedComponentHealth {
+        name: "runtime_node_rpc_listener".into(),
+        updated_at_unix_secs: health.updated_at_unix_secs,
+        state: health.state,
+    });
+
+    assert_eq!(status.component, "runtime_node_rpc_listener");
     match status.state {
         ControlPlaneHealthState::Stale {
             stale_since_unix_secs,

@@ -1,7 +1,14 @@
 use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
+use ployz_supervision::{ComponentHealthRegistry, ComponentId, NamedComponentHealth};
 use tracing::warn;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeHealthSnapshot {
+    pub components: Vec<NamedComponentHealth>,
+}
+
 pub struct RuntimeComponents {
+    health: ComponentHealthRegistry,
     certificate_renewal: Box<dyn RuntimeHandle>,
     bootstrap_peer_seed: Box<dyn RuntimeHandle>,
     nats_control: Box<dyn RuntimeHandle>,
@@ -21,6 +28,7 @@ impl RuntimeComponents {
     #[must_use]
     pub fn noop() -> Self {
         Self {
+            health: ComponentHealthRegistry::default(),
             certificate_renewal: Box::new(NoopRuntimeHandle),
             bootstrap_peer_seed: Box::new(NoopRuntimeHandle),
             nats_control: Box::new(NoopRuntimeHandle),
@@ -28,6 +36,21 @@ impl RuntimeComponents {
             image_receiver: Box::new(NoopRuntimeHandle),
             gateway: Box::new(NoopRuntimeHandle),
             dns: Box::new(NoopRuntimeHandle),
+        }
+    }
+
+    pub fn mark_healthy(&self, component: impl Into<ComponentId>) {
+        self.health.mark_healthy(component);
+    }
+
+    pub fn mark_stale(&self, component: impl Into<ComponentId>, error: impl Into<String>) {
+        self.health.mark_stale(component, error);
+    }
+
+    #[must_use]
+    pub fn health_snapshot(&self) -> RuntimeHealthSnapshot {
+        RuntimeHealthSnapshot {
+            components: self.health.snapshot(),
         }
     }
 
@@ -214,6 +237,57 @@ mod tests {
                 "nats_shutdown"
             ]
         );
+    }
+
+    #[test]
+    fn runtime_components_exposes_health_snapshot() {
+        let components = RuntimeComponents::noop();
+
+        components.mark_healthy("node_rpc_listener");
+
+        let snapshot = components.health_snapshot();
+        assert_eq!(snapshot.components.len(), 1);
+        assert_eq!(snapshot.components[0].name, "node_rpc_listener");
+        assert_eq!(
+            snapshot.components[0].state,
+            ployz_supervision::ComponentHealthState::Healthy
+        );
+    }
+
+    #[test]
+    fn runtime_components_preserves_stale_since_and_failure_count() {
+        let components = RuntimeComponents::noop();
+
+        components.mark_stale("cert_renewal_worker", "first");
+        let first = components.health_snapshot().components;
+        components.mark_stale("cert_renewal_worker", "second");
+        let second = components.health_snapshot().components;
+
+        let [first] = first.as_slice() else {
+            panic!("expected first component health");
+        };
+        let [second] = second.as_slice() else {
+            panic!("expected second component health");
+        };
+        let ployz_supervision::ComponentHealthState::Stale {
+            stale_since_unix_secs: first_stale_since,
+            ..
+        } = first.state.clone()
+        else {
+            panic!("expected first stale health");
+        };
+        let ployz_supervision::ComponentHealthState::Stale {
+            stale_since_unix_secs: second_stale_since,
+            consecutive_failures,
+            last_error,
+        } = second.state.clone()
+        else {
+            panic!("expected second stale health");
+        };
+
+        assert_eq!(first_stale_since, second_stale_since);
+        assert_eq!(consecutive_failures, 2);
+        assert_eq!(last_error, "second");
     }
 
     fn recording_handle(
