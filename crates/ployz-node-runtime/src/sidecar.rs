@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use ployz_runtime_docker::runtime::labels::build_system_labels;
@@ -13,6 +14,7 @@ use ployz_runtime_docker::runtime::{
 };
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
+const OUTPUT_DRAIN_GRACE_PERIOD: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceSupervision {
@@ -137,12 +139,15 @@ pub enum SidecarError {
 struct ChildHandle {
     name: String,
     child: AsyncMutex<Option<Child>>,
+    output_tasks: AsyncMutex<Vec<JoinHandle<()>>>,
 }
 
 impl ChildHandle {
     async fn shutdown(&self) -> Result<(), SidecarError> {
         let mut guard = self.child.lock().await;
         let Some(child) = guard.as_mut() else {
+            drop(guard);
+            self.stop_output_tasks().await;
             return Ok(());
         };
 
@@ -155,6 +160,8 @@ impl ChildHandle {
             match tokio::time::timeout(STOP_GRACE_PERIOD, child.wait()).await {
                 Ok(Ok(_status)) => {
                     guard.take();
+                    drop(guard);
+                    self.stop_output_tasks().await;
                     return Ok(());
                 }
                 Ok(Err(err)) => {
@@ -180,7 +187,16 @@ impl ChildHandle {
             ))
         })?;
         guard.take();
+        drop(guard);
+        self.stop_output_tasks().await;
         Ok(())
+    }
+
+    async fn stop_output_tasks(&self) {
+        let mut guard = self.output_tasks.lock().await;
+        let tasks = std::mem::take(&mut *guard);
+        drop(guard);
+        stop_output_task_handles(tasks).await;
     }
 }
 
@@ -205,11 +221,12 @@ async fn start_child(spec: SidecarSpec) -> Result<ChildHandle, SidecarError> {
             SidecarError::Process(format!("failed to spawn {}: {err}", binary.display()))
         })?;
 
+    let mut output_tasks = Vec::new();
     if let Some(stdout) = child.stdout.take() {
-        forward_child_output(spec.name.clone(), "stdout", stdout);
+        output_tasks.push(forward_child_output(spec.name.clone(), "stdout", stdout));
     }
     if let Some(stderr) = child.stderr.take() {
-        forward_child_output(spec.name.clone(), "stderr", stderr);
+        output_tasks.push(forward_child_output(spec.name.clone(), "stderr", stderr));
     }
 
     info!(
@@ -223,10 +240,11 @@ async fn start_child(spec: SidecarSpec) -> Result<ChildHandle, SidecarError> {
     Ok(ChildHandle {
         name: spec.name,
         child: AsyncMutex::new(Some(child)),
+        output_tasks: AsyncMutex::new(output_tasks),
     })
 }
 
-fn forward_child_output<R>(name: String, stream_name: &'static str, stream: R)
+fn forward_child_output<R>(name: String, stream_name: &'static str, stream: R) -> JoinHandle<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
@@ -254,7 +272,32 @@ where
                 }
             }
         }
-    });
+    })
+}
+
+async fn stop_output_task_handles(tasks: Vec<JoinHandle<()>>) {
+    stop_output_task_handles_with_grace(tasks, OUTPUT_DRAIN_GRACE_PERIOD).await;
+}
+
+async fn stop_output_task_handles_with_grace(tasks: Vec<JoinHandle<()>>, grace_period: Duration) {
+    for task in tasks {
+        stop_output_task_handle(task, grace_period).await;
+    }
+}
+
+async fn stop_output_task_handle(mut task: JoinHandle<()>, grace_period: Duration) {
+    match tokio::time::timeout(grace_period, &mut task).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            if !error.is_cancelled() {
+                warn!(?error, "sidecar output task failed");
+            }
+        }
+        Err(_) => {
+            task.abort();
+            let _ = task.await;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -486,4 +529,55 @@ pub fn sanitize_unit_component(name: &str) -> String {
 
 pub fn systemd_quote(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{forward_child_output, stop_output_task_handles_with_grace};
+    use std::future;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn child_output_task_exits_on_eof() {
+        let (mut writer, reader) = tokio::io::duplex(64);
+        let task = forward_child_output("test-sidecar".into(), "stdout", reader);
+
+        writer
+            .write_all(b"ready\nstill-ready\n")
+            .await
+            .expect("write output");
+        drop(writer);
+
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("output task exits")
+            .expect("output task succeeds");
+    }
+
+    #[tokio::test]
+    async fn stop_output_tasks_aborts_stuck_reader_task() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_dropped = Arc::clone(&dropped);
+        let task = tokio::spawn(async move {
+            let _guard = DropMarker(task_dropped);
+            future::pending::<()>().await;
+        });
+
+        stop_output_task_handles_with_grace(vec![task], Duration::from_millis(10)).await;
+
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    struct DropMarker(Arc<AtomicBool>);
+
+    impl Drop for DropMarker {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
 }
