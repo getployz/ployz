@@ -1,12 +1,20 @@
-use ipnet::Ipv4Net;
-use ployz_api::{DaemonRequest, MachineSelfTransition, MeshBootstrapRequest};
-use ployz_model::{
-    MachineLifecycle, MachineMembership, MachineStorageRole, RegionRole, StorageParticipation,
-    management_ip_from_key,
-};
-use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
+mod bootstrap_seed;
+mod joiner;
+mod validation;
+
+use ployz_api::DaemonRequest;
+use ployz_model::MachineLifecycle;
 use ployz_store_api::MachineMembershipStore;
 
+use self::bootstrap_seed::{
+    build_bootstrap_membership_seed, build_mesh_bootstrap_request,
+    publish_bootstrap_membership_seed,
+};
+use self::joiner::{
+    activate_joiner_lifecycle, joiner_self_record, wait_for_joiner_command_responder,
+    wait_for_joiner_ready,
+};
+use self::validation::{validate_joined_machine_authority_posture, validate_joined_machine_subnet};
 use super::super::operations::{
     MachineOperationRecord, MachineOperationStatus, MachineOperationStore,
 };
@@ -18,9 +26,8 @@ use super::coordination::{
     BootstrapSubnetClaim, assert_subnet_unique, consume_invite, release_reserved_subnet,
 };
 use super::remote::{
-    ExpectedMachineRecord, ExpectedSubnetState, nats_self_record, nats_transition_self,
-    remote_daemon_identity, remote_rpc_expect_ok, remote_self_record, wait_for_machine_record,
-    wait_for_nats_command_responder, wait_for_nats_ready, wait_for_remote_ready,
+    ExpectedMachineRecord, ExpectedSubnetState, remote_daemon_identity, remote_rpc_expect_ok,
+    wait_for_machine_record,
 };
 use super::rollback::rollback_machine_add_target;
 use crate::mesh_state::bootstrap::refresh_bootstrap_peer_records_from_store;
@@ -71,18 +78,7 @@ pub(super) async fn run_machine_add_target(
             };
         }
     };
-    let bootstrap_overlay_ip = management_ip_from_key(&remote_identity.public_key);
-    let mut bootstrap_record = MachineMembership::seed(
-        remote_identity.machine_id.clone(),
-        remote_identity.public_key.clone(),
-        bootstrap_overlay_ip,
-        None,
-        bootstrap_wireguard_endpoints(&target),
-    );
-    bootstrap_record.storage_role = MachineStorageRole::Candidate;
-    bootstrap_record.region_role = RegionRole::Compute;
-    bootstrap_record.created_at = ployz_time::now_unix_secs();
-    bootstrap_record.updated_at = bootstrap_record.created_at;
+    let bootstrap_record = build_bootstrap_membership_seed(&target, &remote_identity);
     joiner_id = Some(remote_identity.machine_id.clone());
     operation.artifacts.machine_id = Some(remote_identity.machine_id.clone());
     let _ = operation_store.save(&operation);
@@ -371,211 +367,5 @@ pub(super) async fn run_machine_add_target(
     MachineAddTargetResult::AwaitingSelfPublication {
         target,
         joiner_id: machine_id,
-    }
-}
-
-fn bootstrap_wireguard_endpoints(target: &str) -> Vec<String> {
-    let host = target
-        .rsplit_once('@')
-        .map_or(target, |(_, host)| host)
-        .trim();
-    let Some(host) = host.split_whitespace().next() else {
-        return Vec::new();
-    };
-    if host.is_empty() {
-        return Vec::new();
-    }
-
-    if host.starts_with('[') {
-        let Some((address, _rest)) = host[1..].split_once(']') else {
-            return Vec::new();
-        };
-        return vec![format!("[{address}]:{DEFAULT_LISTEN_PORT}")];
-    }
-
-    if host.contains(':') {
-        return vec![format!("[{host}]:{DEFAULT_LISTEN_PORT}")];
-    }
-
-    vec![format!("{host}:{DEFAULT_LISTEN_PORT}")]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bootstrap_wireguard_endpoint_uses_ssh_target_host() {
-        assert_eq!(
-            bootstrap_wireguard_endpoints("root@192.168.227.3"),
-            vec!["192.168.227.3:51820"]
-        );
-    }
-
-    #[test]
-    fn bootstrap_wireguard_endpoint_brackets_ipv6_hosts() {
-        assert_eq!(
-            bootstrap_wireguard_endpoints("root@fd00::12"),
-            vec!["[fd00::12]:51820"]
-        );
-        assert_eq!(
-            bootstrap_wireguard_endpoints("root@[fd00::12]"),
-            vec!["[fd00::12]:51820"]
-        );
-    }
-}
-
-async fn publish_bootstrap_membership_seed(
-    context: &MachineAddContext,
-    record: &MachineMembership,
-) -> Result<(), String> {
-    if let Some(existing) =
-        super::super::list::find_machine_record(&context.store, &record.id).await?
-    {
-        return Err(format!(
-            "machine '{}' already exists with lifecycle '{}'",
-            existing.id, existing.lifecycle
-        ));
-    }
-    context
-        .store
-        .upsert_self_machine(record)
-        .await
-        .map_err(|err| format!("publish bootstrap membership seed: {err}"))
-}
-
-async fn wait_for_joiner_command_responder(
-    context: &MachineAddContext,
-    machine: &MachineMembership,
-) -> Result<(), String> {
-    if let Some(client) = &context.nats_rpc {
-        return wait_for_nats_command_responder(client, machine).await;
-    }
-
-    #[cfg(test)]
-    {
-        let _ = machine;
-        return Ok(());
-    }
-
-    #[cfg(not(test))]
-    {
-        let _ = machine;
-        Err("NATS RPC client unavailable".into())
-    }
-}
-
-async fn joiner_self_record(
-    context: &MachineAddContext,
-    target: &str,
-    machine: &MachineMembership,
-) -> Result<MachineMembership, String> {
-    if let Some(client) = &context.nats_rpc {
-        return nats_self_record(client, machine).await;
-    }
-    remote_self_record(target, &context.ssh_options).await
-}
-
-async fn wait_for_joiner_ready(
-    context: &MachineAddContext,
-    target: &str,
-    machine: &MachineMembership,
-) -> Result<(), String> {
-    if let Some(client) = &context.nats_rpc {
-        return wait_for_nats_ready(client, machine).await;
-    }
-    wait_for_remote_ready(
-        target,
-        &context.ssh_options,
-        context.remote_ready_wait_policy,
-    )
-    .await
-}
-
-async fn activate_joiner_lifecycle(
-    context: &MachineAddContext,
-    record: &MachineMembership,
-    assigned_subnet: Ipv4Net,
-) -> Result<(), String> {
-    if let Some(client) = &context.nats_rpc {
-        return nats_transition_self(
-            client,
-            record,
-            MachineSelfTransition::Activate { assigned_subnet },
-        )
-        .await;
-    }
-
-    #[cfg(test)]
-    {
-        let mut active_record = record.clone();
-        active_record
-            .apply_lifecycle_transition(ployz_model::MachineLifecycleTransition {
-                goal: ployz_model::MachineLifecycleGoal::Activate { assigned_subnet },
-                evidence: ployz_model::MachineTransitionEvidence::BootstrapActivation {
-                    operation_id: None,
-                },
-                at_unix_secs: ployz_time::now_unix_secs(),
-            })
-            .map_err(|err| format!("activate joined machine: {err}"))?;
-        return context
-            .store
-            .upsert_self_machine(&active_record)
-            .await
-            .map_err(|err| format!("persist active self-record: {err}"));
-    }
-
-    #[cfg(not(test))]
-    {
-        Err("NATS RPC client unavailable".into())
-    }
-}
-
-async fn build_mesh_bootstrap_request(
-    context: &MachineAddContext,
-    assigned_subnet: Ipv4Net,
-) -> Result<MeshBootstrapRequest, String> {
-    let bootstrap_peers = context
-        .store
-        .list_machines()
-        .await
-        .map_err(|err| format!("list machines for bootstrap: {err}"))?
-        .into_iter()
-        .filter(|machine| !machine.endpoints.is_empty())
-        .collect::<Vec<_>>();
-
-    Ok(MeshBootstrapRequest {
-        network_id: context.network_id.clone(),
-        network_name: context.network_name.clone(),
-        cluster_cidr: context.cluster_cidr.clone(),
-        assigned_subnet,
-        bootstrap_peers,
-    })
-}
-
-fn validate_joined_machine_subnet(
-    record: &MachineMembership,
-    expected_subnet: Ipv4Net,
-) -> Result<(), String> {
-    match record.subnet {
-        Some(subnet) if subnet == expected_subnet => Ok(()),
-        Some(subnet) => Err(format!(
-            "remote machine '{}' reported subnet '{}' but founder reserved '{}'",
-            record.id, subnet, expected_subnet
-        )),
-        None => Err(format!(
-            "remote machine '{}' reported no subnet but founder reserved '{}'",
-            record.id, expected_subnet
-        )),
-    }
-}
-
-fn validate_joined_machine_authority_posture(record: &MachineMembership) -> Result<(), String> {
-    match &record.storage_participation() {
-        StorageParticipation::Candidate => Ok(()),
-        StorageParticipation::Authority { authority_id } => Err(format!(
-            "remote machine '{}' reported authority storage for '{}' during machine add; use explicit storage promotion",
-            record.id, authority_id
-        )),
     }
 }
