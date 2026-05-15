@@ -1,5 +1,8 @@
-use super::*;
-use ployz_api::StatusPayload;
+use ployz_api::{
+    MachineStorageAuthorityPeer, MachineStoragePromotionFailure,
+    MachineStoragePromotionFailureCause, MachineStoragePromotionPayload, StatusPayload,
+};
+use ployz_model::{MachineId, MachineMembership, StorageParticipation, StorageReplicaPolicy};
 use ployz_node_runtime::{
     MachineStorageNodeClient, MachineStorageRpcTransport, NODE_STATUS_RPC_POLICY,
     NodeProbeNodeClient, NodeProbeRpcOperation, NodeProbeRpcTransport, NodeRpcError,
@@ -394,7 +397,7 @@ mod tests {
             NodeRequest::MachineStoragePromoteSelf {
                 replicas,
                 authority_peers: request_peers,
-            } if replicas == &StorageReplicaPolicy::R3 && request_peers == &authority_peers
+            } if *replicas == StorageReplicaPolicy::R3 && request_peers == &authority_peers
         ));
     }
 

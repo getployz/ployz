@@ -1,18 +1,15 @@
 use ployz_api::{
-    DaemonPayload, DaemonResponse, MachineStorageAuthorityPeer, MachineStoragePromoteRequest,
-    MachineStoragePromotionFailure, MachineStoragePromotionFailureCause,
-    MachineStoragePromotionPayload,
+    DaemonPayload, DaemonResponse, MachineStoragePromoteRequest, MachineStoragePromotionFailure,
+    MachineStoragePromotionFailureCause, MachineStoragePromotionPayload,
 };
 use ployz_model::{
-    AuthorityId, MachineId, MachineLifecycle, MachineMembership, MachineStorageRole,
-    StorageParticipation, StorageReplicaPolicy,
+    MachineMembership, MachineStorageRole, StorageParticipation, StorageReplicaPolicy,
 };
 use ployz_node_runtime::{
     MACHINE_STORAGE_RPC_POLICY, MachineStorageNodeClient, NODE_STATUS_RPC_POLICY,
     NodeProbeNodeClient,
 };
 use ployz_store_api::MachineMembershipStore;
-use std::collections::BTreeSet;
 use tokio::sync::oneshot;
 
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
@@ -23,7 +20,9 @@ use crate::mesh_state::bootstrap::{
 };
 
 mod local;
+mod plan;
 mod promotion;
+use plan::StoragePromotionPlan;
 use promotion::*;
 
 impl DaemonState {
@@ -139,124 +138,12 @@ impl DaemonState {
             }
         };
 
-        let mut seen_targets = BTreeSet::new();
-        for target in &request.targets {
-            if !seen_targets.insert(target.clone()) {
-                failed.push(MachineStoragePromotionFailure {
-                    machine_id: target.clone(),
-                    cause: MachineStoragePromotionFailureCause::DuplicateTarget,
-                    message: "duplicate promotion target".into(),
-                });
-            }
-        }
-        if !failed.is_empty() {
-            return Err(StoragePromotionError::Preflight { failed });
-        }
-
-        let default_authority = AuthorityId::default_authority();
-        let mut authorities = machines
-            .iter()
-            .filter(|machine| {
-                machine.lifecycle == MachineLifecycle::Active
-                    && machine.storage()
-                    && matches!(
-                        &machine.storage_participation(),
-                        StorageParticipation::Authority { authority_id }
-                            if authority_id == &default_authority
-                    )
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        if !authorities
-            .iter()
-            .any(|machine| machine.id == local_record.id)
-        {
-            if local_record.lifecycle != MachineLifecycle::Active
-                || !local_record.storage()
-                || !matches!(
-                    &local_record.storage_participation(),
-                    StorageParticipation::Authority { authority_id }
-                        if authority_id == &default_authority
-                )
-            {
-                return Err(StoragePromotionError::InvalidLocalAuthority {
-                    message: format!(
-                        "local authority must be active storage for {} (lifecycle={}, storage={}, participation={:?})",
-                        default_authority,
-                        local_record.lifecycle,
-                        local_record.storage(),
-                        local_record.storage_participation()
-                    ),
-                });
-            }
-            authorities.push(local_record.clone());
-        }
-
-        let mut targets = Vec::new();
-        for target in &request.targets {
-            match machines.iter().find(|machine| machine.id.as_str() == *target) {
-                Some(machine)
-                    if machine.lifecycle == MachineLifecycle::Active
-                        && machine.storage()
-                        && machine.storage_participation() == StorageParticipation::Candidate =>
-                {
-                    targets.push(machine.clone());
-                }
-                Some(machine) => failed.push(MachineStoragePromotionFailure {
-                    machine_id: target.clone(),
-                    cause: MachineStoragePromotionFailureCause::InvalidCandidate,
-                    message: format!(
-                        "machine must be an active storage candidate (lifecycle={}, storage={}, participation={:?})",
-                        machine.lifecycle, machine.storage(), machine.storage_participation()
-                    ),
-                }),
-                None => failed.push(MachineStoragePromotionFailure {
-                    machine_id: target.clone(),
-                    cause: MachineStoragePromotionFailureCause::MachineNotFound,
-                    message: "machine not found".into(),
-                }),
-            }
-        }
-        if !failed.is_empty() {
-            return Err(StoragePromotionError::Preflight { failed });
-        }
-
-        let final_authority_ids = authorities
-            .iter()
-            .chain(targets.iter())
-            .map(|machine| machine.id.clone())
-            .collect::<BTreeSet<_>>();
-        let final_authority_count = final_authority_ids.len();
-        if final_authority_count != request.replicas.replicas() {
-            return Err(StoragePromotionError::ReplicaCount {
-                message: format!(
-                    "storage promotion to {} replicas requires exactly {} active authority participants after promotion; current authorities={}, targets={}",
-                    request.replicas,
-                    request.replicas.replicas(),
-                    authorities.len(),
-                    targets.len()
-                ),
-            });
-        }
-
-        let previous_authority_peers = authorities
-            .iter()
-            .map(MachineStorageAuthorityPeer::from)
-            .collect::<Vec<_>>();
+        let plan = StoragePromotionPlan::build(request, machines.as_slice(), local_record)?;
         let previous_remote_replicas = self
             .active
             .as_ref()
             .map(|active| active.config.storage_replicas)
             .unwrap_or(StorageReplicaPolicy::Single);
-        let mut authority_peers = authorities.clone();
-        authority_peers.extend(targets.clone().into_iter().map(|mut target| {
-            target.storage_role = MachineStorageRole::default_authority();
-            target
-        }));
-        let authority_peer_payloads = authority_peers
-            .iter()
-            .map(MachineStorageAuthorityPeer::from)
-            .collect::<Vec<_>>();
 
         let mut promoted = Vec::new();
         let mut remote_rollbacks = Vec::new();
@@ -264,7 +151,7 @@ impl DaemonState {
             let _ = self
                 .machine_operation_store()
                 .update_stage(operation, "promoting-authority-members");
-            for target in &targets {
+            for target in &plan.targets {
                 let mut promoted_record = target.clone();
                 promoted_record.storage_role = MachineStorageRole::default_authority();
                 promoted_record.updated_at = ployz_time::now_unix_secs();
@@ -304,7 +191,8 @@ impl DaemonState {
                         });
                     }
                 };
-                let peer_records = authority_peers
+                let peer_records = plan
+                    .authority_peers
                     .iter()
                     .map(BootstrapPeerRecord::from_machine_record)
                     .collect::<Vec<_>>();
@@ -339,7 +227,8 @@ impl DaemonState {
                 NodeProbeNodeClient::new(NatsNodeProbeRpcTransport::new(client.clone()))
                     .with_policy(NODE_STATUS_RPC_POLICY);
 
-            let remote_authorities = authority_peers
+            let remote_authorities = plan
+                .authority_peers
                 .iter()
                 .filter(|machine| machine.id != local_record.id)
                 .collect::<Vec<_>>();
@@ -374,7 +263,8 @@ impl DaemonState {
                     });
                 }
             };
-            let peer_records = authority_peers
+            let peer_records = plan
+                .authority_peers
                 .iter()
                 .map(BootstrapPeerRecord::from_machine_record)
                 .collect::<Vec<_>>();
@@ -397,7 +287,7 @@ impl DaemonState {
                     &machine_client,
                     target,
                     request.replicas,
-                    &authority_peer_payloads,
+                    &plan.authority_peer_payloads,
                 )
                 .await
                 {
@@ -411,9 +301,13 @@ impl DaemonState {
                         machine_id: target.id.clone(),
                         participation: target.storage_participation().clone(),
                         replicas: previous_remote_replicas,
-                        authority_peers: previous_authority_peers.clone(),
+                        authority_peers: plan.previous_authority_peers.clone(),
                     });
-                    if targets.iter().any(|candidate| candidate.id == target.id) {
+                    if plan
+                        .targets
+                        .iter()
+                        .any(|candidate| candidate.id == target.id)
+                    {
                         promoted.push(target.id.as_str().to_string());
                     }
                 }
