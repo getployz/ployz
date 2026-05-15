@@ -1,4 +1,4 @@
-use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec};
+use crate::sidecar::{ServiceSupervision, SidecarHandle, SidecarSpec};
 use async_trait::async_trait;
 use ployz_dns::{DnsConfig, DnsError};
 use ployz_runtime_api::RuntimeHandle;

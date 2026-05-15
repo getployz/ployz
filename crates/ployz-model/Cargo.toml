@@ -6,7 +6,6 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-base64 = { workspace = true }
 derive_more = { workspace = true }
 ipnet = { workspace = true }
 rand = { workspace = true }

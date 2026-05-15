@@ -14,7 +14,6 @@ ployz-model = { path = "../ployz-model" }
 ployz-time = { path = "../ployz-time" }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
-tracing = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 reqwest = { workspace = true, features = ["rustls-tls"] }
 instant-acme = { workspace = true, features = ["hyper-rustls", "ring"] }

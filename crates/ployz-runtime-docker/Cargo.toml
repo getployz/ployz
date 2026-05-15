@@ -11,7 +11,6 @@ docker = []
 
 [dependencies]
 ployz-runtime-api = { path = "../ployz-runtime-api" }
-ployz-storage-api = { path = "../ployz-storage-api" }
 ployz-volume-api = { path = "../ployz-volume-api" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-error = { path = "../ployz-error" }
@@ -20,23 +19,14 @@ ployz-spec = { path = "../ployz-spec" }
 ployz-time = { path = "../ployz-time" }
 async-trait = { workspace = true }
 backon = { workspace = true }
-base64 = { workspace = true }
 bollard = "0.20.1"
-chrono = { workspace = true }
-derive_more = { workspace = true }
 futures-util = { workspace = true }
-http = { workspace = true }
 ipnet = { workspace = true }
-libc = { workspace = true }
-rand = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
-serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "process", "fs", "io-util", "net", "sync", "time"] }
 tokio-util = { workspace = true, features = ["codec", "io"] }
 tracing = { workspace = true }
-uuid = { workspace = true }
 
 [lints]
 workspace = true

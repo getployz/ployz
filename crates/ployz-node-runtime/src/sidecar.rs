@@ -466,7 +466,6 @@ async fn run_systemctl<const N: usize>(
     )))
 }
 
-#[cfg(target_os = "linux")]
 pub fn sanitize_unit_component(name: &str) -> String {
     let sanitized = name
         .chars()
@@ -485,7 +484,6 @@ pub fn sanitize_unit_component(name: &str) -> String {
     }
 }
 
-#[cfg(target_os = "linux")]
 pub fn systemd_quote(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }

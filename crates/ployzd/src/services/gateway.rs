@@ -1,9 +1,11 @@
 use std::path::PathBuf;
 
 use crate::mesh_state::network::NetworkConfig;
-use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec};
 use async_trait::async_trait;
 use ployz_gateway::{GatewayConfig, GatewayError};
+use ployz_node_runtime::sidecar::{ServiceSupervision, SidecarHandle, SidecarSpec};
+#[cfg(target_os = "linux")]
+use ployz_node_runtime::sidecar::{find_binary, systemd_quote};
 use ployz_runtime_api::RuntimeHandle;
 
 // ---------------------------------------------------------------------------
@@ -96,15 +98,13 @@ fn build_gateway_sidecar_spec(
 
     #[cfg(target_os = "linux")]
     let systemd_extra = {
-        let pid_file =
-            crate::services::supervisor::systemd_quote(&paths.pid_file.display().to_string());
-        let pingora_config =
-            crate::services::supervisor::systemd_quote(&paths.pingora_config.display().to_string());
+        let pid_file = systemd_quote(&paths.pid_file.display().to_string());
+        let pingora_config = systemd_quote(&paths.pingora_config.display().to_string());
         // The gateway stays attached to the invoking process for normal startup,
         // so the systemd unit must be `Type=simple`. Reload still uses Pingora's
         // upgrade path and keeps the PID file/socket metadata available.
-        let binary = crate::services::supervisor::find_binary("ployz-gateway")
-            .map(|b| crate::services::supervisor::systemd_quote(&b.display().to_string()))
+        let binary = find_binary("ployz-gateway")
+            .map(|b| systemd_quote(&b.display().to_string()))
             .unwrap_or_default();
         format!(
             "PIDFile={pid_file}\nExecReload=/bin/kill -QUIT $MAINPID\nExecReload={binary} -u -d -c {pingora_config}\nExecStop=/bin/kill -TERM $MAINPID\n"

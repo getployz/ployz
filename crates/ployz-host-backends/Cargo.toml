@@ -9,11 +9,7 @@ publish = false
 if-addrs = { workspace = true }
 libc = { workspace = true }
 reqwest = { workspace = true, features = ["rustls-tls"] }
-tokio = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lints]
 workspace = true

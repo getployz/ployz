@@ -7,14 +7,18 @@ publish = false
 
 [dependencies]
 async-trait = { workspace = true }
+libc = { workspace = true }
+ployz-dns = { path = "../ployz-dns" }
 ployz-model = { path = "../ployz-model" }
 ployz-node-api = { path = "../ployz-node-api" }
 ployz-runtime-api = { path = "../ployz-runtime-api" }
+ployz-runtime-docker = { path = "../ployz-runtime-docker" }
 ployz-supervision = { path = "../ployz-supervision" }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["sync", "time"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "process", "sync", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 

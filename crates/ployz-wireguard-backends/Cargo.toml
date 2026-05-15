@@ -10,7 +10,6 @@ default = ["userspace-wg"]
 docker = [
     "userspace-wg",
     "dep:bollard",
-    "dep:reqwest",
     "dep:ployz-runtime-docker",
 ]
 userspace-wg = [
@@ -32,11 +31,7 @@ defguard_boringtun = { version = "0.6", optional = true }
 defguard_wireguard_rs = { version = "0.9.3", optional = true }
 futures-util = { workspace = true }
 ipnet = { workspace = true }
-libc = { workspace = true }
-reqwest = { workspace = true, features = ["json", "rustls-tls"], optional = true }
-serde = { workspace = true }
 smoltcp = { version = "0.12.0", default-features = false, features = ["std", "medium-ip", "proto-ipv6", "socket-tcp"], optional = true }
-thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "process", "fs", "io-util", "net", "sync", "time"] }
 tracing = { workspace = true }
 x25519-dalek = { workspace = true, optional = true }

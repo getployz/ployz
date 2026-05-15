@@ -15,7 +15,6 @@ ployz-spec = { path = "../ployz-spec" }
 ployz-time = { path = "../ployz-time" }
 async-trait = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 tokio = { workspace = true, features = ["process", "time"] }
 tracing = { workspace = true }
 

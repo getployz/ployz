@@ -136,3 +136,13 @@ fallible_impl_from = "warn"
 wildcard_enum_match_arm = "warn"
 fn_params_excessive_bools = "warn"
 must_use_candidate = "warn"
+
+[workspace.metadata.cargo-shear]
+ignored-paths = [
+    "crates/ployzd/src/daemon/handlers/build/local.rs",
+    "crates/ployzd/src/daemon/handlers/build/operations.rs",
+    "crates/ployzd/src/daemon/handlers/image/inspect.rs",
+    "crates/ployzd/src/daemon/handlers/image/operations.rs",
+    "crates/ployzd/src/daemon/handlers/image/push.rs",
+    "crates/ployzd/src/daemon/handlers/image/status.rs",
+]
