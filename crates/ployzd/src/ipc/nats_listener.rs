@@ -1,10 +1,10 @@
 use futures_util::StreamExt;
 use ployz_nats::{decode_node_request, encode_node_response};
 use ployz_runtime_api::RuntimeHandle;
+use ployz_supervision::FileHealthRecorder;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -57,8 +57,8 @@ pub async fn serve(
         .queue_subscribe(subject.clone(), queue_group.clone())
         .await
         .map_err(|error| format!("queue subscribe {subject} {queue_group}: {error}"))?;
-    let health = Arc::new(NodeRpcHealthRecorder::new(health_path));
-    health.force_healthy().await;
+    let health = Arc::new(FileHealthRecorder::new(health_path));
+    force_healthy(&health).await;
     let cancel = CancellationToken::new();
     let task_cancel = cancel.clone();
     let task = tokio::spawn(async move {
@@ -73,7 +73,7 @@ pub async fn serve(
                 next = subscriber.next() => {
                     let Some(message) = next else {
                         warn!(%subject, %queue_group, "nats node rpc subscription closed; resubscribing");
-                        health.record_unhealthy("nats node rpc subscription closed").await;
+                        record_unhealthy(&health, "nats node rpc subscription closed").await;
                         subscriber = match resubscribe(
                             &client,
                             &subject,
@@ -82,7 +82,7 @@ pub async fn serve(
                             health.clone(),
                         ).await {
                             Some(subscriber) => {
-                                health.force_healthy().await;
+                                force_healthy(&health).await;
                                 subscriber
                             }
                             None => break,
@@ -106,11 +106,12 @@ pub async fn serve(
                         let _permit = permit;
                         if let Err(error) = handle_message(client, message, tx).await {
                             warn!(%error, "nats node rpc message failed");
-                            health
-                                .record_unhealthy(format!("nats node rpc message failed: {error}"))
-                                .await;
+                            record_unhealthy(
+                                &health,
+                                format!("nats node rpc message failed: {error}"),
+                            ).await;
                         } else {
-                            health.record_healthy_if_stale().await;
+                            record_healthy_if_stale(&health).await;
                         }
                     });
                 }
@@ -125,7 +126,7 @@ async fn resubscribe(
     subject: &str,
     queue_group: &str,
     cancel: &CancellationToken,
-    health: Arc<NodeRpcHealthRecorder>,
+    health: Arc<FileHealthRecorder>,
 ) -> Option<async_nats::Subscriber> {
     loop {
         tokio::select! {
@@ -142,107 +143,58 @@ async fn resubscribe(
             }
             Err(error) => {
                 warn!(%subject, %queue_group, %error, "nats node rpc resubscribe failed");
-                health
-                    .record_unhealthy(format!("nats node rpc resubscribe failed: {error}"))
-                    .await;
+                record_unhealthy(
+                    &health,
+                    format!("nats node rpc resubscribe failed: {error}"),
+                )
+                .await;
             }
         }
     }
 }
 
 pub async fn load_health(path: PathBuf) -> std::io::Result<NatsNodeRpcHealth> {
-    let bytes = tokio::fs::read(path).await?;
-    serde_json::from_slice(&bytes)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
-}
-
-struct NodeRpcHealthRecorder {
-    path: PathBuf,
-    state: Mutex<NodeRpcHealthState>,
-}
-
-#[derive(Debug, Default)]
-struct NodeRpcHealthState {
-    health: Option<NatsNodeRpcHealth>,
-}
-
-impl NodeRpcHealthRecorder {
-    fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            state: Mutex::new(NodeRpcHealthState::default()),
-        }
-    }
-
-    async fn force_healthy(&self) {
-        let mut state = self.state.lock().await;
-        state.health = None;
-        write_health(&self.path, healthy_health()).await;
-    }
-
-    async fn record_healthy_if_stale(&self) {
-        let mut state = self.state.lock().await;
-        if state.health.is_none() {
-            return;
-        }
-        state.health = None;
-        write_health(&self.path, healthy_health()).await;
-    }
-
-    async fn record_unhealthy(&self, error: impl Into<String>) {
-        let mut state = self.state.lock().await;
-        let now = unix_secs();
-        let next = NatsNodeRpcHealth::stale(now, state.health.as_ref(), error);
-        state.health = Some(next.clone());
-        write_health(&self.path, next).await;
-    }
+    ployz_supervision::load_component_health(path).await
 }
 
 #[cfg(test)]
-async fn record_unhealthy(
-    path: &PathBuf,
-    health_state: &mut Option<NatsNodeRpcHealth>,
-    error: impl Into<String>,
-) {
-    let now = unix_secs();
-    let next = NatsNodeRpcHealth::stale(now, health_state.as_ref(), error);
-    *health_state = Some(next.clone());
-    write_health(path, next).await;
-}
-
-fn healthy_health() -> NatsNodeRpcHealth {
-    NatsNodeRpcHealth::healthy(unix_secs())
-}
-
-async fn write_health(path: &PathBuf, health: NatsNodeRpcHealth) {
-    let Ok(payload) = serde_json::to_vec_pretty(&health) else {
-        return;
-    };
-    if let Some(parent) = path.parent()
-        && let Err(error) = tokio::fs::create_dir_all(parent).await
-    {
-        warn!(path = %path.display(), %error, "failed to create nats node rpc health directory");
-        return;
-    }
-    if let Err(error) = tokio::fs::write(path, payload).await {
+async fn write_health(path: &PathBuf, health: &NatsNodeRpcHealth) {
+    if let Err(error) = ployz_supervision::write_component_health(path, health).await {
         warn!(path = %path.display(), %error, "failed to write nats node rpc health");
-    } else {
-        debug!(path = %path.display(), "wrote nats node rpc health");
     }
 }
 
-fn unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
+async fn force_healthy(health: &FileHealthRecorder) {
+    if let Err(error) = health.force_healthy().await {
+        warn!(path = %health.path().display(), %error, "failed to write nats node rpc healthy state");
+    } else {
+        debug!(path = %health.path().display(), "wrote nats node rpc healthy state");
+    }
+}
+
+async fn record_healthy_if_stale(health: &FileHealthRecorder) {
+    if let Err(error) = health.record_healthy_if_stale().await {
+        warn!(path = %health.path().display(), %error, "failed to write nats node rpc healthy state");
+    } else {
+        debug!(path = %health.path().display(), "wrote nats node rpc healthy state");
+    }
+}
+
+async fn record_unhealthy(health: &FileHealthRecorder, error: impl Into<String>) {
+    if let Err(error) = health.record_unhealthy(error).await {
+        warn!(path = %health.path().display(), %error, "failed to write nats node rpc stale state");
+    } else {
+        debug!(path = %health.path().display(), "wrote nats node rpc stale state");
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        NatsNodeRpcHealth, NodeRpcHealthRecorder, healthy_health, load_health, record_unhealthy,
+        NatsNodeRpcHealth, force_healthy, load_health, record_healthy_if_stale, record_unhealthy,
         write_health,
     };
+    use ployz_supervision::FileHealthRecorder;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -255,7 +207,7 @@ mod tests {
         let first = NatsNodeRpcHealth::stale(1_777_646_000, None, "first");
         let health = NatsNodeRpcHealth::stale(1_777_646_100, Some(&first), "subscription closed");
 
-        write_health(&path, health.clone()).await;
+        write_health(&path, &health).await;
 
         let loaded = load_health(path).await.expect("load health");
         assert_eq!(loaded, health);
@@ -264,11 +216,11 @@ mod tests {
     #[tokio::test]
     async fn node_rpc_unhealthy_keeps_original_stale_since() {
         let path = temp_path("node-rpc-health-stale").join("health.json");
-        let mut health_state = None;
+        let recorder = FileHealthRecorder::new(path.clone());
 
-        record_unhealthy(&path, &mut health_state, "first").await;
+        record_unhealthy(&recorder, "first").await;
         let first = load_health(path.clone()).await.expect("load first health");
-        record_unhealthy(&path, &mut health_state, "second").await;
+        record_unhealthy(&recorder, "second").await;
         let second = load_health(path).await.expect("load second health");
 
         let ployz_supervision::ComponentHealthState::Stale {
@@ -293,7 +245,7 @@ mod tests {
 
     #[test]
     fn node_rpc_healthy_state_is_fresh() {
-        let health = healthy_health();
+        let health = ployz_supervision::healthy_component_health();
 
         assert_eq!(
             health.state,
@@ -304,10 +256,10 @@ mod tests {
     #[tokio::test]
     async fn node_rpc_recorder_clears_stale_health_after_success() {
         let path = temp_path("node-rpc-health-recorder").join("health.json");
-        let recorder = NodeRpcHealthRecorder::new(path.clone());
+        let recorder = FileHealthRecorder::new(path.clone());
 
-        recorder.force_healthy().await;
-        recorder.record_unhealthy("publish response failed").await;
+        force_healthy(&recorder).await;
+        record_unhealthy(&recorder, "publish response failed").await;
         let unhealthy = load_health(path.clone()).await.expect("load unhealthy");
 
         let ployz_supervision::ComponentHealthState::Stale {
@@ -321,9 +273,32 @@ mod tests {
         assert_eq!(consecutive_failures, 1);
         assert_eq!(last_error, "publish response failed");
 
-        recorder.record_healthy_if_stale().await;
+        record_healthy_if_stale(&recorder).await;
         let healthy = load_health(path).await.expect("load healthy");
 
+        assert_eq!(
+            healthy.state,
+            ployz_supervision::ComponentHealthState::Healthy
+        );
+    }
+
+    #[tokio::test]
+    async fn node_rpc_health_write_failure_does_not_poison_later_recovery() {
+        let blocked_path = temp_path("node-rpc-health-blocked");
+        tokio::fs::write(&blocked_path, b"not a directory")
+            .await
+            .expect("write blocker");
+        let failing_recorder = FileHealthRecorder::new(blocked_path.join("health.json"));
+
+        record_unhealthy(&failing_recorder, "first failure").await;
+        force_healthy(&failing_recorder).await;
+
+        let path = temp_path("node-rpc-health-recovery").join("health.json");
+        let recorder = FileHealthRecorder::new(path.clone());
+        record_unhealthy(&recorder, "recoverable failure").await;
+        record_healthy_if_stale(&recorder).await;
+
+        let healthy = load_health(path).await.expect("load healthy");
         assert_eq!(
             healthy.state,
             ployz_supervision::ComponentHealthState::Healthy
