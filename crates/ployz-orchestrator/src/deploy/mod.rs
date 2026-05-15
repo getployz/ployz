@@ -2,6 +2,7 @@ pub mod participant;
 mod participant_set;
 mod volume_execution;
 
+mod branch_manifest;
 mod execute;
 mod export;
 mod lifecycle;
@@ -28,6 +29,11 @@ use ployz_time::now_unix_secs;
 use probe::{probe_participants, warnings_from_reachability};
 use std::sync::Arc;
 
+pub use branch_manifest::{
+    BranchManifestResourceMode, BranchManifestResourceModeOverride, BranchNamespaceManifestRequest,
+    BranchRenderError, encode_branch_manifest_json, render_branch_namespace_manifest,
+    stable_fingerprint, validate_branch_namespace_manifest_request,
+};
 pub use execute::DeployApplyPreconditions;
 pub use export::{ExportedManifest, export_manifest, export_manifest_with_evidence};
 pub use migrate_manifest::{

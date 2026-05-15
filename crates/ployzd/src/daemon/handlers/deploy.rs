@@ -19,10 +19,6 @@ use ployz_spec::{DeployManifest, Namespace};
 use ployz_store_memory::StoreDriverMemoryExt as _;
 
 #[cfg(test)]
-use manifest_render::{BranchRenderError, stable_fingerprint};
-#[cfg(test)]
-pub(super) use planning::DEPLOY_PREPARE_TTL_SECS;
-#[cfg(test)]
 use volume_transfer::run_volume_move_rpc;
 
 impl DaemonState {

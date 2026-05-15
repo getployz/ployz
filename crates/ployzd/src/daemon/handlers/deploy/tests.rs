@@ -2,7 +2,6 @@ use super::apply::{DeployLockLossOutcome, mark_deploy_failed_after_lock_loss};
 use super::branch::{
     BranchApplyingReplayAction, branch_applying_replay_action, record_branch_apply_prepared_outcome,
 };
-use super::manifest_render::render_branch_namespace_manifest;
 use super::responses::deploy_failure_payload_for_error;
 use super::*;
 use crate::daemon::{ActiveMesh, RetainedSubnet};
@@ -29,13 +28,12 @@ use ployz_node_runtime::{
     NodeRpcError, NodeRpcPolicy, VolumeZfsMoveError, VolumeZfsRpcOperation, VolumeZfsRpcTransport,
     volume_move_result_from_transfer,
 };
-use ployz_orchestrator::deploy::{participant::MoveVolumeRequest, prepare};
+use ployz_orchestrator::deploy::participant::MoveVolumeRequest;
 use ployz_orchestrator::{Mesh, WireguardDriver};
 use ployz_runtime_api::Identity;
 use ployz_spec::{
     ContainerSpec, Mount, MountSource, NetworkMode, Placement, PullPolicy, Resources,
-    RestartPolicy, RolloutStrategy, ServiceIntent, ServiceSpec, VolumeCloneConsistency,
-    VolumeCloneDataPolicy, VolumeIntent, VolumeScope,
+    RestartPolicy, RolloutStrategy, ServiceSpec,
 };
 use ployz_store_api::{DeployCommit, DeployStore, MachineMembershipStore, StoreDriver};
 use std::collections::{BTreeMap, VecDeque};
@@ -195,32 +193,6 @@ fn test_service_with_mounts(name: &str, mounts: Vec<Mount>) -> ServiceSpec {
     }
 }
 
-fn test_volume_record(namespace: &Namespace, volume: &str, machine: &str) -> VolumeRecord {
-    test_volume_record_with_scope(namespace, volume, machine, VolumeScope::Single)
-}
-
-fn test_volume_record_with_scope(
-    namespace: &Namespace,
-    volume: &str,
-    machine: &str,
-    scope: VolumeScope,
-) -> VolumeRecord {
-    VolumeRecord {
-        namespace: namespace.clone(),
-        volume_name: volume.into(),
-        scope,
-        machine_id: MachineId::new(machine),
-        quota: "10G".into(),
-        mode: "0750".into(),
-        owner: "999:999".into(),
-        attached_services: vec!["db".into()],
-        created_at: 1,
-        created_by_deploy_id: DeployId::new("deploy-1"),
-        last_modified_at: 1,
-        last_modified_by_deploy_id: DeployId::new("deploy-1"),
-    }
-}
-
 async fn seed_committed_service(
     store: &StoreDriver,
     namespace: &Namespace,
@@ -297,152 +269,6 @@ fn decode_manifest_rejects_invalid_json_with_structured_error() {
 }
 
 #[tokio::test]
-async fn render_branch_namespace_manifest_branches_services_and_fresh_volumes_by_default() {
-    let store = StoreDriver::memory();
-    let source = Namespace::new("prod");
-    seed_committed_service(
-        &store,
-        &source,
-        test_service(),
-        vec![test_volume_record(&source, "data", "machine-a")],
-    )
-    .await;
-
-    let manifest = render_branch_namespace_manifest(
-        &store,
-        &BranchNamespaceRequest {
-            source_namespace: "prod".into(),
-            target_namespace: "pr-39".into(),
-            mode: BranchNamespaceMode::RenderManifest,
-            default_service_mode: BranchResourceMode::Branch,
-            default_volume_mode: BranchResourceMode::Fresh,
-            services: Vec::new(),
-            volumes: Vec::new(),
-        },
-    )
-    .await
-    .expect("render branch manifest");
-
-    assert_eq!(manifest.namespace, Namespace::new("pr-39"));
-    let intent = manifest.intent.expect("branch service intent");
-    let [service] = intent.services.as_slice() else {
-        panic!(
-            "expected one service branch hint, got {:?}",
-            intent.services
-        );
-    };
-    assert_eq!(service.service, "db");
-    assert_eq!(
-        service.intent,
-        ServiceIntent::Branch {
-            source_namespace: Namespace::new("prod"),
-            source_service: "db".into(),
-            expected_source_revision_hash: Some("rev-db".into()),
-        }
-    );
-    assert!(intent.volumes.is_empty());
-}
-
-#[tokio::test]
-async fn render_branch_namespace_manifest_clones_opted_in_volumes() {
-    let store = StoreDriver::memory();
-    let source = Namespace::new("prod");
-    let source_volume = test_volume_record(&source, "data", "machine-a");
-    let expected_source_record_fingerprint = stable_fingerprint(&source_volume);
-    seed_committed_service(&store, &source, test_service(), vec![source_volume]).await;
-
-    let manifest = render_branch_namespace_manifest(
-        &store,
-        &BranchNamespaceRequest {
-            source_namespace: "prod".into(),
-            target_namespace: "pr-39".into(),
-            mode: BranchNamespaceMode::RenderManifest,
-            default_service_mode: BranchResourceMode::Branch,
-            default_volume_mode: BranchResourceMode::Fresh,
-            services: Vec::new(),
-            volumes: vec![ployz_api::BranchResourceModeOverride {
-                name: "data".into(),
-                mode: BranchResourceMode::Branch,
-            }],
-        },
-    )
-    .await
-    .expect("render branch manifest");
-
-    let intent = manifest.intent.expect("branch intent");
-    let [volume] = intent.volumes.as_slice() else {
-        panic!("expected one volume clone hint, got {:?}", intent.volumes);
-    };
-    assert_eq!(volume.volume, "data");
-    assert_eq!(
-        volume.intent,
-        VolumeIntent::Clone {
-            source_namespace: Namespace::new("prod"),
-            source_volume: "data".into(),
-            data_policy: VolumeCloneDataPolicy::Raw,
-            consistency: VolumeCloneConsistency::CrashConsistent,
-            expected_source_record_fingerprint: Some(expected_source_record_fingerprint),
-        }
-    );
-}
-
-#[tokio::test]
-async fn render_branch_namespace_manifest_service_override_fresh_removes_hint() {
-    let store = StoreDriver::memory();
-    let source = Namespace::new("prod");
-    seed_committed_service(
-        &store,
-        &source,
-        test_service(),
-        vec![test_volume_record(&source, "data", "machine-a")],
-    )
-    .await;
-
-    let manifest = render_branch_namespace_manifest(
-        &store,
-        &BranchNamespaceRequest {
-            source_namespace: "prod".into(),
-            target_namespace: "pr-39".into(),
-            mode: BranchNamespaceMode::RenderManifest,
-            default_service_mode: BranchResourceMode::Branch,
-            default_volume_mode: BranchResourceMode::Fresh,
-            services: vec![ployz_api::BranchResourceModeOverride {
-                name: "db".into(),
-                mode: BranchResourceMode::Fresh,
-            }],
-            volumes: Vec::new(),
-        },
-    )
-    .await
-    .expect("render branch manifest");
-
-    assert!(manifest.intent.is_none());
-}
-
-#[tokio::test]
-async fn render_branch_namespace_manifest_rejects_empty_source() {
-    let store = StoreDriver::memory();
-
-    let error = render_branch_namespace_manifest(
-        &store,
-        &BranchNamespaceRequest {
-            source_namespace: "missing".into(),
-            target_namespace: "pr-39".into(),
-            mode: BranchNamespaceMode::RenderManifest,
-            default_service_mode: BranchResourceMode::Branch,
-            default_volume_mode: BranchResourceMode::Fresh,
-            services: Vec::new(),
-            volumes: Vec::new(),
-        },
-    )
-    .await
-    .expect_err("empty source should fail");
-
-    assert!(matches!(error, BranchRenderError::EmptySource { .. }));
-    assert_eq!(error.code(), "BRANCH_SOURCE_EMPTY");
-}
-
-#[tokio::test]
 async fn handle_branch_namespace_validates_request_before_mesh() {
     let state = test_daemon_state();
 
@@ -500,94 +326,6 @@ async fn handle_branch_namespace_apply_is_unsupported() {
 
     assert!(!response.is_ok());
     assert_eq!(response.code(), "BRANCH_DIRECT_APPLY_UNSUPPORTED");
-}
-
-#[tokio::test]
-async fn branch_prepare_record_preserves_compiled_source_evidence() {
-    let store = StoreDriver::memory();
-    let mut machine = MachineMembership::seed(
-        MachineId::new("founder"),
-        PublicKey([42; 32]),
-        OverlayIp("fd00::42".parse().expect("valid overlay")),
-        None,
-        Vec::new(),
-    );
-    machine.lifecycle = MachineLifecycle::Active;
-    store
-        .upsert_self_machine(&machine)
-        .await
-        .expect("seed active machine");
-    let source = Namespace::new("prod");
-    let source_volume = test_volume_record(&source, "data", "founder");
-    let expected_source_record_fingerprint = stable_fingerprint(&source_volume);
-    seed_committed_service(&store, &source, test_service(), vec![source_volume]).await;
-    let manifest = render_branch_namespace_manifest(
-        &store,
-        &BranchNamespaceRequest {
-            source_namespace: "prod".into(),
-            target_namespace: "pr-39".into(),
-            mode: BranchNamespaceMode::Prepare,
-            default_service_mode: BranchResourceMode::Branch,
-            default_volume_mode: BranchResourceMode::Fresh,
-            services: Vec::new(),
-            volumes: vec![ployz_api::BranchResourceModeOverride {
-                name: "data".into(),
-                mode: BranchResourceMode::Branch,
-            }],
-        },
-    )
-    .await
-    .expect("render branch manifest");
-
-    let prepared = prepare(
-        &store,
-        &MachineId::new("founder"),
-        &manifest,
-        &ployz_orchestrator::deploy::NoopParticipantProbe,
-        DeployId::new("prepare-branch"),
-        DEPLOY_PREPARE_TTL_SECS,
-    )
-    .await
-    .expect("prepare compiled branch manifest");
-
-    assert_eq!(prepared.namespace, Namespace::new("pr-39"));
-    let stored_manifest: DeployManifest =
-        serde_json::from_str(&prepared.manifest_json).expect("stored manifest json");
-    assert_eq!(stored_manifest.namespace, Namespace::new("pr-39"));
-    let intent = stored_manifest.intent.expect("stored branch intent");
-    let [service] = intent.services.as_slice() else {
-        panic!(
-            "expected one stored service branch hint, got {:?}",
-            intent.services
-        );
-    };
-    assert_eq!(
-        service.intent,
-        ServiceIntent::Branch {
-            source_namespace: Namespace::new("prod"),
-            source_service: "db".into(),
-            expected_source_revision_hash: Some("rev-db".into()),
-        }
-    );
-    let [volume] = intent.volumes.as_slice() else {
-        panic!(
-            "expected one stored volume clone hint, got {:?}",
-            intent.volumes
-        );
-    };
-    assert_eq!(
-        volume.intent,
-        VolumeIntent::Clone {
-            source_namespace: Namespace::new("prod"),
-            source_volume: "data".into(),
-            data_policy: VolumeCloneDataPolicy::Raw,
-            consistency: VolumeCloneConsistency::CrashConsistent,
-            expected_source_record_fingerprint: Some(expected_source_record_fingerprint),
-        }
-    );
-    assert_eq!(prepared.preview.namespace, Namespace::new("pr-39"));
-    assert_eq!(prepared.preview.service_branch_sources.len(), 1);
-    assert_eq!(prepared.preview.volume_clones.len(), 1);
 }
 
 #[tokio::test]
@@ -1273,120 +1011,6 @@ async fn branch_applying_replay_action_prefers_active_replay_after_race() {
     };
     assert_eq!(environment.state, BranchEnvironmentState::Active);
     assert_eq!(environment.applied_deploy_id, Some(prepared_deploy_id));
-}
-
-#[tokio::test]
-async fn render_branch_namespace_manifest_rejects_unknown_and_duplicate_overrides() {
-    let store = StoreDriver::memory();
-    let source = Namespace::new("prod");
-    seed_committed_service(
-        &store,
-        &source,
-        test_service(),
-        vec![test_volume_record(&source, "data", "machine-a")],
-    )
-    .await;
-
-    let unknown = render_branch_namespace_manifest(
-        &store,
-        &BranchNamespaceRequest {
-            source_namespace: "prod".into(),
-            target_namespace: "pr-39".into(),
-            mode: BranchNamespaceMode::RenderManifest,
-            default_service_mode: BranchResourceMode::Branch,
-            default_volume_mode: BranchResourceMode::Fresh,
-            services: vec![ployz_api::BranchResourceModeOverride {
-                name: "missing".into(),
-                mode: BranchResourceMode::Fresh,
-            }],
-            volumes: Vec::new(),
-        },
-    )
-    .await
-    .expect_err("unknown override should fail");
-    assert!(matches!(unknown, BranchRenderError::UnknownService { .. }));
-    assert_eq!(unknown.code(), "BRANCH_UNKNOWN_SERVICE");
-
-    let unknown_volume = render_branch_namespace_manifest(
-        &store,
-        &BranchNamespaceRequest {
-            source_namespace: "prod".into(),
-            target_namespace: "pr-39".into(),
-            mode: BranchNamespaceMode::RenderManifest,
-            default_service_mode: BranchResourceMode::Branch,
-            default_volume_mode: BranchResourceMode::Fresh,
-            services: Vec::new(),
-            volumes: vec![ployz_api::BranchResourceModeOverride {
-                name: "missing".into(),
-                mode: BranchResourceMode::Branch,
-            }],
-        },
-    )
-    .await
-    .expect_err("unknown volume override should fail");
-    assert!(matches!(
-        unknown_volume,
-        BranchRenderError::UnknownVolume { .. }
-    ));
-    assert_eq!(unknown_volume.code(), "BRANCH_UNKNOWN_VOLUME");
-
-    let duplicate_service = render_branch_namespace_manifest(
-        &store,
-        &BranchNamespaceRequest {
-            source_namespace: "prod".into(),
-            target_namespace: "pr-39".into(),
-            mode: BranchNamespaceMode::RenderManifest,
-            default_service_mode: BranchResourceMode::Branch,
-            default_volume_mode: BranchResourceMode::Fresh,
-            services: vec![
-                ployz_api::BranchResourceModeOverride {
-                    name: "db".into(),
-                    mode: BranchResourceMode::Branch,
-                },
-                ployz_api::BranchResourceModeOverride {
-                    name: "db".into(),
-                    mode: BranchResourceMode::Fresh,
-                },
-            ],
-            volumes: Vec::new(),
-        },
-    )
-    .await
-    .expect_err("duplicate service override should fail");
-    assert!(matches!(
-        duplicate_service,
-        BranchRenderError::DuplicateService { .. }
-    ));
-    assert_eq!(duplicate_service.code(), "BRANCH_DUPLICATE_SERVICE");
-
-    let duplicate = render_branch_namespace_manifest(
-        &store,
-        &BranchNamespaceRequest {
-            source_namespace: "prod".into(),
-            target_namespace: "pr-39".into(),
-            mode: BranchNamespaceMode::RenderManifest,
-            default_service_mode: BranchResourceMode::Branch,
-            default_volume_mode: BranchResourceMode::Fresh,
-            services: Vec::new(),
-            volumes: vec![
-                ployz_api::BranchResourceModeOverride {
-                    name: "data".into(),
-                    mode: BranchResourceMode::Branch,
-                },
-                ployz_api::BranchResourceModeOverride {
-                    name: "data".into(),
-                    mode: BranchResourceMode::Fresh,
-                },
-            ],
-        },
-    )
-    .await
-    .expect_err("duplicate override should fail");
-    assert!(matches!(
-        duplicate,
-        BranchRenderError::DuplicateVolume { .. }
-    ));
-    assert_eq!(duplicate.code(), "BRANCH_DUPLICATE_VOLUME");
 }
 
 #[test]

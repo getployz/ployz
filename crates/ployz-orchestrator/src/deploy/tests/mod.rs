@@ -57,6 +57,7 @@ use tokio::time::sleep;
 
 mod apply;
 mod branch;
+mod branch_manifest;
 mod export;
 mod image_availability;
 mod managed_domains;

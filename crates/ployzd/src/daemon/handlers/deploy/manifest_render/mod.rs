@@ -1,12 +1,8 @@
 mod branch;
 mod migrate;
 
-#[cfg(test)]
-pub(super) use branch::BranchRenderError;
-#[cfg(test)]
-pub(super) use branch::stable_fingerprint;
 pub(super) use branch::{
-    encode_branch_manifest_json, render_branch_namespace_manifest,
+    branch_render_error_code, encode_branch_manifest_json, render_branch_namespace_manifest,
     validate_branch_namespace_request,
 };
 pub(super) use migrate::{

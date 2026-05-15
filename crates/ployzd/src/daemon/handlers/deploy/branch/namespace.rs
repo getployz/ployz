@@ -11,14 +11,14 @@ use ployz_spec::Namespace;
 use ployz_store_api::DeployStore;
 
 use super::super::manifest_render::{
-    encode_branch_manifest_json, render_branch_namespace_manifest,
+    branch_render_error_code, encode_branch_manifest_json, render_branch_namespace_manifest,
     validate_branch_namespace_request,
 };
 
 impl DaemonState {
     pub async fn handle_branch_namespace(&self, request: BranchNamespaceRequest) -> DaemonResponse {
         if let Err(error) = validate_branch_namespace_request(&request) {
-            return self.err(error.code(), error.to_string());
+            return self.err(branch_render_error_code(&error), error.to_string());
         }
         if matches!(request.mode, BranchNamespaceMode::Apply) {
             return self.err(
@@ -57,7 +57,7 @@ impl DaemonState {
         }
         let manifest = match render_branch_namespace_manifest(&active.mesh.store, &request).await {
             Ok(manifest) => manifest,
-            Err(error) => return self.err(error.code(), error.to_string()),
+            Err(error) => return self.err(branch_render_error_code(&error), error.to_string()),
         };
         match request.mode {
             BranchNamespaceMode::RenderManifest => {
@@ -66,7 +66,9 @@ impl DaemonState {
             BranchNamespaceMode::Prepare => {
                 let manifest_json = match encode_branch_manifest_json(&manifest) {
                     Ok(manifest_json) => manifest_json,
-                    Err(error) => return self.err(error.code(), error.to_string()),
+                    Err(error) => {
+                        return self.err(branch_render_error_code(&error), error.to_string());
+                    }
                 };
                 let response = self.handle_deploy_prepare(&manifest_json).await;
                 if response.is_ok()
@@ -82,7 +84,9 @@ impl DaemonState {
             BranchNamespaceMode::Preview => {
                 let manifest_json = match encode_branch_manifest_json(&manifest) {
                     Ok(manifest_json) => manifest_json,
-                    Err(error) => return self.err(error.code(), error.to_string()),
+                    Err(error) => {
+                        return self.err(branch_render_error_code(&error), error.to_string());
+                    }
                 };
                 self.handle_deploy_preview(&manifest_json, &DeployOptions::default())
                     .await
@@ -90,7 +94,9 @@ impl DaemonState {
             BranchNamespaceMode::Apply => {
                 let manifest_json = match encode_branch_manifest_json(&manifest) {
                     Ok(manifest_json) => manifest_json,
-                    Err(error) => return self.err(error.code(), error.to_string()),
+                    Err(error) => {
+                        return self.err(branch_render_error_code(&error), error.to_string());
+                    }
                 };
                 self.handle_deploy_apply(&manifest_json, &DeployOptions::default())
                     .await
