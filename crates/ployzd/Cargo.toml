@@ -33,6 +33,7 @@ ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-runtime-docker = { path = "../ployz-runtime-docker" }
 ployz-sdk = { path = "../ployz-sdk" }
 ployz-storage-api = { path = "../ployz-storage-api" }
+ployz-supervision = { path = "../ployz-supervision" }
 ployz-volume-api = { path = "../ployz-volume-api" }
 ployz-volume-btrfs = { path = "../ployz-volume-btrfs" }
 ployz-volume-docker = { path = "../ployz-volume-docker" }

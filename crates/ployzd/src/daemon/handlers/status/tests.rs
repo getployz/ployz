@@ -5,7 +5,6 @@ use super::nats::{
     nats_offline_replicas,
 };
 use crate::daemon::{ActiveMesh, DaemonState, RetainedSubnet};
-use crate::health::ComponentHealth;
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use async_nats::jetstream::stream::{ClusterInfo, PeerInfo};
 use ipnet::Ipv4Net;
@@ -25,6 +24,7 @@ use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
 use ployz_runtime_api::Identity;
 use ployz_store_api::{MachineMembershipStore, StoreDriver};
 use ployz_store_memory::{MemoryService, MemoryStore, StoreDriverMemoryExt as _};
+use ployz_supervision::ComponentHealth;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;

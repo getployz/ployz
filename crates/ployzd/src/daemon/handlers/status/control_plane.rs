@@ -162,11 +162,11 @@ pub(super) fn storage_replica_intent_status(
 
 pub(super) fn component_health_status(
     component: impl Into<String>,
-    health: &crate::health::ComponentHealth,
+    health: &ployz_supervision::ComponentHealth,
 ) -> ControlPlaneStatus {
     let state = match &health.state {
-        crate::health::ComponentHealthState::Healthy => ControlPlaneHealthState::Healthy,
-        crate::health::ComponentHealthState::Stale {
+        ployz_supervision::ComponentHealthState::Healthy => ControlPlaneHealthState::Healthy,
+        ployz_supervision::ComponentHealthState::Stale {
             stale_since_unix_secs,
             consecutive_failures,
             last_error,

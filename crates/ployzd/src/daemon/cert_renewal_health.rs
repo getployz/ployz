@@ -1,19 +1,16 @@
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, warn};
 
 pub const NATS_CERT_RENEWAL_HEALTH_FILE: &str = "nats-cert-renewal-health.json";
 
-pub type CertRenewalWorkerHealth = crate::health::ComponentHealth;
+pub type CertRenewalWorkerHealth = ployz_supervision::ComponentHealth;
 
 pub async fn load_health(path: impl AsRef<Path>) -> std::io::Result<CertRenewalWorkerHealth> {
-    let bytes = tokio::fs::read(path).await?;
-    serde_json::from_slice(&bytes)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    ployz_supervision::load_component_health(path).await
 }
 
 pub async fn record_healthy(path: &Path) {
-    write_health(path, healthy_health()).await;
+    write_health(path, &ployz_supervision::healthy_component_health()).await;
 }
 
 pub async fn record_unhealthy(
@@ -21,44 +18,23 @@ pub async fn record_unhealthy(
     health_state: &mut Option<CertRenewalWorkerHealth>,
     error: impl Into<String>,
 ) {
-    let now = unix_secs();
-    let next = CertRenewalWorkerHealth::stale(now, health_state.as_ref(), error);
+    let next =
+        CertRenewalWorkerHealth::stale(ployz_time::now_unix_secs(), health_state.as_ref(), error);
     *health_state = Some(next.clone());
-    write_health(path, next).await;
+    write_health(path, &next).await;
 }
 
-fn healthy_health() -> CertRenewalWorkerHealth {
-    CertRenewalWorkerHealth::healthy(unix_secs())
-}
-
-async fn write_health(path: &Path, health: CertRenewalWorkerHealth) {
-    let Ok(payload) = serde_json::to_vec_pretty(&health) else {
-        return;
-    };
-    if let Some(parent) = path.parent()
-        && let Err(error) = tokio::fs::create_dir_all(parent).await
-    {
-        warn!(path = %path.display(), %error, "failed to create cert renewal health directory");
-        return;
-    }
-    if let Err(error) = tokio::fs::write(path, payload).await {
+async fn write_health(path: &Path, health: &CertRenewalWorkerHealth) {
+    if let Err(error) = ployz_supervision::write_component_health(path, health).await {
         warn!(path = %path.display(), %error, "failed to write cert renewal health");
     } else {
         debug!(path = %path.display(), "wrote cert renewal health");
     }
 }
 
-fn unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        CertRenewalWorkerHealth, healthy_health, load_health, record_unhealthy, write_health,
-    };
+    use super::{CertRenewalWorkerHealth, load_health, record_unhealthy, write_health};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -71,7 +47,7 @@ mod tests {
         let first = CertRenewalWorkerHealth::stale(1_777_646_000, None, "first");
         let health = CertRenewalWorkerHealth::stale(1_777_646_100, Some(&first), "fetch failed");
 
-        write_health(&path, health.clone()).await;
+        write_health(&path, &health).await;
 
         let loaded = load_health(path).await.expect("load health");
         assert_eq!(loaded, health);
@@ -87,14 +63,14 @@ mod tests {
         record_unhealthy(&path, &mut health_state, "second").await;
         let second = load_health(path).await.expect("load second health");
 
-        let crate::health::ComponentHealthState::Stale {
+        let ployz_supervision::ComponentHealthState::Stale {
             stale_since_unix_secs: first_stale_since,
             ..
         } = first.state
         else {
             panic!("first health should be stale");
         };
-        let crate::health::ComponentHealthState::Stale {
+        let ployz_supervision::ComponentHealthState::Stale {
             stale_since_unix_secs: second_stale_since,
             consecutive_failures,
             last_error,
@@ -109,9 +85,12 @@ mod tests {
 
     #[test]
     fn cert_renewal_healthy_state_is_fresh() {
-        let health = healthy_health();
+        let health = ployz_supervision::healthy_component_health();
 
-        assert_eq!(health.state, crate::health::ComponentHealthState::Healthy);
+        assert_eq!(
+            health.state,
+            ployz_supervision::ComponentHealthState::Healthy
+        );
     }
 
     fn temp_path(label: &str) -> PathBuf {

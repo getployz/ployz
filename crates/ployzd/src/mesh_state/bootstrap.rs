@@ -40,7 +40,7 @@ pub struct BootstrapPeerRecord {
     pub endpoints: Vec<String>,
 }
 
-pub type BootstrapPeerSeedHealth = crate::health::ComponentHealth;
+pub type BootstrapPeerSeedHealth = ployz_supervision::ComponentHealth;
 
 impl BootstrapPeerRecord {
     #[must_use]
@@ -807,7 +807,10 @@ mod tests {
         let health = load_bootstrap_peer_seed_health(&network_dir)
             .expect("load health")
             .expect("health");
-        assert_eq!(health.state, crate::health::ComponentHealthState::Healthy);
+        assert_eq!(
+            health.state,
+            ployz_supervision::ComponentHealthState::Healthy
+        );
         let _ = std::fs::remove_dir_all(&network_dir);
     }
 

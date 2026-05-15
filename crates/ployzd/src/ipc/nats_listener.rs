@@ -16,7 +16,7 @@ const RESUBSCRIBE_DELAY: Duration = Duration::from_secs(1);
 const MAX_IN_FLIGHT_COMMANDS: usize = 64;
 pub const NATS_NODE_RPC_HEALTH_FILE: &str = "nats-node-rpc-health.json";
 
-pub type NatsNodeRpcHealth = crate::health::ComponentHealth;
+pub type NatsNodeRpcHealth = ployz_supervision::ComponentHealth;
 
 pub struct NatsListenerHandle {
     cancel: CancellationToken,
@@ -271,14 +271,14 @@ mod tests {
         record_unhealthy(&path, &mut health_state, "second").await;
         let second = load_health(path).await.expect("load second health");
 
-        let crate::health::ComponentHealthState::Stale {
+        let ployz_supervision::ComponentHealthState::Stale {
             stale_since_unix_secs: first_stale_since,
             ..
         } = first.state
         else {
             panic!("first health should be stale");
         };
-        let crate::health::ComponentHealthState::Stale {
+        let ployz_supervision::ComponentHealthState::Stale {
             stale_since_unix_secs: second_stale_since,
             consecutive_failures,
             last_error,
@@ -295,7 +295,10 @@ mod tests {
     fn node_rpc_healthy_state_is_fresh() {
         let health = healthy_health();
 
-        assert_eq!(health.state, crate::health::ComponentHealthState::Healthy);
+        assert_eq!(
+            health.state,
+            ployz_supervision::ComponentHealthState::Healthy
+        );
     }
 
     #[tokio::test]
@@ -307,7 +310,7 @@ mod tests {
         recorder.record_unhealthy("publish response failed").await;
         let unhealthy = load_health(path.clone()).await.expect("load unhealthy");
 
-        let crate::health::ComponentHealthState::Stale {
+        let ployz_supervision::ComponentHealthState::Stale {
             consecutive_failures,
             last_error,
             ..
@@ -321,7 +324,10 @@ mod tests {
         recorder.record_healthy_if_stale().await;
         let healthy = load_health(path).await.expect("load healthy");
 
-        assert_eq!(healthy.state, crate::health::ComponentHealthState::Healthy);
+        assert_eq!(
+            healthy.state,
+            ployz_supervision::ComponentHealthState::Healthy
+        );
     }
 
     fn temp_path(label: &str) -> PathBuf {

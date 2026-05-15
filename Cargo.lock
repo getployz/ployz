@@ -3625,6 +3625,8 @@ dependencies = [
 name = "ployz-supervision"
 version = "0.6.1"
 dependencies = [
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-util",
 ]
@@ -3763,6 +3765,7 @@ dependencies = [
  "ployz-storage-api",
  "ployz-store-api",
  "ployz-store-memory",
+ "ployz-supervision",
  "ployz-time",
  "ployz-volume-api",
  "ployz-volume-btrfs",
