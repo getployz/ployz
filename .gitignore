@@ -1,4 +1,7 @@
 /target/
+/_build/
+/deps/
+/tmp/
 node_modules/
 npm-debug.log*
 *.tgz

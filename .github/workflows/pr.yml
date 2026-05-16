@@ -29,11 +29,27 @@ jobs:
       - name: Install just
         uses: extractions/setup-just@v3
 
+      - name: Install Erlang and Elixir for v2
+        if: ${{ hashFiles('mix.exs') != '' }}
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.3"
+          elixir-version: "1.18.4"
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Check v2 formatting
+        run: just format-v2
+
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --exclude ployz-bpfctl
+
+      - name: Run v2 tests
+        run: just test-v2
+
+      - name: Run v2 Docker e2e tests
+        run: just test-v2-e2e
 
       - name: Run tests
         run: just test-all

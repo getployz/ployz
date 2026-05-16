@@ -18,6 +18,40 @@ build-release:
 test:
     cargo test --workspace --exclude ployzd --exclude ployz-runtime-backends
 
+format-v2:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -f mix.exs ]]; then
+      echo "mix.exs not present yet; skipping v2 format"
+      exit 0
+    fi
+    if [[ ! -f .formatter.exs ]]; then
+      echo ".formatter.exs not present yet; skipping v2 format"
+      exit 0
+    fi
+    mix format --check-formatted
+
+test-v2:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -f mix.exs ]]; then
+      echo "mix.exs not present yet; skipping v2 tests"
+      exit 0
+    fi
+    mix deps.get
+    mix test --exclude docker
+
+test-v2-e2e:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -f mix.exs ]]; then
+      echo "mix.exs not present yet; skipping v2 Docker e2e tests"
+      exit 0
+    fi
+    cargo build -p ployz-substrate-helper
+    mix deps.get
+    mix test --only docker
+
 test-all:
     cargo test
     just verify-deploy-types
