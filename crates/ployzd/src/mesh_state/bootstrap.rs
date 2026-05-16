@@ -153,18 +153,14 @@ pub fn load_bootstrap_peer_seed_health(
     if !path.exists() {
         return Ok(None);
     }
-    let data = std::fs::read_to_string(&path).map_err(|error| {
-        format!(
-            "read bootstrap peer seed health '{}': {error}",
-            path.display()
-        )
-    })?;
-    serde_json::from_str(&data).map(Some).map_err(|error| {
-        format!(
-            "parse bootstrap peer seed health '{}': {error}",
-            path.display()
-        )
-    })
+    ployz_supervision::load_component_health_sync(&path)
+        .map(Some)
+        .map_err(|error| {
+            format!(
+                "load bootstrap peer seed health '{}': {error}",
+                path.display()
+            )
+        })
 }
 
 pub fn load_bootstrap_peer_records(network_dir: &Path) -> Result<Vec<BootstrapPeerRecord>, String> {
@@ -219,34 +215,9 @@ fn write_bootstrap_peer_seed_health(
     health: &BootstrapPeerSeedHealth,
 ) -> Result<(), String> {
     let path = bootstrap_peer_seed_health_path(network_dir);
-    std::fs::create_dir_all(network_dir).map_err(|error| {
-        format!(
-            "create bootstrap peer seed health dir '{}': {error}",
-            network_dir.display()
-        )
-    })?;
-    let body = serde_json::to_string_pretty(health).map_err(|error| {
-        format!(
-            "encode bootstrap peer seed health '{}': {error}",
-            path.display()
-        )
-    })?;
-    let seq = BOOTSTRAP_PEER_SEED_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp_path = path.with_file_name(format!(
-        "{BOOTSTRAP_PEER_SEED_HEALTH_FILE}.tmp.{}.{seq}",
-        std::process::id()
-    ));
-    std::fs::write(&tmp_path, body).map_err(|error| {
+    ployz_supervision::write_component_health_atomic_sync(&path, health).map_err(|error| {
         format!(
             "write bootstrap peer seed health '{}': {error}",
-            tmp_path.display()
-        )
-    })?;
-    std::fs::rename(&tmp_path, &path).map_err(|error| {
-        let _ = std::fs::remove_file(&tmp_path);
-        format!(
-            "replace bootstrap peer seed health '{}' with '{}': {error}",
-            tmp_path.display(),
             path.display()
         )
     })
@@ -470,7 +441,7 @@ async fn sleep_or_cancel(delay: Duration, cancel: &CancellationToken) -> bool {
 }
 
 fn mark_peer_seed_healthy(network_dir: &Path) {
-    let health = BootstrapPeerSeedHealth::healthy(ployz_time::now_unix_secs());
+    let health = ployz_supervision::healthy_component_health();
     if let Err(error) = write_bootstrap_peer_seed_health(network_dir, &health) {
         tracing::warn!(%error, "failed to write bootstrap peer seed health");
     }
@@ -481,8 +452,7 @@ fn mark_peer_seed_failed(
     health_state: &mut Option<BootstrapPeerSeedHealth>,
     error: impl Into<String>,
 ) {
-    let now = ployz_time::now_unix_secs();
-    let health = BootstrapPeerSeedHealth::stale(now, health_state.as_ref(), error);
+    let health = ployz_supervision::stale_component_health(health_state.as_ref(), error);
     *health_state = Some(health.clone());
     if let Err(error) = write_bootstrap_peer_seed_health(network_dir, &health) {
         tracing::warn!(%error, "failed to write bootstrap peer seed health");

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -8,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+static COMPONENT_HEALTH_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ComponentHealth {
@@ -384,6 +387,29 @@ pub fn write_component_health_sync(
     let payload = serde_json::to_vec_pretty(health)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     std::fs::write(path, payload)
+}
+
+pub fn write_component_health_atomic_sync(
+    path: impl AsRef<Path>,
+    health: &ComponentHealth,
+) -> std::io::Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let payload = serde_json::to_vec_pretty(health)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let seq = COMPONENT_HEALTH_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("component-health.json");
+    let tmp_path = path.with_file_name(format!("{file_name}.tmp.{}.{seq}", std::process::id()));
+    std::fs::write(&tmp_path, payload)?;
+    std::fs::rename(&tmp_path, path).map_err(|error| {
+        let _ = std::fs::remove_file(&tmp_path);
+        error
+    })
 }
 
 fn decode_component_health(bytes: &[u8]) -> std::io::Result<ComponentHealth> {
@@ -780,6 +806,19 @@ mod tests {
         let health = ComponentHealth::stale(100, None, "watch failed");
 
         write_component_health_sync(&path, &health).expect("write health");
+
+        assert_eq!(
+            load_component_health_sync(path).expect("load health"),
+            health
+        );
+    }
+
+    #[test]
+    fn sync_atomic_health_io_roundtrips() {
+        let path = temp_path("sync-atomic-health-io").join("health.json");
+        let health = ComponentHealth::stale(100, None, "watch failed");
+
+        write_component_health_atomic_sync(&path, &health).expect("write health");
 
         assert_eq!(
             load_component_health_sync(path).expect("load health"),
