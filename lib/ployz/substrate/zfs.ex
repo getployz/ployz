@@ -8,10 +8,11 @@ defmodule Ployz.Substrate.Zfs do
 
   def snapshot(volume, _timeout), do: unavailable(:snapshot, volume)
 
-  def send_receive(%{} = snapshot, destination, _timeout),
-    do: unavailable(:send_receive, {snapshot, destination})
+  def send(%{} = snapshot, _timeout), do: unavailable(:send, snapshot)
 
-  def verify_destination(%{} = transfer, _timeout), do: unavailable(:verify_destination, transfer)
+  def recv(%{} = stream, destination, _timeout), do: unavailable(:recv, {stream, destination})
+
+  def verify(%{} = transfer, _timeout), do: unavailable(:verify, transfer)
 
   defp unavailable(op, context) do
     {:error, %{code: :zfs_helper_not_configured, op: op, context: context}}

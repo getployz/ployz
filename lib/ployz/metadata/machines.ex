@@ -52,7 +52,6 @@ defmodule Ployz.Metadata.Machines do
         roles = Map.get(machine, :roles, [:runtime])
         :runtime in roles or "runtime" in roles
       end)
-      |> Enum.map(&Map.fetch!(&1, :id))
 
     {:ok, members}
   end

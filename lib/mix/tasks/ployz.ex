@@ -20,57 +20,54 @@ defmodule Mix.Tasks.Ployz do
   def run(args) do
     Mix.Task.run("app.start")
 
-    args
-    |> dispatch()
-    |> Output.format(format: :text)
-    |> Mix.shell().info()
+    case dispatch(args) do
+      {:ok, _payload} = result ->
+        result
+        |> Output.format(format: :text)
+        |> Mix.shell().info()
+
+      {:error, _payload} = result ->
+        message = Output.format(result, format: :text)
+        Mix.shell().error(message)
+        Mix.raise(message)
+
+      {:error, _reason, _receipt} = result ->
+        message = Output.format(result, format: :text)
+        Mix.shell().error(message)
+        Mix.raise(message)
+    end
   end
 
   def dispatch(["deploy", path]) do
-    endpoint_dispatch(%{command: :deploy, args: %{manifest_path: path}, opts: []}, fn ->
-      Ployz.Commands.Deploy.run(path)
-    end)
+    endpoint_dispatch(%{command: :deploy, args: %{manifest_path: path}, opts: []})
   end
 
   def dispatch(["machine", "add", id]) do
-    endpoint_dispatch(%{command: :machine_add, args: %{id: id}, opts: []}, fn ->
-      Ployz.Commands.MachineAdd.run(%{role: :local_operator}, %{id: id})
-    end)
+    endpoint_dispatch(%{command: :machine_add, args: %{id: id}, opts: []})
   end
 
   def dispatch(["machine", "remove", id]) do
-    endpoint_dispatch(%{command: :machine_remove, args: %{id: id}, opts: []}, fn ->
-      Ployz.Commands.MachineRemove.run(%{role: :local_operator}, %{id: id})
-    end)
+    endpoint_dispatch(%{command: :machine_remove, args: %{id: id}, opts: []})
   end
 
   def dispatch(["cert", "issue", hostname]) do
-    endpoint_dispatch(%{command: :cert_issue, args: %{hostname: hostname}, opts: []}, fn ->
-      Ployz.Commands.Acme.issue(hostname)
-    end)
+    endpoint_dispatch(%{command: :cert_issue, args: %{hostname: hostname}, opts: []})
   end
 
   def dispatch(["migrate-volume", volume, "--to", destination]) do
-    endpoint_dispatch(
-      %{command: :migrate_volume, args: %{volume: volume, destination: destination}, opts: []},
-      fn ->
-        Ployz.Commands.MigrateVolume.run(volume, destination)
-      end
-    )
+    endpoint_dispatch(%{
+      command: :migrate_volume,
+      args: %{volume: volume, destination: destination},
+      opts: []
+    })
   end
 
   def dispatch(["gateway", "routes"]) do
-    endpoint_dispatch(%{command: :gateway_routes, args: %{}, opts: []}, fn ->
-      with {:ok, snapshot} <- Ployz.Gateway.Projection.snapshot() do
-        {:ok, snapshot.routes}
-      end
-    end)
+    endpoint_dispatch(%{command: :gateway_routes, args: %{}, opts: []})
   end
 
   def dispatch(["status"]) do
-    endpoint_dispatch(%{command: :status, args: %{}, opts: []}, fn ->
-      Ployz.Status.snapshot()
-    end)
+    endpoint_dispatch(%{command: :status, args: %{}, opts: []})
   end
 
   def dispatch(["manifest", "check", path]) do
@@ -84,19 +81,20 @@ defmodule Mix.Tasks.Ployz do
      nil}
   end
 
-  defp endpoint_dispatch(request, fallback) do
+  defp endpoint_dispatch(request) do
     endpoint = Application.get_env(:ployz, :command_endpoint, Ployz.CommandEndpoint)
     actor = Application.get_env(:ployz, :cli_actor, %{role: :local_operator})
 
-    cond do
-      Code.ensure_loaded?(endpoint) and function_exported?(endpoint, :authorize_and_dispatch, 2) ->
-        endpoint.authorize_and_dispatch(actor, request)
-
-      Code.ensure_loaded?(endpoint) and function_exported?(endpoint, :authorize_and_dispatch, 1) ->
-        endpoint.authorize_and_dispatch(request)
-
-      true ->
-        fallback.()
+    if Code.ensure_loaded?(endpoint) and function_exported?(endpoint, :authorize_and_dispatch, 2) do
+      endpoint.authorize_and_dispatch(actor, request)
+    else
+      {:error,
+       %{
+         audience: :operator,
+         phase: :dispatch,
+         reason: {:invalid_command_endpoint, endpoint},
+         receipt: nil
+       }}
     end
   end
 end

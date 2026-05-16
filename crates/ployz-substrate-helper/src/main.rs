@@ -329,7 +329,21 @@ fn validate_container_name(name: &str) -> Result<(), HelperError> {
 }
 
 fn validate_image(image: &str) -> Result<(), HelperError> {
-    validate_string_value("image", image)
+    validate_string_value("image", image)?;
+
+    if image.starts_with('-')
+        || image.chars().any(|ch| {
+            !(ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/' | ':' | '@'))
+        })
+    {
+        return Err(helper_error(
+            "invalid_argument",
+            "Docker image reference contains disallowed characters",
+            json!({ "field": "image" }),
+        ));
+    }
+
+    Ok(())
 }
 
 fn validate_string_vec(field: &str, values: &[String]) -> Result<(), HelperError> {

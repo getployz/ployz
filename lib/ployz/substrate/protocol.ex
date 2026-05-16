@@ -143,52 +143,14 @@ defmodule Ployz.Substrate.Protocol do
 
   @doc false
   @spec encode_json(json_value() | map()) :: binary()
-  def encode_json(value) when is_map(value) do
-    encoded =
-      value
-      |> Enum.sort_by(fn {key, _value} -> to_string(key) end)
-      |> Enum.map(fn {key, nested} ->
-        encode_json(to_string(key)) <> ":" <> encode_json(nested)
-      end)
-      |> Enum.join(",")
-
-    "{" <> encoded <> "}"
-  end
-
-  def encode_json(value) when is_list(value) do
-    "[" <> Enum.map_join(value, ",", &encode_json/1) <> "]"
-  end
-
-  def encode_json(value) when is_binary(value) do
-    escaped =
-      value
-      |> String.replace("\\", "\\\\")
-      |> String.replace("\"", "\\\"")
-      |> String.replace("\n", "\\n")
-      |> String.replace("\r", "\\r")
-      |> String.replace("\t", "\\t")
-
-    "\"" <> escaped <> "\""
-  end
-
-  def encode_json(value) when is_integer(value) or is_float(value), do: to_string(value)
-  def encode_json(true), do: "true"
-  def encode_json(false), do: "false"
-  def encode_json(nil), do: "null"
+  def encode_json(value), do: JSON.encode!(value)
 
   @doc false
   @spec decode_json(binary()) :: {:ok, json_value()} | {:error, protocol_error()}
   def decode_json(json) when is_binary(json) do
-    case parse_value(skip_ws(json)) do
-      {:ok, value, rest} ->
-        if skip_ws(rest) == "" do
-          {:ok, value}
-        else
-          {:error, error("invalid_json", "helper frame has trailing JSON content", %{})}
-        end
-
-      {:error, reason} ->
-        {:error, error("invalid_json", reason, %{})}
+    case JSON.decode(json) do
+      {:ok, value} -> {:ok, value}
+      {:error, reason} -> {:error, error("invalid_json", inspect(reason), %{})}
     end
   end
 
@@ -290,102 +252,4 @@ defmodule Ployz.Substrate.Protocol do
     normalized = String.downcase(key)
     Enum.any?(@secret_key_fragments, &String.contains?(normalized, &1))
   end
-
-  defp skip_ws(value), do: String.trim_leading(value)
-
-  defp parse_value("{" <> rest), do: parse_object(skip_ws(rest), %{})
-  defp parse_value("[" <> rest), do: parse_array(skip_ws(rest), [])
-  defp parse_value("\"" <> rest), do: parse_string(rest, [])
-  defp parse_value("true" <> rest), do: {:ok, true, rest}
-  defp parse_value("false" <> rest), do: {:ok, false, rest}
-  defp parse_value("null" <> rest), do: {:ok, nil, rest}
-
-  defp parse_value(<<char, _rest::binary>> = value) when char in ~c"-0123456789",
-    do: parse_number(value)
-
-  defp parse_value(_value), do: {:error, "invalid JSON value"}
-
-  defp parse_object("}" <> rest, acc), do: {:ok, acc, rest}
-
-  defp parse_object("\"" <> rest, acc) do
-    with {:ok, key, rest} <- parse_string(rest, []),
-         ":" <> rest <- skip_ws(rest),
-         {:ok, value, rest} <- parse_value(skip_ws(rest)) do
-      case skip_ws(rest) do
-        "," <> rest -> parse_object(skip_ws(rest), Map.put(acc, key, value))
-        "}" <> rest -> {:ok, Map.put(acc, key, value), rest}
-        _other -> {:error, "invalid JSON object separator"}
-      end
-    else
-      {:error, reason} -> {:error, reason}
-      _other -> {:error, "invalid JSON object"}
-    end
-  end
-
-  defp parse_object(_rest, _acc), do: {:error, "invalid JSON object"}
-
-  defp parse_array("]" <> rest, acc), do: {:ok, Enum.reverse(acc), rest}
-
-  defp parse_array(rest, acc) do
-    with {:ok, value, rest} <- parse_value(skip_ws(rest)) do
-      case skip_ws(rest) do
-        "," <> rest -> parse_array(skip_ws(rest), [value | acc])
-        "]" <> rest -> {:ok, Enum.reverse([value | acc]), rest}
-        _other -> {:error, "invalid JSON array separator"}
-      end
-    end
-  end
-
-  defp parse_string("\"" <> rest, acc),
-    do: {:ok, acc |> Enum.reverse() |> IO.iodata_to_binary(), rest}
-
-  defp parse_string("\\\"" <> rest, acc), do: parse_string(rest, [?\" | acc])
-  defp parse_string("\\\\" <> rest, acc), do: parse_string(rest, [?\\ | acc])
-  defp parse_string("\\/" <> rest, acc), do: parse_string(rest, [?/ | acc])
-  defp parse_string("\\b" <> rest, acc), do: parse_string(rest, [?\b | acc])
-  defp parse_string("\\f" <> rest, acc), do: parse_string(rest, [?\f | acc])
-  defp parse_string("\\n" <> rest, acc), do: parse_string(rest, [?\n | acc])
-  defp parse_string("\\r" <> rest, acc), do: parse_string(rest, [?\r | acc])
-  defp parse_string("\\t" <> rest, acc), do: parse_string(rest, [?\t | acc])
-  defp parse_string("\\u" <> rest, acc), do: parse_unicode_escape(rest, acc)
-
-  defp parse_string(<<char::utf8, rest::binary>>, acc),
-    do: parse_string(rest, [<<char::utf8>> | acc])
-
-  defp parse_string(<<>>, _acc), do: {:error, "unterminated JSON string"}
-
-  defp parse_unicode_escape(<<hex::binary-size(4), rest::binary>>, acc) do
-    case Integer.parse(hex, 16) do
-      {codepoint, ""} -> parse_string(rest, [<<codepoint::utf8>> | acc])
-      _other -> {:error, "invalid JSON unicode escape"}
-    end
-  end
-
-  defp parse_unicode_escape(_rest, _acc), do: {:error, "invalid JSON unicode escape"}
-
-  defp parse_number(value) do
-    {number, rest} = take_number(value, "")
-
-    cond do
-      number == "" ->
-        {:error, "invalid JSON number"}
-
-      String.contains?(number, [".", "e", "E"]) ->
-        case Float.parse(number) do
-          {parsed, ""} -> {:ok, parsed, rest}
-          _other -> {:error, "invalid JSON number"}
-        end
-
-      true ->
-        case Integer.parse(number) do
-          {parsed, ""} -> {:ok, parsed, rest}
-          _other -> {:error, "invalid JSON number"}
-        end
-    end
-  end
-
-  defp take_number(<<char, rest::binary>>, acc) when char in ~c"-+0123456789.eE",
-    do: take_number(rest, <<acc::binary, char>>)
-
-  defp take_number(rest, acc), do: {acc, rest}
 end

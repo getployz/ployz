@@ -21,7 +21,7 @@ defmodule Ployz.Metadata.TransactionsTest do
 
     assert {:ok, %{revision: 1}} = Revisions.get_head("web")
     assert {:ok, %{revision: 1}} = Routes.get("web.example")
-    assert {:ok, %{status: :succeeded}} = Commands.get("cmd-1")
+    assert {:ok, %{status: :committed}} = Commands.get("cmd-1")
   end
 
   test "failed transaction leaves no partial route or service head" do
@@ -37,22 +37,30 @@ defmodule Ployz.Metadata.TransactionsTest do
   end
 
   test "expired lease can be acquired but unexpired lease cannot be stolen" do
-    assert {:ok, {:ok, token}} =
+    assert {:ok, {:ok, lease}} =
              Tables.transaction(fn -> Leases.acquire({:deploy, "web"}, :owner_a, 100, 1_000) end)
+
+    assert lease.owner == :owner_a
+    assert lease.expires_at == 1_100
+
+    assert {:ok, {:error, {:lease_held, :owner_a, 1_100}}} =
+             Tables.transaction(fn -> Leases.acquire({:deploy, "web"}, :owner_a, 100, 1_050) end)
 
     assert {:ok, {:error, {:lease_held, :owner_a, 1_100}}} =
              Tables.transaction(fn -> Leases.acquire({:deploy, "web"}, :owner_b, 100, 1_050) end)
 
-    assert {:ok, {:ok, new_token}} =
+    assert {:ok, {:ok, new_lease}} =
              Tables.transaction(fn -> Leases.acquire({:deploy, "web"}, :owner_b, 100, 1_101) end)
 
-    refute new_token == token
+    refute new_lease.token == lease.token
   end
 
-  test "certs store references and drop secret-bearing material" do
+  test "certs store references and drop atom or string secret-bearing material" do
     assert {:ok, :ok} =
              Tables.transaction(fn ->
                Ployz.Metadata.Certs.put("web.example", %{
+                 "account_key" => "SECRET",
+                 "token" => "SECRET",
                  cert_ref: "ployz-cert://web.example/1",
                  private_key: "SECRET",
                  pem: "PEM"
@@ -63,6 +71,8 @@ defmodule Ployz.Metadata.TransactionsTest do
     assert cert.cert_ref == "ployz-cert://web.example/1"
     refute Map.has_key?(cert, :private_key)
     refute Map.has_key?(cert, :pem)
+    refute Map.has_key?(cert, "account_key")
+    refute Map.has_key?(cert, "token")
   end
 
   defp reset_mnesia(context), do: Ployz.TestSupport.Mnesia.reset!(context)

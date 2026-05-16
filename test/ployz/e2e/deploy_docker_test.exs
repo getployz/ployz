@@ -46,27 +46,19 @@ defmodule Ployz.E2E.DeployDockerTest do
         assert true
 
       true ->
-        actor = %{role: :local_operator}
         helper_path = helper_path()
 
+        Application.put_env(:ployz, :substrate_helper_path, helper_path)
         ensure_gateway_started()
+        ensure_runtime_started()
 
-        {:ok, runtime} =
-          start_supervised(
-            {Ployz.Runtime.Server,
-             port_opts: [helper_path: helper_path], group: Ployz.Runtime.Server.group()}
-          )
+        assert {:ok, %{receipt: add_receipt}} =
+                 Mix.Tasks.Ployz.dispatch(["machine", "add", "docker-e2e-node"])
 
-        assert {:ok, _receipt} =
-                 Ployz.Commands.MachineAdd.run(actor, %{
-                   id: "docker-e2e-node",
-                   roles: [:runtime],
-                   runtime_pid: runtime,
-                   command_id: "cmd-docker-add"
-                 })
+        assert add_receipt.status == :committed
 
         manifest_path = write_manifest!()
-        assert {:ok, receipt} = Mix.Tasks.Ployz.dispatch(["deploy", manifest_path])
+        assert {:ok, %{receipt: receipt}} = Mix.Tasks.Ployz.dispatch(["deploy", manifest_path])
 
         assert receipt.status == :committed
         assert receipt.service == @service
@@ -110,6 +102,13 @@ defmodule Ployz.E2E.DeployDockerTest do
     end
   end
 
+  defp ensure_runtime_started do
+    case Process.whereis(Ployz.Runtime.Server) do
+      nil -> start_supervised({Ployz.Runtime.Server, name: Ployz.Runtime.Server})
+      pid when is_pid(pid) -> {:ok, pid}
+    end
+  end
+
   defp helper_path do
     System.get_env("PLOYZ_SUBSTRATE_HELPER") ||
       Path.expand("../../../target/debug/ployz-substrate-helper", __DIR__)
@@ -117,57 +116,61 @@ defmodule Ployz.E2E.DeployDockerTest do
 
   defp docker_available? do
     System.find_executable("docker") != nil and
-      match?({_output, 0}, System.cmd("docker", ["info"], stderr_to_stdout: true))
+      match?({_output, 0}, docker_cmd(["info"], 15_000))
   end
 
   defp image_available?(image) do
     match?(
       {_output, 0},
-      System.cmd("docker", ["image", "inspect", image], stderr_to_stdout: true)
+      docker_cmd(["image", "inspect", image], 15_000)
     ) or
-      match?({_output, 0}, System.cmd("docker", ["pull", image], stderr_to_stdout: true))
+      match?({_output, 0}, docker_cmd(["pull", image], 60_000))
   end
 
   defp docker_container_started? do
-    {_output, status} =
-      System.cmd(
-        "docker",
-        [
-          "ps",
-          "--filter",
-          "label=ployz.service=#{@service}",
-          "--filter",
-          "label=ployz.test=#{@e2e_label}",
-          "--format",
-          "{{.Names}}"
-        ],
-        stderr_to_stdout: true
-      )
-
-    status == 0
+    case docker_cmd([
+           "ps",
+           "--filter",
+           "label=ployz.service=#{@service}",
+           "--filter",
+           "label=ployz.test=#{@e2e_label}",
+           "--format",
+           "{{.Names}}"
+         ]) do
+      {output, 0} -> output |> String.split("\n", trim: true) |> Enum.any?()
+      {_output, _status} -> false
+    end
   end
 
   defp cleanup_containers do
-    {ids, 0} =
-      System.cmd(
-        "docker",
-        [
-          "ps",
-          "-aq",
-          "--filter",
-          "label=ployz.service=#{@service}",
-          "--filter",
-          "label=ployz.test=#{@e2e_label}"
-        ],
-        stderr_to_stdout: true
-      )
+    {ids, _status} =
+      docker_cmd([
+        "ps",
+        "-aq",
+        "--filter",
+        "label=ployz.service=#{@service}",
+        "--filter",
+        "label=ployz.test=#{@e2e_label}"
+      ])
 
     ids
     |> String.split("\n", trim: true)
     |> Enum.each(fn id ->
-      System.cmd("docker", ["rm", "-f", id], stderr_to_stdout: true)
+      docker_cmd(["rm", "-f", id])
     end)
   rescue
     _error -> :ok
+  end
+
+  defp docker_cmd(args, timeout \\ 30_000) do
+    task = Task.async(fn -> System.cmd("docker", args, stderr_to_stdout: true) end)
+
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      nil -> {"", 124}
+    end
+  rescue
+    _error ->
+      {"", 124}
   end
 end

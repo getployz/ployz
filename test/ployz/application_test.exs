@@ -10,6 +10,7 @@ defmodule Ployz.ApplicationTest do
       Ployz.Supervisor.start_link(
         name: :"ployz-test-supervisor-#{suffix}",
         command_supervisor_name: :"ployz-test-commands-#{suffix}",
+        runtime_name: :"ployz-test-runtime-#{suffix}",
         gateway_name: :"ployz-test-gateway-#{suffix}"
       )
 

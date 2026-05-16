@@ -9,6 +9,7 @@ defmodule Ployz.Supervisor do
 
   @impl true
   def init(opts) do
+    :ok = validate_distribution!(opts)
     Ployz.Metadata.Schema.boot!()
     ensure_pg_started!()
 
@@ -16,13 +17,32 @@ defmodule Ployz.Supervisor do
       Keyword.get(opts, :command_supervisor_name, Ployz.Commands.Supervisor)
 
     gateway_name = Keyword.get(opts, :gateway_name, Ployz.Gateway.Projection)
+    runtime_name = Keyword.get(opts, :runtime_name, Ployz.Runtime.Server)
 
     children = [
-      {DynamicSupervisor, name: command_supervisor_name, strategy: :one_for_one},
+      {Ployz.Commands.Supervisor, name: command_supervisor_name},
+      {Ployz.Runtime.Server, name: runtime_name},
       {Ployz.Gateway.Projection, name: gateway_name}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)
+  end
+
+  defp validate_distribution!(opts) do
+    mode =
+      Keyword.get(opts, :distribution_mode, Application.get_env(:ployz, :distribution_mode, :dev))
+
+    distribution_opts = [
+      cookie_path:
+        Keyword.get(opts, :cookie_path, Application.get_env(:ployz, :distribution_cookie_path)),
+      bind_address:
+        Keyword.get(opts, :bind_address, Application.get_env(:ployz, :distribution_bind_address))
+    ]
+
+    case Ployz.Cluster.Distribution.validate_config(mode, distribution_opts) do
+      :ok -> :ok
+      {:error, reason} -> raise "invalid Ployz distribution config: #{inspect(reason)}"
+    end
   end
 
   defp ensure_pg_started! do

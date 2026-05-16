@@ -68,16 +68,18 @@ defmodule Ployz.Manifest.Validator do
         invalid =
           Enum.find(env, fn
             {key, value} when is_binary(key) and is_binary(value) ->
-              secret_like_key = Regex.match?(~r/(SECRET|TOKEN|KEY|PASSWORD)/, String.upcase(key))
-              secret_like_key and not Regex.match?(@secret_ref, value)
+              not Regex.match?(@secret_ref, value)
 
             _ ->
               true
           end)
 
         case invalid do
-          nil -> {:ok, env}
-          {key, _value} -> {:error, {:manifest_invalid, "env.#{key}", :secret_must_be_reference}}
+          nil ->
+            {:ok, env}
+
+          {key, _value} ->
+            {:error, {:manifest_invalid, "env.#{key}", :env_must_be_secret_reference}}
         end
 
       _ ->
@@ -103,7 +105,7 @@ defmodule Ployz.Manifest.Validator do
           end
         end)
         |> case do
-          {:ok, routes} -> {:ok, Enum.reverse(routes)}
+          {:ok, routes} -> reject_duplicate_routes(Enum.reverse(routes))
           error -> error
         end
 
@@ -148,6 +150,20 @@ defmodule Ployz.Manifest.Validator do
   end
 
   defp list_of_maps(_values, key), do: {:error, {:manifest_invalid, key, :list_required}}
+
+  defp reject_duplicate_routes(routes) do
+    duplicate =
+      routes
+      |> Enum.map(fn route -> {route.host, route.path} end)
+      |> Enum.find(fn key ->
+        Enum.count(routes, fn route -> {route.host, route.path} == key end) > 1
+      end)
+
+    case duplicate do
+      nil -> {:ok, routes}
+      {host, path} -> {:error, {:manifest_invalid, "routes", {:duplicate_route, host, path}}}
+    end
+  end
 
   defp route_required(map, index, key) do
     case Map.get(map, key) do

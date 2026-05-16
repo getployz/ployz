@@ -53,6 +53,17 @@ fn validate_container_name_rejects_shell_metacharacters() {
 }
 
 #[test]
+fn validate_image_rejects_docker_option_injection() {
+    for image in ["--privileged", "--network=host", "-v", "busy box"] {
+        let error = validate_image(image).expect_err("expected invalid image argument");
+        assert_eq!(error.code, "invalid_argument");
+    }
+
+    validate_image("registry.example.com/team/app:sha-123").expect("expected valid image");
+    validate_image("busybox@sha256:abc123").expect("expected valid digest image");
+}
+
+#[test]
 fn valid_request_id_accepts_protocol_ids_only() {
     assert!(valid_request_id("req-1:abc.def"));
     assert!(!valid_request_id(""));

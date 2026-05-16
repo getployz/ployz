@@ -19,12 +19,17 @@ defmodule Ployz.Metadata.Routes do
   end
 
   def committed do
-    routes =
-      :routes
-      |> Tables.all()
-      |> Enum.map(fn {_host, route} -> route end)
-      |> Enum.sort_by(fn route -> Map.get(route, :host) || Map.get(route, :hostname) end)
+    case Tables.all(:routes) do
+      {:error, reason} ->
+        {:error, reason}
 
-    {:ok, routes}
+      rows ->
+        routes =
+          rows
+          |> Enum.map(fn {_host, route} -> route end)
+          |> Enum.sort_by(fn route -> Map.get(route, :host) || Map.get(route, :hostname) end)
+
+        {:ok, routes}
+    end
   end
 end

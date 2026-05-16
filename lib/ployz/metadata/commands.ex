@@ -4,13 +4,14 @@ defmodule Ployz.Metadata.Commands do
   """
 
   alias Ployz.Metadata.Tables
+  alias Ployz.Redactor
 
   def create(%{id: command_id} = receipt) do
-    Tables.write(:commands, command_id, redact(receipt))
+    Tables.write(:commands, command_id, Redactor.redact(receipt))
   end
 
   def finish(%{id: command_id} = receipt) do
-    Tables.write(:commands, command_id, redact(receipt))
+    Tables.write(:commands, command_id, Redactor.redact(receipt))
   end
 
   def create_running(command_id, kind, actor, opts \\ []) do
@@ -37,7 +38,7 @@ defmodule Ployz.Metadata.Commands do
 
   def succeed(command_id, result \\ %{}) do
     update(command_id, fn receipt ->
-      {:ok, %{receipt | status: :succeeded, completed_at: now(), result: result, last_error: nil}}
+      {:ok, %{receipt | status: :committed, completed_at: now(), result: result, last_error: nil}}
     end)
   end
 
@@ -48,7 +49,7 @@ defmodule Ployz.Metadata.Commands do
          receipt
          | status: :failed,
            completed_at: now(),
-           last_error: redact(reason)
+           last_error: Redactor.redact(error_reason(reason))
        }}
     end)
   end
@@ -62,19 +63,9 @@ defmodule Ployz.Metadata.Commands do
     end
   end
 
-  defp redact(reason) when is_atom(reason), do: %{code: reason}
-
-  defp redact(%{} = value) do
-    value
-    |> Map.drop([:secret, :private_key, :pem, "secret", "private_key", "pem"])
-    |> Map.new(fn {key, nested} -> {key, redact_nested(nested)} end)
-  end
-
-  defp redact(reason), do: %{code: :command_failed, detail: inspect(reason)}
-
-  defp redact_nested(%{} = value), do: redact(value)
-  defp redact_nested(values) when is_list(values), do: Enum.map(values, &redact_nested/1)
-  defp redact_nested(value), do: value
+  defp error_reason(reason) when is_atom(reason), do: %{code: reason}
+  defp error_reason(%{} = reason), do: reason
+  defp error_reason(reason), do: %{code: :command_failed, detail: inspect(reason)}
 
   defp now, do: System.system_time(:millisecond)
 end

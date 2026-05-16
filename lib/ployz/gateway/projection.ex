@@ -31,7 +31,7 @@ defmodule Ployz.Gateway.Projection do
   def handle_call(:snapshot, _from, state), do: {:reply, {:ok, state.snapshot}, state}
 
   def handle_call(:refresh, _from, state) do
-    case read_committed(state.readers) do
+    case safe_read_committed(state.readers) do
       {:ok, snapshot} ->
         {:reply, {:ok, freshness(snapshot)}, %{state | snapshot: snapshot}}
 
@@ -42,7 +42,27 @@ defmodule Ployz.Gateway.Projection do
   end
 
   def read_once(readers \\ default_readers()) do
+    safe_read_committed(readers)
+  end
+
+  defp safe_read_committed(readers) do
     read_committed(readers)
+  rescue
+    exception ->
+      {:error,
+       %{
+         code: :gateway_projection_reader_crashed,
+         exception: inspect(exception.__struct__),
+         message: Exception.message(exception)
+       }}
+  catch
+    kind, reason ->
+      {:error,
+       %{
+         code: :gateway_projection_reader_failed,
+         kind: kind,
+         detail: inspect(reason)
+       }}
   end
 
   defp read_committed(readers) do

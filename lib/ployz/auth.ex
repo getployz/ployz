@@ -21,19 +21,19 @@ defmodule Ployz.Auth do
   def authorize(_actor, _command), do: {:error, :unauthorized}
 
   defp authorize_token(%{token: token}) when is_binary(token) do
-    tokens = Application.get_env(:ployz, :auth_tokens, [])
-
-    cond do
-      tokens == [] -> :ok
-      token in tokens -> :ok
-      true -> {:error, :invalid_token}
+    case {Application.get_env(:ployz, :auth_mode, :dev_open),
+          Application.get_env(:ployz, :auth_tokens, [])} do
+      {:dev_open, []} -> :ok
+      {_mode, []} -> {:error, :missing_token_config}
+      {_mode, tokens} -> if token in tokens, do: :ok, else: {:error, :invalid_token}
     end
   end
 
   defp authorize_token(_actor) do
-    case Application.get_env(:ployz, :auth_tokens, []) do
-      [] -> :ok
-      _tokens -> {:error, :missing_token}
+    case {Application.get_env(:ployz, :auth_mode, :dev_open),
+          Application.get_env(:ployz, :auth_tokens, [])} do
+      {:dev_open, []} -> :ok
+      {_mode, _tokens} -> {:error, :missing_token}
     end
   end
 

@@ -17,6 +17,7 @@ build-release:
 
 test:
     cargo test --workspace --exclude ployzd --exclude ployz-runtime-backends
+    just test-v2
 
 format-v2:
     #!/usr/bin/env bash
@@ -50,7 +51,7 @@ test-v2-e2e:
     fi
     cargo build -p ployz-substrate-helper
     mix deps.get
-    mix test --only docker
+    PLOYZ_SUBSTRATE_HELPER="$PWD/target/debug/ployz-substrate-helper" mix test --only docker
 
 test-all:
     cargo test

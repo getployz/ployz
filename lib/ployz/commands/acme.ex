@@ -38,14 +38,16 @@ defmodule Ployz.Commands.Acme do
 
   defp run_with_lease(hostname, opts, deps, receipt, lease) do
     result =
-      with {:ok, issued} <-
-             call(deps.issuer, :issue, [hostname, Keyword.get(opts, :timeout_ms, 30_000)]),
-           :ok <- cert_ref_only(issued),
-           {:ok, committed} <- commit(deps, hostname, receipt, lease, issued) do
-        {:ok, committed}
-      end
+      safe_work(fn ->
+        with {:ok, issued} <-
+               call(deps.issuer, :issue, [hostname, Keyword.get(opts, :timeout_ms, 30_000)]),
+             :ok <- cert_ref_only(issued),
+             {:ok, committed} <- commit(deps, hostname, receipt, lease, issued) do
+          {:ok, committed}
+        end
+      end)
 
-    _ = call(deps.leases, :release, [receipt.lease_key, lease.token])
+    release_lease(deps.leases, receipt.lease_key, lease.token)
 
     case result do
       {:ok, committed} ->
@@ -64,9 +66,10 @@ defmodule Ployz.Commands.Acme do
     {:error, reason, failed}
   end
 
-  defp commit(deps, hostname, receipt, lease, issued) do
+  defp commit(deps, hostname, receipt, _lease, issued) do
     call(deps.transaction, :transaction, [
       fn ->
+        :ok = assert_lease(deps.leases, receipt.lease_key, receipt.lease_token)
         {:ok, revision} = next_cert_revision(deps.certs, hostname)
 
         row = %{
@@ -84,7 +87,7 @@ defmodule Ployz.Commands.Acme do
           Map.merge(receipt, %{
             status: :committed,
             phase: :committed,
-            lease_token: lease.token,
+            lease_token: nil,
             cert_ref: row.cert_ref,
             revision: revision,
             finished_at: now_ms()
@@ -97,66 +100,31 @@ defmodule Ployz.Commands.Acme do
   end
 
   defp create_command(module, receipt) do
-    if exports?(module, :create, 1) do
-      call(module, :create, [receipt])
-    else
-      call(module, :create_running, [
-        receipt.id,
-        :cert_issue,
-        %{role: :local_operator},
-        owner: receipt.owner,
-        phase: receipt.phase
-      ])
-    end
+    call(module, :create, [receipt])
   end
 
   defp finish_command(module, %{status: :committed} = receipt) do
-    if exports?(module, :finish, 1) do
-      call(module, :finish, [receipt])
-    else
-      call(module, :succeed, [receipt.id, Map.drop(receipt, [:id, :status, :phase])])
-    end
+    call(module, :finish, [receipt])
   end
 
   defp finish_command(module, %{status: :failed} = receipt) do
-    if exports?(module, :finish, 1) do
-      call(module, :finish, [receipt])
-    else
-      call(module, :fail, [receipt.id, receipt.last_error])
-    end
+    call(module, :finish, [receipt])
   end
 
   defp acquire_lease(module, key, owner, ttl_ms) do
-    case call(module, :acquire, [key, owner, ttl_ms]) do
-      {:ok, %{token: _token} = lease} -> {:ok, lease}
-      {:ok, token} when is_binary(token) -> {:ok, %{key: key, token: token, owner: owner}}
-      {:error, reason} -> {:error, reason}
-    end
+    call(module, :acquire, [key, owner, ttl_ms])
+  end
+
+  defp assert_lease(module, key, token) do
+    call!(module, :assert_current, [key, token])
   end
 
   defp next_cert_revision(module, hostname) do
-    cond do
-      exports?(module, :next_revision, 1) ->
-        call(module, :next_revision, [hostname])
-
-      exports?(module, :get, 1) ->
-        case call(module, :get, [hostname]) do
-          {:ok, %{revision: revision}} -> {:ok, revision + 1}
-          {:error, :not_found} -> {:ok, 1}
-          {:error, reason} -> {:error, reason}
-        end
-
-      true ->
-        {:error, {:missing_metadata_contract, module, :next_revision}}
-    end
+    call(module, :next_revision, [hostname])
   end
 
   defp put_cert(module, hostname, row) do
-    cond do
-      exports?(module, :put, 1) -> call!(module, :put, [row])
-      exports?(module, :put, 2) -> call!(module, :put, [hostname, row])
-      true -> throw({:metadata_commit_failed, :put_cert, :missing_contract})
-    end
+    call!(module, :put, [hostname, row])
   end
 
   defp cert_ref_only(%{cert_ref: "ployz-cert://" <> _} = issued) do
@@ -190,6 +158,7 @@ defmodule Ployz.Commands.Acme do
     Map.merge(receipt, %{
       status: :failed,
       phase: :failed,
+      lease_token: nil,
       last_error: reason,
       finished_at: now_ms()
     })
@@ -205,11 +174,32 @@ defmodule Ployz.Commands.Acme do
     end
   end
 
-  defp exports?(module, function, arity) when is_atom(module) do
-    Code.ensure_loaded?(module) and function_exported?(module, function, arity)
+  defp safe_work(fun) do
+    fun.()
+  rescue
+    exception ->
+      {:error,
+       %{
+         code: :command_crashed,
+         exception: inspect(exception.__struct__),
+         message: Exception.message(exception)
+       }}
+  catch
+    :exit, reason ->
+      {:error, %{code: :command_exited, detail: inspect(reason)}}
+
+    kind, reason ->
+      {:error, %{code: :command_threw, kind: kind, detail: inspect(reason)}}
   end
 
-  defp exports?(_module, _function, _arity), do: false
+  defp release_lease(module, key, token) do
+    _ = call(module, :release, [key, token])
+    :ok
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
 
   defp new_command_id, do: "cmd-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
   defp now_ms, do: System.system_time(:millisecond)

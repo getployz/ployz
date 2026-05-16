@@ -29,7 +29,7 @@ defmodule Ployz.Commands.MachineRemove do
 
              receipt
            end) do
-      if receipt.status == :succeeded, do: {:ok, receipt}, else: {:error, receipt}
+      if receipt.status == :committed, do: {:ok, receipt}, else: {:error, receipt}
     else
       {:error, reason} -> {:error, %{command_id: command_id, status: :failed, reason: reason}}
     end

@@ -11,12 +11,14 @@ defmodule Ployz.Commands.MachineLifecycleTest do
 
   test "machine add records joining then active after readiness" do
     actor = %{role: :local_operator}
+    join_runtime_group()
 
-    assert {:ok, %{status: :succeeded, result: %{status: :active}}} =
-             MachineAdd.run(actor, %{id: "node-1", command_id: "cmd-1"})
+    assert {:ok, %{status: :committed, result: %{status: :active}}} =
+             MachineAdd.run(actor, %{id: "node-1", command_id: "cmd-1", runtime_pid: self()})
 
-    assert {:ok, %{status: :active}} = Machines.get("node-1")
-    assert {:ok, %{status: :succeeded}} = Commands.get("cmd-1")
+    assert {:ok, %{status: :active, runtime_pid: pid}} = Machines.get("node-1")
+    assert pid == self()
+    assert {:ok, %{status: :committed}} = Commands.get("cmd-1")
   end
 
   test "machine add failure leaves machine non-selectable and receipt visible" do
@@ -33,9 +35,12 @@ defmodule Ployz.Commands.MachineLifecycleTest do
 
   test "machine remove marks removed and excludes future candidates" do
     actor = %{role: :local_operator}
-    assert {:ok, _receipt} = MachineAdd.run(actor, %{id: "node-1", command_id: "cmd-1"})
+    join_runtime_group()
 
-    assert {:ok, %{status: :succeeded}} =
+    assert {:ok, _receipt} =
+             MachineAdd.run(actor, %{id: "node-1", command_id: "cmd-1", runtime_pid: self()})
+
+    assert {:ok, %{status: :committed}} =
              MachineRemove.run(actor, %{id: "node-1", command_id: "cmd-2"})
 
     assert {:ok, %{status: :removed}} = Machines.get("node-1")
@@ -44,7 +49,7 @@ defmodule Ployz.Commands.MachineLifecycleTest do
 
   test "runtime candidates require active metadata and live pg membership" do
     group = Groups.runtime_group()
-    assert :ok = Groups.join(group, self())
+    join_runtime_group()
 
     actor = %{role: :local_operator}
 
@@ -58,4 +63,13 @@ defmodule Ployz.Commands.MachineLifecycleTest do
   end
 
   defp reset_mnesia(context), do: Ployz.TestSupport.Mnesia.reset!(context)
+
+  defp join_runtime_group do
+    group = Groups.runtime_group()
+
+    case Groups.join(group, self()) do
+      :ok -> :ok
+      {:error, {:already_joined, _pid}} -> :ok
+    end
+  end
 end

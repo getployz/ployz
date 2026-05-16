@@ -15,6 +15,8 @@ defmodule Ployz.Status do
        machines: Machines.selectable(),
        routes: routes,
        live_runtime_members: Groups.members(Groups.runtime_group()),
+       auth_mode: Application.get_env(:ployz, :auth_mode, :dev_open),
+       distribution_mode: Application.get_env(:ployz, :distribution_mode, :dev),
        freshness: :local
      }}
   end

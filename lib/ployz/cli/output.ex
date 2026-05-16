@@ -4,12 +4,23 @@ defmodule Ployz.Cli.Output do
   @spec format(term(), keyword()) :: String.t()
   def format(value, opts \\ []) do
     case Keyword.get(opts, :format, :text) do
-      :json -> jsonish(value) <> "\n"
-      :text -> text(value) <> "\n"
+      :json ->
+        Ployz.Substrate.Protocol.encode_json(value |> jsonable() |> Ployz.Redactor.redact()) <>
+          "\n"
+
+      :text ->
+        text(value) <> "\n"
     end
   end
 
+  defp text({:ok, %{receipt: receipt}}), do: text(receipt)
+  defp text({:ok, %{result: result}}), do: text(result)
   defp text({:ok, receipt}), do: text(receipt)
+  defp text({:error, %{reason: reason, receipt: nil}}), do: "error: #{inspect(reason)}"
+
+  defp text({:error, %{reason: reason, receipt: receipt}}),
+    do: "error: #{inspect(reason)}\n#{text(receipt)}"
+
   defp text({:error, receipt}) when is_map(receipt), do: "error:\n#{text(receipt)}"
   defp text({:error, reason, nil}), do: "error: #{inspect(reason)}"
   defp text({:error, reason, receipt}), do: "error: #{inspect(reason)}\n#{text(receipt)}"
@@ -35,19 +46,19 @@ defmodule Ployz.Cli.Output do
   defp maybe_line(_label, nil), do: nil
   defp maybe_line(label, value), do: "#{label}: #{inspect(value)}"
 
-  defp jsonish(value) do
-    value
-    |> redact()
-    |> inspect(limit: :infinity, printable_limit: :infinity)
+  defp jsonable({:ok, %{receipt: receipt}}), do: %{"ok" => %{"receipt" => jsonable(receipt)}}
+  defp jsonable({:ok, %{result: result}}), do: %{"ok" => %{"result" => jsonable(result)}}
+  defp jsonable({:error, error}), do: %{"error" => jsonable(error)}
+
+  defp jsonable({:error, reason, receipt}),
+    do: %{"error" => jsonable(%{reason: reason, receipt: receipt})}
+
+  defp jsonable(%{} = map) do
+    Map.new(map, fn {key, value} -> {to_string(key), jsonable(value)} end)
   end
 
-  defp redact(value) when is_map(value) do
-    Map.new(value, fn
-      {key, _value} when key in [:private_key, "private_key", :pem, "pem"] -> {key, "[redacted]"}
-      {key, value} -> {key, redact(value)}
-    end)
-  end
-
-  defp redact(values) when is_list(values), do: Enum.map(values, &redact/1)
-  defp redact(value), do: value
+  defp jsonable(values) when is_list(values), do: Enum.map(values, &jsonable/1)
+  defp jsonable(value) when is_atom(value), do: Atom.to_string(value)
+  defp jsonable(value) when is_tuple(value), do: value |> Tuple.to_list() |> jsonable()
+  defp jsonable(value), do: value
 end

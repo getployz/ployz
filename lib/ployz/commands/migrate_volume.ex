@@ -18,7 +18,7 @@ defmodule Ployz.Commands.MigrateVolume do
 
     with :ok <- create_command(deps.commands, receipt),
          {:ok, lease} <-
-           acquire_lease(deps.leases, lease_key, owner, Keyword.get(opts, :lease_ttl_ms, 60_000)) do
+           acquire_lease(deps.leases, lease_key, owner, Keyword.get(opts, :lease_ttl_ms, 720_000)) do
       run_with_lease(
         volume,
         destination,
@@ -45,24 +45,28 @@ defmodule Ployz.Commands.MigrateVolume do
 
   defp run_with_lease(volume, destination, opts, deps, receipt, lease) do
     result =
-      with {:ok, snapshot} <-
-             call(deps.substrate, :snapshot, [volume, Keyword.get(opts, :timeout_ms, 30_000)]),
-           {:ok, transfer} <-
-             call(deps.substrate, :send_receive, [
-               snapshot,
-               destination,
-               Keyword.get(opts, :timeout_ms, 300_000)
-             ]),
-           :ok <-
-             call(deps.substrate, :verify_destination, [
-               transfer,
-               Keyword.get(opts, :timeout_ms, 30_000)
-             ]),
-           {:ok, committed} <- commit(deps, volume, destination, receipt, lease, transfer) do
-        {:ok, committed}
-      end
+      safe_work(fn ->
+        with {:ok, snapshot} <-
+               call(deps.substrate, :snapshot, [volume, Keyword.get(opts, :timeout_ms, 30_000)]),
+             {:ok, stream} <-
+               call(deps.substrate, :send, [snapshot, Keyword.get(opts, :timeout_ms, 300_000)]),
+             {:ok, transfer} <-
+               call(deps.substrate, :recv, [
+                 stream,
+                 destination,
+                 Keyword.get(opts, :timeout_ms, 300_000)
+               ]),
+             :ok <-
+               call(deps.substrate, :verify, [
+                 transfer,
+                 Keyword.get(opts, :timeout_ms, 30_000)
+               ]),
+             {:ok, committed} <- commit(deps, volume, destination, receipt, lease, transfer) do
+          {:ok, committed}
+        end
+      end)
 
-    _ = call(deps.leases, :release, [receipt.lease_key, lease.token])
+    release_lease(deps.leases, receipt.lease_key, lease.token)
 
     case result do
       {:ok, committed} ->
@@ -81,9 +85,10 @@ defmodule Ployz.Commands.MigrateVolume do
     {:error, reason, failed}
   end
 
-  defp commit(deps, volume, destination, receipt, lease, transfer) do
+  defp commit(deps, volume, destination, receipt, _lease, transfer) do
     call(deps.transaction, :transaction, [
       fn ->
+        :ok = assert_lease(deps.leases, receipt.lease_key, receipt.lease_token)
         {:ok, generation} = next_generation(deps.volumes, volume)
 
         row = %{
@@ -100,7 +105,7 @@ defmodule Ployz.Commands.MigrateVolume do
           Map.merge(receipt, %{
             status: :committed,
             phase: :committed,
-            lease_token: lease.token,
+            lease_token: nil,
             generation: generation,
             dataset_ref: row.dataset_ref,
             finished_at: now_ms()
@@ -113,71 +118,31 @@ defmodule Ployz.Commands.MigrateVolume do
   end
 
   defp create_command(module, receipt) do
-    if exports?(module, :create, 1) do
-      call(module, :create, [receipt])
-    else
-      call(module, :create_running, [
-        receipt.id,
-        :migrate_volume,
-        %{role: :local_operator},
-        owner: receipt.owner,
-        phase: receipt.phase
-      ])
-    end
+    call(module, :create, [receipt])
   end
 
   defp finish_command(module, %{status: :committed} = receipt) do
-    if exports?(module, :finish, 1) do
-      call(module, :finish, [receipt])
-    else
-      call(module, :succeed, [receipt.id, Map.drop(receipt, [:id, :status, :phase])])
-    end
+    call(module, :finish, [receipt])
   end
 
   defp finish_command(module, %{status: :failed} = receipt) do
-    if exports?(module, :finish, 1) do
-      call(module, :finish, [receipt])
-    else
-      call(module, :fail, [receipt.id, receipt.last_error])
-    end
+    call(module, :finish, [receipt])
   end
 
   defp acquire_lease(module, key, owner, ttl_ms) do
-    case call(module, :acquire, [key, owner, ttl_ms]) do
-      {:ok, %{token: _token} = lease} -> {:ok, lease}
-      {:ok, token} when is_binary(token) -> {:ok, %{key: key, token: token, owner: owner}}
-      {:error, reason} -> {:error, reason}
-    end
+    call(module, :acquire, [key, owner, ttl_ms])
+  end
+
+  defp assert_lease(module, key, token) do
+    call!(module, :assert_current, [key, token])
   end
 
   defp next_generation(module, volume) do
-    cond do
-      exports?(module, :next_generation, 1) ->
-        call(module, :next_generation, [volume])
-
-      exports?(module, :get, 1) ->
-        case call(module, :get, [volume]) do
-          {:ok, %{generation: generation}} -> {:ok, generation + 1}
-          {:error, :not_found} -> {:ok, 1}
-          {:error, reason} -> {:error, reason}
-        end
-
-      true ->
-        {:error, {:missing_metadata_contract, module, :next_generation}}
-    end
+    call(module, :next_generation, [volume])
   end
 
-  defp promote_generation(module, volume, row) do
-    cond do
-      exports?(module, :promote_generation, 1) ->
-        call!(module, :promote_generation, [row])
-
-      exports?(module, :put, 2) ->
-        call!(module, :put, [volume, row])
-
-      true ->
-        throw({:metadata_commit_failed, :promote_generation, :missing_contract})
-    end
+  defp promote_generation(module, _volume, row) do
+    call!(module, :promote_generation, [row])
   end
 
   defp running_receipt(command_id, owner, lease_key, volume, destination) do
@@ -200,6 +165,7 @@ defmodule Ployz.Commands.MigrateVolume do
     Map.merge(receipt, %{
       status: :failed,
       phase: :failed,
+      lease_token: nil,
       last_error: reason,
       finished_at: now_ms()
     })
@@ -215,11 +181,32 @@ defmodule Ployz.Commands.MigrateVolume do
     end
   end
 
-  defp exports?(module, function, arity) when is_atom(module) do
-    Code.ensure_loaded?(module) and function_exported?(module, function, arity)
+  defp safe_work(fun) do
+    fun.()
+  rescue
+    exception ->
+      {:error,
+       %{
+         code: :command_crashed,
+         exception: inspect(exception.__struct__),
+         message: Exception.message(exception)
+       }}
+  catch
+    :exit, reason ->
+      {:error, %{code: :command_exited, detail: inspect(reason)}}
+
+    kind, reason ->
+      {:error, %{code: :command_threw, kind: kind, detail: inspect(reason)}}
   end
 
-  defp exports?(_module, _function, _arity), do: false
+  defp release_lease(module, key, token) do
+    _ = call(module, :release, [key, token])
+    :ok
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
 
   defp new_command_id, do: "cmd-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
   defp now_ms, do: System.system_time(:millisecond)

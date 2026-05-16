@@ -6,6 +6,7 @@ defmodule Ployz.Runtime.Server do
   use GenServer
 
   alias Ployz.Substrate.Port, as: SubstratePort
+  alias Ployz.Substrate.Protocol
 
   @group Ployz.Cluster.Groups.runtime_group()
   @default_timeout 30_000
@@ -36,40 +37,27 @@ defmodule Ployz.Runtime.Server do
     live =
       @group
       |> members()
-      |> Enum.filter(&Process.alive?/1)
+      |> MapSet.new()
+
+    reachable =
+      active_members
+      |> Enum.map(&runtime_pid/1)
+      |> Enum.filter(fn
+        pid when is_pid(pid) -> MapSet.member?(live, pid) and Process.alive?(pid)
+        _other -> false
+      end)
 
     cond do
       active_members == [] -> {:error, :no_active_runtime_members}
-      live == [] -> {:error, :no_live_runtime_members}
-      true -> {:ok, Enum.take(live, length(active_members))}
+      reachable == [] -> {:error, :no_live_runtime_members}
+      true -> {:ok, reachable}
     end
   end
 
   @spec start_and_probe([GenServer.server()], Ployz.Manifest.t(), timeout()) ::
           {:ok, [map()]} | {:error, term()}
   def start_and_probe(members, manifest, timeout) when is_list(members) do
-    members
-    |> Enum.reduce_while({:ok, []}, fn member, {:ok, acc} ->
-      params = docker_params(member, manifest)
-
-      with {:ok, started} <- start(member, params, timeout),
-           {:ok, inspected} <- inspect(member, %{"name" => params["name"]}, timeout) do
-        evidence = %{
-          member: inspect_member(member),
-          container: params["name"],
-          started: started,
-          inspected: inspected
-        }
-
-        {:cont, {:ok, [evidence | acc]}}
-      else
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, evidence} -> {:ok, Enum.reverse(evidence)}
-      error -> error
-    end
+    start_and_probe(members, manifest, timeout, [], [])
   end
 
   @spec bid(GenServer.server(), map(), timeout()) :: {:ok, map()}
@@ -110,9 +98,13 @@ defmodule Ployz.Runtime.Server do
     group = Keyword.get(opts, :group, @group)
 
     with :ok <- ensure_pg_started(),
-         :ok <- join_group(group),
-         {:ok, port} <- resolve_port(opts) do
-      {:ok, %{group: group, port: port}}
+         :ok <- join_group(group) do
+      {:ok,
+       %{
+         group: group,
+         port: Keyword.get(opts, :port),
+         port_opts: Keyword.get(opts, :port_opts, [])
+       }}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -125,19 +117,19 @@ defmodule Ployz.Runtime.Server do
   end
 
   def handle_call({:substrate, :start, params, timeout}, _from, state) do
-    {:reply, SubstratePort.docker_start(state.port, params, timeout), state}
+    reply_with_port(state, fn port -> SubstratePort.docker_start(port, params, timeout) end)
   end
 
   def handle_call({:substrate, :stop, params, timeout}, _from, state) do
-    {:reply, SubstratePort.docker_stop(state.port, params, timeout), state}
+    reply_with_port(state, fn port -> SubstratePort.docker_stop(port, params, timeout) end)
   end
 
   def handle_call({:substrate, :inspect, params, timeout}, _from, state) do
-    {:reply, SubstratePort.docker_inspect(state.port, params, timeout), state}
+    reply_with_port(state, fn port -> SubstratePort.docker_inspect(port, params, timeout) end)
   end
 
   def handle_call({:substrate, :list_ployz, params, timeout}, _from, state) do
-    {:reply, SubstratePort.docker_list_ployz(state.port, params, timeout), state}
+    reply_with_port(state, fn port -> SubstratePort.docker_list_ployz(port, params, timeout) end)
   end
 
   defp call_substrate(server, op, params, timeout) when is_map(params) do
@@ -165,6 +157,46 @@ defmodule Ployz.Runtime.Server do
     }
   end
 
+  defp start_and_probe([], _manifest, _timeout, evidence, _started) do
+    {:ok, Enum.reverse(evidence)}
+  end
+
+  defp start_and_probe([member | rest], manifest, timeout, evidence, started) do
+    params = docker_params(member, manifest)
+    container = params["name"]
+
+    case start(member, params, timeout) do
+      {:ok, started_payload} ->
+        started = [{member, container} | started]
+
+        case inspect(member, %{"name" => container}, timeout) do
+          {:ok, inspected} ->
+            next_evidence = %{
+              member: inspect_member(member),
+              container: container,
+              started: started_payload,
+              inspected: inspected
+            }
+
+            start_and_probe(rest, manifest, timeout, [next_evidence | evidence], started)
+
+          {:error, reason} ->
+            cleanup_started(started, timeout)
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        cleanup_started(started, timeout)
+        {:error, reason}
+    end
+  end
+
+  defp cleanup_started(started, timeout) do
+    Enum.each(started, fn {member, container} ->
+      _ = stop(member, %{"name" => container}, timeout)
+    end)
+  end
+
   defp command_args(nil), do: []
 
   defp command_args(command) when is_binary(command) do
@@ -181,6 +213,11 @@ defmodule Ployz.Runtime.Server do
 
   defp inspect_member(pid) when is_pid(pid), do: inspect(pid)
   defp inspect_member(member), do: inspect(member)
+
+  defp runtime_pid(%{runtime_pid: pid}), do: pid
+  defp runtime_pid(%{"runtime_pid" => pid}), do: pid
+  defp runtime_pid(pid) when is_pid(pid), do: pid
+  defp runtime_pid(_member), do: nil
 
   defp ensure_pg_started do
     case Process.whereis(:pg) do
@@ -206,13 +243,30 @@ defmodule Ployz.Runtime.Server do
     error in ArgumentError -> {:error, {:runtime_group_join_failed, Exception.message(error)}}
   end
 
-  defp resolve_port(opts) do
-    case Keyword.fetch(opts, :port) do
-      {:ok, port} ->
-        {:ok, port}
+  defp reply_with_port(state, fun) do
+    case ensure_port(state) do
+      {:ok, port, next_state} ->
+        {:reply, fun.(port), next_state}
 
-      :error ->
-        SubstratePort.start_link(Keyword.get(opts, :port_opts, []))
+      {:error, error, next_state} ->
+        {:reply, {:error, error}, next_state}
+    end
+  end
+
+  defp ensure_port(%{port: port} = state) when is_pid(port), do: {:ok, port, state}
+
+  defp ensure_port(%{port_opts: port_opts} = state) do
+    case SubstratePort.start_link(port_opts) do
+      {:ok, port} ->
+        {:ok, port, %{state | port: port}}
+
+      {:error, reason} ->
+        error =
+          Protocol.error("helper_unavailable", "substrate helper is unavailable", %{
+            reason: inspect(reason)
+          })
+
+        {:error, error, state}
     end
   end
 end

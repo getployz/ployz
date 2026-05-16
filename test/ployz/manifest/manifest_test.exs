@@ -28,15 +28,32 @@ defmodule Ployz.ManifestTest do
     assert parsed.volumes == [%{name: "data", mount: "/data"}]
   end
 
-  test "rejects secret-like env values that are not refs" do
+  test "rejects env values that are not refs" do
     manifest = """
     service: web
     image: web:latest
     env:
-      API_TOKEN: plaintext-token
+      DATABASE_URL: postgres://user:pass@example/db
     """
 
-    assert {:error, {:manifest_invalid, "env.API_TOKEN", :secret_must_be_reference}} =
+    assert {:error, {:manifest_invalid, "env.DATABASE_URL", :env_must_be_secret_reference}} =
+             Manifest.parse_string(manifest)
+  end
+
+  test "rejects duplicate routes" do
+    manifest = """
+    service: web
+    image: web:latest
+    routes:
+      - host: example.com
+        path: /
+        port: 4000
+      - host: example.com
+        path: /
+        port: 5000
+    """
+
+    assert {:error, {:manifest_invalid, "routes", {:duplicate_route, "example.com", "/"}}} =
              Manifest.parse_string(manifest)
   end
 

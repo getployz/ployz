@@ -15,18 +15,16 @@ defmodule Ployz.Metadata.Leases do
       case :mnesia.read(:leases, key) do
         [] ->
           :mnesia.write({:leases, key, token, owner, expires_at})
-          {:ok, token}
+          {:ok, lease(key, token, owner, expires_at)}
 
-        [{:leases, ^key, existing_token, ^owner, _expires_at}] ->
-          {:ok, existing_token}
+        [{:leases, ^key, _existing_token, existing_owner, existing_expires_at}]
+        when existing_expires_at > now_ms ->
+          {:error, {:lease_held, existing_owner, existing_expires_at}}
 
         [{:leases, ^key, _existing_token, _existing_owner, existing_expires_at}]
         when existing_expires_at <= now_ms ->
           :mnesia.write({:leases, key, token, owner, expires_at})
-          {:ok, token}
-
-        [{:leases, ^key, _existing_token, existing_owner, existing_expires_at}] ->
-          {:error, {:lease_held, existing_owner, existing_expires_at}}
+          {:ok, lease(key, token, owner, expires_at)}
       end
     end)
   end
@@ -47,16 +45,38 @@ defmodule Ployz.Metadata.Leases do
     end)
   end
 
+  def assert_current(key, token, now_ms \\ System.system_time(:millisecond)) do
+    activity(fn ->
+      case :mnesia.read(:leases, key) do
+        [{:leases, ^key, ^token, _owner, expires_at}] when expires_at > now_ms ->
+          :ok
+
+        [{:leases, ^key, ^token, _owner, expires_at}] ->
+          {:error, {:lease_expired, expires_at}}
+
+        [{:leases, ^key, _other_token, _owner, _expires_at}] ->
+          {:error, :token_mismatch}
+
+        [] ->
+          {:error, :lease_missing}
+      end
+    end)
+  end
+
   def get(key) do
     activity(fn ->
       case :mnesia.read(:leases, key) do
         [{:leases, ^key, token, owner, expires_at}] ->
-          {:ok, %{key: key, token: token, owner: owner, expires_at: expires_at}}
+          {:ok, lease(key, token, owner, expires_at)}
 
         [] ->
           {:error, :not_found}
       end
     end)
+  end
+
+  defp lease(key, token, owner, expires_at) do
+    %{key: key, token: token, owner: owner, expires_at: expires_at}
   end
 
   defp activity(fun) do

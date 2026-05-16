@@ -2,16 +2,29 @@ defmodule Ployz.Metadata.Certs do
   @moduledoc false
 
   alias Ployz.Metadata.Tables
+  alias Ployz.Redactor
 
-  @forbidden_keys [:private_key, :pem, :account_key, :secret]
+  @pem_markers ["-----BEGIN", "PRIVATE KEY", "CERTIFICATE-----"]
 
   def put(hostname, cert) when is_binary(hostname) and is_map(cert) do
-    cert = Map.drop(cert, @forbidden_keys)
+    cert = Redactor.redact(cert)
 
-    if is_binary(cert[:cert_ref]) do
-      Tables.write(:certs, hostname, Map.put(cert, :hostname, hostname))
-    else
-      {:error, :missing_cert_ref}
+    cond do
+      contains_pem_material?(cert) ->
+        {:error, :secret_material_not_allowed}
+
+      is_binary(cert[:cert_ref]) ->
+        Tables.write(:certs, hostname, Map.put(cert, :hostname, hostname))
+
+      is_binary(cert["cert_ref"]) ->
+        Tables.write(
+          :certs,
+          hostname,
+          cert |> atomize_allowed_keys() |> Map.put(:hostname, hostname)
+        )
+
+      true ->
+        {:error, :missing_cert_ref}
     end
   end
 
@@ -26,14 +39,36 @@ defmodule Ployz.Metadata.Certs do
   end
 
   def active_refs do
-    refs =
-      :certs
-      |> Tables.all()
-      |> Enum.map(fn {hostname, cert} ->
-        {hostname, Map.take(cert, [:cert_ref, :chain_ref, :revision, :expires_at])}
-      end)
-      |> Map.new()
+    case Tables.all(:certs) do
+      {:error, reason} ->
+        {:error, reason}
 
-    {:ok, refs}
+      rows ->
+        refs =
+          rows
+          |> Enum.map(fn {hostname, cert} ->
+            {hostname, Map.take(cert, [:cert_ref, :chain_ref, :revision, :expires_at])}
+          end)
+          |> Map.new()
+
+        {:ok, refs}
+    end
+  end
+
+  defp atomize_allowed_keys(cert) do
+    Map.new(cert, fn
+      {"cert_ref", value} -> {:cert_ref, value}
+      {"chain_ref", value} -> {:chain_ref, value}
+      {"revision", value} -> {:revision, value}
+      {"expires_at", value} -> {:expires_at, value}
+      {"issued_at", value} -> {:issued_at, value}
+      {key, value} -> {key, value}
+    end)
+  end
+
+  defp contains_pem_material?(value) do
+    value
+    |> inspect()
+    |> then(fn inspected -> Enum.any?(@pem_markers, &String.contains?(inspected, &1)) end)
   end
 end

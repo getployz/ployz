@@ -69,8 +69,13 @@ defmodule Ployz.Substrate.Port do
   def handle_call({:request, op, params}, from, %{port: port, pending: pending} = state) do
     case Protocol.encode_request(op, params) do
       {:ok, {request_id, frame}} ->
-        Port.command(port, frame)
-        {:noreply, %{state | pending: Map.put(pending, request_id, from)}}
+        case send_frame(port, frame, state.helper_path) do
+          :ok ->
+            {:noreply, %{state | pending: Map.put(pending, request_id, from)}}
+
+          {:error, error} ->
+            {:reply, {:error, error}, state}
+        end
 
       {:error, error} ->
         {:reply, {:error, error}, state}
@@ -159,5 +164,25 @@ defmodule Ployz.Substrate.Port do
   rescue
     error in ArgumentError ->
       {:error, {:helper_open_failed, Exception.message(error)}}
+  end
+
+  defp send_frame(port, frame, helper_path) do
+    case Port.command(port, frame) do
+      true ->
+        :ok
+
+      false ->
+        {:error,
+         Protocol.error("helper_send_failed", "substrate helper rejected request frame", %{
+           helper_path: helper_path
+         })}
+    end
+  rescue
+    error in ArgumentError ->
+      {:error,
+       Protocol.error("helper_port_closed", "substrate helper port is closed", %{
+         helper_path: helper_path,
+         error: Exception.message(error)
+       })}
   end
 end

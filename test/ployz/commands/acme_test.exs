@@ -17,6 +17,7 @@ defmodule Ployz.Commands.AcmeTest do
 
   defmodule Leases do
     def acquire(key, _owner, _ttl), do: {:ok, %{key: key, token: "lease-token"}}
+    def assert_current(_key, "lease-token"), do: :ok
 
     def release(key, token) do
       send(Process.get(:test_pid), {:lease_release, key, token})
@@ -31,7 +32,7 @@ defmodule Ployz.Commands.AcmeTest do
   defmodule Certs do
     def next_revision("example.com"), do: {:ok, 2}
 
-    def put(row) do
+    def put("example.com", row) do
       send(Process.get(:test_pid), {:cert_put, row})
       :ok
     end
@@ -54,6 +55,19 @@ defmodule Ployz.Commands.AcmeTest do
     end
   end
 
+  defmodule FailingIssuer do
+    def issue("example.com", _timeout), do: {:error, :issuer_down}
+  end
+
+  defmodule ExplodingIssuer do
+    def issue("example.com", _timeout), do: raise("boom")
+  end
+
+  defmodule HeldLeases do
+    def acquire(_key, _owner, _ttl), do: {:error, {:lease_held, :other, 1234}}
+    def release(_key, _token), do: raise("lease should not be released when acquisition fails")
+  end
+
   setup do
     Process.put(:test_pid, self())
     :ok
@@ -73,6 +87,7 @@ defmodule Ployz.Commands.AcmeTest do
                      }}
 
     assert_received {:command_finish, %{id: "cmd-cert", status: :committed}}
+    assert_received {:lease_release, {:acme, "example.com"}, "lease-token"}
   end
 
   test "rejects issuer responses that contain secret material" do
@@ -82,6 +97,36 @@ defmodule Ployz.Commands.AcmeTest do
     assert receipt.status == :failed
     refute_received {:cert_put, _row}
     assert_received {:command_finish, %{id: "cmd-cert-fail", status: :failed}}
+    assert_received {:lease_release, {:acme, "example.com"}, "lease-token"}
+  end
+
+  test "lease contention prevents issuer calls and cert writes" do
+    assert {:error, {:lease_held, :other, 1234}, receipt} =
+             Acme.issue("example.com", [command_id: "cmd-cert-held"], %{
+               deps(Issuer)
+               | leases: HeldLeases
+             })
+
+    assert receipt.status == :failed
+    refute_received {:cert_put, _row}
+  end
+
+  test "issuer failures release the lease and finish a failed receipt" do
+    assert {:error, :issuer_down, receipt} =
+             Acme.issue("example.com", [command_id: "cmd-cert-issuer-down"], deps(FailingIssuer))
+
+    assert receipt.status == :failed
+    refute_received {:cert_put, _row}
+    assert_received {:lease_release, {:acme, "example.com"}, "lease-token"}
+    assert_received {:command_finish, %{id: "cmd-cert-issuer-down", status: :failed}}
+  end
+
+  test "issuer crashes release the lease and finish a failed receipt" do
+    assert {:error, %{code: :command_crashed}, receipt} =
+             Acme.issue("example.com", [command_id: "cmd-cert-crash"], deps(ExplodingIssuer))
+
+    assert receipt.status == :failed
+    assert_received {:lease_release, {:acme, "example.com"}, "lease-token"}
   end
 
   defp deps(issuer) do

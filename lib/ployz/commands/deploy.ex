@@ -57,22 +57,25 @@ defmodule Ployz.Commands.Deploy do
     lease_key = receipt.lease_key
 
     result =
-      with {:ok, candidates} <-
-             active_reachable_candidates(deps, Keyword.get(opts, :timeout_ms, 5_000)),
-           {:ok, selected} <- select_members(candidates, manifest.instances),
-           {:ok, runtime_evidence} <-
-             start_and_probe(
-               deps.runtime,
-               selected,
-               manifest,
-               Keyword.get(opts, :timeout_ms, 5_000)
-             ),
-           {:ok, committed} <- commit(deps, manifest, receipt, lease, selected, runtime_evidence),
-           {:ok, final} <- refresh_gateway(deps, committed) do
-        {:ok, final}
-      end
+      safe_work(fn ->
+        with {:ok, candidates} <-
+               active_reachable_candidates(deps, Keyword.get(opts, :timeout_ms, 5_000)),
+             {:ok, selected} <- select_members(candidates, manifest.instances),
+             {:ok, runtime_evidence} <-
+               start_and_probe(
+                 deps.runtime,
+                 selected,
+                 manifest,
+                 Keyword.get(opts, :timeout_ms, 5_000)
+               ),
+             {:ok, committed} <-
+               commit(deps, manifest, receipt, lease, selected, runtime_evidence),
+             {:ok, final} <- refresh_gateway(deps, committed) do
+          {:ok, final}
+        end
+      end)
 
-    _ = call(deps.leases, :release, [lease_key, lease.token])
+    release_lease(deps.leases, lease_key, lease.token)
 
     case result do
       {:ok, final} ->
@@ -99,35 +102,11 @@ defmodule Ployz.Commands.Deploy do
   end
 
   defp active_members(module) do
-    cond do
-      exports?(module, :active_runtime_members, 0) ->
-        call(module, :active_runtime_members, [])
-
-      exports?(module, :selectable, 0) ->
-        {:ok, call(module, :selectable, [])}
-
-      true ->
-        {:error, {:missing_metadata_contract, module, :active_runtime_members}}
-    end
+    call(module, :active_runtime_members, [])
   end
 
   defp reachable_members(module, active, timeout_ms) do
-    cond do
-      exports?(module, :reachable_members, 2) ->
-        call(module, :reachable_members, [active, timeout_ms])
-
-      exports?(module, :members, 0) ->
-        members = call(module, :members, [])
-
-        if active == [] do
-          {:error, :no_active_runtime_members}
-        else
-          {:ok, Enum.take(members, length(active))}
-        end
-
-      true ->
-        {:error, {:missing_runtime_contract, module, :reachable_members}}
-    end
+    call(module, :reachable_members, [active, timeout_ms])
   end
 
   defp select_members(candidates, needed) do
@@ -140,9 +119,10 @@ defmodule Ployz.Commands.Deploy do
     end
   end
 
-  defp commit(deps, manifest, receipt, lease, selected, runtime_evidence) do
+  defp commit(deps, manifest, receipt, _lease, selected, runtime_evidence) do
     call(deps.transaction, :transaction, [
       fn ->
+        :ok = assert_lease(deps.leases, receipt.lease_key, receipt.lease_token)
         {:ok, revision} = next_revision(deps.revisions, manifest.service)
 
         deploy_revision = %{
@@ -163,7 +143,7 @@ defmodule Ployz.Commands.Deploy do
           |> Map.merge(%{
             status: :committed,
             phase: :committed,
-            lease_token: lease.token,
+            lease_token: nil,
             service: manifest.service,
             revision: revision,
             members: selected,
@@ -178,129 +158,43 @@ defmodule Ployz.Commands.Deploy do
   end
 
   defp start_and_probe(module, selected, manifest, timeout_ms) do
-    cond do
-      exports?(module, :start_and_probe, 3) ->
-        call(module, :start_and_probe, [selected, manifest, timeout_ms])
-
-      exports?(module, :start, 3) and exports?(module, :probe, 3) ->
-        params = %{service: manifest.service, image: manifest.image, routes: manifest.routes}
-
-        selected
-        |> Enum.reduce_while({:ok, []}, fn member, {:ok, acc} ->
-          with {:ok, started} <- call(module, :start, [member, params, timeout_ms]),
-               {:ok, probe} <- call(module, :probe, [member, params, timeout_ms]) do
-            {:cont, {:ok, [%{member: member, started: started, probe: probe} | acc]}}
-          else
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-        end)
-        |> case do
-          {:ok, evidence} -> {:ok, Enum.reverse(evidence)}
-          error -> error
-        end
-
-      true ->
-        {:error, {:missing_runtime_contract, module, :start_and_probe}}
-    end
+    call(module, :start_and_probe, [selected, manifest, timeout_ms])
   end
 
   defp create_command(module, receipt) do
-    if exports?(module, :create, 1) do
-      call(module, :create, [receipt])
-    else
-      call(module, :create_running, [
-        receipt.id,
-        :deploy,
-        %{role: :local_operator},
-        owner: receipt.owner,
-        phase: receipt.phase
-      ])
-    end
+    call(module, :create, [receipt])
   end
 
   defp finish_command(module, %{status: :committed} = receipt) do
-    if exports?(module, :finish, 1) do
-      call(module, :finish, [receipt])
-    else
-      call(module, :succeed, [receipt.id, Map.drop(receipt, [:id, :status, :phase])])
-    end
+    call(module, :finish, [receipt])
   end
 
   defp finish_command(module, %{status: :failed} = receipt) do
-    if exports?(module, :finish, 1) do
-      call(module, :finish, [receipt])
-    else
-      call(module, :fail, [receipt.id, receipt.last_error])
-    end
+    call(module, :finish, [receipt])
   end
 
   defp acquire_lease(module, key, owner, ttl_ms) do
-    case call(module, :acquire, [key, owner, ttl_ms]) do
-      {:ok, %{token: _token} = lease} -> {:ok, lease}
-      {:ok, token} when is_binary(token) -> {:ok, %{key: key, token: token, owner: owner}}
-      {:error, reason} -> {:error, reason}
-    end
+    call(module, :acquire, [key, owner, ttl_ms])
+  end
+
+  defp assert_lease(module, key, token) do
+    call!(module, :assert_current, [key, token])
   end
 
   defp next_revision(module, service) do
-    cond do
-      exports?(module, :next_for_service, 1) ->
-        call(module, :next_for_service, [service])
-
-      exports?(module, :get_head, 1) ->
-        case call(module, :get_head, [service]) do
-          {:ok, %{revision: revision}} -> {:ok, revision + 1}
-          {:error, :not_found} -> {:ok, 1}
-          {:error, reason} -> {:error, reason}
-        end
-
-      true ->
-        {:error, {:missing_metadata_contract, module, :next_for_service}}
-    end
+    call(module, :next_for_service, [service])
   end
 
   defp put_revision(module, row) do
-    cond do
-      exports?(module, :put, 1) ->
-        call!(module, :put, [row])
-
-      exports?(module, :put_revision, 3) ->
-        call!(module, :put_revision, [row.service, row.revision, row])
-
-      true ->
-        throw({:metadata_commit_failed, :put_revision, :missing_contract})
-    end
+    call!(module, :put, [row])
   end
 
   defp put_head(deps, service, revision) do
-    cond do
-      exports?(deps.services, :put_head, 2) ->
-        call!(deps.services, :put_head, [service, revision])
-
-      exports?(deps.revisions, :put_head, 2) ->
-        call!(deps.revisions, :put_head, [service, revision])
-
-      true ->
-        throw({:metadata_commit_failed, :put_head, :missing_contract})
-    end
+    call!(deps.services, :put_head, [service, revision])
   end
 
   defp replace_routes(module, service, revision, routes) do
-    cond do
-      exports?(module, :replace_for_service, 3) ->
-        call!(module, :replace_for_service, [service, revision, routes])
-
-      exports?(module, :put, 2) ->
-        Enum.each(routes, fn route ->
-          host = Map.get(route, :host) || Map.fetch!(route, "host")
-          call!(module, :put, [host, Map.merge(route, %{service: service, revision: revision})])
-        end)
-
-        :ok
-
-      true ->
-        throw({:metadata_commit_failed, :replace_routes, :missing_contract})
-    end
+    call!(module, :replace_for_service, [service, revision, routes])
   end
 
   defp refresh_gateway(deps, receipt) do
@@ -332,6 +226,7 @@ defmodule Ployz.Commands.Deploy do
     |> Map.merge(%{
       status: :failed,
       phase: :failed,
+      lease_token: nil,
       last_error: reason,
       finished_at: now_ms()
     })
@@ -348,11 +243,32 @@ defmodule Ployz.Commands.Deploy do
     end
   end
 
-  defp exports?(module, function, arity) when is_atom(module) do
-    Code.ensure_loaded?(module) and function_exported?(module, function, arity)
+  defp safe_work(fun) do
+    fun.()
+  rescue
+    exception ->
+      {:error,
+       %{
+         code: :command_crashed,
+         exception: inspect(exception.__struct__),
+         message: Exception.message(exception)
+       }}
+  catch
+    :exit, reason ->
+      {:error, %{code: :command_exited, detail: inspect(reason)}}
+
+    kind, reason ->
+      {:error, %{code: :command_threw, kind: kind, detail: inspect(reason)}}
   end
 
-  defp exports?(_module, _function, _arity), do: false
+  defp release_lease(module, key, token) do
+    _ = call(module, :release, [key, token])
+    :ok
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
 
   defp new_command_id, do: "cmd-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
   defp now_ms, do: System.system_time(:millisecond)
