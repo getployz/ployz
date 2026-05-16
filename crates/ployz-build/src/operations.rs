@@ -8,11 +8,32 @@ use ployz_operation_store::FileOperationStore;
 use ployz_time::now_unix_secs;
 
 const OPERATIONS_DIR_NAME: &str = "build-operations";
+const DAEMON_RESTART_INTERRUPT_ERROR: &str =
+    "daemon restarted before build completed; retry the build or inspect any recorded artifact";
 pub use ployz_operation_store::MAX_OPERATION_ID_LEN;
 
 #[derive(Debug, Clone)]
 pub struct BuildOperationStore {
     files: FileOperationStore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationStartupRecovery {
+    pub interrupted: Vec<String>,
+    pub failures: Vec<OperationStartupRecoveryFailure>,
+}
+
+impl OperationStartupRecovery {
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.failures.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationStartupRecoveryFailure {
+    pub operation_id: String,
+    pub error: String,
 }
 
 impl BuildOperationStore {
@@ -130,6 +151,34 @@ impl BuildOperationStore {
             |record: &BuildOperationRecord| record.started_at,
             |record| &record.id,
         )
+    }
+
+    pub fn interrupt_running_after_daemon_restart(
+        &self,
+    ) -> Result<OperationStartupRecovery, String> {
+        let mut recovery = OperationStartupRecovery {
+            interrupted: Vec::new(),
+            failures: Vec::new(),
+        };
+
+        for mut record in self.list()? {
+            if record.status() != OperationStatus::Running {
+                continue;
+            }
+            match self.update_status(
+                &mut record,
+                OperationStatus::Interrupted,
+                Some(DAEMON_RESTART_INTERRUPT_ERROR.into()),
+            ) {
+                Ok(()) => recovery.interrupted.push(record.id),
+                Err(error) => recovery.failures.push(OperationStartupRecoveryFailure {
+                    operation_id: record.id,
+                    error,
+                }),
+            }
+        }
+
+        Ok(recovery)
     }
 }
 
@@ -317,5 +366,66 @@ mod tests {
             .map(|record| record.id)
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["newer", "older"]);
+    }
+
+    #[test]
+    fn startup_recovery_marks_running_operation_interrupted() {
+        let store = BuildOperationStore::new(unique_temp_dir("ployz-build-ops-test"));
+        let operation = store
+            .begin(
+                BuildOperationKind::Local,
+                BuildMethod::Dockerfile,
+                BuildLocation::Local,
+                "building",
+            )
+            .expect("begin operation");
+
+        let recovery = store
+            .interrupt_running_after_daemon_restart()
+            .expect("recover startup");
+
+        assert_eq!(recovery.interrupted, vec![operation.id.clone()]);
+        assert!(recovery.is_clean());
+        let recovered = store
+            .load(&operation.id)
+            .expect("load operation")
+            .expect("operation exists");
+        assert_eq!(recovered.status(), OperationStatus::Interrupted);
+        assert!(
+            recovered
+                .last_error()
+                .expect("last error")
+                .contains("daemon restarted")
+        );
+    }
+
+    #[test]
+    fn startup_recovery_leaves_terminal_operations_untouched() {
+        let store = BuildOperationStore::new(unique_temp_dir("ployz-build-ops-test"));
+        let mut operation = store
+            .begin_with_id(
+                "finished-build-operation".into(),
+                BuildOperationKind::Local,
+                BuildMethod::Dockerfile,
+                BuildLocation::Local,
+                "building",
+            )
+            .expect("begin operation");
+        store
+            .update_artifact(&mut operation, artifact())
+            .expect("record artifact");
+
+        let recovery = store
+            .interrupt_running_after_daemon_restart()
+            .expect("recover startup");
+
+        assert!(recovery.interrupted.is_empty());
+        assert!(recovery.is_clean());
+        let recovered = store
+            .load("finished-build-operation")
+            .expect("load operation")
+            .expect("operation exists");
+        assert_eq!(recovered.status(), OperationStatus::Succeeded);
+        assert_eq!(recovered.last_error(), None);
     }
 }

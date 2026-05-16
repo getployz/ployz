@@ -14,7 +14,7 @@ ployz-time = { path = "../ployz-time" }
 async-trait = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
-tokio = { workspace = true, features = ["process", "io-util", "time"] }
+tokio = { workspace = true, features = ["rt", "process", "io-util", "time"] }
 
 [lints]
 workspace = true
