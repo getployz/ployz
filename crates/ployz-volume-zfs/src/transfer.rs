@@ -402,6 +402,122 @@ impl TransferStore {
         }))
     }
 
+    pub async fn claim_or_reuse_move(
+        &self,
+        namespace: &Namespace,
+        volume: &str,
+        source_machine: &MachineId,
+        target_machine: &MachineId,
+        snapshot_name: &str,
+        from_snapshot_name: Option<&str>,
+    ) -> Result<MoveTransferClaim, String> {
+        if let Some(transfer) = self.find_reusable(
+            namespace,
+            volume,
+            source_machine,
+            target_machine,
+            snapshot_name,
+            from_snapshot_name,
+        )? {
+            return Ok(MoveTransferClaim::Reusable(transfer));
+        }
+
+        for _ in 0..2 {
+            let transfer_id = self.new_transfer_id()?;
+            match self.create_move_claim(
+                namespace,
+                volume,
+                source_machine,
+                target_machine,
+                snapshot_name,
+                from_snapshot_name,
+                &transfer_id,
+            ) {
+                Ok(MoveClaimOutcome::Created) => {
+                    let now = now_unix_secs();
+                    match self.begin_with_id(
+                        transfer_id,
+                        namespace,
+                        volume,
+                        source_machine.clone(),
+                        target_machine.clone(),
+                        snapshot_name.to_string(),
+                        from_snapshot_name.map(str::to_string),
+                        now,
+                    ) {
+                        Ok(record) => return Ok(MoveTransferClaim::Started(record)),
+                        Err(error) => {
+                            self.delete_move_claim(
+                                namespace,
+                                volume,
+                                source_machine,
+                                target_machine,
+                                snapshot_name,
+                                from_snapshot_name,
+                            );
+                            return Err(error);
+                        }
+                    }
+                }
+                Ok(MoveClaimOutcome::Exists(existing_id)) => {
+                    if let Err(error) = validate_transfer_id(&existing_id) {
+                        tracing::warn!(
+                            transfer_id = %existing_id,
+                            %error,
+                            "deleting stale zfs transfer claim with invalid transfer id"
+                        );
+                        self.delete_move_claim(
+                            namespace,
+                            volume,
+                            source_machine,
+                            target_machine,
+                            snapshot_name,
+                            from_snapshot_name,
+                        );
+                        continue;
+                    }
+                    match wait_for_claimed_transfer_record(self, &existing_id).await? {
+                        ClaimedTransfer::Running(existing) => {
+                            return Ok(MoveTransferClaim::Reusable(existing));
+                        }
+                        ClaimedTransfer::Terminal(existing) => {
+                            tracing::warn!(
+                                transfer_id = %existing.id,
+                                status = ?existing.status(),
+                                "deleting stale zfs transfer claim for terminal transfer"
+                            );
+                            self.delete_move_claim(
+                                namespace,
+                                volume,
+                                source_machine,
+                                target_machine,
+                                snapshot_name,
+                                from_snapshot_name,
+                            );
+                        }
+                        ClaimedTransfer::MissingAfterWait => {
+                            tracing::warn!(
+                                transfer_id = %existing_id,
+                                "deleting stale zfs transfer claim for missing transfer"
+                            );
+                            self.delete_move_claim(
+                                namespace,
+                                volume,
+                                source_machine,
+                                target_machine,
+                                snapshot_name,
+                                from_snapshot_name,
+                            );
+                        }
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err("zfs transfer claim could not be acquired after stale claim cleanup".into())
+    }
+
     pub fn create_move_claim(
         &self,
         namespace: &Namespace,
@@ -570,6 +686,28 @@ impl TransferStore {
         self.delete_claim_path(&path, Some(&record.id));
     }
 
+    pub fn finalize_result(&self, transfer: &mut TransferRecord, result: Result<(), String>) {
+        let transfer_id = transfer.id.clone();
+        match result {
+            Ok(()) => {
+                if let Err(error) = self.update_stage(transfer, "complete") {
+                    tracing::warn!(%error, transfer_id, "failed to record complete stage");
+                }
+                if let Err(error) = self.update_status(transfer, TransferStatus::Succeeded, None) {
+                    tracing::warn!(%error, transfer_id, "failed to record success status");
+                }
+            }
+            Err(error) => {
+                if let Err(save_err) =
+                    self.update_status(transfer, TransferStatus::Failed, Some(error))
+                {
+                    tracing::warn!(%save_err, transfer_id, "failed to record failed status");
+                }
+                self.delete_claim_for(transfer);
+            }
+        }
+    }
+
     fn delete_claim_path(&self, path: &std::path::Path, transfer_id: Option<&str>) {
         if let Err(error) = std::fs::remove_file(&path)
             && error.kind() != std::io::ErrorKind::NotFound
@@ -587,6 +725,11 @@ impl TransferStore {
 pub enum MoveClaimOutcome {
     Created,
     Exists(String),
+}
+
+pub enum MoveTransferClaim {
+    Reusable(TransferRecord),
+    Started(TransferRecord),
 }
 
 pub enum ClaimedTransfer {
@@ -639,4 +782,207 @@ pub fn validate_transfer_id(id: &str) -> Result<(), String> {
 
 pub fn unique_transfer_id(now: u64) -> Result<String, String> {
     try_unique_operation_id("zfs-transfer", std::process::id(), now)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_root(label: &str) -> PathBuf {
+        let id = unique_transfer_id(0).expect("unique id");
+        std::env::temp_dir().join(format!("ployz-zfs-transfer-test-{label}-{id}"))
+    }
+
+    fn begin(store: &TransferStore) -> TransferRecord {
+        store
+            .begin(
+                &Namespace::new("default"),
+                "data",
+                MachineId::new("source"),
+                MachineId::new("target"),
+                "snap".into(),
+                None,
+            )
+            .expect("begin transfer")
+    }
+
+    fn create_claim(store: &TransferStore, transfer_id: &str) -> MoveClaimOutcome {
+        store
+            .create_move_claim(
+                &Namespace::new("default"),
+                "data",
+                &MachineId::new("source"),
+                &MachineId::new("target"),
+                "snap",
+                None,
+                transfer_id,
+            )
+            .expect("create claim")
+    }
+
+    fn claim_path(store: &TransferStore) -> PathBuf {
+        let key = move_claim_key(
+            &Namespace::new("default"),
+            "data",
+            &MachineId::new("source"),
+            &MachineId::new("target"),
+            "snap",
+            None,
+        );
+        store.claim_path(&key)
+    }
+
+    #[tokio::test]
+    async fn claim_or_reuse_move_starts_new_transfer_and_claim() {
+        let root = tmp_root("claim-start");
+        let store = TransferStore::new(root.clone());
+
+        let claim = store
+            .claim_or_reuse_move(
+                &Namespace::new("default"),
+                "data",
+                &MachineId::new("source"),
+                &MachineId::new("target"),
+                "snap",
+                None,
+            )
+            .await
+            .expect("claim move");
+
+        let MoveTransferClaim::Started(record) = claim else {
+            panic!("expected new transfer");
+        };
+        assert_eq!(record.status(), TransferStatus::Running);
+        assert!(claim_path(&store).exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn claim_or_reuse_move_reuses_running_transfer() {
+        let root = tmp_root("claim-reuse");
+        let store = TransferStore::new(root.clone());
+        let transfer = begin(&store);
+
+        let claim = store
+            .claim_or_reuse_move(
+                &Namespace::new("default"),
+                "data",
+                &MachineId::new("source"),
+                &MachineId::new("target"),
+                "snap",
+                None,
+            )
+            .await
+            .expect("claim move");
+
+        let MoveTransferClaim::Reusable(record) = claim else {
+            panic!("expected reusable transfer");
+        };
+        assert_eq!(record.id, transfer.id);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn claim_or_reuse_move_cleans_terminal_claim_and_reclaims() {
+        let root = tmp_root("claim-terminal-cleanup");
+        let store = TransferStore::new(root.clone());
+        let mut transfer = begin(&store);
+        assert!(matches!(
+            create_claim(&store, &transfer.id),
+            MoveClaimOutcome::Created
+        ));
+        store
+            .update_status(&mut transfer, TransferStatus::Failed, Some("boom".into()))
+            .expect("fail transfer");
+
+        let claim = store
+            .claim_or_reuse_move(
+                &Namespace::new("default"),
+                "data",
+                &MachineId::new("source"),
+                &MachineId::new("target"),
+                "snap",
+                None,
+            )
+            .await
+            .expect("claim move");
+
+        let MoveTransferClaim::Started(record) = claim else {
+            panic!("expected new transfer after stale claim cleanup");
+        };
+        assert_ne!(record.id, transfer.id);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn claim_or_reuse_move_cleans_invalid_claim_and_reclaims() {
+        let root = tmp_root("claim-invalid-cleanup");
+        let store = TransferStore::new(root.clone());
+        std::fs::create_dir_all(store.claim_dir()).expect("claim dir");
+        std::fs::write(claim_path(&store), "\n").expect("invalid claim");
+
+        let claim = store
+            .claim_or_reuse_move(
+                &Namespace::new("default"),
+                "data",
+                &MachineId::new("source"),
+                &MachineId::new("target"),
+                "snap",
+                None,
+            )
+            .await
+            .expect("claim move");
+
+        assert!(matches!(claim, MoveTransferClaim::Started(_)));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn finalize_result_records_complete_stage_and_succeeded_status() {
+        let root = tmp_root("finalize-ok");
+        let store = TransferStore::new(root.clone());
+        let mut transfer = begin(&store);
+        store
+            .update_stage(&mut transfer, "snapshot")
+            .expect("stage snapshot");
+        store
+            .update_stage(&mut transfer, "send")
+            .expect("stage send");
+        transfer.state.with_snapshot_guid(123);
+        transfer.state.with_bytes_transferred(456);
+        store.save(&transfer).expect("save transfer");
+
+        store.finalize_result(&mut transfer, Ok(()));
+
+        assert_eq!(transfer.status(), TransferStatus::Succeeded);
+        assert_eq!(transfer.stage(), "complete");
+        let loaded = store
+            .load(&transfer.id)
+            .expect("load finalized")
+            .expect("record exists");
+        assert_eq!(loaded.status(), TransferStatus::Succeeded);
+        assert_eq!(loaded.stage(), "complete");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn finalize_result_captures_last_error_on_failure_and_deletes_claim() {
+        let root = tmp_root("finalize-failed");
+        let store = TransferStore::new(root.clone());
+        let mut transfer = begin(&store);
+        assert!(matches!(
+            create_claim(&store, &transfer.id),
+            MoveClaimOutcome::Created
+        ));
+
+        store.finalize_result(&mut transfer, Err("boom".into()));
+
+        assert_eq!(transfer.status(), TransferStatus::Failed);
+        assert_eq!(transfer.last_error(), Some("boom"));
+        assert!(
+            !claim_path(&store).exists(),
+            "failed finalization should remove claim"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

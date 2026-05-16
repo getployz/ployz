@@ -1,10 +1,7 @@
-mod finalization;
 mod machine;
 
 #[cfg(test)]
 mod tests;
-
-pub(super) use finalization::finalize_zfs_transfer;
 
 use ployz_model::{MachineId, MachineMembership, VolumeRecord};
 use ployz_node_runtime::{VolumeZfsNodeClient, VolumeZfsRpcTransport};

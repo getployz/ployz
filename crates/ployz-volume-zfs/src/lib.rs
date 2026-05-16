@@ -22,9 +22,9 @@ pub use resolve::resolve_volumes;
 pub use send_stream::send_zfs_stream_from_local;
 pub use shell::{ShellOutput, ShellRunner, ShellStdio, ShellStreamer, TokioShellRunner};
 pub use transfer::{
-    ClaimedTransfer, MoveClaimOutcome, SendResult, TransferRecord, TransferState, TransferStatus,
-    TransferStore, move_claim_key, unique_transfer_id, validate_transfer_id,
-    wait_for_claimed_transfer_record,
+    ClaimedTransfer, MoveClaimOutcome, MoveTransferClaim, SendResult, TransferRecord,
+    TransferState, TransferStatus, TransferStore, move_claim_key, unique_transfer_id,
+    validate_transfer_id, wait_for_claimed_transfer_record,
 };
 pub use transfer_protocol::{
     MAX_HEADER_BYTES, VolumeAuthorizationRejection, ZfsReceiveRequest, ZfsTransferOpen,

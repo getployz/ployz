@@ -14,8 +14,6 @@ use ployz_volume_zfs::{
 use crate::daemon::DaemonState;
 
 use super::responses::transfer_info;
-use super::transfer_execution::finalize_zfs_transfer;
-
 fn tmp_root(label: &str) -> PathBuf {
     let id = unique_transfer_id(0).expect("unique id");
     std::env::temp_dir().join(format!("ployz-zfs-transfer-test-{label}-{id}"))
@@ -358,7 +356,7 @@ fn finalize_records_complete_stage_and_succeeded_status() {
         .update_stage(&mut transfer, "send")
         .expect("stage send");
 
-    finalize_zfs_transfer(&store, &mut transfer, Ok(()));
+    store.finalize_result(&mut transfer, Ok(()));
 
     let loaded = store
         .load(&transfer.id)
@@ -380,7 +378,7 @@ fn finalize_captures_last_error_on_failure() {
         MoveClaimOutcome::Created
     ));
 
-    finalize_zfs_transfer(&store, &mut transfer, Err("boom".into()));
+    store.finalize_result(&mut transfer, Err("boom".into()));
 
     let loaded = store
         .load(&transfer.id)
