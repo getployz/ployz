@@ -1,5 +1,4 @@
 mod cert_coordination;
-mod cert_renewal_health;
 mod deploy_probe;
 pub mod handlers;
 mod node_rpc;

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
 use ployz_supervision::{ComponentHealthRegistry, ComponentId, NamedComponentHealth};
 use tracing::warn;
@@ -5,10 +7,26 @@ use tracing::warn;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeHealthSnapshot {
     pub components: Vec<NamedComponentHealth>,
+    pub unknown_components: Vec<RuntimeComponentHealthUnknown>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeComponentHealthUnknown {
+    pub name: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileHealthSource {
+    name: String,
+    path: PathBuf,
+    missing_error: String,
+    read_error_prefix: String,
 }
 
 pub struct RuntimeComponents {
     health: ComponentHealthRegistry,
+    file_health_sources: Vec<FileHealthSource>,
     certificate_renewal: Box<dyn RuntimeHandle>,
     bootstrap_peer_seed: Box<dyn RuntimeHandle>,
     nats_control: Box<dyn RuntimeHandle>,
@@ -29,6 +47,7 @@ impl RuntimeComponents {
     pub fn noop() -> Self {
         Self {
             health: ComponentHealthRegistry::default(),
+            file_health_sources: Vec::new(),
             certificate_renewal: Box::new(NoopRuntimeHandle),
             bootstrap_peer_seed: Box::new(NoopRuntimeHandle),
             nats_control: Box::new(NoopRuntimeHandle),
@@ -47,10 +66,48 @@ impl RuntimeComponents {
         self.health.mark_stale(component, error);
     }
 
+    pub fn track_file_health(
+        &mut self,
+        component: impl Into<String>,
+        path: PathBuf,
+        missing_error: impl Into<String>,
+        read_error_prefix: impl Into<String>,
+    ) {
+        self.file_health_sources.push(FileHealthSource {
+            name: component.into(),
+            path,
+            missing_error: missing_error.into(),
+            read_error_prefix: read_error_prefix.into(),
+        });
+    }
+
     #[must_use]
     pub fn health_snapshot(&self) -> RuntimeHealthSnapshot {
+        let mut components = self.health.snapshot();
+        let mut unknown_components = Vec::new();
+        for source in &self.file_health_sources {
+            if !source.path.exists() {
+                unknown_components.push(RuntimeComponentHealthUnknown {
+                    name: source.name.clone(),
+                    error: source.missing_error.clone(),
+                });
+                continue;
+            }
+            match ployz_supervision::load_component_health_sync(&source.path) {
+                Ok(health) => components.push(NamedComponentHealth {
+                    name: source.name.clone(),
+                    updated_at_unix_secs: health.updated_at_unix_secs,
+                    state: health.state,
+                }),
+                Err(error) => unknown_components.push(RuntimeComponentHealthUnknown {
+                    name: source.name.clone(),
+                    error: format!("{}: {error}", source.read_error_prefix),
+                }),
+            }
+        }
         RuntimeHealthSnapshot {
-            components: self.health.snapshot(),
+            components,
+            unknown_components,
         }
     }
 
@@ -181,7 +238,12 @@ impl RuntimeComponents {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
     #[tokio::test]
     async fn startup_rollback_shuts_down_started_components_in_dependency_order() {
@@ -290,6 +352,53 @@ mod tests {
         assert_eq!(last_error, "second");
     }
 
+    #[test]
+    fn runtime_components_loads_tracked_file_health_into_snapshot() {
+        let network_dir = temp_path("runtime-file-health");
+        let health_path = network_dir.join("health.json");
+        let health = ployz_supervision::ComponentHealth::stale(123, None, "subscription closed");
+        ployz_supervision::write_component_health_atomic_sync(&health_path, &health)
+            .expect("write health");
+        let mut components = RuntimeComponents::noop();
+        components.track_file_health(
+            "node_rpc_listener",
+            health_path,
+            "node rpc listener health file missing",
+            "read listener health",
+        );
+
+        let snapshot = components.health_snapshot();
+
+        let [component] = snapshot.components.as_slice() else {
+            panic!("expected tracked file health component");
+        };
+        assert_eq!(component.name, "node_rpc_listener");
+        assert_eq!(component.updated_at_unix_secs, 123);
+        assert_eq!(component.state, health.state);
+        assert!(snapshot.unknown_components.is_empty());
+        let _ = std::fs::remove_dir_all(&network_dir);
+    }
+
+    #[test]
+    fn runtime_components_reports_missing_tracked_file_health() {
+        let mut components = RuntimeComponents::noop();
+        components.track_file_health(
+            "bootstrap_peer_seed",
+            temp_path("missing-runtime-file-health").join("health.json"),
+            "bootstrap peer seed health file missing",
+            "read bootstrap peer seed health",
+        );
+
+        let snapshot = components.health_snapshot();
+
+        assert!(snapshot.components.is_empty());
+        let [unknown] = snapshot.unknown_components.as_slice() else {
+            panic!("expected missing health component");
+        };
+        assert_eq!(unknown.name, "bootstrap_peer_seed");
+        assert_eq!(unknown.error, "bootstrap peer seed health file missing");
+    }
+
     fn recording_handle(
         name: &'static str,
         events: Arc<Mutex<Vec<&'static str>>>,
@@ -299,6 +408,15 @@ mod tests {
 
     fn recorded(events: &Arc<Mutex<Vec<&'static str>>>) -> Vec<&'static str> {
         events.lock().expect("events").clone()
+    }
+
+    fn temp_path(label: &str) -> PathBuf {
+        let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{label}-{}-{nanos}-{sequence}", std::process::id()))
     }
 
     struct RecordingHandle {

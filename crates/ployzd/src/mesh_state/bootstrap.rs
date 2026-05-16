@@ -20,7 +20,6 @@ use tokio_util::sync::CancellationToken;
 use base64::Engine as _;
 
 const BOOTSTRAP_PEERS_FILE: &str = "bootstrap-peers.json";
-const BOOTSTRAP_PEER_SEED_HEALTH_FILE: &str = "bootstrap-peer-seed-health.json";
 const BOOTSTRAP_PEER_SEED_DEBOUNCE: Duration = Duration::from_millis(250);
 
 static BOOTSTRAP_PEER_SEED_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -40,7 +39,7 @@ pub struct BootstrapPeerRecord {
     pub endpoints: Vec<String>,
 }
 
-pub type BootstrapPeerSeedHealth = ployz_supervision::ComponentHealth;
+pub type BootstrapPeerSeedHealth = ployz_node_runtime::RuntimeComponentHealth;
 
 impl BootstrapPeerRecord {
     #[must_use]
@@ -141,26 +140,11 @@ pub fn bootstrap_peers_path(network_dir: &Path) -> std::path::PathBuf {
     network_dir.join(BOOTSTRAP_PEERS_FILE)
 }
 
-#[must_use]
-pub fn bootstrap_peer_seed_health_path(network_dir: &Path) -> std::path::PathBuf {
-    network_dir.join(BOOTSTRAP_PEER_SEED_HEALTH_FILE)
-}
-
+#[cfg(test)]
 pub fn load_bootstrap_peer_seed_health(
     network_dir: &Path,
 ) -> Result<Option<BootstrapPeerSeedHealth>, String> {
-    let path = bootstrap_peer_seed_health_path(network_dir);
-    if !path.exists() {
-        return Ok(None);
-    }
-    ployz_supervision::load_component_health_sync(&path)
-        .map(Some)
-        .map_err(|error| {
-            format!(
-                "load bootstrap peer seed health '{}': {error}",
-                path.display()
-            )
-        })
+    ployz_node_runtime::load_bootstrap_peer_seed_health(network_dir)
 }
 
 pub fn load_bootstrap_peer_records(network_dir: &Path) -> Result<Vec<BootstrapPeerRecord>, String> {
@@ -214,13 +198,7 @@ fn write_bootstrap_peer_seed_health(
     network_dir: &Path,
     health: &BootstrapPeerSeedHealth,
 ) -> Result<(), String> {
-    let path = bootstrap_peer_seed_health_path(network_dir);
-    ployz_supervision::write_component_health_atomic_sync(&path, health).map_err(|error| {
-        format!(
-            "write bootstrap peer seed health '{}': {error}",
-            path.display()
-        )
-    })
+    ployz_node_runtime::write_bootstrap_peer_seed_health(network_dir, health)
 }
 
 pub async fn refresh_bootstrap_peer_records_from_store(

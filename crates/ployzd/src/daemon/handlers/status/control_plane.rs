@@ -12,51 +12,13 @@ impl DaemonState {
         if self.runtime_is_memory_test() {
             return Vec::new();
         }
-        let node_rpc_health_path = self
-            .network_dir(&active.config.name.0)
-            .join(crate::ipc::nats_listener::NATS_NODE_RPC_HEALTH_FILE);
-        let cert_renewal_health_path = self
-            .network_dir(&active.config.name.0)
-            .join(crate::daemon::cert_renewal_health::NATS_CERT_RENEWAL_HEALTH_FILE);
-        let network_dir = self.network_dir(&active.config.name.0);
         let mut status = Vec::new();
-        match crate::ipc::nats_listener::load_health(node_rpc_health_path).await {
-            Ok(health) => status.push(component_health_status("node_rpc_listener", &health)),
-            Err(error) => status.push(ControlPlaneStatus {
-                component: String::from("node_rpc_listener"),
-                state: ControlPlaneHealthState::Unknown {
-                    error: format!("read listener health: {error}"),
-                },
-            }),
-        }
-        match crate::daemon::cert_renewal_health::load_health(cert_renewal_health_path).await {
-            Ok(health) => status.push(component_health_status("cert_renewal_worker", &health)),
-            Err(error) => status.push(ControlPlaneStatus {
-                component: String::from("cert_renewal_worker"),
-                state: ControlPlaneHealthState::Unknown {
-                    error: format!("read cert renewal health: {error}"),
-                },
-            }),
-        }
-        match crate::mesh_state::bootstrap::load_bootstrap_peer_seed_health(&network_dir) {
-            Ok(Some(health)) => {
-                status.push(component_health_status("bootstrap_peer_seed", &health))
-            }
-            Ok(None) => status.push(ControlPlaneStatus {
-                component: String::from("bootstrap_peer_seed"),
-                state: ControlPlaneHealthState::Unknown {
-                    error: String::from("bootstrap peer seed health file missing"),
-                },
-            }),
-            Err(error) => status.push(ControlPlaneStatus {
-                component: String::from("bootstrap_peer_seed"),
-                state: ControlPlaneHealthState::Unknown {
-                    error: format!("read bootstrap peer seed health: {error}"),
-                },
-            }),
-        }
-        for health in active.runtime.health_snapshot().components {
+        let runtime_health = active.runtime.health_snapshot();
+        for health in runtime_health.components {
             status.push(named_component_health_status(health));
+        }
+        for health in runtime_health.unknown_components {
+            status.push(unknown_component_health_status(health));
         }
         for health in active.mesh.task_health() {
             status.push(ControlPlaneStatus {
@@ -196,4 +158,15 @@ pub(super) fn named_component_health_status(
             state: health.state,
         },
     )
+}
+
+pub(super) fn unknown_component_health_status(
+    health: ployz_node_runtime::RuntimeComponentHealthUnknown,
+) -> ControlPlaneStatus {
+    ControlPlaneStatus {
+        component: health.name,
+        state: ControlPlaneHealthState::Unknown {
+            error: health.error,
+        },
+    }
 }

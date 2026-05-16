@@ -14,9 +14,8 @@ use super::listener::{IncomingCommand, IncomingRequest};
 
 const RESUBSCRIBE_DELAY: Duration = Duration::from_secs(1);
 const MAX_IN_FLIGHT_COMMANDS: usize = 64;
-pub const NATS_NODE_RPC_HEALTH_FILE: &str = "nats-node-rpc-health.json";
-
-pub type NatsNodeRpcHealth = ployz_supervision::ComponentHealth;
+#[cfg(test)]
+pub type NatsNodeRpcHealth = ployz_node_runtime::RuntimeComponentHealth;
 
 pub struct NatsListenerHandle {
     cancel: CancellationToken,
@@ -153,8 +152,9 @@ async fn resubscribe(
     }
 }
 
+#[cfg(test)]
 pub async fn load_health(path: PathBuf) -> std::io::Result<NatsNodeRpcHealth> {
-    ployz_supervision::load_component_health(path).await
+    ployz_node_runtime::load_node_rpc_health(path).await
 }
 
 #[cfg(test)]

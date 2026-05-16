@@ -481,17 +481,17 @@ impl MeshStartAttempt {
         let (client, subject, queue_group) = nats_store
             .node_command_listener(&state.identity.machine_id)
             .into_parts();
-        let handle = nats_listener::serve(
-            client,
-            subject,
-            queue_group,
-            command_tx,
-            state
-                .network_dir(&self.config.name.0)
-                .join(nats_listener::NATS_NODE_RPC_HEALTH_FILE),
-        )
-        .await
-        .map_err(StartMeshError::MeshUp)?;
+        let health_path =
+            ployz_node_runtime::node_rpc_health_path(&state.network_dir(&self.config.name.0));
+        self.runtime.track_file_health(
+            ployz_node_runtime::NODE_RPC_LISTENER_COMPONENT,
+            health_path.clone(),
+            "node rpc listener health file missing",
+            "read listener health",
+        );
+        let handle = nats_listener::serve(client, subject, queue_group, command_tx, health_path)
+            .await
+            .map_err(StartMeshError::MeshUp)?;
         let _ = mesh;
         self.runtime.set_nats_control(Box::new(handle));
         Ok(())
@@ -620,6 +620,15 @@ impl MeshStartAttempt {
             let issuer_factory = std::sync::Arc::new(InstantAcmeIssuerFactory::new(
                 CertificateManagerConfig::from_env(),
             ));
+            let health_path = ployz_node_runtime::cert_renewal_health_path(
+                &state.network_dir(&self.config.name.0),
+            );
+            self.runtime.track_file_health(
+                ployz_node_runtime::CERT_RENEWAL_WORKER_COMPONENT,
+                health_path.clone(),
+                "cert renewal health file missing",
+                "read cert renewal health",
+            );
             self.runtime.set_certificate_renewal(
                 crate::daemon::certificate_renewal_runtime_handle(
                     start_nats_certificate_renewal_worker(
@@ -629,15 +638,22 @@ impl MeshStartAttempt {
                         coordinator,
                         readiness,
                         account_coordinator,
-                        state.network_dir(&self.config.name.0).join(
-                            crate::daemon::cert_renewal_health::NATS_CERT_RENEWAL_HEALTH_FILE,
-                        ),
+                        health_path,
                     )
                     .await?,
                 ),
             );
         }
 
+        self.runtime.track_file_health(
+            ployz_node_runtime::BOOTSTRAP_PEER_SEED_COMPONENT,
+            ployz_node_runtime::bootstrap_peer_seed_health_path(&NetworkConfig::dir(
+                &state.data_dir,
+                &self.config.name.0,
+            )),
+            "bootstrap peer seed health file missing",
+            "read bootstrap peer seed health",
+        );
         self.runtime
             .set_bootstrap_peer_seed(crate::daemon::bootstrap_peer_seed_runtime_handle(
                 BootstrapPeerSeedTask::spawn(

@@ -1,5 +1,6 @@
 use super::control_plane::{
     component_health_status, named_component_health_status, storage_replica_intent_status,
+    unknown_component_health_status,
 };
 use super::edge_sync::{SyncMetric, metric_status, parse_sync_metric, parse_sync_metric_u64};
 use super::nats::{
@@ -323,6 +324,23 @@ fn named_component_health_status_uses_runtime_component_name() {
             assert_eq!(error, "ack failed");
         }
         other => panic!("expected stale component health, got {other:?}"),
+    }
+}
+
+#[test]
+fn unknown_component_health_status_preserves_runtime_error() {
+    let status =
+        unknown_component_health_status(ployz_node_runtime::RuntimeComponentHealthUnknown {
+            name: "bootstrap_peer_seed".into(),
+            error: "bootstrap peer seed health file missing".into(),
+        });
+
+    assert_eq!(status.component, "bootstrap_peer_seed");
+    match status.state {
+        ControlPlaneHealthState::Unknown { error } => {
+            assert_eq!(error, "bootstrap peer seed health file missing");
+        }
+        other => panic!("expected unknown component health, got {other:?}"),
     }
 }
 

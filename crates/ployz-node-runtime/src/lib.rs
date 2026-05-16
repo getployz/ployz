@@ -1,15 +1,23 @@
 mod components;
 mod dns;
 mod gateway;
+mod health;
 mod node_clients;
 pub mod sidecar;
 
 use std::future::Future;
 use std::time::Duration;
 
-pub use components::{RuntimeComponents, RuntimeHealthSnapshot};
+pub use components::{RuntimeComponentHealthUnknown, RuntimeComponents, RuntimeHealthSnapshot};
 pub use dns::{DnsHandle, start_managed_dns};
 pub use gateway::{GatewayHandle, start_managed_gateway};
+pub use health::{
+    BOOTSTRAP_PEER_SEED_COMPONENT, BOOTSTRAP_PEER_SEED_HEALTH_FILE, CERT_RENEWAL_WORKER_COMPONENT,
+    NATS_CERT_RENEWAL_HEALTH_FILE, NATS_NODE_RPC_HEALTH_FILE, NODE_RPC_LISTENER_COMPONENT,
+    RuntimeComponentHealth, bootstrap_peer_seed_health_path, cert_renewal_health_path,
+    load_bootstrap_peer_seed_health, load_cert_renewal_health, load_node_rpc_health,
+    node_rpc_health_path, write_bootstrap_peer_seed_health,
+};
 pub use node_clients::{
     DEPLOY_PARTICIPANT_RPC_POLICY, DEPLOY_VOLUME_CLONE_CLEANUP_RPC_POLICY,
     DEPLOY_VOLUME_CLONE_RPC_POLICY, DEPLOY_VOLUME_MOVE_POLL_INTERVAL,
