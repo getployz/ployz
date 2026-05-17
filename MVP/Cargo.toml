@@ -2,6 +2,7 @@
 members = [
     "acme",
     "bus",
+    "deploy",
     "e2e",
     "iroh",
     "lease",

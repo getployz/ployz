@@ -47,6 +47,7 @@ impl RouteId {
 pub enum ProjectionFactPayload {
     NodeJoined(NodeJoinedFact),
     ServiceRegistered(ServiceRegistrationFact),
+    ServingCommit(ServingCommitFact),
     RouteCommit(RouteCommitFact),
     GatewayCommit(GatewayCommitFact),
     DnsCommit(DnsCommitFact),
@@ -85,6 +86,20 @@ pub struct RouteCommitFact {
     pub hostnames: Vec<String>,
     pub backends: Vec<BackendEndpoint>,
     pub old_backends_to_drain: Vec<BackendEndpoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServingCommitFact {
+    pub serving_commit_id: String,
+    pub route_commit_id: String,
+    pub gateway_commit_id: String,
+    pub dns_commit_id: String,
+    pub route_id: RouteId,
+    pub hostnames: Vec<String>,
+    pub backends: Vec<BackendEndpoint>,
+    pub old_backends_to_drain: Vec<BackendEndpoint>,
+    pub dns_records: Vec<DnsRecordFact>,
+    pub epoch: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

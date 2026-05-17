@@ -10,15 +10,15 @@ use mvp_bus::{
 use mvp_projection::{
     BackendEndpoint, BusFactSource, CandidateStatus, DnsCommitFact, DnsRecordFact, FactCandidate,
     FactKind, FactSource, FactSourceResult, GatewayCommitFact, NodeId, NodeJoinedFact,
-    ProjectionActorHandle, ProjectionFactPayload, ProjectionIgnoreReason, RouteCommitFact, RouteId,
-    ServiceName, ServiceRegistrationFact, SqliteProjectionStore, load_dns_snapshot,
-    load_gateway_snapshot,
+    ProjectionFactPayload, ProjectionIgnoreReason, RouteCommitFact, RouteId, ServiceName,
+    ServiceRegistrationFact, SqliteProjectionStore, load_dns_snapshot, load_gateway_snapshot,
 };
 use serde::Serialize;
 
 use crate::assertions::assert_eq_named;
 use crate::bus_syntax::{fact_key, fact_pattern, write_projection_fact};
 use crate::metrics::{reset_dir, scenario_dir, write_json};
+use crate::projection_harness::projection_actor;
 
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -405,22 +405,6 @@ fn seed_base_facts() -> Result<(InMemoryBus, BusSession, BusSession), String> {
         }),
     )?;
     Ok((bus, projection, intruder))
-}
-
-fn projection_actor(
-    source: Arc<dyn FactSource>,
-    session: BusSession,
-    root: &Path,
-) -> Result<ProjectionActorHandle, String> {
-    Ok(ProjectionActorHandle::spawn(
-        source,
-        IslandId::new("prod"),
-        session,
-        fact_pattern("/facts/>")?,
-        SqliteProjectionStore::new(root.join("projections.sqlite")),
-        root.join("gateway.snapshot"),
-        root.join("dns.snapshot"),
-    ))
 }
 
 fn redacted_candidates() -> Result<Vec<FactCandidate>, String> {

@@ -1,19 +1,21 @@
 [package]
-name = "mvp-e2e"
+name = "mvp-deploy"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[lib]
+name = "mvp_deploy"
+path = "src/lib.rs"
+
 [dependencies]
-hdrhistogram = "7"
-memory-stats = "1"
+futures-util = "0.3"
 mvp-bus = { path = "../bus" }
-mvp-deploy = { path = "../deploy" }
-mvp-iroh = { path = "../iroh" }
-mvp-acme = { path = "../acme", features = ["harness"] }
-mvp-lease = { path = "../lease", features = ["harness"] }
 mvp-projection = { path = "../projection" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }

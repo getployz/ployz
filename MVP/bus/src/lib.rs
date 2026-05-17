@@ -26,5 +26,14 @@ pub use message::{BusMessage, Payload, RequestManyPolicy, RequestTarget, Respons
 pub use subject::{Subject, SubjectPattern};
 
 pub mod harness {
+    use crate::{BusActorHandle, BusAuthority};
+
     pub use crate::memory::MemoryBus as InMemoryBus;
+
+    #[must_use]
+    pub fn actor_with_authority() -> (BusActorHandle, BusAuthority, InMemoryBus) {
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let handle = BusActorHandle::spawn(bus.clone());
+        (handle, authority, bus)
+    }
 }

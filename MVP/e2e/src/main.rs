@@ -4,10 +4,12 @@ mod authority_contract;
 mod bridge_contract;
 mod bus_contract;
 mod bus_syntax;
+mod deploy_commit_drain_contract;
 mod iroh_docs_contract;
 mod lease_acme_contract;
 mod metrics;
 mod projection_contract;
+mod projection_harness;
 mod scale;
 
 use std::env;
@@ -49,6 +51,10 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "lease-acme-contract",
         run: lease_acme_contract::run,
+    },
+    Scenario {
+        name: "deploy-commit-drain-contract",
+        run: deploy_commit_drain_contract::run,
     },
     Scenario {
         name: "scale",
@@ -158,6 +164,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"iroh-docs-contract"));
         assert!(names.contains(&"lease-acme-contract"));
+        assert!(names.contains(&"deploy-commit-drain-contract"));
         assert!(scenario_help().contains("lease-acme-contract"));
     }
 

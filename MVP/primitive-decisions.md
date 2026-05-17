@@ -65,6 +65,28 @@ the decision concrete.
   command evidence only. They may improve "visible nodes at decision time"
   later; they are not part of the commit boundary and must not become hidden
   quorum behavior.
+- Slice 010 adds the first deploy commit-before-drain canary. Aggregate
+  `ServingCommit` facts are the local durable route/gateway/DNS fact boundary
+  and the drain gate; projection catch-up is evidence before old-instance
+  stop, not authority. This replaces the earlier three-head write shape for
+  deploy cutover.
+- Slice 010 makes cleanup require a typed `ProjectionCatchUp` proof derived
+  from local projection/snapshot output. The proof matches IDs, snapshot
+  revisions, gateway routes, active backends, old backends, and DNS records. A
+  raw pending cleanup value is not enough to drain or stop old backends.
+- Slice 010 changes deploy admission from open wildcard capacity trust to exact
+  planned-node capacity probes. Wildcard capacity remains observation; planned
+  mutation admission must bind the response to the requested node and validate
+  the capacity fields it requested.
+- Slice 010 separates phase reversibility from serving publication. "Can this
+  phase be rolled back?" and "does this phase publish serving state?" are
+  different deploy dimensions.
+- Slice 010 makes serving/gateway/DNS commit candidates reduce by
+  `(epoch desc, content_hash asc)` with every non-winning candidate counted as
+  `Superseded` instead of falling back to generic conflict/no projection.
+- Slice 010 adds a harness-only way to pair a `BusActorHandle` with the same
+  in-memory bus used by `BusFactSource`. Feature code still uses actor handles;
+  raw `MemoryBus` remains a projection/E2E fixture.
 
 ## NATS-Shaped Bus Semantics
 

@@ -211,11 +211,12 @@ phase 2: web + queue, start-before-cutover
 Scenarios:
 
 1. Submit through `deploy.submit` queue group and verify one scheduler accepts.
-2. `request_many node.*.capacity` drives placement.
+2. Exact planned-node `request_many` capacity probes drive admission before
+   mutation.
 3. Phase 1 starts DB, verifies readiness, and writes durable phase commit.
 4. Phase 2 starts web + queue and does not route until both are ready.
 5. Route commit writes a durable fact and projects HTTP/DNS serving state.
-6. Drain starts only after route commit durability is satisfied.
+6. Drain starts only after the local serving commit fact is durably written.
 7. Old instances remain alive during drain grace so stale gateways still have a
    backend.
 8. Failure after irreversible phase produces `DeployBlockedAfterIrreversiblePhase`.
@@ -230,6 +231,27 @@ Metrics:
 - visible nodes at decision time
 - route commit to gateway reload latency
 - drain duration
+
+Current proof status:
+
+- Slice 010 adds `deploy-commit-drain-contract`.
+- The canary proves `deploy.submit` queue-group acceptance, exact planned-node
+  capacity probes, local aggregate serving commit facts, projection/snapshot
+  catch-up before old-instance drain/stop, old-backend drain metadata, old
+  backend kept alive during projection, cleanup-pending after serving commit,
+  coordinator-level irreversible-phase blocking, serving-fact conflict handling
+  after an irreversible phase, capacity-field rejection before mutation, forged
+  capacity-payload rejection before mutation, projection-proof content mismatch
+  rejection, and deterministic serving-head supersession.
+- The canary intentionally does not prove real runtime/Docker/ZFS operations,
+  WireGuard, real gateway/DNS process restart, or full coordinator
+  crash/restart recovery. Those remain E2E-7 and later substrate slices.
+- Missing responders are only claimed for selected required participants. Open
+  wildcard capacity fanout reports responders as visible-node evidence and does
+  not fabricate an unknown missing set.
+- A future active-member or partition-view check can improve that visibility
+  evidence before mutation, but this scenario deliberately has no quorum,
+  witness-ack, or peer-ack commit boundary.
 
 ### E2E-6a: Advisory Lease-Fenced Commands
 
