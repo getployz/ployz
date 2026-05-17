@@ -2371,6 +2371,7 @@ dependencies = [
  "hdrhistogram",
  "memory-stats",
  "mvp-bus",
+ "mvp-iroh",
  "mvp-projection",
  "serde",
  "serde_json",
@@ -2387,6 +2388,7 @@ dependencies = [
  "iroh-gossip",
  "mvp-bus",
  "mvp-projection",
+ "n0-future",
  "thiserror",
  "tokio",
 ]

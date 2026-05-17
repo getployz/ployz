@@ -28,6 +28,7 @@ pub use snapshot::{
     load_dns_snapshot, load_gateway_snapshot, write_projection_snapshots,
 };
 pub use source::{
-    CandidateStatus, FactCandidate, FactKind, FactSource, FactSourceError, FactSourceResult,
+    CandidateStatus, FactCandidate, FactKeyClassification, FactKind, FactSource, FactSourceError,
+    FactSourceResult, classify_fact_key,
 };
 pub use sqlite::{ProjectionRowCounts, SqliteProjectionStore};

@@ -849,18 +849,20 @@ impl MemoryBus {
 
 impl FactAuthorizer for MemoryBus {
     fn can_access_fact(&self, session: &BusSession, key: &FactKey, access: FactAccess) -> bool {
+        self.can_principal_access_fact(session.island(), session.principal(), key, access)
+    }
+
+    fn can_principal_access_fact(
+        &self,
+        island: &IslandId,
+        principal: &PrincipalId,
+        key: &FactKey,
+        access: FactAccess,
+    ) -> bool {
         let inner = self.inner.lock().expect("memory bus mutex poisoned");
         match access {
-            FactAccess::Read => {
-                inner
-                    .grants
-                    .can_read_fact(session.island(), session.principal(), key)
-            }
-            FactAccess::Write => {
-                inner
-                    .grants
-                    .can_write_fact(session.island(), session.principal(), key)
-            }
+            FactAccess::Read => inner.grants.can_read_fact(island, principal, key),
+            FactAccess::Write => inner.grants.can_write_fact(island, principal, key),
         }
     }
 }
@@ -2469,24 +2471,30 @@ mod tests {
                 .with_fact_write_deny(fact_pattern("/facts/deploy/*/secret")),
         );
 
-        assert!(bus.can_access_fact(
+        assert!(bus.can_session_access_fact(
             &session,
             &fact_key("/facts/routes/public"),
             FactAccess::Read
         ));
-        assert!(!bus.can_access_fact(
+        assert!(!bus.can_session_access_fact(
             &session,
             &fact_key("/facts/routes/secret"),
             FactAccess::Read
         ));
-        assert!(bus.can_access_fact(
+        assert!(bus.can_session_access_fact(
             &session,
             &fact_key("/facts/deploy/d1/plan"),
             FactAccess::Write
         ));
-        assert!(!bus.can_access_fact(
+        assert!(!bus.can_session_access_fact(
             &session,
             &fact_key("/facts/deploy/d1/secret"),
+            FactAccess::Write
+        ));
+        assert!(bus.can_principal_access_fact(
+            session.island(),
+            session.principal(),
+            &fact_key("/facts/deploy/d1/plan"),
             FactAccess::Write
         ));
     }
