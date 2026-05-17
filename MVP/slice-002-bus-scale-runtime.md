@@ -26,14 +26,14 @@ Generated proof:
 
 | Logical nodes | Publish deliveries | Request-many replies | Publish p99 | Request-many p99 | Runtime max concurrency |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 200 | 20,000 | 20,000 | 1,413us | 1,995us | 64 |
-| 1,000 | 100,000 | 100,000 | 5,787us | 10,551us | 64 |
-| 10,000 | 1,000,000 | 1,000,000 | 45,087us | 92,415us | 64 |
+| 200 | 20,000 | 20,000 | 1,503us | 2,111us | 64 |
+| 1,000 | 100,000 | 100,000 | 5,683us | 10,111us | 64 |
+| 10,000 | 1,000,000 | 1,000,000 | 50,047us | 92,991us | 64 |
 
 The same run includes `actor-contract`, plus a saturation case with 4 concurrent
 publishers, 96 slow subscribers, 4 delivery workers, and delivery queue capacity
 8. It observed 384 deliveries, max worker concurrency 4, max queued deliveries
-8, 331 full-queue enqueue waits, and `bounded_backpressure_observed = true`.
+8, 321 full-queue enqueue waits, and `bounded_backpressure_observed = true`.
 
 The 10,000-node run is a logical-node stress test inside one process. It proves
 the bus semantics, payload sharing, bounded delivery execution, response
