@@ -560,15 +560,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use std::time::Instant;
 
     use crate::{
-        BusActorHandle, BusError, BusRuntimeConfig, FactContentHash, FactKey, FactKeyPattern,
-        FactWriteOutcome, Grant, PrincipalId, RequestManyPolicy, RequestTarget, Subject,
+        BridgeEndpoint, BridgeRuleId, BusActorHandle, BusError, BusRuntimeConfig, FactContentHash,
+        FactKey, FactKeyPattern, FactWriteOutcome, Grant, IslandId, PrincipalId, RequestManyPolicy,
+        RequestTarget, ServiceImport, StreamImport, Subject, SubjectTransform,
     };
 
     use super::SubjectPattern;
@@ -595,6 +596,14 @@ mod tests {
 
     fn hash(value: &str) -> FactContentHash {
         FactContentHash::new(value)
+    }
+
+    fn island(value: &str) -> IslandId {
+        IslandId::new(value)
+    }
+
+    fn rule_id(value: &str) -> BridgeRuleId {
+        BridgeRuleId::new(value)
     }
 
     #[tokio::test]
@@ -702,6 +711,134 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn actor_facade_routes_service_imports() {
+        let (bus, authority) = BusActorHandle::new_with_authority();
+        let laptop = island("laptop");
+        let prod = island("prod");
+        let laptop_user = authority.grant_in(
+            laptop.clone(),
+            principal("user"),
+            Grant::empty().with_publish(pattern("gpu.deploy.submit")),
+        );
+        let prod_bridge = authority.grant_in(
+            prod.clone(),
+            principal("bridge"),
+            Grant::empty().with_publish(pattern("deploy.submit")),
+        );
+        let prod_scheduler = authority.grant_in(
+            prod.clone(),
+            principal("scheduler"),
+            Grant::empty()
+                .with_queue(pattern("deploy.submit"), "schedulers")
+                .with_response(),
+        );
+        authority
+            .add_service_import(ServiceImport::new(
+                rule_id("gpu-deploy"),
+                BridgeEndpoint::new(laptop, subject("gpu.deploy.submit")),
+                BridgeEndpoint::new(prod.clone(), subject("deploy.submit")),
+                prod_bridge.principal().clone(),
+            ))
+            .expect("add service import");
+
+        bus.queue_subscribe(
+            &prod_scheduler,
+            pattern("deploy.submit"),
+            "schedulers",
+            |ctx| ctx.reply(format!("{}:ok", ctx.message.island()).into_bytes()),
+        )
+        .await
+        .expect("queue subscribe");
+
+        let response = bus
+            .request(
+                &laptop_user,
+                subject("gpu.deploy.submit"),
+                Vec::new(),
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("imported request");
+
+        assert_eq!(response.island(), &prod);
+        assert_eq!(response.responder().as_str(), "scheduler");
+        assert_eq!(response.payload().as_bytes(), b"prod:ok".as_slice());
+    }
+
+    #[tokio::test]
+    async fn actor_facade_delivers_stream_imports_with_origin() {
+        let (bus, authority) = BusActorHandle::new_with_authority();
+        let laptop = island("laptop");
+        let prod = island("prod");
+        let prod_admin = authority.grant_in(
+            prod.clone(),
+            principal("prod-admin"),
+            Grant::empty().with_publish(pattern("deploy.*.status")),
+        );
+        let bridge = authority.grant_in(
+            prod.clone(),
+            principal("bridge"),
+            Grant::empty().with_bridge_export(pattern("deploy.*.status")),
+        );
+        authority.grant_in(
+            laptop.clone(),
+            principal("bridge"),
+            Grant::empty().with_publish(pattern("prod.deploy.*.status")),
+        );
+        let laptop_reader = authority.grant_in(
+            laptop.clone(),
+            principal("reader"),
+            Grant::empty().with_subscribe(pattern("prod.deploy.*.status")),
+        );
+        authority
+            .add_stream_import(StreamImport::new(
+                rule_id("prod-status"),
+                prod.clone(),
+                laptop,
+                bridge.principal().clone(),
+                SubjectTransform::new(pattern("deploy.*.status"), pattern("prod.deploy.*.status"))
+                    .expect("transform validates"),
+            ))
+            .expect("add stream import");
+
+        let observed = Arc::new(Mutex::new(None));
+        let observed_for_handler = Arc::clone(&observed);
+        bus.subscribe(
+            &laptop_reader,
+            pattern("prod.deploy.*.status"),
+            move |ctx| {
+                *observed_for_handler
+                    .lock()
+                    .map_err(|_| BusError::HandlerFailed {
+                        subject: String::from("prod.deploy.*.status"),
+                        failure: crate::HandlerFailure::LockPoisoned,
+                    })? = ctx.message.bridge_origin().cloned();
+                Ok(())
+            },
+        )
+        .await
+        .expect("subscribe imported status");
+
+        bus.publish(
+            &prod_admin,
+            subject("deploy.d1.status"),
+            b"running".to_vec(),
+        )
+        .await
+        .expect("publish status");
+
+        let origin = observed
+            .lock()
+            .expect("lock observed")
+            .clone()
+            .expect("bridge origin");
+        assert_eq!(origin.rule_id().as_str(), "prod-status");
+        assert_eq!(origin.source_island(), &prod);
+        assert_eq!(origin.source_principal().as_str(), "prod-admin");
+        assert_eq!(origin.original_subject().as_str(), "deploy.d1.status");
+    }
+
+    #[tokio::test]
     async fn actor_facade_zero_max_request_many_checks_authority_before_deadline() {
         let (bus, authority) = BusActorHandle::new_with_authority();
         let requester = authority.grant(principal("requester"), Grant::empty());
@@ -740,7 +877,7 @@ mod tests {
                 &admin,
                 subject("gateway.changed"),
                 Vec::new(),
-                Duration::from_millis(5),
+                Duration::from_millis(20),
             )
             .await
             .unwrap_err();

@@ -107,6 +107,7 @@ pub struct Grant {
     publish_allow: Vec<SubjectPattern>,
     subscribe_allow: Vec<SubjectPattern>,
     queue_allow: Vec<QueueGrant>,
+    bridge_export_allow: Vec<SubjectPattern>,
     fact_write_allow: Vec<FactKeyPattern>,
     fact_write_deny: Vec<FactKeyPattern>,
     fact_read_allow: Vec<FactKeyPattern>,
@@ -165,6 +166,7 @@ impl Grant {
             queue_allow: vec![QueueGrant::any(
                 SubjectPattern::parse(">").expect("valid allow-all pattern"),
             )],
+            bridge_export_allow: vec![SubjectPattern::parse(">").expect("valid allow-all pattern")],
             fact_write_allow: vec![FactKeyPattern::parse("/>").expect("valid allow-all pattern")],
             fact_write_deny: Vec::new(),
             fact_read_allow: vec![FactKeyPattern::parse("/>").expect("valid allow-all pattern")],
@@ -190,6 +192,12 @@ impl Grant {
     pub fn with_queue(mut self, pattern: SubjectPattern, queue: impl Into<QueueName>) -> Self {
         self.queue_allow
             .push(QueueGrant::named(pattern, queue.into()));
+        self
+    }
+
+    #[must_use]
+    pub fn with_bridge_export(mut self, pattern: SubjectPattern) -> Self {
+        self.bridge_export_allow.push(pattern);
         self
     }
 
@@ -264,6 +272,13 @@ impl Grant {
     #[must_use]
     pub(crate) fn can_respond(&self) -> bool {
         self.response_allow
+    }
+
+    #[must_use]
+    pub(crate) fn can_bridge_export(&self, subject: &Subject) -> bool {
+        self.bridge_export_allow
+            .iter()
+            .any(|pattern| pattern.matches(subject))
     }
 
     #[must_use]
@@ -351,6 +366,16 @@ impl GrantBook {
     pub(crate) fn can_respond(&self, island: &IslandId, principal: &PrincipalId) -> bool {
         self.grant(island, principal)
             .is_some_and(Grant::can_respond)
+    }
+
+    pub(crate) fn can_bridge_export(
+        &self,
+        island: &IslandId,
+        principal: &PrincipalId,
+        subject: &Subject,
+    ) -> bool {
+        self.grant(island, principal)
+            .is_some_and(|grant| grant.can_bridge_export(subject))
     }
 
     pub(crate) fn can_drain(&self, island: &IslandId, principal: &PrincipalId) -> bool {

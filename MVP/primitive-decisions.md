@@ -148,6 +148,51 @@ Revisit if:
 - Delegated invite or bridge tokens need offline attenuation. `biscuit-auth`
   should be reconsidered then, with revocation still modeled as cluster state.
 
+## Authority Bridges
+
+Why this:
+- Authority islands should stay isolated by default, but Ployz still needs
+  deliberate laptop-to-prod and dev-to-prod workflows. A bridge is the explicit
+  import/export rule that says which service request or message stream may
+  cross islands.
+- Service imports keep remote mutation foreground: a laptop request to
+  `gpu.deploy.submit` maps to prod `deploy.submit`, receives one reply, and
+  fails visibly if the bridge is disabled.
+- Stream imports are one-way visibility, not shared truth. Imported messages
+  carry bridge-origin metadata with source island, source principal, original
+  subject, and rule id.
+- Both sides use grants. The remote bridge principal must be allowed to publish
+  imported service requests or export a stream, and the local bridge principal
+  must be allowed to publish the mapped imported stream.
+- `ServiceImport` uses named `BridgeEndpoint` values for local and remote
+  endpoints so bridge setup code cannot swap authority boundaries through a
+  long positional constructor.
+
+What it replaces:
+- Prefixing every subject with island names.
+- Hidden global forwarding when no local responder exists.
+- Letting a laptop principal mutate prod facts directly.
+- Treating service discovery or transport as the authority decision.
+
+Costs:
+- Bridge rules are now another authority surface and need collision checks.
+  Duplicate rule IDs, duplicate service imports, local responder/import
+  conflicts, and ambiguous stream-source mappings are rejected instead of
+  relying on precedence.
+- Imported stream delivery adds work to publish paths that match bridge rules.
+  The scale harness now measures 200, 1,000, and 10,000 imported stream
+  subscribers plus a 10,000-rule matching stream fanout.
+- The current bridge is an in-memory contract harness. Future slices still need
+  docs-backed rule replication and iroh transport.
+
+Revisit if:
+- Bridge rule reads become a hot path under distributed transport. `arc-swap`
+  is the likely fit for immutable rule snapshots.
+- Bridge tasks need cancellation and outage propagation across async iroh
+  workers. `tokio-util::sync::CancellationToken` should be reconsidered then.
+- Delegated bridge/invite credentials need offline attenuation. Re-evaluate
+  `biscuit-auth`, with revocation still represented as cluster state.
+
 ## Immutable Fact-Set Harness
 
 Why this:

@@ -2,8 +2,8 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
 use crate::{
-    FactContentHash, FactKey, FactKeyParseError, IslandId, PrincipalId, QueueName, RequestTarget,
-    Subject, SubjectPattern,
+    BridgeRuleId, BridgeRuleViolation, FactContentHash, FactKey, FactKeyParseError, IslandId,
+    PrincipalId, QueueName, RequestTarget, Subject, SubjectPattern,
 };
 
 pub type Result<T> = std::result::Result<T, BusError>;
@@ -68,6 +68,21 @@ impl Display for ActorFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeFailure {
+    Disabled,
+    RemoteUnavailable,
+}
+
+impl Display for BridgeFailure {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Disabled => f.write_str("disabled"),
+            Self::RemoteUnavailable => f.write_str("remote unavailable"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BusError {
     SubjectParse(SubjectParseError),
     FactKeyParse(FactKeyParseError),
@@ -116,6 +131,23 @@ pub enum BusError {
         key: Box<FactKey>,
         existing: FactContentHash,
         attempted: FactContentHash,
+    },
+    BridgeRuleInvalid {
+        violation: BridgeRuleViolation,
+    },
+    BridgeUnavailable {
+        rule_id: BridgeRuleId,
+        local_island: IslandId,
+        remote_island: IslandId,
+        subject: Box<Subject>,
+        failure: BridgeFailure,
+    },
+    BridgeRequestManyUnsupported {
+        rule_id: BridgeRuleId,
+        local_island: IslandId,
+        remote_island: IslandId,
+        subject: Box<Subject>,
+        requested: usize,
     },
     Draining,
     NoResponders {
@@ -226,6 +258,29 @@ impl Display for BusError {
                     "fact {key} in {island} already has content {existing}, got {attempted}"
                 )
             }
+            Self::BridgeRuleInvalid { violation } => {
+                write!(f, "invalid bridge rule: {violation}")
+            }
+            Self::BridgeUnavailable {
+                rule_id,
+                local_island,
+                remote_island,
+                subject,
+                failure,
+            } => write!(
+                f,
+                "bridge rule {rule_id} from {local_island} to {remote_island} for {subject} is {failure}"
+            ),
+            Self::BridgeRequestManyUnsupported {
+                rule_id,
+                local_island,
+                remote_island,
+                subject,
+                requested,
+            } => write!(
+                f,
+                "bridge rule {rule_id} from {local_island} to {remote_island} for {subject} supports one service response, requested {requested}"
+            ),
             Self::Draining => f.write_str("bus is draining"),
             Self::NoResponders { target } => {
                 write!(f, "no responders for {}", target.display())

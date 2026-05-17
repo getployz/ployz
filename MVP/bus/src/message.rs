@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
-use crate::{BusError, IslandId, PrincipalId, Result, Subject, SubjectPattern};
+use crate::{BridgeOrigin, BusError, IslandId, PrincipalId, Result, Subject, SubjectPattern};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Payload(Bytes);
@@ -112,6 +112,7 @@ pub struct BusMessage {
     payload: Payload,
     principal: PrincipalId,
     reply_to: Option<ReplyInbox>,
+    bridge_origin: Option<BridgeOrigin>,
 }
 
 impl BusMessage {
@@ -130,6 +131,7 @@ impl BusMessage {
             payload,
             principal,
             reply_to: None,
+            bridge_origin: None,
         }
     }
 
@@ -153,12 +155,21 @@ impl BusMessage {
         &self.principal
     }
 
+    #[must_use]
+    pub fn bridge_origin(&self) -> Option<&BridgeOrigin> {
+        self.bridge_origin.as_ref()
+    }
+
     pub(crate) fn id(&self) -> MessageId {
         self.id
     }
 
     pub(crate) fn set_reply_to(&mut self, reply_to: ReplyInbox) {
         self.reply_to = Some(reply_to);
+    }
+
+    pub(crate) fn set_bridge_origin(&mut self, bridge_origin: BridgeOrigin) {
+        self.bridge_origin = Some(bridge_origin);
     }
 }
 

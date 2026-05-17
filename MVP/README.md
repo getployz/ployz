@@ -43,6 +43,7 @@ Individual E2E scenarios are also runnable while iterating:
 - `cargo run -p mvp-e2e -- bus-contract`
 - `cargo run -p mvp-e2e -- actor-contract`
 - `cargo run -p mvp-e2e -- authority-contract`
+- `cargo run -p mvp-e2e -- bridge-contract`
 - `cargo run -p mvp-e2e -- scale`
 
 Each scenario writes a JSON proof artifact under `MVP/target/mvp-e2e/`.

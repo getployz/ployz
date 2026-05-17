@@ -10,13 +10,15 @@ use crossbeam_channel::{
     Receiver as DeliveryReceiver, SendTimeoutError, Sender as DeliverySender, TrySendError,
 };
 
+use crate::bridge::BridgeRuleSet;
 use crate::facts::InMemoryFactSet;
 use crate::grants::GrantBook;
 use crate::message::{MessageId, ReplyInbox, ReplyPermit};
 use crate::{
-    BusError, BusMessage, BusSession, Fact, FactContentHash, FactKey, FactWriteOutcome, Grant,
-    IslandId, Payload, PrincipalId, QueueName, RequestManyPolicy, RequestTarget, ResponseEnvelope,
-    ResponseMessage, Result, Subject, SubjectPattern,
+    BridgeFailure, BridgeOrigin, BridgeRuleId, BridgeRuleViolation, BridgeState, BusError,
+    BusMessage, BusSession, Fact, FactContentHash, FactKey, FactWriteOutcome, Grant, IslandId,
+    Payload, PrincipalId, QueueName, RequestManyPolicy, RequestTarget, ResponseEnvelope,
+    ResponseMessage, Result, ServiceImport, StreamImport, Subject, SubjectPattern,
 };
 
 pub type HandlerOutcome = Result<()>;
@@ -102,21 +104,35 @@ struct RequestDispatchSpec {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RequestDispatchMode {
+    Broadcast,
     One,
     Many { max: usize },
+}
+
+struct AuthorizedRequestDispatchSpec {
+    island: IslandId,
+    principal: PrincipalId,
+    target: RequestTarget,
+    subject: Subject,
+    payload: Payload,
+    deadline: Instant,
+    mode: RequestDispatchMode,
+    bridge_origin: Option<BridgeOrigin>,
+    tx: mpsc::Sender<ResponseEnvelope>,
 }
 
 impl RequestDispatchMode {
     fn max_deliveries(self) -> Option<usize> {
         match self {
-            Self::One => None,
+            Self::Broadcast => None,
+            Self::One => Some(1),
             Self::Many { max } => Some(max),
         }
     }
 
     fn includes_queue_groups(self) -> bool {
         match self {
-            Self::One => true,
+            Self::Broadcast | Self::One => true,
             Self::Many { .. } => false,
         }
     }
@@ -141,6 +157,15 @@ impl QueueGroupKey {
 pub(crate) struct RequestManyDeadlinePolicy {
     pub max: usize,
     pub deadline: Instant,
+}
+
+struct StreamBridgeTarget {
+    rule_id: BridgeRuleId,
+    source_island: IslandId,
+    local_island: IslandId,
+    bridge_principal: PrincipalId,
+    mapped_subject: Subject,
+    state: BridgeState,
 }
 
 #[derive(Debug, Default)]
@@ -302,6 +327,49 @@ impl MemoryBus {
             .revoke(island, principal)
     }
 
+    fn add_service_import(&self, import: ServiceImport) -> Result<()> {
+        let mut inner = self.inner.lock().expect("memory bus mutex poisoned");
+        if inner.has_local_responder(import.local_island(), import.local_subject()) {
+            return Err(BusError::BridgeRuleInvalid {
+                violation: BridgeRuleViolation::LocalResponderConflict {
+                    local_island: import.local_island().clone(),
+                    local_subject: import.local_subject().clone(),
+                },
+            });
+        }
+        inner
+            .bridges
+            .add_service_import(import)
+            .map_err(|violation| BusError::BridgeRuleInvalid { violation })
+    }
+
+    fn add_stream_import(&self, import: StreamImport) -> Result<()> {
+        self.inner
+            .lock()
+            .expect("memory bus mutex poisoned")
+            .bridges
+            .add_stream_import(import)
+            .map_err(|violation| BusError::BridgeRuleInvalid { violation })
+    }
+
+    fn set_service_import_state(&self, id: &BridgeRuleId, state: BridgeState) -> Result<()> {
+        self.inner
+            .lock()
+            .expect("memory bus mutex poisoned")
+            .bridges
+            .set_service_import_state(id, state)
+            .map_err(|violation| BusError::BridgeRuleInvalid { violation })
+    }
+
+    fn set_stream_import_state(&self, id: &BridgeRuleId, state: BridgeState) -> Result<()> {
+        self.inner
+            .lock()
+            .expect("memory bus mutex poisoned")
+            .bridges
+            .set_stream_import_state(id, state)
+            .map_err(|violation| BusError::BridgeRuleInvalid { violation })
+    }
+
     pub fn subscribe<F>(
         &self,
         session: &BusSession,
@@ -331,7 +399,21 @@ impl MemoryBus {
                 pattern: Box::new(pattern),
             });
         }
+        if let Some(local_subject) = inner.service_import_subject_matching(&island, &pattern) {
+            return Err(BusError::BridgeRuleInvalid {
+                violation: BridgeRuleViolation::LocalResponderConflict {
+                    local_island: island,
+                    local_subject,
+                },
+            });
+        }
         let id = inner.next_id();
+        let subscriber_index = inner.subscribers.len();
+        inner
+            .subscriber_indexes_by_island
+            .entry(island.clone())
+            .or_default()
+            .push(subscriber_index);
         inner.subscribers.push(Subscriber {
             id,
             island,
@@ -377,7 +459,21 @@ impl MemoryBus {
                 queue,
             });
         }
+        if let Some(local_subject) = inner.service_import_subject_matching(&island, &pattern) {
+            return Err(BusError::BridgeRuleInvalid {
+                violation: BridgeRuleViolation::LocalResponderConflict {
+                    local_island: island,
+                    local_subject,
+                },
+            });
+        }
         let id = inner.next_id();
+        let subscriber_index = inner.queue_subscribers.len();
+        inner
+            .queue_subscriber_indexes_by_island
+            .entry(island.clone())
+            .or_default()
+            .push(subscriber_index);
         inner.queue_subscribers.push(QueueSubscriber {
             id,
             island,
@@ -431,8 +527,14 @@ impl MemoryBus {
                 principal,
                 payload,
             );
-            let dispatch =
-                inner.dispatch_for_subject(&subject, message, None, RequestDispatchMode::One);
+            let mut dispatch = inner.dispatch_for_subject(
+                &subject,
+                message.clone(),
+                None,
+                RequestDispatchMode::Broadcast,
+            );
+            let stream_dispatch = inner.stream_bridge_deliveries_for(&message);
+            dispatch.extend(stream_dispatch);
             self.inflight.add(dispatch.len());
             dispatch
         };
@@ -509,7 +611,10 @@ impl MemoryBus {
         policy: RequestManyDeadlinePolicy,
     ) -> Result<Vec<ResponseMessage>> {
         if policy.max == 0 {
-            self.authorize_request(session, &target, &subject)?;
+            self.inner
+                .lock()
+                .expect("memory bus mutex poisoned")
+                .authorize_request(session, &target, &subject)?;
             return Ok(Vec::new());
         }
         let target_display = target.display();
@@ -618,78 +723,35 @@ impl MemoryBus {
         let dispatch = {
             let mut inner = self.inner.lock().expect("memory bus mutex poisoned");
             inner.ensure_not_draining()?;
-            let island = session.island().clone();
-            let principal = session.principal().clone();
-            if !inner
-                .grants
-                .can_publish_target(&island, &principal, &spec.target)
+            if let RequestTarget::Subject(local_subject) = &spec.target
+                && let Some(import) = inner
+                    .bridges
+                    .service_import_for(session.island(), local_subject)
+                    .cloned()
             {
-                return Err(BusError::UnauthorizedRequestTarget {
-                    island,
-                    principal,
-                    target: Box::new(spec.target),
-                });
+                let imported = inner.prepare_service_import_request(session, import, spec, tx)?;
+                self.inflight.add(imported.len());
+                imported
+            } else {
+                inner.authorize_request(session, &spec.target, &spec.subject)?;
+                let dispatch =
+                    inner.prepare_authorized_request_dispatch(AuthorizedRequestDispatchSpec {
+                        island: session.island().clone(),
+                        principal: session.principal().clone(),
+                        target: spec.target,
+                        subject: spec.subject,
+                        payload: spec.payload,
+                        deadline: spec.deadline,
+                        mode: spec.mode,
+                        bridge_origin: None,
+                        tx,
+                    })?;
+                self.inflight.add(dispatch.len());
+                dispatch
             }
-            if !inner.grants.can_publish(&island, &principal, &spec.subject) {
-                return Err(BusError::UnauthorizedPublish {
-                    island,
-                    principal,
-                    subject: Box::new(spec.subject),
-                });
-            }
-
-            let id = MessageId::new(inner.next_id());
-            let inbox = ReplyInbox::new(Subject::parse(format!("_INBOX.{}", id.value()))?);
-            let mut message =
-                BusMessage::new(id, island, spec.subject.clone(), principal, spec.payload);
-            message.set_reply_to(inbox.clone());
-            let reply = ReplySpec {
-                inbox,
-                expires_at: spec.deadline,
-                tx,
-            };
-            let dispatch = inner.dispatch_for_target(&spec.target, message, Some(reply), spec.mode);
-            if dispatch.is_empty() {
-                return Err(BusError::NoResponders {
-                    target: Box::new(spec.target),
-                });
-            }
-            self.inflight.add(dispatch.len());
-            dispatch
         };
 
         Ok((rx, dispatch))
-    }
-
-    fn authorize_request(
-        &self,
-        session: &BusSession,
-        target: &RequestTarget,
-        subject: &Subject,
-    ) -> Result<()> {
-        let inner = self.inner.lock().expect("memory bus mutex poisoned");
-        inner.ensure_not_draining()?;
-        if !inner
-            .grants
-            .can_publish_target(session.island(), session.principal(), target)
-        {
-            return Err(BusError::UnauthorizedRequestTarget {
-                island: session.island().clone(),
-                principal: session.principal().clone(),
-                target: Box::new(target.clone()),
-            });
-        }
-        if !inner
-            .grants
-            .can_publish(session.island(), session.principal(), subject)
-        {
-            return Err(BusError::UnauthorizedPublish {
-                island: session.island().clone(),
-                principal: session.principal().clone(),
-                subject: Box::new(subject.clone()),
-            });
-        }
-        Ok(())
     }
 }
 
@@ -714,14 +776,33 @@ impl BusAuthority {
     pub fn revoke_in(&self, island: &IslandId, principal: &PrincipalId) -> bool {
         self.bus.revoke_grant(island, principal)
     }
+
+    pub fn add_service_import(&self, import: ServiceImport) -> Result<()> {
+        self.bus.add_service_import(import)
+    }
+
+    pub fn add_stream_import(&self, import: StreamImport) -> Result<()> {
+        self.bus.add_stream_import(import)
+    }
+
+    pub fn set_service_import_state(&self, id: &BridgeRuleId, state: BridgeState) -> Result<()> {
+        self.bus.set_service_import_state(id, state)
+    }
+
+    pub fn set_stream_import_state(&self, id: &BridgeRuleId, state: BridgeState) -> Result<()> {
+        self.bus.set_stream_import_state(id, state)
+    }
 }
 
 struct Inner {
     subscribers: Vec<Subscriber>,
+    subscriber_indexes_by_island: BTreeMap<IslandId, Vec<usize>>,
     queue_subscribers: Vec<QueueSubscriber>,
+    queue_subscriber_indexes_by_island: BTreeMap<IslandId, Vec<usize>>,
     queue_cursor: BTreeMap<QueueGroupKey, usize>,
     grants: GrantBook,
     facts: InMemoryFactSet,
+    bridges: BridgeRuleSet,
     next_id: u64,
     draining: bool,
 }
@@ -730,10 +811,13 @@ impl Inner {
     fn new() -> Self {
         Self {
             subscribers: Vec::new(),
+            subscriber_indexes_by_island: BTreeMap::new(),
             queue_subscribers: Vec::new(),
+            queue_subscriber_indexes_by_island: BTreeMap::new(),
             queue_cursor: BTreeMap::new(),
             grants: GrantBook::default(),
             facts: InMemoryFactSet::default(),
+            bridges: BridgeRuleSet::default(),
             next_id: 1,
             draining: false,
         }
@@ -750,6 +834,245 @@ impl Inner {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+
+    fn has_local_responder(&self, island: &IslandId, subject: &Subject) -> bool {
+        self.subscriber_indexes_by_island
+            .get(island)
+            .into_iter()
+            .flat_map(|indexes| indexes.iter())
+            .filter_map(|index| self.subscribers.get(*index))
+            .any(|subscriber| subscriber.pattern.matches(subject))
+            || self
+                .queue_subscriber_indexes_by_island
+                .get(island)
+                .into_iter()
+                .flat_map(|indexes| indexes.iter())
+                .filter_map(|index| self.queue_subscribers.get(*index))
+                .any(|subscriber| subscriber.pattern.matches(subject))
+    }
+
+    fn service_import_subject_matching(
+        &self,
+        island: &IslandId,
+        pattern: &SubjectPattern,
+    ) -> Option<Subject> {
+        self.bridges
+            .service_imports()
+            .iter()
+            .find(|import| {
+                import.local_island() == island && pattern.matches(import.local_subject())
+            })
+            .map(|import| import.local_subject().clone())
+    }
+
+    fn stream_bridge_deliveries_for(&mut self, message: &BusMessage) -> Vec<Delivery> {
+        if message.bridge_origin().is_some() {
+            return Vec::new();
+        }
+
+        let imports = self
+            .bridges
+            .matching_stream_imports(message.island(), message.subject())
+            .map(|import| StreamBridgeTarget {
+                rule_id: import.id().clone(),
+                source_island: import.source_island().clone(),
+                local_island: import.local_island().clone(),
+                bridge_principal: import.bridge_principal().clone(),
+                mapped_subject: import.transform().apply_after_match(message.subject()),
+                state: import.state(),
+            })
+            .collect::<Vec<_>>();
+        let mut dispatch = Vec::new();
+        for import in imports {
+            if import.state != BridgeState::Enabled {
+                continue;
+            }
+            if !self.grants.can_bridge_export(
+                &import.source_island,
+                &import.bridge_principal,
+                message.subject(),
+            ) {
+                continue;
+            }
+            if !self.grants.can_publish(
+                &import.local_island,
+                &import.bridge_principal,
+                &import.mapped_subject,
+            ) {
+                continue;
+            }
+            let mut bridged_message = BusMessage::new(
+                MessageId::new(self.next_id()),
+                import.local_island.clone(),
+                import.mapped_subject.clone(),
+                import.bridge_principal.clone(),
+                message.payload().clone(),
+            );
+            bridged_message.set_bridge_origin(BridgeOrigin::new(
+                import.rule_id,
+                message.island().clone(),
+                message.principal().clone(),
+                message.subject().clone(),
+            ));
+            dispatch.extend(self.dispatch_for_subject(
+                &import.mapped_subject,
+                bridged_message,
+                None,
+                RequestDispatchMode::Broadcast,
+            ));
+        }
+        dispatch
+    }
+
+    fn authorize_request(
+        &self,
+        session: &BusSession,
+        target: &RequestTarget,
+        subject: &Subject,
+    ) -> Result<()> {
+        self.ensure_not_draining()?;
+        if !self
+            .grants
+            .can_publish_target(session.island(), session.principal(), target)
+        {
+            return Err(BusError::UnauthorizedRequestTarget {
+                island: session.island().clone(),
+                principal: session.principal().clone(),
+                target: Box::new(target.clone()),
+            });
+        }
+        if !self
+            .grants
+            .can_publish(session.island(), session.principal(), subject)
+        {
+            return Err(BusError::UnauthorizedPublish {
+                island: session.island().clone(),
+                principal: session.principal().clone(),
+                subject: Box::new(subject.clone()),
+            });
+        }
+        Ok(())
+    }
+
+    fn prepare_service_import_request(
+        &mut self,
+        session: &BusSession,
+        import: ServiceImport,
+        spec: RequestDispatchSpec,
+        tx: mpsc::Sender<ResponseEnvelope>,
+    ) -> Result<Vec<Delivery>> {
+        if !self.grants.can_publish(
+            session.island(),
+            session.principal(),
+            import.local_subject(),
+        ) {
+            return Err(BusError::UnauthorizedPublish {
+                island: session.island().clone(),
+                principal: session.principal().clone(),
+                subject: Box::new(import.local_subject().clone()),
+            });
+        }
+        match import.state() {
+            BridgeState::Enabled => {}
+            BridgeState::Disabled => {
+                return Err(BusError::BridgeUnavailable {
+                    rule_id: import.id().clone(),
+                    local_island: import.local_island().clone(),
+                    remote_island: import.remote_island().clone(),
+                    subject: Box::new(import.local_subject().clone()),
+                    failure: BridgeFailure::Disabled,
+                });
+            }
+            BridgeState::RemoteUnavailable => {
+                return Err(BusError::BridgeUnavailable {
+                    rule_id: import.id().clone(),
+                    local_island: import.local_island().clone(),
+                    remote_island: import.remote_island().clone(),
+                    subject: Box::new(import.local_subject().clone()),
+                    failure: BridgeFailure::RemoteUnavailable,
+                });
+            }
+        }
+        if !self.grants.can_publish(
+            import.remote_island(),
+            import.bridge_principal(),
+            import.remote_subject(),
+        ) {
+            return Err(BusError::UnauthorizedPublish {
+                island: import.remote_island().clone(),
+                principal: import.bridge_principal().clone(),
+                subject: Box::new(import.remote_subject().clone()),
+            });
+        }
+
+        let remote_mode = match spec.mode {
+            RequestDispatchMode::One => RequestDispatchMode::One,
+            RequestDispatchMode::Many { max: 1 } => RequestDispatchMode::One,
+            RequestDispatchMode::Many { max } => {
+                return Err(BusError::BridgeRequestManyUnsupported {
+                    rule_id: import.id().clone(),
+                    local_island: import.local_island().clone(),
+                    remote_island: import.remote_island().clone(),
+                    subject: Box::new(import.local_subject().clone()),
+                    requested: max,
+                });
+            }
+            RequestDispatchMode::Broadcast => unreachable!("service imports are request-only"),
+        };
+
+        self.prepare_authorized_request_dispatch(AuthorizedRequestDispatchSpec {
+            island: import.remote_island().clone(),
+            principal: import.bridge_principal().clone(),
+            target: RequestTarget::Subject(import.remote_subject().clone()),
+            subject: import.remote_subject().clone(),
+            payload: spec.payload,
+            deadline: spec.deadline,
+            mode: remote_mode,
+            bridge_origin: Some(BridgeOrigin::new(
+                import.id().clone(),
+                session.island().clone(),
+                session.principal().clone(),
+                import.local_subject().clone(),
+            )),
+            tx,
+        })
+    }
+
+    fn prepare_authorized_request_dispatch(
+        &mut self,
+        spec: AuthorizedRequestDispatchSpec,
+    ) -> Result<Vec<Delivery>> {
+        let AuthorizedRequestDispatchSpec {
+            island,
+            principal,
+            target,
+            subject,
+            payload,
+            deadline,
+            mode,
+            bridge_origin,
+            tx,
+        } = spec;
+        let id = MessageId::new(self.next_id());
+        let inbox = ReplyInbox::new(Subject::parse(format!("_INBOX.{}", id.value()))?);
+        let mut message = BusMessage::new(id, island, subject, principal, payload);
+        message.set_reply_to(inbox.clone());
+        if let Some(bridge_origin) = bridge_origin {
+            message.set_bridge_origin(bridge_origin);
+        }
+        let reply = ReplySpec {
+            inbox,
+            expires_at: deadline,
+            tx,
+        };
+        let dispatch = self.dispatch_for_target(&target, message, Some(reply), mode);
+        if dispatch.is_empty() {
+            return Err(BusError::NoResponders {
+                target: Box::new(target),
+            });
+        }
+        Ok(dispatch)
     }
 
     fn dispatch_for_subject(
@@ -773,9 +1096,14 @@ impl Inner {
         let mut dispatch = Vec::new();
         let max_deliveries = mode.max_deliveries();
 
-        for subscriber in &self.subscribers {
+        for subscriber in self
+            .subscriber_indexes_by_island
+            .get(message.island())
+            .into_iter()
+            .flat_map(|indexes| indexes.iter())
+            .filter_map(|index| self.subscribers.get(*index))
+        {
             if target_matches_subject_pattern(target, &subscriber.pattern)
-                && &subscriber.island == message.island()
                 && self.grants.can_subscribe(
                     &subscriber.island,
                     &subscriber.principal,
@@ -798,9 +1126,14 @@ impl Inner {
         }
 
         let mut groups = BTreeMap::<QueueGroupKey, Vec<usize>>::new();
-        for (subscriber_index, subscriber) in self.queue_subscribers.iter().enumerate() {
+        for subscriber_index in self
+            .queue_subscriber_indexes_by_island
+            .get(message.island())
+            .into_iter()
+            .flat_map(|indexes| indexes.iter().copied())
+        {
+            let subscriber = &self.queue_subscribers[subscriber_index];
             if target_matches_subject_pattern(target, &subscriber.pattern)
-                && &subscriber.island == message.island()
                 && self.grants.can_queue_subscribe(
                     &subscriber.island,
                     &subscriber.principal,
@@ -1202,9 +1535,10 @@ mod tests {
 
     use super::MemoryBus;
     use crate::{
-        BusError, BusRuntimeConfig, BusSession, FactContentHash, FactKey, FactKeyPattern,
-        FactWriteOutcome, Grant, HandlerFailure, IslandId, Payload, PrincipalId, RequestManyPolicy,
-        RequestTarget, Subject, SubjectPattern,
+        BridgeEndpoint, BridgeRuleId, BridgeRuleViolation, BridgeState, BusError, BusRuntimeConfig,
+        BusSession, FactContentHash, FactKey, FactKeyPattern, FactWriteOutcome, Grant,
+        HandlerFailure, IslandId, Payload, PrincipalId, RequestManyPolicy, RequestTarget,
+        ServiceImport, StreamImport, Subject, SubjectPattern, SubjectTransform,
     };
 
     fn island(name: &str) -> IslandId {
@@ -1233,6 +1567,10 @@ mod tests {
 
     fn hash(value: &str) -> FactContentHash {
         FactContentHash::new(value)
+    }
+
+    fn rule_id(value: &str) -> BridgeRuleId {
+        BridgeRuleId::new(value)
     }
 
     fn bus_with_admin() -> (MemoryBus, BusSession) {
@@ -1813,6 +2151,50 @@ mod tests {
     }
 
     #[test]
+    fn queue_groups_are_island_scoped_for_publish_and_request() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let island_a = island("island-a");
+        let admin_a = authority.grant_in(island_a.clone(), principal("admin"), Grant::allow_all());
+        let admin_b =
+            authority.grant_in(island("island-b"), principal("admin"), Grant::allow_all());
+        let island_a_calls = Arc::new(AtomicUsize::new(0));
+        let island_b_calls = Arc::new(AtomicUsize::new(0));
+
+        let island_a_calls_for_handler = Arc::clone(&island_a_calls);
+        bus.queue_subscribe(&admin_a, pattern("image.pull"), "workers", move |ctx| {
+            island_a_calls_for_handler.fetch_add(1, Ordering::SeqCst);
+            let _ = ctx.reply(b"island-a".to_vec());
+            Ok(())
+        })
+        .expect("island-a queue subscriber");
+        let island_b_calls_for_handler = Arc::clone(&island_b_calls);
+        bus.queue_subscribe(&admin_b, pattern("image.pull"), "workers", move |ctx| {
+            island_b_calls_for_handler.fetch_add(1, Ordering::SeqCst);
+            let _ = ctx.reply(b"island-b".to_vec());
+            Ok(())
+        })
+        .expect("island-b queue subscriber");
+
+        bus.publish(&admin_a, subject("image.pull"), b"pull".to_vec())
+            .expect("publish in island-a");
+        assert_eq!(island_a_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(island_b_calls.load(Ordering::SeqCst), 0);
+
+        let response = bus
+            .request(
+                &admin_a,
+                subject("image.pull"),
+                b"pull".to_vec(),
+                Duration::from_secs(1),
+            )
+            .expect("request in island-a");
+        assert_eq!(response.island(), &island_a);
+        assert_eq!(response.payload().as_bytes(), b"island-a".as_slice());
+        assert_eq!(island_a_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(island_b_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn revoking_grant_blocks_future_publish_before_dispatch() {
         let (bus, authority) = MemoryBus::new_with_authority();
         let admin = authority.grant(principal("admin"), Grant::allow_all());
@@ -2377,6 +2759,828 @@ mod tests {
             }
         );
         assert!(request.join().expect("request thread joins").is_err());
+    }
+
+    #[test]
+    fn service_import_routes_request_to_remote_island() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = island("laptop");
+        let prod = island("prod");
+        let laptop_user = authority.grant_in(
+            laptop.clone(),
+            principal("user"),
+            Grant::empty().with_publish(pattern("gpu.deploy.submit")),
+        );
+        let prod_bridge = authority.grant_in(
+            prod.clone(),
+            principal("bridge"),
+            Grant::empty().with_publish(pattern("deploy.submit")),
+        );
+        let prod_scheduler = authority.grant_in(
+            prod.clone(),
+            principal("scheduler"),
+            Grant::empty()
+                .with_queue(pattern("deploy.submit"), "schedulers")
+                .with_response(),
+        );
+        authority
+            .add_service_import(ServiceImport::new(
+                rule_id("gpu-deploy"),
+                BridgeEndpoint::new(laptop.clone(), subject("gpu.deploy.submit")),
+                BridgeEndpoint::new(prod.clone(), subject("deploy.submit")),
+                prod_bridge.principal().clone(),
+            ))
+            .expect("add service import");
+
+        let observed = Arc::new(Mutex::new(None));
+        let observed_for_handler = Arc::clone(&observed);
+        bus.queue_subscribe(
+            &prod_scheduler,
+            pattern("deploy.submit"),
+            "schedulers",
+            move |ctx| {
+                *observed_for_handler.lock().expect("lock observed") = Some((
+                    ctx.message.island().clone(),
+                    ctx.message.principal().clone(),
+                    ctx.message.subject().clone(),
+                    ctx.message.bridge_origin().cloned(),
+                ));
+                ctx.reply(b"accepted".to_vec())
+            },
+        )
+        .expect("prod scheduler subscribes");
+
+        let response = bus
+            .request(
+                &laptop_user,
+                subject("gpu.deploy.submit"),
+                b"manifest".to_vec(),
+                Duration::from_secs(1),
+            )
+            .expect("imported request");
+
+        assert_eq!(response.payload().as_bytes(), b"accepted".as_slice());
+        assert_eq!(response.island(), &prod);
+        assert_eq!(response.responder().as_str(), "scheduler");
+        let observed = observed.lock().expect("lock observed").clone();
+        assert!(matches!(
+            observed,
+            Some((observed_island, observed_principal, observed_subject, Some(origin)))
+                if observed_island == prod
+                    && observed_principal.as_str() == "bridge"
+                    && observed_subject.as_str() == "deploy.submit"
+                    && origin.rule_id().as_str() == "gpu-deploy"
+                    && origin.source_island() == &laptop
+                    && origin.source_principal().as_str() == "user"
+                    && origin.original_subject().as_str() == "gpu.deploy.submit"
+        ));
+    }
+
+    #[test]
+    fn service_import_request_uses_one_remote_responder() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = island("laptop");
+        let prod = island("prod");
+        let laptop_user = authority.grant_in(
+            laptop.clone(),
+            principal("user"),
+            Grant::empty().with_publish(pattern("gpu.deploy.submit")),
+        );
+        let prod_bridge = authority.grant_in(
+            prod.clone(),
+            principal("bridge"),
+            Grant::empty().with_publish(pattern("deploy.submit")),
+        );
+        authority
+            .add_service_import(ServiceImport::new(
+                rule_id("gpu-deploy"),
+                BridgeEndpoint::new(laptop, subject("gpu.deploy.submit")),
+                BridgeEndpoint::new(prod.clone(), subject("deploy.submit")),
+                prod_bridge.principal().clone(),
+            ))
+            .expect("add service import");
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        for responder in ["scheduler-a", "scheduler-b"] {
+            let session = authority.grant_in(
+                prod.clone(),
+                principal(responder),
+                Grant::empty()
+                    .with_subscribe(pattern("deploy.submit"))
+                    .with_response(),
+            );
+            let calls = Arc::clone(&calls);
+            bus.subscribe(&session, pattern("deploy.submit"), move |ctx| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                ctx.reply(format!("accepted:{responder}").into_bytes())
+            })
+            .expect("prod scheduler subscribes");
+        }
+
+        let response = bus
+            .request(
+                &laptop_user,
+                subject("gpu.deploy.submit"),
+                b"manifest".to_vec(),
+                Duration::from_secs(1),
+            )
+            .expect("imported request");
+
+        assert_eq!(response.island(), &prod);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn exact_request_many_can_use_one_imported_service_responder() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = island("laptop");
+        let prod = island("prod");
+        let laptop_user = authority.grant_in(
+            laptop.clone(),
+            principal("user"),
+            Grant::empty().with_publish(pattern("gpu.deploy.submit")),
+        );
+        let prod_bridge = authority.grant_in(
+            prod.clone(),
+            principal("bridge"),
+            Grant::empty().with_publish(pattern("deploy.submit")),
+        );
+        authority
+            .add_service_import(ServiceImport::new(
+                rule_id("gpu-deploy"),
+                BridgeEndpoint::new(laptop, subject("gpu.deploy.submit")),
+                BridgeEndpoint::new(prod.clone(), subject("deploy.submit")),
+                prod_bridge.principal().clone(),
+            ))
+            .expect("add service import");
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let prod_scheduler = authority.grant_in(
+            prod.clone(),
+            principal("scheduler"),
+            Grant::empty()
+                .with_queue(pattern("deploy.submit"), "schedulers")
+                .with_response(),
+        );
+        let calls_for_handler = Arc::clone(&calls);
+        bus.queue_subscribe(
+            &prod_scheduler,
+            pattern("deploy.submit"),
+            "schedulers",
+            move |ctx| {
+                calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                ctx.reply(b"accepted".to_vec())
+            },
+        )
+        .expect("prod scheduler subscribes");
+
+        let replies = bus
+            .request_many(
+                &laptop_user,
+                RequestTarget::Subject(subject("gpu.deploy.submit")),
+                subject("gpu.deploy.submit"),
+                b"manifest".to_vec(),
+                RequestManyPolicy::new(1, Duration::from_secs(1)),
+            )
+            .expect("imported request_many");
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].island(), &prod);
+        assert_eq!(replies[0].payload().as_bytes(), b"accepted".as_slice());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let unsupported = bus
+            .request_many(
+                &laptop_user,
+                RequestTarget::Subject(subject("gpu.deploy.submit")),
+                subject("gpu.deploy.submit"),
+                b"manifest".to_vec(),
+                RequestManyPolicy::new(2, Duration::from_secs(1)),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            unsupported,
+            BusError::BridgeRequestManyUnsupported { requested: 2, .. }
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn service_import_preserves_remote_response_scope() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = island("laptop");
+        let prod = island("prod");
+        let laptop_user = authority.grant_in(
+            laptop.clone(),
+            principal("user"),
+            Grant::empty().with_publish(pattern("gpu.deploy.submit")),
+        );
+        let prod_bridge = authority.grant_in(
+            prod.clone(),
+            principal("bridge"),
+            Grant::empty().with_publish(pattern("deploy.submit")),
+        );
+        let prod_scheduler = authority.grant_in(
+            prod,
+            principal("scheduler"),
+            Grant::empty()
+                .with_subscribe(pattern("deploy.submit"))
+                .with_response(),
+        );
+        authority
+            .add_service_import(ServiceImport::new(
+                rule_id("gpu-deploy"),
+                BridgeEndpoint::new(laptop, subject("gpu.deploy.submit")),
+                BridgeEndpoint::new(island("prod"), subject("deploy.submit")),
+                prod_bridge.principal().clone(),
+            ))
+            .expect("add service import");
+
+        let duplicate_error = Arc::new(Mutex::new(None));
+        let wrong_principal_error = Arc::new(Mutex::new(None));
+        let (handler_done_tx, handler_done_rx) = mpsc::channel();
+        let duplicate_error_for_handler = Arc::clone(&duplicate_error);
+        let wrong_principal_error_for_handler = Arc::clone(&wrong_principal_error);
+        bus.subscribe(&prod_scheduler, pattern("deploy.submit"), move |ctx| {
+            let wrong = ctx
+                .reply_as(&principal("bridge"), b"wrong".to_vec())
+                .unwrap_err();
+            *wrong_principal_error_for_handler
+                .lock()
+                .expect("lock wrong principal error") = Some(wrong);
+            ctx.reply(b"ok".to_vec())?;
+            let duplicate = ctx.reply(b"second".to_vec()).unwrap_err();
+            *duplicate_error_for_handler
+                .lock()
+                .expect("lock duplicate error") = Some(duplicate);
+            let _ = handler_done_tx.send(());
+            Ok(())
+        })
+        .expect("prod scheduler subscribes");
+
+        let response = bus
+            .request(
+                &laptop_user,
+                subject("gpu.deploy.submit"),
+                Vec::new(),
+                Duration::from_secs(1),
+            )
+            .expect("imported request");
+
+        assert_eq!(response.payload().as_bytes(), b"ok".as_slice());
+        handler_done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("handler completed");
+        assert!(matches!(
+            wrong_principal_error
+                .lock()
+                .expect("lock wrong principal error")
+                .as_ref(),
+            Some(BusError::UnauthorizedResponse { .. })
+        ));
+        assert!(matches!(
+            duplicate_error
+                .lock()
+                .expect("lock duplicate error")
+                .as_ref(),
+            Some(BusError::DuplicateResponse { .. })
+        ));
+    }
+
+    #[test]
+    fn disabled_service_import_fails_before_remote_dispatch() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = island("laptop");
+        let prod = island("prod");
+        let laptop_user = authority.grant_in(
+            laptop.clone(),
+            principal("user"),
+            Grant::empty().with_publish(pattern("gpu.deploy.submit")),
+        );
+        let prod_bridge = authority.grant_in(
+            prod.clone(),
+            principal("bridge"),
+            Grant::empty().with_publish(pattern("deploy.submit")),
+        );
+        let rule = rule_id("gpu-deploy");
+        authority
+            .add_service_import(ServiceImport::new(
+                rule.clone(),
+                BridgeEndpoint::new(laptop.clone(), subject("gpu.deploy.submit")),
+                BridgeEndpoint::new(prod.clone(), subject("deploy.submit")),
+                prod_bridge.principal().clone(),
+            ))
+            .expect("add service import");
+        authority
+            .set_service_import_state(&rule, BridgeState::Disabled)
+            .expect("disable import");
+        let remote_calls = Arc::new(AtomicUsize::new(0));
+        let remote_calls_for_handler = Arc::clone(&remote_calls);
+        let prod_scheduler = authority.grant_in(
+            prod,
+            principal("scheduler"),
+            Grant::empty()
+                .with_subscribe(pattern("deploy.submit"))
+                .with_response(),
+        );
+        bus.subscribe(&prod_scheduler, pattern("deploy.submit"), move |ctx| {
+            remote_calls_for_handler.fetch_add(1, Ordering::SeqCst);
+            ctx.reply(b"should-not-run".to_vec())
+        })
+        .expect("prod scheduler subscribes");
+
+        let error = bus
+            .request(
+                &laptop_user,
+                subject("gpu.deploy.submit"),
+                Vec::new(),
+                Duration::from_secs(1),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            BusError::BridgeUnavailable {
+                failure: crate::BridgeFailure::Disabled,
+                ..
+            }
+        ));
+        assert_eq!(remote_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn remote_unavailable_service_import_fails_before_remote_dispatch() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = island("laptop");
+        let prod = island("prod");
+        let laptop_user = authority.grant_in(
+            laptop.clone(),
+            principal("user"),
+            Grant::empty().with_publish(pattern("gpu.deploy.submit")),
+        );
+        let prod_bridge = authority.grant_in(
+            prod.clone(),
+            principal("bridge"),
+            Grant::empty().with_publish(pattern("deploy.submit")),
+        );
+        let rule = rule_id("gpu-deploy");
+        authority
+            .add_service_import(ServiceImport::new(
+                rule.clone(),
+                BridgeEndpoint::new(laptop.clone(), subject("gpu.deploy.submit")),
+                BridgeEndpoint::new(prod.clone(), subject("deploy.submit")),
+                prod_bridge.principal().clone(),
+            ))
+            .expect("add service import");
+        authority
+            .set_service_import_state(&rule, BridgeState::RemoteUnavailable)
+            .expect("mark import unavailable");
+        let remote_calls = Arc::new(AtomicUsize::new(0));
+        let remote_calls_for_handler = Arc::clone(&remote_calls);
+        let prod_scheduler = authority.grant_in(
+            prod,
+            principal("scheduler"),
+            Grant::empty()
+                .with_subscribe(pattern("deploy.submit"))
+                .with_response(),
+        );
+        bus.subscribe(&prod_scheduler, pattern("deploy.submit"), move |ctx| {
+            remote_calls_for_handler.fetch_add(1, Ordering::SeqCst);
+            ctx.reply(b"should-not-run".to_vec())
+        })
+        .expect("prod scheduler subscribes");
+
+        let error = bus
+            .request(
+                &laptop_user,
+                subject("gpu.deploy.submit"),
+                Vec::new(),
+                Duration::from_secs(1),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            BusError::BridgeUnavailable {
+                failure: crate::BridgeFailure::RemoteUnavailable,
+                ..
+            }
+        ));
+        assert_eq!(remote_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn service_import_requires_local_and_remote_publish_grants() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = island("laptop");
+        let prod = island("prod");
+        let laptop_user = authority.grant_in(laptop.clone(), principal("user"), Grant::empty());
+        let prod_bridge = authority.grant_in(prod.clone(), principal("bridge"), Grant::empty());
+        authority
+            .add_service_import(ServiceImport::new(
+                rule_id("gpu-deploy"),
+                BridgeEndpoint::new(laptop.clone(), subject("gpu.deploy.submit")),
+                BridgeEndpoint::new(prod.clone(), subject("deploy.submit")),
+                prod_bridge.principal().clone(),
+            ))
+            .expect("add service import");
+
+        let local_error = bus
+            .request(
+                &laptop_user,
+                subject("gpu.deploy.submit"),
+                Vec::new(),
+                Duration::from_secs(1),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            local_error,
+            BusError::UnauthorizedPublish { island, principal, subject }
+                if island == laptop && principal.as_str() == "user"
+                    && subject.as_str() == "gpu.deploy.submit"
+        ));
+
+        let laptop_user = authority.grant_in(
+            laptop,
+            principal("user"),
+            Grant::empty().with_publish(pattern("gpu.deploy.submit")),
+        );
+        let remote_error = bus
+            .request(
+                &laptop_user,
+                subject("gpu.deploy.submit"),
+                Vec::new(),
+                Duration::from_secs(1),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            remote_error,
+            BusError::UnauthorizedPublish { island, principal, subject }
+                if island == prod && principal.as_str() == "bridge"
+                    && subject.as_str() == "deploy.submit"
+        ));
+    }
+
+    #[test]
+    fn service_import_conflicts_with_local_subscriber_in_both_orders() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = island("laptop");
+        let prod = island("prod");
+        let laptop_admin =
+            authority.grant_in(laptop.clone(), principal("admin"), Grant::allow_all());
+        let prod_bridge = authority.grant_in(
+            prod.clone(),
+            principal("bridge"),
+            Grant::empty().with_publish(pattern("deploy.submit")),
+        );
+        bus.subscribe(&laptop_admin, pattern("gpu.deploy.submit"), |_| Ok(()))
+            .expect("local subscriber registers");
+
+        let add_error = authority
+            .add_service_import(ServiceImport::new(
+                rule_id("gpu-deploy"),
+                BridgeEndpoint::new(laptop.clone(), subject("gpu.deploy.submit")),
+                BridgeEndpoint::new(prod.clone(), subject("deploy.submit")),
+                prod_bridge.principal().clone(),
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            add_error,
+            BusError::BridgeRuleInvalid {
+                violation: BridgeRuleViolation::LocalResponderConflict { .. }
+            }
+        ));
+
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop_admin =
+            authority.grant_in(laptop.clone(), principal("admin"), Grant::allow_all());
+        let prod_bridge = authority.grant_in(
+            prod.clone(),
+            principal("bridge"),
+            Grant::empty().with_publish(pattern("deploy.submit")),
+        );
+        authority
+            .add_service_import(ServiceImport::new(
+                rule_id("gpu-deploy"),
+                BridgeEndpoint::new(laptop.clone(), subject("gpu.deploy.submit")),
+                BridgeEndpoint::new(prod, subject("deploy.submit")),
+                prod_bridge.principal().clone(),
+            ))
+            .expect("service import registers");
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_handler = Arc::clone(&calls);
+        let subscribe_error = bus
+            .subscribe(&laptop_admin, pattern("gpu.deploy.submit"), move |_| {
+                calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(matches!(
+            subscribe_error,
+            BusError::BridgeRuleInvalid {
+                violation: BridgeRuleViolation::LocalResponderConflict { .. }
+            }
+        ));
+        bus.publish(
+            &laptop_admin,
+            subject("gpu.deploy.submit"),
+            b"local".to_vec(),
+        )
+        .expect("publish does not register failed subscriber");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn service_import_conflicts_with_local_queue_subscriber_in_both_orders() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = island("laptop");
+        let prod = island("prod");
+        let laptop_admin =
+            authority.grant_in(laptop.clone(), principal("admin"), Grant::allow_all());
+        let prod_bridge = authority.grant_in(
+            prod.clone(),
+            principal("bridge"),
+            Grant::empty().with_publish(pattern("deploy.submit")),
+        );
+        bus.queue_subscribe(
+            &laptop_admin,
+            pattern("gpu.deploy.submit"),
+            "schedulers",
+            |_| Ok(()),
+        )
+        .expect("local queue subscriber registers");
+
+        let add_error = authority
+            .add_service_import(ServiceImport::new(
+                rule_id("gpu-deploy"),
+                BridgeEndpoint::new(laptop.clone(), subject("gpu.deploy.submit")),
+                BridgeEndpoint::new(prod.clone(), subject("deploy.submit")),
+                prod_bridge.principal().clone(),
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            add_error,
+            BusError::BridgeRuleInvalid {
+                violation: BridgeRuleViolation::LocalResponderConflict { .. }
+            }
+        ));
+
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop_admin =
+            authority.grant_in(laptop.clone(), principal("admin"), Grant::allow_all());
+        let prod_bridge = authority.grant_in(
+            prod.clone(),
+            principal("bridge"),
+            Grant::empty().with_publish(pattern("deploy.submit")),
+        );
+        authority
+            .add_service_import(ServiceImport::new(
+                rule_id("gpu-deploy"),
+                BridgeEndpoint::new(laptop.clone(), subject("gpu.deploy.submit")),
+                BridgeEndpoint::new(prod, subject("deploy.submit")),
+                prod_bridge.principal().clone(),
+            ))
+            .expect("service import registers");
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_handler = Arc::clone(&calls);
+        let queue_error = bus
+            .queue_subscribe(
+                &laptop_admin,
+                pattern("gpu.deploy.submit"),
+                "schedulers",
+                move |_| {
+                    calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            queue_error,
+            BusError::BridgeRuleInvalid {
+                violation: BridgeRuleViolation::LocalResponderConflict { .. }
+            }
+        ));
+        bus.publish(
+            &laptop_admin,
+            subject("gpu.deploy.submit"),
+            b"local".to_vec(),
+        )
+        .expect("publish does not register failed queue subscriber");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn stream_import_delivers_with_bridge_origin() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = island("laptop");
+        let prod = island("prod");
+        let prod_admin = authority.grant_in(
+            prod.clone(),
+            principal("prod-admin"),
+            Grant::empty().with_publish(pattern("deploy.*.status")),
+        );
+        let bridge = authority.grant_in(
+            prod.clone(),
+            principal("bridge"),
+            Grant::empty().with_bridge_export(pattern("deploy.*.status")),
+        );
+        authority.grant_in(
+            laptop.clone(),
+            principal("bridge"),
+            Grant::empty().with_publish(pattern("prod.deploy.*.status")),
+        );
+        let laptop_reader = authority.grant_in(
+            laptop.clone(),
+            principal("reader"),
+            Grant::empty().with_subscribe(pattern("prod.deploy.*.status")),
+        );
+        authority
+            .add_stream_import(StreamImport::new(
+                rule_id("prod-status"),
+                prod.clone(),
+                laptop.clone(),
+                bridge.principal().clone(),
+                SubjectTransform::new(pattern("deploy.*.status"), pattern("prod.deploy.*.status"))
+                    .expect("transform validates"),
+            ))
+            .expect("add stream import");
+
+        let observed = Arc::new(Mutex::new(None));
+        let observed_for_handler = Arc::clone(&observed);
+        bus.subscribe(
+            &laptop_reader,
+            pattern("prod.deploy.*.status"),
+            move |ctx| {
+                *observed_for_handler.lock().expect("lock observed") = Some((
+                    ctx.message.island().clone(),
+                    ctx.message.principal().clone(),
+                    ctx.message.subject().clone(),
+                    ctx.message.bridge_origin().cloned(),
+                ));
+                Ok(())
+            },
+        )
+        .expect("laptop reader subscribes");
+
+        bus.publish(
+            &prod_admin,
+            subject("deploy.d1.status"),
+            b"running".to_vec(),
+        )
+        .expect("prod publishes status");
+
+        let observed = observed
+            .lock()
+            .expect("lock observed")
+            .clone()
+            .expect("observed imported status");
+        assert_eq!(observed.0, laptop);
+        assert_eq!(observed.1.as_str(), "bridge");
+        assert_eq!(observed.2.as_str(), "prod.deploy.d1.status");
+        let origin = observed.3.expect("bridge origin exists");
+        assert_eq!(origin.rule_id().as_str(), "prod-status");
+        assert_eq!(origin.source_island(), &prod);
+        assert_eq!(origin.source_principal().as_str(), "prod-admin");
+        assert_eq!(origin.original_subject().as_str(), "deploy.d1.status");
+    }
+
+    #[test]
+    fn stream_import_requires_remote_export_and_local_publish_grants() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = island("laptop");
+        let prod = island("prod");
+        let prod_admin = authority.grant_in(
+            prod.clone(),
+            principal("prod-admin"),
+            Grant::empty().with_publish(pattern("deploy.*.status")),
+        );
+        let bridge = authority.grant_in(prod.clone(), principal("bridge"), Grant::empty());
+        let laptop_reader = authority.grant_in(
+            laptop.clone(),
+            principal("reader"),
+            Grant::empty().with_subscribe(pattern("prod.deploy.*.status")),
+        );
+        authority
+            .add_stream_import(StreamImport::new(
+                rule_id("prod-status"),
+                prod.clone(),
+                laptop.clone(),
+                bridge.principal().clone(),
+                SubjectTransform::new(pattern("deploy.*.status"), pattern("prod.deploy.*.status"))
+                    .expect("transform validates"),
+            ))
+            .expect("add stream import");
+
+        let deliveries = Arc::new(AtomicUsize::new(0));
+        let deliveries_for_handler = Arc::clone(&deliveries);
+        bus.subscribe(&laptop_reader, pattern("prod.deploy.*.status"), move |_| {
+            deliveries_for_handler.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .expect("laptop reader subscribes");
+
+        bus.publish(
+            &prod_admin,
+            subject("deploy.d1.status"),
+            b"running".to_vec(),
+        )
+        .expect("prod publish still succeeds without export grant");
+        assert_eq!(deliveries.load(Ordering::SeqCst), 0);
+
+        authority.grant_in(
+            prod.clone(),
+            principal("bridge"),
+            Grant::empty().with_bridge_export(pattern("deploy.*.status")),
+        );
+        bus.publish(
+            &prod_admin,
+            subject("deploy.d1.status"),
+            b"running".to_vec(),
+        )
+        .expect("prod publish still succeeds without local bridge publish");
+        assert_eq!(deliveries.load(Ordering::SeqCst), 0);
+
+        authority.grant_in(
+            laptop,
+            principal("bridge"),
+            Grant::empty().with_publish(pattern("prod.deploy.*.status")),
+        );
+        bus.publish(
+            &prod_admin,
+            subject("deploy.d1.status"),
+            b"running".to_vec(),
+        )
+        .expect("prod publish succeeds with both bridge grants");
+        assert_eq!(deliveries.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn disabled_stream_import_skips_remote_delivery_but_keeps_local_publish() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = island("laptop");
+        let prod = island("prod");
+        let prod_admin = authority.grant_in(
+            prod.clone(),
+            principal("prod-admin"),
+            Grant::empty()
+                .with_publish(pattern("deploy.*.status"))
+                .with_subscribe(pattern("deploy.*.status")),
+        );
+        let bridge = authority.grant_in(
+            prod.clone(),
+            principal("bridge"),
+            Grant::empty().with_bridge_export(pattern("deploy.*.status")),
+        );
+        authority.grant_in(
+            laptop.clone(),
+            principal("bridge"),
+            Grant::empty().with_publish(pattern("prod.deploy.*.status")),
+        );
+        let laptop_reader = authority.grant_in(
+            laptop.clone(),
+            principal("reader"),
+            Grant::empty().with_subscribe(pattern("prod.deploy.*.status")),
+        );
+        let rule = rule_id("prod-status");
+        authority
+            .add_stream_import(StreamImport::new(
+                rule.clone(),
+                prod.clone(),
+                laptop,
+                bridge.principal().clone(),
+                SubjectTransform::new(pattern("deploy.*.status"), pattern("prod.deploy.*.status"))
+                    .expect("transform validates"),
+            ))
+            .expect("add stream import");
+        authority
+            .set_stream_import_state(&rule, BridgeState::Disabled)
+            .expect("disable stream import");
+
+        let prod_deliveries = Arc::new(AtomicUsize::new(0));
+        let laptop_deliveries = Arc::new(AtomicUsize::new(0));
+        let prod_deliveries_for_handler = Arc::clone(&prod_deliveries);
+        bus.subscribe(&prod_admin, pattern("deploy.*.status"), move |_| {
+            prod_deliveries_for_handler.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .expect("prod subscribes locally");
+        let laptop_deliveries_for_handler = Arc::clone(&laptop_deliveries);
+        bus.subscribe(&laptop_reader, pattern("prod.deploy.*.status"), move |_| {
+            laptop_deliveries_for_handler.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .expect("laptop subscribes");
+
+        bus.publish(
+            &prod_admin,
+            subject("deploy.d1.status"),
+            b"running".to_vec(),
+        )
+        .expect("prod publish succeeds");
+
+        assert_eq!(prod_deliveries.load(Ordering::SeqCst), 1);
+        assert_eq!(laptop_deliveries.load(Ordering::SeqCst), 0);
     }
 
     fn record_max(max_active: &AtomicUsize, active_now: usize) {

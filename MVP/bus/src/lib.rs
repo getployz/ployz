@@ -1,4 +1,5 @@
 mod actor;
+mod bridge;
 mod error;
 mod facts;
 mod grants;
@@ -7,7 +8,11 @@ mod message;
 mod subject;
 
 pub use actor::BusActorHandle;
-pub use error::{ActorFailure, BusError, HandlerFailure, Result, SubjectParseError};
+pub use bridge::{
+    BridgeEndpoint, BridgeOrigin, BridgeRuleId, BridgeRuleViolation, BridgeState, ServiceImport,
+    StreamImport, SubjectTransform,
+};
+pub use error::{ActorFailure, BridgeFailure, BusError, HandlerFailure, Result, SubjectParseError};
 pub use facts::{
     Fact, FactContentHash, FactKey, FactKeyParseError, FactKeyPattern, FactWriteOutcome,
 };
