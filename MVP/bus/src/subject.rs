@@ -103,7 +103,10 @@ impl SubjectPattern {
                 },
                 PatternToken::Literal(value) => match requested.tokens.get(index) {
                     Some(PatternToken::Literal(requested)) if requested == value => {}
-                    _ => return false,
+                    Some(PatternToken::Literal(_))
+                    | Some(PatternToken::One)
+                    | Some(PatternToken::Many)
+                    | None => return false,
                 },
             }
         }
@@ -182,7 +185,15 @@ fn prefix_compatible(prefix: &[PatternToken], requested: &SubjectPattern) -> boo
         match (token, requested.tokens.get(index)) {
             (PatternToken::Literal(left), Some(PatternToken::Literal(right))) if left == right => {}
             (PatternToken::One, Some(PatternToken::Literal(_) | PatternToken::One)) => {}
-            _ => return false,
+            (PatternToken::Literal(_), Some(PatternToken::Literal(_))) => return false,
+            (PatternToken::Literal(_), Some(PatternToken::One | PatternToken::Many) | None) => {
+                return false;
+            }
+            (PatternToken::One, Some(PatternToken::Many) | None) => return false,
+            (
+                PatternToken::Many,
+                Some(PatternToken::Literal(_) | PatternToken::One | PatternToken::Many) | None,
+            ) => return false,
         }
     }
     true
@@ -191,18 +202,30 @@ fn prefix_compatible(prefix: &[PatternToken], requested: &SubjectPattern) -> boo
 fn patterns_overlap(left: &[PatternToken], right: &[PatternToken]) -> bool {
     match (left.split_first(), right.split_first()) {
         (None, None) => true,
-        (None, Some(_)) | (Some(_), None) => false,
-        (Some((PatternToken::Many, _)), Some(_)) => true,
-        (Some(_), Some((PatternToken::Many, _))) => true,
+        (None, Some((PatternToken::Literal(_) | PatternToken::One | PatternToken::Many, _)))
+        | (Some((PatternToken::Literal(_) | PatternToken::One | PatternToken::Many, _)), None) => {
+            false
+        }
+        (
+            Some((PatternToken::Many, _)),
+            Some((PatternToken::Literal(_) | PatternToken::One | PatternToken::Many, _)),
+        )
+        | (
+            Some((PatternToken::Literal(_) | PatternToken::One, _)),
+            Some((PatternToken::Many, _)),
+        ) => true,
         (
             Some((PatternToken::One, left_tail)),
             Some((PatternToken::Literal(_) | PatternToken::One, right_tail)),
         ) => patterns_overlap(left_tail, right_tail),
+        (Some((PatternToken::Literal(_), left_tail)), Some((PatternToken::One, right_tail))) => {
+            patterns_overlap(left_tail, right_tail)
+        }
         (
             Some((PatternToken::Literal(left), left_tail)),
             Some((PatternToken::Literal(right), right_tail)),
         ) if left == right => patterns_overlap(left_tail, right_tail),
-        _ => false,
+        (Some((PatternToken::Literal(_), _)), Some((PatternToken::Literal(_), _))) => false,
     }
 }
 
@@ -302,5 +325,14 @@ mod tests {
 
         assert!(broad.overlaps(&narrow));
         assert!(narrow.overlaps(&broad));
+    }
+
+    #[test]
+    fn literal_pattern_overlaps_one_wildcard_pattern() {
+        let literal = SubjectPattern::parse("node.alpha.capacity").expect("pattern parses");
+        let wildcard = SubjectPattern::parse("node.*.capacity").expect("pattern parses");
+
+        assert!(literal.overlaps(&wildcard));
+        assert!(wildcard.overlaps(&literal));
     }
 }

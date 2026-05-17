@@ -8,7 +8,7 @@ use kameo::mailbox;
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
 
-use crate::memory::MemoryBus;
+use crate::memory::{DEFAULT_PUBLISH_TIMEOUT, MemoryBus};
 use crate::memory::{Handler, RequestManyDeadlinePolicy, deadline_after, remaining_until};
 use crate::{
     BusAuthority, BusError, BusRuntimeSnapshot, BusSession, HandlerOutcome, Payload, QueueName,
@@ -102,11 +102,29 @@ impl BusActorHandle {
         subject: Subject,
         payload: impl Into<Payload>,
     ) -> Result<()> {
-        self.ask_delegated(Publish {
-            session: session.clone(),
-            subject,
-            payload: payload.into(),
-        })
+        self.publish_with_timeout(session, subject, payload, DEFAULT_PUBLISH_TIMEOUT)
+            .await
+    }
+
+    pub async fn publish_with_timeout(
+        &self,
+        session: &BusSession,
+        subject: Subject,
+        payload: impl Into<Payload>,
+        timeout: Duration,
+    ) -> Result<()> {
+        let deadline = deadline_after(timeout);
+        let timeout_subject = subject.to_string();
+        self.ask_until(
+            Publish {
+                session: session.clone(),
+                subject,
+                payload: payload.into(),
+                deadline,
+            },
+            deadline,
+            timeout_subject,
+        )
         .await
     }
 
@@ -179,20 +197,6 @@ impl BusActorHandle {
     async fn ask<M, R>(&self, message: M) -> Result<R>
     where
         BusActor: Message<M, Reply = Result<R>>,
-        M: Send + 'static,
-        R: Send + 'static,
-    {
-        self.actor
-            .ask(message)
-            .mailbox_timeout(BUS_ACTOR_MAILBOX_TIMEOUT)
-            .reply_timeout(BUS_ACTOR_REPLY_TIMEOUT)
-            .await
-            .map_err(map_actor_send_error)
-    }
-
-    async fn ask_delegated<M, R>(&self, message: M) -> Result<R>
-    where
-        BusActor: Message<M, Reply = DelegatedReply<Result<R>>>,
         M: Send + 'static,
         R: Send + 'static,
     {
@@ -331,6 +335,7 @@ struct Publish {
     session: BusSession,
     subject: Subject,
     payload: Payload,
+    deadline: Instant,
 }
 
 impl Message<Publish> for BusActor {
@@ -343,7 +348,12 @@ impl Message<Publish> for BusActor {
     ) -> Self::Reply {
         let bus = self.bus.clone();
         ctx.spawn(run_blocking(move || {
-            bus.publish(&message.session, message.subject, message.payload)
+            bus.publish_until(
+                &message.session,
+                message.subject,
+                message.payload,
+                message.deadline,
+            )
         }))
     }
 }
@@ -459,7 +469,10 @@ mod tests {
     use std::time::Duration;
     use std::time::Instant;
 
-    use crate::{BusActorHandle, Grant, PrincipalId, RequestManyPolicy, RequestTarget, Subject};
+    use crate::{
+        BusActorHandle, BusError, BusRuntimeConfig, Grant, PrincipalId, RequestManyPolicy,
+        RequestTarget, Subject,
+    };
 
     use super::SubjectPattern;
 
@@ -553,6 +566,178 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, crate::BusError::Draining));
+    }
+
+    #[tokio::test]
+    async fn actor_facade_publish_timeout_uses_single_deadline() {
+        let (bus, authority) = BusActorHandle::new_with_authority_and_config(
+            BusRuntimeConfig::with_delivery_workers(1).with_delivery_queue_capacity(1),
+        );
+        let admin = authority.grant(principal("admin"), Grant::allow_all());
+        for _ in 0..3 {
+            bus.subscribe(&admin, pattern("gateway.changed"), move |_| {
+                std::thread::sleep(Duration::from_millis(100));
+                Ok(())
+            })
+            .await
+            .expect("subscribe slow gateway handler");
+        }
+
+        let error = bus
+            .publish_with_timeout(
+                &admin,
+                subject("gateway.changed"),
+                Vec::new(),
+                Duration::from_millis(5),
+            )
+            .await
+            .unwrap_err();
+        let snapshot = bus.runtime_snapshot().await.expect("snapshot");
+
+        assert!(matches!(error, BusError::Timeout { .. }));
+        assert!(snapshot.max_queued_deliveries >= 1);
+        assert!(snapshot.enqueue_full_count > 0);
+        assert!(snapshot.enqueue_blocked_ns > 0);
+    }
+
+    #[tokio::test]
+    async fn actor_facade_drain_waits_for_inflight_request() {
+        let (bus, authority) = BusActorHandle::new_with_authority();
+        let admin = authority.grant(principal("admin"), Grant::allow_all());
+        let completed = Arc::new(AtomicUsize::new(0));
+        let completed_for_handler = Arc::clone(&completed);
+        let (started_tx, started_rx) = mpsc::channel();
+        bus.subscribe(&admin, pattern("node.alpha.inspect"), move |ctx| {
+            let _ = started_tx.send(());
+            std::thread::sleep(Duration::from_millis(30));
+            completed_for_handler.fetch_add(1, Ordering::SeqCst);
+            ctx.reply(b"ok".to_vec())
+        })
+        .await
+        .expect("subscribe inspect");
+
+        let bus_for_request = bus.clone();
+        let admin_for_request = admin.clone();
+        let request = tokio::spawn(async move {
+            bus_for_request
+                .request(
+                    &admin_for_request,
+                    subject("node.alpha.inspect"),
+                    Vec::new(),
+                    Duration::from_secs(1),
+                )
+                .await
+        });
+        tokio::task::spawn_blocking(move || started_rx.recv_timeout(Duration::from_secs(1)))
+            .await
+            .expect("started wait joins")
+            .expect("handler started");
+
+        bus.drain(&admin, Duration::from_secs(1))
+            .await
+            .expect("drain");
+        let response = request.await.expect("request task joins").expect("request");
+
+        assert_eq!(response.payload().as_bytes(), b"ok".as_slice());
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn actor_facade_drain_waits_for_queued_delivery_work() {
+        let (bus, authority) = BusActorHandle::new_with_authority_and_config(
+            BusRuntimeConfig::with_delivery_workers(1),
+        );
+        let admin = authority.grant(principal("admin"), Grant::allow_all());
+        let completed = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::channel();
+        for index in 0..3 {
+            let completed_for_handler = Arc::clone(&completed);
+            let started_tx = started_tx.clone();
+            bus.subscribe(&admin, pattern("node.*.capacity"), move |ctx| {
+                if index == 0 {
+                    let _ = started_tx.send(());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+                completed_for_handler.fetch_add(1, Ordering::SeqCst);
+                ctx.reply(b"ok".to_vec())
+            })
+            .await
+            .expect("subscribe capacity");
+        }
+        drop(started_tx);
+
+        let bus_for_request = bus.clone();
+        let admin_for_request = admin.clone();
+        let request = tokio::spawn(async move {
+            bus_for_request
+                .request_many(
+                    &admin_for_request,
+                    RequestTarget::Pattern(pattern("node.*.capacity")),
+                    subject("node.broadcast.capacity"),
+                    Vec::new(),
+                    RequestManyPolicy::new(8, Duration::from_secs(1)),
+                )
+                .await
+        });
+        tokio::task::spawn_blocking(move || started_rx.recv_timeout(Duration::from_secs(1)))
+            .await
+            .expect("started wait joins")
+            .expect("first handler started");
+
+        bus.drain(&admin, Duration::from_secs(1))
+            .await
+            .expect("drain");
+        let replies = request
+            .await
+            .expect("request task joins")
+            .expect("request many");
+
+        assert_eq!(replies.len(), 3);
+        assert_eq!(completed.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn actor_facade_drain_times_out_waiting_for_inflight_work() {
+        let (bus, authority) = BusActorHandle::new_with_authority();
+        let admin = authority.grant(principal("admin"), Grant::allow_all());
+        let (started_tx, started_rx) = mpsc::channel();
+        bus.subscribe(&admin, pattern("node.alpha.inspect"), move |ctx| {
+            let _ = started_tx.send(());
+            std::thread::sleep(Duration::from_millis(50));
+            ctx.reply(b"ok".to_vec())
+        })
+        .await
+        .expect("subscribe inspect");
+
+        let bus_for_request = bus.clone();
+        let admin_for_request = admin.clone();
+        let request = tokio::spawn(async move {
+            bus_for_request
+                .request(
+                    &admin_for_request,
+                    subject("node.alpha.inspect"),
+                    Vec::new(),
+                    Duration::from_secs(1),
+                )
+                .await
+        });
+        tokio::task::spawn_blocking(move || started_rx.recv_timeout(Duration::from_secs(1)))
+            .await
+            .expect("started wait joins")
+            .expect("handler started");
+
+        let error = bus
+            .drain(&admin, Duration::from_millis(1))
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            BusError::Timeout {
+                subject: String::from("drain"),
+            }
+        );
+        request.await.expect("request task joins").expect("request");
     }
 
     #[tokio::test]
