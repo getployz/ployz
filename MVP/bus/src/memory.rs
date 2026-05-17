@@ -16,10 +16,10 @@ use crate::grants::GrantBook;
 use crate::message::{MessageId, ReplyInbox, ReplyPermit};
 use crate::{
     BridgeFailure, BridgeOrigin, BridgeRuleId, BridgeRuleViolation, BridgeState, BusError,
-    BusMessage, BusSession, Fact, FactContentHash, FactKey, FactKeyPattern, FactPayload,
-    FactWriteOutcome, Grant, IslandId, Payload, PrincipalId, QueueName, RequestManyPolicy,
-    RequestTarget, ResponseEnvelope, ResponseMessage, Result, ServiceImport, StreamImport, Subject,
-    SubjectPattern,
+    BusMessage, BusSession, Fact, FactAccess, FactAuthorizer, FactContentHash, FactKey,
+    FactKeyPattern, FactPayload, FactWriteOutcome, Grant, IslandId, Payload, PrincipalId,
+    QueueName, RequestManyPolicy, RequestTarget, ResponseEnvelope, ResponseMessage, Result,
+    ServiceImport, StreamImport, Subject, SubjectPattern,
 };
 
 pub type HandlerOutcome = Result<()>;
@@ -847,6 +847,24 @@ impl MemoryBus {
     }
 }
 
+impl FactAuthorizer for MemoryBus {
+    fn can_access_fact(&self, session: &BusSession, key: &FactKey, access: FactAccess) -> bool {
+        let inner = self.inner.lock().expect("memory bus mutex poisoned");
+        match access {
+            FactAccess::Read => {
+                inner
+                    .grants
+                    .can_read_fact(session.island(), session.principal(), key)
+            }
+            FactAccess::Write => {
+                inner
+                    .grants
+                    .can_write_fact(session.island(), session.principal(), key)
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct BusAuthority {
     bus: MemoryBus,
@@ -1619,9 +1637,10 @@ mod tests {
     use super::MemoryBus;
     use crate::{
         BridgeEndpoint, BridgeRuleId, BridgeRuleViolation, BridgeState, BusError, BusRuntimeConfig,
-        BusSession, FactContentHash, FactKey, FactKeyPattern, FactPayload, FactWriteOutcome, Grant,
-        HandlerFailure, IslandId, Payload, PrincipalId, RequestManyPolicy, RequestTarget,
-        ServiceImport, StreamImport, Subject, SubjectPattern, SubjectTransform,
+        BusSession, FactAccess, FactAuthorizer, FactContentHash, FactKey, FactKeyPattern,
+        FactPayload, FactWriteOutcome, Grant, HandlerFailure, IslandId, Payload, PrincipalId,
+        RequestManyPolicy, RequestTarget, ServiceImport, StreamImport, Subject, SubjectPattern,
+        SubjectTransform,
     };
 
     fn island(name: &str) -> IslandId {
@@ -2435,6 +2454,41 @@ mod tests {
                 .expect("read secret")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn fact_authorizer_matches_bus_fact_read_and_write_grants() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let session = authority.grant_in(
+            island("prod"),
+            principal("projection"),
+            Grant::empty()
+                .with_fact_read(fact_pattern("/facts/routes/>"))
+                .with_fact_read_deny(fact_pattern("/facts/routes/secret"))
+                .with_fact_write(fact_pattern("/facts/deploy/>"))
+                .with_fact_write_deny(fact_pattern("/facts/deploy/*/secret")),
+        );
+
+        assert!(bus.can_access_fact(
+            &session,
+            &fact_key("/facts/routes/public"),
+            FactAccess::Read
+        ));
+        assert!(!bus.can_access_fact(
+            &session,
+            &fact_key("/facts/routes/secret"),
+            FactAccess::Read
+        ));
+        assert!(bus.can_access_fact(
+            &session,
+            &fact_key("/facts/deploy/d1/plan"),
+            FactAccess::Write
+        ));
+        assert!(!bus.can_access_fact(
+            &session,
+            &fact_key("/facts/deploy/d1/secret"),
+            FactAccess::Write
+        ));
     }
 
     #[test]
