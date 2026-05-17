@@ -1,9 +1,11 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use mvp_bus::IslandId;
 use mvp_projection::NodeId;
 use serde::{Deserialize, Serialize};
+use tempfile::NamedTempFile;
 
 use crate::{MeshError, MeshResult, WireGuardOverlayIp, WireGuardPeer, WireGuardPeerPlan};
 
@@ -26,11 +28,6 @@ impl WireGuardAppliedSnapshot {
             revision: plan.revision,
             peers: plan.peers,
         }
-    }
-
-    #[must_use]
-    pub fn has_peer(&self, node_id: &NodeId) -> bool {
-        self.peers.iter().any(|peer| &peer.node_id == node_id)
     }
 }
 
@@ -56,15 +53,23 @@ pub fn write_applied_snapshot(
         fs::create_dir_all(parent).map_err(|error| snapshot_io("create parent", parent, error))?;
     }
     reject_symlink(&paths.applied)?;
-    let tmp = paths.applied.with_extension("snapshot.tmp");
-    reject_symlink(&tmp)?;
     let bytes =
         serde_json::to_vec_pretty(snapshot).map_err(|error| MeshError::InvalidSnapshot {
             path: paths.applied.display().to_string(),
             message: error.to_string(),
         })?;
-    fs::write(&tmp, bytes).map_err(|error| snapshot_io("write", &tmp, error))?;
-    fs::rename(&tmp, &paths.applied).map_err(|error| snapshot_io("rename", &paths.applied, error))
+    let parent = paths.applied.parent().unwrap_or_else(|| Path::new("."));
+    let mut tmp =
+        NamedTempFile::new_in(parent).map_err(|error| snapshot_io("create temp", parent, error))?;
+    tmp.write_all(&bytes)
+        .map_err(|error| snapshot_io("write temp", tmp.path(), error))?;
+    tmp.as_file_mut()
+        .sync_all()
+        .map_err(|error| snapshot_io("sync temp", tmp.path(), error))?;
+    reject_symlink(&paths.applied)?;
+    tmp.persist(&paths.applied)
+        .map(|_file| ())
+        .map_err(|error| snapshot_io("persist", &paths.applied, error.error))
 }
 
 pub fn load_applied_snapshot(
@@ -116,6 +121,8 @@ fn snapshot_io(operation: &'static str, path: &Path, error: std::io::Error) -> M
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use mvp_bus::IslandId;
     use mvp_projection::{NodeId, NodeProjection, ProjectionState};
     use tempfile::tempdir;
@@ -139,6 +146,31 @@ mod tests {
             snapshot
         );
         assert!(load_applied_snapshot(&paths, &IslandId::new("dev")).is_err());
+    }
+
+    #[test]
+    fn snapshot_rejects_invalid_json() {
+        let temp = tempdir().expect("tempdir");
+        let paths = WireGuardSnapshotPaths::new(temp.path());
+        fs::write(&paths.applied, b"not-json").expect("write invalid snapshot");
+
+        assert!(load_applied_snapshot(&paths, &IslandId::new("prod")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_rejects_symlink_applied_path() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().expect("tempdir");
+        let paths = WireGuardSnapshotPaths::new(temp.path());
+        let target = temp.path().join("outside.snapshot");
+        symlink(&target, &paths.applied).expect("create symlink");
+        let plan = plan_full_mesh(&projection(), &NodeId::new("node-1"), 1).expect("plan");
+        let snapshot = WireGuardAppliedSnapshot::from_plan(IslandId::new("prod"), plan);
+
+        assert!(write_applied_snapshot(&paths, &snapshot).is_err());
+        assert!(!target.exists());
     }
 
     fn projection() -> ProjectionState {

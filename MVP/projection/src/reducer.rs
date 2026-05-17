@@ -156,6 +156,7 @@ impl<'a> Reducer<'a> {
     }
 
     fn finish(mut self) -> ProjectionState {
+        self.state.tombstoned_nodes = std::mem::take(&mut self.node_tombstones);
         if let Some(commit) = self.serving_head() {
             self.state.gateway = Some(project_gateway_from_serving(&commit));
             self.state.dns = Some(project_dns_from_serving(commit));
@@ -222,20 +223,9 @@ impl<'a> Reducer<'a> {
     }
 
     fn apply_node(&mut self, node: NodeProjection) {
-        if self
-            .node_tombstones
-            .get(&node.node_id)
-            .is_some_and(|epoch| *epoch >= node.epoch)
-        {
+        if self.node_tombstones.contains_key(&node.node_id) {
             self.ignore(ProjectionIgnoreReason::Superseded);
             return;
-        }
-        if self
-            .node_tombstones
-            .get(&node.node_id)
-            .is_some_and(|epoch| *epoch < node.epoch)
-        {
-            self.node_tombstones.remove(&node.node_id);
         }
 
         let conflict_epoch = self.node_conflicts.get(&node.node_id).copied();
@@ -275,25 +265,19 @@ impl<'a> Reducer<'a> {
             .insert(tombstone.node_id.clone(), tombstone.epoch);
         self.node_conflicts.remove(&tombstone.node_id);
 
-        let should_remove_node = self
-            .state
-            .nodes
-            .get(&tombstone.node_id)
-            .is_some_and(|node| node.epoch <= tombstone.epoch);
-        if should_remove_node {
-            self.state.nodes.remove(&tombstone.node_id);
+        if self.state.nodes.remove(&tombstone.node_id).is_some() {
+            self.ignore(ProjectionIgnoreReason::Superseded);
         }
-        self.state.services.retain(|(_service, node_id), service| {
-            node_id != &tombstone.node_id || service.epoch > tombstone.epoch
-        });
+        let services_before = self.state.services.len();
+        self.state
+            .services
+            .retain(|(_service, node_id), _projection| node_id != &tombstone.node_id);
+        let removed_services = services_before.saturating_sub(self.state.services.len());
+        self.ignore_many(ProjectionIgnoreReason::Superseded, removed_services);
     }
 
     fn apply_service(&mut self, key: (ServiceName, NodeId), service: ServiceProjection) {
-        if self
-            .node_tombstones
-            .get(&service.node_id)
-            .is_some_and(|epoch| *epoch >= service.epoch)
-        {
+        if self.node_tombstones.contains_key(&service.node_id) {
             self.ignore(ProjectionIgnoreReason::Superseded);
             return;
         }
@@ -893,12 +877,70 @@ mod tests {
         let state = reduce_facts(&island("prod"), &candidates, &payloads);
 
         assert!(state.nodes.is_empty());
+        assert_eq!(state.tombstoned_nodes.get(&NodeId::new("node-1")), Some(&1));
         assert!(state.services.is_empty());
-        assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 1);
+        assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 2);
     }
 
     #[test]
-    fn reducer_keeps_node_when_join_epoch_survives_older_tombstone() {
+    fn reducer_excludes_tombstoned_node_services_even_with_newer_service_epoch() {
+        let mut payloads = BTreeMap::new();
+        let node_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::NodeJoined(NodeJoinedFact {
+                node_id: NodeId::new("node-1"),
+                epoch: 1,
+                overlay_ip: "fd00::1".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
+            }),
+        );
+        let service_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::ServiceRegistered(ServiceRegistrationFact {
+                service: ServiceName::new("web"),
+                node_id: NodeId::new("node-1"),
+                version: "3.0.0".to_string(),
+                endpoint_subject: "node.node-1.web".to_string(),
+                epoch: 3,
+            }),
+        );
+        let tombstone_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::NodeTombstoned(NodeTombstonedFact {
+                node_id: NodeId::new("node-1"),
+                epoch: 2,
+                reason: "force-remove".to_string(),
+            }),
+        );
+        let candidates = vec![
+            candidate(
+                "/facts/node/node-1/joined/1",
+                FactKind::NodeJoined,
+                node_hash,
+            ),
+            candidate(
+                "/facts/service/web/node-1/registered/3",
+                FactKind::ServiceRegistered,
+                service_hash,
+            ),
+            candidate(
+                "/facts/node/node-1/tombstoned/2",
+                FactKind::NodeTombstoned,
+                tombstone_hash,
+            ),
+        ];
+
+        let state = reduce_facts(&island("prod"), &candidates, &payloads);
+
+        assert!(state.nodes.is_empty());
+        assert_eq!(state.tombstoned_nodes.get(&NodeId::new("node-1")), Some(&2));
+        assert!(state.services.is_empty());
+        assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 2);
+    }
+
+    #[test]
+    fn reducer_keeps_tombstone_until_explicit_reinvite_exists() {
         let mut payloads = BTreeMap::new();
         let node_hash = insert_payload(
             &mut payloads,
@@ -933,8 +975,9 @@ mod tests {
 
         let state = reduce_facts(&island("prod"), &candidates, &payloads);
 
-        assert!(state.nodes.contains_key(&NodeId::new("node-1")));
-        assert!(state.statuses.is_empty());
+        assert!(state.nodes.is_empty());
+        assert_eq!(state.tombstoned_nodes.get(&NodeId::new("node-1")), Some(&1));
+        assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 1);
     }
 
     #[test]

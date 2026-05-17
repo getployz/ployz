@@ -120,6 +120,19 @@ the decision concrete.
   executable identity, cleanup is best-effort across all records, stale/raced
   child exits do not stop the sweep, and dropping a running child leaves its PID
   file for timeout cleanup.
+- Slice 014 adds MVP-local membership and full-mesh WireGuard planning. Join
+  facts carry iroh endpoint and WireGuard identity; tombstone facts dominate
+  normal future joins/services until an explicit reinvite/clear primitive exists.
+- Slice 014 splits join writers from tombstone writers at the fact-grant layer.
+  A principal that can write `/facts/node/*/joined/>` cannot remove machines by
+  writing `/facts/node/*/tombstoned/>`.
+- Slice 014 proves a last-applied mesh data-plane process role. Outbound
+  service traffic resolves target sockets from the applied peer snapshot, not
+  from caller-supplied addresses, and continues while the local coordinator is
+  killed.
+- Slice 014 keeps active-member/partition-view checks deferred. The membership
+  proof reports visible nodes and tombstone facts, but it does not introduce
+  quorum, witness acknowledgements, or hidden active-partition commit rules.
 
 ## NATS-Shaped Bus Semantics
 
@@ -701,6 +714,63 @@ Revisit if:
   boundary.
 - Wire request throughput exposes snapshot-read lock contention. Move from
   `RwLock` to immutable `Arc` snapshots swapped by reload.
+
+## Membership And Last-Applied WireGuard
+
+Why this:
+- Machine add/remove is one of the product's core primitives. The foundation
+  needs typed membership facts and peer planning before deploy/runtime slices can
+  rely on the private data plane.
+- WireGuard is steady-state data plane. The coordinator may request changes,
+  but service-to-service traffic must keep using the last applied peer config
+  while the coordinator is down.
+- Tombstones are explicit operator intent. They should not be undone by a later
+  normal join fact that races in through eventual replication.
+
+Decision:
+- `NodeJoined` facts carry node id, epoch, derived overlay IP, iroh endpoint
+  identity, and WireGuard public key.
+- `NodeTombstoned` facts remove the node from live membership and service
+  projections. They dominate later normal join/service facts until a future
+  explicit reinvite/clear primitive exists.
+- Join and tombstone mutation authority use separate fact grants.
+- For `<= 32` live nodes, the MVP plans full-mesh peers from projection state.
+  Malformed remote peer identities are skipped; malformed or missing local
+  identity fails planning.
+- The E2E data-plane role loads a last-applied snapshot before serving and
+  resolves outbound targets from that snapshot. A caller may name a peer, but
+  cannot supply an arbitrary socket address.
+
+What it replaces:
+- Treating membership as implied liveness or freshness.
+- A manual IPAM/lease table for overlay addresses.
+- A coordinator-owned data plane that disappears when the daemon dies.
+
+Costs:
+- The current proof uses loopback TCP gated by the WireGuard peer snapshot. It
+  proves membership, applied-config, and process fate semantics, not encrypted
+  kernel WireGuard packets.
+- There is no graceful remove yet. Tombstone/force-remove membership behavior
+  is proven; workload drain and route removal belong to deploy/runtime slices.
+- Reinvite is intentionally absent. The system rejects normal rejoin for a
+  tombstoned node id until a later slice defines that primitive.
+
+Crates:
+- `kameo` owns the WireGuard actor boundary and bounded apply/status messages.
+- `tempfile` owns random same-directory snapshot temp files before atomic
+  persist.
+- `defguard_wireguard_rs`, `wireguard-control`, and `boringtun` were reviewed
+  and deferred. `defguard_wireguard_rs` remains the likely production host
+  adapter candidate once real interface mutation enters scope.
+
+Revisit if:
+- Product requirements need partial WireGuard graph selection beyond full mesh.
+- A future active-member or partition-view primitive becomes useful as explicit
+  command evidence. It must enrich visible-node reporting and precondition
+  failures, not become a hidden quorum/peer-ack commit rule.
+- Production WireGuard adapter work starts. Add it behind the existing
+  `WireGuardBackend` boundary rather than changing membership reducers or join
+  command semantics.
 
 ## hdrhistogram and memory-stats for E2E Proof
 

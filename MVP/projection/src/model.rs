@@ -9,6 +9,7 @@ use crate::facts::{BackendEndpoint, DnsRecordFact, NodeId, RouteId, ServiceName}
 pub struct ProjectionState {
     pub island: IslandId,
     pub nodes: BTreeMap<NodeId, NodeProjection>,
+    pub tombstoned_nodes: BTreeMap<NodeId, u64>,
     pub services: BTreeMap<(ServiceName, NodeId), ServiceProjection>,
     pub gateway: Option<GatewayProjection>,
     pub dns: Option<DnsProjection>,
@@ -21,6 +22,7 @@ impl ProjectionState {
         Self {
             island,
             nodes: BTreeMap::new(),
+            tombstoned_nodes: BTreeMap::new(),
             services: BTreeMap::new(),
             gateway: None,
             dns: None,

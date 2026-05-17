@@ -197,6 +197,23 @@ Metrics:
 - remove duration
 - failed preflight reasons
 
+Current proof status:
+
+- Slice 014 adds `membership-wireguard-contract`.
+- The scenario proves docs-backed membership joins through `mvp-iroh`, ten
+  joined nodes converging into 90 full-mesh peer relationships, expired invite
+  rejection before mutation, split join/tombstone fact grants, tombstone
+  projection down to nine live nodes, and tombstoned rejoin rejection derived
+  from replicated tombstone facts.
+- The WireGuard proof is a last-applied config/data-plane harness, not kernel
+  WireGuard. Loopback TCP service-to-service traffic is gated by the applied
+  peer table, tombstoned peers are rejected before opening a service
+  connection, and peer endpoints come from the applied snapshot rather than
+  caller-supplied addresses.
+- Remaining E2E-5 work is graceful remove with workload drain, route removal,
+  runtime stop, real host/container WireGuard interface mutation, and a
+  production join RPC over iroh/PloyzBus.
+
 ### E2E-6: Deploy Commit And Drain
 
 Purpose: prove the central deploy invariant.
@@ -378,10 +395,16 @@ Current proof status:
   HTTP/DNS answers to the rebuilt serving state.
 - HTTP and DNS wire roles can restart while the coordinator is still dead and
   load snapshot files before answering wire requests.
-- Remaining E2E-7 work is WireGuard service-to-service traffic, deploy
-  coordinator crash/restart around drain, docs-backed cross-node replication,
-  and replacing the HTTP/DNS fallback crates with Pingora/`hickory-server` if
-  those become the chosen production protocol primitives.
+- Slice 014 adds `membership-wireguard-contract`.
+- The scenario proves service-to-service traffic through a last-applied mesh
+  data-plane process before coordinator death, after the coordinator is killed,
+  and after the data-plane role restarts while the coordinator remains dead.
+  Local mutation attempts through the killed coordinator fail visibly.
+- Remaining E2E-7 work is deploy coordinator crash/restart around drain,
+  docs-backed cross-node serving replication beyond the local harness,
+  production WireGuard adapter proof, and replacing the HTTP/DNS fallback crates
+  with Pingora/`hickory-server` if those become the chosen production protocol
+  primitives.
 
 ### E2E-8: Scale And Reliability Harness
 

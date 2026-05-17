@@ -298,36 +298,6 @@ pub(crate) fn spawn_process_role(
     socket: &Path,
     extra_args: &[&str],
 ) -> Result<RunningChild, String> {
-    spawn_process_role_with_args(name, role, root, socket, extra_args.iter().copied())
-}
-
-pub(crate) fn spawn_process_role_owned(
-    name: &'static str,
-    role: &'static str,
-    root: &Path,
-    socket: &Path,
-    extra_args: &[String],
-) -> Result<RunningChild, String> {
-    spawn_process_role_with_args(
-        name,
-        role,
-        root,
-        socket,
-        extra_args.iter().map(String::as_str),
-    )
-}
-
-fn spawn_process_role_with_args<I, S>(
-    name: &'static str,
-    role: &'static str,
-    root: &Path,
-    socket: &Path,
-    extra_args: I,
-) -> Result<RunningChild, String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<std::ffi::OsStr>,
-{
     let mut command = TokioCommand::new(current_exe()?);
     command
         .arg("role")
@@ -993,18 +963,19 @@ async fn run_mesh_echo_listener(listener: TcpListener) -> Result<(), String> {
             .map_err(|error| format!("acquire mesh echo task permit: {error}"))?;
         tokio::spawn(async move {
             let _permit = permit;
-            if let Ok(Ok(body)) = timeout(
+            let Ok(Ok(body)) = timeout(
                 ROLE_RESPONSE_TIMEOUT,
                 read_bounded(&mut stream, ROLE_MAX_REQUEST_BYTES, "mesh echo request"),
             )
             .await
+            else {
+                return;
+            };
+            if timeout(ROLE_WRITE_TIMEOUT, stream.write_all(&body))
+                .await
+                .is_ok()
             {
-                if timeout(ROLE_WRITE_TIMEOUT, stream.write_all(&body))
-                    .await
-                    .is_ok()
-                {
-                    let _ = stream.shutdown().await;
-                }
+                let _ = stream.shutdown().await;
             }
         });
     }
@@ -1071,16 +1042,12 @@ async fn handle_mesh_role_request(
     match request {
         MeshRoleRequest::Send {
             target_node_id,
-            target_addr,
             payload,
         } => {
-            let allowed = {
+            let target_addr = {
                 let state = state.lock().await;
-                state.snapshot.has_peer(&target_node_id)
+                state.peer_endpoint(&target_node_id)?
             };
-            if !allowed {
-                return Err(MeshRoleFailure::peer_not_applied(&target_node_id));
-            }
             let payload = send_mesh_tcp(target_addr, payload).await?;
             Ok(MeshRoleSuccess::Sent { payload })
         }
@@ -1131,6 +1098,24 @@ async fn send_mesh_tcp(
 }
 
 impl MeshDataPlaneState {
+    fn peer_endpoint(&self, node_id: &NodeId) -> Result<SocketAddr, MeshRoleFailure> {
+        let Some(peer) = self
+            .snapshot
+            .peers
+            .iter()
+            .find(|peer| &peer.node_id == node_id)
+        else {
+            return Err(MeshRoleFailure::peer_not_applied(node_id));
+        };
+        peer.endpoint.parse().map_err(|error| {
+            MeshRoleFailure::snapshot(format!(
+                "peer {} endpoint '{}' is not a socket address: {error}",
+                node_id.as_str(),
+                peer.endpoint
+            ))
+        })
+    }
+
     fn status(&self) -> MeshRoleStatus {
         MeshRoleStatus {
             listen: self.listen,
@@ -2249,7 +2234,6 @@ struct MeshDataPlaneState {
 pub(crate) enum MeshRoleRequest {
     Send {
         target_node_id: NodeId,
-        target_addr: SocketAddr,
         payload: Vec<u8>,
     },
     Reload,

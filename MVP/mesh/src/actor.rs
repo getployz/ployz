@@ -6,11 +6,13 @@ use kameo::actor::{ActorRef, Spawn};
 use kameo::error::SendError;
 use kameo::mailbox;
 use kameo::message::{Context, Message};
+use tokio::time::timeout;
 
 use crate::{MeshError, MeshResult, WireGuardAppliedSnapshot, WireGuardBackend};
 
 const WG_ACTOR_MAILBOX_CAPACITY: usize = 16;
 const WG_ACTOR_TIMEOUT: Duration = Duration::from_secs(5);
+const WG_BACKEND_APPLY_TIMEOUT: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireGuardActorStatus {
@@ -101,18 +103,31 @@ impl Message<ApplySnapshot> for WireGuardActor {
         let revision = message.snapshot.revision;
         let peer_count = message.snapshot.peers.len();
         let snapshot = message.snapshot;
-        match self.backend.apply(snapshot.clone()).await {
-            Ok(()) => {
+        match timeout(
+            WG_BACKEND_APPLY_TIMEOUT,
+            self.backend.apply(snapshot.clone()),
+        )
+        .await
+        {
+            Err(_) => {
+                let error = MeshError::BackendTimeout {
+                    operation: "apply",
+                    timeout: WG_BACKEND_APPLY_TIMEOUT,
+                };
+                self.status.last_failure = Some(error.to_string());
+                Err(error)
+            }
+            Ok(Err(error)) => {
+                self.status.last_failure = Some(error.to_string());
+                Err(error)
+            }
+            Ok(Ok(())) => {
                 self.last_snapshot = Some(snapshot);
                 self.status.applied_revision = Some(revision);
                 self.status.applied_peer_count = peer_count;
                 self.status.last_apply_success_at = Some(SystemTime::now());
                 self.status.last_failure = None;
                 Ok(self.status.clone())
-            }
-            Err(error) => {
-                self.status.last_failure = Some(error.to_string());
-                Err(error)
             }
         }
     }
@@ -148,9 +163,12 @@ fn map_send_error<T>(operation: &'static str, error: SendError<T, MeshError>) ->
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Duration;
 
+    use async_trait::async_trait;
     use mvp_bus::IslandId;
     use mvp_projection::{NodeId, NodeProjection, ProjectionState};
+    use tokio::time::sleep;
 
     use crate::{
         MemoryWireGuardBackend, WireGuardActorHandle, WireGuardAppliedSnapshot, WireGuardBackend,
@@ -188,6 +206,21 @@ mod tests {
         assert_eq!(second.apply_attempts, 1);
     }
 
+    #[tokio::test]
+    async fn actor_reports_backend_apply_timeout_and_remains_available() {
+        let actor = WireGuardActorHandle::spawn(Arc::new(HangingBackend));
+        let plan = plan_full_mesh(&projection(), &NodeId::new("node-0"), 5).expect("plan");
+        let snapshot = WireGuardAppliedSnapshot::from_plan(IslandId::new("prod"), plan);
+
+        let error = actor.apply(snapshot).await.expect_err("apply times out");
+        let status = actor.status().await.expect("actor status");
+
+        assert!(matches!(error, crate::MeshError::BackendTimeout { .. }));
+        assert_eq!(status.applied_revision, None);
+        assert_eq!(status.apply_attempts, 1);
+        assert!(status.last_failure.is_some());
+    }
+
     fn projection() -> ProjectionState {
         let mut state = ProjectionState::for_island(IslandId::new("prod"));
         for index in 0..2 {
@@ -204,5 +237,19 @@ mod tests {
             );
         }
         state
+    }
+
+    struct HangingBackend;
+
+    #[async_trait]
+    impl WireGuardBackend for HangingBackend {
+        async fn apply(&self, _snapshot: WireGuardAppliedSnapshot) -> crate::MeshResult<()> {
+            sleep(Duration::from_secs(30)).await;
+            Ok(())
+        }
+
+        async fn last_applied(&self) -> crate::MeshResult<Option<WireGuardAppliedSnapshot>> {
+            Ok(None)
+        }
     }
 }
