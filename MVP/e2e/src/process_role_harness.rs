@@ -1,16 +1,19 @@
+use std::fmt::{self, Display, Formatter};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use mvp_bus::{BusSession, FactKeyPattern, Grant, IslandId, PrincipalId, harness::InMemoryBus};
+use mvp_deploy::{DnsCommitId, GatewayCommitId, RouteCommitId, ServingCommitId, ServingCommitPlan};
 use mvp_projection::{
-    DnsRecordProjection, FactSource, GatewayRouteProjection, ProjectionActorHandle,
-    ProjectionActorStatus, ProjectionReport, SqliteProjectionStore,
+    BackendEndpoint, DnsRecordFact, DnsRecordProjection, FactSource, GatewayRouteProjection,
+    NodeId, ProjectionActorHandle, ProjectionActorStatus, ProjectionFactPayload, ProjectionReport,
+    RouteId, ServingCommitFact, SqliteProjectionStore,
 };
 use mvp_serving::{
     ServingActorHandle, ServingError, ServingFreshness, ServingSnapshotPaths, ServingStatus,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, oneshot};
@@ -30,12 +33,27 @@ const ROLE_MAX_REQUEST_BYTES: usize = 64 * 1024;
 
 pub(crate) fn run_role(args: Vec<String>) -> Result<(), String> {
     let [role, rest @ ..] = args.as_slice() else {
-        return Err("usage: mvp-e2e role <serving-projection> ...".to_string());
+        return Err(
+            "usage: mvp-e2e role <serving-projection|local-coordinator|remote-replication-injector> ..."
+                .to_string(),
+        );
     };
     match role.as_str() {
         "serving-projection" => {
             let config = ServingProjectionRoleConfig::parse(rest)?;
             runtime()?.block_on(run_serving_projection_role(config))
+        }
+        "local-coordinator" => {
+            let config = LocalCoordinatorRoleConfig::parse(rest)?;
+            runtime()?.block_on(run_local_coordinator_role(config))
+        }
+        "remote-replication-injector" => {
+            let config = RemoteReplicationInjectorConfig::parse(rest)?;
+            let response = run_remote_replication_injector(config);
+            let json = serde_json::to_string(&response)
+                .map_err(|error| format!("serialize injector response: {error}"))?;
+            println!("{json}");
+            Ok(())
         }
         other => Err(format!("unknown process role '{other}'")),
     }
@@ -63,27 +81,159 @@ impl ServingProjectionRoleConfig {
     }
 
     fn parse(args: &[String]) -> Result<Self, String> {
-        let mut root = None;
-        let mut socket = None;
-        let mut remaining = args;
-        while let [flag, value, tail @ ..] = remaining {
-            match flag.as_str() {
-                "--root" => root = Some(PathBuf::from(value)),
-                "--socket" => socket = Some(PathBuf::from(value)),
-                other => return Err(format!("unknown serving-projection flag '{other}'")),
-            }
-            remaining = tail;
-        }
-        if !remaining.is_empty() {
-            return Err(format!(
-                "serving-projection arguments must be flag/value pairs, got {remaining:?}"
-            ));
-        }
-        Ok(Self {
-            root: root.ok_or_else(|| "serving-projection requires --root".to_string())?,
-            socket: socket.ok_or_else(|| "serving-projection requires --socket".to_string())?,
-        })
+        let (root, socket) = parse_root_socket_flags(args, "serving-projection")?;
+        Ok(Self { root, socket })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocalCoordinatorRoleConfig {
+    root: PathBuf,
+    socket: PathBuf,
+}
+
+impl LocalCoordinatorRoleConfig {
+    pub(crate) fn new(root: impl Into<PathBuf>, socket: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            socket: socket.into(),
+        }
+    }
+
+    fn parse(args: &[String]) -> Result<Self, String> {
+        let (root, socket) = parse_root_socket_flags(args, "local-coordinator")?;
+        Ok(Self { root, socket })
+    }
+}
+
+fn parse_root_socket_flags(
+    args: &[String],
+    role: &'static str,
+) -> Result<(PathBuf, PathBuf), String> {
+    let mut root = None;
+    let mut socket = None;
+    let mut remaining = args;
+    while let [flag, value, tail @ ..] = remaining {
+        match flag.as_str() {
+            "--root" => root = Some(PathBuf::from(value)),
+            "--socket" => socket = Some(PathBuf::from(value)),
+            other => return Err(format!("unknown {role} flag '{other}'")),
+        }
+        remaining = tail;
+    }
+    if !remaining.is_empty() {
+        return Err(format!(
+            "{role} arguments must be flag/value pairs, got {remaining:?}"
+        ));
+    }
+    Ok((
+        root.ok_or_else(|| format!("{role} requires --root"))?,
+        socket.ok_or_else(|| format!("{role} requires --socket"))?,
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RemoteReplicationInjectorConfig {
+    root: PathBuf,
+    author: String,
+    input: ServingCommitInput,
+}
+
+impl RemoteReplicationInjectorConfig {
+    pub(crate) fn new(
+        root: impl Into<PathBuf>,
+        author: impl Into<String>,
+        commit_id: impl Into<String>,
+        backend_address: impl Into<String>,
+        dns_value: impl Into<String>,
+        epoch: u64,
+    ) -> Self {
+        Self {
+            root: root.into(),
+            author: author.into(),
+            input: ServingCommitInput::new(commit_id, backend_address, dns_value, epoch),
+        }
+    }
+
+    fn parse(args: &[String]) -> Result<Self, String> {
+        parse_remote_replication_injector_flags(args)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ServingCommitInput {
+    commit_id: String,
+    backend_address: String,
+    dns_value: String,
+    epoch: u64,
+}
+
+impl ServingCommitInput {
+    fn new(
+        commit_id: impl Into<String>,
+        backend_address: impl Into<String>,
+        dns_value: impl Into<String>,
+        epoch: u64,
+    ) -> Self {
+        Self {
+            commit_id: commit_id.into(),
+            backend_address: backend_address.into(),
+            dns_value: dns_value.into(),
+            epoch,
+        }
+    }
+}
+
+fn parse_remote_replication_injector_flags(
+    args: &[String],
+) -> Result<RemoteReplicationInjectorConfig, String> {
+    let role = "remote-replication-injector";
+    let mut root = None;
+    let mut author_value = None;
+    let mut commit_id = None;
+    let mut backend_address = None;
+    let mut dns_value = None;
+    let mut epoch = None;
+    let mut remaining = args;
+    while let [flag, value, tail @ ..] = remaining {
+        match flag.as_str() {
+            "--root" => root = Some(PathBuf::from(value)),
+            "--author" => author_value = Some(value.clone()),
+            "--commit-id" => commit_id = Some(value.clone()),
+            "--backend" => backend_address = Some(value.clone()),
+            "--dns" => dns_value = Some(value.clone()),
+            "--epoch" => {
+                epoch = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|error| format!("{role} --epoch must be u64: {error}"))?,
+                )
+            }
+            other => return Err(format!("unknown {role} flag '{other}'")),
+        }
+        remaining = tail;
+    }
+    if !remaining.is_empty() {
+        return Err(format!(
+            "{role} arguments must be flag/value pairs, got {remaining:?}"
+        ));
+    }
+    if author_value
+        .as_ref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err(format!("{role} requires --author"));
+    }
+    Ok(RemoteReplicationInjectorConfig {
+        root: root.ok_or_else(|| format!("{role} requires --root"))?,
+        author: author_value.ok_or_else(|| format!("{role} requires --author"))?,
+        input: ServingCommitInput::new(
+            commit_id.ok_or_else(|| format!("{role} requires --commit-id"))?,
+            backend_address.ok_or_else(|| format!("{role} requires --backend"))?,
+            dns_value.ok_or_else(|| format!("{role} requires --dns"))?,
+            epoch.ok_or_else(|| format!("{role} requires --epoch"))?,
+        ),
+    })
 }
 
 pub(crate) async fn run_serving_projection_role(
@@ -109,11 +259,109 @@ pub(crate) async fn run_serving_projection_role(
     Ok(())
 }
 
+pub(crate) async fn run_local_coordinator_role(
+    config: LocalCoordinatorRoleConfig,
+) -> Result<(), String> {
+    let writer = ServingFactWriter::new(config.root.as_path())
+        .map_err(|error| format!("prepare local-coordinator fact writer: {error}"))?;
+    remove_stale_socket(&config.socket)?;
+    if let Some(parent) = config.socket.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create socket dir '{}': {error}", parent.display()))?;
+    }
+    let listener = UnixListener::bind(&config.socket)
+        .map_err(|error| format!("bind local-coordinator socket: {error}"))?;
+    loop {
+        let (stream, _addr) = listener
+            .accept()
+            .await
+            .map_err(|error| format!("accept local-coordinator connection: {error}"))?;
+        if handle_local_coordinator_connection(stream, writer.clone()).await? {
+            break;
+        }
+    }
+    Ok(())
+}
+
+async fn handle_local_coordinator_connection(
+    mut stream: UnixStream,
+    writer: ServingFactWriter,
+) -> Result<bool, String> {
+    let response = match read_request(&mut stream, "coordinator request").await {
+        Ok(request) => match serde_json::from_slice::<CoordinatorRequest>(&request) {
+            Ok(request) => match handle_coordinator_request(request, writer).await {
+                Ok(success) => CoordinatorResponse::Success(success),
+                Err(error) => CoordinatorResponse::Failure(error),
+            },
+            Err(error) => CoordinatorResponse::Failure(CoordinatorFailure::invalid_request(
+                format!("parse coordinator request: {error}"),
+            )),
+        },
+        Err(message) => CoordinatorResponse::Failure(CoordinatorFailure::invalid_request(message)),
+    };
+    let should_shutdown = matches!(
+        response,
+        CoordinatorResponse::Success(CoordinatorSuccess::Shutdown)
+    );
+    let response = serde_json::to_vec(&response)
+        .map_err(|error| format!("serialize coordinator response: {error}"))?;
+    if write_response(&mut stream, &response, "coordinator response")
+        .await
+        .is_err()
+    {
+        return Ok(should_shutdown);
+    }
+    Ok(should_shutdown)
+}
+
+async fn handle_coordinator_request(
+    request: CoordinatorRequest,
+    writer: ServingFactWriter,
+) -> Result<CoordinatorSuccess, CoordinatorFailure> {
+    match request {
+        CoordinatorRequest::CommitServing(input) => {
+            let ack = tokio::task::spawn_blocking(move || {
+                writer.write(ServingCommitWriteOrigin::LocalCoordinator, &input)
+            })
+            .await
+            .map_err(|error| {
+                CoordinatorFailure::internal(format!("join serving commit writer: {error}"))
+            })?
+            .map_err(CoordinatorFailure::from)?;
+            Ok(CoordinatorSuccess::Committed(ack))
+        }
+        CoordinatorRequest::Status => Ok(CoordinatorSuccess::Status(CoordinatorStatus {
+            mutation: LocalMutationStatus::Available,
+        })),
+        CoordinatorRequest::Shutdown => Ok(CoordinatorSuccess::Shutdown),
+    }
+}
+
+pub(crate) fn run_remote_replication_injector(
+    args: RemoteReplicationInjectorConfig,
+) -> ReplicationInjectorResponse {
+    let RemoteReplicationInjectorConfig {
+        root,
+        author,
+        input,
+    } = args;
+    let result = ServingFactWriter::new(root.as_path()).and_then(|writer| {
+        writer.write(
+            ServingCommitWriteOrigin::RemoteReplication { author },
+            &input,
+        )
+    });
+    match result {
+        Ok(ack) => ReplicationInjectorResponse::Success(ack),
+        Err(error) => ReplicationInjectorResponse::Failure(error.into()),
+    }
+}
+
 async fn handle_serving_projection_connection(
     mut stream: UnixStream,
     state: Arc<Mutex<ServingProjectionState>>,
 ) -> Result<bool, String> {
-    let response = match read_request(&mut stream).await {
+    let response = match read_request(&mut stream, "serving role request").await {
         Ok(request) => match serde_json::from_slice::<RoleRequest>(&request) {
             Ok(request) => match handle_role_request(request, state).await {
                 Ok(success) => RoleResponse::Success(success),
@@ -128,33 +376,41 @@ async fn handle_serving_projection_connection(
     let should_shutdown = matches!(response, RoleResponse::Success(RoleSuccess::Shutdown));
     let response = serde_json::to_vec(&response)
         .map_err(|error| format!("serialize role response: {error}"))?;
-    write_with_timeout(&mut stream, &response, "role response").await?;
-    shutdown_stream(&mut stream, "role response").await?;
+    if write_response(&mut stream, &response, "role response")
+        .await
+        .is_err()
+    {
+        return Ok(should_shutdown);
+    }
     Ok(should_shutdown)
 }
 
-async fn read_request(stream: &mut UnixStream) -> Result<Vec<u8>, String> {
+async fn read_request(stream: &mut UnixStream, operation: &str) -> Result<Vec<u8>, String> {
     timeout(
         ROLE_REQUEST_READ_TIMEOUT,
-        read_bounded(stream, ROLE_MAX_REQUEST_BYTES),
+        read_bounded(stream, ROLE_MAX_REQUEST_BYTES, operation),
     )
     .await
-    .map_err(|_| "read role request timed out".to_string())?
+    .map_err(|_| format!("read {operation} timed out"))?
 }
 
-async fn read_bounded(stream: &mut UnixStream, limit: usize) -> Result<Vec<u8>, String> {
+async fn read_bounded(
+    stream: &mut UnixStream,
+    limit: usize,
+    operation: &str,
+) -> Result<Vec<u8>, String> {
     let mut request = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
         let read = stream
             .read(&mut chunk)
             .await
-            .map_err(|error| format!("read role request: {error}"))?;
+            .map_err(|error| format!("read {operation}: {error}"))?;
         if read == 0 {
             return Ok(request);
         }
         if request.len() + read > limit {
-            return Err(format!("role request exceeds {limit} byte limit"));
+            return Err(format!("{operation} exceeds {limit} byte limit"));
         }
         request.extend_from_slice(&chunk[..read]);
     }
@@ -163,7 +419,7 @@ async fn read_bounded(stream: &mut UnixStream, limit: usize) -> Result<Vec<u8>, 
 async fn write_with_timeout(
     stream: &mut UnixStream,
     bytes: &[u8],
-    operation: &'static str,
+    operation: &str,
 ) -> Result<(), String> {
     timeout(ROLE_WRITE_TIMEOUT, stream.write_all(bytes))
         .await
@@ -171,11 +427,20 @@ async fn write_with_timeout(
         .map_err(|error| format!("write {operation}: {error}"))
 }
 
-async fn shutdown_stream(stream: &mut UnixStream, operation: &'static str) -> Result<(), String> {
+async fn shutdown_stream(stream: &mut UnixStream, operation: &str) -> Result<(), String> {
     timeout(ROLE_WRITE_TIMEOUT, stream.shutdown())
         .await
         .map_err(|_| format!("shutdown {operation} stream timed out"))?
         .map_err(|error| format!("shutdown {operation} stream: {error}"))
+}
+
+async fn write_response(
+    stream: &mut UnixStream,
+    response: &[u8],
+    operation: &str,
+) -> Result<(), String> {
+    write_with_timeout(stream, response, operation).await?;
+    shutdown_stream(stream, operation).await
 }
 
 async fn handle_role_request(
@@ -523,6 +788,158 @@ fn spawn_projection(
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum ServingCommitWriteOrigin {
+    LocalCoordinator,
+    RemoteReplication { author: String },
+}
+
+impl ServingCommitWriteOrigin {
+    fn author(&self) -> PrincipalId {
+        match self {
+            Self::LocalCoordinator => PrincipalId::new("local-coordinator"),
+            Self::RemoteReplication { author } => PrincipalId::new(author.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ServingCommitWriteError {
+    Validation(String),
+    Storage(String),
+}
+
+impl ServingCommitWriteError {
+    fn validation(message: impl Into<String>) -> Self {
+        Self::Validation(message.into())
+    }
+
+    fn storage(message: impl Into<String>) -> Self {
+        Self::Storage(message.into())
+    }
+}
+
+impl Display for ServingCommitWriteError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Validation(message) | Self::Storage(message) => f.write_str(message),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ServingFactWriter {
+    source: Arc<ProcessFactSource>,
+    island: IslandId,
+}
+
+impl ServingFactWriter {
+    fn new(root: &Path) -> Result<Self, ServingCommitWriteError> {
+        let island = IslandId::new("prod");
+        let source = ProcessFactSource::new(
+            root.join("facts"),
+            ProcessFactReadPolicy::allow(
+                island.clone(),
+                PrincipalId::new("projection"),
+                vec![fact_pattern("/facts/>").map_err(ServingCommitWriteError::storage)?],
+            ),
+        )
+        .map_err(ServingCommitWriteError::storage)?;
+        Ok(Self {
+            source: Arc::new(source),
+            island,
+        })
+    }
+
+    fn write(
+        &self,
+        origin: ServingCommitWriteOrigin,
+        input: &ServingCommitInput,
+    ) -> Result<ServingCommitAck, ServingCommitWriteError> {
+        let plan = serving_commit_plan(input)?;
+        let payload = serving_commit_payload(&plan)?;
+        let key = mvp_bus::FactKey::parse(format!("/facts/serving/{}", plan.serving_commit_id))
+            .map_err(|error| {
+                ServingCommitWriteError::validation(format!("parse serving commit key: {error}"))
+            })?;
+        let author = origin.author();
+        let written = self
+            .source
+            .write_payload(&self.island, &author, key, mvp_bus::Payload::from(payload))
+            .map_err(ServingCommitWriteError::storage)?;
+        Ok(ServingCommitAck {
+            key: written.key.as_str().to_string(),
+            content_hash: written.content_hash.as_str().to_string(),
+            author: author.as_str().to_string(),
+            origin,
+        })
+    }
+}
+
+fn serving_commit_payload(plan: &ServingCommitPlan) -> Result<Vec<u8>, ServingCommitWriteError> {
+    ProjectionFactPayload::ServingCommit(serving_commit_fact(plan))
+        .to_fact_bytes()
+        .map_err(|error| {
+            ServingCommitWriteError::storage(format!("serialize serving commit fact: {error}"))
+        })
+}
+
+fn serving_commit_fact(plan: &ServingCommitPlan) -> ServingCommitFact {
+    ServingCommitFact {
+        serving_commit_id: plan.serving_commit_id.to_string(),
+        route_commit_id: plan.route_commit_id.to_string(),
+        gateway_commit_id: plan.gateway_commit_id.to_string(),
+        dns_commit_id: plan.dns_commit_id.to_string(),
+        route_id: plan.route_id.clone(),
+        hostnames: plan.hostnames.clone(),
+        backends: plan.active_backends.clone(),
+        old_backends_to_drain: plan.old_backends_to_drain.clone(),
+        dns_records: plan.dns_records.clone(),
+        epoch: plan.epoch,
+    }
+}
+
+fn serving_commit_plan(
+    input: &ServingCommitInput,
+) -> Result<ServingCommitPlan, ServingCommitWriteError> {
+    if input.commit_id.trim().is_empty() {
+        return Err(ServingCommitWriteError::validation(
+            "serving commit id may not be empty",
+        ));
+    }
+    if input.backend_address.trim().is_empty() {
+        return Err(ServingCommitWriteError::validation(
+            "serving backend address may not be empty",
+        ));
+    }
+    if input.dns_value.trim().is_empty() {
+        return Err(ServingCommitWriteError::validation(
+            "serving dns value may not be empty",
+        ));
+    }
+    Ok(ServingCommitPlan {
+        serving_commit_id: ServingCommitId::new(input.commit_id.clone()),
+        route_commit_id: RouteCommitId::new(format!("{}-route", input.commit_id)),
+        gateway_commit_id: GatewayCommitId::new(format!("{}-gateway", input.commit_id)),
+        dns_commit_id: DnsCommitId::new(format!("{}-dns", input.commit_id)),
+        route_id: RouteId::new("web-http"),
+        hostnames: vec!["web.example.test".to_string()],
+        active_backends: vec![BackendEndpoint {
+            node_id: NodeId::new("node-web"),
+            address: input.backend_address.clone(),
+        }],
+        old_backends_to_drain: Vec::new(),
+        dns_records: vec![DnsRecordFact {
+            name: "web.example.test".to_string(),
+            record_type: "AAAA".to_string(),
+            value: input.dns_value.clone(),
+            ttl_seconds: 30,
+        }],
+        epoch: input.epoch,
+    })
+}
+
 fn projected_summary(report: &ProjectionReport) -> ProjectedSummary {
     ProjectedSummary {
         duration_us: duration_to_us(report.duration),
@@ -574,6 +991,129 @@ fn remove_stale_socket(path: &Path) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("remove stale socket '{}': {error}", path.display())),
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub(crate) enum CoordinatorRequest {
+    CommitServing(ServingCommitInput),
+    Status,
+    Shutdown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub(crate) enum CoordinatorResponse {
+    Success(CoordinatorSuccess),
+    Failure(CoordinatorFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum CoordinatorSuccess {
+    Committed(ServingCommitAck),
+    Status(CoordinatorStatus),
+    Shutdown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ServingCommitAck {
+    pub(crate) key: String,
+    pub(crate) content_hash: String,
+    pub(crate) author: String,
+    pub(crate) origin: ServingCommitWriteOrigin,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub(crate) enum ReplicationInjectorResponse {
+    Success(ServingCommitAck),
+    Failure(ReplicationInjectorFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ReplicationInjectorFailure {
+    pub(crate) kind: ReplicationInjectorFailureKind,
+    pub(crate) message: String,
+}
+
+impl From<ServingCommitWriteError> for ReplicationInjectorFailure {
+    fn from(error: ServingCommitWriteError) -> Self {
+        match error {
+            ServingCommitWriteError::Validation(message) => Self {
+                kind: ReplicationInjectorFailureKind::InvalidRequest,
+                message,
+            },
+            ServingCommitWriteError::Storage(message) => Self {
+                kind: ReplicationInjectorFailureKind::Storage,
+                message,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReplicationInjectorFailureKind {
+    InvalidRequest,
+    Storage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CoordinatorStatus {
+    pub(crate) mutation: LocalMutationStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LocalMutationStatus {
+    Available,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CoordinatorFailure {
+    pub(crate) kind: CoordinatorFailureKind,
+    pub(crate) message: String,
+}
+
+impl CoordinatorFailure {
+    fn invalid_request(message: impl Into<String>) -> Self {
+        Self {
+            kind: CoordinatorFailureKind::InvalidRequest,
+            message: message.into(),
+        }
+    }
+
+    fn storage(message: impl Into<String>) -> Self {
+        Self {
+            kind: CoordinatorFailureKind::Storage,
+            message: message.into(),
+        }
+    }
+
+    fn internal(message: impl Into<String>) -> Self {
+        Self {
+            kind: CoordinatorFailureKind::Internal,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<ServingCommitWriteError> for CoordinatorFailure {
+    fn from(error: ServingCommitWriteError) -> Self {
+        match error {
+            ServingCommitWriteError::Validation(message) => Self::invalid_request(message),
+            ServingCommitWriteError::Storage(message) => Self::storage(message),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CoordinatorFailureKind {
+    InvalidRequest,
+    Storage,
+    Internal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -743,38 +1283,63 @@ pub(crate) enum RoleClientError {
     Failure(RoleFailure),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CoordinatorClientError {
+    Transport(String),
+    Failure(CoordinatorFailure),
+}
+
 pub(crate) async fn request_role(
     socket: &Path,
     request: &RoleRequest,
 ) -> Result<RoleSuccess, RoleClientError> {
+    match request_json::<_, RoleResponse>(socket, request, "serving role").await {
+        Ok(RoleResponse::Success(success)) => Ok(success),
+        Ok(RoleResponse::Failure(failure)) => Err(RoleClientError::Failure(failure)),
+        Err(error) => Err(RoleClientError::Transport(error)),
+    }
+}
+
+pub(crate) async fn request_coordinator(
+    socket: &Path,
+    request: &CoordinatorRequest,
+) -> Result<CoordinatorSuccess, CoordinatorClientError> {
+    match request_json::<_, CoordinatorResponse>(socket, request, "local coordinator").await {
+        Ok(CoordinatorResponse::Success(success)) => Ok(success),
+        Ok(CoordinatorResponse::Failure(failure)) => Err(CoordinatorClientError::Failure(failure)),
+        Err(error) => Err(CoordinatorClientError::Transport(error)),
+    }
+}
+
+async fn request_json<TRequest, TResponse>(
+    socket: &Path,
+    request: &TRequest,
+    endpoint: &'static str,
+) -> Result<TResponse, String>
+where
+    TRequest: Serialize,
+    TResponse: DeserializeOwned,
+{
     let mut stream = timeout(ROLE_CONNECT_TIMEOUT, UnixStream::connect(socket))
         .await
-        .map_err(|_| RoleClientError::Transport("connect role socket timed out".to_string()))?
-        .map_err(|error| {
-            RoleClientError::Transport(format!(
-                "connect role socket '{}': {error}",
-                socket.display()
-            ))
-        })?;
+        .map_err(|_| format!("connect {endpoint} socket timed out"))?
+        .map_err(|error| format!("connect {endpoint} socket '{}': {error}", socket.display()))?;
     let bytes = serde_json::to_vec(request)
-        .map_err(|error| RoleClientError::Transport(format!("serialize request: {error}")))?;
-    write_with_timeout(&mut stream, &bytes, "role request")
+        .map_err(|error| format!("serialize {endpoint} request: {error}"))?;
+    let request_operation = format!("{endpoint} request");
+    write_with_timeout(&mut stream, &bytes, &request_operation)
         .await
-        .map_err(RoleClientError::Transport)?;
-    shutdown_stream(&mut stream, "role request")
+        .map_err(|error| format!("send {endpoint} request: {error}"))?;
+    shutdown_stream(&mut stream, &request_operation)
         .await
-        .map_err(RoleClientError::Transport)?;
+        .map_err(|error| format!("finish {endpoint} request: {error}"))?;
     let mut response = Vec::new();
     timeout(ROLE_RESPONSE_TIMEOUT, stream.read_to_end(&mut response))
         .await
-        .map_err(|_| RoleClientError::Transport("read role response timed out".to_string()))?
-        .map_err(|error| RoleClientError::Transport(format!("read role response: {error}")))?;
-    match serde_json::from_slice::<RoleResponse>(&response)
-        .map_err(|error| RoleClientError::Transport(format!("parse role response: {error}")))?
-    {
-        RoleResponse::Success(success) => Ok(success),
-        RoleResponse::Failure(failure) => Err(RoleClientError::Failure(failure)),
-    }
+        .map_err(|_| format!("read {endpoint} response timed out"))?
+        .map_err(|error| format!("read {endpoint} response: {error}"))?;
+    serde_json::from_slice::<TResponse>(&response)
+        .map_err(|error| format!("parse {endpoint} response: {error}"))
 }
 
 #[cfg(test)]
@@ -782,11 +1347,6 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use mvp_bus::Payload;
-    use mvp_deploy::{
-        DnsCommitId, GatewayCommitId, RouteCommitId, ServingCommitId, ServingCommitPlan,
-    };
-    use mvp_projection::{BackendEndpoint, DnsRecordFact, NodeId, ProjectionFactPayload, RouteId};
     use tokio::task::JoinHandle;
     use tokio::time::{Duration, sleep, timeout};
 
@@ -809,6 +1369,13 @@ mod tests {
         let socket = root.join("serving.sock");
         let config = ServingProjectionRoleConfig::new(root, &socket);
         let handle = tokio::spawn(run_serving_projection_role(config));
+        (socket, handle)
+    }
+
+    fn spawn_coordinator(root: &Path) -> (PathBuf, JoinHandle<Result<(), String>>) {
+        let socket = root.join("coordinator.sock");
+        let config = LocalCoordinatorRoleConfig::new(root, &socket);
+        let handle = tokio::spawn(run_local_coordinator_role(config));
         (socket, handle)
     }
 
@@ -839,52 +1406,11 @@ mod tests {
         .expect("process fact source")
     }
 
-    fn serving_commit(id: &str, backend: &str, dns: &str, epoch: u64) -> ServingCommitPlan {
-        ServingCommitPlan {
-            serving_commit_id: ServingCommitId::new(id),
-            route_commit_id: RouteCommitId::new(format!("{id}-route")),
-            gateway_commit_id: GatewayCommitId::new(format!("{id}-gateway")),
-            dns_commit_id: DnsCommitId::new(format!("{id}-dns")),
-            route_id: RouteId::new("web-http"),
-            hostnames: vec!["web.example.test".to_string()],
-            active_backends: vec![BackendEndpoint {
-                node_id: NodeId::new("node-web"),
-                address: backend.to_string(),
-            }],
-            old_backends_to_drain: Vec::new(),
-            dns_records: vec![DnsRecordFact {
-                name: "web.example.test".to_string(),
-                record_type: "AAAA".to_string(),
-                value: dns.to_string(),
-                ttl_seconds: 30,
-            }],
-            epoch,
-        }
-    }
-
-    fn write_serving_fact(root: &Path, commit: &ServingCommitPlan) {
-        let payload = ProjectionFactPayload::ServingCommit(mvp_projection::ServingCommitFact {
-            serving_commit_id: commit.serving_commit_id.to_string(),
-            route_commit_id: commit.route_commit_id.to_string(),
-            gateway_commit_id: commit.gateway_commit_id.to_string(),
-            dns_commit_id: commit.dns_commit_id.to_string(),
-            route_id: commit.route_id.clone(),
-            hostnames: commit.hostnames.clone(),
-            backends: commit.active_backends.clone(),
-            old_backends_to_drain: commit.old_backends_to_drain.clone(),
-            dns_records: commit.dns_records.clone(),
-            epoch: commit.epoch,
-        })
-        .to_fact_bytes()
-        .expect("payload serializes");
-        fact_source(root)
-            .write_payload(
-                &IslandId::new("prod"),
-                &PrincipalId::new("coordinator"),
-                mvp_bus::FactKey::parse(format!("/facts/serving/{}", commit.serving_commit_id))
-                    .expect("fact key"),
-                Payload::from(payload),
-            )
+    fn write_serving_fact(root: &Path, id: &str, backend: &str, dns: &str, epoch: u64) {
+        let input = ServingCommitInput::new(id, backend, dns, epoch);
+        ServingFactWriter::new(root)
+            .expect("serving fact writer")
+            .write(ServingCommitWriteOrigin::LocalCoordinator, &input)
             .expect("write serving fact");
     }
 
@@ -899,6 +1425,34 @@ mod tests {
             .await
             .map_err(|_| "role did not exit after shutdown".to_string())?
             .map_err(|error| format!("join role after shutdown: {error}"))?
+    }
+
+    async fn wait_coordinator_ready(socket: &Path) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match request_coordinator(socket, &CoordinatorRequest::Status).await {
+                Ok(CoordinatorSuccess::Status(_)) => return Ok(()),
+                Ok(other) => return Err(format!("unexpected coordinator response: {other:?}")),
+                Err(error) if std::time::Instant::now() < deadline => {
+                    let _ = error;
+                    sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => return Err(format!("coordinator did not become ready: {error:?}")),
+            }
+        }
+    }
+
+    async fn shutdown_coordinator(
+        socket: &Path,
+        handle: JoinHandle<Result<(), String>>,
+    ) -> Result<(), String> {
+        request_coordinator(socket, &CoordinatorRequest::Shutdown)
+            .await
+            .map_err(|error| format!("coordinator shutdown request: {error:?}"))?;
+        timeout(Duration::from_secs(2), handle)
+            .await
+            .map_err(|_| "coordinator did not exit after shutdown".to_string())?
+            .map_err(|error| format!("join coordinator after shutdown: {error}"))?
     }
 
     #[tokio::test]
@@ -940,10 +1494,7 @@ mod tests {
     #[tokio::test]
     async fn role_projects_reloads_and_answers_gateway_and_dns() {
         let root = root("query");
-        write_serving_fact(
-            &root,
-            &serving_commit("serving-1", "fd00::1:8080", "fd00::1", 1),
-        );
+        write_serving_fact(&root, "serving-1", "fd00::1:8080", "fd00::1", 1);
         let (socket, handle) = spawn_role(&root);
         wait_ready(&socket).await.expect("role ready");
 
@@ -986,10 +1537,7 @@ mod tests {
     #[tokio::test]
     async fn begin_rebuild_keeps_last_good_queries_available() {
         let root = root("rebuild");
-        write_serving_fact(
-            &root,
-            &serving_commit("serving-1", "fd00::1:8080", "fd00::1", 1),
-        );
+        write_serving_fact(&root, "serving-1", "fd00::1:8080", "fd00::1", 1);
         let (socket, handle) = spawn_role(&root);
         wait_ready(&socket).await.expect("role ready");
         request_role(&socket, &RoleRequest::ProjectOnce)
@@ -1062,10 +1610,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_after_begin_rebuild_cancels_pending_rebuild() {
         let root = root("shutdown-rebuild");
-        write_serving_fact(
-            &root,
-            &serving_commit("serving-1", "fd00::1:8080", "fd00::1", 1),
-        );
+        write_serving_fact(&root, "serving-1", "fd00::1:8080", "fd00::1", 1);
         let (socket, handle) = spawn_role(&root);
         wait_ready(&socket).await.expect("role ready");
 
@@ -1091,5 +1636,204 @@ mod tests {
             .expect("join role");
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn local_coordinator_commits_serving_fact_and_shuts_down() {
+        let root = root("coordinator-commit");
+        let (socket, handle) = spawn_coordinator(&root);
+        wait_coordinator_ready(&socket)
+            .await
+            .expect("coordinator ready");
+
+        let committed = request_coordinator(
+            &socket,
+            &CoordinatorRequest::CommitServing(ServingCommitInput::new(
+                "serving-1",
+                "fd00::1:8080",
+                "fd00::1",
+                1,
+            )),
+        )
+        .await
+        .expect("commit serving");
+        let CoordinatorSuccess::Committed(ack) = committed else {
+            panic!("expected commit ack");
+        };
+        assert_eq!(ack.key, "/facts/serving/serving-1");
+        assert_eq!(ack.author, "local-coordinator");
+        assert_eq!(ack.origin, ServingCommitWriteOrigin::LocalCoordinator);
+
+        let candidates = fact_source(&root)
+            .list_candidates(
+                &IslandId::new("prod"),
+                &fact_pattern("/facts/serving/>").expect("pattern"),
+                &identity_session(IslandId::new("prod"), PrincipalId::new("projection")),
+            )
+            .expect("list candidates");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].author().as_str(), "local-coordinator");
+
+        shutdown_coordinator(&socket, handle)
+            .await
+            .expect("shutdown coordinator");
+    }
+
+    #[tokio::test]
+    async fn local_coordinator_rejects_invalid_commit_without_fact() {
+        let root = root("coordinator-invalid");
+        let (socket, handle) = spawn_coordinator(&root);
+        wait_coordinator_ready(&socket)
+            .await
+            .expect("coordinator ready");
+
+        let error = request_coordinator(
+            &socket,
+            &CoordinatorRequest::CommitServing(ServingCommitInput::new(
+                String::new(),
+                "fd00::1:8080",
+                "fd00::1",
+                1,
+            )),
+        )
+        .await
+        .expect_err("invalid commit should fail");
+        assert!(matches!(
+            error,
+            CoordinatorClientError::Failure(CoordinatorFailure {
+                kind: CoordinatorFailureKind::InvalidRequest,
+                ..
+            })
+        ));
+        let candidates = fact_source(&root)
+            .list_candidates(
+                &IslandId::new("prod"),
+                &fact_pattern("/facts/serving/>").expect("pattern"),
+                &identity_session(IslandId::new("prod"), PrincipalId::new("projection")),
+            )
+            .expect("list candidates");
+        assert!(candidates.is_empty());
+
+        shutdown_coordinator(&socket, handle)
+            .await
+            .expect("shutdown coordinator");
+    }
+
+    #[tokio::test]
+    async fn dropped_coordinator_client_does_not_stop_coordinator() {
+        let root = root("coordinator-dropped-client");
+        let (socket, handle) = spawn_coordinator(&root);
+        wait_coordinator_ready(&socket)
+            .await
+            .expect("coordinator ready");
+
+        let mut stream = UnixStream::connect(&socket)
+            .await
+            .expect("connect dropped client");
+        let request = serde_json::to_vec(&CoordinatorRequest::Status).expect("serialize status");
+        stream.write_all(&request).await.expect("write status");
+        stream.shutdown().await.expect("finish status request");
+        drop(stream);
+
+        let status = request_coordinator(&socket, &CoordinatorRequest::Status)
+            .await
+            .expect("coordinator still accepts status");
+        assert!(matches!(status, CoordinatorSuccess::Status(_)));
+
+        shutdown_coordinator(&socket, handle)
+            .await
+            .expect("shutdown coordinator");
+    }
+
+    #[tokio::test]
+    async fn local_coordinator_reports_storage_errors_separately() {
+        let root = root("coordinator-storage");
+        let writer = ServingFactWriter::new(&root).expect("serving fact writer");
+        let payloads = root.join("facts").join("payloads");
+        fs::remove_dir_all(&payloads).expect("remove payload dir");
+        fs::write(&payloads, b"file blocks payload directory").expect("write blocking file");
+
+        let error = handle_coordinator_request(
+            CoordinatorRequest::CommitServing(ServingCommitInput::new(
+                "serving-1",
+                "fd00::1:8080",
+                "fd00::1",
+                1,
+            )),
+            writer,
+        )
+        .await
+        .expect_err("storage error should fail");
+
+        assert!(matches!(
+            error,
+            CoordinatorFailure {
+                kind: CoordinatorFailureKind::Storage,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn remote_replication_injector_writes_already_authorized_fact() {
+        let root = root("remote-injector");
+        let response = run_remote_replication_injector(RemoteReplicationInjectorConfig::new(
+            &root,
+            "remote-scheduler",
+            "serving-2",
+            "fd00::2:8080",
+            "fd00::2",
+            2,
+        ));
+        let ReplicationInjectorResponse::Success(ack) = response else {
+            panic!("expected injector success");
+        };
+
+        assert_eq!(ack.key, "/facts/serving/serving-2");
+        assert_eq!(ack.author, "remote-scheduler");
+        assert_eq!(
+            ack.origin,
+            ServingCommitWriteOrigin::RemoteReplication {
+                author: "remote-scheduler".to_string()
+            }
+        );
+        let candidates = fact_source(&root)
+            .list_candidates(
+                &IslandId::new("prod"),
+                &fact_pattern("/facts/serving/>").expect("pattern"),
+                &identity_session(IslandId::new("prod"), PrincipalId::new("projection")),
+            )
+            .expect("list candidates");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].author().as_str(), "remote-scheduler");
+    }
+
+    #[test]
+    fn remote_replication_injector_returns_typed_failures() {
+        let root = root("remote-injector-failure");
+        let response = run_remote_replication_injector(RemoteReplicationInjectorConfig::new(
+            &root,
+            "remote-scheduler",
+            String::new(),
+            "fd00::2:8080",
+            "fd00::2",
+            2,
+        ));
+
+        assert!(matches!(
+            response,
+            ReplicationInjectorResponse::Failure(ReplicationInjectorFailure {
+                kind: ReplicationInjectorFailureKind::InvalidRequest,
+                ..
+            })
+        ));
+        let candidates = fact_source(&root)
+            .list_candidates(
+                &IslandId::new("prod"),
+                &fact_pattern("/facts/serving/>").expect("pattern"),
+                &identity_session(IslandId::new("prod"), PrincipalId::new("projection")),
+            )
+            .expect("list candidates");
+        assert!(candidates.is_empty());
     }
 }
