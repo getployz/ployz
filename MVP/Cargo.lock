@@ -2445,6 +2445,7 @@ name = "mvp-serving"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "hickory-proto",
  "http-body-util",
  "hyper",
  "hyper-util",
