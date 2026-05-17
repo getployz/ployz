@@ -25,6 +25,19 @@ works, stays fast, and survives the failure cases that matter.
 - [MVP/primitive-decisions.md](primitive-decisions.md) is the maintainer-facing
   rationale for the main crates and architecture primitives.
 
+## Local Proof Command
+
+From `MVP/`, run `just test` to execute the local MVP gate:
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo test`
+- `cargo run -p mvp-e2e -- all`
+
+This is intentionally kept inside `MVP/` while the rewrite remains isolated
+from the existing codebase. Wire it into the repo-level CI only when the user
+allows touching non-`MVP/` files.
+
 ## Non-Negotiables
 
 - Keep the product model from [VISION.md](../VISION.md): explicit operations,

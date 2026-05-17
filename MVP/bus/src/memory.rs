@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver as DeliveryReceiver, Sender as DeliverySender};
+use crossbeam_channel::{Receiver as DeliveryReceiver, SendTimeoutError, Sender as DeliverySender};
 
 use crate::grants::GrantBook;
 use crate::{
@@ -69,13 +69,29 @@ pub struct BusRuntimeSnapshot {
     pub delivery_workers: usize,
     pub delivery_queue_capacity: usize,
     pub max_active_deliveries: usize,
+    pub max_queued_deliveries: usize,
+    pub enqueue_full_count: usize,
+    pub enqueue_blocked_ns: u64,
+}
+
+pub(crate) fn deadline_after(timeout: Duration) -> Instant {
+    Instant::now() + timeout
+}
+
+pub(crate) fn remaining_until(deadline: Instant, subject: impl Into<String>) -> Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| BusError::Timeout {
+            subject: subject.into(),
+        })
 }
 
 struct RequestDispatchSpec {
     target: RequestTarget,
     subject: Subject,
     payload: Payload,
-    timeout: Duration,
+    deadline: Instant,
     max_deliveries: Option<usize>,
     queue_dispatch: QueueDispatch,
 }
@@ -84,6 +100,12 @@ struct RequestDispatchSpec {
 enum QueueDispatch {
     Include,
     Exclude,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RequestManyDeadlinePolicy {
+    pub max: usize,
+    pub deadline: Instant,
 }
 
 #[derive(Debug, Default)]
@@ -349,23 +371,35 @@ impl MemoryBus {
         payload: impl Into<Payload>,
         timeout: Duration,
     ) -> Result<ResponseMessage> {
+        self.request_until(session, subject, payload, deadline_after(timeout))
+    }
+
+    pub(crate) fn request_until(
+        &self,
+        session: &BusSession,
+        subject: Subject,
+        payload: impl Into<Payload>,
+        deadline: Instant,
+    ) -> Result<ResponseMessage> {
+        let subject_display = subject.to_string();
         let (rx, dispatch) = self.prepare_request(
             session,
             RequestDispatchSpec {
                 target: RequestTarget::Subject(subject.clone()),
                 subject: subject.clone(),
                 payload: payload.into(),
-                timeout,
+                deadline,
                 max_deliveries: None,
                 queue_dispatch: QueueDispatch::Include,
             },
         )?;
-        self.runtime.spawn(dispatch)?;
-        match rx.recv_timeout(timeout) {
+        self.runtime
+            .spawn_until(dispatch, deadline, subject_display.clone())?;
+        match rx.recv_timeout(remaining_until(deadline, subject_display.clone())?) {
             Ok(ResponseEnvelope::Reply(response)) => Ok(response),
             Ok(ResponseEnvelope::HandlerError(error)) => Err(error),
             Err(_) => Err(BusError::Timeout {
-                subject: subject.to_string(),
+                subject: subject_display,
             }),
         }
     }
@@ -378,6 +412,26 @@ impl MemoryBus {
         payload: impl Into<Payload>,
         policy: RequestManyPolicy,
     ) -> Result<Vec<ResponseMessage>> {
+        self.request_many_until(
+            session,
+            target,
+            subject,
+            payload,
+            RequestManyDeadlinePolicy {
+                max: policy.max,
+                deadline: deadline_after(policy.deadline),
+            },
+        )
+    }
+
+    pub(crate) fn request_many_until(
+        &self,
+        session: &BusSession,
+        target: RequestTarget,
+        subject: Subject,
+        payload: impl Into<Payload>,
+        policy: RequestManyDeadlinePolicy,
+    ) -> Result<Vec<ResponseMessage>> {
         if policy.max == 0 {
             return Ok(Vec::new());
         }
@@ -388,22 +442,22 @@ impl MemoryBus {
                 target,
                 subject,
                 payload: payload.into(),
-                timeout: policy.deadline,
+                deadline: policy.deadline,
                 max_deliveries: Some(policy.max),
                 queue_dispatch: QueueDispatch::Exclude,
             },
         )?;
         let expected = dispatch.len();
-        self.runtime.spawn(dispatch)?;
+        self.runtime
+            .spawn_until(dispatch, policy.deadline, target_display.clone())?;
 
-        let deadline = Instant::now() + policy.deadline;
         let mut replies = Vec::with_capacity(expected);
         while replies.len() < expected {
             let now = Instant::now();
-            if now >= deadline {
+            if now >= policy.deadline {
                 break;
             }
-            match rx.recv_timeout(deadline.saturating_duration_since(now)) {
+            match rx.recv_timeout(policy.deadline.saturating_duration_since(now)) {
                 Ok(ResponseEnvelope::Reply(response)) => replies.push(response),
                 Ok(ResponseEnvelope::HandlerError(error)) => return Err(error),
                 Err(mpsc::RecvTimeoutError::Timeout) => break,
@@ -458,10 +512,15 @@ impl MemoryBus {
             let inbox = ReplyInbox::new(Subject::parse(format!("_INBOX.{}", id.value()))?);
             let mut message = BusMessage::new(id, spec.subject.clone(), principal, spec.payload);
             message.reply_to = Some(inbox.clone());
+            let reply = ReplySpec {
+                inbox,
+                expires_at: spec.deadline,
+                tx,
+            };
             let dispatch = inner.dispatch_for_target(
                 &spec.target,
                 message,
-                Some((inbox, spec.timeout, tx)),
+                Some(reply),
                 spec.max_deliveries,
                 spec.queue_dispatch,
             );
@@ -527,7 +586,7 @@ impl Inner {
         &mut self,
         subject: &Subject,
         message: BusMessage,
-        reply: Option<(ReplyInbox, Duration, mpsc::Sender<ResponseEnvelope>)>,
+        reply: Option<ReplySpec>,
         queue_dispatch: QueueDispatch,
     ) -> Vec<Delivery> {
         let target = RequestTarget::Subject(subject.clone());
@@ -538,7 +597,7 @@ impl Inner {
         &mut self,
         target: &RequestTarget,
         message: BusMessage,
-        reply: Option<(ReplyInbox, Duration, mpsc::Sender<ResponseEnvelope>)>,
+        reply: Option<ReplySpec>,
         max_deliveries: Option<usize>,
         queue_dispatch: QueueDispatch,
     ) -> Vec<Delivery> {
@@ -618,11 +677,7 @@ struct Subscriber {
 }
 
 impl Subscriber {
-    fn delivery(
-        &self,
-        message: BusMessage,
-        reply: Option<(ReplyInbox, Duration, mpsc::Sender<ResponseEnvelope>)>,
-    ) -> Delivery {
+    fn delivery(&self, message: BusMessage, reply: Option<ReplySpec>) -> Delivery {
         Delivery::new(
             self.id,
             self.principal.clone(),
@@ -649,11 +704,7 @@ impl QueueSubscriber {
         }
     }
 
-    fn delivery(
-        &self,
-        message: BusMessage,
-        reply: Option<(ReplyInbox, Duration, mpsc::Sender<ResponseEnvelope>)>,
-    ) -> Delivery {
+    fn delivery(&self, message: BusMessage, reply: Option<ReplySpec>) -> Delivery {
         Delivery::new(
             self.id,
             self.principal.clone(),
@@ -669,12 +720,19 @@ struct QueueGroupKey {
     queue: QueueName,
 }
 
+#[derive(Clone)]
+struct ReplySpec {
+    inbox: ReplyInbox,
+    expires_at: Instant,
+    tx: mpsc::Sender<ResponseEnvelope>,
+}
+
 struct Delivery {
     subscriber_id: u64,
     principal: PrincipalId,
     handler: Handler,
     message: BusMessage,
-    reply: Option<(ReplyInbox, Duration, mpsc::Sender<ResponseEnvelope>)>,
+    reply: Option<ReplySpec>,
 }
 
 impl Delivery {
@@ -683,7 +741,7 @@ impl Delivery {
         principal: PrincipalId,
         handler: Handler,
         message: BusMessage,
-        reply: Option<(ReplyInbox, Duration, mpsc::Sender<ResponseEnvelope>)>,
+        reply: Option<ReplySpec>,
     ) -> Self {
         Self {
             subscriber_id,
@@ -695,7 +753,7 @@ impl Delivery {
     }
 
     fn invoke(self) -> Result<()> {
-        let error_tx = self.reply.as_ref().map(|(_, _, tx)| tx.clone());
+        let error_tx = self.reply.as_ref().map(|reply| reply.tx.clone());
         let handler = Arc::clone(&self.handler);
         let context = self.into_context();
         match handler(context) {
@@ -710,18 +768,18 @@ impl Delivery {
     }
 
     fn into_context(self) -> RequestContext {
-        let permit = self.reply.as_ref().map(|(inbox, timeout, tx)| {
+        let permit = self.reply.as_ref().map(|reply| {
             ReplyPermit::new(
-                inbox.clone(),
+                reply.inbox.clone(),
                 self.message.id,
                 self.principal.clone(),
-                Instant::now() + *timeout,
-                tx.clone(),
+                reply.expires_at,
+                reply.tx.clone(),
             )
         });
         let mut message = self.message;
-        if let Some((inbox, _, _)) = &self.reply {
-            message.reply_to = Some(inbox.clone());
+        if let Some(reply) = &self.reply {
+            message.reply_to = Some(reply.inbox.clone());
         }
         message.headers.insert(
             String::from("mvp-bus-subscriber-id"),
@@ -758,8 +816,13 @@ impl DeliveryRuntime {
         }
     }
 
-    fn spawn(&self, deliveries: Vec<Delivery>) -> Result<()> {
-        self.enqueue(deliveries, None)
+    fn spawn_until(
+        &self,
+        deliveries: Vec<Delivery>,
+        deadline: Instant,
+        timeout_subject: String,
+    ) -> Result<()> {
+        self.enqueue(deliveries, None, Some(deadline), timeout_subject)
     }
 
     fn run_and_wait(&self, deliveries: Vec<Delivery>) -> Result<()> {
@@ -768,7 +831,7 @@ impl DeliveryRuntime {
         }
         let expected = deliveries.len();
         let (result_tx, result_rx) = mpsc::channel();
-        self.enqueue(deliveries, Some(result_tx))?;
+        self.enqueue(deliveries, Some(result_tx), None, String::from("delivery"))?;
 
         let mut first_error = None;
         for _ in 0..expected {
@@ -794,6 +857,9 @@ impl DeliveryRuntime {
             delivery_workers: self.config.delivery_workers(),
             delivery_queue_capacity: self.config.delivery_queue_capacity(),
             max_active_deliveries: self.metrics.max_active_deliveries(),
+            max_queued_deliveries: self.metrics.max_queued_deliveries(),
+            enqueue_full_count: self.metrics.enqueue_full_count(),
+            enqueue_blocked_ns: self.metrics.enqueue_blocked_ns(),
         }
     }
 
@@ -801,17 +867,53 @@ impl DeliveryRuntime {
         &self,
         deliveries: Vec<Delivery>,
         result_tx: Option<mpsc::Sender<Result<()>>>,
+        deadline: Option<Instant>,
+        timeout_subject: String,
     ) -> Result<()> {
         let total = deliveries.len();
         for (queued, delivery) in deliveries.into_iter().enumerate() {
+            let queue_len = self.sender.len();
+            self.metrics.record_queue_depth(queue_len);
+            let was_full = self
+                .sender
+                .capacity()
+                .is_some_and(|capacity| queue_len >= capacity);
             let job = DeliveryJob {
                 delivery,
                 result_tx: result_tx.clone(),
             };
-            if self.sender.send(job).is_err() {
+            let send_started = Instant::now();
+            let result = match deadline {
+                Some(deadline) => {
+                    let remaining = match remaining_until(deadline, timeout_subject.clone()) {
+                        Ok(remaining) => remaining,
+                        Err(error) => {
+                            self.inflight.complete_many(total - queued);
+                            return Err(error);
+                        }
+                    };
+                    self.sender
+                        .send_timeout(job, remaining)
+                        .map_err(|error| match error {
+                            SendTimeoutError::Timeout(_) => BusError::Timeout {
+                                subject: timeout_subject.clone(),
+                            },
+                            SendTimeoutError::Disconnected(_) => BusError::DeliveryRuntimeStopped,
+                        })
+                }
+                None => self
+                    .sender
+                    .send(job)
+                    .map_err(|_| BusError::DeliveryRuntimeStopped),
+            };
+            if let Err(error) = result {
                 self.inflight.complete_many(total - queued);
-                return Err(BusError::DeliveryRuntimeStopped);
+                return Err(error);
             }
+            if was_full {
+                self.metrics.record_enqueue_block(send_started.elapsed());
+            }
+            self.metrics.record_queue_depth(self.sender.len());
         }
         Ok(())
     }
@@ -826,6 +928,9 @@ struct DeliveryJob {
 struct DeliveryRuntimeMetrics {
     active_deliveries: AtomicUsize,
     max_active_deliveries: AtomicUsize,
+    max_queued_deliveries: AtomicUsize,
+    enqueue_full_count: AtomicUsize,
+    enqueue_blocked_ns: AtomicU64,
 }
 
 impl DeliveryRuntimeMetrics {
@@ -854,8 +959,42 @@ impl DeliveryRuntimeMetrics {
         self.active_deliveries.fetch_sub(1, Ordering::SeqCst);
     }
 
+    fn record_queue_depth(&self, queued: usize) {
+        let mut current = self.max_queued_deliveries.load(Ordering::SeqCst);
+        while queued > current {
+            match self.max_queued_deliveries.compare_exchange(
+                current,
+                queued,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    fn record_enqueue_block(&self, duration: Duration) {
+        self.enqueue_full_count.fetch_add(1, Ordering::SeqCst);
+        let blocked_ns = duration_to_ns(duration);
+        self.enqueue_blocked_ns
+            .fetch_add(blocked_ns, Ordering::SeqCst);
+    }
+
     fn max_active_deliveries(&self) -> usize {
         self.max_active_deliveries.load(Ordering::SeqCst)
+    }
+
+    fn max_queued_deliveries(&self) -> usize {
+        self.max_queued_deliveries.load(Ordering::SeqCst)
+    }
+
+    fn enqueue_full_count(&self) -> usize {
+        self.enqueue_full_count.load(Ordering::SeqCst)
+    }
+
+    fn enqueue_blocked_ns(&self) -> u64 {
+        self.enqueue_blocked_ns.load(Ordering::SeqCst)
     }
 }
 
@@ -888,6 +1027,14 @@ fn spawn_delivery_worker(
             }
         })
         .expect("delivery worker starts");
+}
+
+fn duration_to_ns(duration: Duration) -> u64 {
+    let nanos = duration.as_nanos();
+    if nanos > u128::from(u64::MAX) {
+        return u64::MAX;
+    }
+    nanos as u64
 }
 
 #[cfg(test)]
@@ -1479,6 +1626,58 @@ mod tests {
         assert!(matches!(request_error, BusError::Timeout { .. }));
         assert!(matches!(
             expired_error.lock().expect("lock expired error").as_ref(),
+            Some(BusError::UnauthorizedResponse { .. })
+        ));
+    }
+
+    #[test]
+    fn reply_permit_deadline_includes_delivery_queue_wait() {
+        let (bus, authority) =
+            MemoryBus::new_with_authority_and_config(BusRuntimeConfig::with_delivery_workers(1));
+        let admin = authority.grant(principal("admin"), Grant::allow_all());
+        let (blocker_started_tx, blocker_started_rx) = mpsc::channel();
+        bus.subscribe(&admin, pattern("node.blocker"), move |_| {
+            let _ = blocker_started_tx.send(());
+            std::thread::sleep(Duration::from_millis(40));
+            Ok(())
+        })
+        .expect("subscribe blocker");
+
+        let reply_error = Arc::new(Mutex::new(None));
+        let reply_error_for_handler = Arc::clone(&reply_error);
+        bus.subscribe(&admin, pattern("node.alpha.inspect"), move |ctx| {
+            let error = ctx.reply(b"late".to_vec()).unwrap_err();
+            *reply_error_for_handler.lock().expect("reply error lock") = Some(error);
+            Ok(())
+        })
+        .expect("subscribe inspect");
+
+        let bus_for_publish = bus.clone();
+        let admin_for_publish = admin.clone();
+        let publish = std::thread::spawn(move || {
+            bus_for_publish.publish(&admin_for_publish, subject("node.blocker"), Vec::new())
+        });
+        blocker_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("blocker started");
+
+        let request_error = bus
+            .request(
+                &admin,
+                subject("node.alpha.inspect"),
+                Vec::new(),
+                Duration::from_millis(5),
+            )
+            .unwrap_err();
+        publish
+            .join()
+            .expect("publish thread joins")
+            .expect("publish");
+        std::thread::sleep(Duration::from_millis(20));
+
+        assert!(matches!(request_error, BusError::Timeout { .. }));
+        assert!(matches!(
+            reply_error.lock().expect("reply error lock").as_ref(),
             Some(BusError::UnauthorizedResponse { .. })
         ));
     }

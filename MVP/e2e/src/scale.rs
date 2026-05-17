@@ -60,6 +60,9 @@ struct RuntimeReport {
     delivery_workers: usize,
     delivery_queue_capacity: usize,
     max_worker_concurrency: usize,
+    max_queued_deliveries: usize,
+    enqueue_full_count: usize,
+    enqueue_blocked_ns: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -217,6 +220,9 @@ fn runtime_report(snapshot: BusRuntimeSnapshot) -> RuntimeReport {
         delivery_workers: snapshot.delivery_workers,
         delivery_queue_capacity: snapshot.delivery_queue_capacity,
         max_worker_concurrency: snapshot.max_active_deliveries,
+        max_queued_deliveries: snapshot.max_queued_deliveries,
+        enqueue_full_count: snapshot.enqueue_full_count,
+        enqueue_blocked_ns: snapshot.enqueue_blocked_ns,
     }
 }
 
@@ -273,6 +279,13 @@ fn run_saturation_case() -> Result<SaturationReport, String> {
         return Err(format!(
             "saturation concurrency exceeded worker bound: {} > {SATURATION_DELIVERY_WORKERS}",
             runtime.max_worker_concurrency
+        ));
+    }
+    if runtime.max_queued_deliveries < SATURATION_QUEUE_CAPACITY || runtime.enqueue_full_count == 0
+    {
+        return Err(format!(
+            "saturation did not observe delivery queue pressure: max_queued={}, full_count={}",
+            runtime.max_queued_deliveries, runtime.enqueue_full_count
         ));
     }
 
