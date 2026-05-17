@@ -1,9 +1,12 @@
 use std::collections::BTreeMap;
-use std::collections::VecDeque;
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use crossbeam_channel::{Receiver as DeliveryReceiver, Sender as DeliverySender};
 
 use crate::grants::GrantBook;
 use crate::{
@@ -15,7 +18,48 @@ use crate::{
 pub type HandlerOutcome = Result<()>;
 
 type Handler = Arc<dyn Fn(RequestContext) -> HandlerOutcome + Send + Sync + 'static>;
-const MAX_DELIVERY_WORKERS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BusRuntimeConfig {
+    delivery_workers: NonZeroUsize,
+    delivery_queue_capacity: NonZeroUsize,
+}
+
+impl BusRuntimeConfig {
+    #[must_use]
+    pub fn default_for_mvp() -> Self {
+        Self::with_delivery_workers(64)
+    }
+
+    #[must_use]
+    pub fn with_delivery_workers(delivery_workers: usize) -> Self {
+        let delivery_workers =
+            NonZeroUsize::new(delivery_workers).expect("delivery workers must be at least one");
+        let delivery_queue_capacity =
+            NonZeroUsize::new(delivery_workers.get() * 4096).expect("queue capacity is non-zero");
+        Self {
+            delivery_workers,
+            delivery_queue_capacity,
+        }
+    }
+
+    #[must_use]
+    pub fn delivery_workers(self) -> usize {
+        self.delivery_workers.get()
+    }
+
+    #[must_use]
+    pub fn delivery_queue_capacity(self) -> usize {
+        self.delivery_queue_capacity.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BusRuntimeSnapshot {
+    pub delivery_workers: usize,
+    pub delivery_queue_capacity: usize,
+    pub max_active_deliveries: usize,
+}
 
 struct RequestDispatchSpec {
     target: RequestTarget,
@@ -47,6 +91,14 @@ impl Inflight {
     fn complete(&self) {
         let mut in_flight = self.count.lock().expect("in-flight mutex poisoned");
         *in_flight = in_flight.saturating_sub(1);
+        if *in_flight == 0 {
+            self.idle.notify_all();
+        }
+    }
+
+    fn complete_many(&self, count: usize) {
+        let mut in_flight = self.count.lock().expect("in-flight mutex poisoned");
+        *in_flight = in_flight.saturating_sub(count);
         if *in_flight == 0 {
             self.idle.notify_all();
         }
@@ -107,7 +159,7 @@ impl RequestContext {
         }
     }
 
-    pub fn reply(&self, payload: Payload) -> Result<()> {
+    pub fn reply(&self, payload: impl Into<Payload>) -> Result<()> {
         let Some(reply_permit) = &self.reply_permit else {
             return Err(BusError::ResponseClosed {
                 inbox: String::from("<none>"),
@@ -116,7 +168,7 @@ impl RequestContext {
         reply_permit.respond(payload)
     }
 
-    pub fn reply_as(&self, principal: &PrincipalId, payload: Payload) -> Result<()> {
+    pub fn reply_as(&self, principal: &PrincipalId, payload: impl Into<Payload>) -> Result<()> {
         let Some(reply_permit) = &self.reply_permit else {
             return Err(BusError::ResponseClosed {
                 inbox: String::from("<none>"),
@@ -130,13 +182,20 @@ impl RequestContext {
 pub struct MemoryBus {
     inner: Arc<Mutex<Inner>>,
     inflight: Arc<Inflight>,
+    runtime: Arc<DeliveryRuntime>,
 }
 
 impl MemoryBus {
     fn new() -> Self {
+        Self::with_config(BusRuntimeConfig::default_for_mvp())
+    }
+
+    fn with_config(config: BusRuntimeConfig) -> Self {
+        let inflight = Arc::new(Inflight::default());
         Self {
             inner: Arc::new(Mutex::new(Inner::new())),
-            inflight: Arc::new(Inflight::default()),
+            runtime: Arc::new(DeliveryRuntime::new(config, Arc::clone(&inflight))),
+            inflight,
         }
     }
 
@@ -144,6 +203,17 @@ impl MemoryBus {
     pub fn new_with_authority() -> (Self, BusAuthority) {
         let bus = Self::new();
         (bus.clone(), BusAuthority { bus: bus.clone() })
+    }
+
+    #[must_use]
+    pub fn new_with_authority_and_config(config: BusRuntimeConfig) -> (Self, BusAuthority) {
+        let bus = Self::with_config(config);
+        (bus.clone(), BusAuthority { bus: bus.clone() })
+    }
+
+    #[must_use]
+    pub fn runtime_snapshot(&self) -> BusRuntimeSnapshot {
+        self.runtime.snapshot()
     }
 
     fn set_grant(&self, principal: PrincipalId, grant: Grant) -> BusSession {
@@ -215,7 +285,13 @@ impl MemoryBus {
         Ok(id)
     }
 
-    pub fn publish(&self, session: &BusSession, subject: Subject, payload: Payload) -> Result<()> {
+    pub fn publish(
+        &self,
+        session: &BusSession,
+        subject: Subject,
+        payload: impl Into<Payload>,
+    ) -> Result<()> {
+        let payload = payload.into();
         let dispatch = {
             let mut inner = self.inner.lock().expect("memory bus mutex poisoned");
             inner.ensure_not_draining()?;
@@ -235,14 +311,14 @@ impl MemoryBus {
             dispatch
         };
 
-        run_deliveries_and_wait(&self.inflight, dispatch)
+        self.runtime.run_and_wait(dispatch)
     }
 
     pub fn request(
         &self,
         session: &BusSession,
         subject: Subject,
-        payload: Payload,
+        payload: impl Into<Payload>,
         timeout: Duration,
     ) -> Result<ResponseMessage> {
         let (rx, dispatch) = self.prepare_request(
@@ -250,13 +326,13 @@ impl MemoryBus {
             RequestDispatchSpec {
                 target: RequestTarget::Subject(subject.clone()),
                 subject: subject.clone(),
-                payload,
+                payload: payload.into(),
                 timeout,
                 max_deliveries: None,
                 queue_dispatch: QueueDispatch::Include,
             },
         )?;
-        spawn_deliveries(&self.inflight, dispatch);
+        self.runtime.spawn(dispatch)?;
         match rx.recv_timeout(timeout) {
             Ok(ResponseEnvelope::Reply(response)) => Ok(response),
             Ok(ResponseEnvelope::HandlerError(error)) => Err(error),
@@ -271,7 +347,7 @@ impl MemoryBus {
         session: &BusSession,
         target: RequestTarget,
         subject: Subject,
-        payload: Payload,
+        payload: impl Into<Payload>,
         policy: RequestManyPolicy,
     ) -> Result<Vec<ResponseMessage>> {
         if policy.max == 0 {
@@ -283,14 +359,14 @@ impl MemoryBus {
             RequestDispatchSpec {
                 target,
                 subject,
-                payload,
+                payload: payload.into(),
                 timeout: policy.deadline,
                 max_deliveries: Some(policy.max),
                 queue_dispatch: QueueDispatch::Exclude,
             },
         )?;
         let expected = dispatch.len();
-        spawn_deliveries(&self.inflight, dispatch);
+        self.runtime.spawn(dispatch)?;
 
         let deadline = Instant::now() + policy.deadline;
         let mut replies = Vec::with_capacity(expected);
@@ -627,65 +703,165 @@ impl Delivery {
     }
 }
 
-fn spawn_deliveries(inflight: &Arc<Inflight>, deliveries: Vec<Delivery>) {
-    let _ = run_deliveries(inflight, deliveries, DeliveryWait::Detached);
+struct DeliveryRuntime {
+    config: BusRuntimeConfig,
+    sender: DeliverySender<DeliveryJob>,
+    inflight: Arc<Inflight>,
+    metrics: Arc<DeliveryRuntimeMetrics>,
 }
 
-fn run_deliveries_and_wait(inflight: &Arc<Inflight>, deliveries: Vec<Delivery>) -> Result<()> {
-    run_deliveries(inflight, deliveries, DeliveryWait::Join)
-}
-
-fn run_deliveries(
-    inflight: &Arc<Inflight>,
-    deliveries: Vec<Delivery>,
-    wait: DeliveryWait,
-) -> Result<()> {
-    if deliveries.is_empty() {
-        return Ok(());
+impl DeliveryRuntime {
+    fn new(config: BusRuntimeConfig, inflight: Arc<Inflight>) -> Self {
+        let (sender, receiver) = crossbeam_channel::bounded(config.delivery_queue_capacity());
+        let metrics = Arc::new(DeliveryRuntimeMetrics::default());
+        for worker_index in 0..config.delivery_workers() {
+            spawn_delivery_worker(
+                worker_index,
+                receiver.clone(),
+                Arc::clone(&metrics),
+                Arc::clone(&inflight),
+            );
+        }
+        Self {
+            config,
+            sender,
+            inflight,
+            metrics,
+        }
     }
-    let worker_count = deliveries.len().min(MAX_DELIVERY_WORKERS);
-    let queue = Arc::new(Mutex::new(VecDeque::from(deliveries)));
-    let (error_tx, error_rx) = mpsc::channel();
-    let mut handles = Vec::with_capacity(worker_count);
 
-    for _ in 0..worker_count {
-        let inflight = Arc::clone(inflight);
-        let queue = Arc::clone(&queue);
-        let error_tx = error_tx.clone();
-        handles.push(thread::spawn(move || {
-            loop {
-                let Some(delivery) = queue
-                    .lock()
-                    .expect("delivery queue mutex poisoned")
-                    .pop_front()
-                else {
-                    break;
-                };
+    fn spawn(&self, deliveries: Vec<Delivery>) -> Result<()> {
+        self.enqueue(deliveries, None)
+    }
+
+    fn run_and_wait(&self, deliveries: Vec<Delivery>) -> Result<()> {
+        if deliveries.is_empty() {
+            return Ok(());
+        }
+        let expected = deliveries.len();
+        let (result_tx, result_rx) = mpsc::channel();
+        self.enqueue(deliveries, Some(result_tx))?;
+
+        let mut first_error = None;
+        for _ in 0..expected {
+            match result_rx.recv() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+                Err(_) => return Err(BusError::DeliveryRuntimeStopped),
+            }
+        }
+
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    fn snapshot(&self) -> BusRuntimeSnapshot {
+        BusRuntimeSnapshot {
+            delivery_workers: self.config.delivery_workers(),
+            delivery_queue_capacity: self.config.delivery_queue_capacity(),
+            max_active_deliveries: self.metrics.max_active_deliveries(),
+        }
+    }
+
+    fn enqueue(
+        &self,
+        deliveries: Vec<Delivery>,
+        result_tx: Option<mpsc::Sender<Result<()>>>,
+    ) -> Result<()> {
+        let mut queued = 0usize;
+        let total = deliveries.len();
+        for delivery in deliveries {
+            let job = DeliveryJob {
+                delivery,
+                result_tx: result_tx.clone(),
+            };
+            if self.sender.send(job).is_err() {
+                self.inflight.complete_many(total - queued);
+                return Err(BusError::DeliveryRuntimeStopped);
+            }
+            queued += 1;
+        }
+        Ok(())
+    }
+}
+
+struct DeliveryJob {
+    delivery: Delivery,
+    result_tx: Option<mpsc::Sender<Result<()>>>,
+}
+
+#[derive(Debug, Default)]
+struct DeliveryRuntimeMetrics {
+    active_deliveries: AtomicUsize,
+    max_active_deliveries: AtomicUsize,
+}
+
+impl DeliveryRuntimeMetrics {
+    fn start_delivery(&self) -> ActiveDeliveryGuard<'_> {
+        let active = self.active_deliveries.fetch_add(1, Ordering::SeqCst) + 1;
+        self.record_max_active(active);
+        ActiveDeliveryGuard { metrics: self }
+    }
+
+    fn record_max_active(&self, active: usize) {
+        let mut current = self.max_active_deliveries.load(Ordering::SeqCst);
+        while active > current {
+            match self.max_active_deliveries.compare_exchange(
+                current,
+                active,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    fn finish_delivery(&self) {
+        self.active_deliveries.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    fn max_active_deliveries(&self) -> usize {
+        self.max_active_deliveries.load(Ordering::SeqCst)
+    }
+}
+
+struct ActiveDeliveryGuard<'a> {
+    metrics: &'a DeliveryRuntimeMetrics,
+}
+
+impl Drop for ActiveDeliveryGuard<'_> {
+    fn drop(&mut self) {
+        self.metrics.finish_delivery();
+    }
+}
+
+fn spawn_delivery_worker(
+    worker_index: usize,
+    receiver: DeliveryReceiver<DeliveryJob>,
+    metrics: Arc<DeliveryRuntimeMetrics>,
+    inflight: Arc<Inflight>,
+) {
+    thread::Builder::new()
+        .name(format!("mvp-bus-delivery-{worker_index}"))
+        .spawn(move || {
+            while let Ok(job) = receiver.recv() {
                 let _inflight_guard = inflight.guard();
-                if let Err(error) = delivery.invoke() {
-                    let _ = error_tx.send(error);
+                let _active_delivery = metrics.start_delivery();
+                let result = job.delivery.invoke();
+                if let Some(result_tx) = job.result_tx {
+                    let _ = result_tx.send(result);
                 }
             }
-        }));
-    }
-    drop(error_tx);
-
-    if wait == DeliveryWait::Join {
-        for handle in handles {
-            let _ = handle.join();
-        }
-        if let Ok(error) = error_rx.try_recv() {
-            return Err(error);
-        }
-    }
-
-    Ok(())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeliveryWait {
-    Detached,
-    Join,
+        })
+        .expect("delivery worker starts");
 }
 
 #[cfg(test)]
@@ -696,8 +872,8 @@ mod tests {
     use std::time::Duration;
 
     use crate::{
-        BusError, BusSession, Grant, MemoryBus, PrincipalId, RequestManyPolicy, RequestTarget,
-        Subject, SubjectPattern,
+        BusError, BusRuntimeConfig, BusSession, Grant, MemoryBus, Payload, PrincipalId,
+        RequestManyPolicy, RequestTarget, Subject, SubjectPattern,
     };
 
     fn principal(name: &str) -> PrincipalId {
@@ -735,6 +911,68 @@ mod tests {
             .expect("publish");
 
         assert_eq!(received.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn fanout_reuses_payload_storage_across_subscribers() {
+        let (bus, admin) = bus_with_admin();
+        let payload_ptrs = Arc::new(Mutex::new(Vec::new()));
+        for _ in 0..2 {
+            let payload_ptrs = Arc::clone(&payload_ptrs);
+            bus.subscribe(&admin, pattern("node.*.status"), move |ctx| {
+                payload_ptrs
+                    .lock()
+                    .expect("payload ptr lock")
+                    .push(ctx.message.payload.as_bytes().as_ptr() as usize);
+                Ok(())
+            })
+            .expect("subscribe");
+        }
+
+        bus.publish(
+            &admin,
+            subject("node.alpha.status"),
+            Payload::from(vec![1, 2, 3, 4]),
+        )
+        .expect("publish");
+
+        let payload_ptrs = payload_ptrs.lock().expect("payload ptr lock");
+        assert_eq!(payload_ptrs.len(), 2);
+        assert_eq!(payload_ptrs[0], payload_ptrs[1]);
+    }
+
+    #[test]
+    fn delivery_runtime_bounds_handler_concurrency() {
+        let (bus, authority) =
+            MemoryBus::new_with_authority_and_config(BusRuntimeConfig::with_delivery_workers(2));
+        let admin = authority.grant(principal("admin"), Grant::allow_all());
+        let active = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+
+        for _ in 0..8 {
+            let active = Arc::clone(&active);
+            let completed = Arc::clone(&completed);
+            let max_active = Arc::clone(&max_active);
+            bus.subscribe(&admin, pattern("node.*.status"), move |_| {
+                let active_now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                record_max(&max_active, active_now);
+                std::thread::sleep(Duration::from_millis(10));
+                active.fetch_sub(1, Ordering::SeqCst);
+                completed.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .expect("subscribe");
+        }
+
+        bus.publish(&admin, subject("node.alpha.status"), b"up".to_vec())
+            .expect("publish");
+
+        let snapshot = bus.runtime_snapshot();
+        assert_eq!(completed.load(Ordering::SeqCst), 8);
+        assert_eq!(snapshot.delivery_workers, 2);
+        assert!(max_active.load(Ordering::SeqCst) <= 2);
+        assert!(snapshot.max_active_deliveries <= 2);
     }
 
     #[test]
@@ -1325,6 +1563,53 @@ mod tests {
     }
 
     #[test]
+    fn drain_waits_for_queued_delivery_work() {
+        let (bus, authority) =
+            MemoryBus::new_with_authority_and_config(BusRuntimeConfig::with_delivery_workers(1));
+        let admin = authority.grant(principal("admin"), Grant::allow_all());
+        let completed = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::channel();
+        for index in 0..3 {
+            let completed_for_handler = Arc::clone(&completed);
+            let started_tx = started_tx.clone();
+            bus.subscribe(&admin, pattern("node.*.capacity"), move |ctx| {
+                if index == 0 {
+                    let _ = started_tx.send(());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+                completed_for_handler.fetch_add(1, Ordering::SeqCst);
+                ctx.reply(b"ok".to_vec())
+            })
+            .expect("subscribe");
+        }
+        drop(started_tx);
+
+        let bus_for_request = bus.clone();
+        let admin_for_request = admin.clone();
+        let request = std::thread::spawn(move || {
+            bus_for_request.request_many(
+                &admin_for_request,
+                RequestTarget::Pattern(pattern("node.*.capacity")),
+                subject("node.broadcast.capacity"),
+                Vec::new(),
+                RequestManyPolicy::new(8, Duration::from_secs(1)),
+            )
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first queued handler started");
+
+        bus.drain(&admin, Duration::from_secs(1)).expect("drain");
+
+        let replies = request
+            .join()
+            .expect("request thread joins")
+            .expect("request many");
+        assert_eq!(replies.len(), 3);
+        assert_eq!(completed.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
     fn drain_times_out_waiting_for_inflight_work() {
         let (bus, admin) = bus_with_admin();
         let (started_tx, started_rx) = mpsc::channel();
@@ -1358,5 +1643,20 @@ mod tests {
             }
         );
         assert!(request.join().expect("request thread joins").is_err());
+    }
+
+    fn record_max(max_active: &AtomicUsize, active_now: usize) {
+        let mut current = max_active.load(Ordering::SeqCst);
+        while active_now > current {
+            match max_active.compare_exchange(
+                current,
+                active_now,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
     }
 }

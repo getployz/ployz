@@ -9,3 +9,6 @@ publish = false
 name = "mvp_bus"
 path = "src/lib.rs"
 
+[dependencies]
+bytes = "1"
+crossbeam-channel = "0.5"

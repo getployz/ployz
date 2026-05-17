@@ -64,6 +64,7 @@ pub enum BusError {
     ResponseClosed {
         inbox: String,
     },
+    DeliveryRuntimeStopped,
     DuplicateResponse {
         inbox: String,
     },
@@ -108,6 +109,7 @@ impl Display for BusError {
                 "incomplete responses for {target}: expected {expected}, received {received}"
             ),
             Self::ResponseClosed { inbox } => write!(f, "response inbox closed: {inbox}"),
+            Self::DeliveryRuntimeStopped => f.write_str("delivery runtime stopped"),
             Self::DuplicateResponse { inbox } => write!(f, "duplicate response for {inbox}"),
             Self::HandlerFailed { subject, reason } => {
                 write!(f, "handler failed for {subject}: {reason}")
