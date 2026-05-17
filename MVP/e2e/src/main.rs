@@ -5,6 +5,7 @@ mod bridge_contract;
 mod bus_contract;
 mod bus_syntax;
 mod iroh_docs_contract;
+mod lease_acme_contract;
 mod metrics;
 mod projection_contract;
 mod scale;
@@ -12,16 +13,47 @@ mod scale;
 use std::env;
 use std::process;
 use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
-const ALL_SCENARIOS: &[&str] = &[
-    "bus-contract",
-    "actor-contract",
-    "authority-contract",
-    "bridge-contract",
-    "projection-contract",
-    "iroh-docs-contract",
-    "scale",
+struct Scenario {
+    name: &'static str,
+    run: fn() -> Result<(), String>,
+}
+
+const SCENARIOS: &[Scenario] = &[
+    Scenario {
+        name: "bus-contract",
+        run: bus_contract::run,
+    },
+    Scenario {
+        name: "actor-contract",
+        run: actor_contract::run,
+    },
+    Scenario {
+        name: "authority-contract",
+        run: authority_contract::run,
+    },
+    Scenario {
+        name: "bridge-contract",
+        run: bridge_contract::run,
+    },
+    Scenario {
+        name: "projection-contract",
+        run: projection_contract::run,
+    },
+    Scenario {
+        name: "iroh-docs-contract",
+        run: iroh_docs_contract::run,
+    },
+    Scenario {
+        name: "lease-acme-contract",
+        run: lease_acme_contract::run,
+    },
+    Scenario {
+        name: "scale",
+        run: scale::run,
+    },
 ];
 
 fn main() {
@@ -36,58 +68,51 @@ fn run() -> Result<(), String> {
         .nth(1)
         .unwrap_or_else(|| String::from("bus-contract"));
     match scenario.as_str() {
-        "actor-contract"
-        | "authority-contract"
-        | "bridge-contract"
-        | "bus-contract"
-        | "iroh-docs-contract"
-        | "projection-contract"
-        | "scale" => run_named_scenario(scenario.as_str()),
         "all" => run_all_with_budget(),
         "help" | "--help" | "-h" => {
-            println!(
-                "usage: cargo run -p mvp-e2e -- <bus-contract|actor-contract|authority-contract|bridge-contract|projection-contract|iroh-docs-contract|all|scale>"
-            );
+            println!("usage: cargo run -p mvp-e2e -- <{}|all>", scenario_help());
             Ok(())
         }
-        other => Err(format!("unknown MVP E2E scenario '{other}'")),
+        other => run_named_scenario(other),
     }
 }
 
 fn run_named_scenario(scenario: &str) -> Result<(), String> {
-    match scenario {
-        "actor-contract" => actor_contract::run(),
-        "authority-contract" => authority_contract::run(),
-        "bridge-contract" => bridge_contract::run(),
-        "bus-contract" => bus_contract::run(),
-        "iroh-docs-contract" => iroh_docs_contract::run(),
-        "projection-contract" => projection_contract::run(),
-        "scale" => scale::run(),
-        other => Err(format!("unknown MVP E2E scenario '{other}'")),
+    for candidate in SCENARIOS {
+        if candidate.name == scenario {
+            return (candidate.run)();
+        }
     }
+    Err(format!("unknown MVP E2E scenario '{scenario}'"))
 }
 
 fn run_all_with_budget() -> Result<(), String> {
     let budget = e2e_all_budget()?;
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let result = run_all();
-        let _ = tx.send(result);
+    run_scenarios_with_budget(SCENARIOS, budget)
+}
+
+fn run_scenarios_with_budget(
+    scenarios: &'static [Scenario],
+    budget: Duration,
+) -> Result<(), String> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = sender.send(run_scenarios(scenarios));
     });
-    match rx.recv_timeout(budget) {
+    match receiver.recv_timeout(budget) {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => {
             Err(format!("all scenario exceeded {budget:?} budget"))
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            Err("all scenario worker exited before reporting a result".to_string())
+            Err("all scenario worker exited without a result".to_string())
         }
     }
 }
 
-fn run_all() -> Result<(), String> {
-    for scenario in ALL_SCENARIOS {
-        run_named_scenario(scenario)?;
+fn run_scenarios(scenarios: &[Scenario]) -> Result<(), String> {
+    for scenario in scenarios {
+        (scenario.run)()?;
     }
     Ok(())
 }
@@ -97,6 +122,14 @@ fn e2e_all_budget() -> Result<Duration, String> {
     parse_duration(&value).ok_or_else(|| {
         format!("MVP_E2E_ALL_TIMEOUT must be a positive duration like 120s, got '{value}'")
     })
+}
+
+fn scenario_help() -> String {
+    SCENARIOS
+        .iter()
+        .map(|scenario| scenario.name)
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 fn parse_duration(value: &str) -> Option<Duration> {
@@ -114,12 +147,18 @@ fn parse_duration(value: &str) -> Option<Duration> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ALL_SCENARIOS, parse_duration};
+    use super::{SCENARIOS, Scenario, parse_duration, run_scenarios_with_budget, scenario_help};
     use std::time::Duration;
 
     #[test]
-    fn all_scenarios_include_iroh_docs_contract() {
-        assert!(ALL_SCENARIOS.contains(&"iroh-docs-contract"));
+    fn all_scenarios_include_iroh_and_lease_contracts() {
+        let names = SCENARIOS
+            .iter()
+            .map(|scenario| scenario.name)
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"iroh-docs-contract"));
+        assert!(names.contains(&"lease-acme-contract"));
+        assert!(scenario_help().contains("lease-acme-contract"));
     }
 
     #[test]
@@ -133,5 +172,23 @@ mod tests {
         assert_eq!(parse_duration("0s"), None);
         assert_eq!(parse_duration("0"), None);
         assert_eq!(parse_duration("soon"), None);
+    }
+
+    #[test]
+    fn all_budget_is_enforced_while_scenario_is_running() {
+        fn blocking_scenario() -> Result<(), String> {
+            std::thread::sleep(Duration::from_millis(100));
+            Ok(())
+        }
+
+        static BLOCKING: &[Scenario] = &[Scenario {
+            name: "blocking",
+            run: blocking_scenario,
+        }];
+
+        let error = run_scenarios_with_budget(BLOCKING, Duration::from_millis(10))
+            .expect_err("budget should expire before blocking scenario returns");
+
+        assert!(error.contains("exceeded"));
     }
 }

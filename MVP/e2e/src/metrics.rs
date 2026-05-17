@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use hdrhistogram::Histogram;
@@ -84,6 +84,10 @@ where
     fs::write(path, format!("{contents}\n"))
         .map_err(|error| format!("write metrics '{}': {error}", path.display()))?;
     Ok(contents)
+}
+
+pub(crate) fn scenario_dir(scenario: &str) -> PathBuf {
+    Path::new("target").join("mvp-e2e").join(scenario)
 }
 
 pub(crate) fn reset_dir(path: &Path) -> Result<(), String> {

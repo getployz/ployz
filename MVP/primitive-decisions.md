@@ -55,6 +55,16 @@ the decision concrete.
 - Direction after Slice 008: leases are advisory facts for TTL, renewal, epoch
   fencing, RAII release, and command-level race avoidance. Resource-level
   enforcement owns real exclusivity.
+- Slice 009 implemented the first advisory lease/ACME canary in memory:
+  deterministic supersession, local visible-node command context, stale-holder
+  fencing, book-bound guards, claim-hash-fenced renew/release facts, and
+  best-effort RAII release. Stale imported renewals are reduced
+  chronologically, so an after-expiry renewal candidate cannot resurrect an
+  expired lease. The primitive is intentionally not docs-backed yet.
+- Slice 009 keeps future active-member or partition-view checks as explicit
+  command evidence only. They may improve "visible nodes at decision time"
+  later; they are not part of the commit boundary and must not become hidden
+  quorum behavior.
 
 ## NATS-Shaped Bus Semantics
 

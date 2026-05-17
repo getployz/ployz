@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -11,7 +10,7 @@ use serde::Serialize;
 
 use crate::assertions::{assert_eq_named, assert_error};
 use crate::bus_syntax::{fact_key, fact_pattern, pattern, subject};
-use crate::metrics::write_json;
+use crate::metrics::{scenario_dir, write_json};
 
 #[derive(Debug, Default)]
 struct Metrics {
@@ -333,8 +332,6 @@ fn write_metrics(metrics: &Metrics, started: Instant) -> Result<(), String> {
         cross_island_leakage_count: metrics.cross_island_leakage_count,
         elapsed_ms: started.elapsed().as_millis(),
     };
-    let path = Path::new("target")
-        .join("mvp-e2e")
-        .join("bridge-contract-metrics.json");
+    let path = scenario_dir("bridge-contract").join("bridge-contract-metrics.json");
     write_json(&path, &report).map(|_| ())
 }

@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,7 +10,7 @@ use serde::Serialize;
 
 use crate::assertions::{assert_eq_named, assert_error};
 use crate::bus_syntax::{pattern, subject};
-use crate::metrics::write_json;
+use crate::metrics::{scenario_dir, write_json};
 
 #[derive(Debug, Serialize)]
 struct ActorContractReport {
@@ -269,9 +268,7 @@ async fn run_async() -> Result<(), String> {
         runtime_workers: snapshot.delivery_workers,
         elapsed_ms: started.elapsed().as_millis(),
     };
-    let path = Path::new("target")
-        .join("mvp-e2e")
-        .join("actor-contract-metrics.json");
+    let path = scenario_dir("actor-contract").join("actor-contract-metrics.json");
     write_json(&path, &report)?;
     println!("PASS actor-contract");
     Ok(())

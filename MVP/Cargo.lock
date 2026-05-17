@@ -2354,6 +2354,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mvp-acme"
+version = "0.1.0"
+dependencies = [
+ "mvp-lease",
+ "thiserror",
+]
+
+[[package]]
 name = "mvp-bus"
 version = "0.1.0"
 dependencies = [
@@ -2370,8 +2378,10 @@ version = "0.1.0"
 dependencies = [
  "hdrhistogram",
  "memory-stats",
+ "mvp-acme",
  "mvp-bus",
  "mvp-iroh",
+ "mvp-lease",
  "mvp-projection",
  "serde",
  "serde_json",
@@ -2391,6 +2401,14 @@ dependencies = [
  "n0-future",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "mvp-lease"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "thiserror",
 ]
 
 [[package]]
