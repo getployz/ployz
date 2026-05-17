@@ -230,6 +230,14 @@ async fn run_async() -> Result<(), String> {
     assert_error("actor unauthorized drain", &unauthorized_drain, |error| {
         matches!(error, BusError::UnauthorizedDrain { .. })
     })?;
+    bus.publish(&admin, subject("gateway.changed")?, b"still-open".to_vec())
+        .await
+        .map_err(|error| format!("actor publish after unauthorized drain failed: {error}"))?;
+    assert_eq_named(
+        "actor publish deliveries after unauthorized drain",
+        publish_deliveries.load(Ordering::SeqCst),
+        4,
+    )?;
 
     let snapshot = bus
         .runtime_snapshot()
