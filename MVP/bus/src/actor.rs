@@ -20,13 +20,13 @@ const BUS_ACTOR_MAILBOX_TIMEOUT: Duration = Duration::from_secs(5);
 const BUS_ACTOR_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Actor)]
-pub struct BusActor {
+pub(crate) struct BusActor {
     bus: MemoryBus,
 }
 
 impl BusActor {
     #[must_use]
-    pub fn new(bus: MemoryBus) -> Self {
+    pub(crate) fn new(bus: MemoryBus) -> Self {
         Self { bus }
     }
 }

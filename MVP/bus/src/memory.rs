@@ -6,7 +6,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver as DeliveryReceiver, SendTimeoutError, Sender as DeliverySender};
+use crossbeam_channel::{
+    Receiver as DeliveryReceiver, SendTimeoutError, Sender as DeliverySender, TrySendError,
+};
 
 use crate::grants::GrantBook;
 use crate::{
@@ -874,44 +876,52 @@ impl DeliveryRuntime {
         for (queued, delivery) in deliveries.into_iter().enumerate() {
             let queue_len = self.sender.len();
             self.metrics.record_queue_depth(queue_len);
-            let was_full = self
-                .sender
-                .capacity()
-                .is_some_and(|capacity| queue_len >= capacity);
             let job = DeliveryJob {
                 delivery,
                 result_tx: result_tx.clone(),
             };
-            let send_started = Instant::now();
-            let result = match deadline {
-                Some(deadline) => {
-                    let remaining = match remaining_until(deadline, timeout_subject.clone()) {
-                        Ok(remaining) => remaining,
-                        Err(error) => {
-                            self.inflight.complete_many(total - queued);
-                            return Err(error);
+            let result = match self.sender.try_send(job) {
+                Ok(()) => Ok(()),
+                Err(TrySendError::Full(job)) => {
+                    self.metrics
+                        .record_queue_depth(self.config.delivery_queue_capacity());
+                    let send_started = Instant::now();
+                    let result = match deadline {
+                        Some(deadline) => {
+                            let remaining = match remaining_until(deadline, timeout_subject.clone())
+                            {
+                                Ok(remaining) => remaining,
+                                Err(error) => {
+                                    self.inflight.complete_many(total - queued);
+                                    return Err(error);
+                                }
+                            };
+                            self.sender
+                                .send_timeout(job, remaining)
+                                .map_err(|error| match error {
+                                    SendTimeoutError::Timeout(_) => BusError::Timeout {
+                                        subject: timeout_subject.clone(),
+                                    },
+                                    SendTimeoutError::Disconnected(_) => {
+                                        BusError::DeliveryRuntimeStopped
+                                    }
+                                })
                         }
+                        None => self
+                            .sender
+                            .send(job)
+                            .map_err(|_| BusError::DeliveryRuntimeStopped),
                     };
-                    self.sender
-                        .send_timeout(job, remaining)
-                        .map_err(|error| match error {
-                            SendTimeoutError::Timeout(_) => BusError::Timeout {
-                                subject: timeout_subject.clone(),
-                            },
-                            SendTimeoutError::Disconnected(_) => BusError::DeliveryRuntimeStopped,
-                        })
+                    if result.is_ok() {
+                        self.metrics.record_enqueue_block(send_started.elapsed());
+                    }
+                    result
                 }
-                None => self
-                    .sender
-                    .send(job)
-                    .map_err(|_| BusError::DeliveryRuntimeStopped),
+                Err(TrySendError::Disconnected(_)) => Err(BusError::DeliveryRuntimeStopped),
             };
             if let Err(error) = result {
                 self.inflight.complete_many(total - queued);
                 return Err(error);
-            }
-            if was_full {
-                self.metrics.record_enqueue_block(send_started.elapsed());
             }
             self.metrics.record_queue_depth(self.sender.len());
         }

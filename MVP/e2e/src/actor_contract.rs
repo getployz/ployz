@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,8 @@ struct ActorContractReport {
     queue_deliveries: usize,
     request_many_replies: usize,
     no_responders: usize,
+    timeouts: usize,
+    unauthorized_failures: usize,
     drain_rejections: usize,
     runtime_workers: usize,
     elapsed_ms: u128,
@@ -35,6 +38,8 @@ async fn run_async() -> Result<(), String> {
     let admin = authority.grant(PrincipalId::new("admin"), Grant::allow_all());
     let scheduler_a = authority.grant(PrincipalId::new("scheduler-a"), Grant::allow_all());
     let scheduler_b = authority.grant(PrincipalId::new("scheduler-b"), Grant::allow_all());
+    let intruder_id = PrincipalId::new("intruder");
+    let intruder = authority.grant(intruder_id.clone(), Grant::empty());
 
     let publish_deliveries = Arc::new(AtomicUsize::new(0));
     for _ in 0..2 {
@@ -115,6 +120,109 @@ async fn run_async() -> Result<(), String> {
         matches!(error, BusError::NoResponders { .. })
     })?;
 
+    bus.subscribe(&admin, pattern("node.slow.inspect")?, |_ctx| {
+        std::thread::sleep(Duration::from_millis(50));
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("actor slow responder subscribe failed: {error}"))?;
+    let timeout = bus
+        .request(
+            &admin,
+            subject("node.slow.inspect")?,
+            Vec::new(),
+            Duration::from_millis(5),
+        )
+        .await
+        .unwrap_err();
+    assert_error("actor timeout", &timeout, |error| {
+        matches!(error, BusError::Timeout { .. })
+    })?;
+
+    let unauthorized_publish = bus
+        .publish(&intruder, subject("gateway.changed")?, b"bad".to_vec())
+        .await
+        .unwrap_err();
+    assert_error(
+        "actor unauthorized publish",
+        &unauthorized_publish,
+        |error| matches!(error, BusError::UnauthorizedPublish { .. }),
+    )?;
+    assert_eq_named(
+        "actor unauthorized publish delivery count",
+        publish_deliveries.load(Ordering::SeqCst),
+        2,
+    )?;
+
+    let unauthorized_subscribe = bus
+        .subscribe(&intruder, pattern("gateway.changed")?, |_| Ok(()))
+        .await
+        .unwrap_err();
+    assert_error(
+        "actor unauthorized subscribe",
+        &unauthorized_subscribe,
+        |error| matches!(error, BusError::UnauthorizedSubscribe { .. }),
+    )?;
+
+    let subscriber_only = authority.grant(
+        PrincipalId::new("subscriber-only"),
+        Grant::empty().with_subscribe(pattern("deploy.submit")?),
+    );
+    let unauthorized_queue = bus
+        .queue_subscribe(
+            &subscriber_only,
+            pattern("deploy.submit")?,
+            "schedulers",
+            |_| Ok(()),
+        )
+        .await
+        .unwrap_err();
+    assert_error(
+        "actor unauthorized queue subscribe",
+        &unauthorized_queue,
+        |error| matches!(error, BusError::UnauthorizedQueue { .. }),
+    )?;
+
+    let response_error = Arc::new(Mutex::new(None));
+    let response_error_for_handler = Arc::clone(&response_error);
+    let intruder_for_handler = intruder_id.clone();
+    bus.subscribe(&admin, pattern("node.alpha.secure")?, move |ctx| {
+        let error = ctx
+            .reply_as(&intruder_for_handler, b"not allowed".to_vec())
+            .unwrap_err();
+        *response_error_for_handler
+            .lock()
+            .map_err(|_| BusError::HandlerFailed {
+                subject: String::from("node.alpha.secure"),
+                reason: String::from("response error lock poisoned"),
+            })? = Some(error);
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("actor secure responder subscribe failed: {error}"))?;
+    let secure_timeout = bus
+        .request(
+            &admin,
+            subject("node.alpha.secure")?,
+            Vec::new(),
+            Duration::from_millis(20),
+        )
+        .await
+        .unwrap_err();
+    assert_error("actor secure timeout", &secure_timeout, |error| {
+        matches!(error, BusError::Timeout { .. })
+    })?;
+    let stored_response_error = response_error
+        .lock()
+        .map_err(|_| String::from("actor response error lock poisoned"))?
+        .clone()
+        .ok_or_else(|| String::from("actor handler did not record unauthorized response"))?;
+    assert_error(
+        "actor unauthorized response",
+        &stored_response_error,
+        |error| matches!(error, BusError::UnauthorizedResponse { .. }),
+    )?;
+
     let snapshot = bus
         .runtime_snapshot()
         .await
@@ -136,6 +244,8 @@ async fn run_async() -> Result<(), String> {
         queue_deliveries: queue_deliveries.load(Ordering::SeqCst),
         request_many_replies: replies.len(),
         no_responders: 1,
+        timeouts: 2,
+        unauthorized_failures: 4,
         drain_rejections: 1,
         runtime_workers: snapshot.delivery_workers,
         elapsed_ms: started.elapsed().as_millis(),

@@ -230,7 +230,7 @@ impl ReplyPermit {
     }
 
     pub fn respond_as(&self, principal: &PrincipalId, payload: impl Into<Payload>) -> Result<()> {
-        if principal != &self.responder || Instant::now() > self.expires_at {
+        if principal != &self.responder || Instant::now() >= self.expires_at {
             return Err(BusError::UnauthorizedResponse {
                 principal: principal.clone(),
                 inbox: self.inbox.subject.clone(),
