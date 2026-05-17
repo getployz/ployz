@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -15,7 +16,7 @@ use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::timeout;
 
 use crate::{WireMetricsRecorder, WireRoleMetrics, WireServingState};
@@ -23,7 +24,9 @@ use crate::{WireMetricsRecorder, WireRoleMetrics, WireServingState};
 const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const BACKEND_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const BACKEND_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+const HTTP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_BACKEND_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_HTTP_CONNECTIONS: usize = 256;
 const MAX_LATENCY_SAMPLES: usize = 256;
 
 pub type HttpGatewayResult<T> = Result<T, HttpGatewayError>;
@@ -89,19 +92,35 @@ pub async fn spawn_http_gateway(
     let metrics = WireMetricsRecorder::new(MAX_LATENCY_SAMPLES);
     let server_metrics = metrics.clone();
     let task = tokio::spawn(async move {
+        let mut connections = JoinSet::new();
+        let state = Arc::new(state);
         loop {
             tokio::select! {
-                _ = &mut shutdown_rx => return Ok(()),
+                _ = &mut shutdown_rx => {
+                    connections.abort_all();
+                    while connections.join_next().await.is_some() {}
+                    return Ok(());
+                },
+                Some(joined) = connections.join_next(), if !connections.is_empty() => {
+                    let _ = joined;
+                },
                 accepted = listener.accept() => {
                     let (stream, _) = accepted.map_err(HttpGatewayError::Accept)?;
+                    if connections.len() >= MAX_HTTP_CONNECTIONS {
+                        continue;
+                    }
                     let io = TokioIo::new(stream);
-                    let state = state.clone();
+                    let state = Arc::clone(&state);
                     let metrics = server_metrics.clone();
-                    tokio::spawn(async move {
+                    connections.spawn(async move {
                         let service = service_fn(move |request| {
-                            handle_request(request, state.clone(), metrics.clone())
+                            handle_request(request, Arc::clone(&state), metrics.clone())
                         });
-                        let _ = http1::Builder::new().serve_connection(io, service).await;
+                        let _ = timeout(
+                            HTTP_CONNECTION_TIMEOUT,
+                            http1::Builder::new().serve_connection(io, service),
+                        )
+                        .await;
                     });
                 }
             }
@@ -117,11 +136,11 @@ pub async fn spawn_http_gateway(
 
 async fn handle_request(
     request: Request<Incoming>,
-    state: WireServingState,
+    state: Arc<WireServingState>,
     metrics: WireMetricsRecorder,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let started = Instant::now();
-    let response = match response_for_request(request, &state, &metrics).await {
+    let response = match response_for_request(request, state.as_ref(), &metrics).await {
         Ok(response) => response,
         Err(response) => response,
     };

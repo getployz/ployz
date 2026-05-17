@@ -15,7 +15,7 @@ pub use model::{
     ServingFailure, ServingFailureKind, ServingFreshness, ServingRevisions, ServingSnapshotBatch,
     ServingSnapshotKind, ServingSnapshotPaths, ServingStatus,
 };
-pub use wire::{WireMetricsRecorder, WireRoleMetrics, WireRoleStatus, WireServingState};
+pub use wire::{WireMetricsRecorder, WireRoleMetrics, WireServingState};
 
 #[cfg(test)]
 mod tests;
