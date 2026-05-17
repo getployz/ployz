@@ -1,3 +1,4 @@
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, SystemTime};
 
 use kameo::Actor;
@@ -16,12 +17,14 @@ use crate::{
 const SERVING_ACTOR_MAILBOX_CAPACITY: usize = 16;
 const SERVING_ACTOR_TIMEOUT: Duration = Duration::from_secs(5);
 
+type SharedSnapshots = Arc<RwLock<ServingSnapshotBatch>>;
+
 #[derive(Actor)]
 struct ServingActor {
     expected_island: IslandId,
     paths: ServingSnapshotPaths,
     stale_after: Duration,
-    batch: ServingSnapshotBatch,
+    snapshots: SharedSnapshots,
     loaded_at: SystemTime,
     reload_attempts: u64,
     last_reload_attempt_at: Option<SystemTime>,
@@ -34,14 +37,14 @@ impl ServingActor {
         expected_island: IslandId,
         paths: ServingSnapshotPaths,
         stale_after: Duration,
-        batch: ServingSnapshotBatch,
+        snapshots: SharedSnapshots,
         now: SystemTime,
     ) -> Self {
         Self {
             expected_island,
             paths,
             stale_after,
-            batch,
+            snapshots,
             loaded_at: now,
             reload_attempts: 0,
             last_reload_attempt_at: None,
@@ -60,7 +63,7 @@ impl ServingActor {
             ServingFreshness::Fresh
         };
         ServingStatus {
-            loaded_revisions: self.batch.revisions(),
+            loaded_revisions: read_snapshots(&self.snapshots).revisions(),
             loaded_at: self.loaded_at,
             snapshot_age,
             freshness,
@@ -75,6 +78,7 @@ impl ServingActor {
 #[derive(Clone)]
 pub struct ServingActorHandle {
     actor: ActorRef<ServingActor>,
+    snapshots: SharedSnapshots,
 }
 
 impl ServingActorHandle {
@@ -85,9 +89,11 @@ impl ServingActorHandle {
     ) -> ServingResult<Self> {
         let now = SystemTime::now();
         let batch = ServingSnapshotBatch::load(&paths, &expected_island)?;
+        let snapshots = Arc::new(RwLock::new(batch));
         Ok(Self {
+            snapshots: Arc::clone(&snapshots),
             actor: ServingActor::spawn_with_mailbox(
-                ServingActor::new(expected_island, paths, stale_after, batch, now),
+                ServingActor::new(expected_island, paths, stale_after, snapshots, now),
                 mailbox::bounded(SERVING_ACTOR_MAILBOX_CAPACITY),
             ),
         })
@@ -97,12 +103,7 @@ impl ServingActorHandle {
         &self,
         host: impl Into<String>,
     ) -> ServingResult<Option<GatewayRouteProjection>> {
-        self.actor
-            .ask(GatewayRouteForHost { host: host.into() })
-            .mailbox_timeout(SERVING_ACTOR_TIMEOUT)
-            .reply_timeout(SERVING_ACTOR_TIMEOUT)
-            .await
-            .map_err(|error| map_send_error("gateway_route_for_host", error))
+        Ok(read_snapshots(&self.snapshots).route_for_host(&host.into()))
     }
 
     pub async fn dns_records(
@@ -110,15 +111,7 @@ impl ServingActorHandle {
         name: impl Into<String>,
         record_type: impl Into<String>,
     ) -> ServingResult<Vec<DnsRecordProjection>> {
-        self.actor
-            .ask(DnsRecords {
-                name: name.into(),
-                record_type: record_type.into(),
-            })
-            .mailbox_timeout(SERVING_ACTOR_TIMEOUT)
-            .reply_timeout(SERVING_ACTOR_TIMEOUT)
-            .await
-            .map_err(|error| map_send_error("dns_records", error))
+        Ok(read_snapshots(&self.snapshots).dns_records(&name.into(), &record_type.into()))
     }
 
     pub async fn reload(&self) -> ServingResult<ServingStatus> {
@@ -140,39 +133,6 @@ impl ServingActorHandle {
     }
 }
 
-struct GatewayRouteForHost {
-    host: String,
-}
-
-impl Message<GatewayRouteForHost> for ServingActor {
-    type Reply = Option<GatewayRouteProjection>;
-
-    async fn handle(
-        &mut self,
-        message: GatewayRouteForHost,
-        _ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        self.batch.route_for_host(&message.host)
-    }
-}
-
-struct DnsRecords {
-    name: String,
-    record_type: String,
-}
-
-impl Message<DnsRecords> for ServingActor {
-    type Reply = Vec<DnsRecordProjection>;
-
-    async fn handle(
-        &mut self,
-        message: DnsRecords,
-        _ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        self.batch.dns_records(&message.name, &message.record_type)
-    }
-}
-
 struct ReloadSnapshots;
 
 impl Message<ReloadSnapshots> for ServingActor {
@@ -188,7 +148,7 @@ impl Message<ReloadSnapshots> for ServingActor {
         self.last_reload_attempt_at = Some(now);
         match ServingSnapshotBatch::load(&self.paths, &self.expected_island) {
             Ok(batch) => {
-                self.batch = batch;
+                *write_snapshots(&self.snapshots) = batch;
                 self.loaded_at = now;
                 self.last_reload_success_at = Some(now);
                 self.last_failure = None;
@@ -216,11 +176,12 @@ impl Message<ReadStatus> for ServingActor {
     }
 }
 
-fn map_send_error<T>(operation: &'static str, error: SendError<T>) -> ServingError {
-    ServingError::ActorUnavailable {
-        operation,
-        reason: error.to_string(),
-    }
+fn read_snapshots(snapshots: &SharedSnapshots) -> RwLockReadGuard<'_, ServingSnapshotBatch> {
+    snapshots.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn write_snapshots(snapshots: &SharedSnapshots) -> RwLockWriteGuard<'_, ServingSnapshotBatch> {
+    snapshots.write().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn map_serving_send_error<T>(

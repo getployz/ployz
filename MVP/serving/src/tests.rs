@@ -1,6 +1,6 @@
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hickory_proto::op::{Message, Query, ResponseCode};
 use hickory_proto::rr::{Name, RData, RecordType};
@@ -13,8 +13,8 @@ use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
-use tokio::time::timeout;
+use tokio::task::{JoinHandle, JoinSet};
+use tokio::time::{sleep, timeout};
 
 use crate::{
     ServingActorHandle, ServingError, ServingFailureKind, ServingFreshness, ServingSnapshotBatch,
@@ -457,6 +457,85 @@ async fn dns_server_records_malformed_packets_without_crashing() {
 }
 
 #[tokio::test]
+async fn wire_servers_handle_concurrent_requests_from_snapshot_state() {
+    let backend = TestBackend::spawn("backend-1").await;
+    let root = TempDir::new().expect("tempdir");
+    write_prod_snapshots(&root, "rev-1", &backend.addr().to_string(), "fd00::1");
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let wire = WireServingState::new(actor);
+    let gateway = spawn_http_gateway(loopback_any(), wire.clone())
+        .await
+        .expect("spawn http gateway");
+    let dns = spawn_dns_server(loopback_any(), wire)
+        .await
+        .expect("spawn dns server");
+
+    let mut http_requests = JoinSet::new();
+    for _ in 0..64 {
+        let addr = gateway.listen_addr();
+        http_requests.spawn(async move { http_get(addr, "web.example.test", "/health").await });
+    }
+    while let Some(joined) = http_requests.join_next().await {
+        let response = joined.expect("http request task");
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("backend-1"));
+    }
+
+    let mut dns_requests = JoinSet::new();
+    for _ in 0..64 {
+        let addr = dns.listen_addr();
+        dns_requests
+            .spawn(async move { dns_query(addr, "web.example.test.", RecordType::AAAA).await });
+    }
+    while let Some(joined) = dns_requests.join_next().await {
+        let response = joined.expect("dns request task");
+        assert_eq!(response.metadata.response_code, ResponseCode::NoError);
+        assert_eq!(response.answers.len(), 1);
+    }
+
+    assert_eq!(gateway.metrics().request_count, 64);
+    assert_eq!(dns.metrics().request_count, 64);
+    gateway.shutdown().await.expect("shutdown http gateway");
+    dns.shutdown().await.expect("shutdown dns server");
+    backend.shutdown().await;
+}
+
+#[tokio::test]
+async fn dropped_http_gateway_handle_releases_listener() {
+    let root = TempDir::new().expect("tempdir");
+    write_prod_snapshots(&root, "rev-1", "127.0.0.1:1", "fd00::1");
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let gateway = spawn_http_gateway(loopback_any(), WireServingState::new(actor))
+        .await
+        .expect("spawn http gateway");
+    let addr = gateway.listen_addr();
+
+    drop(gateway);
+
+    let rebound = wait_for_tcp_bind(addr).await;
+    drop(rebound);
+}
+
+#[tokio::test]
+async fn dropped_dns_server_handle_releases_listener() {
+    let root = TempDir::new().expect("tempdir");
+    write_prod_snapshots(&root, "rev-1", "127.0.0.1:1", "fd00::1");
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let server = spawn_dns_server(loopback_any(), WireServingState::new(actor))
+        .await
+        .expect("spawn dns server");
+    let addr = server.listen_addr();
+
+    drop(server);
+
+    let rebound = wait_for_udp_bind(addr).await;
+    drop(rebound);
+}
+
+#[tokio::test]
 async fn successful_reload_replaces_gateway_and_dns_together() {
     let root = TempDir::new().expect("tempdir");
     write_prod_snapshots(&root, "rev-1", "fd00::1:8080", "fd00::1");
@@ -570,6 +649,34 @@ async fn http_get(addr: SocketAddr, host: &str, path: &str) -> String {
         .expect("read response timeout")
         .expect("read response");
     String::from_utf8(response).expect("utf8 response")
+}
+
+async fn wait_for_tcp_bind(addr: SocketAddr) -> TcpListener {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match TcpListener::bind(addr).await {
+            Ok(listener) => return listener,
+            Err(error) if Instant::now() < deadline => {
+                let _ = error;
+                sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => panic!("tcp listener {addr} was not released: {error}"),
+        }
+    }
+}
+
+async fn wait_for_udp_bind(addr: SocketAddr) -> UdpSocket {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match UdpSocket::bind(addr).await {
+            Ok(socket) => return socket,
+            Err(error) if Instant::now() < deadline => {
+                let _ = error;
+                sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => panic!("udp listener {addr} was not released: {error}"),
+        }
+    }
 }
 
 async fn dns_query(addr: SocketAddr, name: &str, record_type: RecordType) -> Message {

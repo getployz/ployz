@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 
 use hickory_proto::op::{Message, Query, ResponseCode};
 use hickory_proto::rr::{Name, RData, RecordType};
+use mvp_serving::ServingFreshness;
 use serde::Serialize;
+use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::oneshot;
@@ -75,6 +77,7 @@ async fn run_async() -> Result<(), String> {
 
     let backend_1 = TestBackend::spawn("backend-1").await?;
     let backend_2 = TestBackend::spawn("backend-2").await?;
+    let backend_3 = TestBackend::spawn("backend-3").await?;
 
     let mut serving = spawn_process_role(
         "serving-projection",
@@ -156,16 +159,46 @@ async fn run_async() -> Result<(), String> {
     assert_http_answer(http_addr, "backend-2").await?;
     assert_dns_answer(dns_addr, "fd00::2").await?;
 
-    fs::write(root.join("dns.snapshot"), b"not json")
-        .map_err(|error| format!("corrupt dns snapshot: {error}"))?;
-    assert_wire_reload_fails(&http_socket).await?;
-    assert_wire_reload_fails(&dns_socket).await?;
-    assert_http_answer(http_addr, "backend-2").await?;
-    assert_dns_answer(dns_addr, "fd00::2").await?;
+    assert_failed_snapshot_reload_preserves_wire(
+        SnapshotFailureCase::CorruptJson,
+        &root,
+        &serving_socket,
+        &http_socket,
+        &dns_socket,
+        http_addr,
+        dns_addr,
+    )
+    .await?;
+    assert_failed_snapshot_reload_preserves_wire(
+        SnapshotFailureCase::MissingFile,
+        &root,
+        &serving_socket,
+        &http_socket,
+        &dns_socket,
+        http_addr,
+        dns_addr,
+    )
+    .await?;
+    assert_failed_snapshot_reload_preserves_wire(
+        SnapshotFailureCase::WrongIsland,
+        &root,
+        &serving_socket,
+        &http_socket,
+        &dns_socket,
+        http_addr,
+        dns_addr,
+    )
+    .await?;
 
-    request_project_once(&serving_socket).await?;
-    reload_wire_role(&http_socket).await?;
-    reload_wire_role(&dns_socket).await?;
+    run_remote_injector(
+        &root,
+        "remote-scheduler",
+        "serving-3",
+        &backend_3.addr().to_string(),
+        "fd00::3",
+        3,
+    )
+    .await?;
 
     fs::remove_file(root.join("projections.sqlite"))
         .map_err(|error| format!("delete projection sqlite during wire serving: {error}"))?;
@@ -174,9 +207,21 @@ async fn run_async() -> Result<(), String> {
     assert_http_answer(http_addr, "backend-2").await?;
     assert_dns_answer(dns_addr, "fd00::2").await?;
     let rebuild_probe_success_count = 2;
-    request_await_rebuild(&serving_socket, token).await?;
+    let rebuild_summary = request_await_rebuild(&serving_socket, token).await?;
+    assert_eq_named(
+        "rebuilt gateway route count",
+        rebuild_summary.gateway_route_count,
+        1,
+    )?;
+    assert_eq_named(
+        "rebuilt dns record count",
+        rebuild_summary.dns_record_count,
+        1,
+    )?;
     reload_wire_role(&http_socket).await?;
     reload_wire_role(&dns_socket).await?;
+    assert_http_answer(http_addr, "backend-3").await?;
+    assert_dns_answer(dns_addr, "fd00::3").await?;
     let projection_rebuild_us = rebuild_started.elapsed().as_micros();
 
     request_wire_role(&http_socket, &WireRoleRequest::Shutdown)
@@ -193,7 +238,7 @@ async fn run_async() -> Result<(), String> {
         &["--listen", "127.0.0.1:0"],
     )?;
     let restarted_http_addr = wait_for_wire_role(&restarted_http_socket).await?;
-    assert_http_answer(restarted_http_addr, "backend-2").await?;
+    assert_http_answer(restarted_http_addr, "backend-3").await?;
     let http_restart_us = http_restart_started.elapsed().as_micros();
 
     request_wire_role(&dns_socket, &WireRoleRequest::Shutdown)
@@ -210,12 +255,12 @@ async fn run_async() -> Result<(), String> {
         &["--listen", "127.0.0.1:0"],
     )?;
     let restarted_dns_addr = wait_for_wire_role(&restarted_dns_socket).await?;
-    assert_dns_answer(restarted_dns_addr, "fd00::2").await?;
+    assert_dns_answer(restarted_dns_addr, "fd00::3").await?;
     let dns_restart_us = dns_restart_started.elapsed().as_micros();
 
     send_malformed_dns(restarted_dns_addr).await?;
     wait_for_malformed_dns_count(&restarted_dns_socket, 1).await?;
-    assert_dns_answer(restarted_dns_addr, "fd00::2").await?;
+    assert_dns_answer(restarted_dns_addr, "fd00::3").await?;
 
     let final_http_status = request_wire_status(&restarted_http_socket).await?;
     let final_dns_status = request_wire_status(&restarted_dns_socket).await?;
@@ -235,6 +280,7 @@ async fn run_async() -> Result<(), String> {
     serving.wait_for_exit().await?;
     backend_1.shutdown().await;
     backend_2.shutdown().await;
+    backend_3.shutdown().await;
 
     let report = WireServingReport {
         scenario: "wire-serving-contract",
@@ -274,6 +320,14 @@ async fn run_async() -> Result<(), String> {
         2,
     )?;
     assert_eq_named("malformed dns count", report.malformed_dns_count, 1)?;
+    assert_metric_positive("http reload latency", report.http_reload_latency_us)?;
+    assert_metric_positive("dns reload latency", report.dns_reload_latency_us)?;
+    assert_metric_positive("projection rebuild latency", report.projection_rebuild_us)?;
+    assert_metric_positive("http restart latency", report.http_restart_us)?;
+    assert_metric_positive("dns restart latency", report.dns_restart_us)?;
+    assert_eq_named("final http request count", report.http_request_count, 1)?;
+    assert_eq_named("final dns request count", report.dns_request_count, 3)?;
+    assert_eq_named("backend failure count", report.backend_failure_count, 0)?;
     if report.http_latency_samples_us.is_empty() || report.dns_latency_samples_us.is_empty() {
         return Err("wire latency samples must be present".to_string());
     }
@@ -326,6 +380,88 @@ async fn assert_wire_reload_fails(socket: &Path) -> Result<(), String> {
             "wire reload transport failed unexpectedly: {message}"
         )),
         Ok(success) => Err(format!("wire reload unexpectedly succeeded: {success:?}")),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotFailureCase {
+    CorruptJson,
+    MissingFile,
+    WrongIsland,
+}
+
+async fn assert_failed_snapshot_reload_preserves_wire(
+    case: SnapshotFailureCase,
+    root: &Path,
+    serving_socket: &Path,
+    http_socket: &Path,
+    dns_socket: &Path,
+    http_addr: SocketAddr,
+    dns_addr: SocketAddr,
+) -> Result<(), String> {
+    apply_snapshot_failure(case, root)?;
+    assert_wire_reload_fails(http_socket).await?;
+    assert_wire_reload_fails(dns_socket).await?;
+    assert_last_good_failure_status(http_socket).await?;
+    assert_last_good_failure_status(dns_socket).await?;
+    assert_http_answer(http_addr, "backend-2").await?;
+    assert_dns_answer(dns_addr, "fd00::2").await?;
+
+    request_project_once(serving_socket).await?;
+    reload_wire_role(http_socket).await?;
+    reload_wire_role(dns_socket).await?;
+    assert_http_answer(http_addr, "backend-2").await?;
+    assert_dns_answer(dns_addr, "fd00::2").await
+}
+
+fn apply_snapshot_failure(case: SnapshotFailureCase, root: &Path) -> Result<(), String> {
+    let dns_snapshot = root.join("dns.snapshot");
+    match case {
+        SnapshotFailureCase::CorruptJson => fs::write(&dns_snapshot, b"not json")
+            .map_err(|error| format!("corrupt dns snapshot: {error}")),
+        SnapshotFailureCase::MissingFile => {
+            fs::remove_file(&dns_snapshot).map_err(|error| format!("delete dns snapshot: {error}"))
+        }
+        SnapshotFailureCase::WrongIsland => {
+            let bytes = fs::read(&dns_snapshot)
+                .map_err(|error| format!("read dns snapshot for wrong island: {error}"))?;
+            let mut json = serde_json::from_slice::<Value>(&bytes)
+                .map_err(|error| format!("parse dns snapshot for wrong island: {error}"))?;
+            let Value::Object(object) = &mut json else {
+                return Err("dns snapshot was not a JSON object".to_string());
+            };
+            object.insert("island".to_string(), Value::String("laptop".to_string()));
+            fs::write(
+                &dns_snapshot,
+                serde_json::to_vec(&json)
+                    .map_err(|error| format!("encode wrong-island dns snapshot: {error}"))?,
+            )
+            .map_err(|error| format!("write wrong-island dns snapshot: {error}"))
+        }
+    }
+}
+
+async fn assert_last_good_failure_status(socket: &Path) -> Result<(), String> {
+    let status = request_wire_status(socket).await?;
+    match status.serving {
+        RoleServingStatus::Available {
+            freshness,
+            last_failure,
+            ..
+        } => {
+            assert_eq_named(
+                "wire freshness after failed reload",
+                freshness,
+                ServingFreshness::ServingLastGoodAfterFailure,
+            )?;
+            if last_failure.is_none() {
+                return Err("wire status did not record reload failure".to_string());
+            }
+            Ok(())
+        }
+        other => Err(format!(
+            "wire status unavailable after failed reload: {other:?}"
+        )),
     }
 }
 
@@ -431,6 +567,13 @@ async fn wait_for_malformed_dns_count(socket: &Path, expected: u64) -> Result<()
         }
         sleep(ROLE_REQUEST_PAUSE).await;
     }
+}
+
+fn assert_metric_positive(name: &str, value: u128) -> Result<(), String> {
+    if value == 0 {
+        return Err(format!("{name} must be positive"));
+    }
+    Ok(())
 }
 
 fn snapshot_age_us(status: &WireProcessStatus) -> Result<u64, String> {
