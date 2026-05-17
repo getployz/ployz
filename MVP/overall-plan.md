@@ -37,6 +37,8 @@ The end state is a Ployz foundation where:
 - The proof is a strong E2E suite, not just architectural plausibility.
 - The code shape proves the primitives are right: real business behavior should
   require far less orchestration glue than the previous foundation.
+- New implementation work stays isolated under `MVP/` until the MVP foundation
+  has enough proof to justify migration into existing crates.
 
 ## Why This Exists
 
@@ -172,6 +174,11 @@ them:
 The gateway/DNS change should be about their control-plane input model: local
 snapshots and projections first, not direct dependency on a live NATS store.
 
+While the MVP is being proven, do not modify the existing codebase. Build new
+experimental code under `MVP/` and use the old code only as reference material.
+Migration into `crates/`, root workspace files, or existing docs should be a
+separate explicit decision after the MVP evidence exists.
+
 ## Current Code To Challenge
 
 Challenge these areas during future slice planning:
@@ -205,7 +212,7 @@ The slice plan should decide:
 - the single proof target for the slice,
 - why that target is the next best step,
 - what existing code should be reused,
-- what new crates/modules are justified,
+- what new MVP-local crates/modules are justified,
 - what must remain out of scope,
 - the minimum E2E or simulation proof,
 - targeted unit/integration tests,
@@ -214,6 +221,7 @@ The slice plan should decide:
 - what semantic-leverage metric the slice will inspect, such as lines of
   feature logic versus substrate glue, number of files touched to add a product
   rule, or clarity of business invariants in tests.
+- how the slice stays isolated under `MVP/`.
 
 The slice plan should not blindly follow a prewritten backlog. It should inspect
 the code and choose the next boundary.
@@ -233,8 +241,9 @@ After a slice plan exists:
 9. Commit the slice.
 10. Push the branch.
 
-For broad daemon/runtime/backend changes, run `just test-all` before pushing.
-For narrower code, run the relevant crate tests plus `just test` when feasible.
+While the rewrite is isolated, run MVP-local checks from inside `MVP/` before
+pushing. Repo-level `just` targets and full-workspace checks come later only as
+part of an explicit migration into the existing codebase.
 
 ## Commit And Branch Protocol
 
@@ -323,7 +332,8 @@ Defer these until an E2E proof or product requirement makes them necessary:
 Future slice plans should resolve these only when they become blocking:
 
 - Whether the first implementation should integrate into existing `ployzd` or
-  run as a parallel MVP daemon path until the proof harness passes.
+  run as a parallel MVP daemon path until the proof harness passes. Current
+  direction: keep it under `MVP/` until explicitly changed.
 - Which current iroh-docs/iroh-sync APIs are stable enough for the repo's Rust
   toolchain.
 - Whether Kameo remote actors should be avoided entirely at first, keeping all
