@@ -10,7 +10,7 @@ use tempfile::TempDir;
 
 use crate::{
     ServingActorHandle, ServingError, ServingFailureKind, ServingFreshness, ServingSnapshotBatch,
-    ServingSnapshotKind, ServingSnapshotPaths,
+    ServingSnapshotKind, ServingSnapshotPaths, WireServingState,
 };
 
 fn snapshot_paths(root: &TempDir) -> ServingSnapshotPaths {
@@ -231,6 +231,71 @@ async fn actor_serves_gateway_and_dns_from_last_good_snapshots() {
     assert_eq!(status.loaded_revisions.dns, "rev-1");
     assert_eq!(status.reload_attempts, 0);
     assert_eq!(status.freshness, ServingFreshness::Fresh);
+}
+
+#[tokio::test]
+async fn wire_state_delegates_queries_and_status_to_serving_actor() {
+    let root = TempDir::new().expect("tempdir");
+    write_prod_snapshots(&root, "rev-1", "fd00::1:8080", "fd00::1");
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let wire = WireServingState::new(actor);
+
+    let route = wire
+        .gateway_route_for_host("WEB.EXAMPLE.TEST")
+        .await
+        .expect("query route")
+        .expect("route");
+    let records = wire
+        .dns_records("web.example.test", "aaaa")
+        .await
+        .expect("query dns");
+    let status = wire.status().await.expect("status");
+
+    assert_eq!(route.backends[0].address, "fd00::1:8080");
+    assert_eq!(records[0].value, "fd00::1");
+    assert_eq!(status.loaded_revisions.gateway, "rev-1");
+    assert_eq!(status.loaded_revisions.dns, "rev-1");
+}
+
+#[tokio::test]
+async fn wire_state_reload_preserves_last_good_failure_semantics() {
+    let root = TempDir::new().expect("tempdir");
+    let paths = snapshot_paths(&root);
+    write_prod_snapshots(&root, "rev-1", "fd00::1:8080", "fd00::1");
+    let actor = ServingActorHandle::spawn(prod(), paths.clone(), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let wire = WireServingState::new(actor);
+    fs::write(&paths.dns, b"not json").expect("corrupt dns snapshot");
+
+    let error = wire.reload().await.expect_err("reload should fail");
+    let route = wire
+        .gateway_route_for_host("web.example.test")
+        .await
+        .expect("query route")
+        .expect("route");
+    let records = wire
+        .dns_records("web.example.test", "AAAA")
+        .await
+        .expect("query dns");
+    let status = wire.status().await.expect("status");
+
+    assert!(matches!(
+        error,
+        ServingError::SnapshotLoad {
+            failure
+        } if failure.kind == ServingFailureKind::InvalidSnapshotJson
+            && failure.snapshot == Some(ServingSnapshotKind::Dns)
+    ));
+    assert_eq!(route.backends[0].address, "fd00::1:8080");
+    assert_eq!(records[0].value, "fd00::1");
+    assert_eq!(status.loaded_revisions.gateway, "rev-1");
+    assert_eq!(status.loaded_revisions.dns, "rev-1");
+    assert!(status.last_failure.is_some());
+    assert_eq!(
+        status.freshness,
+        ServingFreshness::ServingLastGoodAfterFailure
+    );
 }
 
 #[tokio::test]
