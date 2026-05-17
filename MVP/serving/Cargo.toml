@@ -1,0 +1,22 @@
+[package]
+name = "mvp-serving"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "mvp_serving"
+path = "src/lib.rs"
+
+[dependencies]
+kameo = "0.20"
+mvp-bus = { path = "../bus" }
+mvp-projection = { path = "../projection" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
