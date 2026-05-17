@@ -27,7 +27,6 @@ impl Display for BridgeRuleId {
 pub enum BridgeState {
     Enabled,
     Disabled,
-    RemoteUnavailable,
 }
 
 impl Display for BridgeState {
@@ -35,7 +34,6 @@ impl Display for BridgeState {
         match self {
             Self::Enabled => f.write_str("enabled"),
             Self::Disabled => f.write_str("disabled"),
-            Self::RemoteUnavailable => f.write_str("remote unavailable"),
         }
     }
 }

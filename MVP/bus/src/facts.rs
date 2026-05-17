@@ -3,7 +3,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::ops::Bound;
 
-use crate::{BusError, IslandId, Payload, PrincipalId, Result};
+use crate::{IslandId, Payload, PrincipalId, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FactKeyParseError {
@@ -206,12 +206,13 @@ impl Fact {
 pub enum FactWriteOutcome {
     Inserted(Fact),
     AlreadyPresent(Fact),
+    Conflict(Fact),
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct InMemoryFactSet {
-    facts: BTreeMap<FactIdentity, Fact>,
-    payloads: BTreeMap<FactIdentity, FactPayload>,
+    facts: BTreeMap<FactIdentity, BTreeMap<FactContentHash, Fact>>,
+    payloads: BTreeMap<FactPayloadIdentity, FactPayload>,
 }
 
 impl InMemoryFactSet {
@@ -245,31 +246,60 @@ impl InMemoryFactSet {
         payload: Option<FactPayload>,
     ) -> Result<FactWriteOutcome> {
         let identity = FactIdentity::new(&island, &key);
-        if let Some(existing) = self.facts.get(&identity) {
-            if existing.content_hash == content_hash {
+        if let Some(existing_by_hash) = self.facts.get_mut(&identity) {
+            if let Some(existing) = existing_by_hash.get(&content_hash) {
                 if let Some(payload) = payload {
-                    self.payloads.insert(identity, payload);
+                    self.payloads
+                        .insert(FactPayloadIdentity::new(identity, content_hash), payload);
                 }
                 return Ok(FactWriteOutcome::AlreadyPresent(existing.clone()));
             }
-            return Err(BusError::FactConflict {
-                island,
-                key: Box::new(key),
-                existing: existing.content_hash.clone(),
-                attempted: content_hash,
-            });
+            if existing_by_hash.len() >= 2 {
+                let existing = existing_by_hash
+                    .values()
+                    .next()
+                    .expect("existing_by_hash has at least one fact");
+                return Ok(FactWriteOutcome::Conflict(existing.clone()));
+            }
+            let fact = Fact::new(island, key, author, content_hash.clone());
+            existing_by_hash.insert(content_hash.clone(), fact.clone());
+            if let Some(payload) = payload {
+                self.payloads
+                    .insert(FactPayloadIdentity::new(identity, content_hash), payload);
+            }
+            return Ok(FactWriteOutcome::Conflict(fact));
         }
 
-        if let Some(payload) = payload.clone() {
-            self.payloads.insert(identity.clone(), payload);
+        let fact = Fact::new(island, key, author, content_hash.clone());
+        self.facts.insert(
+            identity.clone(),
+            BTreeMap::from([(content_hash.clone(), fact.clone())]),
+        );
+        if let Some(payload) = payload {
+            self.payloads
+                .insert(FactPayloadIdentity::new(identity, content_hash), payload);
         }
-        let fact = Fact::new(island, key, author, content_hash);
-        self.facts.insert(identity, fact.clone());
         Ok(FactWriteOutcome::Inserted(fact))
     }
 
     pub(crate) fn read(&self, island: &IslandId, key: &FactKey) -> Option<Fact> {
-        self.facts.get(&FactIdentity::new(island, key)).cloned()
+        let facts = self.facts.get(&FactIdentity::new(island, key))?;
+        match facts.values().collect::<Vec<_>>().as_slice() {
+            [fact] => Some((*fact).clone()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn read_exact(
+        &self,
+        island: &IslandId,
+        key: &FactKey,
+        content_hash: &FactContentHash,
+    ) -> Option<Fact> {
+        self.facts
+            .get(&FactIdentity::new(island, key))?
+            .get(content_hash)
+            .cloned()
     }
 
     pub(crate) fn list_filtered(
@@ -280,16 +310,27 @@ impl InMemoryFactSet {
     ) -> Vec<Fact> {
         self.facts
             .range(FactIdentity::scan_bounds(island, pattern))
-            .filter(|(identity, _fact)| {
+            .filter(|(identity, _facts)| {
                 identity.island == *island && pattern.matches(&identity.key)
             })
-            .filter(|(_identity, fact)| include(fact))
-            .map(|(_identity, fact)| fact.clone())
+            .flat_map(|(_identity, facts)| facts.values())
+            .filter(|fact| include(fact))
+            .cloned()
             .collect()
     }
 
-    pub(crate) fn payload(&self, island: &IslandId, key: &FactKey) -> Option<FactPayload> {
-        self.payloads.get(&FactIdentity::new(island, key)).cloned()
+    pub(crate) fn payload(
+        &self,
+        island: &IslandId,
+        key: &FactKey,
+        content_hash: &FactContentHash,
+    ) -> Option<FactPayload> {
+        self.payloads
+            .get(&FactPayloadIdentity::new(
+                FactIdentity::new(island, key),
+                content_hash.clone(),
+            ))
+            .cloned()
     }
 }
 
@@ -330,6 +371,18 @@ impl FactIdentity {
                 },
             }),
         )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct FactPayloadIdentity {
+    fact: FactIdentity,
+    content_hash: FactContentHash,
+}
+
+impl FactPayloadIdentity {
+    fn new(fact: FactIdentity, content_hash: FactContentHash) -> Self {
+        Self { fact, content_hash }
     }
 }
 
@@ -391,7 +444,7 @@ mod tests {
     use super::{
         FactContentHash, FactKey, FactKeyPattern, FactPayload, FactWriteOutcome, InMemoryFactSet,
     };
-    use crate::{BusError, IslandId, PrincipalId};
+    use crate::{IslandId, PrincipalId};
 
     fn island(name: &str) -> IslandId {
         IslandId::new(name)
@@ -430,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn fact_writes_are_immutable_and_idempotent() {
+    fn fact_writes_are_immutable_idempotent_and_allow_conflict_candidates() {
         let mut facts = InMemoryFactSet::default();
         let inserted = facts
             .write(
@@ -455,11 +508,34 @@ mod tests {
                 key("/facts/a"),
                 hash("h2"),
             )
-            .unwrap_err();
+            .expect("write conflicting candidate");
 
         assert!(matches!(inserted, FactWriteOutcome::Inserted(_)));
         assert!(matches!(repeated, FactWriteOutcome::AlreadyPresent(_)));
-        assert!(matches!(conflict, BusError::FactConflict { .. }));
+        assert!(matches!(conflict, FactWriteOutcome::Conflict(_)));
+        assert_eq!(
+            facts
+                .list_filtered(&island("prod"), &pattern("/facts/>"), |_| true)
+                .len(),
+            2
+        );
+        assert!(facts.read(&island("prod"), &key("/facts/a")).is_none());
+
+        let third = facts
+            .write(
+                island("prod"),
+                principal("admin"),
+                key("/facts/a"),
+                hash("h3"),
+            )
+            .expect("third conflicting write is bounded");
+        assert!(matches!(third, FactWriteOutcome::Conflict(_)));
+        assert_eq!(
+            facts
+                .list_filtered(&island("prod"), &pattern("/facts/>"), |_| true)
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -497,21 +573,25 @@ mod tests {
         };
         assert_eq!(fact.content_hash(), &expected_hash);
         assert_eq!(
-            facts.payload(&island("prod"), &key("/facts/routes/r1")),
+            facts.payload(&island("prod"), &key("/facts/routes/r1"), &expected_hash),
             Some(payload)
         );
     }
 
     #[test]
-    fn payload_writes_are_idempotent_and_conflict_on_changed_body() {
+    fn payload_writes_store_conflicting_bodies_by_hash() {
         let mut facts = InMemoryFactSet::default();
         let key = key("/facts/routes/r1");
+        let first_payload = payload("route-commit");
+        let first_hash = FactContentHash::for_payload(&first_payload);
+        let changed_payload = payload("changed");
+        let changed_hash = FactContentHash::for_payload(&changed_payload);
         facts
             .write_payload(
                 island("prod"),
                 principal("admin"),
                 key.clone(),
-                payload("route-commit"),
+                first_payload.clone(),
             )
             .expect("insert payload fact");
         let repeated = facts
@@ -523,11 +603,36 @@ mod tests {
             )
             .expect("repeat payload fact");
         let conflict = facts
-            .write_payload(island("prod"), principal("admin"), key, payload("changed"))
-            .unwrap_err();
+            .write_payload(
+                island("prod"),
+                principal("admin"),
+                key.clone(),
+                changed_payload.clone(),
+            )
+            .expect("write conflicting payload fact");
 
         assert!(matches!(repeated, FactWriteOutcome::AlreadyPresent(_)));
-        assert!(matches!(conflict, BusError::FactConflict { .. }));
+        assert!(matches!(conflict, FactWriteOutcome::Conflict(_)));
+        assert_eq!(
+            facts.payload(&island("prod"), &key, &first_hash),
+            Some(first_payload)
+        );
+        assert_eq!(
+            facts.payload(&island("prod"), &key, &changed_hash),
+            Some(changed_payload)
+        );
+        let dropped_payload = payload("dropped");
+        let dropped_hash = FactContentHash::for_payload(&dropped_payload);
+        let third = facts
+            .write_payload(
+                island("prod"),
+                principal("admin"),
+                key.clone(),
+                dropped_payload,
+            )
+            .expect("third conflicting payload write is bounded");
+        assert!(matches!(third, FactWriteOutcome::Conflict(_)));
+        assert_eq!(facts.payload(&island("prod"), &key, &dropped_hash), None);
     }
 
     #[test]

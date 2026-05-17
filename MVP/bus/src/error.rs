@@ -2,8 +2,8 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
 use crate::{
-    BridgeRuleId, BridgeRuleViolation, FactContentHash, FactKey, FactKeyParseError, IslandId,
-    PrincipalId, QueueName, RequestTarget, Subject, SubjectPattern,
+    BridgeRuleId, BridgeRuleViolation, FactKey, FactKeyParseError, IslandId, PrincipalId,
+    QueueName, RequestTarget, Subject, SubjectPattern,
 };
 
 pub type Result<T> = std::result::Result<T, BusError>;
@@ -70,14 +70,12 @@ impl Display for ActorFailure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeFailure {
     Disabled,
-    RemoteUnavailable,
 }
 
 impl Display for BridgeFailure {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Disabled => f.write_str("disabled"),
-            Self::RemoteUnavailable => f.write_str("remote unavailable"),
         }
     }
 }
@@ -125,12 +123,6 @@ pub enum BusError {
         island: IslandId,
         principal: PrincipalId,
         key: Box<FactKey>,
-    },
-    FactConflict {
-        island: IslandId,
-        key: Box<FactKey>,
-        existing: FactContentHash,
-        attempted: FactContentHash,
     },
     BridgeRuleInvalid {
         violation: BridgeRuleViolation,
@@ -246,17 +238,6 @@ impl Display for BusError {
                 key,
             } => {
                 write!(f, "{principal} may not read fact {key} in {island}")
-            }
-            Self::FactConflict {
-                island,
-                key,
-                existing,
-                attempted,
-            } => {
-                write!(
-                    f,
-                    "fact {key} in {island} already has content {existing}, got {attempted}"
-                )
             }
             Self::BridgeRuleInvalid { violation } => {
                 write!(f, "invalid bridge rule: {violation}")

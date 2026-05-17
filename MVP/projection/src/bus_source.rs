@@ -29,11 +29,23 @@ impl FactSource for BusFactSource {
         if island != session.island() {
             return Ok(Vec::new());
         }
-        let candidates = self
-            .bus
-            .list_facts(session, pattern)?
+        let facts = self.bus.list_facts(session, pattern)?;
+        let mut counts = BTreeMap::new();
+        for fact in &facts {
+            *counts
+                .entry((fact.island().clone(), fact.key().clone()))
+                .or_insert(0usize) += 1;
+        }
+        let candidates = facts
             .into_iter()
-            .map(fact_to_candidate)
+            .map(|fact| {
+                let status = if counts[&(fact.island().clone(), fact.key().clone())] > 1 {
+                    CandidateStatus::Conflict
+                } else {
+                    CandidateStatus::Verified
+                };
+                fact_to_candidate(fact, status)
+            })
             .collect();
         Ok(candidates)
     }
@@ -55,7 +67,7 @@ impl FactSource for BusFactSource {
     }
 }
 
-fn fact_to_candidate(fact: Fact) -> FactCandidate {
+fn fact_to_candidate(fact: Fact, status: CandidateStatus) -> FactCandidate {
     FactCandidate::new(
         fact.island().clone(),
         fact.key().clone(),
@@ -63,7 +75,7 @@ fn fact_to_candidate(fact: Fact) -> FactCandidate {
         fact.content_hash().clone(),
         kind_for_key(fact.key()),
         epoch_for_key(fact.key()),
-        CandidateStatus::Verified,
+        status,
     )
 }
 
