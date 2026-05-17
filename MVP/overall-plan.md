@@ -233,8 +233,9 @@ Expected while the coordinator is down:
 - WireGuard configuration remains active and service-to-service traffic across
   nodes continues,
 - HTTP/DNS serving continues from last good local state,
-- local serving-state appliers may keep applying already-replicated facts if
-  they are separate from the coordinator role,
+- fact-sync, projection, and snapshot applier roles keep applying
+  already-replicated serving-state facts and publishing atomic gateway/DNS
+  snapshots,
 - the node reports coordinator health/staleness visibly, rather than silently
   claiming all control-plane capabilities are healthy.
 
@@ -247,8 +248,8 @@ Unavailable while the coordinator is down:
 
 This distinction should drive future process-role design. We may still ship one
 binary, but the coordinator, data-plane serving, workload runtime, and
-state-applier responsibilities must not share a fate unless an E2E proof says
-that is acceptable.
+state-applier responsibilities must not share a fate. Any exception has to be
+called out as a lost MVP invariant before it is accepted.
 
 ## Planning Protocol For Future Slices
 

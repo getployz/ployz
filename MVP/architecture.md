@@ -107,10 +107,19 @@ When the coordinator role is down:
 - existing workloads keep running,
 - WireGuard keeps carrying service-to-service traffic with last applied config,
 - HTTP/DNS serving keeps answering from last good local state,
-- local state appliers can keep applying already-replicated serving-state facts
-  if they are not part of the crashed coordinator role,
+- fact-sync, projection, and snapshot applier roles keep consuming
+  already-authorized replicated serving-state facts and can publish new local
+  gateway/DNS snapshots without the coordinator,
 - new mutations and operator commands for that node fail visibly until the
   coordinator returns.
+
+That means "daemon" cannot be shorthand for every local control-plane
+responsibility. The coordinator proposes and coordinates changes. Separate
+steady-state actors or process roles apply already-committed local state to
+snapshots and data-plane configuration. Killing the coordinator should remove
+the node's ability to accept fresh mutations; it should not remove its ability
+to serve, route, resolve DNS, keep workloads alive, or observe replicated
+commits that other live coordinators have already made.
 
 ## Actor Ownership Boundaries
 
@@ -155,9 +164,9 @@ Ownership rules to preserve as these boundaries become real:
 - `WireGuardActor` owns full-mesh peer reconciliation for the MVP.
 - `DeployCoordinatorActor` owns deploy state machines and durable commit
   boundaries.
-- Steady-state appliers are not the same thing as deploy coordinators. Applying
-  already-replicated serving state should be able to survive coordinator
-  failure if the process-role design keeps those responsibilities separate.
+- Steady-state appliers are not deploy coordinators. Applying
+  already-replicated serving state must survive coordinator failure in the MVP
+  process-role design.
 
 Actors communicate with typed messages. No subsystem should reach into another
 actor's internal state.
