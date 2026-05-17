@@ -18,13 +18,13 @@ hyper-util = { version = "0.1", features = ["server", "http1", "tokio"] }
 kameo = "0.20"
 mvp-acme = { path = "../acme" }
 mvp-bus = { path = "../bus" }
+mvp-lease = { path = "../lease" }
 mvp-projection = { path = "../projection" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "net", "rt", "sync", "time"] }
 
 [dev-dependencies]
-mvp-lease = { path = "../lease" }
 serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

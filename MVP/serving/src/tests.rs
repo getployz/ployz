@@ -1,6 +1,6 @@
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hickory_proto::op::{Message, Query, ResponseCode};
 use hickory_proto::rr::{Name, RData, RecordType};
@@ -138,6 +138,7 @@ fn acme_challenge(host: &str, token: &str, thumbprint: &str) -> AcmeHttp01Challe
         lease_epoch,
         claim_hash: LeaseFact::Claimed(claim).content_hash(),
         published_at: LeaseTimestamp::from_secs(101),
+        expires_at: future_lease_timestamp(),
     }
 }
 
@@ -221,6 +222,7 @@ fn batch_indexes_acme_challenges_by_canonical_host_and_token() {
         ServingSnapshotBatch::load(&snapshot_paths(&root), &prod()).expect("load snapshot batch");
     let key_authorization = batch
         .acme_http01_challenge("EXAMPLE.TEST:443", "tokAcme0123456789abcdef")
+        .expect("read ACME challenge")
         .expect("challenge indexed");
 
     assert_eq!(
@@ -228,6 +230,64 @@ fn batch_indexes_acme_challenges_by_canonical_host_and_token() {
         "tokAcme0123456789abcdef.thumbprintA"
     );
     assert_eq!(batch.acme_http01_challenge_count(), 1);
+}
+
+#[test]
+fn batch_rejects_acme_challenge_with_mismatched_key_authorization() {
+    let root = TempDir::new().expect("tempdir");
+    let mut gateway = empty_gateway_snapshot("prod", "rev-acme");
+    gateway.acme_http01.push(acme_challenge(
+        "Example.Test",
+        "tokAcme0123456789abcdef",
+        "thumbprintA",
+    ));
+    let paths = snapshot_paths(&root);
+    let mut gateway_json = serde_json::to_value(&gateway).expect("gateway snapshot json");
+    gateway_json["acme_http01"][0]["key_authorization"] = serde_json::json!("other.thumbprintA");
+    fs::write(
+        &paths.gateway,
+        serde_json::to_vec(&gateway_json).expect("serialize invalid gateway snapshot"),
+    )
+    .expect("write gateway snapshot");
+    fs::write(
+        &paths.dns,
+        serde_json::to_vec(&empty_dns_snapshot("prod", "rev-acme")).expect("serialize dns"),
+    )
+    .expect("write dns snapshot");
+
+    let error =
+        ServingSnapshotBatch::load(&paths, &prod()).expect_err("invalid ACME snapshot fails");
+
+    assert!(matches!(
+        error,
+        ServingError::SnapshotLoad {
+            failure
+        } if failure.kind == ServingFailureKind::InvalidAcmeHttp01Snapshot
+            && failure.snapshot == Some(ServingSnapshotKind::Gateway)
+    ));
+}
+
+#[test]
+fn batch_does_not_return_expired_acme_challenge() {
+    let root = TempDir::new().expect("tempdir");
+    let mut gateway = empty_gateway_snapshot("prod", "rev-acme");
+    let mut challenge = acme_challenge("Example.Test", "tokAcme0123456789abcdef", "thumbprintA");
+    challenge.expires_at = LeaseTimestamp::from_secs(1);
+    gateway.acme_http01.push(challenge);
+    write_snapshot_files(&root, &gateway, &empty_dns_snapshot("prod", "rev-acme"));
+
+    let batch =
+        ServingSnapshotBatch::load(&snapshot_paths(&root), &prod()).expect("load snapshot batch");
+
+    assert!(
+        batch
+            .acme_http01_challenge_at(
+                "example.test",
+                "tokAcme0123456789abcdef",
+                LeaseTimestamp::from_secs(2),
+            )
+            .is_none()
+    );
 }
 
 #[test]
@@ -436,6 +496,75 @@ async fn http_gateway_serves_acme_http01_challenge_before_route_lookup() {
     );
     assert_eq!(gateway.metrics().request_count, 1);
     assert_eq!(gateway.metrics().backend_failure_count, 0);
+    gateway.shutdown().await.expect("shutdown gateway");
+}
+
+#[tokio::test]
+async fn http_gateway_handles_acme_http01_request_edges() {
+    let root = TempDir::new().expect("tempdir");
+    let mut gateway_snapshot = empty_gateway_snapshot("prod", "rev-acme");
+    gateway_snapshot.acme_http01.push(acme_challenge(
+        "example.test",
+        "tokAcme0123456789abcdef",
+        "thumbprintA",
+    ));
+    write_snapshot_files(
+        &root,
+        &gateway_snapshot,
+        &empty_dns_snapshot("prod", "rev-acme"),
+    );
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let gateway = spawn_http_gateway(loopback_any(), WireServingState::new(actor))
+        .await
+        .expect("spawn http gateway");
+
+    let upper_host = http_get(
+        gateway.listen_addr(),
+        "EXAMPLE.TEST:443",
+        "/.well-known/acme-challenge/tokAcme0123456789abcdef",
+    )
+    .await;
+    let extra_segment = http_get(
+        gateway.listen_addr(),
+        "example.test",
+        "/.well-known/acme-challenge/tokAcme0123456789abcdef/extra",
+    )
+    .await;
+    let invalid_token = http_get(
+        gateway.listen_addr(),
+        "example.test",
+        "/.well-known/acme-challenge/short",
+    )
+    .await;
+    let missing_host = http_request(
+        gateway.listen_addr(),
+        "GET /.well-known/acme-challenge/tokAcme0123456789abcdef HTTP/1.1\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    let post = http_request(
+        gateway.listen_addr(),
+        "POST /.well-known/acme-challenge/tokAcme0123456789abcdef HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+
+    assert!(upper_host.starts_with("HTTP/1.1 200 OK"), "{upper_host}");
+    assert!(
+        extra_segment.starts_with("HTTP/1.1 404 Not Found"),
+        "{extra_segment}"
+    );
+    assert!(
+        invalid_token.starts_with("HTTP/1.1 404 Not Found"),
+        "{invalid_token}"
+    );
+    assert!(
+        missing_host.starts_with("HTTP/1.1 400 Bad Request"),
+        "{missing_host}"
+    );
+    assert!(
+        post.starts_with("HTTP/1.1 405 Method Not Allowed"),
+        "{post}"
+    );
     gateway.shutdown().await.expect("shutdown gateway");
 }
 
@@ -728,8 +857,12 @@ impl TestBackend {
 }
 
 async fn http_get(addr: SocketAddr, host: &str, path: &str) -> String {
-    let mut stream = TcpStream::connect(addr).await.expect("connect gateway");
     let request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    http_request(addr, &request).await
+}
+
+async fn http_request(addr: SocketAddr, request: &str) -> String {
+    let mut stream = TcpStream::connect(addr).await.expect("connect gateway");
     stream
         .write_all(request.as_bytes())
         .await
@@ -740,6 +873,14 @@ async fn http_get(addr: SocketAddr, host: &str, path: &str) -> String {
         .expect("read response timeout")
         .expect("read response");
     String::from_utf8(response).expect("utf8 response")
+}
+
+fn future_lease_timestamp() -> LeaseTimestamp {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock after unix epoch")
+        .as_secs();
+    LeaseTimestamp::from_secs(now + 3600)
 }
 
 async fn wait_for_tcp_bind(addr: SocketAddr) -> TcpListener {

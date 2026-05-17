@@ -471,6 +471,42 @@ fn cleanup_failure_kind(error: &DeployError) -> CleanupFailureKind {
         DeployError::Bus(BusError::NoResponders { .. }) => CleanupFailureKind::NoResponders,
         DeployError::Bus(BusError::Timeout { .. }) => CleanupFailureKind::Timeout,
         DeployError::Bus(BusError::HandlerFailed { .. }) => CleanupFailureKind::HandlerFailed,
-        _ => CleanupFailureKind::Other,
+        DeployError::EmptyManifest { .. }
+        | DeployError::PhaseNotReady { .. }
+        | DeployError::ServingCommitAlreadyExists
+        | DeployError::ServingCommitRequired
+        | DeployError::ProjectionCatchUpMissing
+        | DeployError::ProjectionCatchUpMismatch { .. }
+        | DeployError::BlockedAfterIrreversiblePhase
+        | DeployError::DeployStillRunning
+        | DeployError::ServingCommitPhaseRequired
+        | DeployError::ServingFactConflict { .. }
+        | DeployError::PlannedNodeNotVisible { .. }
+        | DeployError::InsufficientCapacity { .. }
+        | DeployError::CapacityReplyNodeMismatch { .. }
+        | DeployError::InstanceNotReady { .. }
+        | DeployError::WirePayload { .. }
+        | DeployError::SubjectParse(_)
+        | DeployError::FactKeyParse(_)
+        | DeployError::Bus(BusError::SubjectParse(_))
+        | DeployError::Bus(BusError::FactKeyParse(_))
+        | DeployError::Bus(BusError::UnauthorizedPublish { .. })
+        | DeployError::Bus(BusError::UnauthorizedRequestTarget { .. })
+        | DeployError::Bus(BusError::UnauthorizedSubscribe { .. })
+        | DeployError::Bus(BusError::UnauthorizedQueue { .. })
+        | DeployError::Bus(BusError::UnauthorizedResponse { .. })
+        | DeployError::Bus(BusError::UnauthorizedDrain { .. })
+        | DeployError::Bus(BusError::UnauthorizedFactWrite { .. })
+        | DeployError::Bus(BusError::UnauthorizedFactRead { .. })
+        | DeployError::Bus(BusError::BridgeRuleInvalid { .. })
+        | DeployError::Bus(BusError::BridgeUnavailable { .. })
+        | DeployError::Bus(BusError::BridgeRequestManyUnsupported { .. })
+        | DeployError::Bus(BusError::Draining)
+        | DeployError::Bus(BusError::IncompleteResponses { .. })
+        | DeployError::Bus(BusError::NoReplyPermit { .. })
+        | DeployError::Bus(BusError::ResponseClosed { .. })
+        | DeployError::Bus(BusError::DeliveryRuntimeStopped)
+        | DeployError::Bus(BusError::DuplicateResponse { .. })
+        | DeployError::Bus(BusError::ActorUnavailable { .. }) => CleanupFailureKind::Other,
     }
 }

@@ -1,10 +1,13 @@
 use std::collections::BTreeMap;
 
-use mvp_acme::{AcmeChallengeId, AcmeHttp01ClearedFact, AcmeHttp01PresentedFact};
-use mvp_bus::{FactContentHash, FactPayload, IslandId};
+use mvp_acme::{
+    AcmeChallengeId, AcmeChallengeToken, AcmeHostname, AcmeHttp01ClearedFact,
+    AcmeHttp01PresentedFact,
+};
+use mvp_bus::{FactContentHash, FactPayload, IslandId, PrincipalId};
 use mvp_lease::{
-    LeaseClaimed, LeaseContentHash, LeaseEpoch, LeaseRelease, LeaseReleased, LeaseRenewed,
-    LeaseTimestamp,
+    LeaseClaimed, LeaseContentHash, LeaseEpoch, LeaseFact, LeaseHolder, LeaseRelease,
+    LeaseReleased, LeaseRenewed, LeaseResource, LeaseTimestamp,
 };
 
 use crate::facts::{
@@ -54,9 +57,9 @@ struct Reducer<'a> {
     serving_commits: BTreeMap<String, CommitCandidate<ServingCommitFact>>,
     gateway_commits: BTreeMap<String, CommitCandidate<GatewayCommitFact>>,
     dns_commits: BTreeMap<String, CommitCandidate<DnsCommitFact>>,
-    lease_claims: BTreeMap<String, Vec<CommitCandidate<LeaseClaimed>>>,
-    lease_renewals: BTreeMap<String, Vec<CommitCandidate<LeaseRenewed>>>,
-    lease_releases: BTreeMap<String, Vec<CommitCandidate<LeaseReleased>>>,
+    lease_claims: BTreeMap<LeaseResource, Vec<CommitCandidate<LeaseClaimed>>>,
+    lease_renewals: BTreeMap<LeaseResource, Vec<CommitCandidate<LeaseRenewed>>>,
+    lease_releases: BTreeMap<LeaseResource, Vec<CommitCandidate<LeaseReleased>>>,
     acme_presented: BTreeMap<AcmeHttp01ChallengeKey, Vec<CommitCandidate<AcmeHttp01PresentedFact>>>,
     acme_cleared: BTreeMap<AcmeHttp01ChallengeKey, Vec<CommitCandidate<AcmeHttp01ClearedFact>>>,
     node_tombstones: BTreeMap<NodeId, u64>,
@@ -111,12 +114,18 @@ impl<'a> Reducer<'a> {
             self.ignore(ProjectionIgnoreReason::MalformedPayload);
             return;
         }
-        self.apply_payload(candidate.kind(), candidate.content_hash().clone(), payload);
+        self.apply_payload(
+            candidate.kind(),
+            candidate.author().clone(),
+            candidate.content_hash().clone(),
+            payload,
+        );
     }
 
     fn apply_payload(
         &mut self,
         kind: FactKind,
+        author: PrincipalId,
         content_hash: FactContentHash,
         payload: ProjectionFactPayload,
     ) {
@@ -152,52 +161,84 @@ impl<'a> Reducer<'a> {
             (FactKind::ServingCommit, ProjectionFactPayload::ServingCommit(fact)) => {
                 self.serving_commits.insert(
                     fact.serving_commit_id.clone(),
-                    CommitCandidate { content_hash, fact },
+                    CommitCandidate {
+                        author,
+                        content_hash,
+                        fact,
+                    },
                 );
             }
             (FactKind::GatewayCommit, ProjectionFactPayload::GatewayCommit(fact)) => {
                 self.gateway_commits.insert(
                     fact.gateway_commit_id.clone(),
-                    CommitCandidate { content_hash, fact },
+                    CommitCandidate {
+                        author,
+                        content_hash,
+                        fact,
+                    },
                 );
             }
             (FactKind::DnsCommit, ProjectionFactPayload::DnsCommit(fact)) => {
                 self.dns_commits.insert(
                     fact.dns_commit_id.clone(),
-                    CommitCandidate { content_hash, fact },
+                    CommitCandidate {
+                        author,
+                        content_hash,
+                        fact,
+                    },
                 );
             }
             (FactKind::LeaseClaimed, ProjectionFactPayload::LeaseClaimed(fact)) => {
                 self.lease_claims
-                    .entry(fact.resource().as_str().to_string())
+                    .entry(fact.resource().clone())
                     .or_default()
-                    .push(CommitCandidate { content_hash, fact });
+                    .push(CommitCandidate {
+                        author,
+                        content_hash,
+                        fact,
+                    });
             }
             (FactKind::LeaseRenewed, ProjectionFactPayload::LeaseRenewed(fact)) => {
                 self.lease_renewals
-                    .entry(fact.resource().as_str().to_string())
+                    .entry(fact.resource().clone())
                     .or_default()
-                    .push(CommitCandidate { content_hash, fact });
+                    .push(CommitCandidate {
+                        author,
+                        content_hash,
+                        fact,
+                    });
             }
             (FactKind::LeaseReleased, ProjectionFactPayload::LeaseReleased(fact)) => {
                 self.lease_releases
-                    .entry(fact.resource().as_str().to_string())
+                    .entry(fact.resource().clone())
                     .or_default()
-                    .push(CommitCandidate { content_hash, fact });
+                    .push(CommitCandidate {
+                        author,
+                        content_hash,
+                        fact,
+                    });
             }
             (FactKind::AcmeHttp01Presented, ProjectionFactPayload::AcmeHttp01Presented(fact)) => {
                 let key = acme_key(fact.id());
                 self.acme_presented
                     .entry(key)
                     .or_default()
-                    .push(CommitCandidate { content_hash, fact });
+                    .push(CommitCandidate {
+                        author,
+                        content_hash,
+                        fact,
+                    });
             }
             (FactKind::AcmeHttp01Cleared, ProjectionFactPayload::AcmeHttp01Cleared(fact)) => {
                 let key = acme_key(fact.id());
                 self.acme_cleared
                     .entry(key)
                     .or_default()
-                    .push(CommitCandidate { content_hash, fact });
+                    .push(CommitCandidate {
+                        author,
+                        content_hash,
+                        fact,
+                    });
             }
             _ => self.ignore(ProjectionIgnoreReason::MalformedPayload),
         }
@@ -226,23 +267,48 @@ impl<'a> Reducer<'a> {
         &mut self,
     ) -> BTreeMap<AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection> {
         let mut projected = BTreeMap::new();
-        let entries = self
-            .acme_presented
-            .iter()
-            .filter_map(|(key, presentations)| {
-                select_head(
-                    presentations.iter(),
-                    |fact| fact.epoch().value(),
-                    |fact| fact.key_authorization().as_str(),
+        let keys = self.acme_presented.keys().cloned().collect::<Vec<_>>();
+        for key in keys {
+            let Some(presentations) = self.acme_presented.get(&key) else {
+                continue;
+            };
+            let active_lease = presentations.first().and_then(|candidate| {
+                self.active_lease_for_resource(candidate.fact.id().lease_resource())
+            });
+            let (presented, rejected) = {
+                let mut rejected = 0;
+                let valid_presentations = presentations
+                    .iter()
+                    .filter(|candidate| {
+                        let valid = active_lease.as_ref().is_some_and(|lease| {
+                            acme_presentation_matches_current_lease(candidate, lease)
+                        });
+                        if !valid {
+                            rejected += 1;
+                        }
+                        valid
+                    })
+                    .collect::<Vec<_>>();
+                (
+                    select_head(
+                        valid_presentations,
+                        |fact| fact.epoch().value(),
+                        |fact| fact.key_authorization().as_str(),
+                    ),
+                    rejected,
                 )
-                .map(|selection| (key.clone(), selection))
-            })
-            .collect::<Vec<_>>();
-        for (key, presented) in entries {
+            };
+            self.ignore_many(ProjectionIgnoreReason::Superseded, rejected);
+            let Some(presented) = presented else {
+                continue;
+            };
             self.ignore_many(ProjectionIgnoreReason::Superseded, presented.superseded);
-            if self.is_acme_presentation_cleared(&key, &presented.fact) {
+            if self.is_acme_presentation_cleared(&key, &presented) {
                 continue;
             }
+            let Some(active_lease) = active_lease else {
+                continue;
+            };
             projected.insert(
                 key,
                 AcmeHttp01ChallengeProjection {
@@ -253,6 +319,7 @@ impl<'a> Reducer<'a> {
                     lease_epoch: presented.fact.epoch(),
                     claim_hash: presented.fact.claim_hash(),
                     published_at: presented.fact.published_at(),
+                    expires_at: active_lease.expires_at,
                 },
             );
         }
@@ -262,22 +329,103 @@ impl<'a> Reducer<'a> {
     fn is_acme_presentation_cleared(
         &mut self,
         key: &AcmeHttp01ChallengeKey,
-        presented: &AcmeHttp01PresentedFact,
+        presented: &HeadSelection<AcmeHttp01PresentedFact>,
     ) -> bool {
-        let Some(clears) = self.acme_cleared.get(key) else {
-            return false;
+        let (matching_clear, rejected) = {
+            let Some(clears) = self.acme_cleared.get(key) else {
+                return false;
+            };
+            let matching = clears
+                .iter()
+                .filter(|clear| clear_matches_presentation(clear, presented))
+                .collect::<Vec<_>>();
+            let rejected = clears.len().saturating_sub(matching.len());
+            (
+                select_head(
+                    matching,
+                    |fact| fact.epoch().value(),
+                    |fact| fact.holder().as_str(),
+                ),
+                rejected,
+            )
         };
-        let Some(clear) = select_head(
-            clears.iter(),
-            |fact| fact.epoch().value(),
-            |fact| fact.holder().as_str(),
-        ) else {
+        self.ignore_many(ProjectionIgnoreReason::Superseded, rejected);
+        let Some(clear) = matching_clear else {
             return false;
         };
         self.ignore_many(ProjectionIgnoreReason::Superseded, clear.superseded);
-        clear.fact.epoch() >= presented.epoch()
-            && clear.fact.claim_hash() == presented.claim_hash()
-            && clear.fact.holder() == presented.holder()
+        true
+    }
+
+    fn active_lease_for_resource(&self, resource: &LeaseResource) -> Option<ActiveLeaseHead> {
+        let claims = self.lease_claims.get(resource)?;
+        let winner = select_lease_claim_head(claims.iter().filter(|candidate| {
+            author_matches_holder(&candidate.author, candidate.fact.holder())
+        }))?;
+        let claim_hash = lease_claim_hash(&winner.fact);
+        let expires_at = self.latest_lease_expiry(resource, &winner.fact, claim_hash);
+        if self.has_matching_lease_release(resource, &winner.fact, claim_hash, expires_at) {
+            return None;
+        }
+        Some(ActiveLeaseHead {
+            holder: winner.fact.holder().clone(),
+            epoch: winner.fact.epoch(),
+            claim_hash,
+            acquired_at: winner.fact.acquired_at(),
+            expires_at,
+        })
+    }
+
+    fn latest_lease_expiry(
+        &self,
+        resource: &LeaseResource,
+        claim: &LeaseClaimed,
+        claim_hash: LeaseContentHash,
+    ) -> LeaseTimestamp {
+        let mut renewals = self
+            .lease_renewals
+            .get(resource)
+            .into_iter()
+            .flat_map(|renewals| renewals.iter())
+            .filter(|renewed| {
+                author_matches_holder(&renewed.author, renewed.fact.holder())
+                    && renewed.fact.holder() == claim.holder()
+                    && renewed.fact.epoch() == claim.epoch()
+                    && renewed.fact.claim_hash() == claim_hash
+            })
+            .collect::<Vec<_>>();
+        renewals.sort_by_key(|renewed| (renewed.fact.renewed_at(), renewed.content_hash.clone()));
+
+        let mut expires_at = claim.expires_at();
+        for renewed in renewals {
+            if renewed.fact.renewed_at() >= claim.acquired_at()
+                && renewed.fact.renewed_at() < expires_at
+                && renewed.fact.expires_at() > renewed.fact.renewed_at()
+            {
+                expires_at = renewed.fact.expires_at();
+            }
+        }
+        expires_at
+    }
+
+    fn has_matching_lease_release(
+        &self,
+        resource: &LeaseResource,
+        claim: &LeaseClaimed,
+        claim_hash: LeaseContentHash,
+        expires_at: LeaseTimestamp,
+    ) -> bool {
+        self.lease_releases
+            .get(resource)
+            .into_iter()
+            .flat_map(|releases| releases.iter())
+            .any(|released| {
+                author_matches_holder(&released.author, released.fact.holder())
+                    && released.fact.holder() == claim.holder()
+                    && released.fact.epoch() == claim.epoch()
+                    && released.fact.claim_hash() == claim_hash
+                    && release_applies_to_claim(released.fact.release(), claim, expires_at)
+            })
     }
 
     fn record_lease_supersession(&mut self) {
@@ -491,15 +639,62 @@ fn acme_key(id: &AcmeChallengeId) -> AcmeHttp01ChallengeKey {
 }
 
 #[derive(Debug, Clone)]
+struct ActiveLeaseHead {
+    holder: LeaseHolder,
+    epoch: LeaseEpoch,
+    claim_hash: LeaseContentHash,
+    acquired_at: LeaseTimestamp,
+    expires_at: LeaseTimestamp,
+}
+
+#[derive(Debug, Clone)]
 struct CommitCandidate<T> {
+    author: PrincipalId,
     content_hash: FactContentHash,
     fact: T,
 }
 
 #[derive(Debug, Clone)]
 struct HeadSelection<T> {
+    author: PrincipalId,
     fact: T,
     superseded: usize,
+}
+
+fn select_lease_claim_head<'a, I>(candidates: I) -> Option<HeadSelection<LeaseClaimed>>
+where
+    I: IntoIterator<Item = &'a CommitCandidate<LeaseClaimed>>,
+{
+    let mut selected: Option<&CommitCandidate<LeaseClaimed>> = None;
+    let mut selected_epoch = LeaseEpoch::first();
+    let mut selected_claim_hash = None;
+    let mut candidate_count: usize = 0;
+    for candidate in candidates {
+        candidate_count += 1;
+        let candidate_epoch = candidate.fact.epoch();
+        let candidate_claim_hash = lease_claim_hash(&candidate.fact);
+        let replace = match (selected, selected_claim_hash) {
+            (None, _) => true,
+            (Some(_), Some(_)) if candidate_epoch > selected_epoch => true,
+            (Some(current), Some(current_hash)) if candidate_epoch == selected_epoch => {
+                candidate_claim_hash
+                    .cmp(&current_hash)
+                    .then_with(|| candidate.fact.holder().cmp(current.fact.holder()))
+                    .is_lt()
+            }
+            (Some(_), _) => false,
+        };
+        if replace {
+            selected = Some(candidate);
+            selected_epoch = candidate_epoch;
+            selected_claim_hash = Some(candidate_claim_hash);
+        }
+    }
+    selected.map(|candidate| HeadSelection {
+        author: candidate.author.clone(),
+        fact: candidate.fact.clone(),
+        superseded: candidate_count.saturating_sub(1),
+    })
 }
 
 fn select_head<'a, T, I, Epoch, Id>(candidates: I, epoch: Epoch, id: Id) -> Option<HeadSelection<T>>
@@ -531,9 +726,56 @@ where
         }
     }
     selected.map(|candidate| HeadSelection {
+        author: candidate.author.clone(),
         fact: candidate.fact.clone(),
         superseded: candidate_count.saturating_sub(1),
     })
+}
+
+fn clear_matches_presentation(
+    clear: &CommitCandidate<AcmeHttp01ClearedFact>,
+    presented: &HeadSelection<AcmeHttp01PresentedFact>,
+) -> bool {
+    author_matches_holder(&clear.author, clear.fact.holder())
+        && clear.author == presented.author
+        && clear.fact.epoch() >= presented.fact.epoch()
+        && clear.fact.claim_hash() == presented.fact.claim_hash()
+        && clear.fact.holder() == presented.fact.holder()
+        && clear.fact.cleared_at() >= presented.fact.published_at()
+}
+
+fn acme_presentation_matches_current_lease(
+    presented: &CommitCandidate<AcmeHttp01PresentedFact>,
+    lease: &ActiveLeaseHead,
+) -> bool {
+    let fact = &presented.fact;
+    author_matches_holder(&presented.author, fact.holder())
+        && lease.holder == *fact.holder()
+        && lease.epoch == fact.epoch()
+        && lease.claim_hash == fact.claim_hash()
+        && fact.published_at() >= lease.acquired_at
+        && fact.published_at() < lease.expires_at
+}
+
+fn author_matches_holder(author: &PrincipalId, holder: &LeaseHolder) -> bool {
+    author.as_str() == holder.as_str()
+}
+
+fn lease_claim_hash(claim: &LeaseClaimed) -> LeaseContentHash {
+    LeaseFact::Claimed(claim.clone()).content_hash()
+}
+
+fn release_applies_to_claim(
+    release: LeaseRelease,
+    claim: &LeaseClaimed,
+    expires_at: LeaseTimestamp,
+) -> bool {
+    match release {
+        LeaseRelease::DroppedWithoutTimestamp => true,
+        LeaseRelease::At(released_at) => {
+            released_at >= claim.acquired_at() && released_at < expires_at
+        }
+    }
 }
 
 fn compare_commit_candidates<T, Id>(
@@ -600,13 +842,13 @@ enum KeyExpectation {
         release: LeaseRelease,
     },
     AcmeHttp01Presented {
-        hostname: String,
-        token: String,
+        hostname: AcmeHostname,
+        token: AcmeChallengeToken,
         epoch: LeaseEpoch,
     },
     AcmeHttp01Cleared {
-        hostname: String,
-        token: String,
+        hostname: AcmeHostname,
+        token: AcmeChallengeToken,
         epoch: LeaseEpoch,
         claim_hash: LeaseContentHash,
     },
@@ -701,8 +943,8 @@ fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPayloa
             FactKind::AcmeHttp01Presented,
             ProjectionFactPayload::AcmeHttp01Presented(fact),
         ) => {
-            fact.id().hostname().as_str() == hostname
-                && fact.id().token().as_str() == token
+            fact.id().hostname() == &hostname
+                && fact.id().token() == &token
                 && fact.epoch() == epoch
         }
         (
@@ -715,8 +957,8 @@ fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPayloa
             FactKind::AcmeHttp01Cleared,
             ProjectionFactPayload::AcmeHttp01Cleared(fact),
         ) => {
-            fact.id().hostname().as_str() == hostname
-                && fact.id().token().as_str() == token
+            fact.id().hostname() == &hostname
+                && fact.id().token() == &token
                 && fact.epoch() == epoch
                 && fact.claim_hash() == claim_hash
         }
@@ -831,8 +1073,8 @@ fn key_expectation(candidate: &FactCandidate) -> Option<KeyExpectation> {
             epoch,
             _,
         ] => Some(KeyExpectation::AcmeHttp01Presented {
-            hostname: (*hostname).to_string(),
-            token: (*token).to_string(),
+            hostname: AcmeHostname::parse(*hostname).ok()?,
+            token: AcmeChallengeToken::parse(*token).ok()?,
             epoch: parse_lease_epoch(epoch)?,
         }),
         [
@@ -856,8 +1098,8 @@ fn key_expectation(candidate: &FactCandidate) -> Option<KeyExpectation> {
             claim_hash,
             _,
         ] => Some(KeyExpectation::AcmeHttp01Cleared {
-            hostname: (*hostname).to_string(),
-            token: (*token).to_string(),
+            hostname: AcmeHostname::parse(*hostname).ok()?,
+            token: AcmeChallengeToken::parse(*token).ok()?,
             epoch: parse_lease_epoch(epoch)?,
             claim_hash: LeaseContentHash::from_hex(claim_hash).ok()?,
         }),
@@ -901,6 +1143,10 @@ mod tests {
     };
     use crate::model::{ProjectionIgnoreReason, ProjectionState};
     use crate::source::{CandidateStatus, FactCandidate, FactKind};
+    use mvp_acme::{
+        AcmeChallengeId, AcmeChallengeToken, AcmeHostname, AcmeHttp01ClearedFact,
+        AcmeHttp01PresentedFact, AcmeKeyAuthorization,
+    };
     use mvp_bus::{FactContentHash, FactKey, FactPayload, IslandId, PrincipalId};
     use mvp_lease::{
         LeaseClaimed, LeaseEpoch, LeaseFact, LeaseHolder, LeaseReleased, LeaseRenewed,
@@ -932,10 +1178,19 @@ mod tests {
     }
 
     fn candidate(key_value: &str, kind: FactKind, hash: FactContentHash) -> FactCandidate {
+        candidate_as("writer", key_value, kind, hash)
+    }
+
+    fn candidate_as(
+        author: &str,
+        key_value: &str,
+        kind: FactKind,
+        hash: FactContentHash,
+    ) -> FactCandidate {
         FactCandidate::verified(
             island("prod"),
             key(key_value),
-            principal("writer"),
+            principal(author),
             hash,
             kind,
             0,
@@ -948,6 +1203,62 @@ mod tests {
             .iter()
             .find(|status| status.reason == reason)
             .map_or(0, |status| status.count)
+    }
+
+    fn acme_id() -> AcmeChallengeId {
+        AcmeChallengeId::new(
+            AcmeHostname::parse("example.test").expect("hostname"),
+            AcmeChallengeToken::parse("tokAcme0123456789abcdef").expect("token"),
+        )
+    }
+
+    fn acme_claim(id: &AcmeChallengeId, holder: &str, epoch: LeaseEpoch) -> LeaseClaimed {
+        LeaseClaimed::new(
+            id.lease_resource().clone(),
+            LeaseHolder::new(holder),
+            epoch,
+            LeaseTimestamp::from_secs(100),
+            LeaseTimestamp::from_secs(160),
+        )
+    }
+
+    fn acme_presented(
+        id: AcmeChallengeId,
+        holder: &str,
+        epoch: LeaseEpoch,
+        claim_hash: mvp_lease::LeaseContentHash,
+        thumbprint: &str,
+    ) -> AcmeHttp01PresentedFact {
+        let key_authorization = AcmeKeyAuthorization::parse_for_token(
+            id.token(),
+            format!("{}.{thumbprint}", id.token().as_str()),
+        )
+        .expect("key authorization");
+        AcmeHttp01PresentedFact::from_parts(
+            id,
+            key_authorization,
+            LeaseHolder::new(holder),
+            epoch,
+            claim_hash,
+            LeaseTimestamp::from_secs(110),
+        )
+        .expect("presented fact")
+    }
+
+    fn acme_cleared(
+        id: AcmeChallengeId,
+        holder: &str,
+        epoch: LeaseEpoch,
+        claim_hash: mvp_lease::LeaseContentHash,
+        cleared_at: LeaseTimestamp,
+    ) -> AcmeHttp01ClearedFact {
+        AcmeHttp01ClearedFact::from_parts(
+            id,
+            LeaseHolder::new(holder),
+            epoch,
+            claim_hash,
+            cleared_at,
+        )
     }
 
     #[test]
@@ -1646,6 +1957,414 @@ mod tests {
         assert_eq!(dns.dns_commit_id, expected.1);
         assert_eq!(dns.records[0].value, expected.3);
         assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 1);
+    }
+
+    #[test]
+    fn reducer_projects_acme_http01_only_for_current_lease_holder() {
+        let mut payloads = BTreeMap::new();
+        let id = acme_id();
+        let claim = acme_claim(&id, "issuer-a", LeaseEpoch::first());
+        let claim_hash = LeaseFact::Claimed(claim.clone()).content_hash();
+        let claim_payload =
+            insert_payload(&mut payloads, ProjectionFactPayload::LeaseClaimed(claim));
+        let presented = acme_presented(
+            id.clone(),
+            "issuer-a",
+            LeaseEpoch::first(),
+            claim_hash,
+            "thumbprintA",
+        );
+        let presented_payload = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::AcmeHttp01Presented(presented),
+        );
+        let candidates = vec![
+            candidate_as(
+                "issuer-a",
+                &id.lease_claimed_fact_key(LeaseEpoch::first()),
+                FactKind::LeaseClaimed,
+                claim_payload,
+            ),
+            candidate_as(
+                "issuer-a",
+                &id.presented_fact_key(LeaseEpoch::first()),
+                FactKind::AcmeHttp01Presented,
+                presented_payload,
+            ),
+        ];
+
+        let state = reduce_facts(&island("prod"), &candidates, &payloads);
+
+        let challenge = state
+            .acme_http01
+            .values()
+            .next()
+            .expect("challenge projects");
+        assert_eq!(challenge.holder, LeaseHolder::new("issuer-a"));
+        assert_eq!(challenge.claim_hash, claim_hash);
+        assert_eq!(challenge.expires_at, LeaseTimestamp::from_secs(160));
+    }
+
+    #[test]
+    fn reducer_rejects_acme_http01_without_matching_lease() {
+        let mut payloads = BTreeMap::new();
+        let id = acme_id();
+        let claim = acme_claim(&id, "issuer-a", LeaseEpoch::first());
+        let claim_hash = LeaseFact::Claimed(claim).content_hash();
+        let presented = acme_presented(
+            id.clone(),
+            "issuer-a",
+            LeaseEpoch::first(),
+            claim_hash,
+            "thumbprintA",
+        );
+        let presented_payload = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::AcmeHttp01Presented(presented),
+        );
+        let candidates = vec![candidate_as(
+            "issuer-a",
+            &id.presented_fact_key(LeaseEpoch::first()),
+            FactKind::AcmeHttp01Presented,
+            presented_payload,
+        )];
+
+        let state = reduce_facts(&island("prod"), &candidates, &payloads);
+
+        assert!(state.acme_http01.is_empty());
+        assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 1);
+    }
+
+    #[test]
+    fn reducer_rejects_acme_http01_written_by_non_holder() {
+        let mut payloads = BTreeMap::new();
+        let id = acme_id();
+        let claim = acme_claim(&id, "issuer-a", LeaseEpoch::first());
+        let claim_hash = LeaseFact::Claimed(claim.clone()).content_hash();
+        let claim_payload =
+            insert_payload(&mut payloads, ProjectionFactPayload::LeaseClaimed(claim));
+        let presented = acme_presented(
+            id.clone(),
+            "issuer-a",
+            LeaseEpoch::first(),
+            claim_hash,
+            "thumbprintA",
+        );
+        let presented_payload = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::AcmeHttp01Presented(presented),
+        );
+        let candidates = vec![
+            candidate_as(
+                "issuer-a",
+                &id.lease_claimed_fact_key(LeaseEpoch::first()),
+                FactKind::LeaseClaimed,
+                claim_payload,
+            ),
+            candidate_as(
+                "issuer-b",
+                &id.presented_fact_key(LeaseEpoch::first()),
+                FactKind::AcmeHttp01Presented,
+                presented_payload,
+            ),
+        ];
+
+        let state = reduce_facts(&island("prod"), &candidates, &payloads);
+
+        assert!(state.acme_http01.is_empty());
+        assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 1);
+    }
+
+    #[test]
+    fn reducer_rejects_acme_fact_key_with_untyped_hostname_or_token() {
+        let mut payloads = BTreeMap::new();
+        let id = acme_id();
+        let claim = acme_claim(&id, "issuer-a", LeaseEpoch::first());
+        let claim_hash = LeaseFact::Claimed(claim).content_hash();
+        let presented_payload = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::AcmeHttp01Presented(acme_presented(
+                id,
+                "issuer-a",
+                LeaseEpoch::first(),
+                claim_hash,
+                "thumbprintA",
+            )),
+        );
+        let candidates = vec![candidate_as(
+            "issuer-a",
+            "/facts/acme/http01/bad name.example/short/presented/1",
+            FactKind::AcmeHttp01Presented,
+            presented_payload,
+        )];
+
+        let state = reduce_facts(&island("prod"), &candidates, &payloads);
+
+        assert!(state.acme_http01.is_empty());
+        assert_eq!(
+            status_count(&state, ProjectionIgnoreReason::MalformedPayload),
+            1
+        );
+    }
+
+    #[test]
+    fn reducer_ignores_forged_lease_claim_author_without_poisoning_valid_claim() {
+        let mut payloads = BTreeMap::new();
+        let id = acme_id();
+        let valid_claim = acme_claim(&id, "issuer-a", LeaseEpoch::first());
+        let valid_claim_hash = LeaseFact::Claimed(valid_claim.clone()).content_hash();
+        let forged_epoch = LeaseEpoch::from_u64(2).expect("forged epoch");
+        let forged_claim = acme_claim(&id, "issuer-b", forged_epoch);
+        let valid_claim_payload = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::LeaseClaimed(valid_claim),
+        );
+        let forged_claim_payload = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::LeaseClaimed(forged_claim),
+        );
+        let presented_payload = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::AcmeHttp01Presented(acme_presented(
+                id.clone(),
+                "issuer-a",
+                LeaseEpoch::first(),
+                valid_claim_hash,
+                "thumbprintA",
+            )),
+        );
+        let candidates = vec![
+            candidate_as(
+                "issuer-a",
+                &id.lease_claimed_fact_key(LeaseEpoch::first()),
+                FactKind::LeaseClaimed,
+                valid_claim_payload,
+            ),
+            candidate_as(
+                "issuer-a",
+                &id.lease_claimed_fact_key(forged_epoch),
+                FactKind::LeaseClaimed,
+                forged_claim_payload,
+            ),
+            candidate_as(
+                "issuer-a",
+                &id.presented_fact_key(LeaseEpoch::first()),
+                FactKind::AcmeHttp01Presented,
+                presented_payload,
+            ),
+        ];
+
+        let state = reduce_facts(&island("prod"), &candidates, &payloads);
+
+        let challenge = state
+            .acme_http01
+            .values()
+            .next()
+            .expect("valid holder still projects");
+        assert_eq!(challenge.holder, LeaseHolder::new("issuer-a"));
+    }
+
+    #[test]
+    fn reducer_picks_acme_same_epoch_winner_by_content_hash() {
+        let mut payloads = BTreeMap::new();
+        let id = acme_id();
+        let claim = acme_claim(&id, "issuer-a", LeaseEpoch::first());
+        let claim_hash = LeaseFact::Claimed(claim.clone()).content_hash();
+        let claim_payload =
+            insert_payload(&mut payloads, ProjectionFactPayload::LeaseClaimed(claim));
+        let presented_a = acme_presented(
+            id.clone(),
+            "issuer-a",
+            LeaseEpoch::first(),
+            claim_hash,
+            "thumbprintA",
+        );
+        let presented_b = acme_presented(
+            id.clone(),
+            "issuer-a",
+            LeaseEpoch::first(),
+            claim_hash,
+            "thumbprintB",
+        );
+        let hash_a = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::AcmeHttp01Presented(presented_a),
+        );
+        let hash_b = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::AcmeHttp01Presented(presented_b),
+        );
+        let expected = if hash_a <= hash_b {
+            "tokAcme0123456789abcdef.thumbprintA"
+        } else {
+            "tokAcme0123456789abcdef.thumbprintB"
+        };
+        let ordered = vec![
+            candidate_as(
+                "issuer-a",
+                &id.lease_claimed_fact_key(LeaseEpoch::first()),
+                FactKind::LeaseClaimed,
+                claim_payload.clone(),
+            ),
+            candidate_as(
+                "issuer-a",
+                &id.presented_fact_key(LeaseEpoch::first()),
+                FactKind::AcmeHttp01Presented,
+                hash_a.clone(),
+            ),
+            candidate_as(
+                "issuer-a",
+                &id.presented_fact_key(LeaseEpoch::first()),
+                FactKind::AcmeHttp01Presented,
+                hash_b.clone(),
+            ),
+        ];
+        let shuffled = vec![
+            candidate_as(
+                "issuer-a",
+                &id.presented_fact_key(LeaseEpoch::first()),
+                FactKind::AcmeHttp01Presented,
+                hash_b,
+            ),
+            candidate_as(
+                "issuer-a",
+                &id.lease_claimed_fact_key(LeaseEpoch::first()),
+                FactKind::LeaseClaimed,
+                claim_payload,
+            ),
+            candidate_as(
+                "issuer-a",
+                &id.presented_fact_key(LeaseEpoch::first()),
+                FactKind::AcmeHttp01Presented,
+                hash_a,
+            ),
+        ];
+
+        let ordered_state = reduce_facts(&island("prod"), &ordered, &payloads);
+        let shuffled_state = reduce_facts(&island("prod"), &shuffled, &payloads);
+
+        assert_eq!(ordered_state, shuffled_state);
+        assert_eq!(
+            ordered_state
+                .acme_http01
+                .values()
+                .next()
+                .expect("challenge")
+                .key_authorization
+                .as_str(),
+            expected
+        );
+    }
+
+    #[test]
+    fn reducer_only_matching_acme_clear_removes_presentation() {
+        let mut payloads = BTreeMap::new();
+        let id = acme_id();
+        let epoch = LeaseEpoch::from_u64(2).expect("epoch");
+        let claim = acme_claim(&id, "issuer-a", epoch);
+        let claim_hash = LeaseFact::Claimed(claim.clone()).content_hash();
+        let other_claim_hash =
+            LeaseFact::Claimed(acme_claim(&id, "issuer-b", epoch)).content_hash();
+        let claim_payload =
+            insert_payload(&mut payloads, ProjectionFactPayload::LeaseClaimed(claim));
+        let presented_payload = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::AcmeHttp01Presented(acme_presented(
+                id.clone(),
+                "issuer-a",
+                epoch,
+                claim_hash,
+                "thumbprintA",
+            )),
+        );
+        let stale_clear = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::AcmeHttp01Cleared(acme_cleared(
+                id.clone(),
+                "issuer-a",
+                LeaseEpoch::first(),
+                claim_hash,
+                LeaseTimestamp::from_secs(120),
+            )),
+        );
+        let non_matching_high_clear = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::AcmeHttp01Cleared(acme_cleared(
+                id.clone(),
+                "issuer-b",
+                LeaseEpoch::from_u64(3).expect("epoch"),
+                other_claim_hash,
+                LeaseTimestamp::from_secs(120),
+            )),
+        );
+        let matching_clear = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::AcmeHttp01Cleared(acme_cleared(
+                id.clone(),
+                "issuer-a",
+                epoch,
+                claim_hash,
+                LeaseTimestamp::from_secs(120),
+            )),
+        );
+
+        let without_match = reduce_facts(
+            &island("prod"),
+            &[
+                candidate_as(
+                    "issuer-a",
+                    &id.lease_claimed_fact_key(epoch),
+                    FactKind::LeaseClaimed,
+                    claim_payload.clone(),
+                ),
+                candidate_as(
+                    "issuer-a",
+                    &id.presented_fact_key(epoch),
+                    FactKind::AcmeHttp01Presented,
+                    presented_payload.clone(),
+                ),
+                candidate_as(
+                    "issuer-a",
+                    &id.cleared_fact_key(LeaseEpoch::first(), claim_hash),
+                    FactKind::AcmeHttp01Cleared,
+                    stale_clear,
+                ),
+                candidate_as(
+                    "issuer-b",
+                    &id.cleared_fact_key(LeaseEpoch::from_u64(3).expect("epoch"), other_claim_hash),
+                    FactKind::AcmeHttp01Cleared,
+                    non_matching_high_clear,
+                ),
+            ],
+            &payloads,
+        );
+        let with_match = reduce_facts(
+            &island("prod"),
+            &[
+                candidate_as(
+                    "issuer-a",
+                    &id.lease_claimed_fact_key(epoch),
+                    FactKind::LeaseClaimed,
+                    claim_payload,
+                ),
+                candidate_as(
+                    "issuer-a",
+                    &id.presented_fact_key(epoch),
+                    FactKind::AcmeHttp01Presented,
+                    presented_payload,
+                ),
+                candidate_as(
+                    "issuer-a",
+                    &id.cleared_fact_key(epoch, claim_hash),
+                    FactKind::AcmeHttp01Cleared,
+                    matching_clear,
+                ),
+            ],
+            &payloads,
+        );
+
+        assert_eq!(without_match.acme_http01.len(), 1);
+        assert!(with_match.acme_http01.is_empty());
     }
 
     #[test]

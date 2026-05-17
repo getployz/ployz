@@ -104,6 +104,7 @@ pub struct AcmeHttp01ChallengeProjection {
     pub lease_epoch: LeaseEpoch,
     pub claim_hash: LeaseContentHash,
     pub published_at: LeaseTimestamp,
+    pub expires_at: LeaseTimestamp,
 }
 
 impl From<DnsRecordFact> for DnsRecordProjection {

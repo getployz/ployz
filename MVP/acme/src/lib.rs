@@ -13,7 +13,7 @@ const MAX_ACME_KEY_AUTHORIZATION_LEN: usize = 512;
 const MAX_HOSTNAME_LEN: usize = 253;
 const MAX_HOSTNAME_LABEL_LEN: usize = 63;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct AcmeHostname(String);
 
 impl AcmeHostname {
@@ -44,7 +44,17 @@ impl Display for AcmeHostname {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+impl<'de> Deserialize<'de> for AcmeHostname {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct AcmeChallengeToken(String);
 
 impl AcmeChallengeToken {
@@ -74,6 +84,16 @@ impl AcmeChallengeToken {
 impl Display for AcmeChallengeToken {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for AcmeChallengeToken {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -271,7 +291,7 @@ pub struct AcmeChallengeRecord {
     published_at: LeaseTimestamp,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AcmeHttp01PresentedFact {
     id: AcmeChallengeId,
     key_authorization: AcmeKeyAuthorization,
@@ -344,6 +364,34 @@ impl AcmeHttp01PresentedFact {
     #[must_use]
     pub fn published_at(&self) -> LeaseTimestamp {
         self.published_at
+    }
+}
+
+impl<'de> Deserialize<'de> for AcmeHttp01PresentedFact {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WirePresentedFact {
+            id: AcmeChallengeId,
+            key_authorization: AcmeKeyAuthorization,
+            holder: LeaseHolder,
+            epoch: LeaseEpoch,
+            claim_hash: LeaseContentHash,
+            published_at: LeaseTimestamp,
+        }
+
+        let wire = WirePresentedFact::deserialize(deserializer)?;
+        Self::from_parts(
+            wire.id,
+            wire.key_authorization,
+            wire.holder,
+            wire.epoch,
+            wire.claim_hash,
+            wire.published_at,
+        )
+        .map_err(serde::de::Error::custom)
     }
 }
 
@@ -609,7 +657,7 @@ fn is_acme_token_byte(byte: u8) -> bool {
 }
 
 fn canonicalize_hostname(value: &str) -> Result<String, AcmeCoordinationError> {
-    let normalized = value.trim().trim_end_matches('.').to_ascii_lowercase();
+    let normalized = value.trim_end_matches('.').to_ascii_lowercase();
     if normalized.is_empty() {
         return Err(AcmeCoordinationError::EmptyHostname);
     }
@@ -995,6 +1043,63 @@ mod tests {
             control,
             AcmeCoordinationError::InvalidKeyAuthorization { .. }
         ));
+    }
+
+    #[test]
+    fn hostnames_reject_bytes_outside_rfc1035_label_shape() {
+        for value in [
+            "bad/name.example",
+            " bad.example",
+            "bad.example ",
+            "bad name.example",
+            "bad\nname.example",
+            "\"bad.example",
+            "-bad.example",
+            "bad-.example",
+            "bad..example",
+        ] {
+            let error = AcmeHostname::parse(value).expect_err("hostname is rejected");
+            assert!(
+                matches!(error, AcmeCoordinationError::InvalidHostnameLabel { .. }),
+                "{value} produced {error:?}"
+            );
+            let json_error = serde_json::from_value::<AcmeHostname>(serde_json::json!(value))
+                .expect_err("hostname deserialization is rejected");
+            assert!(
+                json_error
+                    .to_string()
+                    .contains("ACME hostname label is invalid"),
+                "{value} produced {json_error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn presented_fact_deserialization_revalidates_key_authorization_token() {
+        let id = AcmeChallengeId::new(hostname("example.test"), token(TOKEN_A));
+        let claim = LeaseClaimed::new(
+            id.lease_resource().clone(),
+            holder("issuer-a"),
+            LeaseEpoch::first(),
+            at(100),
+            at(160),
+        );
+        let fact = AcmeHttp01PresentedFact::from_parts(
+            id,
+            key_auth(&token(TOKEN_A), "thumbprintA"),
+            holder("issuer-a"),
+            LeaseEpoch::first(),
+            LeaseFact::Claimed(claim).content_hash(),
+            at(110),
+        )
+        .expect("presented fact");
+        let mut value = serde_json::to_value(&fact).expect("serialize fact");
+        value["key_authorization"] = serde_json::json!("other.thumbprintA");
+
+        let error =
+            serde_json::from_value::<AcmeHttp01PresentedFact>(value).expect_err("token mismatch");
+
+        assert!(error.to_string().contains("does not match token"));
     }
 
     #[test]
