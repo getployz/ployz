@@ -1,17 +1,23 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::error::SendError;
+use kameo::mailbox;
 use kameo::message::{Context, Message};
+use kameo::reply::DelegatedReply;
 
-use crate::memory::Handler;
+use crate::memory::{Handler, RequestManyDeadlinePolicy, deadline_after, remaining_until};
 use crate::{
     BusAuthority, BusError, BusRuntimeSnapshot, BusSession, HandlerOutcome, MemoryBus, Payload,
     QueueName, RequestContext, RequestManyPolicy, RequestTarget, ResponseMessage, Result, Subject,
     SubjectPattern,
 };
+
+const BUS_ACTOR_MAILBOX_CAPACITY: usize = 64;
+const BUS_ACTOR_MAILBOX_TIMEOUT: Duration = Duration::from_secs(5);
+const BUS_ACTOR_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Actor)]
 pub struct BusActor {
@@ -34,7 +40,10 @@ impl BusActorHandle {
     #[must_use]
     pub fn spawn(bus: MemoryBus) -> Self {
         Self {
-            actor: BusActor::spawn(BusActor::new(bus)),
+            actor: BusActor::spawn_with_mailbox(
+                BusActor::new(bus),
+                mailbox::bounded(BUS_ACTOR_MAILBOX_CAPACITY),
+            ),
         }
     }
 
@@ -86,7 +95,7 @@ impl BusActorHandle {
         subject: Subject,
         payload: impl Into<Payload>,
     ) -> Result<()> {
-        self.ask(Publish {
+        self.ask_delegated(Publish {
             session: session.clone(),
             subject,
             payload: payload.into(),
@@ -101,12 +110,18 @@ impl BusActorHandle {
         payload: impl Into<Payload>,
         timeout: Duration,
     ) -> Result<ResponseMessage> {
-        self.ask(RequestOne {
-            session: session.clone(),
-            subject,
-            payload: payload.into(),
-            timeout,
-        })
+        let deadline = deadline_after(timeout);
+        let timeout_subject = subject.to_string();
+        self.ask_until(
+            RequestOne {
+                session: session.clone(),
+                subject,
+                payload: payload.into(),
+                deadline,
+            },
+            deadline,
+            timeout_subject,
+        )
         .await
     }
 
@@ -118,21 +133,35 @@ impl BusActorHandle {
         payload: impl Into<Payload>,
         policy: RequestManyPolicy,
     ) -> Result<Vec<ResponseMessage>> {
-        self.ask(RequestMany {
-            session: session.clone(),
-            target,
-            subject,
-            payload: payload.into(),
-            policy,
-        })
+        let deadline = deadline_after(policy.deadline);
+        let timeout_subject = target.display();
+        self.ask_until(
+            RequestMany {
+                session: session.clone(),
+                target,
+                subject,
+                payload: payload.into(),
+                policy: RequestManyDeadlinePolicy {
+                    max: policy.max,
+                    deadline,
+                },
+            },
+            deadline,
+            timeout_subject,
+        )
         .await
     }
 
     pub async fn drain(&self, session: &BusSession, deadline: Duration) -> Result<()> {
-        self.ask(Drain {
-            session: session.clone(),
+        let deadline = deadline_after(deadline);
+        self.ask_until(
+            Drain {
+                session: session.clone(),
+                deadline,
+            },
             deadline,
-        })
+            String::from("drain"),
+        )
         .await
     }
 
@@ -146,7 +175,83 @@ impl BusActorHandle {
         M: Send + 'static,
         R: Send + 'static,
     {
-        self.actor.ask(message).await.map_err(map_actor_send_error)
+        self.actor
+            .ask(message)
+            .mailbox_timeout(BUS_ACTOR_MAILBOX_TIMEOUT)
+            .reply_timeout(BUS_ACTOR_REPLY_TIMEOUT)
+            .await
+            .map_err(map_actor_send_error)
+    }
+
+    async fn ask_delegated<M, R>(&self, message: M) -> Result<R>
+    where
+        BusActor: Message<M, Reply = DelegatedReply<Result<R>>>,
+        M: Send + 'static,
+        R: Send + 'static,
+    {
+        self.actor
+            .ask(message)
+            .mailbox_timeout(BUS_ACTOR_MAILBOX_TIMEOUT)
+            .reply_timeout(BUS_ACTOR_REPLY_TIMEOUT)
+            .await
+            .map_err(map_actor_send_error)
+    }
+
+    async fn ask_until<M, R>(
+        &self,
+        message: M,
+        deadline: Instant,
+        timeout_subject: String,
+    ) -> Result<R>
+    where
+        BusActor: Message<M, Reply = DelegatedReply<Result<R>>>,
+        M: Send + 'static,
+        R: Send + 'static,
+    {
+        let mailbox_timeout = remaining_until(deadline, timeout_subject.clone())?;
+        let pending = self
+            .actor
+            .ask(message)
+            .mailbox_timeout(mailbox_timeout)
+            .enqueue()
+            .await
+            .map_err(|error| map_actor_mailbox_send_error(error, timeout_subject.clone()))?;
+        let reply_timeout = remaining_until(deadline, timeout_subject.clone())?;
+        match tokio::time::timeout(reply_timeout, pending).await {
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(error)) => Err(map_actor_deadline_send_error(
+                error,
+                timeout_subject.clone(),
+            )),
+            Err(_) => Err(BusError::Timeout {
+                subject: timeout_subject,
+            }),
+        }
+    }
+}
+
+fn map_actor_deadline_send_error<M>(error: SendError<M, BusError>, subject: String) -> BusError {
+    match error {
+        SendError::Timeout(_) | SendError::MailboxFull(_) => BusError::Timeout { subject },
+        other => map_actor_send_error(other),
+    }
+}
+
+fn map_actor_mailbox_send_error(error: SendError, subject: String) -> BusError {
+    match error {
+        SendError::Timeout(_) | SendError::MailboxFull(_) => BusError::Timeout { subject },
+        SendError::ActorNotRunning(_) => BusError::ActorUnavailable {
+            actor: String::from("bus"),
+            reason: String::from("not running"),
+        },
+        SendError::ActorStopped => BusError::ActorUnavailable {
+            actor: String::from("bus"),
+            reason: String::from("stopped"),
+        },
+        SendError::HandlerError(_) => BusError::ActorUnavailable {
+            actor: String::from("bus"),
+            reason: String::from("mailbox send failed"),
+        },
     }
 }
 
@@ -222,15 +327,17 @@ struct Publish {
 }
 
 impl Message<Publish> for BusActor {
-    type Reply = Result<()>;
+    type Reply = DelegatedReply<Result<()>>;
 
     async fn handle(
         &mut self,
         message: Publish,
-        _ctx: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.bus
-            .publish(&message.session, message.subject, message.payload)
+        let bus = self.bus.clone();
+        ctx.spawn(run_blocking(move || {
+            bus.publish(&message.session, message.subject, message.payload)
+        }))
     }
 }
 
@@ -238,23 +345,26 @@ struct RequestOne {
     session: BusSession,
     subject: Subject,
     payload: Payload,
-    timeout: Duration,
+    deadline: Instant,
 }
 
 impl Message<RequestOne> for BusActor {
-    type Reply = Result<ResponseMessage>;
+    type Reply = DelegatedReply<Result<ResponseMessage>>;
 
     async fn handle(
         &mut self,
         message: RequestOne,
-        _ctx: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.bus.request(
-            &message.session,
-            message.subject,
-            message.payload,
-            message.timeout,
-        )
+        let bus = self.bus.clone();
+        ctx.spawn(run_blocking(move || {
+            bus.request_until(
+                &message.session,
+                message.subject,
+                message.payload,
+                message.deadline,
+            )
+        }))
     }
 }
 
@@ -263,41 +373,48 @@ struct RequestMany {
     target: RequestTarget,
     subject: Subject,
     payload: Payload,
-    policy: RequestManyPolicy,
+    policy: RequestManyDeadlinePolicy,
 }
 
 impl Message<RequestMany> for BusActor {
-    type Reply = Result<Vec<ResponseMessage>>;
+    type Reply = DelegatedReply<Result<Vec<ResponseMessage>>>;
 
     async fn handle(
         &mut self,
         message: RequestMany,
-        _ctx: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.bus.request_many(
-            &message.session,
-            message.target,
-            message.subject,
-            message.payload,
-            message.policy,
-        )
+        let bus = self.bus.clone();
+        ctx.spawn(run_blocking(move || {
+            bus.request_many_until(
+                &message.session,
+                message.target,
+                message.subject,
+                message.payload,
+                message.policy,
+            )
+        }))
     }
 }
 
 struct Drain {
     session: BusSession,
-    deadline: Duration,
+    deadline: Instant,
 }
 
 impl Message<Drain> for BusActor {
-    type Reply = Result<()>;
+    type Reply = DelegatedReply<Result<()>>;
 
     async fn handle(
         &mut self,
         message: Drain,
-        _ctx: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.bus.drain(&message.session, message.deadline)
+        let bus = self.bus.clone();
+        ctx.spawn(run_blocking(move || {
+            let remaining = remaining_until(message.deadline, "drain")?;
+            bus.drain(&message.session, remaining)
+        }))
     }
 }
 
@@ -315,11 +432,25 @@ impl Message<RuntimeSnapshot> for BusActor {
     }
 }
 
+async fn run_blocking<R>(operation: impl FnOnce() -> Result<R> + Send + 'static) -> Result<R>
+where
+    R: Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| BusError::ActorUnavailable {
+            actor: String::from("bus-blocking-task"),
+            reason: error.to_string(),
+        })?
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
     use std::time::Duration;
+    use std::time::Instant;
 
     use crate::{BusActorHandle, Grant, PrincipalId, RequestManyPolicy, RequestTarget, Subject};
 
@@ -415,5 +546,50 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, crate::BusError::Draining));
+    }
+
+    #[tokio::test]
+    async fn actor_facade_does_not_block_mailbox_while_request_waits() {
+        let (bus, authority) = BusActorHandle::new_with_authority();
+        let admin = authority.grant(principal("admin"), Grant::allow_all());
+        let (started_tx, started_rx) = mpsc::channel();
+        bus.subscribe(&admin, pattern("node.alpha.inspect"), move |ctx| {
+            let _ = started_tx.send(());
+            std::thread::sleep(Duration::from_millis(100));
+            ctx.reply(b"ok".to_vec())
+        })
+        .await
+        .expect("subscribe inspect");
+
+        let bus_for_request = bus.clone();
+        let admin_for_request = admin.clone();
+        let request = tokio::spawn(async move {
+            bus_for_request
+                .request(
+                    &admin_for_request,
+                    subject("node.alpha.inspect"),
+                    Vec::new(),
+                    Duration::from_secs(1),
+                )
+                .await
+        });
+        tokio::task::spawn_blocking(move || started_rx.recv_timeout(Duration::from_secs(1)))
+            .await
+            .expect("started wait joins")
+            .expect("handler started");
+
+        let snapshot_started = Instant::now();
+        let snapshot = bus.runtime_snapshot().await.expect("snapshot");
+
+        assert!(snapshot_started.elapsed() < Duration::from_millis(50));
+        assert_eq!(snapshot.delivery_workers, 64);
+        assert_eq!(
+            request
+                .await
+                .expect("request task joins")
+                .expect("request")
+                .payload,
+            b"ok".to_vec()
+        );
     }
 }

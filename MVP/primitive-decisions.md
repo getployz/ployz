@@ -43,6 +43,9 @@ Why this:
   mutable internals.
 - The bus actor is the first proof that future code can talk through an
   actor-owned boundary while the internal bus remains simple and testable.
+- Blocking bus operations are delegated out of the Kameo mailbox, so actor
+  ownership does not turn slow request/reply work into global actor head-of-line
+  blocking.
 
 What it replaces:
 - Direct subsystem access to bus internals.
@@ -53,6 +56,10 @@ Costs:
 - Actor calls are async even when the current in-memory bus is sync.
 - Error mapping needs to preserve domain failures separately from actor
   availability failures.
+- There are currently two surfaces: `MemoryBus` for the in-memory substrate and
+  `BusActorHandle` for business-facing actor ownership. Future slices should
+  keep business logic on the actor handle unless they are testing substrate
+  internals directly.
 
 Revisit if:
 - Actor message handling starts doing blocking work itself. Blocking delivery
@@ -95,9 +102,10 @@ Costs:
 - The in-memory MVP now has a queue capacity and runtime metrics that tests must
   keep honest.
 - Backpressure is currently producer blocking inside the bounded delivery queue.
-  The scale E2E saturation case proves the bound; future slices should make
-  mailbox/queue saturation operator-visible where foreground callers need a
-  structured timeout or rejection.
+  The scale E2E saturation case asserts both full-queue observation and bounded
+  worker concurrency; future slices should make mailbox/queue saturation
+  operator-visible where foreground callers need a structured timeout or
+  rejection.
 
 Revisit if:
 - Delivery handlers become async iroh operations. The runtime may move from
