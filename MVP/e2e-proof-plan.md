@@ -361,10 +361,27 @@ Current proof status:
 - Deleting `projections.sqlite` and rebuilding projection state is now proven
   inside the long-lived serving/projection OS process, and that process can
   restart from snapshot files while no coordinator process is running.
-- This is still not the full E2E-7 wire proof. Real Pingora HTTP serving,
-  Hickory DNS serving, WireGuard service-to-service traffic, deploy
-  coordinator crash/restart around drain, and docs-backed cross-node
-  replication remain follow-up work.
+- Slice 013 adds `wire-serving-contract`.
+- The scenario proves real HTTP and DNS wire serving inside separate process
+  roles: HTTP routes by `Host` through a deterministic loopback backend, DNS
+  answers real UDP AAAA queries, and both keep serving after the local
+  coordinator process is killed.
+- A later already-authorized serving fact projects and reloads into HTTP/DNS
+  roles while the coordinator remains dead. Local mutation attempts through the
+  killed coordinator still fail visibly.
+- Corrupt, missing, and wrong-island next snapshots fail explicit wire-role
+  reload, preserve last-good HTTP/DNS answers, and surface structured
+  last-good-after-failure status.
+- Deleting `projections.sqlite` while HTTP/DNS are live is now proven at the
+  wire level. A fresh remote serving fact is injected before rebuild, the
+  projection rebuild publishes fresh snapshots, and explicit wire reload moves
+  HTTP/DNS answers to the rebuilt serving state.
+- HTTP and DNS wire roles can restart while the coordinator is still dead and
+  load snapshot files before answering wire requests.
+- Remaining E2E-7 work is WireGuard service-to-service traffic, deploy
+  coordinator crash/restart around drain, docs-backed cross-node replication,
+  and replacing the HTTP/DNS fallback crates with Pingora/`hickory-server` if
+  those become the chosen production protocol primitives.
 
 ### E2E-8: Scale And Reliability Harness
 

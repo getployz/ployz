@@ -1,6 +1,6 @@
 ---
 title: Slice 013 Wire HTTP/DNS Serving While Coordinator Dies Plan
-status: active
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md
