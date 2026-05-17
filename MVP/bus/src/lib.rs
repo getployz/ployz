@@ -1,13 +1,17 @@
 mod actor;
 mod error;
+mod facts;
 mod grants;
 mod memory;
 mod message;
 mod subject;
 
 pub use actor::BusActorHandle;
-pub use error::{BusError, Result, SubjectParseError};
-pub use grants::{BusSession, Grant, PrincipalId, QueueName};
+pub use error::{ActorFailure, BusError, HandlerFailure, Result, SubjectParseError};
+pub use facts::{
+    Fact, FactContentHash, FactKey, FactKeyParseError, FactKeyPattern, FactWriteOutcome,
+};
+pub use grants::{BusSession, Grant, IslandId, PrincipalId, QueueName};
 pub use memory::{
     BusAuthority, BusRuntimeConfig, BusRuntimeSnapshot, HandlerOutcome, RequestContext,
 };

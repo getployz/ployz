@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
-use crate::{BusError, PrincipalId, Result, Subject, SubjectPattern};
+use crate::{BusError, IslandId, PrincipalId, Result, Subject, SubjectPattern};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Payload(Bytes);
@@ -107,6 +107,7 @@ impl Display for MessageId {
 #[derive(Debug, Clone)]
 pub struct BusMessage {
     id: MessageId,
+    island: IslandId,
     subject: Subject,
     payload: Payload,
     principal: PrincipalId,
@@ -117,12 +118,14 @@ impl BusMessage {
     #[must_use]
     pub(crate) fn new(
         id: MessageId,
+        island: IslandId,
         subject: Subject,
         principal: PrincipalId,
         payload: Payload,
     ) -> Self {
         Self {
             id,
+            island,
             subject,
             payload,
             principal,
@@ -133,6 +136,11 @@ impl BusMessage {
     #[must_use]
     pub fn subject(&self) -> &Subject {
         &self.subject
+    }
+
+    #[must_use]
+    pub fn island(&self) -> &IslandId {
+        &self.island
     }
 
     #[must_use]
@@ -168,6 +176,7 @@ impl ReplyInbox {
 #[derive(Debug, Clone)]
 pub struct ResponseMessage {
     request_id: MessageId,
+    island: IslandId,
     responder: PrincipalId,
     payload: Payload,
 }
@@ -176,6 +185,11 @@ impl ResponseMessage {
     #[must_use]
     pub fn request_id(&self) -> u64 {
         self.request_id.value()
+    }
+
+    #[must_use]
+    pub fn island(&self) -> &IslandId {
+        &self.island
     }
 
     #[must_use]
@@ -195,7 +209,7 @@ pub(crate) enum ResponseEnvelope {
     HandlerError(BusError),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestTarget {
     Subject(Subject),
     Pattern(SubjectPattern),
@@ -236,6 +250,7 @@ impl RequestManyPolicy {
 pub struct ReplyPermit {
     inbox: ReplyInbox,
     request_id: MessageId,
+    island: IslandId,
     responder: PrincipalId,
     expires_at: Instant,
     used: Arc<AtomicBool>,
@@ -246,6 +261,7 @@ impl ReplyPermit {
     pub(crate) fn new(
         inbox: ReplyInbox,
         request_id: MessageId,
+        island: IslandId,
         responder: PrincipalId,
         expires_at: Instant,
         tx: Sender<ResponseEnvelope>,
@@ -253,6 +269,7 @@ impl ReplyPermit {
         Self {
             inbox,
             request_id,
+            island,
             responder,
             expires_at,
             used: Arc::new(AtomicBool::new(false)),
@@ -267,8 +284,9 @@ impl ReplyPermit {
     pub fn respond_as(&self, principal: &PrincipalId, payload: impl Into<Payload>) -> Result<()> {
         if principal != &self.responder || Instant::now() >= self.expires_at {
             return Err(BusError::UnauthorizedResponse {
+                island: self.island.clone(),
                 principal: principal.clone(),
-                inbox: self.inbox.subject.clone(),
+                inbox: Box::new(self.inbox.subject.clone()),
             });
         }
         if self.used.swap(true, Ordering::SeqCst) {
@@ -279,6 +297,7 @@ impl ReplyPermit {
         self.tx
             .send(ResponseEnvelope::Reply(ResponseMessage {
                 request_id: self.request_id,
+                island: self.island.clone(),
                 responder: principal.clone(),
                 payload: payload.into(),
             }))

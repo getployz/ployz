@@ -4,9 +4,12 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use mvp_bus::{BusActorHandle, BusError, Grant, PrincipalId, RequestManyPolicy, RequestTarget};
+use mvp_bus::{
+    BusActorHandle, BusError, Grant, HandlerFailure, PrincipalId, RequestManyPolicy, RequestTarget,
+};
 use serde::Serialize;
 
+use crate::assertions::{assert_eq_named, assert_error};
 use crate::bus_syntax::{pattern, subject};
 use crate::metrics::write_json;
 
@@ -194,7 +197,7 @@ async fn run_async() -> Result<(), String> {
             .lock()
             .map_err(|_| BusError::HandlerFailed {
                 subject: String::from("node.alpha.secure"),
-                reason: String::from("response error lock poisoned"),
+                failure: HandlerFailure::LockPoisoned,
             })? = Some(error);
         Ok(())
     })
@@ -295,25 +298,4 @@ async fn register_scheduler(
     .await
     .map(|_| ())
     .map_err(|error| format!("actor scheduler queue subscribe failed: {error}"))
-}
-
-fn assert_eq_named<T>(name: &str, actual: T, expected: T) -> Result<(), String>
-where
-    T: std::fmt::Debug + PartialEq,
-{
-    if actual == expected {
-        return Ok(());
-    }
-    Err(format!("{name}: expected {expected:?}, got {actual:?}"))
-}
-
-fn assert_error(
-    name: &str,
-    error: &BusError,
-    predicate: impl FnOnce(&BusError) -> bool,
-) -> Result<(), String> {
-    if predicate(error) {
-        return Ok(());
-    }
-    Err(format!("{name}: unexpected error {error}"))
 }

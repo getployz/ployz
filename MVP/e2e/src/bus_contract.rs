@@ -6,11 +6,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mvp_bus::{
-    BusError, BusSession, Grant, PrincipalId, RequestManyPolicy, RequestTarget, Subject,
-    harness::InMemoryBus,
+    BusError, BusSession, Grant, HandlerFailure, PrincipalId, RequestManyPolicy, RequestTarget,
+    Subject, harness::InMemoryBus,
 };
 use serde::Serialize;
 
+use crate::assertions::{assert_eq_named, assert_error, expect_error};
 use crate::bus_syntax::{pattern, subject};
 use crate::metrics::write_json;
 
@@ -185,7 +186,7 @@ pub(crate) fn run() -> Result<(), String> {
             .lock()
             .map_err(|_| BusError::HandlerFailed {
                 subject: String::from("node.alpha.secure"),
-                reason: String::from("response error lock poisoned"),
+                failure: HandlerFailure::LockPoisoned,
             })? = Some(error);
         Ok(())
     })
@@ -312,34 +313,6 @@ fn register_scheduler(
     )
     .map(|_| ())
     .map_err(|error| format!("scheduler queue subscribe failed: {error}"))
-}
-
-fn assert_eq_named<T>(name: &str, actual: T, expected: T) -> Result<(), String>
-where
-    T: std::fmt::Debug + PartialEq,
-{
-    if actual == expected {
-        return Ok(());
-    }
-    Err(format!("{name}: expected {expected:?}, got {actual:?}"))
-}
-
-fn expect_error<T>(name: &str, result: Result<T, BusError>) -> Result<BusError, String> {
-    match result {
-        Ok(_) => Err(format!("{name}: expected error, got success")),
-        Err(error) => Ok(error),
-    }
-}
-
-fn assert_error(
-    name: &str,
-    error: &BusError,
-    predicate: impl FnOnce(&BusError) -> bool,
-) -> Result<(), String> {
-    if predicate(error) {
-        return Ok(());
-    }
-    Err(format!("{name}: unexpected error {error}"))
 }
 
 fn write_metrics(metrics: &Metrics, started: Instant) -> Result<(), String> {

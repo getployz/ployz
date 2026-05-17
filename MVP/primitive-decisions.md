@@ -118,6 +118,65 @@ Revisit if:
   threads to a Tokio task pool, but the “one owned bus runtime” shape should
   remain.
 
+## Authority Islands and Grants
+
+Why this:
+- Subjects and fact keys are island-local. A laptop and prod can both use
+  `deploy.submit` or `/facts/deploy/d1/plan` without sharing authority or
+  truth.
+- `BusSession` carries `IslandId` plus `PrincipalId`, so business code cannot
+  accidentally choose a remote authority island by writing a longer subject
+  string.
+- Grants authorize publish, subscribe, queue subscribe, response, drain,
+  fact-read, and fact-write operations before handlers or durable mutation run.
+
+What it replaces:
+- A single global bus namespace.
+- Treating transport identity, such as a future iroh endpoint key, as authority.
+- Product logic that manually checks "is this prod?" before every operation.
+
+Costs:
+- Every dispatch now filters by island as well as subject pattern.
+- Revocation is stateful. In this slice it is in-memory; future replicated
+  revocation facts need the same explicit operator-visible shape.
+- Import/export bridges must be explicit. There is deliberately no hidden
+  cross-island forwarding path yet.
+
+Revisit if:
+- Operator-editable policies need a real policy language. `cedar-policy` is the
+  likely candidate if grants outgrow simple product-owned allow/deny lists.
+- Delegated invite or bridge tokens need offline attenuation. `biscuit-auth`
+  should be reconsidered then, with revocation still modeled as cluster state.
+
+## Immutable Fact-Set Harness
+
+Why this:
+- The architecture needs signed, mostly immutable facts projected into SQLite,
+  not a manual SQLite event log with gap repair.
+- This slice proves the business contract before iroh-docs arrives: fact reads
+  and writes are island-scoped, authorized by grants, writes are idempotent for
+  the same hash, and writes return a structured conflict for a different hash.
+- `BusActorHandle` exposes fact writes/reads so future business logic uses the
+  actor boundary instead of inspecting grants or storage internals.
+
+What it replaces:
+- Letting early code write mutable "head" rows as authority.
+- Treating SQLite as cluster truth.
+- Testing authorization only through bus messages while durable fact mutation
+  remains unchecked.
+
+Costs:
+- The current store is an in-memory contract harness, not durable replication.
+- Read authorization is intentionally present even though facts are local for
+  now. A revoked session or an empty grant cannot read facts in its island.
+- `FactContentHash` is only a typed hash string until iroh-blobs supplies real
+  content-addressed payloads.
+
+Revisit if:
+- Slice work reaches iroh-docs integration. At that point this harness should
+  become a backend behind the same fact contract, not a parallel source of
+  truth.
+
 ## hdrhistogram and memory-stats for E2E Proof
 
 Why this:

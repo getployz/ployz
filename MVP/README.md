@@ -38,6 +38,23 @@ This is intentionally kept inside `MVP/` while the rewrite remains isolated
 from the existing codebase. Wire it into the repo-level CI only when the user
 allows touching non-`MVP/` files.
 
+Individual E2E scenarios are also runnable while iterating:
+
+- `cargo run -p mvp-e2e -- bus-contract`
+- `cargo run -p mvp-e2e -- actor-contract`
+- `cargo run -p mvp-e2e -- authority-contract`
+- `cargo run -p mvp-e2e -- scale`
+
+Each scenario writes a JSON proof artifact under `MVP/target/mvp-e2e/`.
+
+## Maintainer Notes
+
+Use [MVP/primitive-decisions.md](primitive-decisions.md) as the living
+maintainer map for the architecture Lego pieces. When a slice picks or rejects
+an important primitive, record the short why/what-it-replaces/costs/revisit
+entry there, and keep the slice report focused on proof and implementation
+evidence.
+
 ## Non-Negotiables
 
 - Keep the product model from [VISION.md](../VISION.md): explicit operations,
