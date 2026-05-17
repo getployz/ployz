@@ -1,4 +1,5 @@
 use std::fs;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
 use mvp_bus::IslandId;
@@ -7,10 +8,15 @@ use mvp_projection::{
     GatewaySnapshotFile, NodeId, RouteId,
 };
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
+use tokio::time::timeout;
 
 use crate::{
     ServingActorHandle, ServingError, ServingFailureKind, ServingFreshness, ServingSnapshotBatch,
-    ServingSnapshotKind, ServingSnapshotPaths, WireServingState,
+    ServingSnapshotKind, ServingSnapshotPaths, WireServingState, spawn_http_gateway,
 };
 
 fn snapshot_paths(root: &TempDir) -> ServingSnapshotPaths {
@@ -104,6 +110,10 @@ fn write_prod_snapshots(root: &TempDir, revision: &str, backend: &str, dns_value
 
 fn prod() -> IslandId {
     IslandId::new("prod")
+}
+
+fn loopback_any() -> SocketAddr {
+    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
 }
 
 #[test]
@@ -299,6 +309,65 @@ async fn wire_state_reload_preserves_last_good_failure_semantics() {
 }
 
 #[tokio::test]
+async fn http_gateway_routes_to_selected_backend() {
+    let backend = TestBackend::spawn("backend-1").await;
+    let root = TempDir::new().expect("tempdir");
+    write_prod_snapshots(&root, "rev-1", &backend.addr().to_string(), "fd00::1");
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let gateway = spawn_http_gateway(loopback_any(), WireServingState::new(actor))
+        .await
+        .expect("spawn http gateway");
+
+    let response = http_get(gateway.listen_addr(), "web.example.test", "/health").await;
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(response.contains("backend-1 /health"), "{response}");
+    assert_eq!(gateway.metrics().request_count, 1);
+    gateway.shutdown().await.expect("shutdown gateway");
+    backend.shutdown().await;
+}
+
+#[tokio::test]
+async fn http_gateway_unknown_host_returns_not_found() {
+    let root = TempDir::new().expect("tempdir");
+    write_prod_snapshots(&root, "rev-1", "127.0.0.1:1", "fd00::1");
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let gateway = spawn_http_gateway(loopback_any(), WireServingState::new(actor))
+        .await
+        .expect("spawn http gateway");
+
+    let response = http_get(gateway.listen_addr(), "missing.example.test", "/").await;
+
+    assert!(response.starts_with("HTTP/1.1 404 Not Found"), "{response}");
+    assert_eq!(gateway.metrics().request_count, 1);
+    gateway.shutdown().await.expect("shutdown gateway");
+}
+
+#[tokio::test]
+async fn http_gateway_invalid_backend_returns_503_and_records_failure() {
+    let root = TempDir::new().expect("tempdir");
+    write_prod_snapshots(&root, "rev-1", "not-a-socket", "fd00::1");
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let gateway = spawn_http_gateway(loopback_any(), WireServingState::new(actor))
+        .await
+        .expect("spawn http gateway");
+
+    let response = http_get(gateway.listen_addr(), "web.example.test", "/").await;
+    let metrics = gateway.metrics();
+
+    assert!(
+        response.starts_with("HTTP/1.1 503 Service Unavailable"),
+        "{response}"
+    );
+    assert_eq!(metrics.request_count, 1);
+    assert_eq!(metrics.backend_failure_count, 1);
+    gateway.shutdown().await.expect("shutdown gateway");
+}
+
+#[tokio::test]
 async fn successful_reload_replaces_gateway_and_dns_together() {
     let root = TempDir::new().expect("tempdir");
     write_prod_snapshots(&root, "rev-1", "fd00::1:8080", "fd00::1");
@@ -325,6 +394,93 @@ async fn successful_reload_replaces_gateway_and_dns_together() {
     assert!(status.last_reload_attempt_at.is_some());
     assert!(status.last_reload_success_at.is_some());
     assert!(status.last_failure.is_none());
+}
+
+struct TestBackend {
+    addr: SocketAddr,
+    shutdown: oneshot::Sender<()>,
+    task: JoinHandle<()>,
+}
+
+impl TestBackend {
+    async fn spawn(id: &'static str) -> Self {
+        let listener = TcpListener::bind(loopback_any())
+            .await
+            .expect("bind test backend");
+        let addr = listener.local_addr().expect("backend local addr");
+        let (shutdown, mut shutdown_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => return,
+                    accepted = listener.accept() => {
+                        let Ok((mut stream, _)) = accepted else {
+                            return;
+                        };
+                        tokio::spawn(async move {
+                            let mut request = Vec::new();
+                            let mut chunk = [0_u8; 1024];
+                            loop {
+                                let read = stream.read(&mut chunk).await.expect("read backend request");
+                                if read == 0 {
+                                    return;
+                                }
+                                request.extend_from_slice(&chunk[..read]);
+                                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                            let request_line = String::from_utf8_lossy(&request)
+                                .lines()
+                                .next()
+                                .unwrap_or("GET / HTTP/1.1")
+                                .to_string();
+                            let path = request_line
+                                .split_whitespace()
+                                .nth(1)
+                                .unwrap_or("/");
+                            let body = format!("{id} {path}\n");
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                body.len(),
+                                body
+                            );
+                            stream.write_all(response.as_bytes()).await.expect("write backend response");
+                        });
+                    }
+                }
+            }
+        });
+        Self {
+            addr,
+            shutdown,
+            task,
+        }
+    }
+
+    fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    async fn shutdown(self) {
+        let _ = self.shutdown.send(());
+        let _ = self.task.await;
+    }
+}
+
+async fn http_get(addr: SocketAddr, host: &str, path: &str) -> String {
+    let mut stream = TcpStream::connect(addr).await.expect("connect gateway");
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write request");
+    let mut response = Vec::new();
+    timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
+        .await
+        .expect("read response timeout")
+        .expect("read response");
+    String::from_utf8(response).expect("utf8 response")
 }
 
 #[tokio::test]
