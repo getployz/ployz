@@ -330,6 +330,26 @@ Metrics:
 - projection rebuild duration
 - stale snapshot age reported to operator
 
+Current proof status:
+
+- Slice 011 adds `steady-state-serving-contract`.
+- The scenario proves the semantic serving-role boundary: typed gateway/DNS
+  queries load from actor-owned last-good snapshot state while the local
+  coordinator is absent for mutations.
+- A separate harness serving-commit writer can publish a commit, project it
+  locally, and reload it into serving state without constructing a local deploy
+  coordinator.
+- Deleting `projections.sqlite` does not interrupt serving queries. A fresh
+  projection actor rebuilds from facts, and serving is queried while that
+  rebuild task is in flight.
+- A serving actor restart from snapshot files works while the coordinator is
+  still absent.
+- Corrupt, wrong-island, deleted, and symlinked next snapshots preserve
+  last-good answers and record structured reload failure status.
+- This is not the full E2E-7 process/wire proof. Real OS process restarts,
+  Pingora HTTP serving, Hickory DNS serving, WireGuard service-to-service
+  traffic, and docs-backed cross-node replication remain follow-up work.
+
 ### E2E-8: Scale And Reliability Harness
 
 Purpose: prove the architecture has margin under large load.
