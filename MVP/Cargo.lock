@@ -2390,6 +2390,7 @@ name = "mvp-e2e"
 version = "0.1.0"
 dependencies = [
  "hdrhistogram",
+ "hickory-proto",
  "memory-stats",
  "mvp-acme",
  "mvp-bus",

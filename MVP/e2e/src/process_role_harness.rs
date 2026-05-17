@@ -1,4 +1,5 @@
 use std::fmt::{self, Display, Formatter};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,7 +12,9 @@ use mvp_projection::{
     RouteId, ServingCommitFact, SqliteProjectionStore,
 };
 use mvp_serving::{
-    ServingActorHandle, ServingError, ServingFreshness, ServingSnapshotPaths, ServingStatus,
+    DnsServerHandle, HttpGatewayHandle, ServingActorHandle, ServingError, ServingFreshness,
+    ServingSnapshotPaths, ServingStatus, WireRoleMetrics, WireServingState, spawn_dns_server,
+    spawn_http_gateway,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -54,6 +57,14 @@ pub(crate) fn run_role(args: Vec<String>) -> Result<(), String> {
                 .map_err(|error| format!("serialize injector response: {error}"))?;
             println!("{json}");
             Ok(())
+        }
+        "http-gateway" => {
+            let config = WireRoleConfig::parse(rest, "http-gateway")?;
+            runtime()?.block_on(run_http_gateway_role(config))
+        }
+        "dns-server" => {
+            let config = WireRoleConfig::parse(rest, "dns-server")?;
+            runtime()?.block_on(run_dns_server_role(config))
         }
         other => Err(format!("unknown process role '{other}'")),
     }
@@ -139,6 +150,46 @@ pub(crate) struct RemoteReplicationInjectorConfig {
     root: PathBuf,
     author: String,
     input: ServingCommitInput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WireRoleConfig {
+    root: PathBuf,
+    socket: PathBuf,
+    listen: SocketAddr,
+}
+
+impl WireRoleConfig {
+    fn parse(args: &[String], role: &'static str) -> Result<Self, String> {
+        let mut root = None;
+        let mut socket = None;
+        let mut listen = None;
+        let mut remaining = args;
+        while let [flag, value, tail @ ..] = remaining {
+            match flag.as_str() {
+                "--root" => root = Some(PathBuf::from(value)),
+                "--socket" => socket = Some(PathBuf::from(value)),
+                "--listen" => {
+                    listen =
+                        Some(value.parse::<SocketAddr>().map_err(|error| {
+                            format!("{role} --listen must be SocketAddr: {error}")
+                        })?)
+                }
+                other => return Err(format!("unknown {role} flag '{other}'")),
+            }
+            remaining = tail;
+        }
+        if !remaining.is_empty() {
+            return Err(format!(
+                "{role} arguments must be flag/value pairs, got {remaining:?}"
+            ));
+        }
+        Ok(Self {
+            root: root.ok_or_else(|| format!("{role} requires --root"))?,
+            socket: socket.ok_or_else(|| format!("{role} requires --socket"))?,
+            listen: listen.ok_or_else(|| format!("{role} requires --listen"))?,
+        })
+    }
 }
 
 impl RemoteReplicationInjectorConfig {
@@ -286,6 +337,70 @@ pub(crate) async fn run_local_coordinator_role(
     Ok(())
 }
 
+pub(crate) async fn run_http_gateway_role(config: WireRoleConfig) -> Result<(), String> {
+    remove_stale_socket(&config.socket)?;
+    if let Some(parent) = config.socket.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "create http-gateway socket dir '{}': {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let listener = UnixListener::bind(&config.socket)
+        .map_err(|error| format!("bind http-gateway control socket: {error}"))?;
+    let state = spawn_wire_serving_state(&config)?;
+    let gateway = spawn_http_gateway(config.listen, state.clone())
+        .await
+        .map_err(|error| format!("start http gateway: {error}"))?;
+    let state = Arc::new(Mutex::new(HttpGatewayRoleState {
+        state,
+        gateway: Some(gateway),
+    }));
+    loop {
+        let (stream, _addr) = listener
+            .accept()
+            .await
+            .map_err(|error| format!("accept http-gateway control connection: {error}"))?;
+        if handle_http_gateway_connection(stream, Arc::clone(&state)).await? {
+            break;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn run_dns_server_role(config: WireRoleConfig) -> Result<(), String> {
+    remove_stale_socket(&config.socket)?;
+    if let Some(parent) = config.socket.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "create dns-server socket dir '{}': {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let listener = UnixListener::bind(&config.socket)
+        .map_err(|error| format!("bind dns-server control socket: {error}"))?;
+    let state = spawn_wire_serving_state(&config)?;
+    let dns = spawn_dns_server(config.listen, state.clone())
+        .await
+        .map_err(|error| format!("start dns server: {error}"))?;
+    let state = Arc::new(Mutex::new(DnsServerRoleState {
+        state,
+        dns: Some(dns),
+    }));
+    loop {
+        let (stream, _addr) = listener
+            .accept()
+            .await
+            .map_err(|error| format!("accept dns-server control connection: {error}"))?;
+        if handle_dns_server_connection(stream, Arc::clone(&state)).await? {
+            break;
+        }
+    }
+    Ok(())
+}
+
 async fn handle_local_coordinator_connection(
     mut stream: UnixStream,
     writer: ServingFactWriter,
@@ -388,6 +503,68 @@ async fn handle_serving_projection_connection(
     Ok(should_shutdown)
 }
 
+async fn handle_http_gateway_connection(
+    mut stream: UnixStream,
+    state: Arc<Mutex<HttpGatewayRoleState>>,
+) -> Result<bool, String> {
+    let response = match read_request(&mut stream, "http-gateway request").await {
+        Ok(request) => match serde_json::from_slice::<WireRoleRequest>(&request) {
+            Ok(request) => match handle_http_gateway_request(request, state).await {
+                Ok(success) => WireRoleResponse::Success(success),
+                Err(error) => WireRoleResponse::Failure(error),
+            },
+            Err(error) => WireRoleResponse::Failure(WireRoleFailure::invalid_request(format!(
+                "parse http-gateway request: {error}"
+            ))),
+        },
+        Err(message) => WireRoleResponse::Failure(WireRoleFailure::invalid_request(message)),
+    };
+    let should_shutdown = matches!(
+        response,
+        WireRoleResponse::Success(WireRoleSuccess::Shutdown)
+    );
+    let response = serde_json::to_vec(&response)
+        .map_err(|error| format!("serialize http-gateway response: {error}"))?;
+    if write_response(&mut stream, &response, "http-gateway response")
+        .await
+        .is_err()
+    {
+        return Ok(should_shutdown);
+    }
+    Ok(should_shutdown)
+}
+
+async fn handle_dns_server_connection(
+    mut stream: UnixStream,
+    state: Arc<Mutex<DnsServerRoleState>>,
+) -> Result<bool, String> {
+    let response = match read_request(&mut stream, "dns-server request").await {
+        Ok(request) => match serde_json::from_slice::<WireRoleRequest>(&request) {
+            Ok(request) => match handle_dns_server_request(request, state).await {
+                Ok(success) => WireRoleResponse::Success(success),
+                Err(error) => WireRoleResponse::Failure(error),
+            },
+            Err(error) => WireRoleResponse::Failure(WireRoleFailure::invalid_request(format!(
+                "parse dns-server request: {error}"
+            ))),
+        },
+        Err(message) => WireRoleResponse::Failure(WireRoleFailure::invalid_request(message)),
+    };
+    let should_shutdown = matches!(
+        response,
+        WireRoleResponse::Success(WireRoleSuccess::Shutdown)
+    );
+    let response = serde_json::to_vec(&response)
+        .map_err(|error| format!("serialize dns-server response: {error}"))?;
+    if write_response(&mut stream, &response, "dns-server response")
+        .await
+        .is_err()
+    {
+        return Ok(should_shutdown);
+    }
+    Ok(should_shutdown)
+}
+
 async fn read_request(stream: &mut UnixStream, operation: &str) -> Result<Vec<u8>, String> {
     timeout(
         ROLE_REQUEST_READ_TIMEOUT,
@@ -463,6 +640,119 @@ async fn handle_role_request(
             Ok(RoleSuccess::Shutdown)
         }
     }
+}
+
+async fn handle_http_gateway_request(
+    request: WireRoleRequest,
+    state: Arc<Mutex<HttpGatewayRoleState>>,
+) -> Result<WireRoleSuccess, WireRoleFailure> {
+    match request {
+        WireRoleRequest::Status | WireRoleRequest::Readiness => http_gateway_status(state).await,
+        WireRoleRequest::Reload => {
+            let wire = {
+                let state = state.lock().await;
+                state.state.clone()
+            };
+            wire.reload()
+                .await
+                .map_err(WireRoleFailure::from_serving_error)?;
+            http_gateway_status(state).await
+        }
+        WireRoleRequest::Shutdown => {
+            let gateway = {
+                let mut state = state.lock().await;
+                state.gateway.take()
+            };
+            if let Some(gateway) = gateway {
+                gateway
+                    .shutdown()
+                    .await
+                    .map_err(|error| WireRoleFailure::internal(error.to_string()))?;
+            }
+            Ok(WireRoleSuccess::Shutdown)
+        }
+    }
+}
+
+async fn handle_dns_server_request(
+    request: WireRoleRequest,
+    state: Arc<Mutex<DnsServerRoleState>>,
+) -> Result<WireRoleSuccess, WireRoleFailure> {
+    match request {
+        WireRoleRequest::Status | WireRoleRequest::Readiness => dns_server_status(state).await,
+        WireRoleRequest::Reload => {
+            let wire = {
+                let state = state.lock().await;
+                state.state.clone()
+            };
+            wire.reload()
+                .await
+                .map_err(WireRoleFailure::from_serving_error)?;
+            dns_server_status(state).await
+        }
+        WireRoleRequest::Shutdown => {
+            let dns = {
+                let mut state = state.lock().await;
+                state.dns.take()
+            };
+            if let Some(dns) = dns {
+                dns.shutdown()
+                    .await
+                    .map_err(|error| WireRoleFailure::internal(error.to_string()))?;
+            }
+            Ok(WireRoleSuccess::Shutdown)
+        }
+    }
+}
+
+async fn http_gateway_status(
+    state: Arc<Mutex<HttpGatewayRoleState>>,
+) -> Result<WireRoleSuccess, WireRoleFailure> {
+    let (wire, listen_addr, metrics) = {
+        let state = state.lock().await;
+        let gateway = state
+            .gateway
+            .as_ref()
+            .ok_or_else(|| WireRoleFailure::unavailable("http gateway is shut down"))?;
+        (
+            state.state.clone(),
+            gateway.listen_addr(),
+            gateway.metrics(),
+        )
+    };
+    wire_role_status(WireRoleKind::HttpGateway, wire, listen_addr, metrics).await
+}
+
+async fn dns_server_status(
+    state: Arc<Mutex<DnsServerRoleState>>,
+) -> Result<WireRoleSuccess, WireRoleFailure> {
+    let (wire, listen_addr, metrics) = {
+        let state = state.lock().await;
+        let dns = state
+            .dns
+            .as_ref()
+            .ok_or_else(|| WireRoleFailure::unavailable("dns server is shut down"))?;
+        (state.state.clone(), dns.listen_addr(), dns.metrics())
+    };
+    wire_role_status(WireRoleKind::DnsServer, wire, listen_addr, metrics).await
+}
+
+async fn wire_role_status(
+    kind: WireRoleKind,
+    wire: WireServingState,
+    listen_addr: SocketAddr,
+    metrics: WireRoleMetrics,
+) -> Result<WireRoleSuccess, WireRoleFailure> {
+    let serving = wire
+        .status()
+        .await
+        .map_err(WireRoleFailure::from_serving_error)?;
+    Ok(WireRoleSuccess::Status(WireProcessStatus {
+        kind,
+        serving: role_serving_status(serving),
+        listen_addr: listen_addr.to_string(),
+        metrics,
+    }))
 }
 
 async fn project_once(
@@ -692,6 +982,27 @@ struct ServingProjectionState {
     serving: Option<ServingActorHandle>,
     rebuild: Option<RebuildState>,
     next_rebuild_token: u64,
+}
+
+struct HttpGatewayRoleState {
+    state: WireServingState,
+    gateway: Option<HttpGatewayHandle>,
+}
+
+struct DnsServerRoleState {
+    state: WireServingState,
+    dns: Option<DnsServerHandle>,
+}
+
+fn spawn_wire_serving_state(config: &WireRoleConfig) -> Result<WireServingState, String> {
+    let expected_island = IslandId::new("prod");
+    let paths = ServingSnapshotPaths::new(
+        config.root.join("gateway.snapshot"),
+        config.root.join("dns.snapshot"),
+    );
+    let serving = ServingActorHandle::spawn(expected_island, paths, STALE_AFTER)
+        .map_err(|error| format!("load wire serving snapshots: {error}"))?;
+    Ok(WireServingState::new(serving))
 }
 
 impl ServingProjectionState {
@@ -1075,6 +1386,94 @@ pub(crate) enum LocalMutationStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub(crate) enum WireRoleRequest {
+    Readiness,
+    Reload,
+    Status,
+    Shutdown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub(crate) enum WireRoleResponse {
+    Success(WireRoleSuccess),
+    Failure(WireRoleFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "success", rename_all = "snake_case")]
+pub(crate) enum WireRoleSuccess {
+    Status(WireProcessStatus),
+    Shutdown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct WireProcessStatus {
+    pub(crate) kind: WireRoleKind,
+    pub(crate) serving: RoleServingStatus,
+    pub(crate) listen_addr: String,
+    pub(crate) metrics: WireRoleMetrics,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WireRoleKind {
+    HttpGateway,
+    DnsServer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct WireRoleFailure {
+    pub(crate) kind: WireRoleFailureKind,
+    pub(crate) message: String,
+}
+
+impl WireRoleFailure {
+    fn invalid_request(message: impl Into<String>) -> Self {
+        Self {
+            kind: WireRoleFailureKind::InvalidRequest,
+            message: message.into(),
+        }
+    }
+
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            kind: WireRoleFailureKind::Unavailable,
+            message: message.into(),
+        }
+    }
+
+    fn internal(message: impl Into<String>) -> Self {
+        Self {
+            kind: WireRoleFailureKind::Internal,
+            message: message.into(),
+        }
+    }
+
+    fn from_serving_error(error: ServingError) -> Self {
+        match error {
+            ServingError::SnapshotLoad { failure } => Self {
+                kind: WireRoleFailureKind::Unavailable,
+                message: failure.to_string(),
+            },
+            ServingError::ActorUnavailable { operation, reason } => Self {
+                kind: WireRoleFailureKind::Internal,
+                message: format!("{operation}: {reason}"),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WireRoleFailureKind {
+    InvalidRequest,
+    Unavailable,
+    Internal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CoordinatorFailure {
     pub(crate) kind: CoordinatorFailureKind,
     pub(crate) message: String,
@@ -1294,6 +1693,12 @@ pub(crate) enum CoordinatorClientError {
     Failure(CoordinatorFailure),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WireRoleClientError {
+    Transport(String),
+    Failure(WireRoleFailure),
+}
+
 pub(crate) async fn request_role(
     socket: &Path,
     request: &RoleRequest,
@@ -1302,6 +1707,17 @@ pub(crate) async fn request_role(
         Ok(RoleResponse::Success(success)) => Ok(success),
         Ok(RoleResponse::Failure(failure)) => Err(RoleClientError::Failure(failure)),
         Err(error) => Err(RoleClientError::Transport(error)),
+    }
+}
+
+pub(crate) async fn request_wire_role(
+    socket: &Path,
+    request: &WireRoleRequest,
+) -> Result<WireRoleSuccess, WireRoleClientError> {
+    match request_json::<_, WireRoleResponse>(socket, request, "wire role").await {
+        Ok(WireRoleResponse::Success(success)) => Ok(success),
+        Ok(WireRoleResponse::Failure(failure)) => Err(WireRoleClientError::Failure(failure)),
+        Err(error) => Err(WireRoleClientError::Transport(error)),
     }
 }
 
