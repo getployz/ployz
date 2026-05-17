@@ -2,6 +2,8 @@ use std::fs;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
+use hickory_proto::op::{Message, Query, ResponseCode};
+use hickory_proto::rr::{Name, RData, RecordType};
 use mvp_bus::IslandId;
 use mvp_projection::{
     BackendEndpoint, DnsRecordProjection, DnsSnapshotFile, GatewayRouteProjection,
@@ -9,14 +11,15 @@ use mvp_projection::{
 };
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use crate::{
     ServingActorHandle, ServingError, ServingFailureKind, ServingFreshness, ServingSnapshotBatch,
-    ServingSnapshotKind, ServingSnapshotPaths, WireServingState, spawn_http_gateway,
+    ServingSnapshotKind, ServingSnapshotPaths, WireServingState, spawn_dns_server,
+    spawn_http_gateway,
 };
 
 fn snapshot_paths(root: &TempDir) -> ServingSnapshotPaths {
@@ -368,6 +371,92 @@ async fn http_gateway_invalid_backend_returns_503_and_records_failure() {
 }
 
 #[tokio::test]
+async fn dns_server_answers_aaaa_from_snapshot() {
+    let root = TempDir::new().expect("tempdir");
+    write_prod_snapshots(&root, "rev-1", "127.0.0.1:1", "fd00::1");
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let server = spawn_dns_server(loopback_any(), WireServingState::new(actor))
+        .await
+        .expect("spawn dns server");
+
+    let response = dns_query(server.listen_addr(), "web.example.test.", RecordType::AAAA).await;
+
+    assert_eq!(response.metadata.response_code, ResponseCode::NoError);
+    assert_eq!(response.answers.len(), 1);
+    assert_eq!(response.answers[0].ttl, 30);
+    assert!(matches!(
+        &response.answers[0].data,
+        RData::AAAA(addr) if addr.to_string() == "fd00::1"
+    ));
+    assert_eq!(server.metrics().request_count, 1);
+    server.shutdown().await.expect("shutdown dns server");
+}
+
+#[tokio::test]
+async fn dns_server_lookup_is_case_insensitive() {
+    let root = TempDir::new().expect("tempdir");
+    write_prod_snapshots(&root, "rev-1", "127.0.0.1:1", "fd00::1");
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let server = spawn_dns_server(loopback_any(), WireServingState::new(actor))
+        .await
+        .expect("spawn dns server");
+
+    let response = dns_query(server.listen_addr(), "WEB.EXAMPLE.TEST.", RecordType::AAAA).await;
+
+    assert_eq!(response.metadata.response_code, ResponseCode::NoError);
+    assert_eq!(response.answers.len(), 1);
+    server.shutdown().await.expect("shutdown dns server");
+}
+
+#[tokio::test]
+async fn dns_server_unknown_name_returns_nxdomain() {
+    let root = TempDir::new().expect("tempdir");
+    write_prod_snapshots(&root, "rev-1", "127.0.0.1:1", "fd00::1");
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let server = spawn_dns_server(loopback_any(), WireServingState::new(actor))
+        .await
+        .expect("spawn dns server");
+
+    let response = dns_query(
+        server.listen_addr(),
+        "missing.example.test.",
+        RecordType::AAAA,
+    )
+    .await;
+
+    assert_eq!(response.metadata.response_code, ResponseCode::NXDomain);
+    assert!(response.answers.is_empty());
+    server.shutdown().await.expect("shutdown dns server");
+}
+
+#[tokio::test]
+async fn dns_server_records_malformed_packets_without_crashing() {
+    let root = TempDir::new().expect("tempdir");
+    write_prod_snapshots(&root, "rev-1", "127.0.0.1:1", "fd00::1");
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let server = spawn_dns_server(loopback_any(), WireServingState::new(actor))
+        .await
+        .expect("spawn dns server");
+    let client = UdpSocket::bind(loopback_any()).await.expect("bind client");
+
+    client
+        .send_to(b"not dns", server.listen_addr())
+        .await
+        .expect("send malformed");
+    let response = dns_query(server.listen_addr(), "web.example.test.", RecordType::AAAA).await;
+    let metrics = server.metrics();
+
+    assert_eq!(response.metadata.response_code, ResponseCode::NoError);
+    assert_eq!(metrics.malformed_dns_count, 1);
+    assert_eq!(metrics.request_count, 2);
+    server.shutdown().await.expect("shutdown dns server");
+}
+
+#[tokio::test]
 async fn successful_reload_replaces_gateway_and_dns_together() {
     let root = TempDir::new().expect("tempdir");
     write_prod_snapshots(&root, "rev-1", "fd00::1:8080", "fd00::1");
@@ -481,6 +570,25 @@ async fn http_get(addr: SocketAddr, host: &str, path: &str) -> String {
         .expect("read response timeout")
         .expect("read response");
     String::from_utf8(response).expect("utf8 response")
+}
+
+async fn dns_query(addr: SocketAddr, name: &str, record_type: RecordType) -> Message {
+    let socket = UdpSocket::bind(loopback_any())
+        .await
+        .expect("bind dns client");
+    let mut query = Message::query();
+    query.add_query(Query::query(
+        Name::from_ascii(name).expect("query name"),
+        record_type,
+    ));
+    let bytes = query.to_vec().expect("encode query");
+    socket.send_to(&bytes, addr).await.expect("send dns query");
+    let mut response = [0_u8; 2048];
+    let len = timeout(Duration::from_secs(2), socket.recv(&mut response))
+        .await
+        .expect("dns response timeout")
+        .expect("receive dns response");
+    Message::from_vec(&response[..len]).expect("decode dns response")
 }
 
 #[tokio::test]
