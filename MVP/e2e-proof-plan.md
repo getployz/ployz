@@ -151,8 +151,8 @@ Scenarios:
 5. Delete `projections.sqlite`; projection rebuilds deterministically from
    docs facts.
 6. Drop notification delivery; periodic/full projection pass catches up.
-7. Conflicting or unauthorized fact writes are rejected or ignored with visible
-   status.
+7. Conflicting fact candidates remain reducer-visible, and unauthorized or
+   unverified candidates are ignored with visible status.
 
 Metrics:
 
@@ -160,6 +160,16 @@ Metrics:
 - projection lag p50/p95/p99
 - full rebuild duration by fact count
 - snapshot write duration
+
+Current proof status:
+
+- Slice 005 proves rebuildable SQLite projections and snapshots from an
+  in-memory fact harness.
+- Slice 007 proves one local two-node iroh-docs fact path behind `FactSource`,
+  including conflict and unauthorized candidate status.
+- Remaining E2E-4 work is remote service registry projection, route/DNS commit
+  projection from docs-backed facts, and propagation histograms beyond the
+  single local sync scenario.
 
 ### E2E-5: Machine Add And Remove
 

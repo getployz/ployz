@@ -110,6 +110,26 @@ pub enum FactAccess {
 
 pub trait FactAuthorizer: Send + Sync {
     fn can_access_fact(&self, session: &BusSession, key: &FactKey, access: FactAccess) -> bool;
+
+    fn can_principal_access_fact(
+        &self,
+        island: &IslandId,
+        principal: &PrincipalId,
+        key: &FactKey,
+        access: FactAccess,
+    ) -> bool {
+        let _ = (island, principal, key, access);
+        false
+    }
+
+    fn can_session_access_fact(
+        &self,
+        session: &BusSession,
+        key: &FactKey,
+        access: FactAccess,
+    ) -> bool {
+        self.can_access_fact(session, key, access)
+    }
 }
 
 #[derive(Debug, Clone, Default)]

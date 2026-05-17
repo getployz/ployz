@@ -4,6 +4,7 @@ mod authority_contract;
 mod bridge_contract;
 mod bus_contract;
 mod bus_syntax;
+mod iroh_docs_contract;
 mod metrics;
 mod projection_contract;
 mod scale;
@@ -12,6 +13,16 @@ use std::env;
 use std::process;
 use std::sync::mpsc;
 use std::time::Duration;
+
+const ALL_SCENARIOS: &[&str] = &[
+    "bus-contract",
+    "actor-contract",
+    "authority-contract",
+    "bridge-contract",
+    "projection-contract",
+    "iroh-docs-contract",
+    "scale",
+];
 
 fn main() {
     if let Err(error) = run() {
@@ -25,19 +36,33 @@ fn run() -> Result<(), String> {
         .nth(1)
         .unwrap_or_else(|| String::from("bus-contract"));
     match scenario.as_str() {
+        "actor-contract"
+        | "authority-contract"
+        | "bridge-contract"
+        | "bus-contract"
+        | "iroh-docs-contract"
+        | "projection-contract"
+        | "scale" => run_named_scenario(scenario.as_str()),
+        "all" => run_all_with_budget(),
+        "help" | "--help" | "-h" => {
+            println!(
+                "usage: cargo run -p mvp-e2e -- <bus-contract|actor-contract|authority-contract|bridge-contract|projection-contract|iroh-docs-contract|all|scale>"
+            );
+            Ok(())
+        }
+        other => Err(format!("unknown MVP E2E scenario '{other}'")),
+    }
+}
+
+fn run_named_scenario(scenario: &str) -> Result<(), String> {
+    match scenario {
         "actor-contract" => actor_contract::run(),
         "authority-contract" => authority_contract::run(),
         "bridge-contract" => bridge_contract::run(),
         "bus-contract" => bus_contract::run(),
+        "iroh-docs-contract" => iroh_docs_contract::run(),
         "projection-contract" => projection_contract::run(),
-        "all" => run_all_with_budget(),
         "scale" => scale::run(),
-        "help" | "--help" | "-h" => {
-            println!(
-                "usage: cargo run -p mvp-e2e -- <bus-contract|actor-contract|authority-contract|bridge-contract|projection-contract|all|scale>"
-            );
-            Ok(())
-        }
         other => Err(format!("unknown MVP E2E scenario '{other}'")),
     }
 }
@@ -61,12 +86,10 @@ fn run_all_with_budget() -> Result<(), String> {
 }
 
 fn run_all() -> Result<(), String> {
-    bus_contract::run()?;
-    actor_contract::run()?;
-    authority_contract::run()?;
-    bridge_contract::run()?;
-    projection_contract::run()?;
-    scale::run()
+    for scenario in ALL_SCENARIOS {
+        run_named_scenario(scenario)?;
+    }
+    Ok(())
 }
 
 fn e2e_all_budget() -> Result<Duration, String> {
@@ -87,4 +110,28 @@ fn parse_duration(value: &str) -> Option<Duration> {
         return None;
     }
     Some(Duration::from_secs(seconds))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ALL_SCENARIOS, parse_duration};
+    use std::time::Duration;
+
+    #[test]
+    fn all_scenarios_include_iroh_docs_contract() {
+        assert!(ALL_SCENARIOS.contains(&"iroh-docs-contract"));
+    }
+
+    #[test]
+    fn parse_duration_accepts_positive_seconds_with_or_without_suffix() {
+        assert_eq!(parse_duration("3s"), Some(Duration::from_secs(3)));
+        assert_eq!(parse_duration("4"), Some(Duration::from_secs(4)));
+    }
+
+    #[test]
+    fn parse_duration_rejects_zero_and_invalid_values() {
+        assert_eq!(parse_duration("0s"), None);
+        assert_eq!(parse_duration("0"), None);
+        assert_eq!(parse_duration("soon"), None);
+    }
 }

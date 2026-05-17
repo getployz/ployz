@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 
 use mvp_bus::{
-    BusSession, Fact, FactContentHash, FactKey, FactKeyPattern, FactPayload, IslandId,
-    harness::InMemoryBus,
+    BusSession, Fact, FactContentHash, FactKeyPattern, FactPayload, IslandId, harness::InMemoryBus,
 };
 
-use crate::source::{CandidateStatus, FactCandidate, FactKind, FactSource, FactSourceResult};
+use crate::source::{
+    CandidateStatus, FactCandidate, FactSource, FactSourceResult, classify_fact_key,
+};
 
 #[derive(Clone)]
 pub struct BusFactSource {
@@ -68,48 +69,16 @@ impl FactSource for BusFactSource {
 }
 
 fn fact_to_candidate(fact: Fact, status: CandidateStatus) -> FactCandidate {
+    let classification = classify_fact_key(fact.key());
     FactCandidate::new(
         fact.island().clone(),
         fact.key().clone(),
         fact.author().clone(),
         fact.content_hash().clone(),
-        kind_for_key(fact.key()),
-        epoch_for_key(fact.key()),
+        classification.kind(),
+        classification.epoch(),
         status,
     )
-}
-
-fn kind_for_key(key: &FactKey) -> FactKind {
-    let segments = key.segments().collect::<Vec<_>>();
-    match segments.as_slice() {
-        ["facts", "node", _node_id, "joined", _epoch]
-        | ["facts", "node", _node_id, "joined", _epoch, _] => FactKind::NodeJoined,
-        ["facts", "service", _service, _node_id, "registered", _epoch]
-        | [
-            "facts",
-            "service",
-            _service,
-            _node_id,
-            "registered",
-            _epoch,
-            _,
-        ] => FactKind::ServiceRegistered,
-        ["facts", "routes", _route_commit] => FactKind::RouteCommit,
-        ["facts", "gateway", _gateway_commit] => FactKind::GatewayCommit,
-        ["facts", "dns", _dns_commit] => FactKind::DnsCommit,
-        _ => FactKind::Unsupported,
-    }
-}
-
-fn epoch_for_key(key: &FactKey) -> u64 {
-    let segments = key.segments().collect::<Vec<_>>();
-    match segments.as_slice() {
-        ["facts", "node", _node_id, "joined", epoch]
-        | ["facts", "node", _node_id, "joined", epoch, _]
-        | ["facts", "service", _, _node_id, "registered", epoch]
-        | ["facts", "service", _, _node_id, "registered", epoch, _] => epoch.parse().unwrap_or(0),
-        _ => 0,
-    }
 }
 
 #[cfg(test)]

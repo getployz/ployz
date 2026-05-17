@@ -31,6 +31,23 @@ the decision concrete.
 - The gateway/DNS plan that preserved the old role shape was superseded. HTTP
   and DNS behavior remain product requirements; Pingora and the existing DNS
   code are references, not constraints.
+- Slice 007 raised only the isolated `MVP/` workspace to Rust 1.91 and added
+  the current iroh family behind a new `mvp-iroh` crate. Root workspace
+  toolchain policy remains unchanged.
+- Slice 007 added a docs-backed `FactSource` adapter with a synchronous local
+  view. Projection reducers still do not depend on raw iroh types or async docs
+  APIs.
+- Slice 007 kept the original session-based fact authorizer method and added a
+  principal-based check for docs authors. That preserves existing call sites
+  while allowing imported iroh-docs entries to be authorized without fabricating
+  a bus session.
+- Slice 007 made payload availability explicit in the docs local view: metadata
+  for a newer same-author fact replaces older payload-bearing metadata, even if
+  the new blob content is not ready yet. Reducers see the candidate but cannot
+  read a stale payload.
+- Slice 007 made malformed docs entries visible as rejected entries while valid
+  facts in the same refresh continue to apply. A bad non-Ployz docs key should
+  not freeze the local projection view.
 
 ## NATS-Shaped Bus Semantics
 
@@ -246,9 +263,9 @@ Costs:
   need truth must list candidates and handle conflicts explicitly.
 
 Revisit if:
-- Slice work reaches iroh-docs integration. At that point this harness should
-  become a backend behind the same fact contract, not a parallel source of
-  truth.
+- Business logic starts choosing between in-memory facts and docs facts itself.
+  The in-memory store is a harness; `mvp-iroh` is the first real backend behind
+  the same fact-source contract.
 
 ## Singleton / Lease Primitive Gap
 
@@ -267,7 +284,7 @@ Revisit:
 - Immediately before ACME planning. Do not implement ACME until this choice is
   made and its failure semantics are captured in the slice plan.
 
-## Iroh Toolchain Decision Is Blocking
+## Iroh Toolchain And Docs Adapter
 
 Why this:
 - The MVP strategy depends on iroh, iroh-gossip, iroh-blobs, and iroh-docs as
@@ -275,17 +292,33 @@ Why this:
 - Several completed slices intentionally proved semantics in memory first. That
   phase is no longer enough; future transport/fact slices must bind the
   semantics to real iroh APIs.
+- The projection path must stay synchronous from the reducer's point of view:
+  async docs sync updates a local view, and projection reads that local view
+  through `FactSource`.
 
-Current decision point:
-- If current `iroh-docs` requires a newer Rust toolchain than `MVP/` declares,
-  the next relevant slice must either bump the MVP Rust version and document
-  the repo impact, or pin an older compatible iroh-docs line and document the
-  API cost.
+Decision:
+- `MVP/` now declares Rust 1.91 so it can use current iroh crates:
+  `iroh 1.0.0-rc.0`, `iroh-docs 0.99.0`, `iroh-blobs 0.101.0`, and
+  `iroh-gossip 0.99.0`.
+- The root workspace is not changed by this decision.
+- Raw endpoint/docs/blob/gossip types are confined to `mvp-iroh` internals and
+  E2E harness setup. Business reducers, deploy logic, and bus semantics should
+  consume typed Ployz contracts.
+- Docs author IDs map through explicit Ployz principal bindings. Unknown docs
+  authors are unverified; docs access is not authority.
+- Malformed docs entries are reported through the `mvp-iroh` local-view
+  rejected-entry surface and skipped. Valid facts in the same docs query still
+  flow into projection.
+- Author bindings are currently explicit test/bootstrap data. Before production
+  join or long-lived docs access, this needs a replicated author-binding
+  manifest or equivalent membership fact so newly authorized docs authors become
+  verifiable on already-imported peers.
 
 Revisit:
-- Before any new fact-replication or transport abstraction work. Do not add
-  more "revisit when distributed transport lands" surface without this
-  concrete version/toolchain choice.
+- If Rust 1.91 becomes unacceptable even inside `MVP/`, pinning an older iroh
+  line must be planned as its own compatibility slice.
+- If projection ever needs to await iroh APIs directly, redesign the adapter
+  boundary instead of letting async transport concerns leak into reducers.
 
 ## Coordinator Is Not Steady State
 
