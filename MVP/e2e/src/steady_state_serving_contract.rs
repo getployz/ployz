@@ -357,7 +357,7 @@ async fn assert_failed_reload_preserves(
     assert_eq_named(
         "loaded gateway revision",
         status.loaded_revisions.gateway,
-        "gateway:serving-2-gateway:serving-2-route".to_string(),
+        expected_gateway_revision("serving-2"),
     )?;
     assert_eq_named(
         "loaded dns revision",
@@ -365,6 +365,10 @@ async fn assert_failed_reload_preserves(
         "dns:serving-2-dns".to_string(),
     )?;
     Ok(true)
+}
+
+fn expected_gateway_revision(serving_commit_id: &str) -> String {
+    format!("gateway:{serving_commit_id}-gateway:{serving_commit_id}-route:acme:none")
 }
 
 fn assert_status_failure(

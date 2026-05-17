@@ -439,7 +439,7 @@ impl ProjectionCatchUp {
         if report.gateway_snapshot.is_none() || report.dns_snapshot.is_none() {
             return Err(crate::DeployError::ProjectionCatchUpMissing);
         }
-        if gateway_snapshot_revision(report) != Some(expected_gateway_revision(commit).as_str())
+        if !gateway_snapshot_revision_matches(report, commit)
             || dns_snapshot_revision(report) != Some(expected_dns_revision(commit).as_str())
             || gateway.gateway_commit_id != commit.gateway_commit_id.to_string()
             || gateway.route_commit_id != commit.route_commit_id.to_string()
@@ -462,7 +462,7 @@ impl ProjectionCatchUp {
     }
 }
 
-fn expected_gateway_revision(commit: &ServingCommitPlan) -> String {
+fn expected_gateway_revision_prefix(commit: &ServingCommitPlan) -> String {
     format!(
         "gateway:{}:{}",
         commit.gateway_commit_id, commit.route_commit_id
@@ -478,6 +478,20 @@ fn gateway_snapshot_revision(report: &ProjectionReport) -> Option<&str> {
         .gateway_snapshot
         .as_ref()
         .map(|snapshot| snapshot.revision.as_str())
+}
+
+fn gateway_snapshot_revision_matches(
+    report: &ProjectionReport,
+    commit: &ServingCommitPlan,
+) -> bool {
+    let Some(revision) = gateway_snapshot_revision(report) else {
+        return false;
+    };
+    let expected = expected_gateway_revision_prefix(commit);
+    revision == expected
+        || revision
+            .strip_prefix(&expected)
+            .is_some_and(|suffix| suffix.starts_with(':'))
 }
 
 fn dns_snapshot_revision(report: &ProjectionReport) -> Option<&str> {
