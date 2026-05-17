@@ -226,9 +226,49 @@ Metrics:
 
 - capacity fanout duration
 - phase duration
-- route commit durability ack duration
+- local route commit durability duration
+- visible nodes at decision time
 - route commit to gateway reload latency
 - drain duration
+
+### E2E-6a: Advisory Lease-Fenced Commands
+
+Purpose: prove product features can express advisory ownership and epoch fencing
+without importing a NATS server lock topology or pretending iroh-docs is a
+consensus system.
+
+Scenarios:
+
+1. First holder acquires an advisory lease on the connected node and the command
+   result reports visible nodes at decision time.
+2. A second holder receives a structured conflict before mutation while the
+   first lease is active.
+3. Renewal extends the current holder's lease.
+4. Expiry allows a new holder at a higher epoch.
+5. Stale guards cannot mutate after a newer epoch exists.
+6. Conflicting same-epoch claims remain candidates, reduce deterministically by
+   `(epoch desc, content_hash asc)`, and annotate the loser as superseded.
+7. ACME HTTP-01 challenge state can only be published or deleted by the current
+   local winner's fencing epoch.
+8. Dropping a local lease guard records a best-effort release without claiming
+   cluster-wide exclusivity.
+
+Current proof status:
+
+- Slice 009 plans `lease-acme-contract` against the corrected advisory lease
+  contract: no witness acks, no quorum, no strict mode, and no pin-fact commit
+  phase.
+- Remaining work after the canary is docs-backed lease facts over real iroh
+  replication and gateway HTTP challenge serving.
+
+Metrics:
+
+- acquisition duration,
+- contention count,
+- stale mutation rejection count,
+- superseded candidate count,
+- visible nodes at decision time,
+- takeover duration after expiry.
 
 ### E2E-7: Crash And Restart
 
@@ -248,8 +288,9 @@ Scenarios:
    serves.
 6. Delete projection DB while HTTP/DNS are serving; daemon rebuilds and
    publishes fresh serving state without traffic interruption.
-7. Coordinator dies permanently after local commit but before pin quorum;
-   deploy does not drain old instances.
+7. Coordinator dies permanently after local route commit before other nodes see
+   the fact; the connected node reports the local commit and visible nodes at
+   decision time, and other nodes converge through eventual docs replication.
 8. Coordinator is down while service-to-service traffic crosses nodes over
    last-applied WireGuard config; traffic continues and the node exposes
    coordinator health as stale/unavailable for mutations.
@@ -298,7 +339,9 @@ Scenarios:
    shape of code and tests.
 3. Reimplement the deploy commit-before-drain invariant and compare the shape of
    code and tests.
-4. Add one new business rule after those flows exist and measure how many files
+4. Reimplement ACME challenge ownership as a lease-fenced canary and compare it
+   against the old cert coordination path.
+5. Add one new business rule after those flows exist and measure how many files
    and abstraction layers change.
 
 Metrics:
