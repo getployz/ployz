@@ -31,10 +31,11 @@ with confidence.
 
 ## Test Harness Shape
 
-Extend the existing harnesses rather than inventing a separate testing system:
-[crates/ployz-e2e](../crates/ployz-e2e) for process-level scenarios and
-[crates/ployz-sim](../crates/ployz-sim) for deterministic control-plane
-simulation.
+Build the MVP proof harness under `MVP/`. Existing harnesses such as
+[crates/ployz-e2e](../crates/ployz-e2e) and
+[crates/ployz-sim](../crates/ployz-sim) are reference material for patterns,
+but the rewrite must remain self-contained in `MVP/` until migration is an
+explicit decision.
 
 Start each slice with the smallest harness extension that proves that slice.
 The full MVP still includes large logical-node stress tests.
@@ -297,24 +298,24 @@ Each slice should add or update:
 - deterministic test scenario code,
 - a structured metrics output file or snapshot,
 - clear failure assertions, not just logs,
-- a `just` target or documented command for local execution.
+- an MVP-local documented command for local execution.
 
-Candidate commands:
+Candidate MVP-local commands:
 
 ```text
-just test
-just test-mvp-bus
-just test-mvp-e2e
-just test-mvp-scale
+cd MVP && cargo test
+cd MVP && cargo run -p mvp-e2e -- bus-contract
+cd MVP && cargo run -p mvp-e2e -- scale
 ```
 
 Final MVP gate:
 
 ```text
-just test
-just test-mvp-e2e
-just test-mvp-scale
+cd MVP && cargo test
+cd MVP && cargo run -p mvp-e2e -- all
+cd MVP && cargo run -p mvp-e2e -- scale
 ```
 
-Use `just test-all` before pushing a broad implementation slice touching
-`ployzd`, `ployz-runtime-backends`, or the full build graph.
+Do not add root `justfile` targets while the rewrite is isolated under `MVP/`.
+When the MVP is later migrated into the main workspace, add repo-level commands
+as part of that explicit migration.

@@ -66,6 +66,12 @@ External grounding:
 
 ## System Shape
 
+During the MVP rewrite, all new implementation code lives under `MVP/`. The
+existing `crates/` tree is reference material, not an implementation target.
+Do not wire MVP code into the root workspace, existing daemon, existing
+gateway/DNS binaries, or existing E2E runner until the MVP has produced enough
+proof to justify a deliberate migration.
+
 One shipped Rust artifact may expose multiple roles:
 
 ```text
@@ -185,7 +191,7 @@ trait PloyzBus {
         -> Result<SubscriptionId, SubscribeError>;
     async fn request(&self, req: RequestMessage, timeout: Duration)
         -> Result<ResponseMessage, RequestError>;
-    async fn request_many(&self, req: RequestMessage, policy: RequestManyPolicy)
+    async fn request_many(&self, target: RequestTarget, req: RequestMessage, policy: RequestManyPolicy)
         -> Result<Vec<ResponseMessage>, RequestManyError>;
     async fn queue_subscribe(&self, pattern: SubjectPattern, queue: QueueName, handler: HandlerId)
         -> Result<QueueSubscriptionId, SubscribeError>;
@@ -213,6 +219,18 @@ struct ReplyTo {
     request_id: MessageId,
     expires_at: Timestamp,
 }
+
+enum RequestTarget {
+    Subject(Subject),
+    Pattern(SubjectPattern),
+}
+
+struct ReplyPermit {
+    inbox: Subject,
+    request_id: MessageId,
+    responder: PrincipalId,
+    expires_at: Timestamp,
+}
 ```
 
 Request-many policy:
@@ -230,9 +248,14 @@ Semantics:
 - `queue_subscribe` delivers each message to one eligible group member.
 - `request` returns `NoResponders` immediately when local/known interest proves
   no eligible responder exists.
-- `request_many` is for fanout and aggregation, not queue groups.
+- `request` targets one concrete subject.
+- `request_many` is for fanout and aggregation, not queue groups. It may target
+  a concrete subject or a subject pattern through `RequestTarget`.
 - Reply inboxes are ephemeral and direct. Do not gossip every inbox
   subscription.
+- Request handlers receive a one-use reply permit. Responses are accepted only
+  through that permit before its deadline, which makes temporary response
+  authorization testable.
 - Large payloads should move through content-addressed references once a slice
   needs them.
 - Gossip is a wake-up and interest-dissemination path. It is not durable truth.

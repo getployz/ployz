@@ -39,3 +39,5 @@ works, stays fast, and survives the failure cases that matter.
 - Treat code shape as a success metric. The new foundation must let us express
   real business behavior with far less substrate glue than the previous
   codebase.
+- Keep new implementation work isolated under `MVP/` until the foundation has
+  earned migration into the existing codebase.
