@@ -6,8 +6,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mvp_bus::{
-    BusRuntimeConfig, BusRuntimeSnapshot, Grant, IslandId, Payload, PrincipalId, RequestManyPolicy,
-    RequestTarget, Subject, harness::InMemoryBus,
+    BridgeEndpoint, BridgeRuleId, BusRuntimeConfig, BusRuntimeSnapshot, Grant, IslandId, Payload,
+    PrincipalId, RequestManyPolicy, RequestTarget, ServiceImport, StreamImport, Subject,
+    SubjectTransform, harness::InMemoryBus,
 };
 use serde::Serialize;
 
@@ -28,12 +29,17 @@ const SATURATION_HANDLER_SLEEP: Duration = Duration::from_millis(15);
 const MULTI_ISLAND_SUBSCRIBERS: usize = 1_000;
 const QUEUE_GROUP_SUBSCRIBERS: usize = 10_000;
 const QUEUE_GROUP_REQUESTS: usize = 100;
+const BRIDGE_STREAM_ITERATIONS: usize = 20;
+const BRIDGE_SERVICE_RESPONDERS: usize = 100;
+const BRIDGE_SERVICE_REQUESTS: usize = 100;
+const BRIDGE_RULE_VOLUME_IMPORTS: usize = 10_000;
 
 #[derive(Debug, Serialize)]
 struct ScaleReport {
     scenario: &'static str,
     node_counts: Vec<ScaleRunReport>,
     multi_island: MultiIslandReport,
+    bridge: BridgeScaleReport,
     queue_group: QueueGroupReport,
     saturation: SaturationReport,
     elapsed_ms: u128,
@@ -109,6 +115,55 @@ struct QueueGroupReport {
     elapsed_ms: u128,
 }
 
+#[derive(Debug, Serialize)]
+struct BridgeScaleReport {
+    stream_runs: Vec<BridgeStreamRunReport>,
+    service: BridgeServiceReport,
+    rule_volume: BridgeRuleVolumeReport,
+}
+
+#[derive(Debug, Serialize)]
+struct BridgeStreamRunReport {
+    logical_subscribers: usize,
+    publish_iterations: usize,
+    expected_deliveries: usize,
+    observed_deliveries: usize,
+    cross_island_leakage_count: usize,
+    publish_latency: LatencySummary,
+    memory_before: MemorySnapshot,
+    memory_after: MemorySnapshot,
+    elapsed_ms: u128,
+}
+
+#[derive(Debug, Serialize)]
+struct BridgeServiceReport {
+    responders: usize,
+    requests: usize,
+    expected_deliveries: usize,
+    observed_deliveries: usize,
+    unique_responders: usize,
+    request_latency: LatencySummary,
+    memory_before: MemorySnapshot,
+    memory_after: MemorySnapshot,
+    elapsed_ms: u128,
+}
+
+#[derive(Debug, Serialize)]
+struct BridgeRuleVolumeReport {
+    service_imports: usize,
+    stream_imports: usize,
+    service_delivery_count: usize,
+    stream_delivery_count: usize,
+    stream_leakage_count: usize,
+    matching_stream_imports: usize,
+    matching_stream_delivery_count: usize,
+    matching_stream_leakage_count: usize,
+    service_request_us: u128,
+    stream_publish_us: u128,
+    matching_stream_publish_us: u128,
+    elapsed_ms: u128,
+}
+
 pub(crate) fn run() -> Result<(), String> {
     let started = Instant::now();
     let mut node_counts = Vec::with_capacity(NODE_COUNTS.len());
@@ -120,6 +175,7 @@ pub(crate) fn run() -> Result<(), String> {
         scenario: "scale",
         node_counts,
         multi_island: run_multi_island_case()?,
+        bridge: run_bridge_case()?,
         queue_group: run_queue_group_case()?,
         saturation: run_saturation_case()?,
         elapsed_ms: started.elapsed().as_millis(),
@@ -404,6 +460,483 @@ fn run_multi_island_case() -> Result<MultiIslandReport, String> {
         island_a_replies: replies.len(),
         island_b_request_calls,
         cross_island_delivery_count: cross_island_observed,
+        elapsed_ms: started.elapsed().as_millis(),
+    })
+}
+
+fn run_bridge_case() -> Result<BridgeScaleReport, String> {
+    let mut stream_runs = Vec::with_capacity(NODE_COUNTS.len());
+    for logical_subscribers in NODE_COUNTS {
+        stream_runs.push(run_bridge_stream_case(logical_subscribers)?);
+    }
+    Ok(BridgeScaleReport {
+        stream_runs,
+        service: run_bridge_service_case()?,
+        rule_volume: run_bridge_rule_volume_case()?,
+    })
+}
+
+fn run_bridge_stream_case(logical_subscribers: usize) -> Result<BridgeStreamRunReport, String> {
+    let started = Instant::now();
+    let memory_before = memory_snapshot();
+    let (bus, authority) = InMemoryBus::new_with_authority_and_config(
+        BusRuntimeConfig::with_delivery_workers(DELIVERY_WORKERS),
+    );
+    let laptop = IslandId::new("laptop");
+    let prod = IslandId::new("prod");
+    let prod_admin = authority.grant_in(
+        prod.clone(),
+        PrincipalId::new("admin"),
+        Grant::empty().with_publish(pattern("deploy.*.status")?),
+    );
+    let prod_bridge = authority.grant_in(
+        prod.clone(),
+        PrincipalId::new("bridge"),
+        Grant::empty().with_bridge_export(pattern("deploy.*.status")?),
+    );
+    authority.grant_in(
+        laptop.clone(),
+        PrincipalId::new("bridge"),
+        Grant::empty().with_publish(pattern("prod.deploy.*.status")?),
+    );
+    let laptop_reader = authority.grant_in(
+        laptop.clone(),
+        PrincipalId::new("reader"),
+        Grant::empty().with_subscribe(pattern("prod.deploy.*.status")?),
+    );
+    authority
+        .add_stream_import(StreamImport::new(
+            BridgeRuleId::new("prod-status"),
+            prod.clone(),
+            laptop.clone(),
+            prod_bridge.principal().clone(),
+            SubjectTransform::new(
+                pattern("deploy.*.status")?,
+                pattern("prod.deploy.*.status")?,
+            )
+            .map_err(|error| format!("create bridge stream transform: {error}"))?,
+        ))
+        .map_err(|error| format!("add bridge stream import: {error}"))?;
+
+    let deliveries = Arc::new(AtomicUsize::new(0));
+    let cross_island_leakage = Arc::new(AtomicUsize::new(0));
+    for subscriber_index in 0..logical_subscribers {
+        let deliveries = Arc::clone(&deliveries);
+        let cross_island_leakage = Arc::clone(&cross_island_leakage);
+        bus.subscribe(
+            &laptop_reader,
+            pattern("prod.deploy.*.status")?,
+            move |ctx| {
+                if ctx.message.island().as_str() != "laptop"
+                    || ctx.message.principal().as_str() != "bridge"
+                    || ctx.message.bridge_origin().is_none()
+                {
+                    cross_island_leakage.fetch_add(1, Ordering::SeqCst);
+                }
+                deliveries.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .map_err(|error| {
+            format!("subscribe bridge stream handler {subscriber_index} failed: {error}")
+        })?;
+    }
+
+    let mut publish_latency = LatencyRecorder::new()?;
+    for _ in 0..BRIDGE_STREAM_ITERATIONS {
+        let started = Instant::now();
+        bus.publish(
+            &prod_admin,
+            subject("deploy.d1.status")?,
+            Payload::from_static(b"running"),
+        )
+        .map_err(|error| {
+            format!("bridge stream publish to {logical_subscribers} subscribers failed: {error}")
+        })?;
+        publish_latency.record(started.elapsed())?;
+    }
+
+    let expected_deliveries = logical_subscribers * BRIDGE_STREAM_ITERATIONS;
+    let observed_deliveries = deliveries.load(Ordering::SeqCst);
+    let cross_island_leakage_count = cross_island_leakage.load(Ordering::SeqCst);
+    if observed_deliveries != expected_deliveries {
+        return Err(format!(
+            "bridge stream expected {expected_deliveries} deliveries, got {observed_deliveries}"
+        ));
+    }
+    if cross_island_leakage_count != 0 {
+        return Err(format!(
+            "bridge stream expected zero cross-island leakage, got {cross_island_leakage_count}"
+        ));
+    }
+
+    Ok(BridgeStreamRunReport {
+        logical_subscribers,
+        publish_iterations: BRIDGE_STREAM_ITERATIONS,
+        expected_deliveries,
+        observed_deliveries,
+        cross_island_leakage_count,
+        publish_latency: publish_latency.summary(),
+        memory_before,
+        memory_after: memory_snapshot(),
+        elapsed_ms: started.elapsed().as_millis(),
+    })
+}
+
+fn run_bridge_service_case() -> Result<BridgeServiceReport, String> {
+    let started = Instant::now();
+    let memory_before = memory_snapshot();
+    let (bus, authority) = InMemoryBus::new_with_authority_and_config(
+        BusRuntimeConfig::with_delivery_workers(DELIVERY_WORKERS),
+    );
+    let laptop = IslandId::new("laptop");
+    let prod = IslandId::new("prod");
+    let laptop_user = authority.grant_in(
+        laptop.clone(),
+        PrincipalId::new("user"),
+        Grant::empty().with_publish(pattern("gpu.deploy.submit")?),
+    );
+    let prod_bridge = authority.grant_in(
+        prod.clone(),
+        PrincipalId::new("bridge"),
+        Grant::empty().with_publish(pattern("deploy.submit")?),
+    );
+    authority
+        .add_service_import(ServiceImport::new(
+            BridgeRuleId::new("gpu-deploy"),
+            BridgeEndpoint::new(laptop, subject("gpu.deploy.submit")?),
+            BridgeEndpoint::new(prod.clone(), subject("deploy.submit")?),
+            prod_bridge.principal().clone(),
+        ))
+        .map_err(|error| format!("add bridge service import: {error}"))?;
+
+    let deliveries = Arc::new(AtomicUsize::new(0));
+    for responder_index in 0..BRIDGE_SERVICE_RESPONDERS {
+        let prod_scheduler = authority.grant_in(
+            prod.clone(),
+            PrincipalId::new(format!("scheduler-{responder_index}")),
+            Grant::empty()
+                .with_queue(pattern("deploy.submit")?, "schedulers")
+                .with_response(),
+        );
+        let deliveries = Arc::clone(&deliveries);
+        bus.queue_subscribe(
+            &prod_scheduler,
+            pattern("deploy.submit")?,
+            "schedulers",
+            move |ctx| {
+                deliveries.fetch_add(1, Ordering::SeqCst);
+                ctx.reply(format!("scheduler:{responder_index}").into_bytes())
+            },
+        )
+        .map_err(|error| {
+            format!("subscribe bridge service responder {responder_index} failed: {error}")
+        })?;
+    }
+
+    let mut request_latency = LatencyRecorder::new()?;
+    let mut unique_responders = BTreeSet::new();
+    for request_index in 0..BRIDGE_SERVICE_REQUESTS {
+        let started = Instant::now();
+        let response = bus
+            .request(
+                &laptop_user,
+                subject("gpu.deploy.submit")?,
+                Payload::from_static(b"manifest"),
+                Duration::from_secs(5),
+            )
+            .map_err(|error| format!("bridge service request {request_index} failed: {error}"))?;
+        request_latency.record(started.elapsed())?;
+        if response.island().as_str() != "prod" {
+            return Err(format!(
+                "bridge service response {request_index} came from {}",
+                response.island()
+            ));
+        }
+        unique_responders.insert(response.responder().as_str().to_string());
+    }
+
+    let observed_deliveries = deliveries.load(Ordering::SeqCst);
+    if observed_deliveries != BRIDGE_SERVICE_REQUESTS {
+        return Err(format!(
+            "bridge service expected {BRIDGE_SERVICE_REQUESTS} deliveries, got {observed_deliveries}"
+        ));
+    }
+    if unique_responders.len() != BRIDGE_SERVICE_REQUESTS {
+        return Err(format!(
+            "bridge service expected {BRIDGE_SERVICE_REQUESTS} unique queue responders, got {}",
+            unique_responders.len()
+        ));
+    }
+    Ok(BridgeServiceReport {
+        responders: BRIDGE_SERVICE_RESPONDERS,
+        requests: BRIDGE_SERVICE_REQUESTS,
+        expected_deliveries: BRIDGE_SERVICE_REQUESTS,
+        observed_deliveries,
+        unique_responders: unique_responders.len(),
+        request_latency: request_latency.summary(),
+        memory_before,
+        memory_after: memory_snapshot(),
+        elapsed_ms: started.elapsed().as_millis(),
+    })
+}
+
+fn run_bridge_rule_volume_case() -> Result<BridgeRuleVolumeReport, String> {
+    let started = Instant::now();
+    let (bus, authority) = InMemoryBus::new_with_authority_and_config(
+        BusRuntimeConfig::with_delivery_workers(DELIVERY_WORKERS),
+    );
+    let laptop = IslandId::new("laptop");
+    let prod = IslandId::new("prod");
+    let bridge_principal = PrincipalId::new("bridge");
+    let target_index = BRIDGE_RULE_VOLUME_IMPORTS - 1;
+    let target_local_subject = subject(&format!("gpu{target_index}.deploy.submit"))?;
+
+    let laptop_user = authority.grant_in(
+        laptop.clone(),
+        PrincipalId::new("user"),
+        Grant::empty().with_publish(pattern(&target_local_subject.to_string())?),
+    );
+    let prod_bridge = authority.grant_in(
+        prod.clone(),
+        bridge_principal.clone(),
+        Grant::empty().with_publish(pattern("deploy.submit")?),
+    );
+    for import_index in 0..BRIDGE_RULE_VOLUME_IMPORTS {
+        authority
+            .add_service_import(ServiceImport::new(
+                BridgeRuleId::new(format!("service-{import_index}")),
+                BridgeEndpoint::new(
+                    laptop.clone(),
+                    subject(&format!("gpu{import_index}.deploy.submit"))?,
+                ),
+                BridgeEndpoint::new(prod.clone(), subject("deploy.submit")?),
+                prod_bridge.principal().clone(),
+            ))
+            .map_err(|error| format!("add bridge service volume import {import_index}: {error}"))?;
+    }
+
+    let service_deliveries = Arc::new(AtomicUsize::new(0));
+    let scheduler = authority.grant_in(
+        prod.clone(),
+        PrincipalId::new("scheduler"),
+        Grant::empty()
+            .with_queue(pattern("deploy.submit")?, "schedulers")
+            .with_response(),
+    );
+    let service_deliveries_for_handler = Arc::clone(&service_deliveries);
+    bus.queue_subscribe(
+        &scheduler,
+        pattern("deploy.submit")?,
+        "schedulers",
+        move |ctx| {
+            service_deliveries_for_handler.fetch_add(1, Ordering::SeqCst);
+            ctx.reply(Payload::from_static(b"scheduled"))
+        },
+    )
+    .map_err(|error| format!("subscribe bridge volume scheduler: {error}"))?;
+
+    let service_started = Instant::now();
+    let response = bus
+        .request(
+            &laptop_user,
+            target_local_subject,
+            Payload::from_static(b"manifest"),
+            Duration::from_secs(5),
+        )
+        .map_err(|error| format!("bridge volume service request failed: {error}"))?;
+    let service_request_us = service_started.elapsed().as_micros();
+    if response.island() != &prod {
+        return Err(format!(
+            "bridge volume service response came from {}",
+            response.island()
+        ));
+    }
+    let service_delivery_count = service_deliveries.load(Ordering::SeqCst);
+    if service_delivery_count != 1 {
+        return Err(format!(
+            "bridge volume service expected one delivery, got {service_delivery_count}"
+        ));
+    }
+
+    let target_stream_island = IslandId::new(format!("prod-stream-{target_index}"));
+    let target_destination = format!("prod{target_index}.deploy.*.status");
+    let target_delivery_subject = format!("prod{target_index}.deploy.d1.status");
+    let stream_admin = authority.grant_in(
+        target_stream_island.clone(),
+        PrincipalId::new("admin"),
+        Grant::empty().with_publish(pattern("deploy.*.status")?),
+    );
+    authority.grant_in(
+        target_stream_island.clone(),
+        bridge_principal.clone(),
+        Grant::empty().with_bridge_export(pattern("deploy.*.status")?),
+    );
+    authority.grant_in(
+        laptop.clone(),
+        bridge_principal.clone(),
+        Grant::empty().with_publish(pattern(&target_destination)?),
+    );
+    let stream_reader = authority.grant_in(
+        laptop.clone(),
+        PrincipalId::new("reader"),
+        Grant::empty().with_subscribe(pattern(&target_destination)?),
+    );
+    for import_index in 0..BRIDGE_RULE_VOLUME_IMPORTS {
+        authority
+            .add_stream_import(StreamImport::new(
+                BridgeRuleId::new(format!("stream-{import_index}")),
+                IslandId::new(format!("prod-stream-{import_index}")),
+                laptop.clone(),
+                bridge_principal.clone(),
+                SubjectTransform::new(
+                    pattern("deploy.*.status")?,
+                    pattern(&format!("prod{import_index}.deploy.*.status"))?,
+                )
+                .map_err(|error| {
+                    format!("create bridge volume stream transform {import_index}: {error}")
+                })?,
+            ))
+            .map_err(|error| format!("add bridge stream volume import {import_index}: {error}"))?;
+    }
+
+    let stream_deliveries = Arc::new(AtomicUsize::new(0));
+    let stream_leakage = Arc::new(AtomicUsize::new(0));
+    let stream_deliveries_for_handler = Arc::clone(&stream_deliveries);
+    let stream_leakage_for_handler = Arc::clone(&stream_leakage);
+    bus.subscribe(
+        &stream_reader,
+        pattern(&target_delivery_subject)?,
+        move |ctx| {
+            if ctx.message.island().as_str() != "laptop"
+                || ctx.message.principal().as_str() != "bridge"
+                || ctx.message.bridge_origin().is_none()
+            {
+                stream_leakage_for_handler.fetch_add(1, Ordering::SeqCst);
+            }
+            stream_deliveries_for_handler.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        },
+    )
+    .map_err(|error| format!("subscribe bridge volume stream reader: {error}"))?;
+
+    let stream_started = Instant::now();
+    bus.publish(
+        &stream_admin,
+        subject("deploy.d1.status")?,
+        Payload::from_static(b"running"),
+    )
+    .map_err(|error| format!("bridge volume stream publish failed: {error}"))?;
+    let stream_publish_us = stream_started.elapsed().as_micros();
+
+    let stream_delivery_count = stream_deliveries.load(Ordering::SeqCst);
+    let stream_leakage_count = stream_leakage.load(Ordering::SeqCst);
+    if stream_delivery_count != 1 {
+        return Err(format!(
+            "bridge volume stream expected one delivery, got {stream_delivery_count}"
+        ));
+    }
+    if stream_leakage_count != 0 {
+        return Err(format!(
+            "bridge volume stream expected zero leakage, got {stream_leakage_count}"
+        ));
+    }
+
+    let matching_source = IslandId::new("prod-stream-shared");
+    let matching_stream_admin = authority.grant_in(
+        matching_source.clone(),
+        PrincipalId::new("matching-admin"),
+        Grant::empty().with_publish(pattern("deploy.*.status")?),
+    );
+    authority.grant_in(
+        matching_source.clone(),
+        bridge_principal.clone(),
+        Grant::empty().with_bridge_export(pattern("deploy.*.status")?),
+    );
+    let matching_stream_deliveries = Arc::new(AtomicUsize::new(0));
+    let matching_stream_leakage = Arc::new(AtomicUsize::new(0));
+    for import_index in 0..BRIDGE_RULE_VOLUME_IMPORTS {
+        let local_island = IslandId::new(format!("laptop-match-{import_index}"));
+        authority.grant_in(
+            local_island.clone(),
+            bridge_principal.clone(),
+            Grant::empty().with_publish(pattern("prod.deploy.*.status")?),
+        );
+        let reader = authority.grant_in(
+            local_island.clone(),
+            PrincipalId::new("reader"),
+            Grant::empty().with_subscribe(pattern("prod.deploy.*.status")?),
+        );
+        authority
+            .add_stream_import(StreamImport::new(
+                BridgeRuleId::new(format!("stream-match-{import_index}")),
+                matching_source.clone(),
+                local_island,
+                bridge_principal.clone(),
+                SubjectTransform::new(
+                    pattern("deploy.*.status")?,
+                    pattern("prod.deploy.*.status")?,
+                )
+                .map_err(|error| {
+                    format!("create matching bridge volume transform {import_index}: {error}")
+                })?,
+            ))
+            .map_err(|error| {
+                format!("add matching bridge stream import {import_index}: {error}")
+            })?;
+        let matching_stream_deliveries_for_handler = Arc::clone(&matching_stream_deliveries);
+        let matching_stream_leakage_for_handler = Arc::clone(&matching_stream_leakage);
+        bus.subscribe(&reader, pattern("prod.deploy.*.status")?, move |ctx| {
+            if ctx.message.principal().as_str() != "bridge"
+                || ctx.message.subject().as_str() != "prod.deploy.d1.status"
+                || ctx
+                    .message
+                    .bridge_origin()
+                    .is_none_or(|origin| origin.source_island().as_str() != "prod-stream-shared")
+            {
+                matching_stream_leakage_for_handler.fetch_add(1, Ordering::SeqCst);
+            }
+            matching_stream_deliveries_for_handler.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .map_err(|error| {
+            format!("subscribe matching bridge volume reader {import_index}: {error}")
+        })?;
+    }
+
+    let matching_stream_started = Instant::now();
+    bus.publish(
+        &matching_stream_admin,
+        subject("deploy.d1.status")?,
+        Payload::from_static(b"running"),
+    )
+    .map_err(|error| format!("matching bridge volume stream publish failed: {error}"))?;
+    let matching_stream_publish_us = matching_stream_started.elapsed().as_micros();
+    let matching_stream_delivery_count = matching_stream_deliveries.load(Ordering::SeqCst);
+    let matching_stream_leakage_count = matching_stream_leakage.load(Ordering::SeqCst);
+    if matching_stream_delivery_count != BRIDGE_RULE_VOLUME_IMPORTS {
+        return Err(format!(
+            "matching bridge volume stream expected {BRIDGE_RULE_VOLUME_IMPORTS} deliveries, got {matching_stream_delivery_count}"
+        ));
+    }
+    if matching_stream_leakage_count != 0 {
+        return Err(format!(
+            "matching bridge volume stream expected zero leakage, got {matching_stream_leakage_count}"
+        ));
+    }
+
+    Ok(BridgeRuleVolumeReport {
+        service_imports: BRIDGE_RULE_VOLUME_IMPORTS,
+        stream_imports: BRIDGE_RULE_VOLUME_IMPORTS * 2,
+        service_delivery_count,
+        stream_delivery_count,
+        stream_leakage_count,
+        matching_stream_imports: BRIDGE_RULE_VOLUME_IMPORTS,
+        matching_stream_delivery_count,
+        matching_stream_leakage_count,
+        service_request_us,
+        stream_publish_us,
+        matching_stream_publish_us,
         elapsed_ms: started.elapsed().as_millis(),
     })
 }

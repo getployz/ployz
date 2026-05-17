@@ -1,7 +1,8 @@
 ---
 title: Slice 004 Authority Bridge Import/Export Plan
-status: active
+status: completed
 created: 2026-05-17
+completed: 2026-05-17
 origin:
   - VISION.md
   - MVP/overall-plan.md
@@ -235,7 +236,7 @@ drop wildcard captures or become ambiguous, reject it during rule registration.
 
 ### U1: Bridge Domain Model
 
-Goal: introduce explicit service-import and stream-export rule types without
+Goal: introduce explicit service-import and stream-import rule types without
 transport coupling.
 
 Files:
@@ -248,18 +249,21 @@ Files:
 Approach:
 
 - Add typed bridge rule identifiers if useful for error messages and metrics.
-- Add `ServiceImport`, `StreamExport`, `StreamImport`, `BridgeRuleSet`,
-  `BridgeState`, `BridgePrincipal`, `BridgeOrigin`, and `SubjectTransform`
-  types.
+- Add `BridgeEndpoint`, `ServiceImport`, `StreamImport`, `BridgeRuleSet`,
+  `BridgeState`, `BridgeOrigin`, and `SubjectTransform` types.
+- Represent the bridge principal as a normal `PrincipalId`; export authority is
+  a `Grant::with_bridge_export(...)` permission, not a separate principal type.
 - Validate no self-imports.
 - Validate that service imports use exact local and remote subjects for this
   slice.
 - Validate that stream mappings preserve wildcard captures and are
   bidirectionally unambiguous enough for E2E proof.
+- Reject duplicate rule IDs globally across service and stream imports.
 - Reject duplicate or overlapping local service imports unless a later plan
   defines deterministic precedence.
-- Reject ambiguous stream bridge rules that can map the same remote publish into
-  the same local subject more than once.
+- Reject stream bridge rules with overlapping source patterns for the same
+  source/local island pair; fanout to multiple local islands is explicit and
+  measured separately.
 - Add structured errors for invalid rules, disabled bridge paths, explicit
   remote-unavailable bridge state, and forbidden bridge crossings.
 - Treat availability as bridge-rule state managed by `BusAuthority`, not as an
