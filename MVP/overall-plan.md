@@ -97,6 +97,16 @@ Important constraints:
 - No hidden controller should silently rewrite durable truth.
 - Durable state records explicit operator intent and lifecycle facts.
 - Live observation is checked at decision time and does not become stored truth.
+- The operator's connected node is the consistency boundary for a command. A
+  command writes durably to that node's local docs store, returns, and lets
+  replication converge eventually.
+- Command results must include the visible nodes at decision time, so operators
+  see the reachability context the command used instead of the system blocking
+  on a quorum.
+- A future active-member or partition-view primitive may improve those
+  reachability checks. That is intentionally pushed out of the MVP commit
+  boundary; it must be added as explicit decision-time evidence, not as hidden
+  quorum behavior.
 - The daemon is disposable. Workloads, WireGuard, HTTP serving, DNS serving,
   and last-good data-plane state must outlive it.
 - If a command cannot prove preconditions, it fails before mutation.
@@ -144,7 +154,7 @@ The MVP is not done when the types compile. It is done when E2E tests prove:
 - bus semantics work,
 - authority islands isolate truth,
 - bridges import/export explicit subjects,
-- facts replicate,
+- facts write durably on the connected node and replicate eventually,
 - projections rebuild,
 - HTTP/DNS serving keeps last good data-plane state,
 - machine add/remove works through iroh and WireGuard reconciliation,
@@ -307,21 +317,17 @@ The next product-feature slices should be:
 1. ACME on the new primitives.
 2. Deploy commit-before-drain rebuilt on the new primitives.
 
-ACME is the canary because it forces a singleton/concurrency primitive the MVP
-does not yet have. Before planning or implementing ACME, ask the operator which
-primitive shape to prove:
-
-- queue group with `max_members = 1` enforced by the bus,
-- explicit lease fact with TTL and renewal as a fact-store primitive,
-- named singleton service registered through `$SYS.service.*`.
-
-Those options have different partition and recovery semantics. Do not choose
-silently.
+ACME is the canary because it forces the advisory lease primitive to be honest:
+TTL, renewal, epoch fencing, RAII release-on-drop for local holders, and
+conflict-as-candidate facts on the existing fact contract. Leases are not
+cluster locks. They are foreground coordination hints and fencing tokens;
+resource-level enforcement, such as the ACME directory or storage backend, is
+where real exclusivity lives.
 
 The deploy slice should not port old `deploy.rs`. It should express the
 smallest durable state machine from `MVP/architecture.md`: request-many
-capacity, prepare/start, durable route commit/pin, projection rebuild, then
-drain as a consequence of that commit.
+capacity, prepare/start, local-docs-durable route commit, projection rebuild,
+then drain as a consequence of that commit.
 
 ## Crate Scout Protocol
 
@@ -435,12 +441,14 @@ deterministic reducers over stringly option bags or broad facades.
 Each future slice should improve at least one of these gates:
 
 - `Bus`: subject matching, request/reply, no responders, request-many, queue
-  groups, drain, auth failures, singleton/lease behavior once ACME selects the
-  primitive.
+  groups, drain, and auth failures.
 - `Authority`: island membership, grants, imports/exports, direct fact-write
   denial across islands.
-- `Facts`: signed immutable facts, replication, pin acknowledgements,
-  projection rebuild.
+- `Facts`: signed immutable facts, local durable writes, eventual replication,
+  conflict candidates, deterministic reducer supersession, and projection
+  rebuild.
+- `Leases`: advisory TTL, renewal, epoch fencing, RAII release, and loud
+  conflict surfaces without quorum or witness-ack collection.
 - `HTTP/DNS`: last-good serving, corrupt next-state handling, daemon outage,
   and whatever role/process boundary the new serving design proves.
 - `Membership`: init, invite, join, tombstone, WireGuard full mesh.
@@ -464,6 +472,7 @@ Defer these until an E2E proof or product requirement makes them necessary:
 - Global total ordering.
 - Distributed SQL.
 - Hard consensus.
+- Quorum/witness-ack collection for fact commits or leases.
 - Automatic partial WireGuard graph selection beyond full mesh.
 - Optimized wildcard subject indexes for very large fleets.
 - Full adversarial multi-tenant hosting.
@@ -488,6 +497,10 @@ Future slice plans should resolve these only when they become blocking:
   be bypassed for the MVP path.
 - Which serving-state encoding is best for HTTP/DNS. Start readable unless
   tests prove it is too slow.
+- Whether a future active-member or partition-view primitive should let
+  commands check currently alive members before mutation. This may become useful
+  evidence, but it should not be smuggled back in as quorum-style commit
+  semantics.
 
 ## First Next Step
 
