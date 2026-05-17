@@ -284,10 +284,8 @@ Semantics:
 - Large payloads should move through content-addressed references once a slice
   needs them.
 - Gossip is a wake-up and interest-dissemination path. It is not durable truth.
-- Quorum-style pinning and all-responder aggregation remain MVP proof
-  requirements. They do not have to be represented as core bus enum variants
-  until implementation proves that is clearer than composing `request_many` at
-  callers.
+- Request-many aggregation remains an MVP proof requirement for observation and
+  capacity checks. It is not a quorum mechanism for writes.
 
 ## Subject Namespace
 
@@ -303,7 +301,6 @@ deploy.<deploy_id>.inspect
 gateway.changed
 dns.changed
 store.fact.inserted
-store.pin_fact
 service.<namespace>.<service>.changed
 _INBOX.<principal>.<random>
 $SYS.service.ping
@@ -398,11 +395,58 @@ or consensus system. Ployz imposes the fact-ledger rules above it:
 
 - Fact keys are write-once by Ployz policy.
 - Reusing a fact key with a different content hash is a conflict.
-- Reducers ignore unauthorized or conflicting entries and emit visible status
-  for operators/tests.
-- `store.pin_fact` means a peer has verified and stored the fact envelope and
-  referenced content. It is durability evidence, not consensus.
+- The operator's connected node is the consistency boundary for a command.
+  Foreground commands write durably to that node's local docs store and return.
+  Other nodes learn the fact through eventual iroh-docs replication.
+- There is no commit quorum, `min_replicas`, or witness-ack collection for fact
+  writes.
+- Commands read relevant durable facts before their first mutation. If the
+  precondition set already contains incompatible intent, the command fails with
+  a structured `Conflict` naming the conflicting fact, principal, and time.
+- Surviving write races remain in the fact set as conflict candidates. Reducers
+  order candidates deterministically by `(epoch desc, content_hash asc)` and
+  annotate losers as `Superseded { by_epoch, by_principal, at }` in projection
+  status.
+- Operator status surfaces `Superseded` events for commands authored by that
+  operator. Conflict-as-candidate is substrate machinery; the command surface
+  stays loud.
 - Current heads are projected views, not mutable authority keys.
+
+Command results include the visible nodes at decision time. Reachability is
+evidence for the operator, not a hidden quorum gate.
+
+A future membership or active-partition view may make that reachability evidence
+better by checking known-alive members before mutation. That should be modeled
+as explicit decision-time evidence and structured precondition failure, not as a
+peer-ack commit protocol.
+
+## Advisory Lease Facts
+
+Leases are advisory coordination facts, not cluster-enforced locks. They help
+commands avoid obvious races and carry fencing tokens into resource-specific
+mutation code, but they do not claim exclusive truth across partitions.
+
+Lease facts should model:
+
+- resource id,
+- holder principal,
+- epoch,
+- TTL and expiry,
+- renewal,
+- release,
+- fencing token,
+- RAII release-on-drop for local holders where a process owns a lease guard.
+
+There is no quorum mode, no opt-in strict mode, and no witness-ack collection.
+The lease reducer uses the same conflict-as-candidate fact contract as every
+other reducer. Surviving races are ordered deterministically by
+`(epoch desc, content_hash asc)` and surfaced as superseded projection status.
+
+Real exclusivity belongs to the resource being mutated. For ACME that means the
+ACME directory and challenge validation path. For storage it means the storage
+backend or filesystem primitive. A Ployz lease only decides whether a command
+should proceed and which epoch/fencing token it must carry when it talks to the
+resource.
 
 ## Deploy Invariant
 
@@ -428,17 +472,20 @@ drain is a consequence of that fact
 No route cutover before phase ready. No drain before durable phase commit. No
 old-instance removal before drain policy is satisfied.
 
-Durability for serious commits:
+Durability for commits:
 
 ```text
 write fact locally
-request_many store.pin_fact to selected peers
-require min_replicas = min(3, live_nodes) for MVP
 then treat commit as durable
+replicate to other nodes eventually
 ```
 
-This is durability replication, not consensus. It prevents draining old
-production after only one coordinator has observed the route commit.
+The route commit is durable when the coordinator's connected node has persisted
+the fact to its local docs store. The command result reports visible nodes at
+decision time, but it does not wait for peer acknowledgements before moving to
+the next command-state transition. If another race survives into replication,
+the reducer's deterministic supersession rules make the projected winner and
+loser visible.
 
 ## Target Machine Add Flow
 

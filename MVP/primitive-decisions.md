@@ -48,6 +48,13 @@ the decision concrete.
 - Slice 007 made malformed docs entries visible as rejected entries while valid
   facts in the same refresh continue to apply. A bad non-Ployz docs key should
   not freeze the local projection view.
+- Direction after Slice 008: every node is equal and the operator's connected
+  node is the consistency boundary. Fact writes commit durably to local docs
+  and replicate eventually; no `min_replicas`, commit quorum, pin-fact
+  acknowledgement collection, or lease witness collection.
+- Direction after Slice 008: leases are advisory facts for TTL, renewal, epoch
+  fencing, RAII release, and command-level race avoidance. Resource-level
+  enforcement owns real exclusivity.
 
 ## NATS-Shaped Bus Semantics
 
@@ -267,22 +274,124 @@ Revisit if:
   The in-memory store is a harness; `mvp-iroh` is the first real backend behind
   the same fact-source contract.
 
-## Singleton / Lease Primitive Gap
+## Command Consistency Boundary
 
-Why this is not decided yet:
-- ACME needs exactly one issuer per challenge at a time across the cluster.
-  Existing bus semantics through Slice 004 cannot express that safely.
-- This primitive has partition and recovery semantics, so it must be selected
-  deliberately before the ACME slice starts.
+Why this:
+- Ployz is a small-cluster operator tool, not a consensus database. The
+  operator is connected to a node, and that node is the consistency boundary for
+  the command being run.
+- Waiting for quorum-style acknowledgement would make reachability a hidden
+  policy. Operators need to see reachability, not have it silently converted
+  into blocked progress.
 
-Options to plan with the operator:
-- queue group with `max_members = 1` enforced by the bus,
-- explicit lease fact with TTL and renewal as a fact-store primitive,
-- named singleton service registered through `$SYS.service.*`.
+Decision:
+- A foreground command reads relevant durable facts on its connected node before
+  its first mutation.
+- If preconditions already conflict, the command fails with a structured
+  `Conflict` variant that names the conflicting fact, principal, and time.
+- If the command proceeds, it writes intent/lifecycle facts durably to local
+  docs and returns.
+- Every command result includes visible nodes at decision time.
+- Replication to other nodes is eventual through iroh-docs. There is no
+  `min_replicas` knob, no `store.pin_fact` commit path, and no witness-ack
+  collection.
+
+What it replaces:
+- Durability quorum language that made `store.pin_fact` look like a required
+  commit phase.
+- Hidden dependence on live-node counts to decide whether an operator command
+  may finish.
+
+Costs:
+- A command can return before other nodes have observed its fact. Projection and
+  serving-state tests must prove last-good behavior during propagation lag.
+- If a race survives into replication, the reducer must make the outcome and
+  superseded loser visible instead of pretending the race did not happen.
+
+Revisit if:
+- Product requirements explicitly require consensus for one operation. That
+  should be a new primitive with a named failure audience, not a hidden mode on
+  facts, deploy, or leases.
+- A future membership or active-partition view proves useful enough to check
+  known-alive members before mutation. That should enrich command preconditions
+  and visible-node reporting, not become a hidden peer-ack commit requirement.
+
+## Conflict Candidates And Supersession
+
+Why this:
+- iroh-docs is a replicated set. Conflicts are possible facts, not transport
+  exceptions.
+- Operators should not be asked to pick a winner interactively for every
+  surviving race. The command surface should fail before mutation when it sees
+  the conflict, and reducers should handle later races deterministically.
+
+Decision:
+- Fact storage keeps conflicting candidates.
+- Command entry fails loudly on already-visible conflicts before mutation.
+- Reducers order surviving candidates by `(epoch desc, content_hash asc)`.
+- The chosen candidate becomes projected state.
+- Losers are annotated in projection status as
+  `Superseded { by_epoch, by_principal, at }`.
+- Operator status surfaces `Superseded` events for the operator's own commands.
+
+What it replaces:
+- Write-time conflict rejection as the fact-store contract.
+- "Operator picks" conflict resolution.
+- Reducers silently ignoring a conflicting entry with no audience.
+
+Costs:
+- Reducers must be explicit about the epoch they compare. If a fact kind has no
+  epoch, the slice that introduces it must define its deterministic ordering.
+- Status surfaces need to retain enough provenance to tell an operator which of
+  their commands was superseded and by whom.
+
+Revisit if:
+- A fact kind cannot define deterministic supersession without semantic loss.
+  That fact kind probably needs a different command primitive.
+
+## Advisory Lease Facts
+
+Why this:
+- ACME needs one issuer to act on a challenge at a time in the normal case.
+  Existing bus semantics cannot express even advisory ownership safely by
+  themselves.
+- The same primitive will likely apply to deploy ownership, subnet claims,
+  machine removal coordination, and future single-writer operations.
+- Ownership loss needs to be branchable business state, not a generic transport
+  error or hidden queue behavior.
+
+Decision:
+- Use explicit lease facts with resource, holder, epoch, TTL, expiry, renewal,
+  release, RAII release-on-drop for local holders, and fencing token.
+- Treat leases as advisory. They help command entry detect conflicts and carry
+  epoch fencing into resource-specific code.
+- Use the existing fact conflict contract. Conflicting claims remain candidates
+  for the reducer and are ordered deterministically, not rejected by a special
+  lease quorum path.
+- Require product mutations that depend on advisory ownership to carry the
+  current lease epoch/fencing token and re-check local lease state immediately
+  before mutation.
+- Leave real exclusivity to the resource-level enforcement point: ACME
+  directory/challenge validation, storage backend, filesystem primitive, or
+  equivalent.
+
+What it replaces:
+- NATS/JetStream-style locks for ACME issuance.
+- Queue-group singleton semantics that hide failure and partition behavior in
+  bus dispatch.
+- Named singleton service registration as an authority mechanism.
+
+Costs:
+- A lease is not a linearizable lock on top of iroh-docs.
+- A holder may lose in projection after a surviving race. The operator status
+  surface must show that supersession loudly for commands they initiated.
+- Resource adapters still need their own fencing or conflict behavior. The
+  lease does not make an unsafe backend safe.
 
 Revisit:
-- Immediately before ACME planning. Do not implement ACME until this choice is
-  made and its failure semantics are captured in the slice plan.
+- If a future product operation truly needs exclusive mutation under partition,
+  add a resource-specific enforcement primitive. Do not add a hidden "strict
+  lease" mode.
 
 ## Iroh Toolchain And Docs Adapter
 
