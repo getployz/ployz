@@ -86,6 +86,35 @@ Out of scope:
 
 ## Key Decisions
 
+## Crate Scout
+
+Checked before implementation:
+
+- `async-nats`: useful semantic reference for subjects, request/reply, queue
+  groups, and services. Not adopted because this slice is proving the internal
+  PloyzBus contract without a NATS server topology.
+- `nuid`: candidate for future production inbox IDs. Not adopted because this
+  in-process contract can use monotonic message ids until transport and
+  cross-process uniqueness matter.
+- `matchit` and route-trie style crates: not adopted because NATS subject
+  wildcards have different `*`/`>` semantics and this slice needs a tiny,
+  auditable matcher with explicit tests.
+- `tokio`/`tokio-util`: likely useful for later actor/transport slices. Not
+  adopted here because the first proof is synchronous and in-process; adding an
+  async runtime now would obscure the bus semantics this slice is testing.
+- `cedar-policy` and `biscuit-auth`: strong candidates for authority-island
+  planning. Deferred because this slice only needs a small grant model to prove
+  routing, response, queue, and drain authorization boundaries.
+
+Decision: implement the tiny in-memory substrate locally for slice 001, while
+recording the semantic ideas to keep from NATS and the crates to revisit when
+the slice reaches transport, authority islands, and production-grade id
+generation.
+
+Simplicity rule for this slice: the bus implementation may contain routing and
+authorization plumbing, but future feature code should only see subjects,
+typed targets, handlers, replies, and structured errors.
+
 1. The first implementation lives completely under `MVP/`.
    This keeps the experimental foundation isolated and allows aggressive
    iteration without adding churn to the existing codebase.
