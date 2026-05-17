@@ -11,6 +11,7 @@ mod metrics;
 mod projection_contract;
 mod projection_harness;
 mod scale;
+mod steady_state_serving_contract;
 
 use std::env;
 use std::process;
@@ -55,6 +56,10 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "deploy-commit-drain-contract",
         run: deploy_commit_drain_contract::run,
+    },
+    Scenario {
+        name: "steady-state-serving-contract",
+        run: steady_state_serving_contract::run,
     },
     Scenario {
         name: "scale",
@@ -165,6 +170,7 @@ mod tests {
         assert!(names.contains(&"iroh-docs-contract"));
         assert!(names.contains(&"lease-acme-contract"));
         assert!(names.contains(&"deploy-commit-drain-contract"));
+        assert!(names.contains(&"steady-state-serving-contract"));
         assert!(scenario_help().contains("lease-acme-contract"));
     }
 
