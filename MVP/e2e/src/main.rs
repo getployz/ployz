@@ -9,6 +9,8 @@ mod iroh_docs_contract;
 mod lease_acme_contract;
 mod metrics;
 mod process_fact_source;
+#[cfg(unix)]
+mod process_role_harness;
 mod projection_contract;
 mod projection_harness;
 mod scale;
@@ -76,9 +78,12 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let scenario = env::args()
-        .nth(1)
-        .unwrap_or_else(|| String::from("bus-contract"));
+    let mut args = env::args();
+    let _bin = args.next();
+    let scenario = args.next().unwrap_or_else(|| String::from("bus-contract"));
+    if scenario == "role" {
+        return run_role(args.collect());
+    }
     match scenario.as_str() {
         "all" => run_all_with_budget(),
         "help" | "--help" | "-h" => {
@@ -87,6 +92,16 @@ fn run() -> Result<(), String> {
         }
         other => run_named_scenario(other),
     }
+}
+
+#[cfg(unix)]
+fn run_role(args: Vec<String>) -> Result<(), String> {
+    process_role_harness::run_role(args)
+}
+
+#[cfg(not(unix))]
+fn run_role(_args: Vec<String>) -> Result<(), String> {
+    Err("process roles use Unix sockets in the MVP harness".to_string())
 }
 
 fn run_named_scenario(scenario: &str) -> Result<(), String> {
