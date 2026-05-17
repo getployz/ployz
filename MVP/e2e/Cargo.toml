@@ -14,6 +14,7 @@ mvp-deploy = { path = "../deploy" }
 mvp-iroh = { path = "../iroh" }
 mvp-acme = { path = "../acme", features = ["harness"] }
 mvp-lease = { path = "../lease", features = ["harness"] }
+mvp-mesh = { path = "../mesh" }
 mvp-projection = { path = "../projection" }
 mvp-serving = { path = "../serving" }
 serde = { version = "1", features = ["derive"] }

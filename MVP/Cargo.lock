@@ -2397,6 +2397,7 @@ dependencies = [
  "mvp-deploy",
  "mvp-iroh",
  "mvp-lease",
+ "mvp-mesh",
  "mvp-projection",
  "mvp-serving",
  "serde",
