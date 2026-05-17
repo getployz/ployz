@@ -346,9 +346,25 @@ Current proof status:
   still absent.
 - Corrupt, wrong-island, deleted, and symlinked next snapshots preserve
   last-good answers and record structured reload failure status.
-- This is not the full E2E-7 process/wire proof. Real OS process restarts,
-  Pingora HTTP serving, Hickory DNS serving, WireGuard service-to-service
-  traffic, and docs-backed cross-node replication remain follow-up work.
+- Slice 012 adds `process-role-serving-contract`.
+- The scenario proves real OS process fate separation inside the MVP harness:
+  a local coordinator process writes the first serving commit, the
+  serving/projection process loads it, the parent kills the coordinator, and
+  typed gateway/DNS queries keep answering before any later recovery command
+  runs.
+- Local mutation attempts through the killed coordinator path fail visibly,
+  while the serving/projection role reports its own health and
+  `mutation_unavailable_in_this_role` without polling coordinator liveness.
+- A separate remote-replication injector writes a later already-authorized
+  serving fact. The still-running serving/projection process projects and
+  reloads it without reviving local mutation authority.
+- Deleting `projections.sqlite` and rebuilding projection state is now proven
+  inside the long-lived serving/projection OS process, and that process can
+  restart from snapshot files while no coordinator process is running.
+- This is still not the full E2E-7 wire proof. Real Pingora HTTP serving,
+  Hickory DNS serving, WireGuard service-to-service traffic, deploy
+  coordinator crash/restart around drain, and docs-backed cross-node
+  replication remain follow-up work.
 
 ### E2E-8: Scale And Reliability Harness
 
