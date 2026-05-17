@@ -768,10 +768,11 @@ impl MemoryBus {
                 key: Box::new(key.clone()),
             });
         }
-        Ok(inner
-            .facts
-            .read(session.island(), key)
-            .and_then(|_fact| inner.facts.payload(session.island(), key)))
+        Ok(inner.facts.read(session.island(), key).and_then(|fact| {
+            inner
+                .facts
+                .payload(session.island(), key, fact.content_hash())
+        }))
     }
 
     pub fn read_fact_payloads(
@@ -792,13 +793,13 @@ impl MemoryBus {
                     key: Box::new(key.clone()),
                 });
             }
-            let Some(fact) = inner.facts.read(session.island(), key) else {
+            let Some(fact) = inner.facts.read_exact(session.island(), key, expected_hash) else {
                 continue;
             };
-            if fact.content_hash() != expected_hash {
-                continue;
-            }
-            if let Some(payload) = inner.facts.payload(session.island(), key) {
+            if let Some(payload) = inner
+                .facts
+                .payload(session.island(), key, fact.content_hash())
+            {
                 payloads.insert(expected_hash.clone(), payload);
             }
         }
@@ -1073,15 +1074,6 @@ impl Inner {
                     remote_island: import.remote_island().clone(),
                     subject: Box::new(import.local_subject().clone()),
                     failure: BridgeFailure::Disabled,
-                });
-            }
-            BridgeState::RemoteUnavailable => {
-                return Err(BusError::BridgeUnavailable {
-                    rule_id: import.id().clone(),
-                    local_island: import.local_island().clone(),
-                    remote_island: import.remote_island().clone(),
-                    subject: Box::new(import.local_subject().clone()),
-                    failure: BridgeFailure::RemoteUnavailable,
                 });
             }
         }
@@ -2559,7 +2551,7 @@ mod tests {
     }
 
     #[test]
-    fn fact_write_conflict_is_structured() {
+    fn fact_write_conflict_is_a_stored_candidate() {
         let (bus, authority) = MemoryBus::new_with_authority();
         let writer = authority.grant(principal("admin"), Grant::allow_all());
         bus.write_fact(&writer, fact_key("/facts/deploy/d1/plan"), hash("b3:first"))
@@ -2574,10 +2566,21 @@ mod tests {
                 fact_key("/facts/deploy/d1/plan"),
                 hash("b3:second"),
             )
-            .unwrap_err();
+            .expect("write conflicting fact candidate");
 
         assert!(matches!(repeated, FactWriteOutcome::AlreadyPresent(_)));
-        assert!(matches!(conflict, BusError::FactConflict { .. }));
+        assert!(matches!(conflict, FactWriteOutcome::Conflict(_)));
+        assert_eq!(
+            bus.list_facts(&writer, &fact_pattern("/facts/deploy/>"))
+                .expect("list facts")
+                .len(),
+            2
+        );
+        assert!(
+            bus.read_fact(&writer, &fact_key("/facts/deploy/d1/plan"))
+                .expect("read conflicted fact")
+                .is_none()
+        );
     }
 
     #[test]
@@ -3320,7 +3323,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_unavailable_service_import_fails_before_remote_dispatch() {
+    fn enabled_service_import_without_remote_responder_reports_no_responders() {
         let (bus, authority) = MemoryBus::new_with_authority();
         let laptop = island("laptop");
         let prod = island("prod");
@@ -3334,32 +3337,14 @@ mod tests {
             principal("bridge"),
             Grant::empty().with_publish(pattern("deploy.submit")),
         );
-        let rule = rule_id("gpu-deploy");
         authority
             .add_service_import(ServiceImport::new(
-                rule.clone(),
-                BridgeEndpoint::new(laptop.clone(), subject("gpu.deploy.submit")),
-                BridgeEndpoint::new(prod.clone(), subject("deploy.submit")),
+                rule_id("gpu-deploy"),
+                BridgeEndpoint::new(laptop, subject("gpu.deploy.submit")),
+                BridgeEndpoint::new(prod, subject("deploy.submit")),
                 prod_bridge.principal().clone(),
             ))
             .expect("add service import");
-        authority
-            .set_service_import_state(&rule, BridgeState::RemoteUnavailable)
-            .expect("mark import unavailable");
-        let remote_calls = Arc::new(AtomicUsize::new(0));
-        let remote_calls_for_handler = Arc::clone(&remote_calls);
-        let prod_scheduler = authority.grant_in(
-            prod,
-            principal("scheduler"),
-            Grant::empty()
-                .with_subscribe(pattern("deploy.submit"))
-                .with_response(),
-        );
-        bus.subscribe(&prod_scheduler, pattern("deploy.submit"), move |ctx| {
-            remote_calls_for_handler.fetch_add(1, Ordering::SeqCst);
-            ctx.reply(b"should-not-run".to_vec())
-        })
-        .expect("prod scheduler subscribes");
 
         let error = bus
             .request(
@@ -3370,14 +3355,7 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(matches!(
-            error,
-            BusError::BridgeUnavailable {
-                failure: crate::BridgeFailure::RemoteUnavailable,
-                ..
-            }
-        ));
-        assert_eq!(remote_calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(error, BusError::NoResponders { .. }));
     }
 
     #[test]

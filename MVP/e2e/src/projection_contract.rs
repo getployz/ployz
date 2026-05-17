@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mvp_bus::{
-    BusError, BusSession, FactContentHash, FactKeyPattern, Grant, IslandId, PrincipalId,
-    harness::InMemoryBus,
+    BusError, BusSession, FactContentHash, FactKeyPattern, FactWriteOutcome, Grant, IslandId,
+    PrincipalId, harness::InMemoryBus,
 };
 use mvp_projection::{
     BackendEndpoint, BusFactSource, CandidateStatus, DnsCommitFact, DnsRecordFact, FactCandidate,
@@ -39,7 +39,7 @@ struct ProjectionContractReport {
     dropped_hint_caught_up: bool,
     corrupt_snapshot_rejected: bool,
     unauthorized_write_rejected: bool,
-    conflict_write_rejected: bool,
+    conflict_write_recorded: bool,
     payload_key_mismatch_rejected: bool,
     elapsed_ms: u128,
 }
@@ -217,20 +217,33 @@ async fn run_async() -> Result<(), String> {
         .unwrap_err(),
         BusError::UnauthorizedFactWrite { .. }
     );
-    let conflict_write_rejected = matches!(
+    let conflict_key = fact_key("/facts/node/node-conflict/joined/1")?;
+    bus.write_fact_payload(
+        &projection_session,
+        conflict_key.clone(),
+        ProjectionFactPayload::NodeJoined(NodeJoinedFact {
+            node_id: NodeId::new("node-conflict"),
+            epoch: 1,
+            overlay_ip: "fd00::10".to_string(),
+        })
+        .to_fact_bytes()
+        .map_err(|error| format!("serialize first conflict payload: {error}"))?,
+    )
+    .map_err(|error| format!("write first conflict candidate: {error}"))?;
+    let conflict_write_recorded = matches!(
         bus.write_fact_payload(
             &projection_session,
-            fact_key("/facts/node/node-1/joined/1")?,
+            conflict_key,
             ProjectionFactPayload::NodeJoined(NodeJoinedFact {
-                node_id: NodeId::new("node-1"),
-                epoch: 2,
-                overlay_ip: "fd00::changed".to_string(),
+                node_id: NodeId::new("node-conflict"),
+                epoch: 1,
+                overlay_ip: "fd00::11".to_string(),
             })
             .to_fact_bytes()
-            .map_err(|error| format!("serialize conflict payload: {error}"))?,
+            .map_err(|error| format!("serialize second conflict payload: {error}"))?,
         )
-        .unwrap_err(),
-        BusError::FactConflict { .. }
+        .map_err(|error| format!("write second conflict candidate: {error}"))?,
+        FactWriteOutcome::Conflict(_)
     );
 
     let redacted_actor = projection_actor(
@@ -290,15 +303,15 @@ async fn run_async() -> Result<(), String> {
         dropped_hint_caught_up: caught_up.state.services.len() == 2,
         corrupt_snapshot_rejected,
         unauthorized_write_rejected,
-        conflict_write_rejected,
+        conflict_write_recorded,
         payload_key_mismatch_rejected,
         elapsed_ms: started.elapsed().as_millis(),
     };
     if !report.unauthorized_write_rejected {
         return Err("unauthorized fact write was not rejected".to_string());
     }
-    if !report.conflict_write_rejected {
-        return Err("conflicting fact write was not rejected".to_string());
+    if !report.conflict_write_recorded {
+        return Err("conflicting fact write was not recorded".to_string());
     }
     if !report.corrupt_snapshot_rejected {
         return Err("corrupt gateway snapshot was accepted".to_string());
@@ -471,8 +484,10 @@ fn assert_redacted_outputs(
     if status_count(statuses, ProjectionIgnoreReason::Unverified) != 1 {
         return Err("expected one redacted unverified projection status".to_string());
     }
-    if status_count(statuses, ProjectionIgnoreReason::Conflict) != 1 {
-        return Err("expected one redacted conflict projection status".to_string());
+    if status_count(statuses, ProjectionIgnoreReason::Conflict) != 3 {
+        return Err(
+            "expected two stored conflict candidates and one redacted conflict status".to_string(),
+        );
     }
     Ok(())
 }
