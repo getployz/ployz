@@ -1,11 +1,12 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::ExitStatus;
+use std::process::{Command as StdCommand, ExitStatus, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tokio::process::{Child, Command};
+use tokio::process::{Child, Command as TokioCommand};
 use tokio::time::{sleep, timeout};
 
 use crate::assertions::assert_eq_named;
@@ -26,8 +27,8 @@ struct ProcessRoleServingReport {
     scenario: &'static str,
     coordinator_killed: bool,
     serving_process_alive_after_kill: bool,
-    query_probes_during_outage: usize,
-    local_mutation_failed_after_death: bool,
+    coordinator_outage_query_probes: usize,
+    rebuild_query_probes: usize,
     local_mutation_failure_after_death: String,
     commit_to_reload_us: u128,
     remote_commit_to_reload_us: u128,
@@ -47,6 +48,41 @@ pub(crate) fn run() -> Result<(), String> {
     runtime.block_on(run_async())
 }
 
+pub(crate) fn cleanup_orphaned_children() -> Result<(), String> {
+    let dir = child_pid_dir(&scenario_dir("process-role-serving-contract"));
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("read child pid dir '{}': {error}", dir.display())),
+    };
+
+    let mut pids = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|error| format!("read child pid entry: {error}"))?
+            .path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("pid") {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)
+            .map_err(|error| format!("read child pid '{}': {error}", path.display()))?;
+        let pid = contents
+            .trim()
+            .parse::<u32>()
+            .map_err(|error| format!("parse child pid '{}': {error}", path.display()))?;
+        pids.push(pid);
+    }
+
+    for pid in &pids {
+        send_signal(*pid, "-TERM")?;
+    }
+    thread::sleep(Duration::from_millis(100));
+    for pid in pids {
+        send_signal(pid, "-KILL")?;
+    }
+    Ok(())
+}
+
 async fn run_async() -> Result<(), String> {
     let started = Instant::now();
     let root = scenario_dir("process-role-serving-contract");
@@ -55,29 +91,19 @@ async fn run_async() -> Result<(), String> {
     let serving_socket = root.join("serving.sock");
     let coordinator_socket = root.join("coordinator.sock");
 
-    let mut serving = spawn_role(
+    let mut serving = spawn_process_role(
         "serving-projection",
-        vec![
-            "role".to_string(),
-            "serving-projection".to_string(),
-            "--root".to_string(),
-            path_arg(&root)?,
-            "--socket".to_string(),
-            path_arg(&serving_socket)?,
-        ],
+        "serving-projection",
+        &root,
+        &serving_socket,
     )?;
     wait_for_serving_role(&serving_socket).await?;
 
-    let mut coordinator = spawn_role(
+    let mut coordinator = spawn_process_role(
         "local-coordinator",
-        vec![
-            "role".to_string(),
-            "local-coordinator".to_string(),
-            "--root".to_string(),
-            path_arg(&root)?,
-            "--socket".to_string(),
-            path_arg(&coordinator_socket)?,
-        ],
+        "local-coordinator",
+        &root,
+        &coordinator_socket,
     )?;
     wait_for_coordinator(&coordinator_socket).await?;
 
@@ -101,13 +127,13 @@ async fn run_async() -> Result<(), String> {
     let commit_to_reload_us = commit_started.elapsed().as_micros();
     let baseline_gateway_revision = gateway_revision(&baseline_status)?;
 
-    let coordinator_killed = coordinator.kill_and_wait().await?.success_or_signal();
+    let coordinator_killed = coordinator.kill_and_wait().await?;
     let serving_process_alive_after_kill = serving.is_running()?;
 
-    let mut query_probes_during_outage = 0;
+    let mut coordinator_outage_query_probes = 0;
     for _ in 0..OUTAGE_PROBES {
         assert_role_answer(&serving_socket, "fd00::1:8080", "fd00::1").await?;
-        query_probes_during_outage += 1;
+        coordinator_outage_query_probes += 1;
     }
     let role_status_after_kill = request_status(&serving_socket).await?;
     assert_eq_named(
@@ -152,7 +178,7 @@ async fn run_async() -> Result<(), String> {
         Some(token),
     )?;
     assert_role_answer(&serving_socket, "fd00::2:8080", "fd00::2").await?;
-    query_probes_during_outage += 1;
+    let rebuild_query_probes = 1;
     await_rebuild(&serving_socket, token).await?;
     request_reload(&serving_socket).await?;
     assert_role_answer(&serving_socket, "fd00::2:8080", "fd00::2").await?;
@@ -165,16 +191,11 @@ async fn run_async() -> Result<(), String> {
 
     let restart_started = Instant::now();
     let restarted_socket = root.join("serving-restarted.sock");
-    let mut restarted_serving = spawn_role(
+    let mut restarted_serving = spawn_process_role(
         "serving-projection-restart",
-        vec![
-            "role".to_string(),
-            "serving-projection".to_string(),
-            "--root".to_string(),
-            path_arg(&root)?,
-            "--socket".to_string(),
-            path_arg(&restarted_socket)?,
-        ],
+        "serving-projection",
+        &root,
+        &restarted_socket,
     )?;
     wait_for_serving_role(&restarted_socket).await?;
     request_reload(&restarted_socket).await?;
@@ -192,8 +213,8 @@ async fn run_async() -> Result<(), String> {
         scenario: "process-role-serving-contract",
         coordinator_killed,
         serving_process_alive_after_kill,
-        query_probes_during_outage,
-        local_mutation_failed_after_death: true,
+        coordinator_outage_query_probes,
+        rebuild_query_probes,
         local_mutation_failure_after_death,
         commit_to_reload_us,
         remote_commit_to_reload_us,
@@ -212,9 +233,10 @@ async fn run_async() -> Result<(), String> {
     )?;
     assert_eq_named(
         "outage query probes",
-        report.query_probes_during_outage,
-        OUTAGE_PROBES + 1,
+        report.coordinator_outage_query_probes,
+        OUTAGE_PROBES,
     )?;
+    assert_eq_named("rebuild query probes", report.rebuild_query_probes, 1)?;
 
     let json = write_json(
         &root.join("process-role-serving-contract-metrics.json"),
@@ -400,28 +422,34 @@ async fn run_remote_injector(
     dns: &str,
     epoch: u64,
 ) -> Result<ServingCommitAck, String> {
-    let output = timeout(
-        CHILD_EXIT_TIMEOUT,
-        Command::new(current_exe()?)
-            .arg("role")
-            .arg("remote-replication-injector")
-            .arg("--root")
-            .arg(path_arg(root)?)
-            .arg("--author")
-            .arg(author)
-            .arg("--commit-id")
-            .arg(commit_id)
-            .arg("--backend")
-            .arg(backend)
-            .arg("--dns")
-            .arg(dns)
-            .arg("--epoch")
-            .arg(epoch.to_string())
-            .output(),
-    )
-    .await
-    .map_err(|_| "remote injector timed out".to_string())?
-    .map_err(|error| format!("run remote injector: {error}"))?;
+    let mut command = TokioCommand::new(current_exe()?);
+    command
+        .arg("role")
+        .arg("remote-replication-injector")
+        .arg("--root")
+        .arg(root)
+        .arg("--author")
+        .arg(author)
+        .arg("--commit-id")
+        .arg(commit_id)
+        .arg("--backend")
+        .arg(backend)
+        .arg("--dns")
+        .arg(dns)
+        .arg("--epoch")
+        .arg(epoch.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let child = command
+        .spawn()
+        .map_err(|error| format!("spawn remote injector: {error}"))?;
+    let pid_file = register_child_pid(root, "remote-replication-injector", &child)?;
+    let output_result = timeout(CHILD_EXIT_TIMEOUT, child.wait_with_output()).await;
+    unregister_child_pid(&pid_file)?;
+    let output = output_result
+        .map_err(|_| "remote injector timed out".to_string())?
+        .map_err(|error| format!("run remote injector: {error}"))?;
     if !output.status.success() {
         return Err(format!(
             "remote injector exited with {}: {}",
@@ -462,28 +490,74 @@ fn snapshot_age_us(status: &RoleStatus) -> Result<u64, String> {
     }
 }
 
-fn spawn_role(name: &'static str, args: Vec<String>) -> Result<RunningChild, String> {
-    let mut command = Command::new(current_exe()?);
-    command.args(args);
+fn spawn_process_role(
+    name: &'static str,
+    role: &'static str,
+    root: &Path,
+    socket: &Path,
+) -> Result<RunningChild, String> {
+    let mut command = TokioCommand::new(current_exe()?);
+    command
+        .arg("role")
+        .arg(role)
+        .arg("--root")
+        .arg(root)
+        .arg("--socket")
+        .arg(socket)
+        .kill_on_drop(true);
     let child = command
         .spawn()
         .map_err(|error| format!("spawn {name} role: {error}"))?;
-    Ok(RunningChild { name, child })
+    let pid_file = register_child_pid(root, name, &child)?;
+    Ok(RunningChild {
+        name,
+        child,
+        pid_file: Some(pid_file),
+    })
 }
 
 fn current_exe() -> Result<PathBuf, String> {
     env::current_exe().map_err(|error| format!("resolve current mvp-e2e binary: {error}"))
 }
 
-fn path_arg(path: &Path) -> Result<String, String> {
-    path.to_str()
-        .map(str::to_string)
-        .ok_or_else(|| format!("path is not valid UTF-8: {}", path.display()))
+fn child_pid_dir(root: &Path) -> PathBuf {
+    root.join("child-pids")
+}
+
+fn register_child_pid(root: &Path, name: &str, child: &Child) -> Result<PathBuf, String> {
+    let pid = child
+        .id()
+        .ok_or_else(|| format!("{name} child did not expose a process id"))?;
+    let dir = child_pid_dir(root);
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("create child pid dir '{}': {error}", dir.display()))?;
+    let path = dir.join(format!("{}-{}.pid", pid, name));
+    fs::write(&path, format!("{pid}\n"))
+        .map_err(|error| format!("write child pid '{}': {error}", path.display()))?;
+    Ok(path)
+}
+
+fn unregister_child_pid(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("remove child pid '{}': {error}", path.display())),
+    }
+}
+
+fn send_signal(pid: u32, signal: &str) -> Result<(), String> {
+    let _status = StdCommand::new("kill")
+        .arg(signal)
+        .arg(pid.to_string())
+        .status()
+        .map_err(|error| format!("run kill {signal} {pid}: {error}"))?;
+    Ok(())
 }
 
 struct RunningChild {
     name: &'static str,
     child: Child,
+    pid_file: Option<PathBuf>,
 }
 
 impl RunningChild {
@@ -494,31 +568,27 @@ impl RunningChild {
             .map_err(|error| format!("poll {} child: {error}", self.name))
     }
 
-    async fn kill_and_wait(&mut self) -> Result<ObservedExit, String> {
+    async fn kill_and_wait(&mut self) -> Result<bool, String> {
         self.child
             .start_kill()
             .map_err(|error| format!("kill {} child: {error}", self.name))?;
-        self.wait_for_exit().await.map(ObservedExit)
+        self.wait_for_exit().await.map(|status| !status.success())
     }
 
     async fn wait_for_exit(&mut self) -> Result<ExitStatus, String> {
-        timeout(CHILD_EXIT_TIMEOUT, self.child.wait())
+        let status = timeout(CHILD_EXIT_TIMEOUT, self.child.wait())
             .await
             .map_err(|_| format!("{} child did not exit before deadline", self.name))?
-            .map_err(|error| format!("wait for {} child: {error}", self.name))
+            .map_err(|error| format!("wait for {} child: {error}", self.name))?;
+        if let Some(pid_file) = self.pid_file.take() {
+            unregister_child_pid(&pid_file)?;
+        }
+        Ok(status)
     }
 }
 
 impl Drop for RunningChild {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
-    }
-}
-
-struct ObservedExit(ExitStatus);
-
-impl ObservedExit {
-    fn success_or_signal(&self) -> bool {
-        !self.0.success()
     }
 }
