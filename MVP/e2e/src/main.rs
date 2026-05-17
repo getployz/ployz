@@ -13,10 +13,22 @@ mod process_fact_source;
 mod process_role_harness;
 #[cfg(unix)]
 mod process_role_serving_contract;
+#[cfg(unix)]
+mod wire_serving_contract;
 #[cfg(not(unix))]
 mod process_role_serving_contract {
     pub(crate) fn run() -> Result<(), String> {
         Err("process-role-serving-contract uses Unix sockets in the MVP harness".to_string())
+    }
+
+    pub(crate) fn cleanup_orphaned_children() -> Result<(), String> {
+        Ok(())
+    }
+}
+#[cfg(not(unix))]
+mod wire_serving_contract {
+    pub(crate) fn run() -> Result<(), String> {
+        Err("wire-serving-contract uses Unix sockets in the MVP harness".to_string())
     }
 
     pub(crate) fn cleanup_orphaned_children() -> Result<(), String> {
@@ -79,6 +91,10 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "process-role-serving-contract",
         run: process_role_serving_contract::run,
+    },
+    Scenario {
+        name: "wire-serving-contract",
+        run: wire_serving_contract::run,
     },
     Scenario {
         name: "scale",
@@ -145,10 +161,12 @@ fn run_scenarios_with_budget(
     match receiver.recv_timeout(budget) {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            match process_role_serving_contract::cleanup_orphaned_children() {
-                Ok(()) => Err(format!("all scenario exceeded {budget:?} budget")),
-                Err(error) => Err(format!(
-                    "all scenario exceeded {budget:?} budget; process-role cleanup failed: {error}"
+            let process_cleanup = process_role_serving_contract::cleanup_orphaned_children();
+            let wire_cleanup = wire_serving_contract::cleanup_orphaned_children();
+            match (process_cleanup, wire_cleanup) {
+                (Ok(()), Ok(())) => Err(format!("all scenario exceeded {budget:?} budget")),
+                (process_result, wire_result) => Err(format!(
+                    "all scenario exceeded {budget:?} budget; process-role cleanup={process_result:?}; wire cleanup={wire_result:?}"
                 )),
             }
         }
@@ -209,6 +227,7 @@ mod tests {
         assert!(names.contains(&"deploy-commit-drain-contract"));
         assert!(names.contains(&"steady-state-serving-contract"));
         assert!(names.contains(&"process-role-serving-contract"));
+        assert!(names.contains(&"wire-serving-contract"));
         assert!(scenario_help().contains("lease-acme-contract"));
     }
 
