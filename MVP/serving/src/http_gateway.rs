@@ -178,10 +178,7 @@ async fn response_for_request(
         return Err(text_response(StatusCode::BAD_REQUEST, "missing host\n"));
     };
     if let Some(token) = acme_http01_token(request.uri().path()) {
-        return match state
-            .acme_http01_challenge(host.clone(), token.to_string())
-            .await
-        {
+        return match state.acme_http01_challenge(host.as_str(), token).await {
             Ok(Some(key_authorization)) => Ok(text_response(
                 StatusCode::OK,
                 key_authorization.as_str().to_string(),

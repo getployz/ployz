@@ -149,7 +149,7 @@ async fn run_async() -> Result<(), String> {
     let presented_a = presented_fact(challenge.clone(), "issuer-a", claim_hash_a, "thumbprintA")?;
     let presented_b = presented_fact(challenge.clone(), "issuer-b", claim_hash_b, "thumbprintB")?;
     let presented_key = fact_key(&challenge.presented_fact_key(epoch))?;
-    let presented_hash_a = write_doc_fact(
+    write_doc_fact(
         &doc,
         &author_a,
         presented_key.clone(),
@@ -189,13 +189,15 @@ async fn run_async() -> Result<(), String> {
         .count();
     assert_eq_named("ACME conflict candidates", initial_conflict_candidates, 2)?;
 
-    let selected = if presented_hash_a <= presented_hash_b {
-        presented_a
-    } else {
-        presented_b
-    };
-    let selected_key_authorization = selected.key_authorization().as_str().to_string();
-    let selected_holder = selected.holder().as_str().to_string();
+    let selected = before_clear
+        .state
+        .acme_http01
+        .values()
+        .next()
+        .cloned()
+        .ok_or_else(|| "ACME projection did not expose a selected challenge".to_string())?;
+    let selected_key_authorization = selected.key_authorization.as_str().to_string();
+    let selected_holder = selected.holder.as_str().to_string();
 
     let sqlite = SqliteProjectionStore::new(root.join("projections.sqlite"));
     let sqlite_before = sqlite
@@ -239,15 +241,16 @@ async fn run_async() -> Result<(), String> {
 
     let clear = AcmeHttp01ClearedFact::from_parts(
         challenge.clone(),
-        selected.holder().clone(),
-        selected.epoch(),
-        selected.claim_hash(),
+        selected.holder.clone(),
+        selected.lease_epoch,
+        selected.claim_hash,
         LeaseTimestamp::from_secs(120),
     );
-    let clear_key = fact_key(&challenge.cleared_fact_key(selected.epoch(), selected.claim_hash()))?;
+    let clear_key =
+        fact_key(&challenge.cleared_fact_key(selected.lease_epoch, selected.claim_hash))?;
     let clear_hash = write_doc_fact(
         &doc,
-        if selected.holder().as_str() == "issuer-a" {
+        if selected.holder.as_str() == "issuer-a" {
             &author_a
         } else {
             &author_b

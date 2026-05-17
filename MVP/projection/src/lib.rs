@@ -31,6 +31,6 @@ pub use snapshot::{
 };
 pub use source::{
     CandidateStatus, FactCandidate, FactKeyClassification, FactKind, FactSource, FactSourceError,
-    FactSourceResult, classify_fact_key, is_reducible_conflict_kind,
+    FactSourceResult, classify_fact_key,
 };
 pub use sqlite::{ProjectionRowCounts, SqliteProjectionStore};
