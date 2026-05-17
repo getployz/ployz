@@ -9,6 +9,7 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FactKind {
     NodeJoined,
+    NodeTombstoned,
     ServiceRegistered,
     ServingCommit,
     RouteCommit,
@@ -47,6 +48,10 @@ pub fn classify_fact_key(key: &FactKey) -> FactKeyClassification {
         ["facts", "node", _node_id, "joined", epoch]
         | ["facts", "node", _node_id, "joined", epoch, _] => {
             classify_epoch(FactKind::NodeJoined, epoch)
+        }
+        ["facts", "node", _node_id, "tombstoned", epoch]
+        | ["facts", "node", _node_id, "tombstoned", epoch, _] => {
+            classify_epoch(FactKind::NodeTombstoned, epoch)
         }
         ["facts", "service", _service, _node_id, "registered", epoch]
         | [
@@ -216,6 +221,14 @@ mod tests {
 
         assert_eq!(classification.kind(), FactKind::NodeJoined);
         assert_eq!(classification.epoch(), 12);
+    }
+
+    #[test]
+    fn classifies_tombstone_epochs() {
+        let classification = classify_fact_key(&key("/facts/node/node-1/tombstoned/13"));
+
+        assert_eq!(classification.kind(), FactKind::NodeTombstoned);
+        assert_eq!(classification.epoch(), 13);
     }
 
     #[test]

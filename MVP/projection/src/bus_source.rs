@@ -127,6 +127,8 @@ mod tests {
             node_id: NodeId::new("node-1"),
             epoch: 1,
             overlay_ip: "fd00::1".to_string(),
+            iroh_endpoint_id: "iroh-test".to_string(),
+            wg_public_key: "wg-test".to_string(),
         })
         .to_fact_bytes()
         .expect("payload serializes");

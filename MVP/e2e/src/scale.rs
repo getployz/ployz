@@ -378,6 +378,8 @@ async fn run_projection_node_count(
                 node_id: node_id.clone(),
                 epoch: 1,
                 overlay_ip: format!("fd00::{node_index:x}"),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
             }),
         )?;
         write_projection_fact(

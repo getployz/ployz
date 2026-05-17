@@ -306,6 +306,8 @@ fn node_joined_payload(
         node_id: NodeId::new(node_id),
         epoch,
         overlay_ip: overlay_ip.to_string(),
+        iroh_endpoint_id: "iroh-test".to_string(),
+        wg_public_key: "wg-test".to_string(),
     })
     .to_fact_bytes()
     .map(Into::into)

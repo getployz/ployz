@@ -182,6 +182,8 @@ async fn run_async() -> Result<(), String> {
             node_id: NodeId::new("node-forged"),
             epoch: 1,
             overlay_ip: "fd00::bad".to_string(),
+            iroh_endpoint_id: "iroh-test".to_string(),
+            wg_public_key: "wg-test".to_string(),
         }),
     )?;
     let mismatch = actor
@@ -208,6 +210,8 @@ async fn run_async() -> Result<(), String> {
                 node_id: NodeId::new("evil"),
                 epoch: 1,
                 overlay_ip: "fd00::bad".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
             })
             .to_fact_bytes()
             .map_err(|error| format!("serialize unauthorized payload: {error}"))?,
@@ -223,6 +227,8 @@ async fn run_async() -> Result<(), String> {
             node_id: NodeId::new("node-conflict"),
             epoch: 1,
             overlay_ip: "fd00::10".to_string(),
+            iroh_endpoint_id: "iroh-test".to_string(),
+            wg_public_key: "wg-test".to_string(),
         })
         .to_fact_bytes()
         .map_err(|error| format!("serialize first conflict payload: {error}"))?,
@@ -236,6 +242,8 @@ async fn run_async() -> Result<(), String> {
                 node_id: NodeId::new("node-conflict"),
                 epoch: 1,
                 overlay_ip: "fd00::11".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
             })
             .to_fact_bytes()
             .map_err(|error| format!("serialize second conflict payload: {error}"))?,
@@ -347,6 +355,8 @@ fn seed_base_facts() -> Result<(InMemoryBus, BusSession, BusSession), String> {
             node_id: NodeId::new("node-1"),
             epoch: 1,
             overlay_ip: "fd00::1".to_string(),
+            iroh_endpoint_id: "iroh-test".to_string(),
+            wg_public_key: "wg-test".to_string(),
         }),
     )?;
     write_projection_fact(
