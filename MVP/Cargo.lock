@@ -2440,6 +2440,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mvp-serving"
+version = "0.1.0"
+dependencies = [
+ "kameo",
+ "mvp-bus",
+ "mvp-projection",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "n0-error"
 version = "1.0.0-rc.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
