@@ -11,6 +11,14 @@ mod metrics;
 mod process_fact_source;
 #[cfg(unix)]
 mod process_role_harness;
+#[cfg(unix)]
+mod process_role_serving_contract;
+#[cfg(not(unix))]
+mod process_role_serving_contract {
+    pub(crate) fn run() -> Result<(), String> {
+        Err("process-role-serving-contract uses Unix sockets in the MVP harness".to_string())
+    }
+}
 mod projection_contract;
 mod projection_harness;
 mod scale;
@@ -63,6 +71,10 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "steady-state-serving-contract",
         run: steady_state_serving_contract::run,
+    },
+    Scenario {
+        name: "process-role-serving-contract",
+        run: process_role_serving_contract::run,
     },
     Scenario {
         name: "scale",
@@ -187,6 +199,7 @@ mod tests {
         assert!(names.contains(&"lease-acme-contract"));
         assert!(names.contains(&"deploy-commit-drain-contract"));
         assert!(names.contains(&"steady-state-serving-contract"));
+        assert!(names.contains(&"process-role-serving-contract"));
         assert!(scenario_help().contains("lease-acme-contract"));
     }
 

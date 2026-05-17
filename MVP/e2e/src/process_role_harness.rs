@@ -73,6 +73,7 @@ pub(crate) struct ServingProjectionRoleConfig {
 }
 
 impl ServingProjectionRoleConfig {
+    #[cfg(test)]
     pub(crate) fn new(root: impl Into<PathBuf>, socket: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
@@ -93,6 +94,7 @@ pub(crate) struct LocalCoordinatorRoleConfig {
 }
 
 impl LocalCoordinatorRoleConfig {
+    #[cfg(test)]
     pub(crate) fn new(root: impl Into<PathBuf>, socket: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
@@ -140,6 +142,7 @@ pub(crate) struct RemoteReplicationInjectorConfig {
 }
 
 impl RemoteReplicationInjectorConfig {
+    #[cfg(test)]
     pub(crate) fn new(
         root: impl Into<PathBuf>,
         author: impl Into<String>,
@@ -169,7 +172,7 @@ pub(crate) struct ServingCommitInput {
 }
 
 impl ServingCommitInput {
-    fn new(
+    pub(crate) fn new(
         commit_id: impl Into<String>,
         backend_address: impl Into<String>,
         dns_value: impl Into<String>,
@@ -967,6 +970,7 @@ fn role_serving_status(status: ServingStatus) -> RoleServingStatus {
         freshness: status.freshness,
         reload_attempts: status.reload_attempts,
         last_failure: status.last_failure.map(|failure| failure.to_string()),
+        snapshot_age_us: duration_to_us(status.snapshot_age),
     }
 }
 
@@ -1186,6 +1190,7 @@ pub(crate) enum RoleServingStatus {
         freshness: ServingFreshness,
         reload_attempts: u64,
         last_failure: Option<String>,
+        snapshot_age_us: u64,
     },
 }
 
