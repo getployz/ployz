@@ -86,6 +86,15 @@ where
     Ok(contents)
 }
 
+pub(crate) fn reset_dir(path: &Path) -> Result<(), String> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("remove old dir '{}': {error}", path.display())),
+    }
+    fs::create_dir_all(path).map_err(|error| format!("create dir '{}': {error}", path.display()))
+}
+
 fn duration_to_us(duration: Duration) -> u64 {
     let micros = duration.as_micros();
     if micros > u128::from(u64::MAX) {

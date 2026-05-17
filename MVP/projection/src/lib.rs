@@ -1,0 +1,33 @@
+mod actor;
+mod bus_source;
+mod error;
+mod facts;
+mod model;
+mod reducer;
+mod snapshot;
+mod source;
+mod sqlite;
+
+pub use actor::{
+    ProjectionActorHandle, ProjectionActorStatus, ProjectionFailureKind, ProjectionFailureStatus,
+    ProjectionReport, ProjectionSuccessStatus,
+};
+pub use bus_source::BusFactSource;
+pub use error::{ProjectionError, ProjectionResult};
+pub use facts::{
+    BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeId, NodeJoinedFact,
+    ProjectionFactPayload, RouteCommitFact, RouteId, ServiceName, ServiceRegistrationFact,
+};
+pub use model::{
+    DnsProjection, DnsRecordProjection, GatewayProjection, GatewayRouteProjection, NodeProjection,
+    ProjectionIgnoreReason, ProjectionState, ProjectionStatus, ServiceProjection,
+};
+pub use reducer::reduce_facts;
+pub use snapshot::{
+    DnsSnapshotFile, GatewaySnapshotFile, ProjectionSnapshotWriteReport, SnapshotWriteReport,
+    load_dns_snapshot, load_gateway_snapshot, write_projection_snapshots,
+};
+pub use source::{
+    CandidateStatus, FactCandidate, FactKind, FactSource, FactSourceError, FactSourceResult,
+};
+pub use sqlite::{ProjectionRowCounts, SqliteProjectionStore};

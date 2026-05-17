@@ -2,6 +2,7 @@
 members = [
     "bus",
     "e2e",
+    "projection",
 ]
 resolver = "3"
 

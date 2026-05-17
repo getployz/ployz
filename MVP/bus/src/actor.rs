@@ -12,8 +12,9 @@ use crate::memory::{DEFAULT_PUBLISH_TIMEOUT, MemoryBus};
 use crate::memory::{Handler, RequestManyDeadlinePolicy, deadline_after, remaining_until};
 use crate::{
     ActorFailure, BusAuthority, BusError, BusRuntimeSnapshot, BusSession, Fact, FactContentHash,
-    FactKey, FactWriteOutcome, HandlerOutcome, Payload, QueueName, RequestContext,
-    RequestManyPolicy, RequestTarget, ResponseMessage, Result, Subject, SubjectPattern,
+    FactKey, FactKeyPattern, FactPayload, FactWriteOutcome, HandlerOutcome, Payload, QueueName,
+    RequestContext, RequestManyPolicy, RequestTarget, ResponseMessage, Result, Subject,
+    SubjectPattern,
 };
 
 const BUS_ACTOR_MAILBOX_CAPACITY: usize = 64;
@@ -219,8 +220,46 @@ impl BusActorHandle {
         .await
     }
 
+    pub async fn write_fact_payload(
+        &self,
+        session: &BusSession,
+        key: FactKey,
+        payload: impl Into<FactPayload>,
+    ) -> Result<FactWriteOutcome> {
+        self.ask(WriteFactPayload {
+            session: session.clone(),
+            key,
+            payload: payload.into(),
+        })
+        .await
+    }
+
     pub async fn read_fact(&self, session: &BusSession, key: FactKey) -> Result<Option<Fact>> {
         self.ask(ReadFact {
+            session: session.clone(),
+            key,
+        })
+        .await
+    }
+
+    pub async fn list_facts(
+        &self,
+        session: &BusSession,
+        pattern: FactKeyPattern,
+    ) -> Result<Vec<Fact>> {
+        self.ask(ListFacts {
+            session: session.clone(),
+            pattern,
+        })
+        .await
+    }
+
+    pub async fn read_fact_payload(
+        &self,
+        session: &BusSession,
+        key: FactKey,
+    ) -> Result<Option<FactPayload>> {
+        self.ask(ReadFactPayload {
             session: session.clone(),
             key,
         })
@@ -529,6 +568,25 @@ impl Message<WriteFact> for BusActor {
     }
 }
 
+struct WriteFactPayload {
+    session: BusSession,
+    key: FactKey,
+    payload: FactPayload,
+}
+
+impl Message<WriteFactPayload> for BusActor {
+    type Reply = Result<FactWriteOutcome>;
+
+    async fn handle(
+        &mut self,
+        message: WriteFactPayload,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.bus
+            .write_fact_payload(&message.session, message.key, message.payload)
+    }
+}
+
 struct ReadFact {
     session: BusSession,
     key: FactKey,
@@ -543,6 +601,40 @@ impl Message<ReadFact> for BusActor {
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         self.bus.read_fact(&message.session, &message.key)
+    }
+}
+
+struct ListFacts {
+    session: BusSession,
+    pattern: FactKeyPattern,
+}
+
+impl Message<ListFacts> for BusActor {
+    type Reply = Result<Vec<Fact>>;
+
+    async fn handle(
+        &mut self,
+        message: ListFacts,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.bus.list_facts(&message.session, &message.pattern)
+    }
+}
+
+struct ReadFactPayload {
+    session: BusSession,
+    key: FactKey,
+}
+
+impl Message<ReadFactPayload> for BusActor {
+    type Reply = Result<Option<FactPayload>>;
+
+    async fn handle(
+        &mut self,
+        message: ReadFactPayload,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.bus.read_fact_payload(&message.session, &message.key)
     }
 }
 
@@ -691,7 +783,9 @@ mod tests {
         let (bus, authority) = BusActorHandle::new_with_authority();
         let writer = authority.grant(
             principal("writer"),
-            Grant::empty().with_fact_write(fact_pattern("/facts/deploy/>")),
+            Grant::empty()
+                .with_fact_write(fact_pattern("/facts/deploy/>"))
+                .with_fact_read(fact_pattern("/facts/deploy/>")),
         );
         let reader = authority.grant(principal("reader"), Grant::allow_all());
 
@@ -708,6 +802,41 @@ mod tests {
         assert!(matches!(outcome, FactWriteOutcome::Inserted(_)));
         assert_eq!(fact.author().as_str(), "writer");
         assert_eq!(fact.content_hash().as_str(), "b3:plan");
+    }
+
+    #[tokio::test]
+    async fn actor_facade_exposes_payload_facts_and_listing() {
+        let (bus, authority) = BusActorHandle::new_with_authority();
+        let writer = authority.grant(
+            principal("writer"),
+            Grant::empty()
+                .with_fact_write(fact_pattern("/facts/routes/>"))
+                .with_fact_read(fact_pattern("/facts/routes/>")),
+        );
+        let payload = "{\"route\":\"web\"}".to_string();
+
+        bus.write_fact_payload(&writer, fact_key("/facts/routes/r2"), payload.clone())
+            .await
+            .expect("write payload fact");
+        bus.write_fact_payload(&writer, fact_key("/facts/routes/r1"), payload.clone())
+            .await
+            .expect("write payload fact");
+        let listed = bus
+            .list_facts(&writer, fact_pattern("/facts/routes/>"))
+            .await
+            .expect("list facts");
+        let body = bus
+            .read_fact_payload(&writer, fact_key("/facts/routes/r1"))
+            .await
+            .expect("read payload")
+            .expect("payload exists");
+
+        let keys = listed
+            .iter()
+            .map(|fact| fact.key().as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(keys, vec!["/facts/routes/r1", "/facts/routes/r2"]);
+        assert_eq!(body.as_bytes(), payload.as_bytes());
     }
 
     #[tokio::test]

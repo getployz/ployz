@@ -14,7 +14,8 @@ pub use bridge::{
 };
 pub use error::{ActorFailure, BridgeFailure, BusError, HandlerFailure, Result, SubjectParseError};
 pub use facts::{
-    Fact, FactContentHash, FactKey, FactKeyParseError, FactKeyPattern, FactWriteOutcome,
+    Fact, FactContentHash, FactKey, FactKeyParseError, FactKeyPattern, FactPayload,
+    FactWriteOutcome,
 };
 pub use grants::{BusSession, Grant, IslandId, PrincipalId, QueueName};
 pub use memory::{

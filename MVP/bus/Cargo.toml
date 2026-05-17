@@ -10,6 +10,7 @@ name = "mvp_bus"
 path = "src/lib.rs"
 
 [dependencies]
+blake3 = "1"
 bytes = "1"
 crossbeam-channel = "0.5"
 kameo = "0.20"
