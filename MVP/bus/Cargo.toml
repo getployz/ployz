@@ -12,3 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 bytes = "1"
 crossbeam-channel = "0.5"
+kameo = "0.20"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

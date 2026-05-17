@@ -1,9 +1,11 @@
+mod actor;
 mod error;
 mod grants;
 mod memory;
 mod message;
 mod subject;
 
+pub use actor::{BusActor, BusActorHandle};
 pub use error::{BusError, Result, SubjectParseError};
 pub use grants::{BusSession, Grant, PrincipalId, QueueName};
 pub use memory::{
