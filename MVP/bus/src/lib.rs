@@ -17,7 +17,7 @@ pub use facts::{
     Fact, FactContentHash, FactKey, FactKeyParseError, FactKeyPattern, FactPayload,
     FactWriteOutcome,
 };
-pub use grants::{BusSession, Grant, IslandId, PrincipalId, QueueName};
+pub use grants::{BusSession, FactAccess, FactAuthorizer, Grant, IslandId, PrincipalId, QueueName};
 pub use memory::{
     BusAuthority, BusRuntimeConfig, BusRuntimeSnapshot, HandlerOutcome, RequestContext,
 };

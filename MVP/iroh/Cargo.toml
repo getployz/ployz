@@ -1,0 +1,20 @@
+[package]
+name = "mvp-iroh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "mvp_iroh"
+path = "src/lib.rs"
+
+[dependencies]
+iroh = "1.0.0-rc.0"
+iroh-blobs = "0.101.0"
+iroh-docs = "0.99.0"
+iroh-gossip = "0.99.0"
+mvp-bus = { path = "../bus" }
+mvp-projection = { path = "../projection" }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }

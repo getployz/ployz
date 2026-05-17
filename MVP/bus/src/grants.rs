@@ -102,6 +102,16 @@ impl BusSession {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactAccess {
+    Read,
+    Write,
+}
+
+pub trait FactAuthorizer: Send + Sync {
+    fn can_access_fact(&self, session: &BusSession, key: &FactKey, access: FactAccess) -> bool;
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Grant {
     publish_allow: Vec<SubjectPattern>,
