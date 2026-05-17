@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use mvp_bus::{BusSession, FactKeyPattern, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_deploy::{DnsCommitId, GatewayCommitId, RouteCommitId, ServingCommitId, ServingCommitPlan};
+use mvp_mesh::{WireGuardAppliedSnapshot, WireGuardSnapshotPaths, load_applied_snapshot};
 use mvp_projection::{
     BackendEndpoint, DnsRecordFact, DnsRecordProjection, FactSource, GatewayRouteProjection,
     NodeId, ProjectionActorHandle, ProjectionActorStatus, ProjectionFactPayload, ProjectionReport,
@@ -22,7 +23,7 @@ use mvp_serving::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio::process::{Child, Command as TokioCommand};
 use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
@@ -74,6 +75,10 @@ pub(crate) fn run_role(args: Vec<String>) -> Result<(), String> {
             let config = WireRoleConfig::parse(rest, "dns-server")?;
             runtime()?.block_on(run_dns_server_role(config))
         }
+        "mesh-data-plane" => {
+            let config = MeshDataPlaneRoleConfig::parse(rest)?;
+            runtime()?.block_on(run_mesh_data_plane_role(config))
+        }
         other => Err(format!("unknown process role '{other}'")),
     }
 }
@@ -115,6 +120,25 @@ pub(crate) async fn wait_for_coordinator(socket: &Path) -> Result<(), String> {
                 sleep(ROLE_REQUEST_PAUSE).await;
             }
             Err(error) => return Err(format!("coordinator did not become ready: {error:?}")),
+        }
+    }
+}
+
+pub(crate) async fn wait_for_mesh_data_plane(socket: &Path) -> Result<(), String> {
+    let deadline = Instant::now() + READY_TIMEOUT;
+    loop {
+        match request_mesh_role(socket, &MeshRoleRequest::Status).await {
+            Ok(MeshRoleSuccess::Status(_)) => return Ok(()),
+            Ok(other) => {
+                return Err(format!(
+                    "unexpected mesh data-plane readiness response: {other:?}"
+                ));
+            }
+            Err(error) if Instant::now() < deadline => {
+                let _ = error;
+                sleep(ROLE_REQUEST_PAUSE).await;
+            }
+            Err(error) => return Err(format!("mesh data-plane did not become ready: {error:?}")),
         }
     }
 }
@@ -272,6 +296,36 @@ pub(crate) fn spawn_process_role(
     root: &Path,
     socket: &Path,
     extra_args: &[&str],
+) -> Result<RunningChild, String> {
+    let mut command = TokioCommand::new(current_exe()?);
+    command
+        .arg("role")
+        .arg(role)
+        .arg("--root")
+        .arg(root)
+        .arg("--socket")
+        .arg(socket)
+        .kill_on_drop(true);
+    for arg in extra_args {
+        command.arg(arg);
+    }
+    let child = command
+        .spawn()
+        .map_err(|error| format!("spawn {name} role: {error}"))?;
+    let pid_file = register_child_pid(root, name, &child)?;
+    Ok(RunningChild {
+        name,
+        child,
+        pid_file: Some(pid_file),
+    })
+}
+
+pub(crate) fn spawn_process_role_owned(
+    name: &'static str,
+    role: &'static str,
+    root: &Path,
+    socket: &Path,
+    extra_args: &[String],
 ) -> Result<RunningChild, String> {
     let mut command = TokioCommand::new(current_exe()?);
     command
@@ -621,6 +675,54 @@ impl WireRoleConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MeshDataPlaneRoleConfig {
+    socket: PathBuf,
+    listen: SocketAddr,
+    snapshot: PathBuf,
+    island: IslandId,
+}
+
+impl MeshDataPlaneRoleConfig {
+    fn parse(args: &[String]) -> Result<Self, String> {
+        let role = "mesh-data-plane";
+        let mut socket = None;
+        let mut listen = None;
+        let mut snapshot = None;
+        let mut island = None;
+        let mut remaining = args;
+        while let [flag, value, tail @ ..] = remaining {
+            match flag.as_str() {
+                "--root" => {
+                    let _ = value;
+                }
+                "--socket" => socket = Some(PathBuf::from(value)),
+                "--listen" => {
+                    listen =
+                        Some(value.parse::<SocketAddr>().map_err(|error| {
+                            format!("{role} --listen must be SocketAddr: {error}")
+                        })?)
+                }
+                "--snapshot" => snapshot = Some(PathBuf::from(value)),
+                "--island" => island = Some(IslandId::new(value.clone())),
+                other => return Err(format!("unknown {role} flag '{other}'")),
+            }
+            remaining = tail;
+        }
+        if !remaining.is_empty() {
+            return Err(format!(
+                "{role} arguments must be flag/value pairs, got {remaining:?}"
+            ));
+        }
+        Ok(Self {
+            socket: socket.ok_or_else(|| format!("{role} requires --socket"))?,
+            listen: listen.ok_or_else(|| format!("{role} requires --listen"))?,
+            snapshot: snapshot.ok_or_else(|| format!("{role} requires --snapshot"))?,
+            island: island.ok_or_else(|| format!("{role} requires --island"))?,
+        })
+    }
+}
+
 impl RemoteReplicationInjectorConfig {
     #[cfg(test)]
     pub(crate) fn new(
@@ -830,6 +932,69 @@ pub(crate) async fn run_dns_server_role(config: WireRoleConfig) -> Result<(), St
     Ok(())
 }
 
+pub(crate) async fn run_mesh_data_plane_role(
+    config: MeshDataPlaneRoleConfig,
+) -> Result<(), String> {
+    remove_stale_socket(&config.socket)?;
+    if let Some(parent) = config.socket.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "create mesh-data-plane socket dir '{}': {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let control = UnixListener::bind(&config.socket)
+        .map_err(|error| format!("bind mesh-data-plane control socket: {error}"))?;
+    let paths = WireGuardSnapshotPaths {
+        applied: config.snapshot.clone(),
+    };
+    let snapshot = load_applied_snapshot(&paths, &config.island)
+        .map_err(|error| format!("load mesh data-plane snapshot: {error}"))?;
+    let listener = TcpListener::bind(config.listen)
+        .await
+        .map_err(|error| format!("bind mesh data-plane tcp listener: {error}"))?;
+    let listen = listener
+        .local_addr()
+        .map_err(|error| format!("read mesh data-plane listener addr: {error}"))?;
+    let echo_task = tokio::spawn(run_mesh_echo_listener(listener));
+    let state = Arc::new(Mutex::new(MeshDataPlaneState {
+        paths,
+        island: config.island,
+        snapshot,
+        listen,
+        last_reload_failure: None,
+    }));
+
+    loop {
+        let (stream, _addr) = control
+            .accept()
+            .await
+            .map_err(|error| format!("accept mesh-data-plane control connection: {error}"))?;
+        if handle_mesh_data_plane_connection(stream, Arc::clone(&state)).await? {
+            break;
+        }
+    }
+    echo_task.abort();
+    Ok(())
+}
+
+async fn run_mesh_echo_listener(listener: TcpListener) -> Result<(), String> {
+    loop {
+        let (mut stream, _addr) = listener
+            .accept()
+            .await
+            .map_err(|error| format!("accept mesh data-plane tcp connection: {error}"))?;
+        tokio::spawn(async move {
+            let mut body = Vec::new();
+            if stream.read_to_end(&mut body).await.is_ok() {
+                let _ = stream.write_all(&body).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+    }
+}
+
 async fn handle_local_coordinator_connection(
     mut stream: UnixStream,
     writer: ServingFactWriter,
@@ -881,6 +1046,80 @@ async fn handle_coordinator_request(
             mutation: LocalMutationStatus::Available,
         })),
         CoordinatorRequest::Shutdown => Ok(CoordinatorSuccess::Shutdown),
+    }
+}
+
+async fn handle_mesh_role_request(
+    request: MeshRoleRequest,
+    state: Arc<Mutex<MeshDataPlaneState>>,
+) -> Result<MeshRoleSuccess, MeshRoleFailure> {
+    match request {
+        MeshRoleRequest::Send {
+            target_node_id,
+            target_addr,
+            payload,
+        } => {
+            let allowed = {
+                let state = state.lock().await;
+                state.snapshot.has_peer(&target_node_id)
+            };
+            if !allowed {
+                return Err(MeshRoleFailure::peer_not_applied(&target_node_id));
+            }
+            let payload = send_mesh_tcp(target_addr, payload).await?;
+            Ok(MeshRoleSuccess::Sent { payload })
+        }
+        MeshRoleRequest::Reload => {
+            let mut state = state.lock().await;
+            match load_applied_snapshot(&state.paths, &state.island) {
+                Ok(snapshot) => {
+                    state.snapshot = snapshot;
+                    state.last_reload_failure = None;
+                    Ok(MeshRoleSuccess::Reloaded(state.status()))
+                }
+                Err(error) => {
+                    state.last_reload_failure = Some(error.to_string());
+                    Err(MeshRoleFailure::snapshot(error.to_string()))
+                }
+            }
+        }
+        MeshRoleRequest::Status => Ok(MeshRoleSuccess::Status(state.lock().await.status())),
+        MeshRoleRequest::Shutdown => Ok(MeshRoleSuccess::Shutdown),
+    }
+}
+
+async fn send_mesh_tcp(
+    target_addr: SocketAddr,
+    payload: Vec<u8>,
+) -> Result<Vec<u8>, MeshRoleFailure> {
+    let mut stream = timeout(ROLE_CONNECT_TIMEOUT, TcpStream::connect(target_addr))
+        .await
+        .map_err(|_| MeshRoleFailure::io("connect target timed out"))?
+        .map_err(|error| MeshRoleFailure::io(format!("connect target {target_addr}: {error}")))?;
+    timeout(ROLE_WRITE_TIMEOUT, stream.write_all(&payload))
+        .await
+        .map_err(|_| MeshRoleFailure::io("write target timed out"))?
+        .map_err(|error| MeshRoleFailure::io(format!("write target: {error}")))?;
+    timeout(ROLE_WRITE_TIMEOUT, stream.shutdown())
+        .await
+        .map_err(|_| MeshRoleFailure::io("finish target write timed out"))?
+        .map_err(|error| MeshRoleFailure::io(format!("finish target write: {error}")))?;
+    let mut response = Vec::new();
+    timeout(ROLE_RESPONSE_TIMEOUT, stream.read_to_end(&mut response))
+        .await
+        .map_err(|_| MeshRoleFailure::io("read target response timed out"))?
+        .map_err(|error| MeshRoleFailure::io(format!("read target response: {error}")))?;
+    Ok(response)
+}
+
+impl MeshDataPlaneState {
+    fn status(&self) -> MeshRoleStatus {
+        MeshRoleStatus {
+            listen: self.listen,
+            revision: self.snapshot.revision,
+            peer_count: self.snapshot.peers.len(),
+            last_reload_failure: self.last_reload_failure.clone(),
+        }
     }
 }
 
@@ -986,6 +1225,37 @@ async fn handle_dns_server_connection(
     let response = serde_json::to_vec(&response)
         .map_err(|error| format!("serialize dns-server response: {error}"))?;
     if write_response(&mut stream, &response, "dns-server response")
+        .await
+        .is_err()
+    {
+        return Ok(should_shutdown);
+    }
+    Ok(should_shutdown)
+}
+
+async fn handle_mesh_data_plane_connection(
+    mut stream: UnixStream,
+    state: Arc<Mutex<MeshDataPlaneState>>,
+) -> Result<bool, String> {
+    let response = match read_request(&mut stream, "mesh-data-plane request").await {
+        Ok(request) => match serde_json::from_slice::<MeshRoleRequest>(&request) {
+            Ok(request) => match handle_mesh_role_request(request, state).await {
+                Ok(success) => MeshRoleResponse::Success(success),
+                Err(error) => MeshRoleResponse::Failure(error),
+            },
+            Err(error) => MeshRoleResponse::Failure(MeshRoleFailure::invalid_request(format!(
+                "parse mesh-data-plane request: {error}"
+            ))),
+        },
+        Err(message) => MeshRoleResponse::Failure(MeshRoleFailure::invalid_request(message)),
+    };
+    let should_shutdown = matches!(
+        response,
+        MeshRoleResponse::Success(MeshRoleSuccess::Shutdown)
+    );
+    let response = serde_json::to_vec(&response)
+        .map_err(|error| format!("serialize mesh-data-plane response: {error}"))?;
+    if write_response(&mut stream, &response, "mesh-data-plane response")
         .await
         .is_err()
     {
@@ -1948,6 +2218,106 @@ pub(crate) enum CoordinatorFailureKind {
     Internal,
 }
 
+#[derive(Debug, Clone)]
+struct MeshDataPlaneState {
+    paths: WireGuardSnapshotPaths,
+    island: IslandId,
+    snapshot: WireGuardAppliedSnapshot,
+    listen: SocketAddr,
+    last_reload_failure: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub(crate) enum MeshRoleRequest {
+    Send {
+        target_node_id: NodeId,
+        target_addr: SocketAddr,
+        payload: Vec<u8>,
+    },
+    Reload,
+    Status,
+    Shutdown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub(crate) enum MeshRoleResponse {
+    Success(MeshRoleSuccess),
+    Failure(MeshRoleFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum MeshRoleSuccess {
+    Sent { payload: Vec<u8> },
+    Reloaded(MeshRoleStatus),
+    Status(MeshRoleStatus),
+    Shutdown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct MeshRoleStatus {
+    pub(crate) listen: SocketAddr,
+    pub(crate) revision: u64,
+    pub(crate) peer_count: usize,
+    pub(crate) last_reload_failure: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct MeshRoleFailure {
+    pub(crate) kind: MeshRoleFailureKind,
+    pub(crate) message: String,
+}
+
+impl MeshRoleFailure {
+    fn invalid_request(message: impl Into<String>) -> Self {
+        Self {
+            kind: MeshRoleFailureKind::InvalidRequest,
+            message: message.into(),
+        }
+    }
+
+    fn peer_not_applied(node_id: &NodeId) -> Self {
+        Self {
+            kind: MeshRoleFailureKind::PeerNotApplied,
+            message: format!(
+                "peer {} is not in last-applied mesh snapshot",
+                node_id.as_str()
+            ),
+        }
+    }
+
+    fn io(message: impl Into<String>) -> Self {
+        Self {
+            kind: MeshRoleFailureKind::Io,
+            message: message.into(),
+        }
+    }
+
+    fn snapshot(message: impl Into<String>) -> Self {
+        Self {
+            kind: MeshRoleFailureKind::Snapshot,
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MeshRoleFailureKind {
+    InvalidRequest,
+    PeerNotApplied,
+    Io,
+    Snapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MeshRoleClientError {
+    Transport(String),
+    Failure(MeshRoleFailure),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub(crate) enum RoleRequest {
@@ -2147,6 +2517,17 @@ pub(crate) async fn request_wire_role(
         Ok(WireRoleResponse::Success(success)) => Ok(success),
         Ok(WireRoleResponse::Failure(failure)) => Err(WireRoleClientError::Failure(failure)),
         Err(error) => Err(WireRoleClientError::Transport(error)),
+    }
+}
+
+pub(crate) async fn request_mesh_role(
+    socket: &Path,
+    request: &MeshRoleRequest,
+) -> Result<MeshRoleSuccess, MeshRoleClientError> {
+    match request_json::<_, MeshRoleResponse>(socket, request, "mesh-data-plane").await {
+        Ok(MeshRoleResponse::Success(success)) => Ok(success),
+        Ok(MeshRoleResponse::Failure(failure)) => Err(MeshRoleClientError::Failure(failure)),
+        Err(error) => Err(MeshRoleClientError::Transport(error)),
     }
 }
 

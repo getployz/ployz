@@ -7,6 +7,18 @@ mod bus_syntax;
 mod deploy_commit_drain_contract;
 mod iroh_docs_contract;
 mod lease_acme_contract;
+#[cfg(unix)]
+mod membership_wireguard_contract;
+#[cfg(not(unix))]
+mod membership_wireguard_contract {
+    pub(crate) fn run() -> Result<(), String> {
+        Err("membership-wireguard-contract uses process roles in the MVP harness".to_string())
+    }
+
+    pub(crate) fn cleanup_orphaned_children() -> Result<(), String> {
+        Ok(())
+    }
+}
 mod metrics;
 mod process_fact_source;
 #[cfg(unix)]
@@ -97,6 +109,10 @@ const SCENARIOS: &[Scenario] = &[
         run: wire_serving_contract::run,
     },
     Scenario {
+        name: "membership-wireguard-contract",
+        run: membership_wireguard_contract::run,
+    },
+    Scenario {
         name: "scale",
         run: scale::run,
     },
@@ -163,10 +179,11 @@ fn run_scenarios_with_budget(
         Err(mpsc::RecvTimeoutError::Timeout) => {
             let process_cleanup = process_role_serving_contract::cleanup_orphaned_children();
             let wire_cleanup = wire_serving_contract::cleanup_orphaned_children();
-            match (process_cleanup, wire_cleanup) {
-                (Ok(()), Ok(())) => Err(format!("all scenario exceeded {budget:?} budget")),
-                (process_result, wire_result) => Err(format!(
-                    "all scenario exceeded {budget:?} budget; process-role cleanup={process_result:?}; wire cleanup={wire_result:?}"
+            let mesh_cleanup = membership_wireguard_contract::cleanup_orphaned_children();
+            match (process_cleanup, wire_cleanup, mesh_cleanup) {
+                (Ok(()), Ok(()), Ok(())) => Err(format!("all scenario exceeded {budget:?} budget")),
+                (process_result, wire_result, mesh_result) => Err(format!(
+                    "all scenario exceeded {budget:?} budget; process-role cleanup={process_result:?}; wire cleanup={wire_result:?}; mesh cleanup={mesh_result:?}"
                 )),
             }
         }
