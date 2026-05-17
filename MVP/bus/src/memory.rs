@@ -17,7 +17,7 @@ use crate::{
 
 pub type HandlerOutcome = Result<()>;
 
-type Handler = Arc<dyn Fn(RequestContext) -> HandlerOutcome + Send + Sync + 'static>;
+pub(crate) type Handler = Arc<dyn Fn(RequestContext) -> HandlerOutcome + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BusRuntimeConfig {
@@ -234,6 +234,15 @@ impl MemoryBus {
     where
         F: Fn(RequestContext) -> HandlerOutcome + Send + Sync + 'static,
     {
+        self.subscribe_handler(session, pattern, Arc::new(handler))
+    }
+
+    pub(crate) fn subscribe_handler(
+        &self,
+        session: &BusSession,
+        pattern: SubjectPattern,
+        handler: Handler,
+    ) -> Result<u64> {
         let mut inner = self.inner.lock().expect("memory bus mutex poisoned");
         inner.ensure_not_draining()?;
         let principal = session.principal().clone();
@@ -245,7 +254,7 @@ impl MemoryBus {
             id,
             principal,
             pattern,
-            handler: Arc::new(handler),
+            handler,
         });
         Ok(id)
     }
@@ -260,10 +269,19 @@ impl MemoryBus {
     where
         F: Fn(RequestContext) -> HandlerOutcome + Send + Sync + 'static,
     {
+        self.queue_subscribe_handler(session, pattern, queue.into(), Arc::new(handler))
+    }
+
+    pub(crate) fn queue_subscribe_handler(
+        &self,
+        session: &BusSession,
+        pattern: SubjectPattern,
+        queue: QueueName,
+        handler: Handler,
+    ) -> Result<u64> {
         let mut inner = self.inner.lock().expect("memory bus mutex poisoned");
         inner.ensure_not_draining()?;
         let principal = session.principal().clone();
-        let queue = queue.into();
         if !inner
             .grants
             .can_queue_subscribe(&principal, &pattern, &queue)
@@ -280,7 +298,7 @@ impl MemoryBus {
             principal,
             pattern,
             queue,
-            handler: Arc::new(handler),
+            handler,
         });
         Ok(id)
     }

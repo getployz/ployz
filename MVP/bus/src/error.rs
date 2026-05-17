@@ -72,6 +72,10 @@ pub enum BusError {
         subject: String,
         reason: String,
     },
+    ActorUnavailable {
+        actor: String,
+        reason: String,
+    },
 }
 
 impl Display for BusError {
@@ -113,6 +117,9 @@ impl Display for BusError {
             Self::DuplicateResponse { inbox } => write!(f, "duplicate response for {inbox}"),
             Self::HandlerFailed { subject, reason } => {
                 write!(f, "handler failed for {subject}: {reason}")
+            }
+            Self::ActorUnavailable { actor, reason } => {
+                write!(f, "actor {actor} unavailable: {reason}")
             }
         }
     }
