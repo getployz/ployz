@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::fmt::{self, Display, Formatter};
 
 use mvp_bus::{FactKey, FactPayload, IslandId};
 use mvp_projection::{NodeId, NodeJoinedFact, NodeTombstonedFact, ProjectionFactPayload};
@@ -20,6 +21,12 @@ impl InviteId {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl Display for InviteId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -59,14 +66,14 @@ impl JoinCommand {
     pub fn admit(request: JoinRequest) -> MeshResult<JoinCommandResult> {
         if request.invite.is_expired(request.now_ms) {
             return Err(MeshError::InviteExpired {
-                invite_id: request.invite.invite_id.as_str().to_string(),
+                invite_id: request.invite.invite_id,
                 expires_at_ms: request.invite.expires_at_ms,
                 now_ms: request.now_ms,
             });
         }
         if request.invite.secret != request.presented_secret {
             return Err(MeshError::InviteSecretMismatch {
-                invite_id: request.invite.invite_id.as_str().to_string(),
+                invite_id: request.invite.invite_id,
             });
         }
         if request.tombstoned_nodes.contains(&request.node_id) {

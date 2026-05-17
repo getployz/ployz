@@ -22,10 +22,10 @@ use mvp_serving::{
     spawn_http_gateway,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio::process::{Child, Command as TokioCommand};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, Semaphore, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
@@ -42,6 +42,7 @@ const ROLE_MAX_REQUEST_BYTES: usize = 64 * 1024;
 const READY_TIMEOUT: Duration = Duration::from_secs(3);
 const CHILD_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
 const ROLE_REQUEST_PAUSE: Duration = Duration::from_millis(10);
+const MESH_ECHO_TASK_LIMIT: usize = 64;
 
 pub(crate) fn run_role(args: Vec<String>) -> Result<(), String> {
     let [role, rest @ ..] = args.as_slice() else {
@@ -124,11 +125,11 @@ pub(crate) async fn wait_for_coordinator(socket: &Path) -> Result<(), String> {
     }
 }
 
-pub(crate) async fn wait_for_mesh_data_plane(socket: &Path) -> Result<(), String> {
+pub(crate) async fn wait_for_mesh_data_plane(socket: &Path) -> Result<MeshRoleStatus, String> {
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
         match request_mesh_role(socket, &MeshRoleRequest::Status).await {
-            Ok(MeshRoleSuccess::Status(_)) => return Ok(()),
+            Ok(MeshRoleSuccess::Status(status)) => return Ok(status),
             Ok(other) => {
                 return Err(format!(
                     "unexpected mesh data-plane readiness response: {other:?}"
@@ -297,27 +298,7 @@ pub(crate) fn spawn_process_role(
     socket: &Path,
     extra_args: &[&str],
 ) -> Result<RunningChild, String> {
-    let mut command = TokioCommand::new(current_exe()?);
-    command
-        .arg("role")
-        .arg(role)
-        .arg("--root")
-        .arg(root)
-        .arg("--socket")
-        .arg(socket)
-        .kill_on_drop(true);
-    for arg in extra_args {
-        command.arg(arg);
-    }
-    let child = command
-        .spawn()
-        .map_err(|error| format!("spawn {name} role: {error}"))?;
-    let pid_file = register_child_pid(root, name, &child)?;
-    Ok(RunningChild {
-        name,
-        child,
-        pid_file: Some(pid_file),
-    })
+    spawn_process_role_with_args(name, role, root, socket, extra_args.iter().copied())
 }
 
 pub(crate) fn spawn_process_role_owned(
@@ -327,6 +308,26 @@ pub(crate) fn spawn_process_role_owned(
     socket: &Path,
     extra_args: &[String],
 ) -> Result<RunningChild, String> {
+    spawn_process_role_with_args(
+        name,
+        role,
+        root,
+        socket,
+        extra_args.iter().map(String::as_str),
+    )
+}
+
+fn spawn_process_role_with_args<I, S>(
+    name: &'static str,
+    role: &'static str,
+    root: &Path,
+    socket: &Path,
+    extra_args: I,
+) -> Result<RunningChild, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
     let mut command = TokioCommand::new(current_exe()?);
     command
         .arg("role")
@@ -980,16 +981,30 @@ pub(crate) async fn run_mesh_data_plane_role(
 }
 
 async fn run_mesh_echo_listener(listener: TcpListener) -> Result<(), String> {
+    let permits = Arc::new(Semaphore::new(MESH_ECHO_TASK_LIMIT));
     loop {
         let (mut stream, _addr) = listener
             .accept()
             .await
             .map_err(|error| format!("accept mesh data-plane tcp connection: {error}"))?;
+        let permit = Arc::clone(&permits)
+            .acquire_owned()
+            .await
+            .map_err(|error| format!("acquire mesh echo task permit: {error}"))?;
         tokio::spawn(async move {
-            let mut body = Vec::new();
-            if stream.read_to_end(&mut body).await.is_ok() {
-                let _ = stream.write_all(&body).await;
-                let _ = stream.shutdown().await;
+            let _permit = permit;
+            if let Ok(Ok(body)) = timeout(
+                ROLE_RESPONSE_TIMEOUT,
+                read_bounded(&mut stream, ROLE_MAX_REQUEST_BYTES, "mesh echo request"),
+            )
+            .await
+            {
+                if timeout(ROLE_WRITE_TIMEOUT, stream.write_all(&body))
+                    .await
+                    .is_ok()
+                {
+                    let _ = stream.shutdown().await;
+                }
             }
         });
     }
@@ -1104,11 +1119,14 @@ async fn send_mesh_tcp(
         .await
         .map_err(|_| MeshRoleFailure::io("finish target write timed out"))?
         .map_err(|error| MeshRoleFailure::io(format!("finish target write: {error}")))?;
-    let mut response = Vec::new();
-    timeout(ROLE_RESPONSE_TIMEOUT, stream.read_to_end(&mut response))
-        .await
-        .map_err(|_| MeshRoleFailure::io("read target response timed out"))?
-        .map_err(|error| MeshRoleFailure::io(format!("read target response: {error}")))?;
+    let response_limit = payload.len().min(ROLE_MAX_REQUEST_BYTES);
+    let response = timeout(
+        ROLE_RESPONSE_TIMEOUT,
+        read_bounded(&mut stream, response_limit, "mesh target response"),
+    )
+    .await
+    .map_err(|_| MeshRoleFailure::io("read target response timed out"))?
+    .map_err(MeshRoleFailure::io)?;
     Ok(response)
 }
 
@@ -1273,11 +1291,10 @@ async fn read_request(stream: &mut UnixStream, operation: &str) -> Result<Vec<u8
     .map_err(|_| format!("read {operation} timed out"))?
 }
 
-async fn read_bounded(
-    stream: &mut UnixStream,
-    limit: usize,
-    operation: &str,
-) -> Result<Vec<u8>, String> {
+async fn read_bounded<R>(stream: &mut R, limit: usize, operation: &str) -> Result<Vec<u8>, String>
+where
+    R: AsyncRead + Unpin,
+{
     let mut request = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
