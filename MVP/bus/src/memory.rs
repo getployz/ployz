@@ -44,6 +44,16 @@ impl BusRuntimeConfig {
     }
 
     #[must_use]
+    pub fn with_delivery_queue_capacity(self, delivery_queue_capacity: usize) -> Self {
+        let delivery_queue_capacity = NonZeroUsize::new(delivery_queue_capacity)
+            .expect("delivery queue capacity must be at least one");
+        Self {
+            delivery_queue_capacity,
+            ..self
+        }
+    }
+
+    #[must_use]
     pub fn delivery_workers(self) -> usize {
         self.delivery_workers.get()
     }
@@ -792,9 +802,8 @@ impl DeliveryRuntime {
         deliveries: Vec<Delivery>,
         result_tx: Option<mpsc::Sender<Result<()>>>,
     ) -> Result<()> {
-        let mut queued = 0usize;
         let total = deliveries.len();
-        for delivery in deliveries {
+        for (queued, delivery) in deliveries.into_iter().enumerate() {
             let job = DeliveryJob {
                 delivery,
                 result_tx: result_tx.clone(),
@@ -803,7 +812,6 @@ impl DeliveryRuntime {
                 self.inflight.complete_many(total - queued);
                 return Err(BusError::DeliveryRuntimeStopped);
             }
-            queued += 1;
         }
         Ok(())
     }

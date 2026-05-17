@@ -357,9 +357,11 @@ mod tests {
         .expect("subscribe inspect");
 
         for node in ["alpha", "beta"] {
-            bus.subscribe(&admin, pattern(&format!("node.{node}.capacity")), move |ctx| {
-                ctx.reply(ctx.message.subject.as_str().as_bytes().to_vec())
-            })
+            bus.subscribe(
+                &admin,
+                pattern(&format!("node.{node}.capacity")),
+                move |ctx| ctx.reply(ctx.message.subject.as_str().as_bytes().to_vec()),
+            )
             .await
             .expect("subscribe capacity");
         }
@@ -390,7 +392,13 @@ mod tests {
         assert_eq!(status_count.load(Ordering::SeqCst), 1);
         assert_eq!(response.payload, b"ok".to_vec());
         assert_eq!(replies.len(), 2);
-        assert_eq!(bus.runtime_snapshot().await.expect("snapshot").delivery_workers, 64);
+        assert_eq!(
+            bus.runtime_snapshot()
+                .await
+                .expect("snapshot")
+                .delivery_workers,
+            64
+        );
     }
 
     #[tokio::test]

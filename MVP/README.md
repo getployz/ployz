@@ -22,6 +22,8 @@ works, stays fast, and survives the failure cases that matter.
 - [MVP/architecture.md](architecture.md) defines the target architecture.
 - [MVP/e2e-proof-plan.md](e2e-proof-plan.md) defines the proof harness and
   acceptance tests.
+- [MVP/primitive-decisions.md](primitive-decisions.md) is the maintainer-facing
+  rationale for the main crates and architecture primitives.
 
 ## Non-Negotiables
 

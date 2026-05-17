@@ -1,4 +1,4 @@
-use std::fs;
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -7,8 +7,11 @@ use std::time::{Duration, Instant};
 
 use mvp_bus::{
     BusError, BusSession, Grant, MemoryBus, PrincipalId, RequestManyPolicy, RequestTarget, Subject,
-    SubjectPattern,
 };
+use serde::Serialize;
+
+use crate::bus_syntax::{pattern, subject};
+use crate::metrics::write_json;
 
 #[derive(Debug, Default)]
 struct Metrics {
@@ -18,6 +21,18 @@ struct Metrics {
     timeouts: usize,
     queue_deliveries: usize,
     unauthorized_failures: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct MetricsReport {
+    scenario: &'static str,
+    requests: usize,
+    responses: usize,
+    no_responders: usize,
+    timeouts: usize,
+    queue_deliveries: usize,
+    unauthorized_failures: usize,
+    elapsed_ms: u128,
 }
 
 pub(crate) fn run() -> Result<(), String> {
@@ -226,8 +241,8 @@ pub(crate) fn run() -> Result<(), String> {
         .map_err(|error| format!("in-flight drain request failed: {error}"))?;
     assert_eq_named(
         "in-flight drain response",
-        drain_response.payload,
-        b"drained".to_vec(),
+        drain_response.payload.as_bytes(),
+        b"drained".as_slice(),
     )?;
     metrics.requests += 1;
     metrics.responses += 1;
@@ -298,14 +313,6 @@ fn register_scheduler(
     .map_err(|error| format!("scheduler queue subscribe failed: {error}"))
 }
 
-fn subject(value: &str) -> Result<Subject, String> {
-    Subject::parse(value).map_err(|error| error.to_string())
-}
-
-fn pattern(value: &str) -> Result<SubjectPattern, String> {
-    SubjectPattern::parse(value).map_err(|error| error.to_string())
-}
-
 fn assert_eq_named<T>(name: &str, actual: T, expected: T) -> Result<(), String>
 where
     T: std::fmt::Debug + PartialEq,
@@ -335,31 +342,18 @@ fn assert_error(
 }
 
 fn write_metrics(metrics: &Metrics, started: Instant) -> Result<(), String> {
-    let dir = std::path::Path::new("target").join("mvp-e2e");
-    fs::create_dir_all(&dir)
-        .map_err(|error| format!("create metrics dir '{}': {error}", dir.display()))?;
-    let path = dir.join("bus-contract-metrics.json");
-    let contents = format!(
-        concat!(
-            "{{\n",
-            "  \"scenario\": \"bus-contract\",\n",
-            "  \"requests\": {},\n",
-            "  \"responses\": {},\n",
-            "  \"no_responders\": {},\n",
-            "  \"timeouts\": {},\n",
-            "  \"queue_deliveries\": {},\n",
-            "  \"unauthorized_failures\": {},\n",
-            "  \"elapsed_ms\": {}\n",
-            "}}\n"
-        ),
-        metrics.requests,
-        metrics.responses,
-        metrics.no_responders,
-        metrics.timeouts,
-        metrics.queue_deliveries,
-        metrics.unauthorized_failures,
-        started.elapsed().as_millis()
-    );
-    fs::write(&path, contents)
-        .map_err(|error| format!("write metrics '{}': {error}", path.display()))
+    let report = MetricsReport {
+        scenario: "bus-contract",
+        requests: metrics.requests,
+        responses: metrics.responses,
+        no_responders: metrics.no_responders,
+        timeouts: metrics.timeouts,
+        queue_deliveries: metrics.queue_deliveries,
+        unauthorized_failures: metrics.unauthorized_failures,
+        elapsed_ms: started.elapsed().as_millis(),
+    };
+    let path = Path::new("target")
+        .join("mvp-e2e")
+        .join("bus-contract-metrics.json");
+    write_json(&path, &report).map(|_| ())
 }
