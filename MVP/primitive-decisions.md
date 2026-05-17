@@ -108,6 +108,18 @@ the decision concrete.
   for process-role E2E. This is not a production fact backend or supervisor; it
   exists to prove fate separation and to keep `mvp-e2e -- all` cleanup bounded
   on timeout.
+- Slice 013 adds real wire HTTP/DNS serving roles inside `MVP/`. The HTTP proof
+  uses Hyper instead of Pingora but still proxies through a deterministic
+  backend; the DNS proof uses `hickory-proto` instead of `hickory-server` but
+  still parses/encodes real DNS packets.
+- Slice 013 moves wire request lookups off the serving actor mailbox. The actor
+  remains the reload/status owner, while HTTP/DNS hot-path reads use a shared
+  last-good snapshot holder so concurrent serving traffic is not serialized
+  through the control-plane actor.
+- Slice 013 hardens the process-role PID registry: records include child
+  executable identity, cleanup is best-effort across all records, stale/raced
+  child exits do not stop the sweep, and dropping a running child leaves its PID
+  file for timeout cleanup.
 
 ## NATS-Shaped Bus Semantics
 
@@ -536,6 +548,9 @@ Costs:
   test substrate.
 - `process_fact_source` is deliberately file-backed and local. It proves OS
   process fate separation; it does not replace iroh-docs replication.
+- The PID registry now records child executable identity and removes records
+  only after observed exit or best-effort timeout cleanup. It is still a test
+  cleanup mechanism, not production supervision.
 
 Crates:
 - `tokio::process` owns child lifecycle.
@@ -619,11 +634,13 @@ What it replaces:
 - Re-reading SQLite or durable facts on each gateway/DNS request.
 
 Costs:
-- The current proof is typed query semantics, not real Pingora or Hickory wire
-  serving.
-- The actor clones route/record answers for callers. That is acceptable for the
-  semantic boundary; future wire serving can optimize shared snapshots if
-  request volume proves it necessary.
+- Slice 011's original proof was typed query semantics. Slice 013 now adds real
+  wire traffic, but Pingora and `hickory-server` integration remain separate
+  proof gaps.
+- The actor clones route/record answers for callers. Wire handlers no longer
+  pay actor-mailbox serialization for each request, but the snapshot holder is
+  still a simple `RwLock`; future traffic tests can justify lock-free immutable
+  snapshot pointers.
 - Snapshot reload is explicit. Automatic file watching is deferred until the
   replacement contract is boring.
 
@@ -631,15 +648,59 @@ Crates:
 - `kameo` owns the serving actor mailbox and typed messages.
 - `mvp-projection` owns snapshot schema and validation.
 - `notify`, `pingora`, `hickory-server`, `axum`, and `arc-swap` were reviewed
-  for this slice and deferred to the first wire/process slice that needs them.
+  for the semantic slice and deferred to the first wire/process slice that needs
+  them.
 
 Revisit if:
-- Pingora/Hickory wire handlers need lock-free concurrent reads. `arc-swap` is
-  the likely fit for immutable last-good snapshot pointers.
+- Wire traffic benchmarks show `RwLock` contention. `arc-swap` is the likely fit
+  for immutable last-good snapshot pointers.
 - File watcher reload becomes product behavior. Add `notify` only after
   explicit reload semantics remain tested.
 - Gateway or DNS state shape needs binary/versioned compatibility instead of
   MVP-local JSON.
+
+## Wire HTTP/DNS Serving Roles
+
+Why this:
+- Typed gateway/DNS queries were not enough proof. The MVP needs real HTTP and
+  DNS sockets that keep serving while the local mutation coordinator is dead.
+- HTTP/DNS roles should consume last-good serving snapshots only. They must not
+  read SQLite, facts, bus state, or coordinator state on request paths.
+- The same shipped artifact can run different roles, but the fate boundary is
+  explicit: killing the coordinator does not kill HTTP/DNS serving.
+
+What it replaces:
+- The old assumption that preserving a Pingora gateway input model or DNS
+  process shape is a non-negotiable migration constraint.
+- A single process where command coordination, projection, and serving all share
+  one failure fate.
+- Per-request control-plane actor calls in the wire hot path.
+
+Costs:
+- The HTTP implementation uses Hyper rather than Pingora. It proves real
+  backend traversal and request routing, but not Pingora-specific lifecycle or
+  proxy APIs.
+- The DNS implementation uses `hickory-proto` directly over Tokio UDP rather
+  than `hickory-server`. It proves real DNS packet parsing/encoding, but not
+  Hickory server handler integration or TCP fallback.
+- The E2E harness now owns more process plumbing. That plumbing is proof
+  substrate, not product supervision.
+
+Crates:
+- `hyper`, `hyper-util`, and `http-body-util` own the HTTP/1 server proof.
+- `hickory-proto = 0.26.1` owns DNS message parsing/encoding on the patched
+  Hickory protocol line.
+- `tokio::net` owns loopback TCP/UDP listeners and Unix control sockets.
+
+Revisit if:
+- Version 1 needs Pingora-specific behavior such as production proxy lifecycle,
+  upstream policy, TLS, or richer gateway features. Add Pingora against the new
+  snapshot input model, not the old daemon/store coupling.
+- DNS needs authoritative-zone abstractions, TCP fallback, or richer record
+  handling. Integrate `hickory-server` behind the same last-good snapshot
+  boundary.
+- Wire request throughput exposes snapshot-read lock contention. Move from
+  `RwLock` to immutable `Arc` snapshots swapped by reload.
 
 ## hdrhistogram and memory-stats for E2E Proof
 
