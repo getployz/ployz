@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::{SocketAddr, TcpListener};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -190,8 +190,6 @@ async fn run_async() -> Result<(), String> {
     )?;
     wait_for_coordinator(&coordinator_socket).await?;
 
-    let node0_addr = reserve_tcp_addr()?;
-    let node1_addr = reserve_tcp_addr()?;
     let node0_socket = root.join("node-0-mesh.sock");
     let node1_socket = root.join("node-1-mesh.sock");
     let mut node0_role = spawn_mesh_role(
@@ -199,7 +197,7 @@ async fn run_async() -> Result<(), String> {
         "mesh-node-0",
         &node0_socket,
         &node0_snapshot_path,
-        node0_addr,
+        loopback_any_port()?,
         &island,
     )?;
     let mut node1_role = spawn_mesh_role(
@@ -207,11 +205,11 @@ async fn run_async() -> Result<(), String> {
         "mesh-node-1",
         &node1_socket,
         &node1_snapshot_path,
-        node1_addr,
+        loopback_any_port()?,
         &island,
     )?;
-    wait_for_mesh_data_plane(&node0_socket).await?;
-    wait_for_mesh_data_plane(&node1_socket).await?;
+    let _node0_addr = wait_for_mesh_data_plane(&node0_socket).await?.listen;
+    let node1_addr = wait_for_mesh_data_plane(&node1_socket).await?.listen;
 
     let traffic_before_coordinator_death =
         send_between(&node0_socket, "node-1", node1_addr, b"before").await?;
@@ -228,11 +226,7 @@ async fn run_async() -> Result<(), String> {
         node_id: NodeId::new("node-9"),
         epoch: 2,
         reason: "force-remove".to_string(),
-        visible_nodes: VisibleNodes::new(
-            (0..9)
-                .map(|index| NodeId::new(format!("node-{index}")))
-                .collect(),
-        ),
+        visible_nodes: VisibleNodes::new((0..9).map(|index| NodeId::new(format!("node-{index}")))),
     }
     .force_remove()
     .map_err(|error| format!("build tombstone command: {error}"))?;
@@ -301,10 +295,10 @@ async fn run_async() -> Result<(), String> {
         "mesh-node-0-restarted",
         &node0_socket,
         &node0_snapshot_path,
-        node0_addr,
+        loopback_any_port()?,
         &island,
     )?;
-    wait_for_mesh_data_plane(&node0_socket).await?;
+    let _restarted_node0_addr = wait_for_mesh_data_plane(&node0_socket).await?.listen;
     let traffic_after_data_plane_restart =
         send_between(&node0_socket, "node-1", node1_addr, b"restart").await?;
 
@@ -474,10 +468,8 @@ async fn send_between(
     }
 }
 
-fn reserve_tcp_addr() -> Result<SocketAddr, String> {
-    let listener =
-        TcpListener::bind("127.0.0.1:0").map_err(|error| format!("reserve tcp addr: {error}"))?;
-    listener
-        .local_addr()
-        .map_err(|error| format!("read reserved tcp addr: {error}"))
+fn loopback_any_port() -> Result<SocketAddr, String> {
+    "127.0.0.1:0"
+        .parse()
+        .map_err(|error| format!("parse loopback any-port addr: {error}"))
 }

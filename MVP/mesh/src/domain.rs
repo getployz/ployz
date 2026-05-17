@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
 use std::net::Ipv6Addr;
 
@@ -131,18 +132,16 @@ impl MachineInvite {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VisibleNodes(Vec<NodeId>);
+pub struct VisibleNodes(BTreeSet<NodeId>);
 
 impl VisibleNodes {
     #[must_use]
-    pub fn new(mut nodes: Vec<NodeId>) -> Self {
-        nodes.sort();
-        nodes.dedup();
-        Self(nodes)
+    pub fn new(nodes: impl IntoIterator<Item = NodeId>) -> Self {
+        Self(nodes.into_iter().collect())
     }
 
     #[must_use]
-    pub fn as_slice(&self) -> &[NodeId] {
+    pub fn as_set(&self) -> &BTreeSet<NodeId> {
         &self.0
     }
 

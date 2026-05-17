@@ -3,16 +3,18 @@ use std::net::AddrParseError;
 use mvp_projection::NodeId;
 use thiserror::Error;
 
+use crate::invite::InviteId;
+
 #[derive(Debug, Error)]
 pub enum MeshError {
     #[error("invite {invite_id} expired at {expires_at_ms}, checked at {now_ms}")]
     InviteExpired {
-        invite_id: String,
+        invite_id: InviteId,
         expires_at_ms: u64,
         now_ms: u64,
     },
     #[error("invite {invite_id} secret did not match")]
-    InviteSecretMismatch { invite_id: String },
+    InviteSecretMismatch { invite_id: InviteId },
     #[error("node {node_id:?} is tombstoned and needs a fresh reinvite")]
     NodeTombstoned { node_id: NodeId },
     #[error("local node {node_id:?} is not live in projection")]

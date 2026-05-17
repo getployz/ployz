@@ -25,6 +25,7 @@ pub struct WireGuardActorStatus {
 struct WireGuardActor {
     backend: Arc<dyn WireGuardBackend>,
     status: WireGuardActorStatus,
+    last_snapshot: Option<WireGuardAppliedSnapshot>,
 }
 
 impl WireGuardActor {
@@ -38,6 +39,7 @@ impl WireGuardActor {
                 last_apply_success_at: None,
                 last_failure: None,
             },
+            last_snapshot: None,
         }
     }
 }
@@ -92,11 +94,16 @@ impl Message<ApplySnapshot> for WireGuardActor {
         message: ApplySnapshot,
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        if self.last_snapshot.as_ref() == Some(&message.snapshot) {
+            return Ok(self.status.clone());
+        }
         self.status.apply_attempts += 1;
         let revision = message.snapshot.revision;
         let peer_count = message.snapshot.peers.len();
-        match self.backend.apply(message.snapshot).await {
+        let snapshot = message.snapshot;
+        match self.backend.apply(snapshot.clone()).await {
             Ok(()) => {
+                self.last_snapshot = Some(snapshot);
                 self.status.applied_revision = Some(revision);
                 self.status.applied_peer_count = peer_count;
                 self.status.last_apply_success_at = Some(SystemTime::now());
@@ -165,6 +172,20 @@ mod tests {
             backend.last_applied().await.expect("last applied"),
             Some(snapshot)
         );
+    }
+
+    #[tokio::test]
+    async fn actor_skips_identical_snapshot_apply() {
+        let backend = Arc::new(MemoryWireGuardBackend::new());
+        let actor = WireGuardActorHandle::spawn(backend);
+        let plan = plan_full_mesh(&projection(), &NodeId::new("node-0"), 5).expect("plan");
+        let snapshot = WireGuardAppliedSnapshot::from_plan(IslandId::new("prod"), plan);
+
+        let first = actor.apply(snapshot.clone()).await.expect("first apply");
+        let second = actor.apply(snapshot).await.expect("second apply");
+
+        assert_eq!(first.apply_attempts, 1);
+        assert_eq!(second.apply_attempts, 1);
     }
 
     fn projection() -> ProjectionState {
