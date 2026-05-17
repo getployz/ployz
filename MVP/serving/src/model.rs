@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mvp_acme::{AcmeChallengeToken, AcmeHostname, AcmeKeyAuthorization};
 use mvp_bus::IslandId;
+use mvp_lease::LeaseTimestamp;
 use mvp_projection::{
     AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsRecordProjection, DnsSnapshotFile,
     GatewayRouteProjection, GatewaySnapshotFile, ProjectionError, load_dns_snapshot,
@@ -43,7 +44,7 @@ impl ServingSnapshotBatch {
     pub fn load(paths: &ServingSnapshotPaths, expected_island: &IslandId) -> ServingResult<Self> {
         let gateway = load_gateway(paths.gateway.as_path(), expected_island)?;
         let dns = load_dns(paths.dns.as_path(), expected_island)?;
-        Ok(Self::from_snapshots(gateway, dns))
+        Self::from_snapshots(gateway, dns)
     }
 
     #[must_use]
@@ -75,12 +76,27 @@ impl ServingSnapshotBatch {
             .collect()
     }
 
+    pub fn acme_http01_challenge(
+        &self,
+        host: &str,
+        token: &str,
+    ) -> ServingResult<Option<AcmeKeyAuthorization>> {
+        let now = now_lease_timestamp()?;
+        Ok(self.acme_http01_challenge_at(host, token, now))
+    }
+
     #[must_use]
-    pub fn acme_http01_challenge(&self, host: &str, token: &str) -> Option<AcmeKeyAuthorization> {
+    pub fn acme_http01_challenge_at(
+        &self,
+        host: &str,
+        token: &str,
+        now: LeaseTimestamp,
+    ) -> Option<AcmeKeyAuthorization> {
         let key = acme_http01_lookup_key(host, token)?;
         self.acme_http01_by_host_token
             .get(&key)
             .and_then(|challenge_index| self.gateway.acme_http01.get(*challenge_index))
+            .filter(|challenge| challenge.expires_at > now)
             .map(|challenge| challenge.key_authorization.clone())
     }
 
@@ -89,17 +105,18 @@ impl ServingSnapshotBatch {
         self.gateway.acme_http01.len()
     }
 
-    fn from_snapshots(gateway: GatewaySnapshotFile, dns: DnsSnapshotFile) -> Self {
+    fn from_snapshots(gateway: GatewaySnapshotFile, dns: DnsSnapshotFile) -> ServingResult<Self> {
+        validate_acme_http01_challenges(&gateway.acme_http01)?;
         let route_by_hostname = index_routes(&gateway.routes);
         let records_by_name_type = index_dns_records(&dns.records);
         let acme_http01_by_host_token = index_acme_http01(&gateway.acme_http01);
-        Self {
+        Ok(Self {
             gateway,
             dns,
             route_by_hostname,
             records_by_name_type,
             acme_http01_by_host_token,
-        }
+        })
     }
 }
 
@@ -151,6 +168,8 @@ pub enum ServingFailureKind {
     InvalidSnapshotJson,
     Io,
     ProjectionSnapshotLoad,
+    InvalidAcmeHttp01Snapshot,
+    ClockUnavailable,
     ActorUnavailable,
 }
 
@@ -177,6 +196,15 @@ impl ServingFailure {
             kind: ServingFailureKind::ActorUnavailable,
             snapshot: None,
             message: format!("{operation}: {message}"),
+        }
+    }
+
+    #[must_use]
+    pub fn clock(message: String) -> Self {
+        Self {
+            kind: ServingFailureKind::ClockUnavailable,
+            snapshot: None,
+            message,
         }
     }
 }
@@ -249,8 +277,43 @@ fn index_acme_http01(
     index
 }
 
+fn validate_acme_http01_challenges(
+    challenges: &[AcmeHttp01ChallengeProjection],
+) -> ServingResult<()> {
+    for challenge in challenges {
+        if AcmeKeyAuthorization::parse_for_token(
+            &challenge.token,
+            challenge.key_authorization.as_str().to_string(),
+        )
+        .is_err()
+        {
+            return Err(ServingError::SnapshotLoad {
+                failure: ServingFailure {
+                    kind: ServingFailureKind::InvalidAcmeHttp01Snapshot,
+                    snapshot: Some(ServingSnapshotKind::Gateway),
+                    message: format!(
+                        "invalid ACME HTTP-01 key authorization for {}",
+                        challenge.hostname.as_str()
+                    ),
+                },
+            });
+        }
+    }
+    Ok(())
+}
+
 fn normalize_lookup_part(value: &str) -> String {
     value.to_ascii_lowercase()
+}
+
+fn now_lease_timestamp() -> ServingResult<LeaseTimestamp> {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| ServingError::SnapshotLoad {
+            failure: ServingFailure::clock(format!("system clock before Unix epoch: {error}")),
+        })?
+        .as_secs();
+    Ok(LeaseTimestamp::from_secs(seconds))
 }
 
 fn snapshot_error(snapshot: ServingSnapshotKind, error: ProjectionError) -> ServingError {

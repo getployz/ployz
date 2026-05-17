@@ -133,6 +133,69 @@ the decision concrete.
 - Slice 014 keeps active-member/partition-view checks deferred. The membership
   proof reports visible nodes and tombstone facts, but it does not introduce
   quorum, witness acknowledgements, or hidden active-partition commit rules.
+- Slice 015 docs-backed ACME projection now treats HTTP-01 presentation facts
+  as valid only when the docs author, lease holder, epoch, and claim hash match
+  the current advisory lease candidate. HTTP-01 projections carry the active
+  lease expiry, and serving refuses expired challenges at request time. ACME
+  hostnames and tokens are revalidated when facts deserialize, and key
+  authorization is revalidated when presentation facts and serving snapshots
+  load, so wire serving can answer from validated last-good state without
+  reparsing on each request.
+
+## Documented Design Gaps
+
+These are known gaps, not hidden behavior. Do not solve them until a slice has
+the metric or product proof that makes the extra primitive worthwhile.
+
+- Deploy pre-commit participant cleanup still needs an explicit ABI. If
+  `prepare_instance` succeeds for one participant and a later
+  `start_instance` fails before any durable serving commit, the coordinator
+  currently relies on participant idempotency and later explicit cleanup rather
+  than substrate-driven compensation. The next deploy slice that expands
+  participants must name the contract for prepare-without-start and
+  start-without-commit cleanup.
+- Lease reduction walks accumulated facts repeatedly per resource. That is fine
+  for the current proof but will become expensive once docs-backed leases carry
+  months of renewal/release facts. Add compaction only after real iroh-docs
+  lease replication ships and there is a renewal-volume metric to drive the
+  threshold.
+- ACME projection currently has a small read-only lease resolver to bind
+  presentation facts to active advisory leases. Before another projection
+  consumer needs lease state, extract a reusable read-only reducer from
+  `mvp-lease` so projection does not grow a parallel lease implementation.
+- `mvp-iroh` fact waits currently poll with a short sleep and full key refresh.
+  This was acceptable for the slice-007 proof, but live iroh-docs events should
+  replace polling once the production docs subscription path is wired.
+- Projection `project_once` checks its deadline before each publish stage, but
+  does not report a timeout while a blocking SQLite/filesystem publish is
+  already in flight. Returning failure while a detached mutating worker keeps
+  publishing would be worse than a late reply. If a hard wall-clock cap becomes
+  required, the publish path needs cooperative cancellation instead of detached
+  worker timeouts.
+- Identity cleanup remains scheduled. `mvp_projection::NodeId` should become
+  the single MVP node identity across deploy, mesh, lease visibility, and
+  future volume/membership commands. WireGuard peer endpoint/address fields
+  should also become typed routing identities before the next command slice
+  adds more node-facing APIs.
+
+## Placeholder Versus Production Code
+
+Reviews should separate placeholder wire proof code from interfaces intended to
+survive migration.
+
+- `MVP/serving/src/http_gateway.rs` proves HTTP wire behavior with Hyper.
+  Production connection limits, keepalive behavior, proxy framing, and the
+  likely Pingora implementation belong to a later migration slice.
+- `MVP/serving/src/dns_server.rs` proves DNS packet behavior with
+  `hickory-proto`. Full DNS server integration belongs with the production
+  serving migration.
+- `MemoryWireGuardBackend` and the in-memory `LeaseBook` are fixtures/proofs.
+  The durable interfaces around snapshots, appliers, lease facts, status, and
+  validated reload semantics are the code review should treat as lasting.
+
+If a finding is about code that will be deleted in the next migration slice,
+record it only if it threatens the proof. If it is about a surviving interface,
+treat it normally.
 
 ## NATS-Shaped Bus Semantics
 

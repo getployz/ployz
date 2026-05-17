@@ -95,7 +95,7 @@ impl LeaseCommandContext {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct LeaseEpoch(NonZeroU64);
 
 impl LeaseEpoch {
@@ -105,15 +105,22 @@ impl LeaseEpoch {
     }
 
     pub fn from_u64(value: u64) -> Result<Self, LeaseEpochError> {
+        if value == u64::MAX {
+            return Err(LeaseEpochError::MaxValue);
+        }
         let Some(value) = NonZeroU64::new(value) else {
             return Err(LeaseEpochError::Zero);
         };
         Ok(Self(value))
     }
 
-    #[must_use]
-    pub fn next(self) -> Self {
-        Self(NonZeroU64::new(self.0.get().saturating_add(1)).expect("nonzero saturated epoch"))
+    pub fn next(self) -> Result<Self, LeaseEpochError> {
+        let next = self
+            .0
+            .get()
+            .checked_add(1)
+            .ok_or(LeaseEpochError::MaxValue)?;
+        Self::from_u64(next)
     }
 
     #[must_use]
@@ -128,10 +135,22 @@ impl Display for LeaseEpoch {
     }
 }
 
+impl<'de> Deserialize<'de> for LeaseEpoch {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = u64::deserialize(deserializer)?;
+        Self::from_u64(value).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum LeaseEpochError {
     #[error("lease epoch must be greater than zero")]
     Zero,
+    #[error("lease epoch u64::MAX is reserved to prevent fencing counter overflow")]
+    MaxValue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -590,13 +609,13 @@ pub enum LeaseState {
     Expired {
         previous: LeaseCurrent,
         expired_at: LeaseTimestamp,
-        next_epoch: LeaseEpoch,
+        next_epoch: Option<LeaseEpoch>,
         superseded: Vec<LeaseSuperseded>,
     },
     Released {
         previous: LeaseCurrent,
         release: LeaseRelease,
-        next_epoch: LeaseEpoch,
+        next_epoch: Option<LeaseEpoch>,
         superseded: Vec<LeaseSuperseded>,
     },
 }
@@ -811,6 +830,14 @@ pub enum LeaseError {
         by_holder: LeaseHolder,
         by_epoch: LeaseEpoch,
     },
+    #[error(
+        "lease {resource} exhausted monotonic epochs at {last_epoch} observed at {observed_at}"
+    )]
+    EpochOverflow {
+        resource: LeaseResource,
+        last_epoch: LeaseEpoch,
+        observed_at: LeaseTimestamp,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -844,6 +871,10 @@ impl LeaseInner {
 }
 
 impl LeaseBook {
+    #[expect(
+        clippy::new_without_default,
+        reason = "LeaseBook owns non-trivial lease state; use LeaseBook::new() explicitly"
+    )]
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -892,9 +923,31 @@ impl LeaseBook {
     ) -> Result<LeaseDecision, LeaseError> {
         let state = self.state(&resource, now);
         let next_epoch = match state {
-            LeaseState::Vacant { next_epoch, .. }
-            | LeaseState::Expired { next_epoch, .. }
-            | LeaseState::Released { next_epoch, .. } => next_epoch,
+            LeaseState::Vacant { next_epoch, .. } => next_epoch,
+            LeaseState::Expired {
+                next_epoch: Some(next_epoch),
+                ..
+            }
+            | LeaseState::Released {
+                next_epoch: Some(next_epoch),
+                ..
+            } => next_epoch,
+            LeaseState::Expired {
+                previous,
+                next_epoch: None,
+                ..
+            }
+            | LeaseState::Released {
+                previous,
+                next_epoch: None,
+                ..
+            } => {
+                return Err(LeaseError::EpochOverflow {
+                    resource,
+                    last_epoch: previous.epoch(),
+                    observed_at: now,
+                });
+            }
             LeaseState::Active { current, .. } => {
                 return Ok(LeaseDecision::Conflict(LeaseConflict {
                     resource,
@@ -1000,12 +1053,6 @@ impl LeaseBook {
     }
 }
 
-impl Default for LeaseBook {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(any(test, feature = "harness"))]
 pub struct LeaseFactImporter<'a> {
     book: &'a LeaseBook,
@@ -1052,12 +1099,9 @@ fn reduce_lease_state(
     };
     candidates.sort_by_key(|candidate| candidate.content_hash);
 
-    let [winner, losers @ ..] = candidates.as_slice() else {
-        return LeaseState::Vacant {
-            resource: resource.clone(),
-            next_epoch: LeaseEpoch::first(),
-        };
-    };
+    let (winner, losers) = candidates
+        .split_first()
+        .expect("highest_epoch set implies lease candidates are non-empty");
 
     let expires_at = latest_expiry(facts, winner);
     let current = LeaseCurrent {
@@ -1086,7 +1130,7 @@ fn reduce_lease_state(
         return LeaseState::Released {
             previous: current,
             release,
-            next_epoch: highest_epoch.next(),
+            next_epoch: highest_epoch.next().ok(),
             superseded,
         };
     }
@@ -1095,7 +1139,7 @@ fn reduce_lease_state(
         return LeaseState::Expired {
             previous: current,
             expired_at: expires_at,
-            next_epoch: highest_epoch.next(),
+            next_epoch: highest_epoch.next().ok(),
             superseded,
         };
     }
@@ -1548,7 +1592,7 @@ mod tests {
             LeaseState::Released {
                 next_epoch,
                 ..
-            } if next_epoch == second_epoch()
+            } if next_epoch == Some(second_epoch())
         ));
     }
 
@@ -1748,6 +1792,84 @@ mod tests {
         let error = LeaseEpoch::from_u64(0).expect_err("zero epoch fails");
 
         assert_eq!(error, LeaseEpochError::Zero);
+    }
+
+    #[test]
+    fn max_epoch_is_reserved_to_prevent_silent_fencing_overflow() {
+        let error = LeaseEpoch::from_u64(u64::MAX).expect_err("max epoch fails");
+        let max_minus_one = LeaseEpoch::from_u64(u64::MAX - 1).expect("max minus one");
+
+        assert_eq!(error, LeaseEpochError::MaxValue);
+        assert_eq!(max_minus_one.next(), Err(LeaseEpochError::MaxValue));
+    }
+
+    #[test]
+    fn exhausted_epoch_boundary_is_reported_without_panicking() {
+        let max_minus_one = LeaseEpoch::from_u64(u64::MAX - 1).expect("max minus one");
+        let expired_book = LeaseBook::new();
+        expired_book
+            .importer()
+            .record(LeaseFact::Claimed(LeaseClaimed::new(
+                resource(),
+                holder("issuer-a"),
+                max_minus_one,
+                at(100),
+                at(110),
+            )));
+
+        assert!(matches!(
+            expired_book.state(&resource(), at(120)),
+            LeaseState::Expired {
+                next_epoch: None,
+                ..
+            }
+        ));
+        let error = expired_book
+            .try_acquire(
+                resource(),
+                holder("issuer-b"),
+                at(120),
+                &policy(),
+                context(),
+            )
+            .expect_err("epoch boundary is a structured failure");
+        assert!(matches!(
+            error,
+            LeaseError::EpochOverflow {
+                last_epoch,
+                ..
+            } if last_epoch == max_minus_one
+        ));
+
+        let released_book = LeaseBook::new();
+        let released_claim = LeaseClaimed::new(
+            resource(),
+            holder("issuer-a"),
+            max_minus_one,
+            at(100),
+            at(160),
+        );
+        let claim_hash = LeaseFact::Claimed(released_claim.clone()).content_hash();
+        released_book
+            .importer()
+            .record(LeaseFact::Claimed(released_claim));
+        released_book
+            .importer()
+            .record(LeaseFact::Released(LeaseReleased::new_at(
+                resource(),
+                holder("issuer-a"),
+                max_minus_one,
+                claim_hash,
+                at(110),
+            )));
+
+        assert!(matches!(
+            released_book.state(&resource(), at(120)),
+            LeaseState::Released {
+                next_epoch: None,
+                ..
+            }
+        ));
     }
 
     #[test]

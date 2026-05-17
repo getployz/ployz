@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,57 +16,73 @@ pub struct WireRoleMetrics {
     pub latency_samples_us: Vec<u64>,
 }
 
-impl WireRoleMetrics {
-    #[must_use]
-    pub fn empty() -> Self {
-        Self {
-            request_count: 0,
-            malformed_dns_count: 0,
-            backend_failure_count: 0,
-            latency_samples_us: Vec::new(),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct WireMetricsRecorder {
-    inner: Arc<Mutex<WireRoleMetrics>>,
+    inner: Arc<WireMetricsInner>,
     max_latency_samples: usize,
+}
+
+#[derive(Debug)]
+struct WireMetricsInner {
+    request_count: AtomicU64,
+    malformed_dns_count: AtomicU64,
+    backend_failure_count: AtomicU64,
+    latency_samples_us: Mutex<Vec<u64>>,
 }
 
 impl WireMetricsRecorder {
     #[must_use]
     pub fn new(max_latency_samples: usize) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(WireRoleMetrics::empty())),
+            inner: Arc::new(WireMetricsInner {
+                request_count: AtomicU64::new(0),
+                malformed_dns_count: AtomicU64::new(0),
+                backend_failure_count: AtomicU64::new(0),
+                latency_samples_us: Mutex::new(Vec::new()),
+            }),
             max_latency_samples,
         }
     }
 
     pub fn record_request(&self, elapsed: Duration) {
-        let mut metrics = self.inner.lock().expect("wire metrics lock poisoned");
-        metrics.request_count += 1;
-        if metrics.latency_samples_us.len() < self.max_latency_samples {
-            metrics.latency_samples_us.push(duration_to_us(elapsed));
+        let previous = self.inner.request_count.fetch_add(1, Ordering::Relaxed);
+        if previous < self.max_latency_samples as u64 {
+            let mut latency_samples = self
+                .inner
+                .latency_samples_us
+                .lock()
+                .expect("wire metrics latency lock poisoned");
+            if latency_samples.len() < self.max_latency_samples {
+                latency_samples.push(duration_to_us(elapsed));
+            }
         }
     }
 
     pub fn record_malformed_dns(&self) {
-        let mut metrics = self.inner.lock().expect("wire metrics lock poisoned");
-        metrics.malformed_dns_count += 1;
+        self.inner
+            .malformed_dns_count
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_backend_failure(&self) {
-        let mut metrics = self.inner.lock().expect("wire metrics lock poisoned");
-        metrics.backend_failure_count += 1;
+        self.inner
+            .backend_failure_count
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     #[must_use]
     pub fn snapshot(&self) -> WireRoleMetrics {
-        self.inner
-            .lock()
-            .expect("wire metrics lock poisoned")
-            .clone()
+        WireRoleMetrics {
+            request_count: self.inner.request_count.load(Ordering::Relaxed),
+            malformed_dns_count: self.inner.malformed_dns_count.load(Ordering::Relaxed),
+            backend_failure_count: self.inner.backend_failure_count.load(Ordering::Relaxed),
+            latency_samples_us: self
+                .inner
+                .latency_samples_us
+                .lock()
+                .expect("wire metrics latency lock poisoned")
+                .clone(),
+        }
     }
 }
 

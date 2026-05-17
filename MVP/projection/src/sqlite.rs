@@ -188,6 +188,7 @@ fn create_schema(connection: &Connection) -> ProjectionResult<()> {
           lease_epoch INTEGER NOT NULL,
           claim_hash TEXT NOT NULL,
           published_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
           PRIMARY KEY (hostname, token)
         );
         CREATE TABLE IF NOT EXISTS projection_statuses (
@@ -346,9 +347,10 @@ fn write_acme_http01(connection: &Connection, state: &ProjectionState) -> Projec
           holder,
           lease_epoch,
           claim_hash,
-          published_at
+          published_at,
+          expires_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         ",
     )?;
     for challenge in state.acme_http01.values() {
@@ -359,7 +361,8 @@ fn write_acme_http01(connection: &Connection, state: &ProjectionState) -> Projec
             challenge.holder.as_str(),
             challenge.lease_epoch.value() as i64,
             challenge.claim_hash.as_hex(),
-            challenge.published_at.value() as i64
+            challenge.published_at.value() as i64,
+            challenge.expires_at.value() as i64
         ])?;
     }
     Ok(())
@@ -537,7 +540,7 @@ fn load_acme_http01(connection: &Connection, state: &mut ProjectionState) -> Pro
     let mut statement = connection.prepare(
         "
         SELECT hostname, token, key_authorization, holder, lease_epoch, claim_hash,
-               published_at
+               published_at, expires_at
         FROM acme_http01_challenges
         ORDER BY hostname, token
         ",
@@ -554,6 +557,7 @@ fn load_acme_http01(connection: &Connection, state: &mut ProjectionState) -> Pro
         let claim_hash =
             LeaseContentHash::from_hex(&row.get::<_, String>(5)?).map_err(to_sql_error)?;
         let published_at = LeaseTimestamp::from_secs(read_u64(row.get::<_, i64>(6)?, 6)?);
+        let expires_at = LeaseTimestamp::from_secs(read_u64(row.get::<_, i64>(7)?, 7)?);
         Ok(AcmeHttp01ChallengeProjection {
             hostname,
             token,
@@ -562,6 +566,7 @@ fn load_acme_http01(connection: &Connection, state: &mut ProjectionState) -> Pro
             lease_epoch,
             claim_hash,
             published_at,
+            expires_at,
         })
     })?;
     for row in rows {

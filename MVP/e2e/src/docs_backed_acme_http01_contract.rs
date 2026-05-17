@@ -1,6 +1,6 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use mvp_acme::{
     AcmeChallengeId, AcmeChallengeToken, AcmeHostname, AcmeHttp01ClearedFact,
@@ -111,8 +111,9 @@ async fn run_async() -> Result<(), String> {
         AcmeChallengeToken::parse(ACME_TOKEN).map_err(|error| error.to_string())?,
     );
     let epoch = LeaseEpoch::first();
-    let claim_a = lease_claim(&challenge, "issuer-a", epoch);
-    let claim_b = lease_claim(&challenge, "issuer-b", epoch);
+    let timeline = LeaseTimeline::fresh()?;
+    let claim_a = lease_claim(&challenge, "issuer-a", epoch, timeline);
+    let claim_b = lease_claim(&challenge, "issuer-b", epoch, timeline);
     let claim_hash_a = LeaseFact::Claimed(claim_a.clone()).content_hash();
     let claim_hash_b = LeaseFact::Claimed(claim_b.clone()).content_hash();
     let claim_key = fact_key(&challenge.lease_claimed_fact_key(epoch))?;
@@ -146,8 +147,20 @@ async fn run_async() -> Result<(), String> {
     )
     .await?;
 
-    let presented_a = presented_fact(challenge.clone(), "issuer-a", claim_hash_a, "thumbprintA")?;
-    let presented_b = presented_fact(challenge.clone(), "issuer-b", claim_hash_b, "thumbprintB")?;
+    let presented_a = presented_fact(
+        challenge.clone(),
+        "issuer-a",
+        claim_hash_a,
+        "thumbprintA",
+        timeline,
+    )?;
+    let presented_b = presented_fact(
+        challenge.clone(),
+        "issuer-b",
+        claim_hash_b,
+        "thumbprintB",
+        timeline,
+    )?;
     let presented_key = fact_key(&challenge.presented_fact_key(epoch))?;
     write_doc_fact(
         &doc,
@@ -244,7 +257,7 @@ async fn run_async() -> Result<(), String> {
         selected.holder.clone(),
         selected.lease_epoch,
         selected.claim_hash,
-        LeaseTimestamp::from_secs(120),
+        timeline.cleared_at,
     );
     let clear_key =
         fact_key(&challenge.cleared_fact_key(selected.lease_epoch, selected.claim_hash))?;
@@ -358,7 +371,35 @@ async fn write_doc_fact(
         .map_err(|error| format!("write docs fact {}: {error}", key.as_str()))
 }
 
-fn lease_claim(id: &AcmeChallengeId, holder: &str, epoch: LeaseEpoch) -> LeaseClaimed {
+#[derive(Debug, Clone, Copy)]
+struct LeaseTimeline {
+    acquired_at: LeaseTimestamp,
+    published_at: LeaseTimestamp,
+    cleared_at: LeaseTimestamp,
+    expires_at: LeaseTimestamp,
+}
+
+impl LeaseTimeline {
+    fn fresh() -> Result<Self, String> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| format!("system clock before unix epoch: {error}"))?
+            .as_secs();
+        Ok(Self {
+            acquired_at: LeaseTimestamp::from_secs(now.saturating_sub(5)),
+            published_at: LeaseTimestamp::from_secs(now),
+            cleared_at: LeaseTimestamp::from_secs(now + 1),
+            expires_at: LeaseTimestamp::from_secs(now + 600),
+        })
+    }
+}
+
+fn lease_claim(
+    id: &AcmeChallengeId,
+    holder: &str,
+    epoch: LeaseEpoch,
+    timeline: LeaseTimeline,
+) -> LeaseClaimed {
     LeaseClaimed::new(
         LeaseResource::from_segments([
             "acme",
@@ -368,8 +409,8 @@ fn lease_claim(id: &AcmeChallengeId, holder: &str, epoch: LeaseEpoch) -> LeaseCl
         ]),
         LeaseHolder::new(holder),
         epoch,
-        LeaseTimestamp::from_secs(100),
-        LeaseTimestamp::from_secs(160),
+        timeline.acquired_at,
+        timeline.expires_at,
     )
 }
 
@@ -378,6 +419,7 @@ fn presented_fact(
     holder: &str,
     claim_hash: mvp_lease::LeaseContentHash,
     thumbprint: &str,
+    timeline: LeaseTimeline,
 ) -> Result<AcmeHttp01PresentedFact, String> {
     let key_authorization =
         AcmeKeyAuthorization::parse_for_token(id.token(), format!("{}.{thumbprint}", id.token()))
@@ -388,7 +430,7 @@ fn presented_fact(
         LeaseHolder::new(holder),
         LeaseEpoch::first(),
         claim_hash,
-        LeaseTimestamp::from_secs(110),
+        timeline.published_at,
     )
     .map_err(|error| error.to_string())
 }

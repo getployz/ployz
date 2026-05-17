@@ -329,6 +329,13 @@ smallest durable state machine from `MVP/architecture.md`: request-many
 capacity, prepare/start, local-docs-durable route commit, projection rebuild,
 then drain as a consequence of that commit.
 
+Future multi-phase commands should watch for the pattern documented in
+[MVP/design-notes/phased-command.md](design-notes/phased-command.md). Do not
+add the primitive prematurely. When three or more commands have phase enums,
+resume-from-phase logic, and non-trivial compensation, plan a dedicated
+`mvp-commands` slice that lifts the bookkeeping while keeping step and
+compensation logic explicit.
+
 ## Crate Scout Protocol
 
 Before each implementation slice, do a short dependency scout and record it in

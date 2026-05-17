@@ -122,7 +122,7 @@ impl ServingActorHandle {
         host: impl Into<String>,
         token: impl Into<String>,
     ) -> ServingResult<Option<AcmeKeyAuthorization>> {
-        Ok(read_snapshots(&self.snapshots).acme_http01_challenge(&host.into(), &token.into()))
+        read_snapshots(&self.snapshots).acme_http01_challenge(&host.into(), &token.into())
     }
 
     pub async fn reload(&self) -> ServingResult<ServingStatus> {

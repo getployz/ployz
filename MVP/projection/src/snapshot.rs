@@ -198,12 +198,13 @@ fn acme_revision(challenges: &[AcmeHttp01ChallengeProjection]) -> String {
         .iter()
         .map(|challenge| {
             format!(
-                "{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}",
                 challenge.hostname.as_str(),
                 challenge.token.as_str(),
                 challenge.lease_epoch.value(),
                 challenge.claim_hash.as_hex(),
-                challenge.key_authorization.as_str()
+                challenge.key_authorization.as_str(),
+                challenge.expires_at.value()
             )
         })
         .collect::<Vec<_>>()

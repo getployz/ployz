@@ -274,9 +274,15 @@ async fn run_projection_job(
         }),
     };
     let result = match prepared {
-        Ok(prepared) => match tokio::task::spawn_blocking(move || prepared.publish()).await {
-            Ok(result) => result,
-            Err(error) => Err(ProjectionError::WorkerJoin(error.to_string())),
+        Ok(prepared) => match remaining_until(prepared.deadline, "publish") {
+            Ok(_) => {
+                let publish = tokio::task::spawn_blocking(move || prepared.publish());
+                match publish.await {
+                    Ok(result) => result,
+                    Err(error) => Err(ProjectionError::WorkerJoin(error.to_string())),
+                }
+            }
+            Err(error) => Err(error),
         },
         Err(error) => Err(error),
     };
@@ -472,6 +478,13 @@ fn ensure_before(deadline: Instant, operation: &'static str) -> ProjectionResult
         return Err(ProjectionError::Timeout { operation });
     }
     Ok(())
+}
+
+fn remaining_until(deadline: Instant, operation: &'static str) -> ProjectionResult<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or(ProjectionError::Timeout { operation })
 }
 
 fn map_send_error<M>(error: SendError<M, ProjectionError>) -> ProjectionError {
