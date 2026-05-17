@@ -5,6 +5,7 @@ mod bridge_contract;
 mod bus_contract;
 mod bus_syntax;
 mod deploy_commit_drain_contract;
+mod docs_backed_acme_http01_contract;
 mod iroh_docs_contract;
 mod lease_acme_contract;
 #[cfg(unix)]
@@ -91,6 +92,10 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "lease-acme-contract",
         run: lease_acme_contract::run,
+    },
+    Scenario {
+        name: "docs-backed-acme-http01-contract",
+        run: docs_backed_acme_http01_contract::run,
     },
     Scenario {
         name: "deploy-commit-drain-contract",

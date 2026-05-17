@@ -15,6 +15,11 @@ pub enum FactKind {
     RouteCommit,
     GatewayCommit,
     DnsCommit,
+    LeaseClaimed,
+    LeaseRenewed,
+    LeaseReleased,
+    AcmeHttp01Presented,
+    AcmeHttp01Cleared,
     Unsupported,
 }
 
@@ -71,8 +76,102 @@ pub fn classify_fact_key(key: &FactKey) -> FactKeyClassification {
             FactKeyClassification::new(FactKind::GatewayCommit, 0)
         }
         ["facts", "dns", _dns_commit] => FactKeyClassification::new(FactKind::DnsCommit, 0),
+        ["facts", "lease", _resource, "claimed", epoch]
+        | ["facts", "lease", _resource, "claimed", epoch, _] => {
+            classify_epoch(FactKind::LeaseClaimed, epoch)
+        }
+        [
+            "facts",
+            "lease",
+            _resource,
+            "renewed",
+            epoch,
+            _claim_hash,
+            _renewed_at,
+        ]
+        | [
+            "facts",
+            "lease",
+            _resource,
+            "renewed",
+            epoch,
+            _claim_hash,
+            _renewed_at,
+            _,
+        ] => classify_epoch(FactKind::LeaseRenewed, epoch),
+        [
+            "facts",
+            "lease",
+            _resource,
+            "released",
+            epoch,
+            _claim_hash,
+            _released_at,
+        ]
+        | [
+            "facts",
+            "lease",
+            _resource,
+            "released",
+            epoch,
+            _claim_hash,
+            _released_at,
+            _,
+        ] => classify_epoch(FactKind::LeaseReleased, epoch),
+        [
+            "facts",
+            "acme",
+            "http01",
+            _hostname,
+            _token,
+            "presented",
+            epoch,
+        ]
+        | [
+            "facts",
+            "acme",
+            "http01",
+            _hostname,
+            _token,
+            "presented",
+            epoch,
+            _,
+        ] => classify_epoch(FactKind::AcmeHttp01Presented, epoch),
+        [
+            "facts",
+            "acme",
+            "http01",
+            _hostname,
+            _token,
+            "cleared",
+            epoch,
+            _claim_hash,
+        ]
+        | [
+            "facts",
+            "acme",
+            "http01",
+            _hostname,
+            _token,
+            "cleared",
+            epoch,
+            _claim_hash,
+            _,
+        ] => classify_epoch(FactKind::AcmeHttp01Cleared, epoch),
         _ => FactKeyClassification::new(FactKind::Unsupported, 0),
     }
+}
+
+#[must_use]
+pub fn is_reducible_conflict_kind(kind: FactKind) -> bool {
+    matches!(
+        kind,
+        FactKind::LeaseClaimed
+            | FactKind::LeaseRenewed
+            | FactKind::LeaseReleased
+            | FactKind::AcmeHttp01Presented
+            | FactKind::AcmeHttp01Cleared
+    )
 }
 
 fn classify_epoch(kind: FactKind, epoch: &str) -> FactKeyClassification {
@@ -229,6 +328,20 @@ mod tests {
 
         assert_eq!(classification.kind(), FactKind::NodeTombstoned);
         assert_eq!(classification.epoch(), 13);
+    }
+
+    #[test]
+    fn classifies_lease_and_acme_epochs() {
+        let claim = classify_fact_key(&key("/facts/lease/acme.http01.example.token/claimed/7"));
+        let presented = classify_fact_key(&key("/facts/acme/http01/example.com/token/presented/8"));
+        let cleared = classify_fact_key(&key("/facts/acme/http01/example.com/token/cleared/9/abc"));
+
+        assert_eq!(claim.kind(), FactKind::LeaseClaimed);
+        assert_eq!(claim.epoch(), 7);
+        assert_eq!(presented.kind(), FactKind::AcmeHttp01Presented);
+        assert_eq!(presented.epoch(), 8);
+        assert_eq!(cleared.kind(), FactKind::AcmeHttp01Cleared);
+        assert_eq!(cleared.epoch(), 9);
     }
 
     #[test]

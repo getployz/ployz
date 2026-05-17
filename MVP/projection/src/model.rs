@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
+use mvp_acme::{AcmeChallengeToken, AcmeHostname, AcmeKeyAuthorization};
 use mvp_bus::IslandId;
+use mvp_lease::{LeaseContentHash, LeaseEpoch, LeaseHolder, LeaseTimestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::facts::{BackendEndpoint, DnsRecordFact, NodeId, RouteId, ServiceName};
@@ -13,6 +15,7 @@ pub struct ProjectionState {
     pub services: BTreeMap<(ServiceName, NodeId), ServiceProjection>,
     pub gateway: Option<GatewayProjection>,
     pub dns: Option<DnsProjection>,
+    pub acme_http01: BTreeMap<AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection>,
     pub statuses: Vec<ProjectionStatus>,
 }
 
@@ -26,6 +29,7 @@ impl ProjectionState {
             services: BTreeMap::new(),
             gateway: None,
             dns: None,
+            acme_http01: BTreeMap::new(),
             statuses: Vec::new(),
         }
     }
@@ -76,6 +80,30 @@ pub struct DnsRecordProjection {
     pub record_type: String,
     pub value: String,
     pub ttl_seconds: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct AcmeHttp01ChallengeKey {
+    pub hostname: AcmeHostname,
+    pub token: AcmeChallengeToken,
+}
+
+impl AcmeHttp01ChallengeKey {
+    #[must_use]
+    pub fn new(hostname: AcmeHostname, token: AcmeChallengeToken) -> Self {
+        Self { hostname, token }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct AcmeHttp01ChallengeProjection {
+    pub hostname: AcmeHostname,
+    pub token: AcmeChallengeToken,
+    pub key_authorization: AcmeKeyAuthorization,
+    pub holder: LeaseHolder,
+    pub lease_epoch: LeaseEpoch,
+    pub claim_hash: LeaseContentHash,
+    pub published_at: LeaseTimestamp,
 }
 
 impl From<DnsRecordFact> for DnsRecordProjection {

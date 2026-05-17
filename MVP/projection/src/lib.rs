@@ -20,8 +20,9 @@ pub use facts::{
     ServiceRegistrationFact, ServingCommitFact,
 };
 pub use model::{
-    DnsProjection, DnsRecordProjection, GatewayProjection, GatewayRouteProjection, NodeProjection,
-    ProjectionIgnoreReason, ProjectionState, ProjectionStatus, ServiceProjection,
+    AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsProjection, DnsRecordProjection,
+    GatewayProjection, GatewayRouteProjection, NodeProjection, ProjectionIgnoreReason,
+    ProjectionState, ProjectionStatus, ServiceProjection,
 };
 pub use reducer::reduce_facts;
 pub use snapshot::{
@@ -30,6 +31,6 @@ pub use snapshot::{
 };
 pub use source::{
     CandidateStatus, FactCandidate, FactKeyClassification, FactKind, FactSource, FactSourceError,
-    FactSourceResult, classify_fact_key,
+    FactSourceResult, classify_fact_key, is_reducible_conflict_kind,
 };
 pub use sqlite::{ProjectionRowCounts, SqliteProjectionStore};

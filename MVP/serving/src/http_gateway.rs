@@ -21,6 +21,7 @@ use tokio::time::timeout;
 
 use crate::{WireMetricsRecorder, WireRoleMetrics, WireServingState};
 
+const ACME_HTTP01_PREFIX: &str = "/.well-known/acme-challenge/";
 const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const BACKEND_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const BACKEND_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -176,6 +177,25 @@ async fn response_for_request(
     let Some(host) = request_host(&request) else {
         return Err(text_response(StatusCode::BAD_REQUEST, "missing host\n"));
     };
+    if let Some(token) = acme_http01_token(request.uri().path()) {
+        return match state
+            .acme_http01_challenge(host.clone(), token.to_string())
+            .await
+        {
+            Ok(Some(key_authorization)) => Ok(text_response(
+                StatusCode::OK,
+                key_authorization.as_str().to_string(),
+            )),
+            Ok(None) => Err(text_response(
+                StatusCode::NOT_FOUND,
+                "challenge not found\n",
+            )),
+            Err(error) => Err(text_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("serving unavailable: {error}\n"),
+            )),
+        };
+    }
     let route = state.gateway_route_for_host(host).await.map_err(|error| {
         text_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -206,6 +226,14 @@ async fn response_for_request(
             Err(text_response(StatusCode::SERVICE_UNAVAILABLE, message))
         }
     }
+}
+
+fn acme_http01_token(path: &str) -> Option<&str> {
+    let token = path.strip_prefix(ACME_HTTP01_PREFIX)?;
+    if token.is_empty() || token.contains('/') {
+        return None;
+    }
+    Some(token)
 }
 
 fn request_host(request: &Request<Incoming>) -> Option<String> {

@@ -1,16 +1,19 @@
 use std::collections::BTreeMap;
 
+use mvp_acme::{AcmeChallengeId, AcmeHttp01ClearedFact, AcmeHttp01PresentedFact};
 use mvp_bus::{FactContentHash, FactPayload, IslandId};
+use mvp_lease::{LeaseClaimed, LeaseReleased, LeaseRenewed};
 
 use crate::facts::{
     DnsCommitFact, GatewayCommitFact, NodeId, NodeTombstonedFact, ProjectionFactPayload,
     RouteCommitFact, ServiceName, ServingCommitFact,
 };
 use crate::model::{
-    DnsProjection, DnsRecordProjection, GatewayProjection, GatewayRouteProjection, NodeProjection,
-    ProjectionIgnoreReason, ProjectionState, ProjectionStatus, ServiceProjection,
+    AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsProjection, DnsRecordProjection,
+    GatewayProjection, GatewayRouteProjection, NodeProjection, ProjectionIgnoreReason,
+    ProjectionState, ProjectionStatus, ServiceProjection,
 };
-use crate::source::{CandidateStatus, FactCandidate, FactKind};
+use crate::source::{CandidateStatus, FactCandidate, FactKind, is_reducible_conflict_kind};
 
 pub fn reduce_facts(
     island: &IslandId,
@@ -48,6 +51,11 @@ struct Reducer<'a> {
     serving_commits: BTreeMap<String, CommitCandidate<ServingCommitFact>>,
     gateway_commits: BTreeMap<String, CommitCandidate<GatewayCommitFact>>,
     dns_commits: BTreeMap<String, CommitCandidate<DnsCommitFact>>,
+    lease_claims: BTreeMap<String, Vec<CommitCandidate<LeaseClaimed>>>,
+    lease_renewals: BTreeMap<String, Vec<CommitCandidate<LeaseRenewed>>>,
+    lease_releases: BTreeMap<String, Vec<CommitCandidate<LeaseReleased>>>,
+    acme_presented: BTreeMap<AcmeHttp01ChallengeKey, Vec<CommitCandidate<AcmeHttp01PresentedFact>>>,
+    acme_cleared: BTreeMap<AcmeHttp01ChallengeKey, Vec<CommitCandidate<AcmeHttp01ClearedFact>>>,
     node_tombstones: BTreeMap<NodeId, u64>,
     node_conflicts: BTreeMap<NodeId, u64>,
     service_conflicts: BTreeMap<(ServiceName, NodeId), u64>,
@@ -63,6 +71,11 @@ impl<'a> Reducer<'a> {
             serving_commits: BTreeMap::new(),
             gateway_commits: BTreeMap::new(),
             dns_commits: BTreeMap::new(),
+            lease_claims: BTreeMap::new(),
+            lease_renewals: BTreeMap::new(),
+            lease_releases: BTreeMap::new(),
+            acme_presented: BTreeMap::new(),
+            acme_cleared: BTreeMap::new(),
             node_tombstones: BTreeMap::new(),
             node_conflicts: BTreeMap::new(),
             service_conflicts: BTreeMap::new(),
@@ -75,7 +88,7 @@ impl<'a> Reducer<'a> {
             self.ignore(ProjectionIgnoreReason::CrossIsland);
             return;
         }
-        if let Some(reason) = rejection_reason(candidate.status()) {
+        if let Some(reason) = rejection_reason(candidate) {
             self.ignore(reason);
             return;
         }
@@ -151,12 +164,46 @@ impl<'a> Reducer<'a> {
                     CommitCandidate { content_hash, fact },
                 );
             }
+            (FactKind::LeaseClaimed, ProjectionFactPayload::LeaseClaimed(fact)) => {
+                self.lease_claims
+                    .entry(fact.resource().as_str().to_string())
+                    .or_default()
+                    .push(CommitCandidate { content_hash, fact });
+            }
+            (FactKind::LeaseRenewed, ProjectionFactPayload::LeaseRenewed(fact)) => {
+                self.lease_renewals
+                    .entry(fact.resource().as_str().to_string())
+                    .or_default()
+                    .push(CommitCandidate { content_hash, fact });
+            }
+            (FactKind::LeaseReleased, ProjectionFactPayload::LeaseReleased(fact)) => {
+                self.lease_releases
+                    .entry(fact.resource().as_str().to_string())
+                    .or_default()
+                    .push(CommitCandidate { content_hash, fact });
+            }
+            (FactKind::AcmeHttp01Presented, ProjectionFactPayload::AcmeHttp01Presented(fact)) => {
+                let key = acme_key(fact.id());
+                self.acme_presented
+                    .entry(key)
+                    .or_default()
+                    .push(CommitCandidate { content_hash, fact });
+            }
+            (FactKind::AcmeHttp01Cleared, ProjectionFactPayload::AcmeHttp01Cleared(fact)) => {
+                let key = acme_key(fact.id());
+                self.acme_cleared
+                    .entry(key)
+                    .or_default()
+                    .push(CommitCandidate { content_hash, fact });
+            }
             _ => self.ignore(ProjectionIgnoreReason::MalformedPayload),
         }
     }
 
     fn finish(mut self) -> ProjectionState {
         self.state.tombstoned_nodes = std::mem::take(&mut self.node_tombstones);
+        self.state.acme_http01 = self.project_acme_http01();
+        self.record_lease_supersession();
         if let Some(commit) = self.serving_head() {
             self.state.gateway = Some(project_gateway_from_serving(&commit));
             self.state.dns = Some(project_dns_from_serving(commit));
@@ -170,6 +217,71 @@ impl<'a> Reducer<'a> {
             .map(|(reason, count)| ProjectionStatus { reason, count })
             .collect();
         self.state
+    }
+
+    fn project_acme_http01(
+        &mut self,
+    ) -> BTreeMap<AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection> {
+        let mut projected = BTreeMap::new();
+        let entries = self
+            .acme_presented
+            .iter()
+            .map(|(key, presentations)| (key.clone(), presentations.clone()))
+            .collect::<Vec<_>>();
+        for (key, presentations) in entries {
+            let Some(presented) = select_head(
+                presentations.iter(),
+                |fact| fact.epoch().value(),
+                |fact| fact.key_authorization().as_str(),
+            ) else {
+                continue;
+            };
+            self.ignore_many(ProjectionIgnoreReason::Superseded, presented.superseded);
+            if self.is_acme_presentation_cleared(&key, &presented.fact) {
+                continue;
+            }
+            projected.insert(
+                key,
+                AcmeHttp01ChallengeProjection {
+                    hostname: presented.fact.id().hostname().clone(),
+                    token: presented.fact.id().token().clone(),
+                    key_authorization: presented.fact.key_authorization().clone(),
+                    holder: presented.fact.holder().clone(),
+                    lease_epoch: presented.fact.epoch(),
+                    claim_hash: presented.fact.claim_hash(),
+                    published_at: presented.fact.published_at(),
+                },
+            );
+        }
+        projected
+    }
+
+    fn is_acme_presentation_cleared(
+        &mut self,
+        key: &AcmeHttp01ChallengeKey,
+        presented: &AcmeHttp01PresentedFact,
+    ) -> bool {
+        let Some(clears) = self.acme_cleared.get(key).cloned() else {
+            return false;
+        };
+        let Some(clear) = select_head(
+            clears.iter(),
+            |fact| fact.epoch().value(),
+            |fact| fact.holder().as_str(),
+        ) else {
+            return false;
+        };
+        self.ignore_many(ProjectionIgnoreReason::Superseded, clear.superseded);
+        clear.fact.epoch() >= presented.epoch()
+            && clear.fact.claim_hash() == presented.claim_hash()
+            && clear.fact.holder() == presented.holder()
+    }
+
+    fn record_lease_supersession(&mut self) {
+        let superseded = superseded_count(&self.lease_claims)
+            + superseded_count(&self.lease_renewals)
+            + superseded_count(&self.lease_releases);
+        self.ignore_many(ProjectionIgnoreReason::Superseded, superseded);
     }
 
     fn project_gateway(&mut self) -> Option<GatewayProjection> {
@@ -371,6 +483,10 @@ fn project_dns_from_serving(commit: ServingCommitFact) -> DnsProjection {
     }
 }
 
+fn acme_key(id: &AcmeChallengeId) -> AcmeHttp01ChallengeKey {
+    AcmeHttp01ChallengeKey::new(id.hostname().clone(), id.token().clone())
+}
+
 #[derive(Debug, Clone)]
 struct CommitCandidate<T> {
     content_hash: FactContentHash,
@@ -430,6 +546,13 @@ where
         .then_with(|| id(&left.fact).cmp(id(&right.fact)))
 }
 
+fn superseded_count<K, T>(candidates: &BTreeMap<K, Vec<CommitCandidate<T>>>) -> usize {
+    candidates
+        .values()
+        .map(|values| values.len().saturating_sub(1))
+        .sum()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum KeyExpectation {
     NodeJoined {
@@ -456,6 +579,21 @@ enum KeyExpectation {
     },
     DnsCommit {
         dns_commit_id: String,
+    },
+    Lease {
+        resource: String,
+        epoch: u64,
+    },
+    AcmeHttp01Presented {
+        hostname: String,
+        token: String,
+        epoch: u64,
+    },
+    AcmeHttp01Cleared {
+        hostname: String,
+        token: String,
+        epoch: u64,
+        claim_hash: String,
     },
 }
 
@@ -504,6 +642,49 @@ fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPayloa
             FactKind::DnsCommit,
             ProjectionFactPayload::DnsCommit(fact),
         ) => fact.dns_commit_id == dns_commit_id,
+        (
+            Some(KeyExpectation::Lease { resource, epoch }),
+            FactKind::LeaseClaimed,
+            ProjectionFactPayload::LeaseClaimed(fact),
+        ) => fact.resource().as_str() == resource && fact.epoch().value() == epoch,
+        (
+            Some(KeyExpectation::Lease { resource, epoch }),
+            FactKind::LeaseRenewed,
+            ProjectionFactPayload::LeaseRenewed(fact),
+        ) => fact.resource().as_str() == resource && fact.epoch().value() == epoch,
+        (
+            Some(KeyExpectation::Lease { resource, epoch }),
+            FactKind::LeaseReleased,
+            ProjectionFactPayload::LeaseReleased(fact),
+        ) => fact.resource().as_str() == resource && fact.epoch().value() == epoch,
+        (
+            Some(KeyExpectation::AcmeHttp01Presented {
+                hostname,
+                token,
+                epoch,
+            }),
+            FactKind::AcmeHttp01Presented,
+            ProjectionFactPayload::AcmeHttp01Presented(fact),
+        ) => {
+            fact.id().hostname().as_str() == hostname
+                && fact.id().token().as_str() == token
+                && fact.epoch().value() == epoch
+        }
+        (
+            Some(KeyExpectation::AcmeHttp01Cleared {
+                hostname,
+                token,
+                epoch,
+                claim_hash,
+            }),
+            FactKind::AcmeHttp01Cleared,
+            ProjectionFactPayload::AcmeHttp01Cleared(fact),
+        ) => {
+            fact.id().hostname().as_str() == hostname
+                && fact.id().token().as_str() == token
+                && fact.epoch().value() == epoch
+                && fact.claim_hash().as_hex() == claim_hash
+        }
         _ => false,
     }
 }
@@ -543,13 +724,69 @@ fn key_expectation(candidate: &FactCandidate) -> Option<KeyExpectation> {
         ["facts", "dns", dns_commit_id] => Some(KeyExpectation::DnsCommit {
             dns_commit_id: (*dns_commit_id).to_string(),
         }),
+        ["facts", "lease", resource, "claimed", epoch]
+        | ["facts", "lease", resource, "renewed", epoch, ..]
+        | ["facts", "lease", resource, "released", epoch, ..] => Some(KeyExpectation::Lease {
+            resource: (*resource).to_string(),
+            epoch: epoch.parse().ok()?,
+        }),
+        [
+            "facts",
+            "acme",
+            "http01",
+            hostname,
+            token,
+            "presented",
+            epoch,
+        ]
+        | [
+            "facts",
+            "acme",
+            "http01",
+            hostname,
+            token,
+            "presented",
+            epoch,
+            _,
+        ] => Some(KeyExpectation::AcmeHttp01Presented {
+            hostname: (*hostname).to_string(),
+            token: (*token).to_string(),
+            epoch: epoch.parse().ok()?,
+        }),
+        [
+            "facts",
+            "acme",
+            "http01",
+            hostname,
+            token,
+            "cleared",
+            epoch,
+            claim_hash,
+        ]
+        | [
+            "facts",
+            "acme",
+            "http01",
+            hostname,
+            token,
+            "cleared",
+            epoch,
+            claim_hash,
+            _,
+        ] => Some(KeyExpectation::AcmeHttp01Cleared {
+            hostname: (*hostname).to_string(),
+            token: (*token).to_string(),
+            epoch: epoch.parse().ok()?,
+            claim_hash: (*claim_hash).to_string(),
+        }),
         _ => None,
     }
 }
 
-fn rejection_reason(status: CandidateStatus) -> Option<ProjectionIgnoreReason> {
-    match status {
+fn rejection_reason(candidate: &FactCandidate) -> Option<ProjectionIgnoreReason> {
+    match candidate.status() {
         CandidateStatus::Verified => None,
+        CandidateStatus::Conflict if is_reducible_conflict_kind(candidate.kind()) => None,
         CandidateStatus::Unverified => Some(ProjectionIgnoreReason::Unverified),
         CandidateStatus::Unauthorized => Some(ProjectionIgnoreReason::Unauthorized),
         CandidateStatus::CrossIsland => Some(ProjectionIgnoreReason::CrossIsland),

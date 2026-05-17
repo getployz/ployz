@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use mvp_acme::AcmeKeyAuthorization;
 use mvp_projection::{DnsRecordProjection, GatewayRouteProjection};
 use serde::{Deserialize, Serialize};
 
@@ -100,6 +101,14 @@ impl WireServingState {
         record_type: impl Into<String>,
     ) -> ServingResult<Vec<DnsRecordProjection>> {
         self.serving.dns_records(name, record_type).await
+    }
+
+    pub async fn acme_http01_challenge(
+        &self,
+        host: impl Into<String>,
+        token: impl Into<String>,
+    ) -> ServingResult<Option<AcmeKeyAuthorization>> {
+        self.serving.acme_http01_challenge(host, token).await
     }
 
     pub async fn reload(&self) -> ServingResult<ServingStatus> {

@@ -1,3 +1,5 @@
+use mvp_acme::{AcmeHttp01ClearedFact, AcmeHttp01PresentedFact};
+use mvp_lease::{LeaseClaimed, LeaseReleased, LeaseRenewed};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -52,6 +54,11 @@ pub enum ProjectionFactPayload {
     RouteCommit(RouteCommitFact),
     GatewayCommit(GatewayCommitFact),
     DnsCommit(DnsCommitFact),
+    LeaseClaimed(LeaseClaimed),
+    LeaseRenewed(LeaseRenewed),
+    LeaseReleased(LeaseReleased),
+    AcmeHttp01Presented(AcmeHttp01PresentedFact),
+    AcmeHttp01Cleared(AcmeHttp01ClearedFact),
 }
 
 impl ProjectionFactPayload {

@@ -3,26 +3,33 @@ use std::fmt::{self, Display, Formatter};
 
 use mvp_lease::{
     LeaseAcquirePolicy, LeaseBook, LeaseCommandContext, LeaseContentHash, LeaseEpoch, LeaseError,
-    LeaseGuard, LeaseHolder, LeaseResource, LeaseState, LeaseTimestamp, VisibleNode,
+    LeaseGuard, LeaseHolder, LeaseRelease, LeaseResource, LeaseState, LeaseTimestamp, VisibleNode,
 };
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const MIN_ACME_TOKEN_LEN: usize = 22;
+const MAX_ACME_KEY_AUTHORIZATION_LEN: usize = 512;
+const MAX_HOSTNAME_LEN: usize = 253;
+const MAX_HOSTNAME_LABEL_LEN: usize = 63;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct AcmeHostname(String);
 
 impl AcmeHostname {
     pub fn parse(value: impl Into<String>) -> Result<Self, AcmeCoordinationError> {
-        let normalized = value
-            .into()
-            .trim()
-            .trim_end_matches('.')
-            .to_ascii_lowercase();
+        let value = value.into();
+        let normalized = canonicalize_hostname(&value)?;
         if normalized.is_empty() {
             return Err(AcmeCoordinationError::EmptyHostname);
         }
         Ok(Self(normalized))
+    }
+
+    pub fn parse_host_header(value: impl Into<String>) -> Result<Self, AcmeCoordinationError> {
+        let value = value.into();
+        let host = strip_host_port(value.trim());
+        Self::parse(host)
     }
 
     #[must_use]
@@ -37,7 +44,7 @@ impl Display for AcmeHostname {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct AcmeChallengeToken(String);
 
 impl AcmeChallengeToken {
@@ -70,7 +77,7 @@ impl Display for AcmeChallengeToken {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct AcmeKeyAuthorization(String);
 
 impl AcmeKeyAuthorization {
@@ -81,6 +88,19 @@ impl AcmeKeyAuthorization {
         let value = value.into();
         if value.is_empty() {
             return Err(AcmeCoordinationError::EmptyKeyAuthorization);
+        }
+        if value.len() > MAX_ACME_KEY_AUTHORIZATION_LEN {
+            return Err(AcmeCoordinationError::KeyAuthorizationTooLong {
+                max_len: MAX_ACME_KEY_AUTHORIZATION_LEN,
+                actual_len: value.len(),
+            });
+        }
+        if !value.is_ascii()
+            || value
+                .bytes()
+                .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        {
+            return Err(AcmeCoordinationError::InvalidKeyAuthorization { value });
         }
         let Some((actual_token, thumbprint)) = value.split_once('.') else {
             return Err(AcmeCoordinationError::InvalidKeyAuthorization { value });
@@ -103,7 +123,7 @@ impl AcmeKeyAuthorization {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct AcmeChallengeId {
     hostname: AcmeHostname,
     token: AcmeChallengeToken,
@@ -135,6 +155,57 @@ impl AcmeChallengeId {
     #[must_use]
     pub fn lease_resource(&self) -> &LeaseResource {
         &self.lease_resource
+    }
+
+    #[must_use]
+    pub fn lease_claimed_fact_key(&self, epoch: LeaseEpoch) -> String {
+        format!("/facts/lease/{}/claimed/{epoch}", self.lease_resource)
+    }
+
+    #[must_use]
+    pub fn lease_renewed_fact_key(
+        &self,
+        epoch: LeaseEpoch,
+        claim_hash: LeaseContentHash,
+        renewed_at: LeaseTimestamp,
+    ) -> String {
+        format!(
+            "/facts/lease/{}/renewed/{epoch}/{}/{renewed_at}",
+            self.lease_resource, claim_hash
+        )
+    }
+
+    #[must_use]
+    pub fn lease_released_fact_key(
+        &self,
+        epoch: LeaseEpoch,
+        claim_hash: LeaseContentHash,
+        release: LeaseRelease,
+    ) -> String {
+        let release_segment = match release {
+            LeaseRelease::At(released_at) => released_at.to_string(),
+            LeaseRelease::DroppedWithoutTimestamp => "drop".to_string(),
+        };
+        format!(
+            "/facts/lease/{}/released/{epoch}/{}/{release_segment}",
+            self.lease_resource, claim_hash
+        )
+    }
+
+    #[must_use]
+    pub fn presented_fact_key(&self, epoch: LeaseEpoch) -> String {
+        format!(
+            "/facts/acme/http01/{}/{}/presented/{epoch}",
+            self.hostname, self.token
+        )
+    }
+
+    #[must_use]
+    pub fn cleared_fact_key(&self, epoch: LeaseEpoch, claim_hash: LeaseContentHash) -> String {
+        format!(
+            "/facts/acme/http01/{}/{}/cleared/{epoch}/{}",
+            self.hostname, self.token, claim_hash
+        )
     }
 }
 
@@ -185,20 +256,159 @@ impl AcmeChallengeLease {
         self.guard.epoch()
     }
 
-    #[cfg(any(test, feature = "harness"))]
     #[must_use]
     pub fn claim_hash(&self) -> LeaseContentHash {
         self.guard.claim_hash()
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcmeChallengeRecord {
     key_authorization: AcmeKeyAuthorization,
     holder: LeaseHolder,
     epoch: LeaseEpoch,
     claim_hash: LeaseContentHash,
     published_at: LeaseTimestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeHttp01PresentedFact {
+    id: AcmeChallengeId,
+    key_authorization: AcmeKeyAuthorization,
+    holder: LeaseHolder,
+    epoch: LeaseEpoch,
+    claim_hash: LeaseContentHash,
+    published_at: LeaseTimestamp,
+}
+
+impl AcmeHttp01PresentedFact {
+    pub fn new(
+        lease: &AcmeChallengeLease,
+        key_authorization: AcmeKeyAuthorization,
+        published_at: LeaseTimestamp,
+    ) -> Self {
+        Self {
+            id: lease.id().clone(),
+            key_authorization,
+            holder: lease.holder().clone(),
+            epoch: lease.epoch(),
+            claim_hash: lease.claim_hash(),
+            published_at,
+        }
+    }
+
+    pub fn from_parts(
+        id: AcmeChallengeId,
+        key_authorization: AcmeKeyAuthorization,
+        holder: LeaseHolder,
+        epoch: LeaseEpoch,
+        claim_hash: LeaseContentHash,
+        published_at: LeaseTimestamp,
+    ) -> Result<Self, AcmeCoordinationError> {
+        AcmeKeyAuthorization::parse_for_token(id.token(), key_authorization.as_str().to_string())?;
+        Ok(Self {
+            id,
+            key_authorization,
+            holder,
+            epoch,
+            claim_hash,
+            published_at,
+        })
+    }
+
+    #[must_use]
+    pub fn id(&self) -> &AcmeChallengeId {
+        &self.id
+    }
+
+    #[must_use]
+    pub fn key_authorization(&self) -> &AcmeKeyAuthorization {
+        &self.key_authorization
+    }
+
+    #[must_use]
+    pub fn holder(&self) -> &LeaseHolder {
+        &self.holder
+    }
+
+    #[must_use]
+    pub fn epoch(&self) -> LeaseEpoch {
+        self.epoch
+    }
+
+    #[must_use]
+    pub fn claim_hash(&self) -> LeaseContentHash {
+        self.claim_hash
+    }
+
+    #[must_use]
+    pub fn published_at(&self) -> LeaseTimestamp {
+        self.published_at
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeHttp01ClearedFact {
+    id: AcmeChallengeId,
+    holder: LeaseHolder,
+    epoch: LeaseEpoch,
+    claim_hash: LeaseContentHash,
+    cleared_at: LeaseTimestamp,
+}
+
+impl AcmeHttp01ClearedFact {
+    #[must_use]
+    pub fn new(lease: &AcmeChallengeLease, cleared_at: LeaseTimestamp) -> Self {
+        Self {
+            id: lease.id().clone(),
+            holder: lease.holder().clone(),
+            epoch: lease.epoch(),
+            claim_hash: lease.claim_hash(),
+            cleared_at,
+        }
+    }
+
+    #[must_use]
+    pub fn from_parts(
+        id: AcmeChallengeId,
+        holder: LeaseHolder,
+        epoch: LeaseEpoch,
+        claim_hash: LeaseContentHash,
+        cleared_at: LeaseTimestamp,
+    ) -> Self {
+        Self {
+            id,
+            holder,
+            epoch,
+            claim_hash,
+            cleared_at,
+        }
+    }
+
+    #[must_use]
+    pub fn id(&self) -> &AcmeChallengeId {
+        &self.id
+    }
+
+    #[must_use]
+    pub fn holder(&self) -> &LeaseHolder {
+        &self.holder
+    }
+
+    #[must_use]
+    pub fn epoch(&self) -> LeaseEpoch {
+        self.epoch
+    }
+
+    #[must_use]
+    pub fn claim_hash(&self) -> LeaseContentHash {
+        self.claim_hash
+    }
+
+    #[must_use]
+    pub fn cleared_at(&self) -> LeaseTimestamp {
+        self.cleared_at
+    }
 }
 
 impl AcmeChallengeRecord {
@@ -232,6 +442,12 @@ impl AcmeChallengeRecord {
 pub enum AcmeCoordinationError {
     #[error("ACME hostname is empty")]
     EmptyHostname,
+    #[error("ACME hostname is too long: expected at most {max_len}, got {actual_len}")]
+    HostnameTooLong { max_len: usize, actual_len: usize },
+    #[error("ACME hostname label is invalid: {label}")]
+    InvalidHostnameLabel { label: String },
+    #[error("ACME hostname label is too long: expected at most {max_len}, got {actual_len}")]
+    HostnameLabelTooLong { max_len: usize, actual_len: usize },
     #[error("ACME challenge token is empty")]
     EmptyChallengeToken,
     #[error("ACME challenge token is too short: expected at least {min_len}, got {actual_len}")]
@@ -240,6 +456,8 @@ pub enum AcmeCoordinationError {
     InvalidChallengeToken { token: String },
     #[error("ACME key authorization is empty")]
     EmptyKeyAuthorization,
+    #[error("ACME key authorization is too long: expected at most {max_len}, got {actual_len}")]
+    KeyAuthorizationTooLong { max_len: usize, actual_len: usize },
     #[error("ACME key authorization does not match token: expected {expected}, got {actual}")]
     KeyAuthorizationTokenMismatch { expected: String, actual: String },
     #[error("ACME key authorization is invalid: {value}")]
@@ -388,6 +606,58 @@ pub mod harness {
 
 fn is_acme_token_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'
+}
+
+fn canonicalize_hostname(value: &str) -> Result<String, AcmeCoordinationError> {
+    let normalized = value.trim().trim_end_matches('.').to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err(AcmeCoordinationError::EmptyHostname);
+    }
+    if normalized.len() > MAX_HOSTNAME_LEN {
+        return Err(AcmeCoordinationError::HostnameTooLong {
+            max_len: MAX_HOSTNAME_LEN,
+            actual_len: normalized.len(),
+        });
+    }
+    for label in normalized.split('.') {
+        validate_hostname_label(label)?;
+    }
+    Ok(normalized)
+}
+
+fn validate_hostname_label(label: &str) -> Result<(), AcmeCoordinationError> {
+    if label.is_empty() {
+        return Err(AcmeCoordinationError::InvalidHostnameLabel {
+            label: label.to_string(),
+        });
+    }
+    if label.len() > MAX_HOSTNAME_LABEL_LEN {
+        return Err(AcmeCoordinationError::HostnameLabelTooLong {
+            max_len: MAX_HOSTNAME_LABEL_LEN,
+            actual_len: label.len(),
+        });
+    }
+    if label.starts_with('-')
+        || label.ends_with('-')
+        || !label
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(AcmeCoordinationError::InvalidHostnameLabel {
+            label: label.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn strip_host_port(value: &str) -> &str {
+    let Some((host, port)) = value.rsplit_once(':') else {
+        return value;
+    };
+    if host.contains(':') || port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+        return value;
+    }
+    host
 }
 
 #[cfg(test)]

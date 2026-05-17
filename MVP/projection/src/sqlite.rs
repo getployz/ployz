@@ -1,15 +1,18 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use mvp_acme::{AcmeChallengeToken, AcmeHostname, AcmeKeyAuthorization};
 use mvp_bus::IslandId;
+use mvp_lease::{LeaseContentHash, LeaseEpoch, LeaseHolder, LeaseTimestamp};
 use rusqlite::{Connection, OptionalExtension, params};
 use tempfile::NamedTempFile;
 
 use crate::error::{ProjectionError, ProjectionResult};
 use crate::facts::{BackendEndpoint, DnsRecordFact, NodeId, RouteId, ServiceName};
 use crate::model::{
-    DnsProjection, DnsRecordProjection, GatewayProjection, GatewayRouteProjection, NodeProjection,
-    ProjectionIgnoreReason, ProjectionState, ProjectionStatus, ServiceProjection,
+    AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsProjection, DnsRecordProjection,
+    GatewayProjection, GatewayRouteProjection, NodeProjection, ProjectionIgnoreReason,
+    ProjectionState, ProjectionStatus, ServiceProjection,
 };
 
 #[derive(Debug, Clone)]
@@ -24,6 +27,7 @@ pub struct ProjectionRowCounts {
     pub services: usize,
     pub gateway_routes: usize,
     pub dns_records: usize,
+    pub acme_http01_challenges: usize,
     pub statuses: usize,
 }
 
@@ -85,6 +89,7 @@ impl SqliteProjectionStore {
         write_services(&transaction, state)?;
         write_gateway(&transaction, state)?;
         write_dns(&transaction, state)?;
+        write_acme_http01(&transaction, state)?;
         write_statuses(&transaction, state)?;
         transaction.commit()?;
         Ok(())
@@ -113,6 +118,7 @@ impl SqliteProjectionStore {
         load_services(&connection, &mut state)?;
         load_gateway(&connection, &mut state)?;
         load_dns(&connection, &mut state)?;
+        load_acme_http01(&connection, &mut state)?;
         load_statuses(&connection, &mut state)?;
         Ok(state)
     }
@@ -126,6 +132,7 @@ impl SqliteProjectionStore {
             services: count_rows(&connection, "services")?,
             gateway_routes: count_rows(&connection, "gateway_routes")?,
             dns_records: count_rows(&connection, "dns_records")?,
+            acme_http01_challenges: count_rows(&connection, "acme_http01_challenges")?,
             statuses: count_rows(&connection, "projection_statuses")?,
         })
     }
@@ -173,6 +180,16 @@ fn create_schema(connection: &Connection) -> ProjectionResult<()> {
           ttl_seconds INTEGER NOT NULL,
           PRIMARY KEY (dns_commit_id, name, record_type, value)
         );
+        CREATE TABLE IF NOT EXISTS acme_http01_challenges (
+          hostname TEXT NOT NULL,
+          token TEXT NOT NULL,
+          key_authorization TEXT NOT NULL,
+          holder TEXT NOT NULL,
+          lease_epoch INTEGER NOT NULL,
+          claim_hash_json TEXT NOT NULL,
+          published_at INTEGER NOT NULL,
+          PRIMARY KEY (hostname, token)
+        );
         CREATE TABLE IF NOT EXISTS projection_statuses (
           reason TEXT PRIMARY KEY,
           count INTEGER NOT NULL
@@ -197,6 +214,7 @@ fn clear_projection_tables(connection: &Connection) -> ProjectionResult<()> {
         "services",
         "gateway_routes",
         "dns_records",
+        "acme_http01_challenges",
         "projection_statuses",
     ] {
         connection.execute(&format!("DELETE FROM {table}"), [])?;
@@ -313,6 +331,35 @@ fn write_dns(connection: &Connection, state: &ProjectionState) -> ProjectionResu
             record.record_type.as_str(),
             record.value.as_str(),
             record.ttl_seconds as i64
+        ])?;
+    }
+    Ok(())
+}
+
+fn write_acme_http01(connection: &Connection, state: &ProjectionState) -> ProjectionResult<()> {
+    let mut statement = connection.prepare(
+        "
+        INSERT INTO acme_http01_challenges (
+          hostname,
+          token,
+          key_authorization,
+          holder,
+          lease_epoch,
+          claim_hash_json,
+          published_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ",
+    )?;
+    for challenge in state.acme_http01.values() {
+        statement.execute(params![
+            challenge.hostname.as_str(),
+            challenge.token.as_str(),
+            challenge.key_authorization.as_str(),
+            challenge.holder.as_str(),
+            challenge.lease_epoch.value() as i64,
+            serde_json::to_string(&challenge.claim_hash)?,
+            challenge.published_at.value() as i64
         ])?;
     }
     Ok(())
@@ -486,6 +533,46 @@ fn load_dns(connection: &Connection, state: &mut ProjectionState) -> ProjectionR
     Ok(())
 }
 
+fn load_acme_http01(connection: &Connection, state: &mut ProjectionState) -> ProjectionResult<()> {
+    let mut statement = connection.prepare(
+        "
+        SELECT hostname, token, key_authorization, holder, lease_epoch, claim_hash_json,
+               published_at
+        FROM acme_http01_challenges
+        ORDER BY hostname, token
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        let hostname = AcmeHostname::parse(row.get::<_, String>(0)?).map_err(to_sql_error)?;
+        let token = AcmeChallengeToken::parse(row.get::<_, String>(1)?).map_err(to_sql_error)?;
+        let key_authorization =
+            AcmeKeyAuthorization::parse_for_token(&token, row.get::<_, String>(2)?)
+                .map_err(to_sql_error)?;
+        let holder = LeaseHolder::new(row.get::<_, String>(3)?);
+        let lease_epoch =
+            LeaseEpoch::from_u64(row.get::<_, i64>(4)? as u64).map_err(to_sql_error)?;
+        let claim_hash_json: String = row.get(5)?;
+        let claim_hash: LeaseContentHash =
+            serde_json::from_str(&claim_hash_json).map_err(to_sql_error)?;
+        let published_at = LeaseTimestamp::from_secs(row.get::<_, i64>(6)? as u64);
+        Ok(AcmeHttp01ChallengeProjection {
+            hostname,
+            token,
+            key_authorization,
+            holder,
+            lease_epoch,
+            claim_hash,
+            published_at,
+        })
+    })?;
+    for row in rows {
+        let challenge = row?;
+        let key = AcmeHttp01ChallengeKey::new(challenge.hostname.clone(), challenge.token.clone());
+        state.acme_http01.insert(key, challenge);
+    }
+    Ok(())
+}
+
 fn load_statuses(connection: &Connection, state: &mut ProjectionState) -> ProjectionResult<()> {
     let mut statement =
         connection.prepare("SELECT reason, count FROM projection_statuses ORDER BY reason")?;
@@ -530,7 +617,7 @@ fn parse_reason(value: &str) -> Result<ProjectionIgnoreReason, serde_json::Error
     Ok(reason)
 }
 
-fn to_sql_error(error: serde_json::Error) -> rusqlite::Error {
+fn to_sql_error(error: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(error))
 }
 

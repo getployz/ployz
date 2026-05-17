@@ -16,7 +16,7 @@ use crate::error::{ProjectionError, ProjectionResult};
 use crate::model::ProjectionState;
 use crate::reducer::reduce_facts;
 use crate::snapshot::{SnapshotWriteReport, write_projection_snapshots};
-use crate::source::{CandidateStatus, FactCandidate, FactSource};
+use crate::source::{CandidateStatus, FactCandidate, FactSource, is_reducible_conflict_kind};
 use crate::sqlite::SqliteProjectionStore;
 
 const PROJECTION_ACTOR_MAILBOX_CAPACITY: usize = 16;
@@ -91,6 +91,7 @@ pub struct ProjectionSuccessStatus {
     pub service_count: usize,
     pub gateway_route_count: usize,
     pub dns_record_count: usize,
+    pub acme_http01_challenge_count: usize,
     pub ignored_fact_count: usize,
 }
 
@@ -109,6 +110,7 @@ impl ProjectionSuccessStatus {
                 .as_ref()
                 .map_or(0, |gateway| gateway.routes.len()),
             dns_record_count: report.state.dns.as_ref().map_or(0, |dns| dns.records.len()),
+            acme_http01_challenge_count: report.state.acme_http01.len(),
             ignored_fact_count: report
                 .state
                 .statuses
@@ -413,7 +415,7 @@ impl ProjectionJob {
         let verified = candidates
             .iter()
             .filter(|candidate| {
-                candidate.status() == CandidateStatus::Verified
+                candidate_payload_is_readable(candidate)
                     && candidate.island() == &self.island
                     && seen.insert(candidate.content_hash().clone())
             })
@@ -423,6 +425,12 @@ impl ProjectionJob {
             .source
             .read_payloads(&self.island, &verified, &self.session)?)
     }
+}
+
+fn candidate_payload_is_readable(candidate: &FactCandidate) -> bool {
+    candidate.status() == CandidateStatus::Verified
+        || (candidate.status() == CandidateStatus::Conflict
+            && is_reducible_conflict_kind(candidate.kind()))
 }
 
 struct PreparedProjection {
@@ -680,7 +688,11 @@ mod tests {
     async fn slow_source_reports_deadline_failure() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (_bus, session) = seed_projectable_facts();
-        let actor = actor_for(Arc::new(SlowSource), session, &dir);
+        let actor = actor_for(
+            Arc::new(SlowSource(Duration::from_millis(75))),
+            session,
+            &dir,
+        );
 
         let started = std::time::Instant::now();
         let error = actor
@@ -698,7 +710,11 @@ mod tests {
     async fn status_remains_responsive_while_projection_runs() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (_bus, session) = seed_projectable_facts();
-        let actor = actor_for(Arc::new(SlowSource), session, &dir);
+        let actor = actor_for(
+            Arc::new(SlowSource(Duration::from_millis(75))),
+            session,
+            &dir,
+        );
         let pending_actor = actor.clone();
         let pending =
             tokio::spawn(
@@ -721,7 +737,11 @@ mod tests {
     async fn timed_out_projection_keeps_inflight_guard_until_worker_exits() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (_bus, session) = seed_projectable_facts();
-        let actor = actor_for(Arc::new(SlowSource), session, &dir);
+        let actor = actor_for(
+            Arc::new(SlowSource(Duration::from_millis(250))),
+            session,
+            &dir,
+        );
 
         let first = actor
             .project_once(Duration::from_millis(10))
@@ -739,12 +759,12 @@ mod tests {
                 operation: "project_once_inflight"
             }
         ));
-        tokio::time::sleep(Duration::from_millis(40)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(!dir.path().join("projections.sqlite").exists());
         assert!(!dir.path().join("gateway.snapshot").exists());
         assert!(!dir.path().join("dns.snapshot").exists());
         actor
-            .project_once(Duration::from_millis(100))
+            .project_once(Duration::from_millis(500))
             .await
             .expect("projection after old worker exits");
     }
@@ -839,7 +859,7 @@ mod tests {
         }
     }
 
-    struct SlowSource;
+    struct SlowSource(Duration);
 
     impl FactSource for SlowSource {
         fn list_candidates(
@@ -848,7 +868,7 @@ mod tests {
             _pattern: &FactKeyPattern,
             _session: &BusSession,
         ) -> FactSourceResult<Vec<FactCandidate>> {
-            thread::sleep(Duration::from_millis(25));
+            thread::sleep(self.0);
             Ok(vec![FactCandidate::new(
                 island.clone(),
                 key("/facts/node/node-1/joined/1"),

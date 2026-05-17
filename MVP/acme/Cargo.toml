@@ -14,7 +14,9 @@ harness = ["mvp-lease/harness"]
 
 [dependencies]
 mvp-lease = { path = "../lease" }
+serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 
 [dev-dependencies]
 mvp-lease = { path = "../lease", features = ["harness"] }
+serde_json = "1"
