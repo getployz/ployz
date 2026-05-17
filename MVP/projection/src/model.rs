@@ -34,6 +34,8 @@ pub struct NodeProjection {
     pub node_id: NodeId,
     pub epoch: u64,
     pub overlay_ip: String,
+    pub iroh_endpoint_id: String,
+    pub wg_public_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

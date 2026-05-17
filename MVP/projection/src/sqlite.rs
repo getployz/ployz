@@ -137,7 +137,9 @@ fn create_schema(connection: &Connection) -> ProjectionResult<()> {
         CREATE TABLE IF NOT EXISTS nodes (
           node_id TEXT PRIMARY KEY,
           epoch INTEGER NOT NULL,
-          overlay_ip TEXT NOT NULL
+          overlay_ip TEXT NOT NULL,
+          iroh_endpoint_id TEXT NOT NULL,
+          wg_public_key TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS services (
           service TEXT NOT NULL,
@@ -202,13 +204,19 @@ fn write_metadata(connection: &Connection, state: &ProjectionState) -> Projectio
 }
 
 fn write_nodes(connection: &Connection, state: &ProjectionState) -> ProjectionResult<()> {
-    let mut statement =
-        connection.prepare("INSERT INTO nodes (node_id, epoch, overlay_ip) VALUES (?1, ?2, ?3)")?;
+    let mut statement = connection.prepare(
+        "
+        INSERT INTO nodes (node_id, epoch, overlay_ip, iroh_endpoint_id, wg_public_key)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        ",
+    )?;
     for node in state.nodes.values() {
         statement.execute(params![
             node.node_id.as_str(),
             node.epoch as i64,
-            node.overlay_ip.as_str()
+            node.overlay_ip.as_str(),
+            node.iroh_endpoint_id.as_str(),
+            node.wg_public_key.as_str()
         ])?;
     }
     Ok(())
@@ -295,14 +303,21 @@ fn write_statuses(connection: &Connection, state: &ProjectionState) -> Projectio
 }
 
 fn load_nodes(connection: &Connection, state: &mut ProjectionState) -> ProjectionResult<()> {
-    let mut statement =
-        connection.prepare("SELECT node_id, epoch, overlay_ip FROM nodes ORDER BY node_id")?;
+    let mut statement = connection.prepare(
+        "
+        SELECT node_id, epoch, overlay_ip, iroh_endpoint_id, wg_public_key
+        FROM nodes
+        ORDER BY node_id
+        ",
+    )?;
     let rows = statement.query_map([], |row| {
         let node_id = NodeId::new(row.get::<_, String>(0)?);
         Ok(NodeProjection {
             node_id,
             epoch: row.get::<_, i64>(1)? as u64,
             overlay_ip: row.get(2)?,
+            iroh_endpoint_id: row.get(3)?,
+            wg_public_key: row.get(4)?,
         })
     })?;
     for row in rows {
@@ -490,6 +505,8 @@ mod tests {
                 node_id: node_id.clone(),
                 epoch: 1,
                 overlay_ip: "fd00::1".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
             },
         );
         state.services.insert(

@@ -16,8 +16,8 @@ pub use bus_source::BusFactSource;
 pub use error::{ProjectionError, ProjectionResult};
 pub use facts::{
     BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeId, NodeJoinedFact,
-    ProjectionFactPayload, RouteCommitFact, RouteId, ServiceName, ServiceRegistrationFact,
-    ServingCommitFact,
+    NodeTombstonedFact, ProjectionFactPayload, RouteCommitFact, RouteId, ServiceName,
+    ServiceRegistrationFact, ServingCommitFact,
 };
 pub use model::{
     DnsProjection, DnsRecordProjection, GatewayProjection, GatewayRouteProjection, NodeProjection,

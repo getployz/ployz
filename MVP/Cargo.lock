@@ -2428,6 +2428,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mvp-mesh"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "kameo",
+ "mvp-bus",
+ "mvp-projection",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "mvp-projection"
 version = "0.1.0"
 dependencies = [

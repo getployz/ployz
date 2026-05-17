@@ -6,6 +6,7 @@ members = [
     "e2e",
     "iroh",
     "lease",
+    "mesh",
     "projection",
     "serving",
 ]

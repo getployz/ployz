@@ -554,6 +554,8 @@ mod tests {
                 node_id: NodeId::new("node-1"),
                 epoch: 1,
                 overlay_ip: "fd00::1".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
             }),
         );
         write_payload(
@@ -774,6 +776,8 @@ mod tests {
                 node_id: NodeId::new("node-2"),
                 epoch: 1,
                 overlay_ip: "fd00::2".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
             }),
         );
         let dns_path = dir.path().join("dns.snapshot");

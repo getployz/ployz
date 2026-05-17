@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use mvp_bus::{FactContentHash, FactPayload, IslandId};
 
 use crate::facts::{
-    DnsCommitFact, GatewayCommitFact, NodeId, ProjectionFactPayload, RouteCommitFact, ServiceName,
-    ServingCommitFact,
+    DnsCommitFact, GatewayCommitFact, NodeId, NodeTombstonedFact, ProjectionFactPayload,
+    RouteCommitFact, ServiceName, ServingCommitFact,
 };
 use crate::model::{
     DnsProjection, DnsRecordProjection, GatewayProjection, GatewayRouteProjection, NodeProjection,
@@ -48,6 +48,7 @@ struct Reducer<'a> {
     serving_commits: BTreeMap<String, CommitCandidate<ServingCommitFact>>,
     gateway_commits: BTreeMap<String, CommitCandidate<GatewayCommitFact>>,
     dns_commits: BTreeMap<String, CommitCandidate<DnsCommitFact>>,
+    node_tombstones: BTreeMap<NodeId, u64>,
     node_conflicts: BTreeMap<NodeId, u64>,
     service_conflicts: BTreeMap<(ServiceName, NodeId), u64>,
     status_counts: BTreeMap<ProjectionIgnoreReason, usize>,
@@ -62,6 +63,7 @@ impl<'a> Reducer<'a> {
             serving_commits: BTreeMap::new(),
             gateway_commits: BTreeMap::new(),
             dns_commits: BTreeMap::new(),
+            node_tombstones: BTreeMap::new(),
             node_conflicts: BTreeMap::new(),
             service_conflicts: BTreeMap::new(),
             status_counts: BTreeMap::new(),
@@ -108,8 +110,13 @@ impl<'a> Reducer<'a> {
                     node_id: fact.node_id,
                     epoch: fact.epoch,
                     overlay_ip: fact.overlay_ip,
+                    iroh_endpoint_id: fact.iroh_endpoint_id,
+                    wg_public_key: fact.wg_public_key,
                 };
                 self.apply_node(node);
+            }
+            (FactKind::NodeTombstoned, ProjectionFactPayload::NodeTombstoned(fact)) => {
+                self.apply_node_tombstone(fact);
             }
             (FactKind::ServiceRegistered, ProjectionFactPayload::ServiceRegistered(fact)) => {
                 let key = (fact.service.clone(), fact.node_id.clone());
@@ -215,6 +222,22 @@ impl<'a> Reducer<'a> {
     }
 
     fn apply_node(&mut self, node: NodeProjection) {
+        if self
+            .node_tombstones
+            .get(&node.node_id)
+            .is_some_and(|epoch| *epoch >= node.epoch)
+        {
+            self.ignore(ProjectionIgnoreReason::Superseded);
+            return;
+        }
+        if self
+            .node_tombstones
+            .get(&node.node_id)
+            .is_some_and(|epoch| *epoch < node.epoch)
+        {
+            self.node_tombstones.remove(&node.node_id);
+        }
+
         let conflict_epoch = self.node_conflicts.get(&node.node_id).copied();
         if conflict_epoch.is_some_and(|epoch| epoch > node.epoch) {
             return;
@@ -242,7 +265,39 @@ impl<'a> Reducer<'a> {
         }
     }
 
+    fn apply_node_tombstone(&mut self, tombstone: NodeTombstonedFact) {
+        let existing_tombstone_epoch = self.node_tombstones.get(&tombstone.node_id).copied();
+        if existing_tombstone_epoch.is_some_and(|epoch| epoch > tombstone.epoch) {
+            self.ignore(ProjectionIgnoreReason::Superseded);
+            return;
+        }
+        self.node_tombstones
+            .insert(tombstone.node_id.clone(), tombstone.epoch);
+        self.node_conflicts.remove(&tombstone.node_id);
+
+        let should_remove_node = self
+            .state
+            .nodes
+            .get(&tombstone.node_id)
+            .is_some_and(|node| node.epoch <= tombstone.epoch);
+        if should_remove_node {
+            self.state.nodes.remove(&tombstone.node_id);
+        }
+        self.state.services.retain(|(_service, node_id), service| {
+            node_id != &tombstone.node_id || service.epoch > tombstone.epoch
+        });
+    }
+
     fn apply_service(&mut self, key: (ServiceName, NodeId), service: ServiceProjection) {
+        if self
+            .node_tombstones
+            .get(&service.node_id)
+            .is_some_and(|epoch| *epoch >= service.epoch)
+        {
+            self.ignore(ProjectionIgnoreReason::Superseded);
+            return;
+        }
+
         let conflict_epoch = self.service_conflicts.get(&key).copied();
         if conflict_epoch.is_some_and(|epoch| epoch > service.epoch) {
             return;
@@ -397,6 +452,10 @@ enum KeyExpectation {
         node_id: String,
         epoch: u64,
     },
+    NodeTombstoned {
+        node_id: String,
+        epoch: u64,
+    },
     ServiceRegistered {
         service: String,
         node_id: String,
@@ -422,6 +481,11 @@ fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPayloa
             Some(KeyExpectation::NodeJoined { node_id, epoch }),
             FactKind::NodeJoined,
             ProjectionFactPayload::NodeJoined(fact),
+        ) => fact.node_id.as_str() == node_id && fact.epoch == epoch,
+        (
+            Some(KeyExpectation::NodeTombstoned { node_id, epoch }),
+            FactKind::NodeTombstoned,
+            ProjectionFactPayload::NodeTombstoned(fact),
         ) => fact.node_id.as_str() == node_id && fact.epoch == epoch,
         (
             Some(KeyExpectation::ServiceRegistered {
@@ -468,6 +532,13 @@ fn key_expectation(candidate: &FactCandidate) -> Option<KeyExpectation> {
             node_id: (*node_id).to_string(),
             epoch: epoch.parse().ok()?,
         }),
+        ["facts", "node", node_id, "tombstoned", epoch]
+        | ["facts", "node", node_id, "tombstoned", epoch, _] => {
+            Some(KeyExpectation::NodeTombstoned {
+                node_id: (*node_id).to_string(),
+                epoch: epoch.parse().ok()?,
+            })
+        }
         ["facts", "service", service, node_id, "registered", epoch]
         | ["facts", "service", service, node_id, "registered", epoch, _] => {
             Some(KeyExpectation::ServiceRegistered {
@@ -507,8 +578,8 @@ mod tests {
     use super::reduce_facts;
     use crate::facts::{
         BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeId, NodeJoinedFact,
-        ProjectionFactPayload, RouteCommitFact, RouteId, ServiceName, ServiceRegistrationFact,
-        ServingCommitFact,
+        NodeTombstonedFact, ProjectionFactPayload, RouteCommitFact, RouteId, ServiceName,
+        ServiceRegistrationFact, ServingCommitFact,
     };
     use crate::model::{ProjectionIgnoreReason, ProjectionState};
     use crate::source::{CandidateStatus, FactCandidate, FactKind};
@@ -566,6 +637,8 @@ mod tests {
                 node_id: NodeId::new("node-1"),
                 epoch: 1,
                 overlay_ip: "fd00::1".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
             }),
         );
         let service_hash = insert_payload(
@@ -656,6 +729,8 @@ mod tests {
                 node_id: NodeId::new("node-1"),
                 epoch: 1,
                 overlay_ip: "fd00::1".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
             }),
         );
         let two = insert_payload(
@@ -664,6 +739,8 @@ mod tests {
                 node_id: NodeId::new("node-2"),
                 epoch: 1,
                 overlay_ip: "fd00::2".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
             }),
         );
         let ordered = vec![
@@ -698,6 +775,8 @@ mod tests {
                 node_id: NodeId::new("node-1"),
                 epoch: 10,
                 overlay_ip: "fd00::10".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
             }),
         );
         let node_9 = insert_payload(
@@ -706,6 +785,8 @@ mod tests {
                 node_id: NodeId::new("node-1"),
                 epoch: 9,
                 overlay_ip: "fd00::9".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
             }),
         );
         let service_10 = insert_payload(
@@ -758,6 +839,102 @@ mod tests {
         assert_eq!(node.overlay_ip, "fd00::10");
         assert_eq!(service.epoch, 10);
         assert_eq!(service.version, "10.0.0");
+    }
+
+    #[test]
+    fn reducer_excludes_tombstoned_nodes_and_services() {
+        let mut payloads = BTreeMap::new();
+        let node_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::NodeJoined(NodeJoinedFact {
+                node_id: NodeId::new("node-1"),
+                epoch: 1,
+                overlay_ip: "fd00::1".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
+            }),
+        );
+        let service_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::ServiceRegistered(ServiceRegistrationFact {
+                service: ServiceName::new("web"),
+                node_id: NodeId::new("node-1"),
+                version: "1.0.0".to_string(),
+                endpoint_subject: "node.node-1.web".to_string(),
+                epoch: 1,
+            }),
+        );
+        let tombstone_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::NodeTombstoned(NodeTombstonedFact {
+                node_id: NodeId::new("node-1"),
+                epoch: 1,
+                reason: "force-remove".to_string(),
+            }),
+        );
+        let candidates = vec![
+            candidate(
+                "/facts/node/node-1/joined/1",
+                FactKind::NodeJoined,
+                node_hash,
+            ),
+            candidate(
+                "/facts/node/node-1/tombstoned/1",
+                FactKind::NodeTombstoned,
+                tombstone_hash,
+            ),
+            candidate(
+                "/facts/service/web/node-1/registered/1",
+                FactKind::ServiceRegistered,
+                service_hash,
+            ),
+        ];
+
+        let state = reduce_facts(&island("prod"), &candidates, &payloads);
+
+        assert!(state.nodes.is_empty());
+        assert!(state.services.is_empty());
+        assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 1);
+    }
+
+    #[test]
+    fn reducer_keeps_node_when_join_epoch_survives_older_tombstone() {
+        let mut payloads = BTreeMap::new();
+        let node_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::NodeJoined(NodeJoinedFact {
+                node_id: NodeId::new("node-1"),
+                epoch: 2,
+                overlay_ip: "fd00::1".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
+            }),
+        );
+        let tombstone_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::NodeTombstoned(NodeTombstonedFact {
+                node_id: NodeId::new("node-1"),
+                epoch: 1,
+                reason: "old-remove".to_string(),
+            }),
+        );
+        let candidates = vec![
+            candidate(
+                "/facts/node/node-1/joined/2",
+                FactKind::NodeJoined,
+                node_hash,
+            ),
+            candidate(
+                "/facts/node/node-1/tombstoned/1",
+                FactKind::NodeTombstoned,
+                tombstone_hash,
+            ),
+        ];
+
+        let state = reduce_facts(&island("prod"), &candidates, &payloads);
+
+        assert!(state.nodes.contains_key(&NodeId::new("node-1")));
+        assert!(state.statuses.is_empty());
     }
 
     #[test]
@@ -860,6 +1037,8 @@ mod tests {
                 node_id: NodeId::new("node-1"),
                 epoch: 1,
                 overlay_ip: "fd00::1".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
             }),
         );
         let node_b = insert_payload(
@@ -868,6 +1047,8 @@ mod tests {
                 node_id: NodeId::new("node-1"),
                 epoch: 1,
                 overlay_ip: "fd00::2".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
             }),
         );
         let service_a = insert_payload(
@@ -1095,6 +1276,8 @@ mod tests {
                 node_id: NodeId::new("node-2"),
                 epoch: 1,
                 overlay_ip: "fd00::2".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
             }),
         );
         let service_hash = insert_payload(
@@ -1151,6 +1334,8 @@ mod tests {
                 node_id: NodeId::new("node-1"),
                 epoch: 1,
                 overlay_ip: "fd00::1".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
             }),
         );
         let candidates = vec![
