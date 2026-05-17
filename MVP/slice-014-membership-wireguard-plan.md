@@ -1,6 +1,6 @@
 ---
 title: Slice 014 Membership And Last-Applied WireGuard Plan
-status: active
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md
@@ -150,10 +150,12 @@ The tombstone fact must carry:
 - reason,
 - author/principal context from the fact envelope.
 
-Reducers should keep the latest joined epoch unless a tombstone at an equal or
-higher epoch exists. Tombstoned nodes must be excluded from service registry and
-WireGuard planning. Conflicting same-epoch candidates remain reducer-visible
-and use the existing deterministic conflict/supersession status machinery.
+Reducers should treat an explicit tombstone as durable exclusion until a later
+slice introduces an explicit reinvite/clear primitive. Normal higher-epoch join
+or service facts do not resurrect a tombstoned node. Tombstoned nodes must be
+excluded from service registry and WireGuard planning. Conflicting same-epoch
+candidates remain reducer-visible and use the existing deterministic
+conflict/supersession status machinery.
 
 ### Overlay IPs
 
@@ -243,7 +245,7 @@ Test scenarios:
 
 - Joined node with full mesh identity projects as live.
 - Tombstone at higher epoch removes the node from live projection.
-- Older tombstone does not remove a newer joined epoch.
+- Tombstone excludes a node even if a newer normal joined fact exists.
 - Same-epoch conflicting joined facts surface conflict/superseded status.
 - Malformed joined fact key/payload is ignored with visible status.
 - SQLite persists and reloads mesh identity and tombstone-reduced live nodes.

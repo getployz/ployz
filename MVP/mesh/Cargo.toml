@@ -17,8 +17,6 @@ mvp-bus = { path = "../bus" }
 mvp-projection = { path = "../projection" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-
-[dev-dependencies]
-tempfile = "3"

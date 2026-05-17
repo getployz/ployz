@@ -520,6 +520,11 @@ templates.
 For the initial product target, clusters up to 32 nodes can use full-mesh
 WireGuard and direct request-many fanout.
 
+The normal join path does not clear tombstones. Once a node id is tombstoned,
+later `NodeJoined` or service-registration facts for that node are ignored until
+a future slice defines an explicit reinvite/clear primitive with its own grants
+and failure semantics.
+
 ## Target Machine Remove Flow
 
 This is a target flow, not a committed first slice. The first implementation

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mvp_bus::{Grant, IslandId, PrincipalId, harness::InMemoryBus};
-use mvp_iroh::{IrohDocsFactSource, IrohFactDoc, IrohFactNode};
+use mvp_iroh::{IrohDocsFactSource, IrohFactDoc, IrohFactError, IrohFactNode};
 use mvp_mesh::{
     InviteId, InviteSecret, IrohEndpointId, JoinCommand, JoinRequest, MachineInvite,
     TombstoneCommand, VisibleNodes, WireGuardAppliedSnapshot, WireGuardPublicKey,
@@ -12,14 +12,15 @@ use mvp_mesh::{
 };
 use mvp_projection::{FactSource, NodeId, ProjectionState, reduce_facts};
 use serde::Serialize;
+use tokio::time::sleep;
 
 use crate::assertions::assert_eq_named;
 use crate::bus_syntax::fact_pattern;
 use crate::metrics::{reset_dir, scenario_dir, write_json};
 use crate::process_role_harness::{
-    CoordinatorRequest, MeshRoleClientError, MeshRoleFailureKind as HarnessMeshFailureKind,
-    MeshRoleRequest, MeshRoleSuccess, cleanup_orphaned_children as cleanup_process_children,
-    request_coordinator, request_mesh_role, spawn_process_role, spawn_process_role_owned,
+    MeshRoleClientError, MeshRoleFailureKind as HarnessMeshFailureKind, MeshRoleRequest,
+    MeshRoleSuccess, ServingCommitInput, assert_local_mutation_unavailable,
+    cleanup_orphaned_children as cleanup_process_children, request_mesh_role, spawn_process_role,
     wait_for_coordinator, wait_for_mesh_data_plane,
 };
 
@@ -34,6 +35,7 @@ struct MembershipWireGuardReport {
     post_tombstone_node0_peers: usize,
     expired_invite_failed: bool,
     tombstoned_rejoin_failed: bool,
+    join_writer_tombstone_denied: bool,
     coordinator_mutation_unavailable: bool,
     traffic_before_coordinator_death: bool,
     traffic_after_coordinator_death: bool,
@@ -70,10 +72,15 @@ async fn run_async() -> Result<(), String> {
         PrincipalId::new("projection"),
         Grant::empty().with_fact_read(fact_pattern("/facts/node/>")?),
     );
-    let writer_session = authority.grant_in(
+    let join_writer_session = authority.grant_in(
         island.clone(),
-        PrincipalId::new("node-writer"),
-        Grant::empty().with_fact_write(fact_pattern("/facts/node/>")?),
+        PrincipalId::new("join-writer"),
+        Grant::empty().with_fact_write(fact_pattern("/facts/node/*/joined/>")?),
+    );
+    let operator_session = authority.grant_in(
+        island.clone(),
+        PrincipalId::new("operator-writer"),
+        Grant::empty().with_fact_write(fact_pattern("/facts/node/*/tombstoned/>")?),
     );
 
     let node_a = IrohFactNode::memory()
@@ -83,10 +90,20 @@ async fn run_async() -> Result<(), String> {
         .create_fact_doc(island.clone())
         .await
         .map_err(|error| format!("create membership doc: {error}"))?;
-    let writer = node_a
-        .create_author(writer_session.principal().clone())
+    let join_writer = node_a
+        .create_author(join_writer_session.principal().clone())
         .await
-        .map_err(|error| format!("create membership writer: {error}"))?;
+        .map_err(|error| format!("create join writer: {error}"))?;
+    let operator_writer = node_a
+        .create_author(operator_session.principal().clone())
+        .await
+        .map_err(|error| format!("create operator writer: {error}"))?;
+    doc_a
+        .bind_author(&join_writer)
+        .map_err(|error| format!("bind join writer before sharing doc: {error}"))?;
+    doc_a
+        .bind_author(&operator_writer)
+        .map_err(|error| format!("bind operator writer before sharing doc: {error}"))?;
 
     let expired_invite_failed = JoinCommand::admit(join_request(
         invite(island.clone(), 100),
@@ -114,7 +131,12 @@ async fn run_async() -> Result<(), String> {
         ))
         .map_err(|error| format!("admit join for {}: {error}", node_id.as_str()))?;
         doc_a
-            .write_fact_payload(&writer, result.fact_key.clone(), result.fact_payload, &bus)
+            .write_fact_payload(
+                &join_writer,
+                result.fact_key.clone(),
+                result.fact_payload,
+                &bus,
+            )
             .await
             .map_err(|error| format!("write joined fact for {}: {error}", node_id.as_str()))?;
         joined_keys.push(result.fact_key);
@@ -144,11 +166,13 @@ async fn run_async() -> Result<(), String> {
     }
     let docs_convergence_ms = sync_started.elapsed().as_millis();
 
-    let state = reduce_membership(&doc_b, &source, &island, &projection_session).await?;
-    assert_eq_named("joined nodes", state.nodes.len(), 10)?;
+    let membership =
+        wait_for_membership_nodes(&doc_b, &source, &island, &projection_session, 10, "joined")
+            .await?;
+    assert_eq_named("joined nodes", membership.nodes.len(), 10)?;
 
     let plan_started = Instant::now();
-    let plans = plan_all_nodes(&state, 1)?;
+    let plans = plan_all_nodes(&membership, 1)?;
     let peer_plan_duration_ms = plan_started.elapsed().as_millis();
     let total_planned_peers: usize = plans.values().map(|plan| plan.peers.len()).sum();
     assert_eq_named("ten node full mesh peer count", total_planned_peers, 90)?;
@@ -161,17 +185,9 @@ async fn run_async() -> Result<(), String> {
         .get(&NodeId::new("node-1"))
         .ok_or_else(|| "missing node-1 plan".to_string())?
         .clone();
-    let node0_snapshot = WireGuardAppliedSnapshot::from_plan(island.clone(), node0_plan.clone());
     let node1_snapshot = WireGuardAppliedSnapshot::from_plan(island.clone(), node1_plan);
     let node0_snapshot_path = root.join("node-0.wireguard.snapshot");
     let node1_snapshot_path = root.join("node-1.wireguard.snapshot");
-    write_applied_snapshot(
-        &WireGuardSnapshotPaths {
-            applied: node0_snapshot_path.clone(),
-        },
-        &node0_snapshot,
-    )
-    .map_err(|error| format!("write node-0 snapshot: {error}"))?;
     write_applied_snapshot(
         &WireGuardSnapshotPaths {
             applied: node1_snapshot_path.clone(),
@@ -192,14 +208,6 @@ async fn run_async() -> Result<(), String> {
 
     let node0_socket = root.join("node-0-mesh.sock");
     let node1_socket = root.join("node-1-mesh.sock");
-    let mut node0_role = spawn_mesh_role(
-        &root,
-        "mesh-node-0",
-        &node0_socket,
-        &node0_snapshot_path,
-        loopback_any_port()?,
-        &island,
-    )?;
     let mut node1_role = spawn_mesh_role(
         &root,
         "mesh-node-1",
@@ -208,18 +216,39 @@ async fn run_async() -> Result<(), String> {
         loopback_any_port()?,
         &island,
     )?;
-    let _node0_addr = wait_for_mesh_data_plane(&node0_socket).await?.listen;
     let node1_addr = wait_for_mesh_data_plane(&node1_socket).await?.listen;
+    let node0_plan = plan_with_peer_endpoint(node0_plan, &NodeId::new("node-1"), node1_addr)?;
+    write_applied_snapshot(
+        &WireGuardSnapshotPaths {
+            applied: node0_snapshot_path.clone(),
+        },
+        &WireGuardAppliedSnapshot::from_plan(island.clone(), node0_plan),
+    )
+    .map_err(|error| format!("write node-0 snapshot: {error}"))?;
+    let mut node0_role = spawn_mesh_role(
+        &root,
+        "mesh-node-0",
+        &node0_socket,
+        &node0_snapshot_path,
+        loopback_any_port()?,
+        &island,
+    )?;
+    let _node0_addr = wait_for_mesh_data_plane(&node0_socket).await?.listen;
 
-    let traffic_before_coordinator_death =
-        send_between(&node0_socket, "node-1", node1_addr, b"before").await?;
+    let traffic_before_coordinator_death = send_between(&node0_socket, "node-1", b"before").await?;
     coordinator.kill_and_wait().await?;
-    let coordinator_mutation_unavailable = matches!(
-        request_coordinator(&coordinator_socket, &CoordinatorRequest::Status).await,
-        Err(crate::process_role_harness::CoordinatorClientError::Transport(_))
-    );
-    let traffic_after_coordinator_death =
-        send_between(&node0_socket, "node-1", node1_addr, b"after").await?;
+    let coordinator_mutation_unavailable = assert_local_mutation_unavailable(
+        &coordinator_socket,
+        ServingCommitInput::new(
+            "membership-after-coordinator-death",
+            "127.0.0.1:1",
+            "127.0.0.1",
+            1,
+        ),
+    )
+    .await
+    .is_ok();
+    let traffic_after_coordinator_death = send_between(&node0_socket, "node-1", b"after").await?;
 
     let tombstone = TombstoneCommand {
         island: island.clone(),
@@ -230,9 +259,23 @@ async fn run_async() -> Result<(), String> {
     }
     .force_remove()
     .map_err(|error| format!("build tombstone command: {error}"))?;
+    let join_writer_tombstone_denied = matches!(
+        doc_a
+            .write_fact_payload(
+                &join_writer,
+                tombstone.fact_key.clone(),
+                tombstone.fact_payload.clone(),
+                &bus,
+            )
+            .await,
+        Err(IrohFactError::UnauthorizedWrite { .. })
+    );
+    if !join_writer_tombstone_denied {
+        return Err("join writer unexpectedly wrote tombstone fact".to_string());
+    }
     doc_a
         .write_fact_payload(
-            &writer,
+            &operator_writer,
             tombstone.fact_key.clone(),
             tombstone.fact_payload,
             &bus,
@@ -243,15 +286,25 @@ async fn run_async() -> Result<(), String> {
         .wait_for_key(&tombstone.fact_key, SYNC_TIMEOUT)
         .await
         .map_err(|error| format!("wait for tombstone sync: {error}"))?;
-    let removed_state = reduce_membership(&doc_b, &source, &island, &projection_session).await?;
-    assert_eq_named("post tombstone nodes", removed_state.nodes.len(), 9)?;
-    let removed_node0_plan = plan_full_mesh(&removed_state, &NodeId::new("node-0"), 2)
+    let removed_membership = wait_for_membership_nodes(
+        &doc_b,
+        &source,
+        &island,
+        &projection_session,
+        9,
+        "post tombstone",
+    )
+    .await?;
+    assert_eq_named("post tombstone nodes", removed_membership.nodes.len(), 9)?;
+    let removed_node0_plan = plan_full_mesh(&removed_membership, &NodeId::new("node-0"), 2)
         .map_err(|error| format!("plan node-0 after tombstone: {error}"))?;
     assert_eq_named(
         "node-0 post tombstone peers",
         removed_node0_plan.peers.len(),
         8,
     )?;
+    let removed_node0_plan =
+        plan_with_peer_endpoint(removed_node0_plan, &NodeId::new("node-1"), node1_addr)?;
     write_applied_snapshot(
         &WireGuardSnapshotPaths {
             applied: node0_snapshot_path.clone(),
@@ -270,7 +323,6 @@ async fn run_async() -> Result<(), String> {
             &node0_socket,
             &MeshRoleRequest::Send {
                 target_node_id: NodeId::new("node-9"),
-                target_addr: node1_addr,
                 payload: b"blocked".to_vec(),
             },
         )
@@ -285,7 +337,11 @@ async fn run_async() -> Result<(), String> {
         3,
         20,
         Vec::new(),
-        BTreeSet::from([NodeId::new("node-9")]),
+        removed_membership
+            .tombstoned_nodes
+            .keys()
+            .cloned()
+            .collect(),
     ))
     .is_err();
 
@@ -300,7 +356,7 @@ async fn run_async() -> Result<(), String> {
     )?;
     let _restarted_node0_addr = wait_for_mesh_data_plane(&node0_socket).await?.listen;
     let traffic_after_data_plane_restart =
-        send_between(&node0_socket, "node-1", node1_addr, b"restart").await?;
+        send_between(&node0_socket, "node-1", b"restart").await?;
 
     restarted_node0.kill_and_wait().await?;
     node1_role.kill_and_wait().await?;
@@ -316,12 +372,13 @@ async fn run_async() -> Result<(), String> {
 
     let report = MembershipWireGuardReport {
         scenario: "membership-wireguard-contract",
-        joined_nodes: state.nodes.len(),
+        joined_nodes: membership.nodes.len(),
         total_planned_peers,
-        post_tombstone_nodes: removed_state.nodes.len(),
+        post_tombstone_nodes: removed_membership.nodes.len(),
         post_tombstone_node0_peers: removed_node0_plan.peers.len(),
         expired_invite_failed,
         tombstoned_rejoin_failed,
+        join_writer_tombstone_denied,
         coordinator_mutation_unavailable,
         traffic_before_coordinator_death,
         traffic_after_coordinator_death,
@@ -342,6 +399,7 @@ async fn run_async() -> Result<(), String> {
     };
     assert!(report.expired_invite_failed);
     assert!(report.tombstoned_rejoin_failed);
+    assert!(report.join_writer_tombstone_denied);
     assert!(report.coordinator_mutation_unavailable);
     assert!(report.tombstoned_peer_rejected);
     assert_eq_named(
@@ -378,6 +436,30 @@ async fn reduce_membership(
     Ok(reduce_facts(island, &candidates, &payloads))
 }
 
+async fn wait_for_membership_nodes(
+    doc: &IrohFactDoc,
+    source: &IrohDocsFactSource,
+    island: &IslandId,
+    session: &mvp_bus::BusSession,
+    expected_nodes: usize,
+    label: &'static str,
+) -> Result<ProjectionState, String> {
+    let deadline = Instant::now() + SYNC_TIMEOUT;
+    loop {
+        let state = reduce_membership(doc, source, island, session).await?;
+        if state.nodes.len() == expected_nodes {
+            return Ok(state);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{label} membership: expected {expected_nodes} nodes, got {}",
+                state.nodes.len()
+            ));
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+}
+
 fn plan_all_nodes(
     state: &ProjectionState,
     revision: u64,
@@ -389,6 +471,26 @@ fn plan_all_nodes(
         plans.insert(node_id.clone(), plan);
     }
     Ok(plans)
+}
+
+fn plan_with_peer_endpoint(
+    mut plan: mvp_mesh::WireGuardPeerPlan,
+    peer_node_id: &NodeId,
+    endpoint: SocketAddr,
+) -> Result<mvp_mesh::WireGuardPeerPlan, String> {
+    let Some(peer) = plan
+        .peers
+        .iter_mut()
+        .find(|peer| &peer.node_id == peer_node_id)
+    else {
+        return Err(format!(
+            "plan for {} is missing peer {}",
+            plan.local_node_id.as_str(),
+            peer_node_id.as_str()
+        ));
+    };
+    peer.endpoint = endpoint.to_string();
+    Ok(plan)
 }
 
 fn join_request(
@@ -431,18 +533,21 @@ fn spawn_mesh_role(
     listen: SocketAddr,
     island: &IslandId,
 ) -> Result<crate::process_role_harness::RunningChild, String> {
-    spawn_process_role_owned(
+    let snapshot = snapshot.display().to_string();
+    let listen = listen.to_string();
+    let island = island.as_str().to_string();
+    spawn_process_role(
         name,
         "mesh-data-plane",
         root,
         socket,
         &[
-            "--snapshot".to_string(),
-            snapshot.display().to_string(),
-            "--listen".to_string(),
-            listen.to_string(),
-            "--island".to_string(),
-            island.as_str().to_string(),
+            "--snapshot",
+            snapshot.as_str(),
+            "--listen",
+            listen.as_str(),
+            "--island",
+            island.as_str(),
         ],
     )
 }
@@ -450,14 +555,12 @@ fn spawn_mesh_role(
 async fn send_between(
     source_socket: &std::path::Path,
     target_node_id: &str,
-    target_addr: SocketAddr,
     payload: &[u8],
 ) -> Result<bool, String> {
     match request_mesh_role(
         source_socket,
         &MeshRoleRequest::Send {
             target_node_id: NodeId::new(target_node_id),
-            target_addr,
             payload: payload.to_vec(),
         },
     )

@@ -1,4 +1,5 @@
 use std::net::AddrParseError;
+use std::time::Duration;
 
 use mvp_projection::NodeId;
 use thiserror::Error;
@@ -44,6 +45,11 @@ pub enum MeshError {
     Backend {
         operation: &'static str,
         message: String,
+    },
+    #[error("wireguard backend {operation} timed out after {timeout:?}")]
+    BackendTimeout {
+        operation: &'static str,
+        timeout: Duration,
     },
     #[error("wireguard actor unavailable during {operation}: {reason}")]
     ActorUnavailable {

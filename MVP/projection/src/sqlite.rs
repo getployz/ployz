@@ -20,6 +20,7 @@ pub struct SqliteProjectionStore {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionRowCounts {
     pub nodes: usize,
+    pub tombstoned_nodes: usize,
     pub services: usize,
     pub gateway_routes: usize,
     pub dns_records: usize,
@@ -80,6 +81,7 @@ impl SqliteProjectionStore {
         clear_projection_tables(&transaction)?;
         write_metadata(&transaction, state)?;
         write_nodes(&transaction, state)?;
+        write_tombstoned_nodes(&transaction, state)?;
         write_services(&transaction, state)?;
         write_gateway(&transaction, state)?;
         write_dns(&transaction, state)?;
@@ -107,6 +109,7 @@ impl SqliteProjectionStore {
         };
         let mut state = ProjectionState::for_island(island);
         load_nodes(&connection, &mut state)?;
+        load_tombstoned_nodes(&connection, &mut state)?;
         load_services(&connection, &mut state)?;
         load_gateway(&connection, &mut state)?;
         load_dns(&connection, &mut state)?;
@@ -119,6 +122,7 @@ impl SqliteProjectionStore {
         create_schema(&connection)?;
         Ok(ProjectionRowCounts {
             nodes: count_rows(&connection, "nodes")?,
+            tombstoned_nodes: count_rows(&connection, "tombstoned_nodes")?,
             services: count_rows(&connection, "services")?,
             gateway_routes: count_rows(&connection, "gateway_routes")?,
             dns_records: count_rows(&connection, "dns_records")?,
@@ -140,6 +144,10 @@ fn create_schema(connection: &Connection) -> ProjectionResult<()> {
           overlay_ip TEXT NOT NULL,
           iroh_endpoint_id TEXT NOT NULL,
           wg_public_key TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS tombstoned_nodes (
+          node_id TEXT PRIMARY KEY,
+          epoch INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS services (
           service TEXT NOT NULL,
@@ -185,6 +193,7 @@ fn clear_projection_tables(connection: &Connection) -> ProjectionResult<()> {
     for table in [
         "projection_metadata",
         "nodes",
+        "tombstoned_nodes",
         "services",
         "gateway_routes",
         "dns_records",
@@ -218,6 +227,22 @@ fn write_nodes(connection: &Connection, state: &ProjectionState) -> ProjectionRe
             node.iroh_endpoint_id.as_str(),
             node.wg_public_key.as_str()
         ])?;
+    }
+    Ok(())
+}
+
+fn write_tombstoned_nodes(
+    connection: &Connection,
+    state: &ProjectionState,
+) -> ProjectionResult<()> {
+    let mut statement = connection.prepare(
+        "
+        INSERT INTO tombstoned_nodes (node_id, epoch)
+        VALUES (?1, ?2)
+        ",
+    )?;
+    for (node_id, epoch) in &state.tombstoned_nodes {
+        statement.execute(params![node_id.as_str(), *epoch as i64])?;
     }
     Ok(())
 }
@@ -323,6 +348,30 @@ fn load_nodes(connection: &Connection, state: &mut ProjectionState) -> Projectio
     for row in rows {
         let node = row?;
         state.nodes.insert(node.node_id.clone(), node);
+    }
+    Ok(())
+}
+
+fn load_tombstoned_nodes(
+    connection: &Connection,
+    state: &mut ProjectionState,
+) -> ProjectionResult<()> {
+    let mut statement = connection.prepare(
+        "
+        SELECT node_id, epoch
+        FROM tombstoned_nodes
+        ORDER BY node_id
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            NodeId::new(row.get::<_, String>(0)?),
+            row.get::<_, i64>(1)? as u64,
+        ))
+    })?;
+    for row in rows {
+        let (node_id, epoch) = row?;
+        state.tombstoned_nodes.insert(node_id, epoch);
     }
     Ok(())
 }
@@ -509,6 +558,7 @@ mod tests {
                 wg_public_key: "wg-test".to_string(),
             },
         );
+        state.tombstoned_nodes.insert(NodeId::new("node-2"), 3);
         state.services.insert(
             (ServiceName::new("web"), node_id.clone()),
             ServiceProjection {
@@ -595,6 +645,7 @@ mod tests {
         let mut state = sample_state();
         store.rebuild(&state).expect("rebuild projection");
         state.nodes.clear();
+        state.tombstoned_nodes.clear();
         state.services.clear();
         state.gateway = None;
         state.dns = None;

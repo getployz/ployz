@@ -501,6 +501,9 @@ Future slice plans should resolve these only when they become blocking:
   commands check currently alive members before mutation. This may become useful
   evidence, but it should not be smuggled back in as quorum-style commit
   semantics.
+- What explicit reinvite/clear primitive should exist for a tombstoned node id.
+  The current MVP join path treats tombstones as durable exclusion and does not
+  allow a normal higher-epoch join fact to resurrect the node.
 
 ## First Next Step
 

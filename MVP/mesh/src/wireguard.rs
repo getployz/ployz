@@ -50,7 +50,9 @@ pub fn plan_full_mesh(
         if node.node_id == *local_node_id {
             continue;
         }
-        let mesh_node = MeshNode::from_projection(node)?;
+        let Ok(mesh_node) = MeshNode::from_projection(node) else {
+            continue;
+        };
         peers.push(WireGuardPeer {
             node_id: mesh_node.node_id,
             public_key: mesh_node.wg_public_key,
@@ -131,6 +133,26 @@ mod tests {
         let error = plan_full_mesh(&state, &NodeId::new("missing"), 1).expect_err("missing local");
 
         assert!(error.to_string().contains("not live"));
+    }
+
+    #[test]
+    fn full_mesh_skips_malformed_remote_peer() {
+        let mut state = projection_with_nodes(2);
+        state.nodes.insert(
+            NodeId::new("bad-peer"),
+            NodeProjection {
+                node_id: NodeId::new("bad-peer"),
+                epoch: 1,
+                overlay_ip: "not-an-ip".to_string(),
+                iroh_endpoint_id: "iroh-bad-peer".to_string(),
+                wg_public_key: "wg-bad-peer".to_string(),
+            },
+        );
+
+        let plan = plan_full_mesh(&state, &NodeId::new("node-0"), 1).expect("mesh plan");
+
+        assert_eq!(plan.peers.len(), 1);
+        assert_eq!(plan.peers[0].node_id, NodeId::new("node-1"));
     }
 
     #[tokio::test]

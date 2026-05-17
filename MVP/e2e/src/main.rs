@@ -180,12 +180,9 @@ fn run_scenarios_with_budget(
             let process_cleanup = process_role_serving_contract::cleanup_orphaned_children();
             let wire_cleanup = wire_serving_contract::cleanup_orphaned_children();
             let mesh_cleanup = membership_wireguard_contract::cleanup_orphaned_children();
-            match (process_cleanup, wire_cleanup, mesh_cleanup) {
-                (Ok(()), Ok(()), Ok(())) => Err(format!("all scenario exceeded {budget:?} budget")),
-                (process_result, wire_result, mesh_result) => Err(format!(
-                    "all scenario exceeded {budget:?} budget; process-role cleanup={process_result:?}; wire cleanup={wire_result:?}; mesh cleanup={mesh_result:?}"
-                )),
-            }
+            Err(format!(
+                "all scenario exceeded {budget:?} budget; process-role cleanup={process_cleanup:?}; wire cleanup={wire_cleanup:?}; mesh cleanup={mesh_cleanup:?}"
+            ))
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             Err("all scenario worker exited without a result".to_string())
@@ -245,7 +242,9 @@ mod tests {
         assert!(names.contains(&"steady-state-serving-contract"));
         assert!(names.contains(&"process-role-serving-contract"));
         assert!(names.contains(&"wire-serving-contract"));
+        assert!(names.contains(&"membership-wireguard-contract"));
         assert!(scenario_help().contains("lease-acme-contract"));
+        assert!(scenario_help().contains("membership-wireguard-contract"));
     }
 
     #[test]
@@ -277,5 +276,6 @@ mod tests {
             .expect_err("budget should expire before blocking scenario returns");
 
         assert!(error.contains("exceeded"));
+        assert!(error.contains("mesh cleanup="));
     }
 }
