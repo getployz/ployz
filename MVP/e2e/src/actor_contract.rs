@@ -223,6 +223,14 @@ async fn run_async() -> Result<(), String> {
         |error| matches!(error, BusError::UnauthorizedResponse { .. }),
     )?;
 
+    let unauthorized_drain = bus
+        .drain(&intruder, Duration::from_millis(20))
+        .await
+        .unwrap_err();
+    assert_error("actor unauthorized drain", &unauthorized_drain, |error| {
+        matches!(error, BusError::UnauthorizedDrain { .. })
+    })?;
+
     let snapshot = bus
         .runtime_snapshot()
         .await
@@ -245,7 +253,7 @@ async fn run_async() -> Result<(), String> {
         request_many_replies: replies.len(),
         no_responders: 1,
         timeouts: 2,
-        unauthorized_failures: 4,
+        unauthorized_failures: 5,
         drain_rejections: 1,
         runtime_workers: snapshot.delivery_workers,
         elapsed_ms: started.elapsed().as_millis(),

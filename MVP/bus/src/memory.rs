@@ -20,7 +20,7 @@ use crate::{
 pub type HandlerOutcome = Result<()>;
 
 pub(crate) type Handler = Arc<dyn Fn(RequestContext) -> HandlerOutcome + Send + Sync + 'static>;
-const DEFAULT_PUBLISH_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const DEFAULT_PUBLISH_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BusRuntimeConfig {
@@ -1517,6 +1517,32 @@ mod tests {
 
         let error = bus
             .publish(&publisher, subject("node.alpha.status"), b"up".to_vec())
+            .unwrap_err();
+
+        assert!(matches!(error, BusError::UnauthorizedPublish { .. }));
+        assert_eq!(received.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn unauthorized_request_fails_before_handler_runs() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let responder = authority.grant(principal("responder"), Grant::allow_all());
+        let requester = authority.grant(principal("requester"), Grant::empty());
+        let received = Arc::new(AtomicUsize::new(0));
+        let received_for_handler = Arc::clone(&received);
+        bus.subscribe(&responder, pattern("node.alpha.inspect"), move |ctx| {
+            received_for_handler.fetch_add(1, Ordering::SeqCst);
+            ctx.reply(b"ok".to_vec())
+        })
+        .expect("subscribe");
+
+        let error = bus
+            .request(
+                &requester,
+                subject("node.alpha.inspect"),
+                Vec::new(),
+                Duration::from_millis(20),
+            )
             .unwrap_err();
 
         assert!(matches!(error, BusError::UnauthorizedPublish { .. }));
