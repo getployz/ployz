@@ -286,17 +286,16 @@ must leave the previous snapshot file untouched.
 Snapshot paths are a trust boundary. This slice should use explicit
 MVP-controlled directories, create parent directories with restrictive
 permissions where the platform supports it, reject symlinked snapshot targets,
-and set restrictive file modes where the platform supports it. The next
-gateway/DNS loader slice will validate schema version, island, and source
-commit hashes before replacing an in-memory last-good snapshot.
+and set restrictive file modes where the platform supports it. A future
+serving-state slice must validate schema version, island, and source commit
+hashes before replacing in-memory last-good state.
 
 This slice does not need the existing gateway/DNS binaries to load the files
 yet. It must prove the files are complete, stable, parseable by an MVP-local
-loader, and safe enough for the next gateway/DNS process-role slice. This slice
-tests loader rejection of corrupt files, not gateway/DNS last-good in-memory
-replacement semantics. The next slice must either wire gateway/DNS snapshot
-loading under `MVP/` or explicitly justify why docs-backed replication is the
-more blocking proof.
+loader, and safe enough for a later serving-state design. This slice tests
+loader rejection of corrupt files, not HTTP/DNS last-good in-memory replacement
+semantics. The serving-state shape is no longer assumed to be the immediate next
+slice.
 
 ### Notifications Are Hints
 
@@ -350,7 +349,9 @@ Test scenarios:
 - Writing a fact with payload stores a BLAKE3 hash and returns the same payload
   on read.
 - Rewriting the same key with identical payload is idempotent.
-- Rewriting the same key with different payload returns `FactConflict`.
+- Rewriting the same key with different payload is now stored as a conflicting
+  candidate for reducers; this replaced the earlier write-time `FactConflict`
+  plan to match iroh-docs/CRDT reality.
 - A reader without fact-read permission cannot read or list payload-bearing
   facts.
 - Listing by prefix is deterministic and island-scoped.
@@ -678,6 +679,8 @@ performance.
 - Plan the iroh-docs adapter/toolchain slice against the fact-store contract.
 - Decide whether `MVP/` raises Rust version to 1.91 for current iroh crates or
   pins older iroh/iroh-docs versions temporarily.
-- Add docs-backed service registry facts on top of the projection reducer.
-- Add gateway/DNS process-role snapshot loading and last-good serving proof.
+- Ask the operator to choose the ACME singleton primitive and plan ACME as the
+  next product proof.
+- Plan deploy commit-before-drain as the following product proof, using the
+  projection reducer rather than porting old `deploy.rs`.
 - Use projected route commits in the deploy commit-before-drain slice.

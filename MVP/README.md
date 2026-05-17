@@ -8,8 +8,8 @@ created: 2026-05-17
 
 This directory is the working specification for rebuilding the Ployz foundation
 around a NATS-shaped bus over iroh, Kameo-owned local subsystems, iroh-docs
-fact replication, SQLite projections, and the existing WireGuard, gateway, and
-DNS data plane.
+fact replication, SQLite projections, WireGuard, and redesigned HTTP/DNS
+data-plane serving.
 
 The goal is not to port the current architecture feature-for-feature. The goal
 is to prove a cleaner version-1 foundation with end-to-end tests that show it
@@ -32,7 +32,7 @@ From `MVP/`, run `just test` to execute the local MVP gate:
 - `cargo fmt --all -- --check`
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo test`
-- `cargo run -p mvp-e2e -- all`
+- time-budgeted `cargo run -p mvp-e2e -- all`
 
 This is intentionally kept inside `MVP/` while the rewrite remains isolated
 from the existing codebase. Wire it into the repo-level CI only when the user
@@ -48,6 +48,8 @@ Individual E2E scenarios are also runnable while iterating:
 - `cargo run -p mvp-e2e -- scale`
 
 Each scenario writes a JSON proof artifact under `MVP/target/mvp-e2e/`.
+The `all` scenario is capped by `MVP_E2E_ALL_TIMEOUT`, defaulting to `120s`,
+when run through `just test`.
 
 ## Maintainer Notes
 
@@ -61,10 +63,13 @@ evidence.
 
 - Keep the product model from [VISION.md](../VISION.md): explicit operations,
   no hidden control-plane reconcilers, and operator-visible failure.
-- Keep gateway and DNS as separate process roles that keep serving last good
-  snapshots when `ployzd` restarts.
-- Keep Pingora as the gateway runtime unless a later plan proves a concrete
-  reason to replace it.
+- Keep HTTP/DNS data-plane serving alive across daemon restarts. Do not preserve
+  the old gateway/DNS process or input-model shape just because it exists.
+- Treat the daemon as a command/coordinator role. Killing it must not stop
+  existing workloads, WireGuard service-to-service traffic, or HTTP/DNS serving
+  from last applied state; it should only block new local mutations and expose
+  visible coordinator staleness.
+- Treat Pingora as a strong HTTP serving candidate, not a non-negotiable.
 - Treat SQLite as a rebuildable projection/cache, not cluster truth.
 - Treat iroh endpoint identity as transport identity only. Authority comes from
   island grants and signed facts.

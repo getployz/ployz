@@ -264,12 +264,11 @@ Approach:
 - Reject stream bridge rules with overlapping source patterns for the same
   source/local island pair; fanout to multiple local islands is explicit and
   measured separately.
-- Add structured errors for invalid rules, disabled bridge paths, explicit
-  remote-unavailable bridge state, and forbidden bridge crossings.
-- Treat availability as bridge-rule state managed by `BusAuthority`, not as an
-  inferred island liveness registry. For this slice, "no prod responder" remains
-  `NoResponders`; `RemoteUnavailable` only occurs when the bridge state is set
-  that way by test/bootstrap authority.
+- Add structured errors for invalid rules, disabled bridge paths, and forbidden
+  bridge crossings.
+- Treat "no prod responder" as `NoResponders` until a production observation
+  pipeline exists. The earlier test-only `RemoteUnavailable` state was removed
+  after Slice 005 because no production path set it.
 
 Test scenarios:
 
@@ -281,7 +280,7 @@ Test scenarios:
 - Overlapping stream exports/imports that would duplicate local delivery are
   rejected.
 - Disabled bridge state returns a typed bridge availability failure.
-- Explicit remote-unavailable bridge state returns a typed foreground failure.
+- Enabled service import with no remote responder returns `NoResponders`.
 - Error variants carry local island, remote island, and subject context.
 
 ### U2: In-Memory Service Import Request Path

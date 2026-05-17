@@ -175,8 +175,9 @@ Approach:
 
 - Add `FactKey`, `FactKeyPattern`, `FactContentHash`, `Fact`, and
   `InMemoryFactSet` types.
-- Facts are immutable for this slice: writing the same `(island, key)` with a
-  different content hash returns a structured conflict.
+- Facts are immutable for this slice: writing the same `(island, key)` with the
+  same content hash is idempotent, and a different content hash is stored as a
+  bounded conflicting candidate for projection.
 - Fact writes require an island-scoped `fact_write_allow` match and no matching
   `fact_write_deny`.
 - Reads are island-scoped.
@@ -192,7 +193,8 @@ Test scenarios:
 - A principal without fact-write permission cannot write a fact.
 - A deny pattern wins over allow.
 - Same key and same hash is idempotent.
-- Same key and different hash is a structured conflict.
+- Same key and different hash is returned as `FactWriteOutcome::Conflict` and
+  listed as a conflicting candidate, not a write-time error.
 - Reads from island B cannot see island A's facts.
 
 ### U3: Authority E2E Contract

@@ -13,6 +13,25 @@ The bar for adding an entry is evidence. If a slice only raises a possible
 future concern, keep that in the slice report until implementation or tests make
 the decision concrete.
 
+## Changed Since Last Slice
+
+- Slice 002 replaced per-dispatch worker creation with one bus-wide bounded
+  delivery runtime. The current shape is intentional and carries runtime
+  pressure metrics.
+- Slice 004 promoted bridge availability from hidden forwarding behavior to
+  explicit enabled/disabled rule state. The test-only `RemoteUnavailable`
+  variant has now been removed because no production observation pipeline set
+  it; remote absence should surface through no-responder/request failure until
+  a real probe path exists.
+- Slice 005 made SQLite disposable and moved serving truth to deterministic
+  fact reduction plus atomic local outputs.
+- Fact conflicts are no longer write-time errors in the in-memory harness.
+  Conflicting candidates are stored and surfaced to projection reducers, which
+  matches the iroh-docs/CRDT reality better than rejecting the second writer.
+- The gateway/DNS plan that preserved the old role shape was superseded. HTTP
+  and DNS behavior remain product requirements; Pingora and the existing DNS
+  code are references, not constraints.
+
 ## NATS-Shaped Bus Semantics
 
 Why this:
@@ -182,6 +201,11 @@ Costs:
 - Imported stream delivery adds work to publish paths that match bridge rules.
   The scale harness now measures 200, 1,000, and 10,000 imported stream
   subscribers plus a 10,000-rule matching stream fanout.
+- The latest local scale run showed bridged 10,000-subscriber stream p99 around
+  2x plain publish p99. The current diagnosis is that a bridged stream does
+  transform/match work and then dispatches a second local message with bridge
+  origin metadata through the same delivery runtime. Do not add more bridge
+  surface before profiling or indexing this path.
 - The current bridge is an in-memory contract harness. Future slices still need
   docs-backed rule replication and iroh transport.
 
@@ -200,7 +224,8 @@ Why this:
   not a manual SQLite event log with gap repair.
 - This slice proves the business contract before iroh-docs arrives: fact reads
   and writes are island-scoped, authorized by grants, writes are idempotent for
-  the same hash, and writes return a structured conflict for a different hash.
+  the same hash, and conflicting hashes for the same fact key are stored as
+  conflicting candidates for projection.
 - `BusActorHandle` exposes fact writes/reads so future business logic uses the
   actor boundary instead of inspecting grants or storage internals.
 
@@ -217,11 +242,76 @@ Costs:
 - Payload bytes are now stored in the harness and hashed with BLAKE3, but the
   store is still local memory. iroh-blobs still needs to supply real
   content-addressed transfer and persistence.
+- Point reads of a conflicted key return no single fact. Reducers and tools that
+  need truth must list candidates and handle conflicts explicitly.
 
 Revisit if:
 - Slice work reaches iroh-docs integration. At that point this harness should
   become a backend behind the same fact contract, not a parallel source of
   truth.
+
+## Singleton / Lease Primitive Gap
+
+Why this is not decided yet:
+- ACME needs exactly one issuer per challenge at a time across the cluster.
+  Existing bus semantics through Slice 004 cannot express that safely.
+- This primitive has partition and recovery semantics, so it must be selected
+  deliberately before the ACME slice starts.
+
+Options to plan with the operator:
+- queue group with `max_members = 1` enforced by the bus,
+- explicit lease fact with TTL and renewal as a fact-store primitive,
+- named singleton service registered through `$SYS.service.*`.
+
+Revisit:
+- Immediately before ACME planning. Do not implement ACME until this choice is
+  made and its failure semantics are captured in the slice plan.
+
+## Iroh Toolchain Decision Is Blocking
+
+Why this:
+- The MVP strategy depends on iroh, iroh-gossip, iroh-blobs, and iroh-docs as
+  deployed substrate, not only as future references.
+- Several completed slices intentionally proved semantics in memory first. That
+  phase is no longer enough; future transport/fact slices must bind the
+  semantics to real iroh APIs.
+
+Current decision point:
+- If current `iroh-docs` requires a newer Rust toolchain than `MVP/` declares,
+  the next relevant slice must either bump the MVP Rust version and document
+  the repo impact, or pin an older compatible iroh-docs line and document the
+  API cost.
+
+Revisit:
+- Before any new fact-replication or transport abstraction work. Do not add
+  more "revisit when distributed transport lands" surface without this
+  concrete version/toolchain choice.
+
+## Coordinator Is Not Steady State
+
+Why this:
+- The daemon should coordinate mutations, not be the reason running services,
+  WireGuard, HTTP serving, or DNS serving stay alive.
+- The strongest MVP failure proof is killing the command/coordinator role and
+  seeing steady state continue from last applied local state.
+
+What it replaces:
+- A single daemon process that owns command routing, data-plane serving,
+  projection application, runtime mutation, and liveness as one fate-sharing
+  unit.
+- Treating "daemon down" as "node dead." The node may be unable to accept new
+  mutations, but existing workloads and data-plane paths should remain useful.
+
+Costs:
+- Future process-role design has to distinguish coordinator, runtime/applier,
+  HTTP/DNS serving, and transport responsibilities.
+- Health surfaces must be precise: coordinator stale/unavailable for mutations
+  is not the same as workload, WireGuard, or serving failure.
+
+Revisit if:
+- A future slice proves that a responsibility cannot safely run outside the
+  coordinator. That slice must document the failure audience and the exact
+  data-plane behavior lost when the coordinator dies.
 
 ## Deterministic Projections And Atomic Snapshots
 
@@ -241,15 +331,15 @@ Why this:
   bytes written under another island/key.
 - The reducer validates that payload identity matches the fact key identity
   before projecting. Grants authorize keys, so payloads cannot smuggle a
-  different node, service, route, gateway, or DNS commit into the serving view.
+  different node, service, route, HTTP, or DNS commit into the serving view.
 - SQLite is staged before snapshot publication and promoted only after the
-  gateway/DNS snapshot batch succeeds. A failed snapshot write therefore leaves
+  serving-state snapshot batch succeeds. A failed snapshot write therefore leaves
   readers on the last successful SQLite projection and last successful
   snapshots.
 
 What it replaces:
 - Mutable SQL head rows as the source of truth.
-- Manual event-log gap repair before rebuilding gateway/DNS state.
+- Manual event-log gap repair before rebuilding HTTP/DNS serving state.
 - Treating fact notifications as correctness-critical delivery.
 
 Costs:
@@ -257,8 +347,7 @@ Costs:
   local scale run is fast enough, but future docs-backed replication still needs
   propagation-lag proof.
 - Snapshot schema is MVP-local JSON. Existing Pingora gateway and DNS binaries
-  do not consume it yet; the process-role slice must wire loaders or explain a
-  different migration step.
+  do not consume it, and future serving slices may redesign the state shape.
 - The in-memory fact source can mark envelopes as verified only by local harness
   rules. A real iroh-docs adapter must validate namespace/author signatures
   before returning `Verified` candidates.
@@ -274,8 +363,8 @@ Revisit if:
 - The iroh-docs/toolchain slice chooses to raise `MVP/` to Rust 1.91 for current
   `iroh-docs`, or pins an older compatible iroh-docs line. That slice should
   implement the adapter behind the fact-source contract, not rewrite reducers.
-- Gateway/DNS loaders need a binary or version-negotiated snapshot format after
-  the MVP-local JSON schema has proven the serving semantics.
+- HTTP/DNS serving needs a binary or version-negotiated state format after the
+  MVP-local JSON schema has proven too slow or too rigid.
 
 ## hdrhistogram and memory-stats for E2E Proof
 

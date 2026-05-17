@@ -111,7 +111,8 @@ Review fixes landed before completion:
 - service-import requests carry bridge origin with source principal,
 - local subscriber and queue-subscriber conflicts are covered in both
   registration orders,
-- service-import `RemoteUnavailable` is covered separately from `Disabled`,
+- service-import `RemoteUnavailable` was later removed because it was only set
+  by tests and had no production observation path,
 - queue groups are explicitly tested as island-scoped.
 
 ## Semantic-Leverage Check

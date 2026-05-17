@@ -32,8 +32,9 @@ The end state is a Ployz foundation where:
 - iroh-blobs carries content-addressed payloads.
 - SQLite is a disposable local projection/cache.
 - WireGuard remains the private data plane.
-- Gateway and DNS remain separate serving roles and keep their existing shape
-  where possible, especially Pingora in the gateway.
+- HTTP gateway and DNS behavior remain product requirements, but their internal
+  shape is open for redesign. Pingora and the existing DNS code are references,
+  not constraints.
 - The proof is a strong E2E suite, not just architectural plausibility.
 - The code shape proves the primitives are right: real business behavior should
   require far less orchestration glue than the previous foundation.
@@ -96,11 +97,17 @@ Important constraints:
 - No hidden controller should silently rewrite durable truth.
 - Durable state records explicit operator intent and lifecycle facts.
 - Live observation is checked at decision time and does not become stored truth.
-- The daemon is disposable. Workloads, WireGuard, gateway, DNS, and last-good
-  snapshots must outlive it.
+- The daemon is disposable. Workloads, WireGuard, HTTP serving, DNS serving,
+  and last-good data-plane state must outlive it.
 - If a command cannot prove preconditions, it fails before mutation.
 - If a command crosses a durable commit point, later cleanup failure is visible
   recoverable status, not erased history.
+- The coordinator daemon is not the data plane. Killing the command/coordinator
+  role must stop new local mutations and operator commands, but steady-state
+  roles continue serving: workloads keep running, WireGuard remains configured,
+  service-to-service traffic still works, HTTP/DNS keep serving last good state,
+  and local appliers can continue consuming already-replicated serving-state
+  updates if their role is not the crashed coordinator.
 
 ## Architecture North Star
 
@@ -119,8 +126,8 @@ State           = signed iroh-docs facts
 Projection      = SQLite plus snapshots
 Runtime         = Kameo actors
 Connectivity    = iroh first, WireGuard data plane
-Gateway         = existing Pingora serving role
-DNS             = existing serving role
+HTTP serving    = product primitive; Pingora is a candidate implementation
+DNS serving     = product primitive; role/process shape must be proven
 ```
 
 The internal control-plane primitive should be PloyzBus, not raw gossip and not
@@ -139,10 +146,11 @@ The MVP is not done when the types compile. It is done when E2E tests prove:
 - bridges import/export explicit subjects,
 - facts replicate,
 - projections rebuild,
-- gateway/DNS keep serving last good state,
+- HTTP/DNS serving keeps last good data-plane state,
 - machine add/remove works through iroh and WireGuard reconciliation,
 - deploy commit happens before drain,
-- crash/restart behavior preserves the data plane,
+- crash/restart behavior preserves steady-state data-plane behavior when the
+  coordinator is down,
 - performance is measured under the product target and under large logical-node
   stress loads.
 
@@ -157,14 +165,14 @@ It is also done only when implementation slices prove semantic leverage:
 - code review can reason about feature rules without reading the whole
   substrate stack.
 
-## Existing Code To Preserve
+## Current Code To Study, Not Preserve
 
-Preserve these unless a later slice plan proves a concrete reason to change
-them:
+Use these as reference material, but do not treat their current shape as a
+non-negotiable migration target:
 
-- Pingora gateway implementation and snapshot state patterns in
+- Pingora HTTP serving implementation and snapshot state patterns in
   [crates/ployz-gateway](../crates/ployz-gateway)
-- DNS binary and serving role in [crates/ployz-dns](../crates/ployz-dns)
+- DNS serving behavior in [crates/ployz-dns](../crates/ployz-dns)
 - Sidecar detach/adopt semantics in
   [crates/ployzd/src/services/gateway.rs](../crates/ployzd/src/services/gateway.rs)
   and [crates/ployzd/src/services/dns.rs](../crates/ployzd/src/services/dns.rs)
@@ -176,9 +184,17 @@ them:
   [docs/routing-and-deploys.md](../docs/routing-and-deploys.md)
 - Stored intent/projection/live observation separation from
   [docs/authority-roadmap.md](../docs/authority-roadmap.md)
+- ACME behavior in
+  [crates/ployz-cert-backends](../crates/ployz-cert-backends) and
+  [crates/ployzd/src/daemon/cert_coordination.rs](../crates/ployzd/src/daemon/cert_coordination.rs)
 
-The gateway/DNS change should be about their control-plane input model: local
-snapshots and projections first, not direct dependency on a live NATS store.
+The old deploy implementation is specifically not a shape to preserve.
+[crates/ployzd/src/daemon/deploy.rs](../crates/ployzd/src/daemon/deploy.rs)
+is the semantic-leverage baseline to beat, not a porting source.
+
+The HTTP/DNS rewrite should preserve product behavior and data-plane continuity,
+not the old control-plane input model or role boundaries. Pingora may still be
+the right HTTP serving primitive; what feeds it is up for redesign.
 
 While the MVP is being proven, do not modify the existing codebase. Build new
 experimental code under `MVP/` and use the old code only as reference material.
@@ -196,9 +212,43 @@ Challenge these areas during future slice planning:
   capability.
 - Background loops that mutate durable control-plane truth.
 - Projection or health state that is accidentally promoted into stored truth.
-- Gateway/DNS startup paths that require live control-plane connectivity before
+- HTTP/DNS serving paths that require live control-plane connectivity before
   serving last good state.
 - Any deploy path where drain can start before the route commit is durable.
+- The old deploy coordinator shape in
+  [crates/ployzd/src/daemon/deploy.rs](../crates/ployzd/src/daemon/deploy.rs).
+- Any architecture where one crashed coordinator process prevents already
+  running services from communicating, serving HTTP/DNS, or consuming
+  already-replicated local serving-state updates.
+
+## Daemon Failure Semantics
+
+For the MVP, "kill the daemon" means kill the role that accepts operator
+commands and coordinates mutations. It must not mean the node's steady state is
+dead.
+
+Expected while the coordinator is down:
+
+- existing workloads keep running,
+- WireGuard configuration remains active and service-to-service traffic across
+  nodes continues,
+- HTTP/DNS serving continues from last good local state,
+- local serving-state appliers may keep applying already-replicated facts if
+  they are separate from the coordinator role,
+- the node reports coordinator health/staleness visibly, rather than silently
+  claiming all control-plane capabilities are healthy.
+
+Unavailable while the coordinator is down:
+
+- new deploys or mutations targeted at that node,
+- local runtime changes that need the coordinator to modify containers,
+  firewall/WireGuard policy, routes, DNS, or certificates,
+- operator commands that require fresh local precondition checks.
+
+This distinction should drive future process-role design. We may still ship one
+binary, but the coordinator, data-plane serving, workload runtime, and
+state-applier responsibilities must not share a fate unless an E2E proof says
+that is acceptable.
 
 ## Planning Protocol For Future Slices
 
@@ -231,9 +281,46 @@ The slice plan should decide:
 - what maintainer-facing documentation should be updated so future contributors
   know why a primitive, crate, or pattern exists.
 - how the slice stays isolated under `MVP/`.
+- how the slice handles iroh/iroh-docs instead of deferring it again. If
+  `iroh-docs` is blocked by the MVP Rust toolchain, the slice plan must choose
+  between bumping the MVP toolchain or pinning an older compatible API.
 
 The slice plan should not blindly follow a prewritten backlog. It should inspect
 the code and choose the next boundary.
+
+## Commit And Review Cadence
+
+- Keep plan, implementation, simplification, and review-fix commits separate
+  when a slice is larger than a narrow docs-only change.
+- Run the simplify workflow after the first implementation proof passes, then
+  land simplification as its own commit before the full review pass.
+- Treat review-caught invariant bugs as a signal to reduce commit size inside
+  the slice.
+- Keep `just test` time-budgeted so the all-scenario E2E gate fails on
+  meaningful wall-clock regressions instead of silently growing.
+
+## Next Product Proofs
+
+The next product-feature slices should be:
+
+1. ACME on the new primitives.
+2. Deploy commit-before-drain rebuilt on the new primitives.
+
+ACME is the canary because it forces a singleton/concurrency primitive the MVP
+does not yet have. Before planning or implementing ACME, ask the operator which
+primitive shape to prove:
+
+- queue group with `max_members = 1` enforced by the bus,
+- explicit lease fact with TTL and renewal as a fact-store primitive,
+- named singleton service registered through `$SYS.service.*`.
+
+Those options have different partition and recovery semantics. Do not choose
+silently.
+
+The deploy slice should not port old `deploy.rs`. It should express the
+smallest durable state machine from `MVP/architecture.md`: request-many
+capacity, prepare/start, durable route commit/pin, projection rebuild, then
+drain as a consequence of that commit.
 
 ## Crate Scout Protocol
 
@@ -336,7 +423,7 @@ Run simplification regularly, especially after:
 - adding actor messages,
 - adding projection reducers,
 - adding transport adapters,
-- wiring daemon/gateway/DNS boundaries.
+- wiring daemon/serving-role boundaries.
 
 The simplification goal is not fewer lines. It is clearer ownership and fewer
 ways to represent the same state. Prefer typed variants, narrow traits, and
@@ -347,13 +434,14 @@ deterministic reducers over stringly option bags or broad facades.
 Each future slice should improve at least one of these gates:
 
 - `Bus`: subject matching, request/reply, no responders, request-many, queue
-  groups, drain, auth failures.
+  groups, drain, auth failures, singleton/lease behavior once ACME selects the
+  primitive.
 - `Authority`: island membership, grants, imports/exports, direct fact-write
   denial across islands.
 - `Facts`: signed immutable facts, replication, pin acknowledgements,
   projection rebuild.
-- `Gateway/DNS`: snapshot load, reload, last-good serving, corrupt snapshot
-  handling, daemon outage.
+- `HTTP/DNS`: last-good serving, corrupt next-state handling, daemon outage,
+  and whatever role/process boundary the new serving design proves.
 - `Membership`: init, invite, join, tombstone, WireGuard full mesh.
 - `Deploy`: capacity fanout, phase readiness, durable commit, route projection,
   drain, crash before/after commit.
@@ -379,7 +467,8 @@ Defer these until an E2E proof or product requirement makes them necessary:
 - Optimized wildcard subject indexes for very large fleets.
 - Full adversarial multi-tenant hosting.
 - Automatic rollback for irreversible phases.
-- Replacing Pingora.
+- Replacing or keeping Pingora before an HTTP-serving slice proves the right
+  shape.
 - Removing the existing NATS path before the MVP path has proof.
 
 ## Open Strategy Questions
@@ -389,14 +478,15 @@ Future slice plans should resolve these only when they become blocking:
 - Whether the first implementation should integrate into existing `ployzd` or
   run as a parallel MVP daemon path until the proof harness passes. Current
   direction: keep it under `MVP/` until explicitly changed.
-- Which current iroh-docs/iroh-sync APIs are stable enough for the repo's Rust
-  toolchain.
+- Which current iroh-docs/iroh-sync APIs are stable enough for the MVP Rust
+  toolchain. This is no longer a question to defer indefinitely; the next slice
+  that touches facts/transport must make a concrete version/toolchain decision.
 - Whether Kameo remote actors should be avoided entirely at first, keeping all
   remote semantics in PloyzBus.
 - Whether `ployz-store-api` should evolve into a projection-facing interface or
   be bypassed for the MVP path.
-- Which snapshot encoding is best for gateway/DNS. Start readable unless tests
-  prove it is too slow.
+- Which serving-state encoding is best for HTTP/DNS. Start readable unless
+  tests prove it is too slow.
 
 ## First Next Step
 
