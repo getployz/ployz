@@ -10,11 +10,13 @@ use crossbeam_channel::{
     Receiver as DeliveryReceiver, SendTimeoutError, Sender as DeliverySender, TrySendError,
 };
 
+use crate::facts::InMemoryFactSet;
 use crate::grants::GrantBook;
 use crate::message::{MessageId, ReplyInbox, ReplyPermit};
 use crate::{
-    BusError, BusMessage, BusSession, Grant, Payload, PrincipalId, QueueName, RequestManyPolicy,
-    RequestTarget, ResponseEnvelope, ResponseMessage, Result, Subject, SubjectPattern,
+    BusError, BusMessage, BusSession, Fact, FactContentHash, FactKey, FactWriteOutcome, Grant,
+    IslandId, Payload, PrincipalId, QueueName, RequestManyPolicy, RequestTarget, ResponseEnvelope,
+    ResponseMessage, Result, Subject, SubjectPattern,
 };
 
 pub type HandlerOutcome = Result<()>;
@@ -95,14 +97,44 @@ struct RequestDispatchSpec {
     subject: Subject,
     payload: Payload,
     deadline: Instant,
-    max_deliveries: Option<usize>,
-    queue_dispatch: QueueDispatch,
+    mode: RequestDispatchMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum QueueDispatch {
-    Include,
-    Exclude,
+enum RequestDispatchMode {
+    One,
+    Many { max: usize },
+}
+
+impl RequestDispatchMode {
+    fn max_deliveries(self) -> Option<usize> {
+        match self {
+            Self::One => None,
+            Self::Many { max } => Some(max),
+        }
+    }
+
+    fn includes_queue_groups(self) -> bool {
+        match self {
+            Self::One => true,
+            Self::Many { .. } => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct QueueGroupKey {
+    island: IslandId,
+    queue: QueueName,
+}
+
+impl QueueGroupKey {
+    fn new(island: &IslandId, queue: &QueueName) -> Self {
+        Self {
+            island: island.clone(),
+            queue: queue.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,8 +228,9 @@ impl RequestContext {
 
     pub fn reply(&self, payload: impl Into<Payload>) -> Result<()> {
         let Some(reply_permit) = &self.reply_permit else {
-            return Err(BusError::ResponseClosed {
-                inbox: String::from("<none>"),
+            return Err(BusError::NoReplyPermit {
+                island: self.message.island().clone(),
+                subject: Box::new(self.message.subject().clone()),
             });
         };
         reply_permit.respond(payload)
@@ -205,8 +238,9 @@ impl RequestContext {
 
     pub fn reply_as(&self, principal: &PrincipalId, payload: impl Into<Payload>) -> Result<()> {
         let Some(reply_permit) = &self.reply_permit else {
-            return Err(BusError::ResponseClosed {
-                inbox: String::from("<none>"),
+            return Err(BusError::NoReplyPermit {
+                island: self.message.island().clone(),
+                subject: Box::new(self.message.subject().clone()),
             });
         };
         reply_permit.respond_as(principal, payload)
@@ -251,13 +285,21 @@ impl MemoryBus {
         self.runtime.snapshot()
     }
 
-    fn set_grant(&self, principal: PrincipalId, grant: Grant) -> BusSession {
+    fn set_grant(&self, island: IslandId, principal: PrincipalId, grant: Grant) -> BusSession {
         self.inner
             .lock()
             .expect("memory bus mutex poisoned")
             .grants
-            .set(principal.clone(), grant);
-        BusSession::new(principal)
+            .set(island.clone(), principal.clone(), grant);
+        BusSession::new(island, principal)
+    }
+
+    fn revoke_grant(&self, island: &IslandId, principal: &PrincipalId) -> bool {
+        self.inner
+            .lock()
+            .expect("memory bus mutex poisoned")
+            .grants
+            .revoke(island, principal)
     }
 
     pub fn subscribe<F>(
@@ -280,13 +322,19 @@ impl MemoryBus {
     ) -> Result<u64> {
         let mut inner = self.inner.lock().expect("memory bus mutex poisoned");
         inner.ensure_not_draining()?;
+        let island = session.island().clone();
         let principal = session.principal().clone();
-        if !inner.grants.can_subscribe(&principal, &pattern) {
-            return Err(BusError::UnauthorizedSubscribe { principal, pattern });
+        if !inner.grants.can_subscribe(&island, &principal, &pattern) {
+            return Err(BusError::UnauthorizedSubscribe {
+                island,
+                principal,
+                pattern: Box::new(pattern),
+            });
         }
         let id = inner.next_id();
         inner.subscribers.push(Subscriber {
             id,
+            island,
             principal,
             pattern,
             handler,
@@ -316,20 +364,23 @@ impl MemoryBus {
     ) -> Result<u64> {
         let mut inner = self.inner.lock().expect("memory bus mutex poisoned");
         inner.ensure_not_draining()?;
+        let island = session.island().clone();
         let principal = session.principal().clone();
         if !inner
             .grants
-            .can_queue_subscribe(&principal, &pattern, &queue)
+            .can_queue_subscribe(&island, &principal, &pattern, &queue)
         {
             return Err(BusError::UnauthorizedQueue {
+                island,
                 principal,
-                pattern,
+                pattern: Box::new(pattern),
                 queue,
             });
         }
         let id = inner.next_id();
         inner.queue_subscribers.push(QueueSubscriber {
             id,
+            island,
             principal,
             pattern,
             queue,
@@ -364,18 +415,24 @@ impl MemoryBus {
         let dispatch = {
             let mut inner = self.inner.lock().expect("memory bus mutex poisoned");
             inner.ensure_not_draining()?;
+            let island = session.island().clone();
             let principal = session.principal().clone();
-            if !inner.grants.can_publish(&principal, &subject) {
-                return Err(BusError::UnauthorizedPublish { principal, subject });
+            if !inner.grants.can_publish(&island, &principal, &subject) {
+                return Err(BusError::UnauthorizedPublish {
+                    island,
+                    principal,
+                    subject: Box::new(subject),
+                });
             }
             let message = BusMessage::new(
                 MessageId::new(inner.next_id()),
+                island,
                 subject.clone(),
                 principal,
                 payload,
             );
             let dispatch =
-                inner.dispatch_for_subject(&subject, message, None, QueueDispatch::Include);
+                inner.dispatch_for_subject(&subject, message, None, RequestDispatchMode::One);
             self.inflight.add(dispatch.len());
             dispatch
         };
@@ -409,8 +466,7 @@ impl MemoryBus {
                 subject: subject.clone(),
                 payload: payload.into(),
                 deadline,
-                max_deliveries: None,
-                queue_dispatch: QueueDispatch::Include,
+                mode: RequestDispatchMode::One,
             },
         )?;
         self.runtime
@@ -453,9 +509,11 @@ impl MemoryBus {
         policy: RequestManyDeadlinePolicy,
     ) -> Result<Vec<ResponseMessage>> {
         if policy.max == 0 {
+            self.authorize_request(session, &target, &subject)?;
             return Ok(Vec::new());
         }
         let target_display = target.display();
+        let target_for_error = target.clone();
         let (rx, dispatch) = self.prepare_request(
             session,
             RequestDispatchSpec {
@@ -463,8 +521,7 @@ impl MemoryBus {
                 subject,
                 payload: payload.into(),
                 deadline: policy.deadline,
-                max_deliveries: Some(policy.max),
-                queue_dispatch: QueueDispatch::Exclude,
+                mode: RequestDispatchMode::Many { max: policy.max },
             },
         )?;
         let expected = dispatch.len();
@@ -487,7 +544,7 @@ impl MemoryBus {
 
         if replies.len() < expected {
             return Err(BusError::IncompleteResponses {
-                target: target_display,
+                target: Box::new(target_for_error),
                 expected,
                 received: replies.len(),
             });
@@ -498,8 +555,12 @@ impl MemoryBus {
     pub fn drain(&self, session: &BusSession, deadline: Duration) -> Result<()> {
         {
             let mut inner = self.inner.lock().expect("memory bus mutex poisoned");
-            if !inner.grants.can_drain(session.principal()) {
+            if !inner
+                .grants
+                .can_drain(session.island(), session.principal())
+            {
                 return Err(BusError::UnauthorizedDrain {
+                    island: session.island().clone(),
                     principal: session.principal().clone(),
                 });
             }
@@ -508,45 +569,89 @@ impl MemoryBus {
         self.inflight.wait_for_idle(deadline)
     }
 
+    pub fn write_fact(
+        &self,
+        session: &BusSession,
+        key: FactKey,
+        content_hash: FactContentHash,
+    ) -> Result<FactWriteOutcome> {
+        let mut inner = self.inner.lock().expect("memory bus mutex poisoned");
+        if !inner
+            .grants
+            .can_write_fact(session.island(), session.principal(), &key)
+        {
+            return Err(BusError::UnauthorizedFactWrite {
+                island: session.island().clone(),
+                principal: session.principal().clone(),
+                key: Box::new(key),
+            });
+        }
+        inner.facts.write(
+            session.island().clone(),
+            session.principal().clone(),
+            key,
+            content_hash,
+        )
+    }
+
+    pub fn read_fact(&self, session: &BusSession, key: &FactKey) -> Result<Option<Fact>> {
+        let inner = self.inner.lock().expect("memory bus mutex poisoned");
+        if !inner
+            .grants
+            .can_read_fact(session.island(), session.principal(), key)
+        {
+            return Err(BusError::UnauthorizedFactRead {
+                island: session.island().clone(),
+                principal: session.principal().clone(),
+                key: Box::new(key.clone()),
+            });
+        }
+        Ok(inner.facts.read(session.island(), key))
+    }
+
     fn prepare_request(
         &self,
         session: &BusSession,
         spec: RequestDispatchSpec,
     ) -> Result<(mpsc::Receiver<ResponseEnvelope>, Vec<Delivery>)> {
         let (tx, rx) = mpsc::channel();
-        let target_display = spec.target.display();
         let dispatch = {
             let mut inner = self.inner.lock().expect("memory bus mutex poisoned");
             inner.ensure_not_draining()?;
+            let island = session.island().clone();
             let principal = session.principal().clone();
-            if !inner.grants.can_publish_target(&principal, &spec.target)
-                || !inner.grants.can_publish(&principal, &spec.subject)
+            if !inner
+                .grants
+                .can_publish_target(&island, &principal, &spec.target)
             {
-                return Err(BusError::UnauthorizedPublish {
+                return Err(BusError::UnauthorizedRequestTarget {
+                    island,
                     principal,
-                    subject: spec.subject,
+                    target: Box::new(spec.target),
+                });
+            }
+            if !inner.grants.can_publish(&island, &principal, &spec.subject) {
+                return Err(BusError::UnauthorizedPublish {
+                    island,
+                    principal,
+                    subject: Box::new(spec.subject),
                 });
             }
 
             let id = MessageId::new(inner.next_id());
             let inbox = ReplyInbox::new(Subject::parse(format!("_INBOX.{}", id.value()))?);
-            let mut message = BusMessage::new(id, spec.subject.clone(), principal, spec.payload);
+            let mut message =
+                BusMessage::new(id, island, spec.subject.clone(), principal, spec.payload);
             message.set_reply_to(inbox.clone());
             let reply = ReplySpec {
                 inbox,
                 expires_at: spec.deadline,
                 tx,
             };
-            let dispatch = inner.dispatch_for_target(
-                &spec.target,
-                message,
-                Some(reply),
-                spec.max_deliveries,
-                spec.queue_dispatch,
-            );
+            let dispatch = inner.dispatch_for_target(&spec.target, message, Some(reply), spec.mode);
             if dispatch.is_empty() {
                 return Err(BusError::NoResponders {
-                    subject: target_display,
+                    target: Box::new(spec.target),
                 });
             }
             self.inflight.add(dispatch.len());
@@ -554,6 +659,37 @@ impl MemoryBus {
         };
 
         Ok((rx, dispatch))
+    }
+
+    fn authorize_request(
+        &self,
+        session: &BusSession,
+        target: &RequestTarget,
+        subject: &Subject,
+    ) -> Result<()> {
+        let inner = self.inner.lock().expect("memory bus mutex poisoned");
+        inner.ensure_not_draining()?;
+        if !inner
+            .grants
+            .can_publish_target(session.island(), session.principal(), target)
+        {
+            return Err(BusError::UnauthorizedRequestTarget {
+                island: session.island().clone(),
+                principal: session.principal().clone(),
+                target: Box::new(target.clone()),
+            });
+        }
+        if !inner
+            .grants
+            .can_publish(session.island(), session.principal(), subject)
+        {
+            return Err(BusError::UnauthorizedPublish {
+                island: session.island().clone(),
+                principal: session.principal().clone(),
+                subject: Box::new(subject.clone()),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -564,15 +700,28 @@ pub struct BusAuthority {
 
 impl BusAuthority {
     pub fn grant(&self, principal: PrincipalId, grant: Grant) -> BusSession {
-        self.bus.set_grant(principal, grant)
+        self.grant_in(IslandId::default_for_mvp(), principal, grant)
+    }
+
+    pub fn grant_in(&self, island: IslandId, principal: PrincipalId, grant: Grant) -> BusSession {
+        self.bus.set_grant(island, principal, grant)
+    }
+
+    pub fn revoke(&self, session: &BusSession) -> bool {
+        self.revoke_in(session.island(), session.principal())
+    }
+
+    pub fn revoke_in(&self, island: &IslandId, principal: &PrincipalId) -> bool {
+        self.bus.revoke_grant(island, principal)
     }
 }
 
 struct Inner {
     subscribers: Vec<Subscriber>,
     queue_subscribers: Vec<QueueSubscriber>,
-    queue_cursor: BTreeMap<QueueName, usize>,
+    queue_cursor: BTreeMap<QueueGroupKey, usize>,
     grants: GrantBook,
+    facts: InMemoryFactSet,
     next_id: u64,
     draining: bool,
 }
@@ -584,6 +733,7 @@ impl Inner {
             queue_subscribers: Vec::new(),
             queue_cursor: BTreeMap::new(),
             grants: GrantBook::default(),
+            facts: InMemoryFactSet::default(),
             next_id: 1,
             draining: false,
         }
@@ -607,10 +757,10 @@ impl Inner {
         subject: &Subject,
         message: BusMessage,
         reply: Option<ReplySpec>,
-        queue_dispatch: QueueDispatch,
+        mode: RequestDispatchMode,
     ) -> Vec<Delivery> {
         let target = RequestTarget::Subject(subject.clone());
-        self.dispatch_for_target(&target, message, reply, None, queue_dispatch)
+        self.dispatch_for_target(&target, message, reply, mode)
     }
 
     fn dispatch_for_target(
@@ -618,19 +768,23 @@ impl Inner {
         target: &RequestTarget,
         message: BusMessage,
         reply: Option<ReplySpec>,
-        max_deliveries: Option<usize>,
-        queue_dispatch: QueueDispatch,
+        mode: RequestDispatchMode,
     ) -> Vec<Delivery> {
         let mut dispatch = Vec::new();
+        let max_deliveries = mode.max_deliveries();
 
         for subscriber in &self.subscribers {
-            if target.matches_subject_pattern(&subscriber.pattern)
-                && self
-                    .grants
-                    .can_subscribe(&subscriber.principal, &subscriber.pattern)
-                && reply
-                    .as_ref()
-                    .is_none_or(|_| self.grants.can_respond(&subscriber.principal))
+            if target_matches_subject_pattern(target, &subscriber.pattern)
+                && &subscriber.island == message.island()
+                && self.grants.can_subscribe(
+                    &subscriber.island,
+                    &subscriber.principal,
+                    &subscriber.pattern,
+                )
+                && reply.as_ref().is_none_or(|_| {
+                    self.grants
+                        .can_respond(&subscriber.island, &subscriber.principal)
+                })
             {
                 dispatch.push(subscriber.delivery(message.clone(), reply.clone()));
                 if max_deliveries.is_some_and(|max| dispatch.len() >= max) {
@@ -639,32 +793,36 @@ impl Inner {
             }
         }
 
-        if queue_dispatch == QueueDispatch::Exclude {
+        if !mode.includes_queue_groups() {
             return dispatch;
         }
 
-        let mut groups = BTreeMap::<QueueName, Vec<QueueSubscriber>>::new();
-        for subscriber in &self.queue_subscribers {
-            if target.matches_subject_pattern(&subscriber.pattern)
+        let mut groups = BTreeMap::<QueueGroupKey, Vec<usize>>::new();
+        for (subscriber_index, subscriber) in self.queue_subscribers.iter().enumerate() {
+            if target_matches_subject_pattern(target, &subscriber.pattern)
+                && &subscriber.island == message.island()
                 && self.grants.can_queue_subscribe(
+                    &subscriber.island,
                     &subscriber.principal,
                     &subscriber.pattern,
                     &subscriber.queue,
                 )
-                && reply
-                    .as_ref()
-                    .is_none_or(|_| self.grants.can_respond(&subscriber.principal))
+                && reply.as_ref().is_none_or(|_| {
+                    self.grants
+                        .can_respond(&subscriber.island, &subscriber.principal)
+                })
             {
                 groups
-                    .entry(subscriber.queue.clone())
+                    .entry(QueueGroupKey::new(&subscriber.island, &subscriber.queue))
                     .or_default()
-                    .push(subscriber.clone());
+                    .push(subscriber_index);
             }
         }
-        for (group_key, subscribers) in groups {
+        for (group_key, subscriber_indices) in groups {
             let cursor = self.queue_cursor.entry(group_key).or_insert(0);
-            let selected = subscribers[*cursor % subscribers.len()].clone();
+            let selected_index = subscriber_indices[*cursor % subscriber_indices.len()];
             *cursor += 1;
+            let selected = &self.queue_subscribers[selected_index];
             dispatch.push(selected.delivery(message.clone(), reply.clone()));
             if max_deliveries.is_some_and(|max| dispatch.len() >= max) {
                 return dispatch;
@@ -675,22 +833,17 @@ impl Inner {
     }
 }
 
-trait TargetMatch {
-    fn matches_subject_pattern(&self, pattern: &SubjectPattern) -> bool;
-}
-
-impl TargetMatch for RequestTarget {
-    fn matches_subject_pattern(&self, pattern: &SubjectPattern) -> bool {
-        match self {
-            RequestTarget::Subject(subject) => pattern.matches(subject),
-            RequestTarget::Pattern(target_pattern) => target_pattern.overlaps(pattern),
-        }
+fn target_matches_subject_pattern(target: &RequestTarget, pattern: &SubjectPattern) -> bool {
+    match target {
+        RequestTarget::Subject(subject) => pattern.matches(subject),
+        RequestTarget::Pattern(target_pattern) => target_pattern.overlaps(pattern),
     }
 }
 
 #[derive(Clone)]
 struct Subscriber {
     id: u64,
+    island: IslandId,
     principal: PrincipalId,
     pattern: SubjectPattern,
     handler: Handler,
@@ -711,6 +864,7 @@ impl Subscriber {
 #[derive(Clone)]
 struct QueueSubscriber {
     id: u64,
+    island: IslandId,
     principal: PrincipalId,
     pattern: SubjectPattern,
     queue: QueueName,
@@ -781,6 +935,7 @@ impl Delivery {
             ReplyPermit::new(
                 reply.inbox.clone(),
                 self.message.id(),
+                self.message.island().clone(),
                 self.principal.clone(),
                 reply.expires_at,
                 reply.tx.clone(),
@@ -1047,9 +1202,14 @@ mod tests {
 
     use super::MemoryBus;
     use crate::{
-        BusError, BusRuntimeConfig, BusSession, Grant, Payload, PrincipalId, RequestManyPolicy,
+        BusError, BusRuntimeConfig, BusSession, FactContentHash, FactKey, FactKeyPattern,
+        FactWriteOutcome, Grant, HandlerFailure, IslandId, Payload, PrincipalId, RequestManyPolicy,
         RequestTarget, Subject, SubjectPattern,
     };
+
+    fn island(name: &str) -> IslandId {
+        IslandId::new(name)
+    }
 
     fn principal(name: &str) -> PrincipalId {
         PrincipalId::new(name)
@@ -1061,6 +1221,18 @@ mod tests {
 
     fn pattern(value: &str) -> SubjectPattern {
         SubjectPattern::parse(value).expect("pattern parses")
+    }
+
+    fn fact_key(value: &str) -> FactKey {
+        FactKey::parse(value).expect("fact key parses")
+    }
+
+    fn fact_pattern(value: &str) -> FactKeyPattern {
+        FactKeyPattern::parse(value).expect("fact key pattern parses")
+    }
+
+    fn hash(value: &str) -> FactContentHash {
+        FactContentHash::new(value)
     }
 
     fn bus_with_admin() -> (MemoryBus, BusSession) {
@@ -1254,7 +1426,7 @@ mod tests {
         assert_eq!(
             error,
             BusError::NoResponders {
-                subject: String::from("node.alpha.inspect")
+                target: Box::new(RequestTarget::Subject(subject("node.alpha.inspect"))),
             }
         );
     }
@@ -1291,7 +1463,7 @@ mod tests {
         bus.subscribe(&admin, pattern("node.alpha.inspect"), |_ctx| {
             Err(BusError::HandlerFailed {
                 subject: String::from("node.alpha.inspect"),
-                reason: String::from("boom"),
+                failure: HandlerFailure::Application,
             })
         })
         .expect("subscribe");
@@ -1309,7 +1481,7 @@ mod tests {
             error,
             BusError::HandlerFailed {
                 subject: String::from("node.alpha.inspect"),
-                reason: String::from("boom"),
+                failure: HandlerFailure::Application,
             }
         );
     }
@@ -1420,7 +1592,7 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(matches!(error, BusError::UnauthorizedPublish { .. }));
+        assert!(matches!(error, BusError::UnauthorizedRequestTarget { .. }));
     }
 
     #[test]
@@ -1470,7 +1642,7 @@ mod tests {
         assert_eq!(
             error,
             BusError::IncompleteResponses {
-                target: String::from("node.*.capacity"),
+                target: Box::new(RequestTarget::Pattern(pattern("node.*.capacity"))),
                 expected: 2,
                 received: 1,
             }
@@ -1500,6 +1672,42 @@ mod tests {
 
         assert!(replies.is_empty());
         assert_eq!(called.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn request_many_zero_max_still_requires_authority() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let requester = authority.grant(principal("requester"), Grant::empty());
+
+        let error = bus
+            .request_many(
+                &requester,
+                RequestTarget::Pattern(pattern("node.*.capacity")),
+                subject("node.broadcast.capacity"),
+                Vec::new(),
+                RequestManyPolicy::new(0, Duration::from_secs(1)),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, BusError::UnauthorizedRequestTarget { .. }));
+    }
+
+    #[test]
+    fn request_many_zero_max_still_respects_draining() {
+        let (bus, admin) = bus_with_admin();
+        bus.drain(&admin, Duration::from_secs(1)).expect("drain");
+
+        let error = bus
+            .request_many(
+                &admin,
+                RequestTarget::Pattern(pattern("node.*.capacity")),
+                subject("node.broadcast.capacity"),
+                Vec::new(),
+                RequestManyPolicy::new(0, Duration::from_secs(1)),
+            )
+            .unwrap_err();
+
+        assert_eq!(error, BusError::Draining);
     }
 
     #[test]
@@ -1545,8 +1753,237 @@ mod tests {
             )
             .unwrap_err();
 
+        assert!(matches!(error, BusError::UnauthorizedRequestTarget { .. }));
+        assert_eq!(received.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn same_subject_publish_stays_inside_session_island() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = authority.grant_in(island("laptop"), principal("admin"), Grant::allow_all());
+        let prod = authority.grant_in(island("prod"), principal("admin"), Grant::allow_all());
+        let laptop_deliveries = Arc::new(AtomicUsize::new(0));
+        let prod_deliveries = Arc::new(AtomicUsize::new(0));
+        let laptop_deliveries_for_handler = Arc::clone(&laptop_deliveries);
+        let prod_deliveries_for_handler = Arc::clone(&prod_deliveries);
+        bus.subscribe(&laptop, pattern("deploy.submit"), move |ctx| {
+            assert_eq!(ctx.message.island().as_str(), "laptop");
+            laptop_deliveries_for_handler.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .expect("subscribe laptop");
+        bus.subscribe(&prod, pattern("deploy.submit"), move |ctx| {
+            assert_eq!(ctx.message.island().as_str(), "prod");
+            prod_deliveries_for_handler.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .expect("subscribe prod");
+
+        bus.publish(&laptop, subject("deploy.submit"), b"from-laptop".to_vec())
+            .expect("publish laptop");
+
+        assert_eq!(laptop_deliveries.load(Ordering::SeqCst), 1);
+        assert_eq!(prod_deliveries.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn request_does_not_use_cross_island_responders() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = authority.grant_in(island("laptop"), principal("admin"), Grant::allow_all());
+        let prod = authority.grant_in(island("prod"), principal("admin"), Grant::allow_all());
+        let prod_handler_calls = Arc::new(AtomicUsize::new(0));
+        let prod_handler_calls_for_handler = Arc::clone(&prod_handler_calls);
+        bus.subscribe(&prod, pattern("deploy.submit"), move |ctx| {
+            prod_handler_calls_for_handler.fetch_add(1, Ordering::SeqCst);
+            ctx.reply(b"prod".to_vec())
+        })
+        .expect("subscribe prod responder");
+
+        let error = bus
+            .request(
+                &laptop,
+                subject("deploy.submit"),
+                Vec::new(),
+                Duration::from_millis(20),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, BusError::NoResponders { .. }));
+        assert_eq!(prod_handler_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn revoking_grant_blocks_future_publish_before_dispatch() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let admin = authority.grant(principal("admin"), Grant::allow_all());
+        let publisher = authority.grant(principal("publisher"), Grant::allow_all());
+        let received = Arc::new(AtomicUsize::new(0));
+        let received_for_handler = Arc::clone(&received);
+        bus.subscribe(&admin, pattern("gateway.changed"), move |_| {
+            received_for_handler.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .expect("subscribe");
+        assert!(authority.revoke(&publisher));
+
+        let error = bus
+            .publish(&publisher, subject("gateway.changed"), Vec::new())
+            .unwrap_err();
+
         assert!(matches!(error, BusError::UnauthorizedPublish { .. }));
         assert_eq!(received.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn authorization_error_carries_island_and_principal_context() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = authority.grant_in(island("laptop"), principal("writer"), Grant::empty());
+
+        let error = bus
+            .publish(&laptop, subject("gateway.changed"), Vec::new())
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            BusError::UnauthorizedPublish {
+                island,
+                principal,
+                ..
+            } if island.as_str() == "laptop" && principal.as_str() == "writer"
+        ));
+    }
+
+    #[test]
+    fn allowed_fact_write_inserts_fact_in_session_island() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let writer = authority.grant_in(
+            island("prod"),
+            principal("deployer"),
+            Grant::empty()
+                .with_fact_write(fact_pattern("/facts/deploy/>"))
+                .with_fact_read(fact_pattern("/facts/deploy/>")),
+        );
+
+        let outcome = bus
+            .write_fact(&writer, fact_key("/facts/deploy/d1/plan"), hash("b3:plan"))
+            .expect("write fact");
+        let fact = bus
+            .read_fact(&writer, &fact_key("/facts/deploy/d1/plan"))
+            .expect("read fact")
+            .expect("fact exists");
+
+        assert!(matches!(outcome, FactWriteOutcome::Inserted(_)));
+        assert_eq!(fact.island().as_str(), "prod");
+        assert_eq!(fact.author().as_str(), "deployer");
+        assert_eq!(fact.content_hash().as_str(), "b3:plan");
+    }
+
+    #[test]
+    fn denied_fact_write_fails_before_mutation() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let reader = authority.grant_in(island("prod"), principal("reader"), Grant::allow_all());
+        let writer = authority.grant_in(
+            island("prod"),
+            principal("deployer"),
+            Grant::empty()
+                .with_fact_write(fact_pattern("/facts/deploy/>"))
+                .with_fact_write_deny(fact_pattern("/facts/deploy/*/secret")),
+        );
+
+        let error = bus
+            .write_fact(
+                &writer,
+                fact_key("/facts/deploy/d1/secret"),
+                hash("b3:secret"),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, BusError::UnauthorizedFactWrite { .. }));
+        assert!(
+            bus.read_fact(&reader, &fact_key("/facts/deploy/d1/secret"))
+                .expect("read secret")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn fact_reads_are_island_scoped_through_bus() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let laptop = authority.grant_in(island("laptop"), principal("admin"), Grant::allow_all());
+        let prod = authority.grant_in(island("prod"), principal("admin"), Grant::allow_all());
+        bus.write_fact(&prod, fact_key("/facts/deploy/d1/plan"), hash("b3:prod"))
+            .expect("write prod fact");
+        bus.write_fact(
+            &laptop,
+            fact_key("/facts/deploy/d1/plan"),
+            hash("b3:laptop"),
+        )
+        .expect("write laptop fact");
+
+        let prod_fact = bus
+            .read_fact(&prod, &fact_key("/facts/deploy/d1/plan"))
+            .expect("read prod")
+            .expect("prod fact exists");
+        let laptop_fact = bus
+            .read_fact(&laptop, &fact_key("/facts/deploy/d1/plan"))
+            .expect("read laptop")
+            .expect("laptop fact exists");
+
+        assert_eq!(prod_fact.content_hash().as_str(), "b3:prod");
+        assert_eq!(laptop_fact.content_hash().as_str(), "b3:laptop");
+    }
+
+    #[test]
+    fn fact_read_requires_active_read_grant() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let admin = authority.grant_in(island("prod"), principal("admin"), Grant::allow_all());
+        let intruder = authority.grant_in(island("prod"), principal("intruder"), Grant::empty());
+        bus.write_fact(&admin, fact_key("/facts/deploy/d1/plan"), hash("b3:prod"))
+            .expect("write prod fact");
+
+        let error = bus
+            .read_fact(&intruder, &fact_key("/facts/deploy/d1/plan"))
+            .unwrap_err();
+
+        assert!(matches!(error, BusError::UnauthorizedFactRead { .. }));
+    }
+
+    #[test]
+    fn revoked_session_cannot_read_facts() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let admin = authority.grant_in(island("prod"), principal("admin"), Grant::allow_all());
+        let reader = authority.grant_in(island("prod"), principal("reader"), Grant::allow_all());
+        bus.write_fact(&admin, fact_key("/facts/deploy/d1/plan"), hash("b3:prod"))
+            .expect("write prod fact");
+        assert!(authority.revoke(&reader));
+
+        let error = bus
+            .read_fact(&reader, &fact_key("/facts/deploy/d1/plan"))
+            .unwrap_err();
+
+        assert!(matches!(error, BusError::UnauthorizedFactRead { .. }));
+    }
+
+    #[test]
+    fn fact_write_conflict_is_structured() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let writer = authority.grant(principal("admin"), Grant::allow_all());
+        bus.write_fact(&writer, fact_key("/facts/deploy/d1/plan"), hash("b3:first"))
+            .expect("write fact");
+
+        let repeated = bus
+            .write_fact(&writer, fact_key("/facts/deploy/d1/plan"), hash("b3:first"))
+            .expect("repeat fact");
+        let conflict = bus
+            .write_fact(
+                &writer,
+                fact_key("/facts/deploy/d1/plan"),
+                hash("b3:second"),
+            )
+            .unwrap_err();
+
+        assert!(matches!(repeated, FactWriteOutcome::AlreadyPresent(_)));
+        assert!(matches!(conflict, BusError::FactConflict { .. }));
     }
 
     #[test]
@@ -1636,12 +2073,14 @@ mod tests {
         let (bus, admin) = bus_with_admin();
         let duplicate_error = Arc::new(Mutex::new(None));
         let duplicate_error_for_handler = Arc::clone(&duplicate_error);
+        let (duplicate_recorded_tx, duplicate_recorded_rx) = mpsc::channel();
         bus.subscribe(&admin, pattern("node.alpha.inspect"), move |ctx| {
             ctx.reply(b"first".to_vec())?;
             let error = ctx.reply(b"second".to_vec()).unwrap_err();
             *duplicate_error_for_handler
                 .lock()
                 .expect("lock duplicate error") = Some(error);
+            let _ = duplicate_recorded_tx.send(());
             Ok(())
         })
         .expect("subscribe");
@@ -1656,6 +2095,9 @@ mod tests {
             .expect("request");
 
         assert_eq!(response.payload().as_bytes(), b"first".as_slice());
+        duplicate_recorded_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("duplicate response recorded");
         assert!(matches!(
             duplicate_error
                 .lock()

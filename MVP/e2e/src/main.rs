@@ -1,4 +1,6 @@
 mod actor_contract;
+mod assertions;
+mod authority_contract;
 mod bus_contract;
 mod bus_syntax;
 mod metrics;
@@ -20,15 +22,19 @@ fn run() -> Result<(), String> {
         .unwrap_or_else(|| String::from("bus-contract"));
     match scenario.as_str() {
         "actor-contract" => actor_contract::run(),
+        "authority-contract" => authority_contract::run(),
         "bus-contract" => bus_contract::run(),
         "all" => {
             bus_contract::run()?;
             actor_contract::run()?;
+            authority_contract::run()?;
             scale::run()
         }
         "scale" => scale::run(),
         "help" | "--help" | "-h" => {
-            println!("usage: cargo run -p mvp-e2e -- <bus-contract|actor-contract|all|scale>");
+            println!(
+                "usage: cargo run -p mvp-e2e -- <bus-contract|actor-contract|authority-contract|all|scale>"
+            );
             Ok(())
         }
         other => Err(format!("unknown MVP E2E scenario '{other}'")),

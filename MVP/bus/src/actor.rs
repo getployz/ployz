@@ -11,9 +11,9 @@ use kameo::reply::DelegatedReply;
 use crate::memory::{DEFAULT_PUBLISH_TIMEOUT, MemoryBus};
 use crate::memory::{Handler, RequestManyDeadlinePolicy, deadline_after, remaining_until};
 use crate::{
-    BusAuthority, BusError, BusRuntimeSnapshot, BusSession, HandlerOutcome, Payload, QueueName,
-    RequestContext, RequestManyPolicy, RequestTarget, ResponseMessage, Result, Subject,
-    SubjectPattern,
+    ActorFailure, BusAuthority, BusError, BusRuntimeSnapshot, BusSession, Fact, FactContentHash,
+    FactKey, FactWriteOutcome, HandlerOutcome, Payload, QueueName, RequestContext,
+    RequestManyPolicy, RequestTarget, ResponseMessage, Result, Subject, SubjectPattern,
 };
 
 const BUS_ACTOR_MAILBOX_CAPACITY: usize = 64;
@@ -158,6 +158,17 @@ impl BusActorHandle {
         payload: impl Into<Payload>,
         policy: RequestManyPolicy,
     ) -> Result<Vec<ResponseMessage>> {
+        let payload = payload.into();
+        if policy.max == 0 {
+            return self
+                .ask(RequestManyZero {
+                    session: session.clone(),
+                    target,
+                    subject,
+                    payload,
+                })
+                .await;
+        }
         let deadline = deadline_after(policy.deadline);
         let timeout_subject = target.display();
         self.ask_until(
@@ -165,7 +176,7 @@ impl BusActorHandle {
                 session: session.clone(),
                 target,
                 subject,
-                payload: payload.into(),
+                payload,
                 policy: RequestManyDeadlinePolicy {
                     max: policy.max,
                     deadline,
@@ -192,6 +203,28 @@ impl BusActorHandle {
 
     pub async fn runtime_snapshot(&self) -> Result<BusRuntimeSnapshot> {
         self.ask(RuntimeSnapshot).await
+    }
+
+    pub async fn write_fact(
+        &self,
+        session: &BusSession,
+        key: FactKey,
+        content_hash: FactContentHash,
+    ) -> Result<FactWriteOutcome> {
+        self.ask(WriteFact {
+            session: session.clone(),
+            key,
+            content_hash,
+        })
+        .await
+    }
+
+    pub async fn read_fact(&self, session: &BusSession, key: FactKey) -> Result<Option<Fact>> {
+        self.ask(ReadFact {
+            session: session.clone(),
+            key,
+        })
+        .await
     }
 
     async fn ask<M, R>(&self, message: M) -> Result<R>
@@ -253,15 +286,15 @@ fn map_actor_mailbox_send_error(error: SendError, subject: String) -> BusError {
         SendError::Timeout(_) | SendError::MailboxFull(_) => BusError::Timeout { subject },
         SendError::ActorNotRunning(_) => BusError::ActorUnavailable {
             actor: String::from("bus"),
-            reason: String::from("not running"),
+            failure: ActorFailure::NotRunning,
         },
         SendError::ActorStopped => BusError::ActorUnavailable {
             actor: String::from("bus"),
-            reason: String::from("stopped"),
+            failure: ActorFailure::Stopped,
         },
         SendError::HandlerError(_) => BusError::ActorUnavailable {
             actor: String::from("bus"),
-            reason: String::from("mailbox send failed"),
+            failure: ActorFailure::MailboxSendFailed,
         },
     }
 }
@@ -271,19 +304,19 @@ fn map_actor_send_error<M>(error: SendError<M, BusError>) -> BusError {
         SendError::HandlerError(error) => error,
         SendError::ActorNotRunning(_) => BusError::ActorUnavailable {
             actor: String::from("bus"),
-            reason: String::from("not running"),
+            failure: ActorFailure::NotRunning,
         },
         SendError::ActorStopped => BusError::ActorUnavailable {
             actor: String::from("bus"),
-            reason: String::from("stopped"),
+            failure: ActorFailure::Stopped,
         },
         SendError::MailboxFull(_) => BusError::ActorUnavailable {
             actor: String::from("bus"),
-            reason: String::from("mailbox full"),
+            failure: ActorFailure::MailboxFull,
         },
         SendError::Timeout(_) => BusError::ActorUnavailable {
             actor: String::from("bus"),
-            reason: String::from("ask timed out"),
+            failure: ActorFailure::AskTimeout,
         },
     }
 }
@@ -393,6 +426,34 @@ struct RequestMany {
     policy: RequestManyDeadlinePolicy,
 }
 
+struct RequestManyZero {
+    session: BusSession,
+    target: RequestTarget,
+    subject: Subject,
+    payload: Payload,
+}
+
+impl Message<RequestManyZero> for BusActor {
+    type Reply = Result<Vec<ResponseMessage>>;
+
+    async fn handle(
+        &mut self,
+        message: RequestManyZero,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.bus.request_many_until(
+            &message.session,
+            message.target,
+            message.subject,
+            message.payload,
+            RequestManyDeadlinePolicy {
+                max: 0,
+                deadline: Instant::now(),
+            },
+        )
+    }
+}
+
 impl Message<RequestMany> for BusActor {
     type Reply = DelegatedReply<Result<Vec<ResponseMessage>>>;
 
@@ -449,15 +510,51 @@ impl Message<RuntimeSnapshot> for BusActor {
     }
 }
 
+struct WriteFact {
+    session: BusSession,
+    key: FactKey,
+    content_hash: FactContentHash,
+}
+
+impl Message<WriteFact> for BusActor {
+    type Reply = Result<FactWriteOutcome>;
+
+    async fn handle(
+        &mut self,
+        message: WriteFact,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.bus
+            .write_fact(&message.session, message.key, message.content_hash)
+    }
+}
+
+struct ReadFact {
+    session: BusSession,
+    key: FactKey,
+}
+
+impl Message<ReadFact> for BusActor {
+    type Reply = Result<Option<Fact>>;
+
+    async fn handle(
+        &mut self,
+        message: ReadFact,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.bus.read_fact(&message.session, &message.key)
+    }
+}
+
 async fn run_blocking<R>(operation: impl FnOnce() -> Result<R> + Send + 'static) -> Result<R>
 where
     R: Send + 'static,
 {
     tokio::task::spawn_blocking(operation)
         .await
-        .map_err(|error| BusError::ActorUnavailable {
+        .map_err(|_error| BusError::ActorUnavailable {
             actor: String::from("bus-blocking-task"),
-            reason: error.to_string(),
+            failure: ActorFailure::BlockingTaskJoinFailed,
         })?
 }
 
@@ -470,8 +567,8 @@ mod tests {
     use std::time::Instant;
 
     use crate::{
-        BusActorHandle, BusError, BusRuntimeConfig, Grant, PrincipalId, RequestManyPolicy,
-        RequestTarget, Subject,
+        BusActorHandle, BusError, BusRuntimeConfig, FactContentHash, FactKey, FactKeyPattern,
+        FactWriteOutcome, Grant, PrincipalId, RequestManyPolicy, RequestTarget, Subject,
     };
 
     use super::SubjectPattern;
@@ -486,6 +583,18 @@ mod tests {
 
     fn pattern(value: &str) -> SubjectPattern {
         SubjectPattern::parse(value).expect("pattern parses")
+    }
+
+    fn fact_key(value: &str) -> FactKey {
+        FactKey::parse(value).expect("fact key parses")
+    }
+
+    fn fact_pattern(value: &str) -> FactKeyPattern {
+        FactKeyPattern::parse(value).expect("fact key pattern parses")
+    }
+
+    fn hash(value: &str) -> FactContentHash {
+        FactContentHash::new(value)
     }
 
     #[tokio::test]
@@ -566,6 +675,49 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, crate::BusError::Draining));
+    }
+
+    #[tokio::test]
+    async fn actor_facade_exposes_authorized_fact_writes() {
+        let (bus, authority) = BusActorHandle::new_with_authority();
+        let writer = authority.grant(
+            principal("writer"),
+            Grant::empty().with_fact_write(fact_pattern("/facts/deploy/>")),
+        );
+        let reader = authority.grant(principal("reader"), Grant::allow_all());
+
+        let outcome = bus
+            .write_fact(&writer, fact_key("/facts/deploy/d1/plan"), hash("b3:plan"))
+            .await
+            .expect("write fact");
+        let fact = bus
+            .read_fact(&reader, fact_key("/facts/deploy/d1/plan"))
+            .await
+            .expect("read fact")
+            .expect("fact exists");
+
+        assert!(matches!(outcome, FactWriteOutcome::Inserted(_)));
+        assert_eq!(fact.author().as_str(), "writer");
+        assert_eq!(fact.content_hash().as_str(), "b3:plan");
+    }
+
+    #[tokio::test]
+    async fn actor_facade_zero_max_request_many_checks_authority_before_deadline() {
+        let (bus, authority) = BusActorHandle::new_with_authority();
+        let requester = authority.grant(principal("requester"), Grant::empty());
+
+        let error = bus
+            .request_many(
+                &requester,
+                RequestTarget::Pattern(pattern("node.*.capacity")),
+                subject("node.broadcast.capacity"),
+                Vec::new(),
+                RequestManyPolicy::new(0, Duration::ZERO),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, BusError::UnauthorizedRequestTarget { .. }));
     }
 
     #[tokio::test]
