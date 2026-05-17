@@ -43,8 +43,8 @@ The candidate substrate becomes:
 | Large payloads | iroh-blobs content-addressed payloads |
 | Local queries | SQLite projection/cache |
 | Data plane | WireGuard |
-| Gateway | Existing `crates/ployz-gateway` Pingora process |
-| DNS | Existing `crates/ployz-dns` process |
+| HTTP serving | Product primitive; Pingora is a candidate runtime |
+| DNS serving | Product primitive; process/role shape is open |
 
 External grounding:
 
@@ -89,15 +89,28 @@ ployz-dns
 ployzctl
 ```
 
-Gateway and DNS must keep their process boundary. Today
-[crates/ployz-gateway/src/main.rs](../crates/ployz-gateway/src/main.rs) and
-[crates/ployz-dns/src/main.rs](../crates/ployz-dns/src/main.rs) connect directly
-to `NatsStore`. In the MVP they should read local snapshots/projections first
-and use bus notifications only to reload. Their serving path must not depend on
-daemon liveness.
+HTTP and DNS serving must preserve data-plane continuity when the daemon is
+down. The current gateway and DNS binaries are reference material, not
+non-negotiable process boundaries. Pingora may remain the right HTTP serving
+primitive, but the state shape that feeds it is explicitly up for redesign.
+Whatever role/process boundary the MVP chooses must prove that serving does not
+depend on daemon liveness.
 
-The daemon is a composition root, router, and lifecycle owner. It must not
-become a registry of feature state. Feature state belongs to actors/subsystems.
+The command/coordinator daemon is a composition root, router, and lifecycle
+owner for mutations. It must not become a registry of feature state, and it must
+not be the fate-sharing boundary for steady-state data-plane behavior. Feature
+state belongs to actors/subsystems, and steady-state roles need their own
+lifecycle story.
+
+When the coordinator role is down:
+
+- existing workloads keep running,
+- WireGuard keeps carrying service-to-service traffic with last applied config,
+- HTTP/DNS serving keeps answering from last good local state,
+- local state appliers can keep applying already-replicated serving-state facts
+  if they are not part of the crashed coordinator role,
+- new mutations and operator commands for that node fail visibly until the
+  coordinator returns.
 
 ## Actor Ownership Boundaries
 
@@ -137,11 +150,14 @@ Ownership rules to preserve as these boundaries become real:
   service facts into bus interest.
 - `DocsActor` owns iroh-docs replicas and fact ingestion.
 - `ProjectionActor` owns deterministic reduction from docs facts into SQLite.
-- `GatewaySnapshotWriterActor` and `DnsSnapshotWriterActor` write atomic
-  snapshot files consumed by gateway/DNS roles.
+- Serving-state writers publish atomic local state consumed by HTTP/DNS serving
+  roles. The exact gateway/DNS state shape is a slice-level design decision.
 - `WireGuardActor` owns full-mesh peer reconciliation for the MVP.
 - `DeployCoordinatorActor` owns deploy state machines and durable commit
   boundaries.
+- Steady-state appliers are not the same thing as deploy coordinators. Applying
+  already-replicated serving state should be able to survive coordinator
+  failure if the process-role design keeps those responsibilities separate.
 
 Actors communicate with typed messages. No subsystem should reach into another
 actor's internal state.
@@ -476,11 +492,11 @@ Force remove:
 
 ## Migration From Current Code
 
-Preserve:
+Study, but do not preserve by default:
 
-- Pingora gateway implementation and snapshot state patterns in
+- Pingora HTTP serving implementation and snapshot state patterns in
   [crates/ployz-gateway](../crates/ployz-gateway)
-- DNS binary and snapshot projection role in
+- DNS serving behavior in
   [crates/ployz-dns](../crates/ployz-dns)
 - WireGuard backend mechanics under
   [crates/ployz-orchestrator/src/mesh](../crates/ployz-orchestrator/src/mesh)
@@ -490,24 +506,29 @@ Preserve:
   [docs/routing-and-deploys.md](../docs/routing-and-deploys.md)
 - Authority/status/observation separation from
   [docs/authority-roadmap.md](../docs/authority-roadmap.md)
+- ACME behavior from
+  [crates/ployz-cert-backends](../crates/ployz-cert-backends) and
+  [crates/ployzd/src/daemon/cert_coordination.rs](../crates/ployzd/src/daemon/cert_coordination.rs)
 
 Replace or wrap:
 
 - NATS store assets as the cluster truth mechanism.
-- Direct gateway/DNS dependence on `NatsStore`.
+- Direct HTTP/DNS serving dependence on `NatsStore`.
 - Daemon handler files that combine transport, orchestration, storage, and
   presentation.
+- The old deploy coordinator shape in
+  [crates/ployzd/src/daemon/deploy.rs](../crates/ployzd/src/daemon/deploy.rs).
 
-## Gateway/DNS Migration Prerequisite
+## HTTP/DNS Serving Prerequisite
 
-The first concrete blocker for daemon-restart proof is the current startup
-shape. Today gateway and DNS connect to `NatsStore` before serving. The MVP path
-must first introduce a snapshot-file adapter/load path:
+The concrete requirement is data-plane continuity, not preservation of the old
+gateway/DNS input model. Today gateway and DNS connect to `NatsStore` before
+serving. The MVP path must introduce a serving-state adapter/load path:
 
-- gateway loads last good `gateway.snapshot` before trying live control-plane
+- HTTP serving loads last good local state before trying live control-plane
   connectivity,
-- DNS loads last good `dns.snapshot` before trying live control-plane
+- DNS serving loads last good local state before trying live control-plane
   connectivity,
-- invalid next snapshots do not replace the in-memory last good state,
+- invalid next state does not replace the in-memory last good state,
 - bus/projection notifications trigger reloads but are not serving
   dependencies.

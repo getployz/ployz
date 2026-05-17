@@ -1,6 +1,6 @@
 ---
-title: Slice 006 Gateway DNS Serving Roles Plan
-status: active
+title: Superseded Slice 006 Gateway DNS Serving Roles Plan
+status: superseded
 created: 2026-05-17
 origin:
   - MVP/overall-plan.md
@@ -10,6 +10,18 @@ origin:
 ---
 
 # Slice 006 Gateway DNS Serving Roles Plan
+
+## Superseded
+
+This plan was superseded on 2026-05-17 before implementation was committed.
+It incorrectly treated preserving the old gateway/DNS role shape as the next
+proof target. The corrected strategy is to preserve HTTP/DNS product behavior
+and data-plane continuity, while allowing the serving-state shape and process
+boundary to be redesigned.
+
+The next product proofs are ACME on the new primitives, followed by deploy
+commit-before-drain. Do not execute this plan without first running a new
+planning pass against `MVP/overall-plan.md`.
 
 ## Problem Frame
 

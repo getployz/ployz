@@ -9,7 +9,7 @@ created: 2026-05-17
 The MVP is only credible if end-to-end tests prove the architecture under load
 and failure. Unit tests can shape individual reducers and actors, but the main
 deliverable is a repeatable E2E harness that exercises real message paths,
-fact replication, projection rebuilds, gateway/DNS continuity, WireGuard
+fact replication, projection rebuilds, HTTP/DNS continuity, WireGuard
 reconciliation, and deploy crash points.
 
 The proof also has to include code-shape evidence. The previous foundation had
@@ -21,8 +21,8 @@ The first proof should be narrow enough to guide implementation:
 
 ```text
 Two nodes can join over the new substrate, exchange bus requests, replicate one
-route fact, rebuild a local projection, publish gateway/DNS snapshots, and keep
-gateway/DNS serving those snapshots through daemon restart.
+route fact, rebuild a local projection, publish serving state, and keep
+HTTP/DNS serving last-good state through daemon restart.
 ```
 
 That proof is the first vertical slice. It is not the whole MVP. The whole MVP
@@ -45,7 +45,7 @@ Likely harness stages:
 | Stage | Purpose |
 | --- | --- |
 | In-process semantic harness | Deterministic bus/fact/projection behavior. |
-| Two-node local process harness | Real daemon/gateway/DNS boundaries for restart proof. |
+| Two-node local process harness | Real daemon/serving-role boundaries for restart proof. |
 | Logical-node stress harness | Required large-load proof once bus/fact behavior exists. |
 
 The product target remains 1-200 real nodes from [VISION.md](../VISION.md).
@@ -65,8 +65,12 @@ larger tests prove margin in the control-plane design; they do not imply a
   service behavior where relevant.
 - Projection state must be disposable. Deleting SQLite should never erase
   cluster truth.
-- Gateway and DNS must keep serving last good snapshots while daemon/projection
-  is down.
+- HTTP/DNS serving must keep serving last good state while daemon/projection is
+  down.
+- Killing the command/coordinator role must not kill steady-state data-plane
+  behavior. Existing workloads, WireGuard service-to-service traffic, and
+  HTTP/DNS serving must continue from last applied state. New mutations should
+  fail visibly until the coordinator is back.
 - Feature tests should read as business behavior. If a test mostly scripts
   transport, storage, retries, or process wiring, the primitive below it is
   probably still too weak.
@@ -164,7 +168,7 @@ Purpose: prove membership and WireGuard reconciliation.
 Scenarios:
 
 1. `ployz init` creates the first island, node facts, bus, docs, blobs,
-   projection DB, and gateway/DNS snapshots.
+   projection DB, and local HTTP/DNS serving state.
 2. `ployz machine invite` creates a scoped invite with expiration.
 3. `ployz join <token>` adds a second node through iroh before WireGuard is
    configured.
@@ -200,7 +204,7 @@ Scenarios:
 2. `request_many node.*.capacity` drives placement.
 3. Phase 1 starts DB, verifies readiness, and writes durable phase commit.
 4. Phase 2 starts web + queue and does not route until both are ready.
-5. Route commit writes a durable fact and projects gateway/DNS snapshots.
+5. Route commit writes a durable fact and projects HTTP/DNS serving state.
 6. Drain starts only after route commit durability is satisfied.
 7. Old instances remain alive during drain grace so stale gateways still have a
    backend.
@@ -226,14 +230,19 @@ Scenarios:
    them as explicit recoverable state.
 2. Kill daemon after phase commit before drain; restart rebuilds projection and
    resumes drain.
-3. Kill daemon during drain; gateway/DNS keep serving last good snapshots.
-4. Restart gateway while daemon is down; gateway loads last good snapshot and
+3. Kill coordinator during drain; HTTP/DNS serving keeps serving last good
+   state and old instances remain reachable during drain grace.
+4. Restart HTTP serving while daemon is down; it loads last good state and
    serves.
-5. Restart DNS while daemon is down; DNS loads last good snapshot and serves.
-6. Delete projection DB while gateway/DNS are serving; daemon rebuilds and
-   publishes a fresh snapshot without traffic interruption.
+5. Restart DNS serving while daemon is down; it loads last good state and
+   serves.
+6. Delete projection DB while HTTP/DNS are serving; daemon rebuilds and
+   publishes fresh serving state without traffic interruption.
 7. Coordinator dies permanently after local commit but before pin quorum;
    deploy does not drain old instances.
+8. Coordinator is down while service-to-service traffic crosses nodes over
+   last-applied WireGuard config; traffic continues and the node exposes
+   coordinator health as stale/unavailable for mutations.
 
 Metrics:
 
@@ -275,7 +284,7 @@ Scenarios:
 
 1. Reimplement a small machine join/add flow from the old foundation and compare
    the shape of code and tests.
-2. Reimplement a route commit to gateway/DNS snapshot flow and compare the
+2. Reimplement a route commit to HTTP/DNS serving-state flow and compare the
    shape of code and tests.
 3. Reimplement the deploy commit-before-drain invariant and compare the shape of
    code and tests.
