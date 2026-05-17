@@ -16,9 +16,10 @@ use crate::grants::GrantBook;
 use crate::message::{MessageId, ReplyInbox, ReplyPermit};
 use crate::{
     BridgeFailure, BridgeOrigin, BridgeRuleId, BridgeRuleViolation, BridgeState, BusError,
-    BusMessage, BusSession, Fact, FactContentHash, FactKey, FactWriteOutcome, Grant, IslandId,
-    Payload, PrincipalId, QueueName, RequestManyPolicy, RequestTarget, ResponseEnvelope,
-    ResponseMessage, Result, ServiceImport, StreamImport, Subject, SubjectPattern,
+    BusMessage, BusSession, Fact, FactContentHash, FactKey, FactKeyPattern, FactPayload,
+    FactWriteOutcome, Grant, IslandId, Payload, PrincipalId, QueueName, RequestManyPolicy,
+    RequestTarget, ResponseEnvelope, ResponseMessage, Result, ServiceImport, StreamImport, Subject,
+    SubjectPattern,
 };
 
 pub type HandlerOutcome = Result<()>;
@@ -699,6 +700,32 @@ impl MemoryBus {
         )
     }
 
+    pub fn write_fact_payload(
+        &self,
+        session: &BusSession,
+        key: FactKey,
+        payload: impl Into<FactPayload>,
+    ) -> Result<FactWriteOutcome> {
+        let payload = payload.into();
+        let mut inner = self.inner.lock().expect("memory bus mutex poisoned");
+        if !inner
+            .grants
+            .can_write_fact(session.island(), session.principal(), &key)
+        {
+            return Err(BusError::UnauthorizedFactWrite {
+                island: session.island().clone(),
+                principal: session.principal().clone(),
+                key: Box::new(key),
+            });
+        }
+        inner.facts.write_payload(
+            session.island().clone(),
+            session.principal().clone(),
+            key,
+            payload,
+        )
+    }
+
     pub fn read_fact(&self, session: &BusSession, key: &FactKey) -> Result<Option<Fact>> {
         let inner = self.inner.lock().expect("memory bus mutex poisoned");
         if !inner
@@ -712,6 +739,70 @@ impl MemoryBus {
             });
         }
         Ok(inner.facts.read(session.island(), key))
+    }
+
+    pub fn list_facts(&self, session: &BusSession, pattern: &FactKeyPattern) -> Result<Vec<Fact>> {
+        let inner = self.inner.lock().expect("memory bus mutex poisoned");
+        Ok(inner
+            .facts
+            .list_filtered(session.island(), pattern, |fact| {
+                inner
+                    .grants
+                    .can_read_fact(session.island(), session.principal(), fact.key())
+            }))
+    }
+
+    pub fn read_fact_payload(
+        &self,
+        session: &BusSession,
+        key: &FactKey,
+    ) -> Result<Option<FactPayload>> {
+        let inner = self.inner.lock().expect("memory bus mutex poisoned");
+        if !inner
+            .grants
+            .can_read_fact(session.island(), session.principal(), key)
+        {
+            return Err(BusError::UnauthorizedFactRead {
+                island: session.island().clone(),
+                principal: session.principal().clone(),
+                key: Box::new(key.clone()),
+            });
+        }
+        Ok(inner
+            .facts
+            .read(session.island(), key)
+            .and_then(|_fact| inner.facts.payload(session.island(), key)))
+    }
+
+    pub fn read_fact_payloads(
+        &self,
+        session: &BusSession,
+        requests: &[(FactKey, FactContentHash)],
+    ) -> Result<BTreeMap<FactContentHash, FactPayload>> {
+        let inner = self.inner.lock().expect("memory bus mutex poisoned");
+        let mut payloads = BTreeMap::new();
+        for (key, expected_hash) in requests {
+            if !inner
+                .grants
+                .can_read_fact(session.island(), session.principal(), key)
+            {
+                return Err(BusError::UnauthorizedFactRead {
+                    island: session.island().clone(),
+                    principal: session.principal().clone(),
+                    key: Box::new(key.clone()),
+                });
+            }
+            let Some(fact) = inner.facts.read(session.island(), key) else {
+                continue;
+            };
+            if fact.content_hash() != expected_hash {
+                continue;
+            }
+            if let Some(payload) = inner.facts.payload(session.island(), key) {
+                payloads.insert(expected_hash.clone(), payload);
+            }
+        }
+        Ok(payloads)
     }
 
     fn prepare_request(
@@ -1536,7 +1627,7 @@ mod tests {
     use super::MemoryBus;
     use crate::{
         BridgeEndpoint, BridgeRuleId, BridgeRuleViolation, BridgeState, BusError, BusRuntimeConfig,
-        BusSession, FactContentHash, FactKey, FactKeyPattern, FactWriteOutcome, Grant,
+        BusSession, FactContentHash, FactKey, FactKeyPattern, FactPayload, FactWriteOutcome, Grant,
         HandlerFailure, IslandId, Payload, PrincipalId, RequestManyPolicy, RequestTarget,
         ServiceImport, StreamImport, Subject, SubjectPattern, SubjectTransform,
     };
@@ -1567,6 +1658,10 @@ mod tests {
 
     fn hash(value: &str) -> FactContentHash {
         FactContentHash::new(value)
+    }
+
+    fn fact_payload(value: &str) -> FactPayload {
+        value.to_string().into()
     }
 
     fn rule_id(value: &str) -> BridgeRuleId {
@@ -2261,6 +2356,68 @@ mod tests {
     }
 
     #[test]
+    fn allowed_payload_fact_write_stores_body_and_derived_hash() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let writer = authority.grant_in(
+            island("prod"),
+            principal("deployer"),
+            Grant::empty()
+                .with_fact_write(fact_pattern("/facts/routes/>"))
+                .with_fact_read(fact_pattern("/facts/routes/>")),
+        );
+        let payload = fact_payload("{\"route\":\"web\"}");
+        let expected_hash = FactContentHash::for_payload(&payload);
+
+        let outcome = bus
+            .write_fact_payload(&writer, fact_key("/facts/routes/r1"), payload.clone())
+            .expect("write payload fact");
+        let fact = bus
+            .read_fact(&writer, &fact_key("/facts/routes/r1"))
+            .expect("read fact")
+            .expect("fact exists");
+        let body = bus
+            .read_fact_payload(&writer, &fact_key("/facts/routes/r1"))
+            .expect("read fact payload")
+            .expect("payload exists");
+
+        assert!(matches!(outcome, FactWriteOutcome::Inserted(_)));
+        assert_eq!(fact.content_hash(), &expected_hash);
+        assert_eq!(body, payload);
+    }
+
+    #[test]
+    fn hash_only_fact_cannot_read_payload_from_another_identity() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let prod = authority.grant_in(
+            island("prod"),
+            principal("prod-writer"),
+            Grant::empty()
+                .with_fact_write(fact_pattern("/facts/routes/>"))
+                .with_fact_read(fact_pattern("/facts/routes/>")),
+        );
+        let laptop = authority.grant_in(
+            island("laptop"),
+            principal("laptop-writer"),
+            Grant::empty()
+                .with_fact_write(fact_pattern("/facts/routes/>"))
+                .with_fact_read(fact_pattern("/facts/routes/>")),
+        );
+        let payload = fact_payload("{\"route\":\"secret\"}");
+        let hash = FactContentHash::for_payload(&payload);
+
+        bus.write_fact_payload(&prod, fact_key("/facts/routes/prod"), payload)
+            .expect("write prod payload fact");
+        bus.write_fact(&laptop, fact_key("/facts/routes/local"), hash)
+            .expect("write laptop hash-only fact");
+
+        assert!(
+            bus.read_fact_payload(&laptop, &fact_key("/facts/routes/local"))
+                .expect("read laptop payload")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn denied_fact_write_fails_before_mutation() {
         let (bus, authority) = MemoryBus::new_with_authority();
         let reader = authority.grant_in(island("prod"), principal("reader"), Grant::allow_all());
@@ -2313,6 +2470,61 @@ mod tests {
 
         assert_eq!(prod_fact.content_hash().as_str(), "b3:prod");
         assert_eq!(laptop_fact.content_hash().as_str(), "b3:laptop");
+    }
+
+    #[test]
+    fn fact_listing_is_deterministic_authorized_and_island_scoped() {
+        let (bus, authority) = MemoryBus::new_with_authority();
+        let prod_admin = authority.grant_in(island("prod"), principal("admin"), Grant::allow_all());
+        let laptop_admin =
+            authority.grant_in(island("laptop"), principal("admin"), Grant::allow_all());
+        let prod_reader = authority.grant_in(
+            island("prod"),
+            principal("reader"),
+            Grant::empty().with_fact_read(fact_pattern("/facts/service/>")),
+        );
+        let intruder = authority.grant_in(island("prod"), principal("intruder"), Grant::empty());
+        bus.write_fact(
+            &prod_admin,
+            fact_key("/facts/service/web/node-2"),
+            hash("b3:node-2"),
+        )
+        .expect("write prod fact");
+        bus.write_fact(
+            &prod_admin,
+            fact_key("/facts/deploy/d1/plan"),
+            hash("b3:deploy"),
+        )
+        .expect("write prod deploy fact");
+        bus.write_fact(
+            &laptop_admin,
+            fact_key("/facts/service/web/node-1"),
+            hash("b3:laptop"),
+        )
+        .expect("write laptop fact");
+        bus.write_fact(
+            &prod_admin,
+            fact_key("/facts/service/web/node-1"),
+            hash("b3:node-1"),
+        )
+        .expect("write prod fact");
+
+        let listed = bus
+            .list_facts(&prod_reader, &fact_pattern("/facts/>"))
+            .expect("list prod facts");
+        let keys = listed
+            .iter()
+            .map(|fact| fact.key().as_str())
+            .collect::<Vec<_>>();
+        let denied = bus
+            .list_facts(&intruder, &fact_pattern("/facts/>"))
+            .expect("list denied facts");
+
+        assert_eq!(
+            keys,
+            vec!["/facts/service/web/node-1", "/facts/service/web/node-2"]
+        );
+        assert!(denied.is_empty());
     }
 
     #[test]

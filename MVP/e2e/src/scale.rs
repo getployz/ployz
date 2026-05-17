@@ -10,11 +10,16 @@ use mvp_bus::{
     PrincipalId, RequestManyPolicy, RequestTarget, ServiceImport, StreamImport, Subject,
     SubjectTransform, harness::InMemoryBus,
 };
+use mvp_projection::{
+    BackendEndpoint, BusFactSource, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeId,
+    NodeJoinedFact, ProjectionActorHandle, ProjectionFactPayload, RouteCommitFact, RouteId,
+    ServiceName, ServiceRegistrationFact, SqliteProjectionStore,
+};
 use serde::Serialize;
 
-use crate::bus_syntax::{pattern, subject};
+use crate::bus_syntax::{fact_pattern, pattern, subject, write_projection_fact};
 use crate::metrics::{
-    LatencyRecorder, LatencySummary, MemorySnapshot, memory_snapshot, write_json,
+    LatencyRecorder, LatencySummary, MemorySnapshot, memory_snapshot, reset_dir, write_json,
 };
 
 const NODE_COUNTS: [usize; 3] = [200, 1_000, 10_000];
@@ -40,6 +45,7 @@ struct ScaleReport {
     node_counts: Vec<ScaleRunReport>,
     multi_island: MultiIslandReport,
     bridge: BridgeScaleReport,
+    projection: ProjectionScaleReport,
     queue_group: QueueGroupReport,
     saturation: SaturationReport,
     elapsed_ms: u128,
@@ -164,6 +170,32 @@ struct BridgeRuleVolumeReport {
     elapsed_ms: u128,
 }
 
+#[derive(Debug, Serialize)]
+struct ProjectionScaleReport {
+    node_counts: Vec<ProjectionScaleRunReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectionScaleRunReport {
+    logical_nodes: usize,
+    fact_writes: usize,
+    projected_nodes: usize,
+    projected_services: usize,
+    gateway_routes: usize,
+    gateway_backends: usize,
+    dns_records: usize,
+    ignored_fact_count: usize,
+    actor_duration_ms: u128,
+    elapsed_ms: u128,
+    deadline_seconds: u64,
+    deadline_satisfied: bool,
+    sqlite_bytes: u64,
+    gateway_snapshot_bytes: u64,
+    dns_snapshot_bytes: u64,
+    memory_before: MemorySnapshot,
+    memory_after: MemorySnapshot,
+}
+
 pub(crate) fn run() -> Result<(), String> {
     let started = Instant::now();
     let mut node_counts = Vec::with_capacity(NODE_COUNTS.len());
@@ -176,6 +208,7 @@ pub(crate) fn run() -> Result<(), String> {
         node_counts,
         multi_island: run_multi_island_case()?,
         bridge: run_bridge_case()?,
+        projection: run_projection_case()?,
         queue_group: run_queue_group_case()?,
         saturation: run_saturation_case()?,
         elapsed_ms: started.elapsed().as_millis(),
@@ -293,6 +326,218 @@ fn run_node_count(logical_nodes: usize) -> Result<ScaleRunReport, String> {
     Ok(report)
 }
 
+fn run_projection_case() -> Result<ProjectionScaleReport, String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .build()
+        .map_err(|error| format!("create tokio runtime for projection scale: {error}"))?;
+    let mut node_counts = Vec::with_capacity(NODE_COUNTS.len());
+    for logical_nodes in NODE_COUNTS {
+        node_counts.push(runtime.block_on(run_projection_node_count(logical_nodes))?);
+    }
+    Ok(ProjectionScaleReport { node_counts })
+}
+
+async fn run_projection_node_count(
+    logical_nodes: usize,
+) -> Result<ProjectionScaleRunReport, String> {
+    const DEADLINE: Duration = Duration::from_secs(120);
+
+    let started = Instant::now();
+    let memory_before = memory_snapshot();
+    let root = Path::new("target")
+        .join("mvp-e2e")
+        .join("scale-projection")
+        .join(logical_nodes.to_string());
+    reset_dir(&root)?;
+
+    let (bus, authority) = InMemoryBus::new_with_authority();
+    let prod = IslandId::new("prod");
+    let projection = authority.grant_in(
+        prod.clone(),
+        PrincipalId::new("projection"),
+        Grant::empty()
+            .with_fact_write(fact_pattern("/facts/routes/>")?)
+            .with_fact_write(fact_pattern("/facts/gateway/>")?)
+            .with_fact_write(fact_pattern("/facts/dns/>")?)
+            .with_fact_read(fact_pattern("/facts/>")?),
+    );
+
+    for node_index in 0..logical_nodes {
+        let node_id = NodeId::new(format!("n{node_index}"));
+        let node = authority.grant_in(
+            prod.clone(),
+            PrincipalId::new(format!("node-{node_index}")),
+            Grant::empty()
+                .with_fact_write(fact_pattern(&format!("/facts/node/n{node_index}/>"))?)
+                .with_fact_write(fact_pattern(&format!(
+                    "/facts/service/worker/n{node_index}/>"
+                ))?),
+        );
+        write_projection_fact(
+            &bus,
+            &node,
+            &format!("/facts/node/n{node_index}/joined/1"),
+            ProjectionFactPayload::NodeJoined(NodeJoinedFact {
+                node_id: node_id.clone(),
+                epoch: 1,
+                overlay_ip: format!("fd00::{node_index:x}"),
+            }),
+        )?;
+        write_projection_fact(
+            &bus,
+            &node,
+            &format!("/facts/service/worker/n{node_index}/registered/1"),
+            ProjectionFactPayload::ServiceRegistered(ServiceRegistrationFact {
+                service: ServiceName::new("worker"),
+                node_id,
+                version: "1.0.0".to_string(),
+                endpoint_subject: format!("node.n{node_index}.worker"),
+                epoch: 1,
+            }),
+        )?;
+    }
+
+    let backends = (0..logical_nodes)
+        .map(|node_index| BackendEndpoint {
+            node_id: NodeId::new(format!("n{node_index}")),
+            address: format!("10.0.{}.{}:8080", node_index / 256, node_index % 256),
+        })
+        .collect::<Vec<_>>();
+    write_projection_fact(
+        &bus,
+        &projection,
+        "/facts/routes/route-scale",
+        ProjectionFactPayload::RouteCommit(RouteCommitFact {
+            route_commit_id: "route-scale".to_string(),
+            route_id: RouteId::new("worker-http"),
+            hostnames: vec!["workers.example.com".to_string()],
+            backends,
+            old_backends_to_drain: Vec::new(),
+        }),
+    )?;
+    write_projection_fact(
+        &bus,
+        &projection,
+        "/facts/gateway/gateway-scale",
+        ProjectionFactPayload::GatewayCommit(GatewayCommitFact {
+            gateway_commit_id: "gateway-scale".to_string(),
+            route_commit_id: "route-scale".to_string(),
+            epoch: 1,
+        }),
+    )?;
+    write_projection_fact(
+        &bus,
+        &projection,
+        "/facts/dns/dns-scale",
+        ProjectionFactPayload::DnsCommit(DnsCommitFact {
+            dns_commit_id: "dns-scale".to_string(),
+            epoch: 1,
+            records: vec![DnsRecordFact {
+                name: "workers.example.com".to_string(),
+                record_type: "AAAA".to_string(),
+                value: "fd00::1".to_string(),
+                ttl_seconds: 30,
+            }],
+        }),
+    )?;
+
+    let actor = ProjectionActorHandle::spawn(
+        Arc::new(BusFactSource::new(bus)),
+        prod,
+        projection,
+        fact_pattern("/facts/>")?,
+        SqliteProjectionStore::new(root.join("projections.sqlite")),
+        root.join("gateway.snapshot"),
+        root.join("dns.snapshot"),
+    );
+    let report = actor.project_once(DEADLINE).await.map_err(|error| {
+        format!("projection scale for {logical_nodes} logical nodes failed: {error}")
+    })?;
+    if report.state.nodes.len() != logical_nodes {
+        return Err(format!(
+            "projection scale expected {logical_nodes} nodes, got {}",
+            report.state.nodes.len()
+        ));
+    }
+    if report.state.services.len() != logical_nodes {
+        return Err(format!(
+            "projection scale expected {logical_nodes} services, got {}",
+            report.state.services.len()
+        ));
+    }
+    let gateway = report
+        .state
+        .gateway
+        .as_ref()
+        .ok_or_else(|| "projection scale missing gateway state".to_string())?;
+    if gateway.routes.len() != 1 {
+        return Err(format!(
+            "projection scale expected one gateway route, got {}",
+            gateway.routes.len()
+        ));
+    }
+    let gateway_backends = gateway
+        .routes
+        .first()
+        .map_or(0, |route| route.backends.len());
+    if gateway_backends != logical_nodes {
+        return Err(format!(
+            "projection scale expected {logical_nodes} gateway backends, got {gateway_backends}"
+        ));
+    }
+    let dns_records = report.state.dns.as_ref().map_or(0, |dns| dns.records.len());
+    if dns_records != 1 {
+        return Err(format!(
+            "projection scale expected one DNS record, got {dns_records}"
+        ));
+    }
+    if report.duration > DEADLINE {
+        return Err(format!(
+            "projection scale exceeded deadline for {logical_nodes} logical nodes: {:?} > {:?}",
+            report.duration, DEADLINE
+        ));
+    }
+
+    let row_counts = SqliteProjectionStore::new(root.join("projections.sqlite"))
+        .row_counts()
+        .map_err(|error| format!("load projection scale sqlite: {error}"))?;
+    if row_counts.nodes != logical_nodes
+        || row_counts.services != logical_nodes
+        || row_counts.gateway_routes != 1
+        || row_counts.dns_records != 1
+    {
+        return Err(format!(
+            "projection scale sqlite rows did not match state for {logical_nodes} logical nodes"
+        ));
+    }
+
+    Ok(ProjectionScaleRunReport {
+        logical_nodes,
+        fact_writes: logical_nodes * 2 + 3,
+        projected_nodes: report.state.nodes.len(),
+        projected_services: report.state.services.len(),
+        gateway_routes: gateway.routes.len(),
+        gateway_backends,
+        dns_records,
+        ignored_fact_count: report
+            .state
+            .statuses
+            .iter()
+            .map(|status| status.count)
+            .sum(),
+        actor_duration_ms: report.duration.as_millis(),
+        elapsed_ms: started.elapsed().as_millis(),
+        deadline_seconds: DEADLINE.as_secs(),
+        deadline_satisfied: report.duration <= DEADLINE,
+        sqlite_bytes: file_len(root.join("projections.sqlite"))?,
+        gateway_snapshot_bytes: file_len(root.join("gateway.snapshot"))?,
+        dns_snapshot_bytes: file_len(root.join("dns.snapshot"))?,
+        memory_before,
+        memory_after: memory_snapshot(),
+    })
+}
+
 fn register_logical_nodes(
     bus: &InMemoryBus,
     admin: &mvp_bus::BusSession,
@@ -326,6 +571,13 @@ fn runtime_report(snapshot: BusRuntimeSnapshot) -> RuntimeReport {
         enqueue_full_count: snapshot.enqueue_full_count,
         enqueue_blocked_ns: snapshot.enqueue_blocked_ns,
     }
+}
+
+fn file_len(path: impl AsRef<Path>) -> Result<u64, String> {
+    let path = path.as_ref();
+    Ok(std::fs::metadata(path)
+        .map_err(|error| format!("metadata '{}': {error}", path.display()))?
+        .len())
 }
 
 fn run_multi_island_case() -> Result<MultiIslandReport, String> {

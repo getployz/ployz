@@ -214,13 +214,68 @@ Costs:
 - The current store is an in-memory contract harness, not durable replication.
 - Read authorization is intentionally present even though facts are local for
   now. A revoked session or an empty grant cannot read facts in its island.
-- `FactContentHash` is only a typed hash string until iroh-blobs supplies real
-  content-addressed payloads.
+- Payload bytes are now stored in the harness and hashed with BLAKE3, but the
+  store is still local memory. iroh-blobs still needs to supply real
+  content-addressed transfer and persistence.
 
 Revisit if:
 - Slice work reaches iroh-docs integration. At that point this harness should
   become a backend behind the same fact contract, not a parallel source of
   truth.
+
+## Deterministic Projections And Atomic Snapshots
+
+Why this:
+- Durable facts should reduce into the serving view without making SQLite
+  authoritative. The projection reducer is pure, deterministic, and can rebuild
+  `projections.sqlite`, `gateway.snapshot`, and `dns.snapshot` from facts.
+- Gateway and DNS process roles need complete local snapshot files they can keep
+  serving through daemon restarts. Snapshot replacement must be atomic so a
+  failed write leaves the last good file intact; gateway and DNS snapshots are
+  written as one projection batch with rollback on partial failure.
+- `ProjectionActor` gives the pipeline an actor-owned boundary: one island, one
+  read-authorized projection principal, bounded `project_once` calls, and
+  structured last-success/last-failure status.
+- Fact payload reads are authorized through the fact identity, not a global hash
+  lookup. A principal may know a content hash without gaining access to payload
+  bytes written under another island/key.
+- The reducer validates that payload identity matches the fact key identity
+  before projecting. Grants authorize keys, so payloads cannot smuggle a
+  different node, service, route, gateway, or DNS commit into the serving view.
+- SQLite is staged before snapshot publication and promoted only after the
+  gateway/DNS snapshot batch succeeds. A failed snapshot write therefore leaves
+  readers on the last successful SQLite projection and last successful
+  snapshots.
+
+What it replaces:
+- Mutable SQL head rows as the source of truth.
+- Manual event-log gap repair before rebuilding gateway/DNS state.
+- Treating fact notifications as correctness-critical delivery.
+
+Costs:
+- Full rebuild is intentionally the correctness path. The current 10,000-node
+  local scale run is fast enough, but future docs-backed replication still needs
+  propagation-lag proof.
+- Snapshot schema is MVP-local JSON. Existing Pingora gateway and DNS binaries
+  do not consume it yet; the process-role slice must wire loaders or explain a
+  different migration step.
+- The in-memory fact source can mark envelopes as verified only by local harness
+  rules. A real iroh-docs adapter must validate namespace/author signatures
+  before returning `Verified` candidates.
+
+Crates:
+- `rusqlite` keeps the rebuildable SQLite projection store direct and small.
+- `tempfile` handles same-directory temp files followed by atomic persist.
+- `blake3` gives fact payloads content-addressed hashes aligned with the iroh
+  ecosystem.
+- `thiserror` keeps projection errors structured without hand-written boilerplate.
+
+Revisit if:
+- The iroh-docs/toolchain slice chooses to raise `MVP/` to Rust 1.91 for current
+  `iroh-docs`, or pins an older compatible iroh-docs line. That slice should
+  implement the adapter behind the fact-source contract, not rewrite reducers.
+- Gateway/DNS loaders need a binary or version-negotiated snapshot format after
+  the MVP-local JSON schema has proven the serving semantics.
 
 ## hdrhistogram and memory-stats for E2E Proof
 

@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::ops::Bound;
 
-use crate::{BusError, IslandId, PrincipalId, Result};
+use crate::{BusError, IslandId, Payload, PrincipalId, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FactKeyParseError {
@@ -47,6 +48,10 @@ impl FactKey {
     pub fn as_str(&self) -> &str {
         &self.raw
     }
+
+    pub fn segments(&self) -> impl DoubleEndedIterator<Item = &str> + ExactSizeIterator {
+        self.segments.iter().map(String::as_str)
+    }
 }
 
 impl Display for FactKey {
@@ -82,6 +87,35 @@ impl FactKeyPattern {
     pub fn matches(&self, key: &FactKey) -> bool {
         matches_fact_segments(&self.segments, &key.segments)
     }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.raw
+    }
+
+    fn scan_prefix(&self) -> Option<String> {
+        let literal_count = self
+            .segments
+            .iter()
+            .take_while(|segment| matches!(segment, FactKeyPatternSegment::Literal(_)))
+            .count();
+        if literal_count == 0 {
+            return None;
+        }
+
+        let mut prefix = String::new();
+        for segment in self.segments.iter().take(literal_count) {
+            let FactKeyPatternSegment::Literal(value) = segment else {
+                unreachable!("literal_count only covers literal segments");
+            };
+            prefix.push('/');
+            prefix.push_str(value);
+        }
+        if literal_count < self.segments.len() {
+            prefix.push('/');
+        }
+        Some(prefix)
+    }
 }
 
 impl Display for FactKeyPattern {
@@ -106,6 +140,11 @@ impl FactContentHash {
     }
 
     #[must_use]
+    pub fn for_payload(payload: &impl AsRef<[u8]>) -> Self {
+        Self(format!("b3:{}", blake3::hash(payload.as_ref()).to_hex()))
+    }
+
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -116,6 +155,8 @@ impl Display for FactContentHash {
         f.write_str(&self.0)
     }
 }
+
+pub type FactPayload = Payload;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fact {
@@ -170,6 +211,7 @@ pub enum FactWriteOutcome {
 #[derive(Debug, Default)]
 pub(crate) struct InMemoryFactSet {
     facts: BTreeMap<FactIdentity, Fact>,
+    payloads: BTreeMap<FactIdentity, FactPayload>,
 }
 
 impl InMemoryFactSet {
@@ -180,9 +222,34 @@ impl InMemoryFactSet {
         key: FactKey,
         content_hash: FactContentHash,
     ) -> Result<FactWriteOutcome> {
+        self.write_inner(island, author, key, content_hash, None)
+    }
+
+    pub(crate) fn write_payload(
+        &mut self,
+        island: IslandId,
+        author: PrincipalId,
+        key: FactKey,
+        payload: FactPayload,
+    ) -> Result<FactWriteOutcome> {
+        let content_hash = FactContentHash::for_payload(&payload);
+        self.write_inner(island, author, key, content_hash, Some(payload))
+    }
+
+    fn write_inner(
+        &mut self,
+        island: IslandId,
+        author: PrincipalId,
+        key: FactKey,
+        content_hash: FactContentHash,
+        payload: Option<FactPayload>,
+    ) -> Result<FactWriteOutcome> {
         let identity = FactIdentity::new(&island, &key);
         if let Some(existing) = self.facts.get(&identity) {
             if existing.content_hash == content_hash {
+                if let Some(payload) = payload {
+                    self.payloads.insert(identity, payload);
+                }
                 return Ok(FactWriteOutcome::AlreadyPresent(existing.clone()));
             }
             return Err(BusError::FactConflict {
@@ -193,6 +260,9 @@ impl InMemoryFactSet {
             });
         }
 
+        if let Some(payload) = payload.clone() {
+            self.payloads.insert(identity.clone(), payload);
+        }
         let fact = Fact::new(island, key, author, content_hash);
         self.facts.insert(identity, fact.clone());
         Ok(FactWriteOutcome::Inserted(fact))
@@ -200,6 +270,26 @@ impl InMemoryFactSet {
 
     pub(crate) fn read(&self, island: &IslandId, key: &FactKey) -> Option<Fact> {
         self.facts.get(&FactIdentity::new(island, key)).cloned()
+    }
+
+    pub(crate) fn list_filtered(
+        &self,
+        island: &IslandId,
+        pattern: &FactKeyPattern,
+        mut include: impl FnMut(&Fact) -> bool,
+    ) -> Vec<Fact> {
+        self.facts
+            .range(FactIdentity::scan_bounds(island, pattern))
+            .filter(|(identity, _fact)| {
+                identity.island == *island && pattern.matches(&identity.key)
+            })
+            .filter(|(_identity, fact)| include(fact))
+            .map(|(_identity, fact)| fact.clone())
+            .collect()
+    }
+
+    pub(crate) fn payload(&self, island: &IslandId, key: &FactKey) -> Option<FactPayload> {
+        self.payloads.get(&FactIdentity::new(island, key)).cloned()
     }
 }
 
@@ -215,6 +305,31 @@ impl FactIdentity {
             island: island.clone(),
             key: key.clone(),
         }
+    }
+
+    fn scan_bounds(
+        island: &IslandId,
+        pattern: &FactKeyPattern,
+    ) -> (Bound<FactIdentity>, Bound<FactIdentity>) {
+        let start = pattern.scan_prefix().unwrap_or_default();
+        let mut end = start.clone();
+        end.push(char::MAX);
+        (
+            Bound::Included(Self {
+                island: island.clone(),
+                key: FactKey {
+                    raw: start,
+                    segments: Vec::new(),
+                },
+            }),
+            Bound::Excluded(Self {
+                island: island.clone(),
+                key: FactKey {
+                    raw: end,
+                    segments: Vec::new(),
+                },
+            }),
+        )
     }
 }
 
@@ -273,7 +388,9 @@ fn matches_fact_segments(pattern: &[FactKeyPatternSegment], key: &[String]) -> b
 
 #[cfg(test)]
 mod tests {
-    use super::{FactContentHash, FactKey, FactKeyPattern, FactWriteOutcome, InMemoryFactSet};
+    use super::{
+        FactContentHash, FactKey, FactKeyPattern, FactPayload, FactWriteOutcome, InMemoryFactSet,
+    };
     use crate::{BusError, IslandId, PrincipalId};
 
     fn island(name: &str) -> IslandId {
@@ -294,6 +411,10 @@ mod tests {
 
     fn hash(value: &str) -> FactContentHash {
         FactContentHash::new(value)
+    }
+
+    fn payload(value: &str) -> FactPayload {
+        value.to_string().into()
     }
 
     #[test]
@@ -355,5 +476,97 @@ mod tests {
 
         assert!(facts.read(&island("prod"), &key("/facts/a")).is_some());
         assert!(facts.read(&island("laptop"), &key("/facts/a")).is_none());
+    }
+
+    #[test]
+    fn payload_writes_derive_hash_and_store_body() {
+        let mut facts = InMemoryFactSet::default();
+        let payload = payload("route-commit");
+        let expected_hash = FactContentHash::for_payload(&payload);
+        let inserted = facts
+            .write_payload(
+                island("prod"),
+                principal("admin"),
+                key("/facts/routes/r1"),
+                payload.clone(),
+            )
+            .expect("insert payload fact");
+
+        let FactWriteOutcome::Inserted(fact) = inserted else {
+            panic!("expected inserted fact");
+        };
+        assert_eq!(fact.content_hash(), &expected_hash);
+        assert_eq!(
+            facts.payload(&island("prod"), &key("/facts/routes/r1")),
+            Some(payload)
+        );
+    }
+
+    #[test]
+    fn payload_writes_are_idempotent_and_conflict_on_changed_body() {
+        let mut facts = InMemoryFactSet::default();
+        let key = key("/facts/routes/r1");
+        facts
+            .write_payload(
+                island("prod"),
+                principal("admin"),
+                key.clone(),
+                payload("route-commit"),
+            )
+            .expect("insert payload fact");
+        let repeated = facts
+            .write_payload(
+                island("prod"),
+                principal("admin"),
+                key.clone(),
+                payload("route-commit"),
+            )
+            .expect("repeat payload fact");
+        let conflict = facts
+            .write_payload(island("prod"), principal("admin"), key, payload("changed"))
+            .unwrap_err();
+
+        assert!(matches!(repeated, FactWriteOutcome::AlreadyPresent(_)));
+        assert!(matches!(conflict, BusError::FactConflict { .. }));
+    }
+
+    #[test]
+    fn fact_list_is_deterministic_and_island_scoped() {
+        let mut facts = InMemoryFactSet::default();
+        facts
+            .write(
+                island("prod"),
+                principal("admin"),
+                key("/facts/service/web/node-2"),
+                hash("h2"),
+            )
+            .expect("insert fact");
+        facts
+            .write(
+                island("laptop"),
+                principal("admin"),
+                key("/facts/service/web/node-1"),
+                hash("h-laptop"),
+            )
+            .expect("insert laptop fact");
+        facts
+            .write(
+                island("prod"),
+                principal("admin"),
+                key("/facts/service/web/node-1"),
+                hash("h1"),
+            )
+            .expect("insert fact");
+
+        let listed = facts.list_filtered(&island("prod"), &pattern("/facts/service/>"), |_| true);
+        let keys = listed
+            .iter()
+            .map(|fact| fact.key().as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            keys,
+            vec!["/facts/service/web/node-1", "/facts/service/web/node-2"]
+        );
     }
 }

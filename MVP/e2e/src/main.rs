@@ -5,6 +5,7 @@ mod bridge_contract;
 mod bus_contract;
 mod bus_syntax;
 mod metrics;
+mod projection_contract;
 mod scale;
 
 use std::env;
@@ -26,17 +27,19 @@ fn run() -> Result<(), String> {
         "authority-contract" => authority_contract::run(),
         "bridge-contract" => bridge_contract::run(),
         "bus-contract" => bus_contract::run(),
+        "projection-contract" => projection_contract::run(),
         "all" => {
             bus_contract::run()?;
             actor_contract::run()?;
             authority_contract::run()?;
             bridge_contract::run()?;
+            projection_contract::run()?;
             scale::run()
         }
         "scale" => scale::run(),
         "help" | "--help" | "-h" => {
             println!(
-                "usage: cargo run -p mvp-e2e -- <bus-contract|actor-contract|authority-contract|bridge-contract|all|scale>"
+                "usage: cargo run -p mvp-e2e -- <bus-contract|actor-contract|authority-contract|bridge-contract|projection-contract|all|scale>"
             );
             Ok(())
         }
