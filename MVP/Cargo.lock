@@ -2397,6 +2397,7 @@ dependencies = [
  "mvp-iroh",
  "mvp-lease",
  "mvp-projection",
+ "mvp-serving",
  "serde",
  "serde_json",
  "tokio",
