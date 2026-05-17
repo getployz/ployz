@@ -9,6 +9,10 @@ Update this file when a slice introduces a new primitive or materially changes
 one. Slice notes should link back here instead of burying architecture rationale
 inside implementation reports.
 
+The bar for adding an entry is evidence. If a slice only raises a possible
+future concern, keep that in the slice report until implementation or tests make
+the decision concrete.
+
 ## NATS-Shaped Bus Semantics
 
 Why this:

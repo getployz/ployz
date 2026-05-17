@@ -228,6 +228,8 @@ The slice plan should decide:
 - what semantic-leverage metric the slice will inspect, such as lines of
   feature logic versus substrate glue, number of files touched to add a product
   rule, or clarity of business invariants in tests.
+- what maintainer-facing documentation should be updated so future contributors
+  know why a primitive, crate, or pattern exists.
 - how the slice stays isolated under `MVP/`.
 
 The slice plan should not blindly follow a prewritten backlog. It should inspect
@@ -253,6 +255,27 @@ they become relevant include iroh protocol helpers such as `irpc`, Kameo,
 authorization, `tokio-util` for cancellation/shutdown, `rusqlite` for
 projections, and load/stress tooling such as `criterion` when a slice needs
 measurement.
+
+## Maintainer Documentation Protocol
+
+The MVP should build a small set of maintainer-facing architecture notes while
+the system is still easy to explain. The goal is not public marketing docs; it
+is to make the chosen “Lego pieces” legible to a future maintainer who needs to
+understand why the code is shaped this way.
+
+Use [MVP/primitive-decisions.md](primitive-decisions.md) as the current decision
+map. Update it when a slice:
+
+- adopts or rejects a crate for substrate plumbing,
+- introduces a new primitive,
+- changes the public semantics of a primitive,
+- discovers a cost or failure mode future maintainers should remember,
+- proves that a simpler approach is enough and a heavier dependency is not
+  justified yet.
+
+If a decision is too speculative to commit to the primitive map, record it as a
+future documentation problem in the slice report instead. Documentation should
+track decisions that have evidence, not every idea raised during exploration.
 
 ## Execution Protocol For Future Slices
 
