@@ -11,15 +11,16 @@ use crossbeam_channel::{
 };
 
 use crate::grants::GrantBook;
+use crate::message::{MessageId, ReplyInbox, ReplyPermit};
 use crate::{
-    BusError, BusMessage, BusSession, Grant, MessageId, Payload, PrincipalId, QueueName,
-    ReplyInbox, ReplyPermit, RequestManyPolicy, RequestTarget, ResponseEnvelope, ResponseMessage,
-    Result, Subject, SubjectPattern,
+    BusError, BusMessage, BusSession, Grant, Payload, PrincipalId, QueueName, RequestManyPolicy,
+    RequestTarget, ResponseEnvelope, ResponseMessage, Result, Subject, SubjectPattern,
 };
 
 pub type HandlerOutcome = Result<()>;
 
 pub(crate) type Handler = Arc<dyn Fn(RequestContext) -> HandlerOutcome + Send + Sync + 'static>;
+const DEFAULT_PUBLISH_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BusRuntimeConfig {
@@ -186,7 +187,7 @@ pub struct RequestContext {
 
 impl RequestContext {
     #[must_use]
-    pub fn new(message: BusMessage, reply_permit: Option<ReplyPermit>) -> Self {
+    pub(crate) fn new(message: BusMessage, reply_permit: Option<ReplyPermit>) -> Self {
         Self {
             message,
             reply_permit,
@@ -343,7 +344,23 @@ impl MemoryBus {
         subject: Subject,
         payload: impl Into<Payload>,
     ) -> Result<()> {
+        self.publish_until(
+            session,
+            subject,
+            payload,
+            deadline_after(DEFAULT_PUBLISH_TIMEOUT),
+        )
+    }
+
+    pub(crate) fn publish_until(
+        &self,
+        session: &BusSession,
+        subject: Subject,
+        payload: impl Into<Payload>,
+        deadline: Instant,
+    ) -> Result<()> {
         let payload = payload.into();
+        let subject_display = subject.to_string();
         let dispatch = {
             let mut inner = self.inner.lock().expect("memory bus mutex poisoned");
             inner.ensure_not_draining()?;
@@ -363,7 +380,8 @@ impl MemoryBus {
             dispatch
         };
 
-        self.runtime.run_and_wait(dispatch)
+        self.runtime
+            .run_and_wait_until(dispatch, deadline, subject_display)
     }
 
     pub fn request(
@@ -513,7 +531,7 @@ impl MemoryBus {
             let id = MessageId::new(inner.next_id());
             let inbox = ReplyInbox::new(Subject::parse(format!("_INBOX.{}", id.value()))?);
             let mut message = BusMessage::new(id, spec.subject.clone(), principal, spec.payload);
-            message.reply_to = Some(inbox.clone());
+            message.set_reply_to(inbox.clone());
             let reply = ReplySpec {
                 inbox,
                 expires_at: spec.deadline,
@@ -553,7 +571,7 @@ impl BusAuthority {
 struct Inner {
     subscribers: Vec<Subscriber>,
     queue_subscribers: Vec<QueueSubscriber>,
-    queue_cursor: BTreeMap<QueueGroupKey, usize>,
+    queue_cursor: BTreeMap<QueueName, usize>,
     grants: GrantBook,
     next_id: u64,
     draining: bool,
@@ -625,7 +643,7 @@ impl Inner {
             return dispatch;
         }
 
-        let mut groups = BTreeMap::<QueueGroupKey, Vec<QueueSubscriber>>::new();
+        let mut groups = BTreeMap::<QueueName, Vec<QueueSubscriber>>::new();
         for subscriber in &self.queue_subscribers {
             if target.matches_subject_pattern(&subscriber.pattern)
                 && self.grants.can_queue_subscribe(
@@ -638,7 +656,7 @@ impl Inner {
                     .is_none_or(|_| self.grants.can_respond(&subscriber.principal))
             {
                 groups
-                    .entry(subscriber.group_key())
+                    .entry(subscriber.queue.clone())
                     .or_default()
                     .push(subscriber.clone());
             }
@@ -700,12 +718,6 @@ struct QueueSubscriber {
 }
 
 impl QueueSubscriber {
-    fn group_key(&self) -> QueueGroupKey {
-        QueueGroupKey {
-            queue: self.queue.clone(),
-        }
-    }
-
     fn delivery(&self, message: BusMessage, reply: Option<ReplySpec>) -> Delivery {
         Delivery::new(
             self.id,
@@ -715,11 +727,6 @@ impl QueueSubscriber {
             reply,
         )
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct QueueGroupKey {
-    queue: QueueName,
 }
 
 #[derive(Clone)]
@@ -773,7 +780,7 @@ impl Delivery {
         let permit = self.reply.as_ref().map(|reply| {
             ReplyPermit::new(
                 reply.inbox.clone(),
-                self.message.id,
+                self.message.id(),
                 self.principal.clone(),
                 reply.expires_at,
                 reply.tx.clone(),
@@ -781,12 +788,9 @@ impl Delivery {
         });
         let mut message = self.message;
         if let Some(reply) = &self.reply {
-            message.reply_to = Some(reply.inbox.clone());
+            message.set_reply_to(reply.inbox.clone());
         }
-        message.headers.insert(
-            String::from("mvp-bus-subscriber-id"),
-            self.subscriber_id.to_string(),
-        );
+        let _subscriber_id = self.subscriber_id;
         RequestContext::new(message, permit)
     }
 }
@@ -824,27 +828,44 @@ impl DeliveryRuntime {
         deadline: Instant,
         timeout_subject: String,
     ) -> Result<()> {
-        self.enqueue(deliveries, None, Some(deadline), timeout_subject)
+        self.enqueue(deliveries, None, deadline, timeout_subject)
     }
 
-    fn run_and_wait(&self, deliveries: Vec<Delivery>) -> Result<()> {
+    fn run_and_wait_until(
+        &self,
+        deliveries: Vec<Delivery>,
+        deadline: Instant,
+        timeout_subject: String,
+    ) -> Result<()> {
         if deliveries.is_empty() {
             return Ok(());
         }
         let expected = deliveries.len();
         let (result_tx, result_rx) = mpsc::channel();
-        self.enqueue(deliveries, Some(result_tx), None, String::from("delivery"))?;
+        self.enqueue(
+            deliveries,
+            Some(result_tx),
+            deadline,
+            timeout_subject.clone(),
+        )?;
 
         let mut first_error = None;
         for _ in 0..expected {
-            match result_rx.recv() {
+            match result_rx.recv_timeout(remaining_until(deadline, timeout_subject.clone())?) {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
                     if first_error.is_none() {
                         first_error = Some(error);
                     }
                 }
-                Err(_) => return Err(BusError::DeliveryRuntimeStopped),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(BusError::Timeout {
+                        subject: timeout_subject,
+                    });
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(BusError::DeliveryRuntimeStopped);
+                }
             }
         }
 
@@ -869,7 +890,7 @@ impl DeliveryRuntime {
         &self,
         deliveries: Vec<Delivery>,
         result_tx: Option<mpsc::Sender<Result<()>>>,
-        deadline: Option<Instant>,
+        deadline: Instant,
         timeout_subject: String,
     ) -> Result<()> {
         let total = deliveries.len();
@@ -886,35 +907,25 @@ impl DeliveryRuntime {
                     self.metrics
                         .record_queue_depth(self.config.delivery_queue_capacity());
                     let send_started = Instant::now();
-                    let result = match deadline {
-                        Some(deadline) => {
-                            let remaining = match remaining_until(deadline, timeout_subject.clone())
-                            {
-                                Ok(remaining) => remaining,
-                                Err(error) => {
-                                    self.inflight.complete_many(total - queued);
-                                    return Err(error);
-                                }
-                            };
-                            self.sender
-                                .send_timeout(job, remaining)
-                                .map_err(|error| match error {
-                                    SendTimeoutError::Timeout(_) => BusError::Timeout {
-                                        subject: timeout_subject.clone(),
-                                    },
-                                    SendTimeoutError::Disconnected(_) => {
-                                        BusError::DeliveryRuntimeStopped
-                                    }
-                                })
+                    let remaining = match remaining_until(deadline, timeout_subject.clone()) {
+                        Ok(remaining) => remaining,
+                        Err(error) => {
+                            self.inflight.complete_many(total - queued);
+                            return Err(error);
                         }
-                        None => self
-                            .sender
-                            .send(job)
-                            .map_err(|_| BusError::DeliveryRuntimeStopped),
                     };
-                    if result.is_ok() {
-                        self.metrics.record_enqueue_block(send_started.elapsed());
-                    }
+                    let result =
+                        self.sender
+                            .send_timeout(job, remaining)
+                            .map_err(|error| match error {
+                                SendTimeoutError::Timeout(_) => BusError::Timeout {
+                                    subject: timeout_subject.clone(),
+                                },
+                                SendTimeoutError::Disconnected(_) => {
+                                    BusError::DeliveryRuntimeStopped
+                                }
+                            });
+                    self.metrics.record_enqueue_block(send_started.elapsed());
                     result
                 }
                 Err(TrySendError::Disconnected(_)) => Err(BusError::DeliveryRuntimeStopped),
@@ -951,18 +962,8 @@ impl DeliveryRuntimeMetrics {
     }
 
     fn record_max_active(&self, active: usize) {
-        let mut current = self.max_active_deliveries.load(Ordering::SeqCst);
-        while active > current {
-            match self.max_active_deliveries.compare_exchange(
-                current,
-                active,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => break,
-                Err(observed) => current = observed,
-            }
-        }
+        self.max_active_deliveries
+            .fetch_max(active, Ordering::SeqCst);
     }
 
     fn finish_delivery(&self) {
@@ -970,18 +971,8 @@ impl DeliveryRuntimeMetrics {
     }
 
     fn record_queue_depth(&self, queued: usize) {
-        let mut current = self.max_queued_deliveries.load(Ordering::SeqCst);
-        while queued > current {
-            match self.max_queued_deliveries.compare_exchange(
-                current,
-                queued,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => break,
-                Err(observed) => current = observed,
-            }
-        }
+        self.max_queued_deliveries
+            .fetch_max(queued, Ordering::SeqCst);
     }
 
     fn record_enqueue_block(&self, duration: Duration) {
@@ -1054,9 +1045,10 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    use super::MemoryBus;
     use crate::{
-        BusError, BusRuntimeConfig, BusSession, Grant, MemoryBus, Payload, PrincipalId,
-        RequestManyPolicy, RequestTarget, Subject, SubjectPattern,
+        BusError, BusRuntimeConfig, BusSession, Grant, Payload, PrincipalId, RequestManyPolicy,
+        RequestTarget, Subject, SubjectPattern,
     };
 
     fn principal(name: &str) -> PrincipalId {
@@ -1106,7 +1098,7 @@ mod tests {
                 payload_ptrs
                     .lock()
                     .expect("payload ptr lock")
-                    .push(ctx.message.payload.as_bytes().as_ptr() as usize);
+                    .push(ctx.message.payload().as_bytes().as_ptr() as usize);
                 Ok(())
             })
             .expect("subscribe");
@@ -1156,6 +1148,36 @@ mod tests {
         assert_eq!(snapshot.delivery_workers, 2);
         assert!(max_active.load(Ordering::SeqCst) <= 2);
         assert!(snapshot.max_active_deliveries <= 2);
+    }
+
+    #[test]
+    fn publish_until_times_out_when_delivery_queue_stays_full_and_records_pressure() {
+        let config = BusRuntimeConfig::with_delivery_workers(1).with_delivery_queue_capacity(1);
+        let (bus, authority) = MemoryBus::new_with_authority_and_config(config);
+        let admin = authority.grant(principal("admin"), Grant::allow_all());
+
+        for _ in 0..3 {
+            bus.subscribe(&admin, pattern("gateway.changed"), move |_| {
+                std::thread::sleep(Duration::from_millis(100));
+                Ok(())
+            })
+            .expect("subscribe slow gateway handler");
+        }
+
+        let error = bus
+            .publish_until(
+                &admin,
+                subject("gateway.changed"),
+                Vec::new(),
+                super::deadline_after(Duration::from_millis(5)),
+            )
+            .unwrap_err();
+        let snapshot = bus.runtime_snapshot();
+
+        assert!(matches!(error, BusError::Timeout { .. }));
+        assert!(snapshot.max_queued_deliveries >= 1);
+        assert!(snapshot.enqueue_full_count > 0);
+        assert!(snapshot.enqueue_blocked_ns > 0);
     }
 
     #[test]
@@ -1213,7 +1235,7 @@ mod tests {
             )
             .expect("request");
 
-        assert_eq!(response.payload, b"ok".to_vec());
+        assert_eq!(response.payload().as_bytes(), b"ok".as_slice());
     }
 
     #[test]
@@ -1299,7 +1321,7 @@ mod tests {
             bus.subscribe(
                 &admin,
                 pattern(&format!("node.{node}.capacity")),
-                move |ctx| ctx.reply(ctx.message.subject.as_str().as_bytes().to_vec()),
+                move |ctx| ctx.reply(ctx.message.subject().as_str().as_bytes().to_vec()),
             )
             .expect("subscribe");
         }
@@ -1313,18 +1335,24 @@ mod tests {
                 RequestManyPolicy::new(8, Duration::from_secs(1)),
             )
             .expect("request many");
-        replies.sort_by(|left, right| left.payload.cmp(&right.payload));
+        replies.sort_by(|left, right| left.payload().cmp(right.payload()));
 
         assert_eq!(replies.len(), 2);
-        assert_eq!(replies[0].payload, b"node.broadcast.capacity".to_vec());
-        assert_eq!(replies[1].payload, b"node.broadcast.capacity".to_vec());
+        assert_eq!(
+            replies[0].payload().as_bytes(),
+            b"node.broadcast.capacity".as_slice()
+        );
+        assert_eq!(
+            replies[1].payload().as_bytes(),
+            b"node.broadcast.capacity".as_slice()
+        );
     }
 
     #[test]
     fn request_many_can_target_broad_subscriber_pattern() {
         let (bus, admin) = bus_with_admin();
         bus.subscribe(&admin, pattern("node.>"), |ctx| {
-            ctx.reply(ctx.message.subject.as_str().as_bytes().to_vec())
+            ctx.reply(ctx.message.subject().as_str().as_bytes().to_vec())
         })
         .expect("subscribe");
 
@@ -1339,7 +1367,10 @@ mod tests {
             .expect("request many");
 
         assert_eq!(replies.len(), 1);
-        assert_eq!(replies[0].payload, b"node.broadcast.capacity".to_vec());
+        assert_eq!(
+            replies[0].payload().as_bytes(),
+            b"node.broadcast.capacity".as_slice()
+        );
     }
 
     #[test]
@@ -1368,7 +1399,7 @@ mod tests {
             .expect("request many");
 
         assert_eq!(replies.len(), 1);
-        assert_eq!(replies[0].payload, b"normal".to_vec());
+        assert_eq!(replies[0].payload().as_bytes(), b"normal".as_slice());
     }
 
     #[test]
@@ -1598,7 +1629,7 @@ mod tests {
             )
             .expect("request");
 
-        assert_eq!(response.payload, b"first".to_vec());
+        assert_eq!(response.payload().as_bytes(), b"first".as_slice());
         assert!(matches!(
             duplicate_error
                 .lock()
@@ -1793,7 +1824,7 @@ mod tests {
             .join()
             .expect("request thread joins")
             .expect("request");
-        assert_eq!(response.payload, b"ok".to_vec());
+        assert_eq!(response.payload().as_bytes(), b"ok".as_slice());
         assert_eq!(completed.load(Ordering::SeqCst), 1);
     }
 
@@ -1881,17 +1912,6 @@ mod tests {
     }
 
     fn record_max(max_active: &AtomicUsize, active_now: usize) {
-        let mut current = max_active.load(Ordering::SeqCst);
-        while active_now > current {
-            match max_active.compare_exchange(
-                current,
-                active_now,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => break,
-                Err(observed) => current = observed,
-            }
-        }
+        max_active.fetch_max(active_now, Ordering::SeqCst);
     }
 }

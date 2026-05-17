@@ -86,7 +86,7 @@ async fn run_async() -> Result<(), String> {
         .map_err(|error| format!("actor queue request failed: {error}"))?;
     assert_eq_named(
         "actor queue reply",
-        deploy.payload.as_bytes(),
+        deploy.payload().as_bytes(),
         b"accepted".as_slice(),
     )?;
     assert_eq_named(
@@ -269,7 +269,7 @@ async fn register_scheduler(
         "schedulers",
         move |ctx| {
             deliveries.fetch_add(1, Ordering::SeqCst);
-            ctx.reply(if ctx.message.payload.is_empty() {
+            ctx.reply(if ctx.message.payload().is_empty() {
                 b"empty".to_vec()
             } else {
                 b"accepted".to_vec()

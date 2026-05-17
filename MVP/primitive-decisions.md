@@ -60,10 +60,9 @@ Costs:
 - Actor calls are async even when the current in-memory bus is sync.
 - Error mapping needs to preserve domain failures separately from actor
   availability failures.
-- There are currently two surfaces: `MemoryBus` for the in-memory substrate and
-  `BusActorHandle` for business-facing actor ownership. Future slices should
-  keep business logic on the actor handle unless they are testing substrate
-  internals directly.
+- `BusActorHandle` is the business-facing surface. The synchronous in-memory
+  bus is exported only through `mvp_bus::harness::InMemoryBus` for E2E and
+  substrate tests.
 
 Revisit if:
 - Actor message handling starts doing blocking work itself. Blocking delivery
@@ -110,6 +109,9 @@ Costs:
   worker concurrency; future slices should make mailbox/queue saturation
   operator-visible where foreground callers need a structured timeout or
   rejection.
+- Publish, request, and request-many paths all use bounded delivery enqueue and
+  response waits. Saturated enqueue attempts record pressure even when they time
+  out instead of disappearing from runtime metrics.
 
 Revisit if:
 - Delivery handlers become async iroh operations. The runtime may move from

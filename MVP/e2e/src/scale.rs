@@ -5,8 +5,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mvp_bus::{
-    BusRuntimeConfig, BusRuntimeSnapshot, Grant, MemoryBus, Payload, PrincipalId,
-    RequestManyPolicy, RequestTarget, Subject,
+    BusRuntimeConfig, BusRuntimeSnapshot, Grant, Payload, PrincipalId, RequestManyPolicy,
+    RequestTarget, Subject, harness::InMemoryBus,
 };
 use serde::Serialize;
 
@@ -105,7 +105,7 @@ pub(crate) fn run() -> Result<(), String> {
 fn run_node_count(logical_nodes: usize) -> Result<ScaleRunReport, String> {
     let started = Instant::now();
     let memory_before = memory_snapshot();
-    let (bus, authority) = MemoryBus::new_with_authority_and_config(
+    let (bus, authority) = InMemoryBus::new_with_authority_and_config(
         BusRuntimeConfig::with_delivery_workers(DELIVERY_WORKERS),
     );
     let admin = authority.grant(PrincipalId::new("admin"), Grant::allow_all());
@@ -192,7 +192,7 @@ fn run_node_count(logical_nodes: usize) -> Result<ScaleRunReport, String> {
 }
 
 fn register_logical_nodes(
-    bus: &MemoryBus,
+    bus: &InMemoryBus,
     admin: &mvp_bus::BusSession,
     logical_nodes: usize,
     gateway_wakeups: Arc<AtomicUsize>,
@@ -231,7 +231,7 @@ fn run_saturation_case() -> Result<SaturationReport, String> {
     let started = Instant::now();
     let config = BusRuntimeConfig::with_delivery_workers(SATURATION_DELIVERY_WORKERS)
         .with_delivery_queue_capacity(SATURATION_QUEUE_CAPACITY);
-    let (bus, authority) = MemoryBus::new_with_authority_and_config(config);
+    let (bus, authority) = InMemoryBus::new_with_authority_and_config(config);
     let admin = authority.grant(PrincipalId::new("admin"), Grant::allow_all());
     let deliveries = Arc::new(AtomicUsize::new(0));
     for subscriber_index in 0..SATURATION_SUBSCRIBERS {

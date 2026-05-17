@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
 use std::ops::Deref;
 use std::sync::Arc;
@@ -9,8 +8,6 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 
 use crate::{BusError, PrincipalId, Result, Subject, SubjectPattern};
-
-pub type Headers = BTreeMap<String, String>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Payload(Bytes);
@@ -91,7 +88,7 @@ pub struct MessageId(u64);
 
 impl MessageId {
     #[must_use]
-    pub fn new(value: u64) -> Self {
+    pub(crate) fn new(value: u64) -> Self {
         Self(value)
     }
 
@@ -109,25 +106,51 @@ impl Display for MessageId {
 
 #[derive(Debug, Clone)]
 pub struct BusMessage {
-    pub id: MessageId,
-    pub subject: Subject,
-    pub headers: Headers,
-    pub payload: Payload,
-    pub principal: PrincipalId,
-    pub reply_to: Option<ReplyInbox>,
+    id: MessageId,
+    subject: Subject,
+    payload: Payload,
+    principal: PrincipalId,
+    reply_to: Option<ReplyInbox>,
 }
 
 impl BusMessage {
     #[must_use]
-    pub fn new(id: MessageId, subject: Subject, principal: PrincipalId, payload: Payload) -> Self {
+    pub(crate) fn new(
+        id: MessageId,
+        subject: Subject,
+        principal: PrincipalId,
+        payload: Payload,
+    ) -> Self {
         Self {
             id,
             subject,
-            headers: Headers::new(),
             payload,
             principal,
             reply_to: None,
         }
+    }
+
+    #[must_use]
+    pub fn subject(&self) -> &Subject {
+        &self.subject
+    }
+
+    #[must_use]
+    pub fn payload(&self) -> &Payload {
+        &self.payload
+    }
+
+    #[must_use]
+    pub fn principal(&self) -> &PrincipalId {
+        &self.principal
+    }
+
+    pub(crate) fn id(&self) -> MessageId {
+        self.id
+    }
+
+    pub(crate) fn set_reply_to(&mut self, reply_to: ReplyInbox) {
+        self.reply_to = Some(reply_to);
     }
 }
 
@@ -137,21 +160,33 @@ pub struct ReplyInbox {
 }
 
 impl ReplyInbox {
-    pub fn new(subject: Subject) -> Self {
+    pub(crate) fn new(subject: Subject) -> Self {
         Self { subject }
-    }
-
-    #[must_use]
-    pub fn subject(&self) -> &Subject {
-        &self.subject
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct ResponseMessage {
-    pub request_id: MessageId,
-    pub responder: PrincipalId,
-    pub payload: Payload,
+    request_id: MessageId,
+    responder: PrincipalId,
+    payload: Payload,
+}
+
+impl ResponseMessage {
+    #[must_use]
+    pub fn request_id(&self) -> u64 {
+        self.request_id.value()
+    }
+
+    #[must_use]
+    pub fn responder(&self) -> &PrincipalId {
+        &self.responder
+    }
+
+    #[must_use]
+    pub fn payload(&self) -> &Payload {
+        &self.payload
+    }
 }
 
 #[derive(Debug, Clone)]

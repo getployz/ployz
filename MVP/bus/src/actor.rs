@@ -8,10 +8,11 @@ use kameo::mailbox;
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
 
+use crate::memory::MemoryBus;
 use crate::memory::{Handler, RequestManyDeadlinePolicy, deadline_after, remaining_until};
 use crate::{
-    BusAuthority, BusError, BusRuntimeSnapshot, BusSession, HandlerOutcome, MemoryBus, Payload,
-    QueueName, RequestContext, RequestManyPolicy, RequestTarget, ResponseMessage, Result, Subject,
+    BusAuthority, BusError, BusRuntimeSnapshot, BusSession, HandlerOutcome, Payload, QueueName,
+    RequestContext, RequestManyPolicy, RequestTarget, ResponseMessage, Result, Subject,
     SubjectPattern,
 };
 
@@ -38,7 +39,7 @@ pub struct BusActorHandle {
 
 impl BusActorHandle {
     #[must_use]
-    pub fn spawn(bus: MemoryBus) -> Self {
+    pub(crate) fn spawn(bus: MemoryBus) -> Self {
         Self {
             actor: BusActor::spawn_with_mailbox(
                 BusActor::new(bus),
@@ -50,6 +51,12 @@ impl BusActorHandle {
     #[must_use]
     pub fn new_with_authority() -> (Self, BusAuthority) {
         let (bus, authority) = MemoryBus::new_with_authority();
+        (Self::spawn(bus), authority)
+    }
+
+    #[must_use]
+    pub fn new_with_authority_and_config(config: crate::BusRuntimeConfig) -> (Self, BusAuthority) {
+        let (bus, authority) = MemoryBus::new_with_authority_and_config(config);
         (Self::spawn(bus), authority)
     }
 
@@ -491,7 +498,7 @@ mod tests {
             bus.subscribe(
                 &admin,
                 pattern(&format!("node.{node}.capacity")),
-                move |ctx| ctx.reply(ctx.message.subject.as_str().as_bytes().to_vec()),
+                move |ctx| ctx.reply(ctx.message.subject().as_str().as_bytes().to_vec()),
             )
             .await
             .expect("subscribe capacity");
@@ -521,7 +528,7 @@ mod tests {
             .expect("request many");
 
         assert_eq!(status_count.load(Ordering::SeqCst), 1);
-        assert_eq!(response.payload, b"ok".to_vec());
+        assert_eq!(response.payload().as_bytes(), b"ok".as_slice());
         assert_eq!(replies.len(), 2);
         assert_eq!(
             bus.runtime_snapshot()
@@ -588,8 +595,9 @@ mod tests {
                 .await
                 .expect("request task joins")
                 .expect("request")
-                .payload,
-            b"ok".to_vec()
+                .payload()
+                .as_bytes(),
+            b"ok".as_slice()
         );
     }
 }

@@ -6,7 +6,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mvp_bus::{
-    BusError, BusSession, Grant, MemoryBus, PrincipalId, RequestManyPolicy, RequestTarget, Subject,
+    BusError, BusSession, Grant, PrincipalId, RequestManyPolicy, RequestTarget, Subject,
+    harness::InMemoryBus,
 };
 use serde::Serialize;
 
@@ -37,7 +38,7 @@ struct MetricsReport {
 
 pub(crate) fn run() -> Result<(), String> {
     let started = Instant::now();
-    let (bus, authority) = MemoryBus::new_with_authority();
+    let (bus, authority) = InMemoryBus::new_with_authority();
     let admin = PrincipalId::new("admin");
     let scheduler_a = PrincipalId::new("scheduler-a");
     let scheduler_b = PrincipalId::new("scheduler-b");
@@ -84,7 +85,7 @@ pub(crate) fn run() -> Result<(), String> {
     assert_eq_named("capacity reply count", capacity.len(), 2)?;
     let mut capacity_payloads = capacity
         .iter()
-        .map(|response| String::from_utf8_lossy(&response.payload).to_string())
+        .map(|response| String::from_utf8_lossy(response.payload()).to_string())
         .collect::<Vec<_>>();
     capacity_payloads.sort();
     assert_eq_named(
@@ -109,10 +110,10 @@ pub(crate) fn run() -> Result<(), String> {
                 Duration::from_secs(1),
             )
             .map_err(|error| format!("deploy submit request failed: {error}"))?;
-        if response.payload != b"accepted".to_vec() {
+        if response.payload().as_bytes() != b"accepted".as_slice() {
             return Err(format!(
                 "deploy submit returned unexpected payload: {:?}",
-                String::from_utf8_lossy(&response.payload)
+                String::from_utf8_lossy(response.payload())
             ));
         }
         metrics.requests += 1;
@@ -241,7 +242,7 @@ pub(crate) fn run() -> Result<(), String> {
         .map_err(|error| format!("in-flight drain request failed: {error}"))?;
     assert_eq_named(
         "in-flight drain response",
-        drain_response.payload.as_bytes(),
+        drain_response.payload().as_bytes(),
         b"drained".as_slice(),
     )?;
     metrics.requests += 1;
@@ -277,7 +278,7 @@ pub(crate) fn run() -> Result<(), String> {
 }
 
 fn register_capacity_responder(
-    bus: &MemoryBus,
+    bus: &InMemoryBus,
     node: &str,
     admin: &BusSession,
 ) -> Result<(), String> {
@@ -292,7 +293,7 @@ fn register_capacity_responder(
 }
 
 fn register_scheduler(
-    bus: &MemoryBus,
+    bus: &InMemoryBus,
     principal: &BusSession,
     deliveries: Arc<AtomicUsize>,
 ) -> Result<(), String> {
@@ -302,7 +303,7 @@ fn register_scheduler(
         "schedulers",
         move |ctx| {
             deliveries.fetch_add(1, Ordering::SeqCst);
-            ctx.reply(if ctx.message.payload.is_empty() {
+            ctx.reply(if ctx.message.payload().is_empty() {
                 b"empty".to_vec()
             } else {
                 b"accepted".to_vec()

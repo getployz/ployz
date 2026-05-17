@@ -90,21 +90,6 @@ impl SubjectPattern {
     }
 
     #[must_use]
-    pub fn literal_subject(&self) -> Option<Subject> {
-        let mut tokens = Vec::with_capacity(self.tokens.len());
-        for token in &self.tokens {
-            let PatternToken::Literal(value) = token else {
-                return None;
-            };
-            tokens.push(value.clone());
-        }
-        Some(Subject {
-            raw: self.raw.clone(),
-            tokens,
-        })
-    }
-
-    #[must_use]
     pub fn subsumes(&self, requested: &SubjectPattern) -> bool {
         for (index, token) in self.tokens.iter().enumerate() {
             match token {
