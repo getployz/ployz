@@ -1,14 +1,90 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
+use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
+
 use crate::{BusError, PrincipalId, Result, Subject, SubjectPattern};
 
 pub type Headers = BTreeMap<String, String>;
-pub type Payload = Vec<u8>;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Payload(Bytes);
+
+impl Payload {
+    #[must_use]
+    pub fn from_static(bytes: &'static [u8]) -> Self {
+        Self(Bytes::from_static(bytes))
+    }
+
+    #[must_use]
+    pub fn copy_from_slice(bytes: &[u8]) -> Self {
+        Self(Bytes::copy_from_slice(bytes))
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+impl AsRef<[u8]> for Payload {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl Deref for Payload {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_bytes()
+    }
+}
+
+impl From<Vec<u8>> for Payload {
+    fn from(value: Vec<u8>) -> Self {
+        Self(Bytes::from(value))
+    }
+}
+
+impl From<&'static [u8]> for Payload {
+    fn from(value: &'static [u8]) -> Self {
+        Self::from_static(value)
+    }
+}
+
+impl From<String> for Payload {
+    fn from(value: String) -> Self {
+        value.into_bytes().into()
+    }
+}
+
+impl PartialEq<Vec<u8>> for Payload {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        self.as_bytes() == other.as_slice()
+    }
+}
+
+impl PartialEq<Payload> for Vec<u8> {
+    fn eq(&self, other: &Payload) -> bool {
+        self.as_slice() == other.as_bytes()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MessageId(u64);
@@ -149,11 +225,11 @@ impl ReplyPermit {
         }
     }
 
-    pub fn respond(&self, payload: Payload) -> Result<()> {
+    pub fn respond(&self, payload: impl Into<Payload>) -> Result<()> {
         self.respond_as(&self.responder, payload)
     }
 
-    pub fn respond_as(&self, principal: &PrincipalId, payload: Payload) -> Result<()> {
+    pub fn respond_as(&self, principal: &PrincipalId, payload: impl Into<Payload>) -> Result<()> {
         if principal != &self.responder || Instant::now() > self.expires_at {
             return Err(BusError::UnauthorizedResponse {
                 principal: principal.clone(),
@@ -169,10 +245,27 @@ impl ReplyPermit {
             .send(ResponseEnvelope::Reply(ResponseMessage {
                 request_id: self.request_id,
                 responder: principal.clone(),
-                payload,
+                payload: payload.into(),
             }))
             .map_err(|_| BusError::ResponseClosed {
                 inbox: self.inbox.subject.to_string(),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Payload;
+
+    #[test]
+    fn payload_clone_shares_backing_storage() {
+        let payload = Payload::from(vec![1, 2, 3, 4]);
+        let clone = payload.clone();
+
+        assert_eq!(payload.as_bytes(), clone.as_bytes());
+        assert!(std::ptr::eq(
+            payload.as_bytes().as_ptr(),
+            clone.as_bytes().as_ptr()
+        ));
     }
 }

@@ -6,7 +6,9 @@ mod subject;
 
 pub use error::{BusError, Result, SubjectParseError};
 pub use grants::{BusSession, Grant, PrincipalId, QueueName};
-pub use memory::{BusAuthority, HandlerOutcome, MemoryBus, RequestContext};
+pub use memory::{
+    BusAuthority, BusRuntimeConfig, BusRuntimeSnapshot, HandlerOutcome, MemoryBus, RequestContext,
+};
 pub(crate) use message::ResponseEnvelope;
 pub use message::{
     BusMessage, Headers, MessageId, Payload, ReplyInbox, ReplyPermit, RequestManyPolicy,
