@@ -66,6 +66,12 @@ right. The new foundation should make a few real product features easier to
 write, easier to test, and easier to review because the business behavior sits
 on top of stronger bus, fact, projection, and actor primitives.
 
+Simplicity is a hard requirement, not a nice-to-have. The target is the simplest
+code that preserves the required semantics: easy to read, easy to maintain,
+easy to test, and hard to misuse from future business logic. A slice that
+passes E2E tests but forces feature code to understand transport, timing,
+authorization, or storage choreography has not proved the foundation.
+
 The strategy is to rebuild the foundation by proof. Every future slice should
 answer: what is the next smallest proof that makes the architecture more real?
 
@@ -211,6 +217,7 @@ The slice plan should decide:
 
 - the single proof target for the slice,
 - why that target is the next best step,
+- what crates or existing projects were checked before writing plumbing,
 - what existing code should be reused,
 - what new MVP-local crates/modules are justified,
 - what must remain out of scope,
@@ -225,6 +232,27 @@ The slice plan should decide:
 
 The slice plan should not blindly follow a prewritten backlog. It should inspect
 the code and choose the next boundary.
+
+## Crate Scout Protocol
+
+Before each implementation slice, do a short dependency scout and record it in
+the slice plan.
+
+The scout should answer:
+
+- What plumbing would this slice otherwise need to build?
+- Which crates or adjacent projects already solve that plumbing?
+- Are they maintained enough and compatible with the MVP architecture?
+- What should be adopted now, what should be deferred, and what ideas should be
+  copied without adding a dependency?
+
+The default is to lean on well-tested crates for substrate plumbing and keep
+Ployz-specific business semantics in our own code. Good candidates to check as
+they become relevant include iroh protocol helpers such as `irpc`, Kameo,
+`async-nats` as a semantic reference, `cedar-policy` or `biscuit-auth` for
+authorization, `tokio-util` for cancellation/shutdown, `rusqlite` for
+projections, and load/stress tooling such as `criterion` when a slice needs
+measurement.
 
 ## Execution Protocol For Future Slices
 
@@ -311,6 +339,10 @@ Each future slice should improve at least one of these gates:
   gates.
 - `Semantic leverage`: reimplement representative old-codebase features and
   compare feature-code clarity, test shape, and amount of substrate glue.
+- `Simplicity`: review whether the implementation is easy to understand,
+  whether concepts have one representation, whether feature authors get a small
+  ergonomic API, and whether complexity is isolated behind primitives rather
+  than leaked into business logic.
 
 ## Non-Goals Until Proven Necessary
 
