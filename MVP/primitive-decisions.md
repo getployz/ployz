@@ -291,9 +291,11 @@ Revisit:
 
 Why this:
 - The daemon should coordinate mutations, not be the reason running services,
-  WireGuard, HTTP serving, or DNS serving stay alive.
+  WireGuard, HTTP serving, DNS serving, fact-sync, projection, or snapshot
+  application stay alive.
 - The strongest MVP failure proof is killing the command/coordinator role and
-  seeing steady state continue from last applied local state.
+  seeing steady state continue from last applied local state while new
+  replicated serving-state facts still reduce into gateway/DNS snapshots.
 
 What it replaces:
 - A single daemon process that owns command routing, data-plane serving,
@@ -304,7 +306,7 @@ What it replaces:
 
 Costs:
 - Future process-role design has to distinguish coordinator, runtime/applier,
-  HTTP/DNS serving, and transport responsibilities.
+  HTTP/DNS serving, fact-sync/projection, and transport responsibilities.
 - Health surfaces must be precise: coordinator stale/unavailable for mutations
   is not the same as workload, WireGuard, or serving failure.
 
