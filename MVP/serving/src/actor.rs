@@ -6,6 +6,7 @@ use kameo::actor::{ActorRef, Spawn};
 use kameo::error::SendError;
 use kameo::mailbox;
 use kameo::message::{Context, Message};
+use mvp_acme::AcmeKeyAuthorization;
 use mvp_bus::IslandId;
 use mvp_projection::{DnsRecordProjection, GatewayRouteProjection};
 
@@ -62,11 +63,13 @@ impl ServingActor {
         } else {
             ServingFreshness::Fresh
         };
+        let snapshots = read_snapshots(&self.snapshots);
         ServingStatus {
-            loaded_revisions: read_snapshots(&self.snapshots).revisions(),
+            loaded_revisions: snapshots.revisions(),
             loaded_at: self.loaded_at,
             snapshot_age,
             freshness,
+            acme_http01_challenge_count: snapshots.acme_http01_challenge_count(),
             reload_attempts: self.reload_attempts,
             last_reload_attempt_at: self.last_reload_attempt_at,
             last_reload_success_at: self.last_reload_success_at,
@@ -112,6 +115,14 @@ impl ServingActorHandle {
         record_type: impl Into<String>,
     ) -> ServingResult<Vec<DnsRecordProjection>> {
         Ok(read_snapshots(&self.snapshots).dns_records(&name.into(), &record_type.into()))
+    }
+
+    pub async fn acme_http01_challenge(
+        &self,
+        host: impl Into<String>,
+        token: impl Into<String>,
+    ) -> ServingResult<Option<AcmeKeyAuthorization>> {
+        Ok(read_snapshots(&self.snapshots).acme_http01_challenge(&host.into(), &token.into()))
     }
 
     pub async fn reload(&self) -> ServingResult<ServingStatus> {

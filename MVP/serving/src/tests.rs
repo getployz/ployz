@@ -4,10 +4,12 @@ use std::time::{Duration, Instant};
 
 use hickory_proto::op::{Message, Query, ResponseCode};
 use hickory_proto::rr::{Name, RData, RecordType};
+use mvp_acme::{AcmeChallengeToken, AcmeHostname, AcmeKeyAuthorization};
 use mvp_bus::IslandId;
+use mvp_lease::{LeaseClaimed, LeaseEpoch, LeaseFact, LeaseHolder, LeaseResource, LeaseTimestamp};
 use mvp_projection::{
-    BackendEndpoint, DnsRecordProjection, DnsSnapshotFile, GatewayRouteProjection,
-    GatewaySnapshotFile, NodeId, RouteId,
+    AcmeHttp01ChallengeProjection, BackendEndpoint, DnsRecordProjection, DnsSnapshotFile,
+    GatewayRouteProjection, GatewaySnapshotFile, NodeId, RouteId,
 };
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -50,6 +52,7 @@ fn gateway_snapshot(
             }],
             old_backends_to_drain: Vec::new(),
         }],
+        acme_http01: Vec::new(),
     }
 }
 
@@ -76,6 +79,7 @@ fn empty_gateway_snapshot(island: &str, revision: &str) -> GatewaySnapshotFile {
         gateway_commit_id: format!("{revision}-gateway"),
         route_commit_id: format!("{revision}-route"),
         routes: Vec::new(),
+        acme_http01: Vec::new(),
     }
 }
 
@@ -109,6 +113,32 @@ fn write_prod_snapshots(root: &TempDir, revision: &str, backend: &str, dns_value
         &gateway_snapshot("prod", revision, "web.example.test", backend),
         &dns_snapshot("prod", revision, "web.example.test", dns_value),
     );
+}
+
+fn acme_challenge(host: &str, token: &str, thumbprint: &str) -> AcmeHttp01ChallengeProjection {
+    let hostname = AcmeHostname::parse(host).expect("acme hostname");
+    let token = AcmeChallengeToken::parse(token).expect("acme token");
+    let key_authorization =
+        AcmeKeyAuthorization::parse_for_token(&token, format!("{}.{thumbprint}", token.as_str()))
+            .expect("key authorization");
+    let holder = LeaseHolder::new("issuer-a");
+    let lease_epoch = LeaseEpoch::first();
+    let claim = LeaseClaimed::new(
+        LeaseResource::from_segments(["acme", "http01", hostname.as_str(), token.as_str()]),
+        holder.clone(),
+        lease_epoch,
+        LeaseTimestamp::from_secs(100),
+        LeaseTimestamp::from_secs(160),
+    );
+    AcmeHttp01ChallengeProjection {
+        hostname,
+        token,
+        key_authorization,
+        holder,
+        lease_epoch,
+        claim_hash: LeaseFact::Claimed(claim).content_hash(),
+        published_at: LeaseTimestamp::from_secs(101),
+    }
 }
 
 fn prod() -> IslandId {
@@ -174,6 +204,30 @@ fn empty_snapshot_batch_is_valid() {
     assert!(batch.dns.records.is_empty());
     assert_eq!(batch.revisions().gateway, "rev-empty");
     assert_eq!(batch.revisions().dns, "rev-empty");
+}
+
+#[test]
+fn batch_indexes_acme_challenges_by_canonical_host_and_token() {
+    let root = TempDir::new().expect("tempdir");
+    let mut gateway = empty_gateway_snapshot("prod", "rev-acme");
+    gateway.acme_http01.push(acme_challenge(
+        "Example.Test",
+        "tokAcme0123456789abcdef",
+        "thumbprintA",
+    ));
+    write_snapshot_files(&root, &gateway, &empty_dns_snapshot("prod", "rev-acme"));
+
+    let batch =
+        ServingSnapshotBatch::load(&snapshot_paths(&root), &prod()).expect("load snapshot batch");
+    let key_authorization = batch
+        .acme_http01_challenge("EXAMPLE.TEST:443", "tokAcme0123456789abcdef")
+        .expect("challenge indexed");
+
+    assert_eq!(
+        key_authorization.as_str(),
+        "tokAcme0123456789abcdef.thumbprintA"
+    );
+    assert_eq!(batch.acme_http01_challenge_count(), 1);
 }
 
 #[test]
@@ -345,6 +399,43 @@ async fn http_gateway_unknown_host_returns_not_found() {
 
     assert!(response.starts_with("HTTP/1.1 404 Not Found"), "{response}");
     assert_eq!(gateway.metrics().request_count, 1);
+    gateway.shutdown().await.expect("shutdown gateway");
+}
+
+#[tokio::test]
+async fn http_gateway_serves_acme_http01_challenge_before_route_lookup() {
+    let root = TempDir::new().expect("tempdir");
+    let mut gateway_snapshot = empty_gateway_snapshot("prod", "rev-acme");
+    gateway_snapshot.acme_http01.push(acme_challenge(
+        "example.test",
+        "tokAcme0123456789abcdef",
+        "thumbprintA",
+    ));
+    write_snapshot_files(
+        &root,
+        &gateway_snapshot,
+        &empty_dns_snapshot("prod", "rev-acme"),
+    );
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let gateway = spawn_http_gateway(loopback_any(), WireServingState::new(actor))
+        .await
+        .expect("spawn http gateway");
+
+    let response = http_get(
+        gateway.listen_addr(),
+        "example.test",
+        "/.well-known/acme-challenge/tokAcme0123456789abcdef",
+    )
+    .await;
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(
+        response.ends_with("tokAcme0123456789abcdef.thumbprintA"),
+        "{response}"
+    );
+    assert_eq!(gateway.metrics().request_count, 1);
+    assert_eq!(gateway.metrics().backend_failure_count, 0);
     gateway.shutdown().await.expect("shutdown gateway");
 }
 

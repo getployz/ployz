@@ -5,9 +5,10 @@ use std::num::NonZeroU64;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct LeaseResource(String);
 
 impl LeaseResource {
@@ -35,7 +36,7 @@ impl Display for LeaseResource {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct LeaseHolder(String);
 
 impl LeaseHolder {
@@ -56,7 +57,7 @@ impl Display for LeaseHolder {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct VisibleNode(String);
 
 impl VisibleNode {
@@ -94,7 +95,7 @@ impl LeaseCommandContext {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct LeaseEpoch(NonZeroU64);
 
 impl LeaseEpoch {
@@ -133,7 +134,7 @@ pub enum LeaseEpochError {
     Zero,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct LeaseTimestamp(u64);
 
 impl LeaseTimestamp {
@@ -199,7 +200,7 @@ pub enum LeasePolicyError {
     ZeroTtl,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct LeaseContentHash([u8; 32]);
 
 impl Display for LeaseContentHash {
@@ -208,6 +209,13 @@ impl Display for LeaseContentHash {
             write!(f, "{byte:02x}")?;
         }
         Ok(())
+    }
+}
+
+impl LeaseContentHash {
+    #[must_use]
+    pub fn as_hex(self) -> String {
+        self.to_string()
     }
 }
 
@@ -220,7 +228,7 @@ fn next_lease_book_id() -> LeaseBookId {
     LeaseBookId(NEXT_LEASE_BOOK_ID.fetch_add(1, Ordering::Relaxed))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LeaseFact {
     Claimed(LeaseClaimed),
     Renewed(LeaseRenewed),
@@ -265,7 +273,7 @@ impl LeaseFact {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaseClaimed {
     resource: LeaseResource,
     holder: LeaseHolder,
@@ -318,7 +326,7 @@ impl LeaseClaimed {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaseRenewed {
     resource: LeaseResource,
     holder: LeaseHolder,
@@ -379,7 +387,7 @@ impl LeaseRenewed {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaseReleased {
     resource: LeaseResource,
     holder: LeaseHolder,
@@ -448,7 +456,7 @@ impl LeaseReleased {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LeaseRelease {
     At(LeaseTimestamp),
     DroppedWithoutTimestamp,

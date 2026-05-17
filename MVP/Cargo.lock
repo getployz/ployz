@@ -2358,6 +2358,8 @@ name = "mvp-acme"
 version = "0.1.0"
 dependencies = [
  "mvp-lease",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -2425,6 +2427,7 @@ name = "mvp-lease"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "serde",
  "thiserror",
 ]
 
@@ -2449,7 +2452,9 @@ name = "mvp-projection"
 version = "0.1.0"
 dependencies = [
  "kameo",
+ "mvp-acme",
  "mvp-bus",
+ "mvp-lease",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2468,7 +2473,9 @@ dependencies = [
  "hyper",
  "hyper-util",
  "kameo",
+ "mvp-acme",
  "mvp-bus",
+ "mvp-lease",
  "mvp-projection",
  "serde",
  "serde_json",

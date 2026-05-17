@@ -7,7 +7,13 @@ use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
 use crate::error::{ProjectionError, ProjectionResult};
-use crate::model::{DnsRecordProjection, GatewayRouteProjection, ProjectionState};
+use crate::model::{
+    AcmeHttp01ChallengeProjection, DnsRecordProjection, GatewayRouteProjection, ProjectionState,
+};
+
+const EMPTY_GATEWAY_COMMIT_ID: &str = "none";
+const EMPTY_ROUTE_COMMIT_ID: &str = "none";
+const EMPTY_DNS_COMMIT_ID: &str = "none";
 
 const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
@@ -32,6 +38,7 @@ pub struct GatewaySnapshotFile {
     pub gateway_commit_id: String,
     pub route_commit_id: String,
     pub routes: Vec<GatewayRouteProjection>,
+    pub acme_http01: Vec<AcmeHttp01ChallengeProjection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,36 +101,58 @@ pub fn load_dns_snapshot(
 fn gateway_snapshot_for_state(
     state: &ProjectionState,
 ) -> ProjectionResult<Option<GatewaySnapshotFile>> {
-    let Some(gateway) = &state.gateway else {
+    if state.gateway.is_none() && state.acme_http01.is_empty() && state.dns.is_none() {
         return Ok(None);
-    };
+    }
     let island = island_string(state);
+    let acme_http01 = state.acme_http01.values().cloned().collect::<Vec<_>>();
+    let gateway_commit_id = state.gateway.as_ref().map_or_else(
+        || EMPTY_GATEWAY_COMMIT_ID.to_string(),
+        |gateway| gateway.gateway_commit_id.clone(),
+    );
+    let route_commit_id = state.gateway.as_ref().map_or_else(
+        || EMPTY_ROUTE_COMMIT_ID.to_string(),
+        |gateway| gateway.route_commit_id.clone(),
+    );
+    let routes = state
+        .gateway
+        .as_ref()
+        .map_or_else(Vec::new, |gateway| gateway.routes.clone());
     let revision = format!(
-        "gateway:{}:{}",
-        gateway.gateway_commit_id, gateway.route_commit_id
+        "gateway:{gateway_commit_id}:{route_commit_id}:acme:{}",
+        acme_revision(&acme_http01)
     );
     Ok(Some(GatewaySnapshotFile {
         schema_version: SNAPSHOT_SCHEMA_VERSION,
         island,
         revision,
-        gateway_commit_id: gateway.gateway_commit_id.clone(),
-        route_commit_id: gateway.route_commit_id.clone(),
-        routes: gateway.routes.clone(),
+        gateway_commit_id,
+        route_commit_id,
+        routes,
+        acme_http01,
     }))
 }
 
 fn dns_snapshot_for_state(state: &ProjectionState) -> ProjectionResult<Option<DnsSnapshotFile>> {
-    let Some(dns) = &state.dns else {
+    if state.dns.is_none() && state.gateway.is_none() && state.acme_http01.is_empty() {
         return Ok(None);
-    };
+    }
     let island = island_string(state);
-    let revision = format!("dns:{}", dns.dns_commit_id);
+    let dns_commit_id = state.dns.as_ref().map_or_else(
+        || EMPTY_DNS_COMMIT_ID.to_string(),
+        |dns| dns.dns_commit_id.clone(),
+    );
+    let records = state
+        .dns
+        .as_ref()
+        .map_or_else(Vec::new, |dns| dns.records.clone());
+    let revision = format!("dns:{dns_commit_id}");
     Ok(Some(DnsSnapshotFile {
         schema_version: SNAPSHOT_SCHEMA_VERSION,
         island,
         revision,
-        dns_commit_id: dns.dns_commit_id.clone(),
-        records: dns.records.clone(),
+        dns_commit_id,
+        records,
     }))
 }
 
@@ -159,6 +188,26 @@ fn dns_operation_for_state(
 
 fn island_string(state: &ProjectionState) -> String {
     state.island.as_str().to_string()
+}
+
+fn acme_revision(challenges: &[AcmeHttp01ChallengeProjection]) -> String {
+    if challenges.is_empty() {
+        return "none".to_string();
+    }
+    challenges
+        .iter()
+        .map(|challenge| {
+            format!(
+                "{}:{}:{}:{}:{}",
+                challenge.hostname.as_str(),
+                challenge.token.as_str(),
+                challenge.lease_epoch.value(),
+                challenge.claim_hash.as_hex(),
+                challenge.key_authorization.as_str()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 #[derive(Debug, Clone, Copy)]
