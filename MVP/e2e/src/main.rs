@@ -18,6 +18,10 @@ mod process_role_serving_contract {
     pub(crate) fn run() -> Result<(), String> {
         Err("process-role-serving-contract uses Unix sockets in the MVP harness".to_string())
     }
+
+    pub(crate) fn cleanup_orphaned_children() -> Result<(), String> {
+        Ok(())
+    }
 }
 mod projection_contract;
 mod projection_harness;
@@ -141,7 +145,12 @@ fn run_scenarios_with_budget(
     match receiver.recv_timeout(budget) {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            Err(format!("all scenario exceeded {budget:?} budget"))
+            match process_role_serving_contract::cleanup_orphaned_children() {
+                Ok(()) => Err(format!("all scenario exceeded {budget:?} budget")),
+                Err(error) => Err(format!(
+                    "all scenario exceeded {budget:?} budget; process-role cleanup failed: {error}"
+                )),
+            }
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             Err("all scenario worker exited without a result".to_string())
