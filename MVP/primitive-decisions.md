@@ -87,6 +87,18 @@ the decision concrete.
 - Slice 010 adds a harness-only way to pair a `BusActorHandle` with the same
   in-memory bus used by `BusFactSource`. Feature code still uses actor handles;
   raw `MemoryBus` remains a projection/E2E fixture.
+- Slice 011 adds actor-owned last-good serving state. Serving loads validated
+  gateway/DNS snapshot batches, answers typed gateway/DNS queries from memory,
+  preserves last good on unsafe reload, and surfaces freshness/reload failure
+  status.
+- Slice 011 proves coordinator-down serving semantics with
+  `steady-state-serving-contract`: the local coordinator is absent for
+  mutations, a separate harness serving-commit writer still projects locally,
+  a fresh projection actor rebuilds deleted SQLite from facts, and serving
+  keeps answering while rebuild is in flight.
+- Slice 011 keeps active-member/partition-view checks deferred. Future slices
+  may add them as explicit command evidence for "visible nodes at decision
+  time"; they are not a hidden quorum or serving commit gate.
 
 ## NATS-Shaped Bus Semantics
 
@@ -541,6 +553,44 @@ Revisit if:
   implement the adapter behind the fact-source contract, not rewrite reducers.
 - HTTP/DNS serving needs a binary or version-negotiated state format after the
   MVP-local JSON schema has proven too slow or too rigid.
+
+## Actor-Owned Last-Good Serving State
+
+Why this:
+- Gateway and DNS serving should not depend on a live coordinator, SQLite hot
+  reads, bus requests, or fact projection during steady-state queries.
+- The serving role needs one owner for loaded snapshot revisions, reload
+  attempts, freshness, and last structured reload failure.
+- Loading gateway and DNS snapshots as one validated batch keeps HTTP-facing
+  and DNS-facing views from diverging after a partial or unsafe reload.
+
+What it replaces:
+- Feeding serving roles through the old NATS-store synchronization/input model.
+- Treating daemon death as serving death.
+- Re-reading SQLite or durable facts on each gateway/DNS request.
+
+Costs:
+- The current proof is typed query semantics, not real Pingora or Hickory wire
+  serving.
+- The actor clones route/record answers for callers. That is acceptable for the
+  semantic boundary; future wire serving can optimize shared snapshots if
+  request volume proves it necessary.
+- Snapshot reload is explicit. Automatic file watching is deferred until the
+  replacement contract is boring.
+
+Crates:
+- `kameo` owns the serving actor mailbox and typed messages.
+- `mvp-projection` owns snapshot schema and validation.
+- `notify`, `pingora`, `hickory-server`, `axum`, and `arc-swap` were reviewed
+  for this slice and deferred to the first wire/process slice that needs them.
+
+Revisit if:
+- Pingora/Hickory wire handlers need lock-free concurrent reads. `arc-swap` is
+  the likely fit for immutable last-good snapshot pointers.
+- File watcher reload becomes product behavior. Add `notify` only after
+  explicit reload semantics remain tested.
+- Gateway or DNS state shape needs binary/versioned compatibility instead of
+  MVP-local JSON.
 
 ## hdrhistogram and memory-stats for E2E Proof
 
