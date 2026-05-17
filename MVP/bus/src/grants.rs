@@ -167,14 +167,14 @@ impl Grant {
     }
 
     #[must_use]
-    pub fn can_publish(&self, subject: &Subject) -> bool {
+    pub(crate) fn can_publish(&self, subject: &Subject) -> bool {
         self.publish_allow
             .iter()
             .any(|pattern| pattern.matches(subject))
     }
 
     #[must_use]
-    pub fn can_publish_target(&self, target: &RequestTarget) -> bool {
+    pub(crate) fn can_publish_target(&self, target: &RequestTarget) -> bool {
         match target {
             RequestTarget::Subject(subject) => self.can_publish(subject),
             RequestTarget::Pattern(pattern) => self
@@ -185,26 +185,26 @@ impl Grant {
     }
 
     #[must_use]
-    pub fn can_subscribe(&self, pattern: &SubjectPattern) -> bool {
+    pub(crate) fn can_subscribe(&self, pattern: &SubjectPattern) -> bool {
         self.subscribe_allow
             .iter()
             .any(|allowed| allowed.subsumes(pattern))
     }
 
     #[must_use]
-    pub fn can_queue_subscribe(&self, pattern: &SubjectPattern, queue: &QueueName) -> bool {
+    pub(crate) fn can_queue_subscribe(&self, pattern: &SubjectPattern, queue: &QueueName) -> bool {
         self.queue_allow
             .iter()
             .any(|allowed| allowed.allows(pattern, queue))
     }
 
     #[must_use]
-    pub fn can_respond(&self) -> bool {
+    pub(crate) fn can_respond(&self) -> bool {
         self.response_allow
     }
 
     #[must_use]
-    pub fn can_drain(&self) -> bool {
+    pub(crate) fn can_drain(&self) -> bool {
         self.drain_allowed
     }
 }

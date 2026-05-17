@@ -11,6 +11,10 @@ Status: implemented
 - A Kameo `BusActorHandle` facade for actor-owned bus access.
 - Actor operations delegate blocking bus work out of the Kameo mailbox, so a
   slow request does not block unrelated actor messages.
+- Publish uses the same bounded delivery deadline path as request/reply, so a
+  full delivery queue cannot park callers forever.
+- Bus-owned message/reply internals are hidden from normal callers; the raw
+  synchronous in-memory bus is exported only under `mvp_bus::harness`.
 - Structured E2E metrics with latency percentiles and process memory snapshots.
 - A `scale` E2E scenario that runs 200, 1,000, and 10,000 logical-node cases.
 - An `actor-contract` E2E scenario that exercises the Kameo facade directly,
@@ -27,14 +31,14 @@ Generated proof:
 
 | Logical nodes | Publish deliveries | Request-many replies | Publish p99 | Request-many p99 | Runtime max concurrency |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 200 | 20,000 | 20,000 | 2,063us | 2,117us | 64 |
-| 1,000 | 100,000 | 100,000 | 5,927us | 10,335us | 64 |
-| 10,000 | 1,000,000 | 1,000,000 | 49,791us | 92,095us | 64 |
+| 200 | 20,000 | 20,000 | 2,461us | 2,145us | 64 |
+| 1,000 | 100,000 | 100,000 | 5,187us | 10,215us | 64 |
+| 10,000 | 1,000,000 | 1,000,000 | 48,031us | 90,431us | 64 |
 
 The same run includes `actor-contract`, plus a saturation case with 4 concurrent
 publishers, 96 slow subscribers, 4 delivery workers, and delivery queue capacity
 8. It observed 384 deliveries, max worker concurrency 4, max queued deliveries
-8, 309 full-queue enqueue waits, 4.99s total enqueue blocking, and
+8, 312 full-queue enqueue waits, 5.21s total enqueue blocking, and
 `bounded_backpressure_observed = true`.
 
 The 10,000-node run is a logical-node stress test inside one process. It proves
@@ -59,8 +63,12 @@ is meant to test.
 ## Simplicity Notes
 
 - The Kameo actor is a facade over the bus, not a second implementation.
+- Business code should use `BusActorHandle`; `InMemoryBus` lives in a harness
+  namespace for contract and scale proofs.
 - Blocking request/publish/drain work runs outside the actor mailbox; the actor
   owns admission and dispatch semantics, not long waits.
+- Reply inboxes, permits, message IDs, grant checkers, and internal subscriber
+  diagnostics are not part of the public business API.
 - Runtime metrics are exposed through one snapshot type instead of spread across
   the E2E harness.
 - The delivery runtime owns execution; the bus lock is only used to validate
