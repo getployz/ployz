@@ -8,6 +8,7 @@ mod deploy_commit_drain_contract;
 mod iroh_docs_contract;
 mod lease_acme_contract;
 mod metrics;
+mod process_fact_source;
 mod projection_contract;
 mod projection_harness;
 mod scale;
