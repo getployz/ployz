@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use crate::assertions::assert_eq_named;
 use crate::bus_syntax::{fact_key, fact_pattern, write_projection_fact};
-use crate::metrics::{reset_dir, write_json};
+use crate::metrics::{reset_dir, scenario_dir, write_json};
 
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -54,9 +54,7 @@ pub(crate) fn run() -> Result<(), String> {
 
 async fn run_async() -> Result<(), String> {
     let started = Instant::now();
-    let root = Path::new("target")
-        .join("mvp-e2e")
-        .join("projection-contract");
+    let root = scenario_dir("projection-contract");
     reset_dir(&root)?;
 
     let (bus, projection_session, intruder_session) = seed_base_facts()?;

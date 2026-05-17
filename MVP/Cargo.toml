@@ -1,8 +1,10 @@
 [workspace]
 members = [
+    "acme",
     "bus",
     "e2e",
     "iroh",
+    "lease",
     "projection",
 ]
 resolver = "3"

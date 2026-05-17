@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,7 +11,7 @@ use tokio::time::sleep;
 
 use crate::assertions::assert_eq_named;
 use crate::bus_syntax::{fact_key, fact_pattern};
-use crate::metrics::{reset_dir, write_json};
+use crate::metrics::{reset_dir, scenario_dir, write_json};
 
 const SYNC_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -42,9 +41,7 @@ pub(crate) fn run() -> Result<(), String> {
 
 async fn run_async() -> Result<(), String> {
     let started = Instant::now();
-    let root = Path::new("target")
-        .join("mvp-e2e")
-        .join("iroh-docs-contract");
+    let root = scenario_dir("iroh-docs-contract");
     reset_dir(&root)?;
 
     let (bus, authority) = InMemoryBus::new_with_authority();

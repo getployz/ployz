@@ -249,17 +249,23 @@ Scenarios:
 6. Conflicting same-epoch claims remain candidates, reduce deterministically by
    `(epoch desc, content_hash asc)`, and annotate the loser as superseded.
 7. ACME HTTP-01 challenge state can only be published or deleted by the current
-   local winner's fencing epoch.
+   local winner's fencing epoch and claim hash.
 8. Dropping a local lease guard records a best-effort release without claiming
    cluster-wide exclusivity.
+9. A local-only command can acquire and publish with zero visible peer witnesses;
+   the visible-node set is evidence, not a commit gate.
 
 Current proof status:
 
-- Slice 009 plans `lease-acme-contract` against the corrected advisory lease
+- Slice 009 adds `lease-acme-contract` against the corrected advisory lease
   contract: no witness acks, no quorum, no strict mode, and no pin-fact commit
   phase.
-- Remaining work after the canary is docs-backed lease facts over real iroh
-  replication and gateway HTTP challenge serving.
+- The current in-memory canary proves visible nodes at decision time,
+  structured active-holder conflict, expiry takeover, stale publish/delete
+  rejection with state preservation, deterministic supersession, same-epoch
+  loser fencing, local-only command success, and best-effort drop release.
+- Remaining work is docs-backed lease facts over real iroh replication and
+  gateway HTTP challenge serving.
 
 Metrics:
 

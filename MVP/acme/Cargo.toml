@@ -1,0 +1,20 @@
+[package]
+name = "mvp-acme"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "mvp_acme"
+path = "src/lib.rs"
+
+[features]
+harness = ["mvp-lease/harness"]
+
+[dependencies]
+mvp-lease = { path = "../lease" }
+thiserror = "2"
+
+[dev-dependencies]
+mvp-lease = { path = "../lease", features = ["harness"] }

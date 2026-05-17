@@ -19,7 +19,8 @@ use serde::Serialize;
 
 use crate::bus_syntax::{fact_pattern, pattern, subject, write_projection_fact};
 use crate::metrics::{
-    LatencyRecorder, LatencySummary, MemorySnapshot, memory_snapshot, reset_dir, write_json,
+    LatencyRecorder, LatencySummary, MemorySnapshot, memory_snapshot, reset_dir, scenario_dir,
+    write_json,
 };
 
 const NODE_COUNTS: [usize; 3] = [200, 1_000, 10_000];
@@ -213,9 +214,7 @@ pub(crate) fn run() -> Result<(), String> {
         saturation: run_saturation_case()?,
         elapsed_ms: started.elapsed().as_millis(),
     };
-    let path = Path::new("target")
-        .join("mvp-e2e")
-        .join("scale-metrics.json");
+    let path = scenario_dir("scale").join("scale-metrics.json");
     let json = write_json(&path, &report)?;
     println!("{json}");
     eprintln!("PASS scale");
@@ -345,10 +344,7 @@ async fn run_projection_node_count(
 
     let started = Instant::now();
     let memory_before = memory_snapshot();
-    let root = Path::new("target")
-        .join("mvp-e2e")
-        .join("scale-projection")
-        .join(logical_nodes.to_string());
+    let root = scenario_dir("scale-projection").join(logical_nodes.to_string());
     reset_dir(&root)?;
 
     let (bus, authority) = InMemoryBus::new_with_authority();

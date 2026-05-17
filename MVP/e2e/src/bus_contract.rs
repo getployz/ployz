@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -13,7 +12,7 @@ use serde::Serialize;
 
 use crate::assertions::{assert_eq_named, assert_error, expect_error};
 use crate::bus_syntax::{pattern, subject};
-use crate::metrics::write_json;
+use crate::metrics::{scenario_dir, write_json};
 
 #[derive(Debug, Default)]
 struct Metrics {
@@ -326,8 +325,6 @@ fn write_metrics(metrics: &Metrics, started: Instant) -> Result<(), String> {
         unauthorized_failures: metrics.unauthorized_failures,
         elapsed_ms: started.elapsed().as_millis(),
     };
-    let path = Path::new("target")
-        .join("mvp-e2e")
-        .join("bus-contract-metrics.json");
+    let path = scenario_dir("bus-contract").join("bus-contract-metrics.json");
     write_json(&path, &report).map(|_| ())
 }

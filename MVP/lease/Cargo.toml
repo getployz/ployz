@@ -1,0 +1,17 @@
+[package]
+name = "mvp-lease"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "mvp_lease"
+path = "src/lib.rs"
+
+[features]
+harness = []
+
+[dependencies]
+blake3 = "1"
+thiserror = "2"
