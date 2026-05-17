@@ -1,9 +1,6 @@
-use std::env;
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::path::{Path, PathBuf};
-use std::process::{Command as StdCommand, ExitStatus, Stdio};
-use std::thread;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use hickory_proto::op::{Message, Query, ResponseCode};
@@ -11,7 +8,6 @@ use hickory_proto::rr::{Name, RData, RecordType};
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::process::{Child, Command as TokioCommand};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
@@ -19,14 +15,15 @@ use tokio::time::{sleep, timeout};
 use crate::assertions::assert_eq_named;
 use crate::metrics::{reset_dir, scenario_dir, write_json};
 use crate::process_role_harness::{
-    CoordinatorClientError, CoordinatorRequest, CoordinatorSuccess, ReplicationInjectorFailure,
-    ReplicationInjectorResponse, RoleRequest, RoleServingStatus, RoleSuccess, ServingCommitAck,
-    ServingCommitInput, WireProcessStatus, WireRoleClientError, WireRoleRequest, WireRoleSuccess,
-    request_coordinator, request_role, request_wire_role,
+    RoleRequest, RoleServingStatus, ServingCommitInput, WireProcessStatus, WireRoleClientError,
+    WireRoleRequest, WireRoleSuccess, assert_local_mutation_unavailable,
+    cleanup_orphaned_children as cleanup_process_role_children, commit_serving,
+    request_await_rebuild, request_begin_rebuild, request_project_once, request_reload,
+    request_role, request_wire_role, run_remote_injector, spawn_process_role, wait_for_coordinator,
+    wait_for_serving_role,
 };
 
 const READY_TIMEOUT: Duration = Duration::from_secs(3);
-const CHILD_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const ROLE_REQUEST_PAUSE: Duration = Duration::from_millis(10);
 const OUTAGE_PROBES: usize = 3;
@@ -63,38 +60,7 @@ pub(crate) fn run() -> Result<(), String> {
 }
 
 pub(crate) fn cleanup_orphaned_children() -> Result<(), String> {
-    let dir = child_pid_dir(&scenario_dir("wire-serving-contract"));
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("read child pid dir '{}': {error}", dir.display())),
-    };
-
-    let mut pids = Vec::new();
-    for entry in entries {
-        let path = entry
-            .map_err(|error| format!("read child pid entry: {error}"))?
-            .path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("pid") {
-            continue;
-        }
-        let contents = fs::read_to_string(&path)
-            .map_err(|error| format!("read child pid '{}': {error}", path.display()))?;
-        let pid = contents
-            .trim()
-            .parse::<u32>()
-            .map_err(|error| format!("parse child pid '{}': {error}", path.display()))?;
-        pids.push(pid);
-    }
-
-    for pid in &pids {
-        send_signal(*pid, "-TERM")?;
-    }
-    thread::sleep(Duration::from_millis(100));
-    for pid in pids {
-        send_signal(pid, "-KILL")?;
-    }
-    Ok(())
+    cleanup_process_role_children(&scenario_dir("wire-serving-contract"))
 }
 
 async fn run_async() -> Result<(), String> {
@@ -137,7 +103,7 @@ async fn run_async() -> Result<(), String> {
     )
     .await?;
     request_project_once(&serving_socket).await?;
-    request_reload_serving(&serving_socket).await?;
+    request_reload(&serving_socket).await?;
 
     let mut http = spawn_process_role(
         "http-gateway",
@@ -168,8 +134,11 @@ async fn run_async() -> Result<(), String> {
         assert_dns_answer(dns_addr, "fd00::1").await?;
         dns_outage_success_count += 1;
     }
-    let local_mutation_failure_after_death =
-        assert_local_mutation_unavailable(&coordinator_socket).await?;
+    let local_mutation_failure_after_death = assert_local_mutation_unavailable(
+        &coordinator_socket,
+        ServingCommitInput::new("wire-serving-after-kill", "127.0.0.1:9", "fd00::dead", 99),
+    )
+    .await?;
 
     run_remote_injector(
         &root,
@@ -181,7 +150,7 @@ async fn run_async() -> Result<(), String> {
     )
     .await?;
     request_project_once(&serving_socket).await?;
-    request_reload_serving(&serving_socket).await?;
+    request_reload(&serving_socket).await?;
     let http_reload_latency_us = reload_wire_role(&http_socket).await?;
     let dns_reload_latency_us = reload_wire_role(&dns_socket).await?;
     assert_http_answer(http_addr, "backend-2").await?;
@@ -201,11 +170,11 @@ async fn run_async() -> Result<(), String> {
     fs::remove_file(root.join("projections.sqlite"))
         .map_err(|error| format!("delete projection sqlite during wire serving: {error}"))?;
     let rebuild_started = Instant::now();
-    let token = begin_rebuild(&serving_socket).await?;
+    let token = request_begin_rebuild(&serving_socket).await?;
     assert_http_answer(http_addr, "backend-2").await?;
     assert_dns_answer(dns_addr, "fd00::2").await?;
     let rebuild_probe_success_count = 2;
-    await_rebuild(&serving_socket, token).await?;
+    request_await_rebuild(&serving_socket, token).await?;
     reload_wire_role(&http_socket).await?;
     reload_wire_role(&dns_socket).await?;
     let projection_rebuild_us = rebuild_started.elapsed().as_micros();
@@ -245,6 +214,7 @@ async fn run_async() -> Result<(), String> {
     let dns_restart_us = dns_restart_started.elapsed().as_micros();
 
     send_malformed_dns(restarted_dns_addr).await?;
+    wait_for_malformed_dns_count(&restarted_dns_socket, 1).await?;
     assert_dns_answer(restarted_dns_addr, "fd00::2").await?;
 
     let final_http_status = request_wire_status(&restarted_http_socket).await?;
@@ -314,41 +284,11 @@ async fn run_async() -> Result<(), String> {
     Ok(())
 }
 
-async fn wait_for_serving_role(socket: &Path) -> Result<(), String> {
-    let deadline = Instant::now() + READY_TIMEOUT;
-    loop {
-        match request_role(socket, &RoleRequest::Status).await {
-            Ok(RoleSuccess::Status(_)) => return Ok(()),
-            Ok(other) => return Err(format!("unexpected serving readiness response: {other:?}")),
-            Err(error) if Instant::now() < deadline => {
-                let _ = error;
-                sleep(ROLE_REQUEST_PAUSE).await;
-            }
-            Err(error) => return Err(format!("serving role did not become ready: {error:?}")),
-        }
-    }
-}
-
-async fn wait_for_coordinator(socket: &Path) -> Result<(), String> {
-    let deadline = Instant::now() + READY_TIMEOUT;
-    loop {
-        match request_coordinator(socket, &CoordinatorRequest::Status).await {
-            Ok(CoordinatorSuccess::Status(_)) => return Ok(()),
-            Ok(other) => return Err(format!("unexpected coordinator ready response: {other:?}")),
-            Err(error) if Instant::now() < deadline => {
-                let _ = error;
-                sleep(ROLE_REQUEST_PAUSE).await;
-            }
-            Err(error) => return Err(format!("coordinator did not become ready: {error:?}")),
-        }
-    }
-}
-
 async fn wait_for_wire_role(socket: &Path) -> Result<SocketAddr, String> {
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
         match request_wire_status(socket).await {
-            Ok(status) => return parse_listen_addr(&status),
+            Ok(status) => return Ok(status.listen_addr),
             Err(error) if Instant::now() < deadline => {
                 let _ = error;
                 sleep(ROLE_REQUEST_PAUSE).await;
@@ -386,150 +326,6 @@ async fn assert_wire_reload_fails(socket: &Path) -> Result<(), String> {
             "wire reload transport failed unexpectedly: {message}"
         )),
         Ok(success) => Err(format!("wire reload unexpectedly succeeded: {success:?}")),
-    }
-}
-
-fn parse_listen_addr(status: &WireProcessStatus) -> Result<SocketAddr, String> {
-    status
-        .listen_addr
-        .parse::<SocketAddr>()
-        .map_err(|error| format!("parse wire listen addr '{}': {error}", status.listen_addr))
-}
-
-async fn commit_serving(
-    socket: &Path,
-    commit_id: &str,
-    backend: &str,
-    dns: &str,
-    epoch: u64,
-) -> Result<ServingCommitAck, String> {
-    let response = request_coordinator(
-        socket,
-        &CoordinatorRequest::CommitServing(ServingCommitInput::new(commit_id, backend, dns, epoch)),
-    )
-    .await
-    .map_err(|error| format!("commit serving through local coordinator: {error:?}"))?;
-    match response {
-        CoordinatorSuccess::Committed(ack) => Ok(ack),
-        other => Err(format!("unexpected commit response: {other:?}")),
-    }
-}
-
-async fn request_project_once(socket: &Path) -> Result<(), String> {
-    match request_role(socket, &RoleRequest::ProjectOnce)
-        .await
-        .map_err(|error| format!("project role once: {error:?}"))?
-    {
-        RoleSuccess::Projected(_) => Ok(()),
-        other => Err(format!("unexpected project response: {other:?}")),
-    }
-}
-
-async fn request_reload_serving(socket: &Path) -> Result<(), String> {
-    match request_role(socket, &RoleRequest::Reload)
-        .await
-        .map_err(|error| format!("reload serving projection: {error:?}"))?
-    {
-        RoleSuccess::Reloaded(_) => Ok(()),
-        other => Err(format!("unexpected serving reload response: {other:?}")),
-    }
-}
-
-async fn begin_rebuild(socket: &Path) -> Result<u64, String> {
-    match request_role(socket, &RoleRequest::BeginRebuild)
-        .await
-        .map_err(|error| format!("begin projection rebuild: {error:?}"))?
-    {
-        RoleSuccess::RebuildStarted { token } => Ok(token),
-        other => Err(format!("unexpected begin rebuild response: {other:?}")),
-    }
-}
-
-async fn await_rebuild(socket: &Path, token: u64) -> Result<(), String> {
-    match request_role(socket, &RoleRequest::AwaitRebuild { token })
-        .await
-        .map_err(|error| format!("await projection rebuild: {error:?}"))?
-    {
-        RoleSuccess::RebuildFinished { token: done, .. } if done == token => Ok(()),
-        other => Err(format!("unexpected await rebuild response: {other:?}")),
-    }
-}
-
-async fn assert_local_mutation_unavailable(socket: &Path) -> Result<String, String> {
-    let result = request_coordinator(
-        socket,
-        &CoordinatorRequest::CommitServing(ServingCommitInput::new(
-            "wire-serving-after-kill",
-            "127.0.0.1:9",
-            "fd00::dead",
-            99,
-        )),
-    )
-    .await;
-    match result {
-        Err(CoordinatorClientError::Transport(message)) => Ok(message),
-        Err(CoordinatorClientError::Failure(failure)) => Ok(format!("{failure:?}")),
-        Ok(success) => Err(format!(
-            "local mutation unexpectedly succeeded after coordinator death: {success:?}"
-        )),
-    }
-}
-
-async fn run_remote_injector(
-    root: &Path,
-    author: &str,
-    commit_id: &str,
-    backend: &str,
-    dns: &str,
-    epoch: u64,
-) -> Result<ServingCommitAck, String> {
-    let mut command = TokioCommand::new(current_exe()?);
-    command
-        .arg("role")
-        .arg("remote-replication-injector")
-        .arg("--root")
-        .arg(root)
-        .arg("--author")
-        .arg(author)
-        .arg("--commit-id")
-        .arg(commit_id)
-        .arg("--backend")
-        .arg(backend)
-        .arg("--dns")
-        .arg(dns)
-        .arg("--epoch")
-        .arg(epoch.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let child = command
-        .spawn()
-        .map_err(|error| format!("spawn remote injector: {error}"))?;
-    let pid_file = register_child_pid(root, "remote-replication-injector", &child)?;
-    let output_result = timeout(CHILD_EXIT_TIMEOUT, child.wait_with_output()).await;
-    unregister_child_pid(&pid_file)?;
-    let output = output_result
-        .map_err(|_| "remote injector timed out".to_string())?
-        .map_err(|error| format!("run remote injector: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "remote injector exited with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    let response =
-        serde_json::from_slice::<ReplicationInjectorResponse>(&output.stdout).map_err(|error| {
-            format!(
-                "parse remote injector response: {error}; stdout={}",
-                String::from_utf8_lossy(&output.stdout)
-            )
-        })?;
-    match response {
-        ReplicationInjectorResponse::Success(ack) => Ok(ack),
-        ReplicationInjectorResponse::Failure(ReplicationInjectorFailure { kind, message }) => {
-            Err(format!("remote injector failed with {kind:?}: {message}"))
-        }
     }
 }
 
@@ -617,8 +413,24 @@ async fn send_malformed_dns(addr: SocketAddr) -> Result<(), String> {
         .send_to(b"not dns", addr)
         .await
         .map_err(|error| format!("send malformed DNS packet: {error}"))?;
-    sleep(Duration::from_millis(20)).await;
     Ok(())
+}
+
+async fn wait_for_malformed_dns_count(socket: &Path, expected: u64) -> Result<(), String> {
+    let deadline = Instant::now() + REQUEST_TIMEOUT;
+    loop {
+        let status = request_wire_status(socket).await?;
+        if status.metrics.malformed_dns_count >= expected {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "malformed DNS count did not reach {expected}, got {}",
+                status.metrics.malformed_dns_count
+            ));
+        }
+        sleep(ROLE_REQUEST_PAUSE).await;
+    }
 }
 
 fn snapshot_age_us(status: &WireProcessStatus) -> Result<u64, String> {
@@ -630,108 +442,8 @@ fn snapshot_age_us(status: &WireProcessStatus) -> Result<u64, String> {
     }
 }
 
-fn spawn_process_role(
-    name: &'static str,
-    role: &'static str,
-    root: &Path,
-    socket: &Path,
-    extra_args: &[&str],
-) -> Result<RunningChild, String> {
-    let mut command = TokioCommand::new(current_exe()?);
-    command
-        .arg("role")
-        .arg(role)
-        .arg("--root")
-        .arg(root)
-        .arg("--socket")
-        .arg(socket)
-        .kill_on_drop(true);
-    for arg in extra_args {
-        command.arg(arg);
-    }
-    let child = command
-        .spawn()
-        .map_err(|error| format!("spawn {name} role: {error}"))?;
-    let pid_file = register_child_pid(root, name, &child)?;
-    Ok(RunningChild {
-        name,
-        child,
-        pid_file: Some(pid_file),
-    })
-}
-
-fn current_exe() -> Result<PathBuf, String> {
-    env::current_exe().map_err(|error| format!("resolve current mvp-e2e binary: {error}"))
-}
-
-fn child_pid_dir(root: &Path) -> PathBuf {
-    root.join("child-pids")
-}
-
-fn register_child_pid(root: &Path, name: &str, child: &Child) -> Result<PathBuf, String> {
-    let pid = child
-        .id()
-        .ok_or_else(|| format!("{name} child did not expose a process id"))?;
-    let dir = child_pid_dir(root);
-    fs::create_dir_all(&dir)
-        .map_err(|error| format!("create child pid dir '{}': {error}", dir.display()))?;
-    let path = dir.join(format!("{}-{}.pid", pid, name));
-    fs::write(&path, format!("{pid}\n"))
-        .map_err(|error| format!("write child pid '{}': {error}", path.display()))?;
-    Ok(path)
-}
-
-fn unregister_child_pid(path: &Path) -> Result<(), String> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("remove child pid '{}': {error}", path.display())),
-    }
-}
-
-fn send_signal(pid: u32, signal: &str) -> Result<(), String> {
-    let _status = StdCommand::new("kill")
-        .arg(signal)
-        .arg(pid.to_string())
-        .status()
-        .map_err(|error| format!("run kill {signal} {pid}: {error}"))?;
-    Ok(())
-}
-
 fn loopback_any() -> SocketAddr {
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
-}
-
-struct RunningChild {
-    name: &'static str,
-    child: Child,
-    pid_file: Option<PathBuf>,
-}
-
-impl RunningChild {
-    async fn kill_and_wait(&mut self) -> Result<bool, String> {
-        self.child
-            .start_kill()
-            .map_err(|error| format!("kill {} child: {error}", self.name))?;
-        self.wait_for_exit().await.map(|status| !status.success())
-    }
-
-    async fn wait_for_exit(&mut self) -> Result<ExitStatus, String> {
-        let status = timeout(CHILD_EXIT_TIMEOUT, self.child.wait())
-            .await
-            .map_err(|_| format!("{} child did not exit before deadline", self.name))?
-            .map_err(|error| format!("wait for {} child: {error}", self.name))?;
-        if let Some(pid_file) = self.pid_file.take() {
-            unregister_child_pid(&pid_file)?;
-        }
-        Ok(status)
-    }
-}
-
-impl Drop for RunningChild {
-    fn drop(&mut self) {
-        let _ = self.child.start_kill();
-    }
 }
 
 struct TestBackend {

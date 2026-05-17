@@ -1,4 +1,5 @@
 use std::net::{Ipv6Addr, SocketAddr};
+use std::sync::Arc;
 use std::time::Instant;
 
 use hickory_proto::op::{Message, OpCode, ResponseCode};
@@ -6,11 +7,12 @@ use hickory_proto::rr::{Name, RData, Record, RecordType};
 use thiserror::Error;
 use tokio::net::UdpSocket;
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 
 use crate::{WireMetricsRecorder, WireRoleMetrics, WireServingState};
 
 const MAX_DNS_PACKET_BYTES: usize = 1232;
+const MAX_DNS_REQUESTS: usize = 512;
 const MAX_LATENCY_SAMPLES: usize = 256;
 
 pub type DnsServerResult<T> = Result<T, DnsServerError>;
@@ -74,17 +76,36 @@ pub async fn spawn_dns_server(
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
     let metrics = WireMetricsRecorder::new(MAX_LATENCY_SAMPLES);
     let server_metrics = metrics.clone();
+    let socket = Arc::new(socket);
     let task = tokio::spawn(async move {
         let mut packet = [0_u8; MAX_DNS_PACKET_BYTES];
+        let mut requests = JoinSet::new();
+        let state = Arc::new(state);
         loop {
             tokio::select! {
-                _ = &mut shutdown_rx => return Ok(()),
+                _ = &mut shutdown_rx => {
+                    requests.abort_all();
+                    while requests.join_next().await.is_some() {}
+                    return Ok(());
+                },
+                Some(joined) = requests.join_next(), if !requests.is_empty() => {
+                    let _ = joined;
+                },
                 received = socket.recv_from(&mut packet) => {
                     let (len, peer) = received.map_err(DnsServerError::Receive)?;
-                    let response = handle_packet(&packet[..len], &state, &server_metrics).await;
-                    if let Some(response) = response {
-                        let _ = socket.send_to(&response, peer).await;
+                    if requests.len() >= MAX_DNS_REQUESTS {
+                        continue;
                     }
+                    let packet = packet[..len].to_vec();
+                    let socket = Arc::clone(&socket);
+                    let state = Arc::clone(&state);
+                    let metrics = server_metrics.clone();
+                    requests.spawn(async move {
+                        let response = handle_packet(&packet, state.as_ref(), &metrics).await;
+                        if let Some(response) = response {
+                            let _ = socket.send_to(&response, peer).await;
+                        }
+                    });
                 }
             }
         }

@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -67,13 +66,6 @@ impl WireMetricsRecorder {
             .expect("wire metrics lock poisoned")
             .clone()
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WireRoleStatus {
-    pub serving: ServingStatus,
-    pub listen_addr: SocketAddr,
-    pub metrics: WireRoleMetrics,
 }
 
 fn duration_to_us(duration: Duration) -> u64 {
