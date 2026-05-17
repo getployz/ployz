@@ -1,6 +1,6 @@
 ---
 title: Slice 012 Process-Role Serving While Coordinator Dies Plan
-status: active
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md

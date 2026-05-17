@@ -99,6 +99,15 @@ the decision concrete.
 - Slice 011 keeps active-member/partition-view checks deferred. Future slices
   may add them as explicit command evidence for "visible nodes at decision
   time"; they are not a hidden quorum or serving commit gate.
+- Slice 012 moves coordinator-down serving from an in-process semantic proof to
+  real OS process roles inside `mvp-e2e`. The local coordinator can be killed,
+  typed gateway/DNS queries keep answering from the serving/projection process,
+  and later already-authorized facts arrive through a remote-replication
+  injector rather than through a revived local coordinator.
+- Slice 012 adds a harness-only `process_fact_source` and PID cleanup registry
+  for process-role E2E. This is not a production fact backend or supervisor; it
+  exists to prove fate separation and to keep `mvp-e2e -- all` cleanup bounded
+  on timeout.
 
 ## NATS-Shaped Bus Semantics
 
@@ -495,11 +504,51 @@ Costs:
   HTTP/DNS serving, fact-sync/projection, and transport responsibilities.
 - Health surfaces must be precise: coordinator stale/unavailable for mutations
   is not the same as workload, WireGuard, or serving failure.
+- Process-role E2E needs explicit child cleanup. Slice 012 uses PID files only
+  in the harness so a global `all` timeout can best-effort kill roles it
+  abandoned; this is not a production service manager.
 
 Revisit if:
 - A future slice proves that a responsibility cannot safely run outside the
   coordinator. That slice must document the failure audience and the exact
   data-plane behavior lost when the coordinator dies.
+- We need production role supervision, restart policy, or cross-platform local
+  sockets. That should be a serving/runtime slice, not an expansion of the E2E
+  harness.
+
+## Process-Role E2E Harness
+
+Why this:
+- In-process actor tests cannot prove fate separation. The MVP needs real child
+  processes so killing the local mutation role does not accidentally kill the
+  serving/projection role.
+- The process harness lets us stress "daemon down, steady state still works"
+  before committing to the final Pingora/Hickory/WireGuard process layout.
+
+What it replaces:
+- Treating one daemon binary/process as the unit of all behavior.
+- Tests that only set a boolean "coordinator unavailable" while all actors live
+  in the same process.
+
+Costs:
+- The harness has more plumbing than the business invariant. Unix sockets,
+  child waits, PID files, timeout cleanup, and one-shot role dispatch are all
+  test substrate.
+- `process_fact_source` is deliberately file-backed and local. It proves OS
+  process fate separation; it does not replace iroh-docs replication.
+
+Crates:
+- `tokio::process` owns child lifecycle.
+- `tokio::net::UnixListener` / `UnixStream` own harness-local IPC.
+- `serde_json` keeps requests/responses typed without a general IPC framework.
+- `interprocess`, `assert_cmd`, `clap`, `tokio-util`, and process supervisor
+  crates were reviewed and deferred.
+
+Revisit if:
+- The role IPC becomes user-facing or cross-platform. Use `clap` for real CLI
+  parsing and reconsider `interprocess` for local socket portability.
+- Process lifecycle becomes product behavior. Add a real supervisor boundary
+  instead of growing the E2E PID registry.
 
 ## Deterministic Projections And Atomic Snapshots
 
