@@ -168,12 +168,18 @@ pub(crate) async fn request_begin_rebuild(socket: &Path) -> Result<u64, String> 
     }
 }
 
-pub(crate) async fn request_await_rebuild(socket: &Path, token: u64) -> Result<(), String> {
+pub(crate) async fn request_await_rebuild(
+    socket: &Path,
+    token: u64,
+) -> Result<ProjectedSummary, String> {
     match request_role(socket, &RoleRequest::AwaitRebuild { token })
         .await
         .map_err(|error| format!("await projection rebuild: {error:?}"))?
     {
-        RoleSuccess::RebuildFinished { token: done, .. } if done == token => Ok(()),
+        RoleSuccess::RebuildFinished {
+            token: done,
+            summary,
+        } if done == token => Ok(summary),
         other => Err(format!("unexpected await rebuild response: {other:?}")),
     }
 }
@@ -299,35 +305,66 @@ pub(crate) fn cleanup_orphaned_children(root: &Path) -> Result<(), String> {
     };
 
     let mut records = Vec::new();
+    let mut errors = Vec::new();
     for entry in entries {
-        let path = entry
-            .map_err(|error| format!("read child pid entry: {error}"))?
-            .path();
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(error) => {
+                errors.push(format!("read child pid entry: {error}"));
+                continue;
+            }
+        };
         if path.extension().and_then(|extension| extension.to_str()) != Some("pid") {
             continue;
         }
-        let Some(record) = read_child_pid_record(&path)? else {
-            unregister_child_pid(&path)?;
-            continue;
-        };
-        if process_matches_record(&record)? {
-            records.push((path, record));
-        } else {
-            unregister_child_pid(&path)?;
+        match read_child_pid_record(&path) {
+            Ok(Some(record)) => match process_matches_record(&record) {
+                Ok(true) => records.push((path, record)),
+                Ok(false) => record_cleanup_error(&mut errors, unregister_child_pid(&path)),
+                Err(error) => errors.push(error),
+            },
+            Ok(None) => record_cleanup_error(&mut errors, unregister_child_pid(&path)),
+            Err(error) => errors.push(error),
         }
     }
 
     for (_, record) in &records {
-        send_signal(record.pid, "-TERM")?;
+        if let Err(error) = send_signal(record.pid, "-TERM") {
+            match process_matches_record(record) {
+                Ok(true) => errors.push(error),
+                Ok(false) => {}
+                Err(error) => errors.push(error),
+            }
+        }
     }
     thread::sleep(Duration::from_millis(100));
     for (path, record) in records {
-        if process_matches_record(&record)? {
-            send_signal(record.pid, "-KILL")?;
+        match process_matches_record(&record) {
+            Ok(true) => {
+                if let Err(error) = send_signal(record.pid, "-KILL") {
+                    match process_matches_record(&record) {
+                        Ok(true) => errors.push(error),
+                        Ok(false) => {}
+                        Err(error) => errors.push(error),
+                    }
+                }
+            }
+            Ok(false) => {}
+            Err(error) => errors.push(error),
         }
-        unregister_child_pid(&path)?;
+        record_cleanup_error(&mut errors, unregister_child_pid(&path));
     }
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("cleanup orphaned children: {}", errors.join("; ")))
+    }
+}
+
+fn record_cleanup_error(errors: &mut Vec<String>, result: Result<(), String>) {
+    if let Err(error) = result {
+        errors.push(error);
+    }
 }
 
 fn current_exe() -> Result<PathBuf, String> {
@@ -349,7 +386,7 @@ fn register_child_pid(root: &Path, name: &str, child: &Child) -> Result<PathBuf,
     let record = ChildPidRecord {
         pid,
         name: name.to_string(),
-        exe: current_exe()?.display().to_string(),
+        exe: child_exe_for_record(pid)?.display().to_string(),
     };
     let bytes = serde_json::to_vec(&record)
         .map_err(|error| format!("serialize child pid record: {error}"))?;
@@ -364,6 +401,17 @@ fn unregister_child_pid(path: &Path) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("remove child pid '{}': {error}", path.display())),
     }
+}
+
+#[cfg(target_os = "linux")]
+fn child_exe_for_record(pid: u32) -> Result<PathBuf, String> {
+    fs::read_link(format!("/proc/{pid}/exe"))
+        .map_err(|error| format!("read /proc/{pid}/exe for child pid record: {error}"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn child_exe_for_record(_pid: u32) -> Result<PathBuf, String> {
+    current_exe()
 }
 
 fn read_child_pid_record(path: &Path) -> Result<Option<ChildPidRecord>, String> {
@@ -445,10 +493,16 @@ impl RunningChild {
 
 impl Drop for RunningChild {
     fn drop(&mut self) {
-        if let Some(pid_file) = self.pid_file.take() {
-            let _ = unregister_child_pid(&pid_file);
+        match self.child.try_wait() {
+            Ok(Some(_)) => {
+                if let Some(pid_file) = self.pid_file.take() {
+                    let _ = unregister_child_pid(&pid_file);
+                }
+            }
+            Ok(None) | Err(_) => {
+                let _ = self.child.start_kill();
+            }
         }
-        let _ = self.child.start_kill();
     }
 }
 
@@ -2432,6 +2486,49 @@ mod tests {
             .expect("join role");
 
         assert!(result.is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn cleanup_orphaned_children_kills_registered_child_and_removes_pid_file() {
+        let root = root("cleanup-orphan");
+        let child = TokioCommand::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep child");
+        let pid_file = register_child_pid(&root, "sleep", &child).expect("register child");
+        assert!(pid_file.exists());
+
+        cleanup_orphaned_children(&root).expect("cleanup child");
+        let status = timeout(Duration::from_secs(2), child.wait_with_output())
+            .await
+            .expect("child exits after cleanup")
+            .expect("wait child");
+
+        assert!(!status.status.success());
+        assert!(!pid_file.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn dropping_running_child_keeps_pid_file_for_cleanup() {
+        let root = root("drop-child");
+        let child = TokioCommand::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep child");
+        let pid_file = register_child_pid(&root, "sleep", &child).expect("register child");
+        let running = RunningChild {
+            name: "sleep",
+            child,
+            pid_file: Some(pid_file.clone()),
+        };
+
+        drop(running);
+
+        assert!(pid_file.exists());
+        cleanup_orphaned_children(&root).expect("cleanup dropped child");
+        assert!(!pid_file.exists());
     }
 
     #[tokio::test]

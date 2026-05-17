@@ -33,7 +33,7 @@ pub enum DnsServerError {
 pub struct DnsServerHandle {
     listen_addr: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
-    task: JoinHandle<DnsServerResult<()>>,
+    task: Option<JoinHandle<DnsServerResult<()>>>,
     metrics: WireMetricsRecorder,
 }
 
@@ -52,12 +52,26 @@ impl DnsServerHandle {
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
-        match self.task.await {
+        let Some(task) = self.task.take() else {
+            return Ok(());
+        };
+        match task.await {
             Ok(result) => result,
             Err(error) if error.is_cancelled() => Ok(()),
             Err(error) => Err(DnsServerError::Receive(std::io::Error::other(format!(
                 "dns task join: {error}"
             )))),
+        }
+    }
+}
+
+impl Drop for DnsServerHandle {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(task) = &self.task {
+            task.abort();
         }
     }
 }
@@ -113,7 +127,7 @@ pub async fn spawn_dns_server(
     Ok(DnsServerHandle {
         listen_addr,
         shutdown: Some(shutdown_tx),
-        task,
+        task: Some(task),
         metrics,
     })
 }

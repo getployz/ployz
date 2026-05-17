@@ -47,7 +47,7 @@ pub enum HttpGatewayError {
 pub struct HttpGatewayHandle {
     listen_addr: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
-    task: JoinHandle<HttpGatewayResult<()>>,
+    task: Option<JoinHandle<HttpGatewayResult<()>>>,
     metrics: WireMetricsRecorder,
 }
 
@@ -66,12 +66,26 @@ impl HttpGatewayHandle {
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
-        match self.task.await {
+        let Some(task) = self.task.take() else {
+            return Ok(());
+        };
+        match task.await {
             Ok(result) => result,
             Err(error) if error.is_cancelled() => Ok(()),
             Err(error) => Err(HttpGatewayError::Accept(std::io::Error::other(format!(
                 "gateway task join: {error}"
             )))),
+        }
+    }
+}
+
+impl Drop for HttpGatewayHandle {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(task) = &self.task {
+            task.abort();
         }
     }
 }
@@ -129,7 +143,7 @@ pub async fn spawn_http_gateway(
     Ok(HttpGatewayHandle {
         listen_addr,
         shutdown: Some(shutdown_tx),
-        task,
+        task: Some(task),
         metrics,
     })
 }
