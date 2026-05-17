@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use mvp_acme::{AcmeChallengeToken, AcmeHostname, AcmeKeyAuthorization};
 use mvp_bus::IslandId;
 use mvp_lease::{LeaseContentHash, LeaseEpoch, LeaseHolder, LeaseTimestamp};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params, types::Type};
 use tempfile::NamedTempFile;
 
 use crate::error::{ProjectionError, ProjectionResult};
@@ -186,7 +186,7 @@ fn create_schema(connection: &Connection) -> ProjectionResult<()> {
           key_authorization TEXT NOT NULL,
           holder TEXT NOT NULL,
           lease_epoch INTEGER NOT NULL,
-          claim_hash_json TEXT NOT NULL,
+          claim_hash TEXT NOT NULL,
           published_at INTEGER NOT NULL,
           PRIMARY KEY (hostname, token)
         );
@@ -345,7 +345,7 @@ fn write_acme_http01(connection: &Connection, state: &ProjectionState) -> Projec
           key_authorization,
           holder,
           lease_epoch,
-          claim_hash_json,
+          claim_hash,
           published_at
         )
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -358,7 +358,7 @@ fn write_acme_http01(connection: &Connection, state: &ProjectionState) -> Projec
             challenge.key_authorization.as_str(),
             challenge.holder.as_str(),
             challenge.lease_epoch.value() as i64,
-            serde_json::to_string(&challenge.claim_hash)?,
+            challenge.claim_hash.as_hex(),
             challenge.published_at.value() as i64
         ])?;
     }
@@ -536,7 +536,7 @@ fn load_dns(connection: &Connection, state: &mut ProjectionState) -> ProjectionR
 fn load_acme_http01(connection: &Connection, state: &mut ProjectionState) -> ProjectionResult<()> {
     let mut statement = connection.prepare(
         "
-        SELECT hostname, token, key_authorization, holder, lease_epoch, claim_hash_json,
+        SELECT hostname, token, key_authorization, holder, lease_epoch, claim_hash,
                published_at
         FROM acme_http01_challenges
         ORDER BY hostname, token
@@ -550,11 +550,10 @@ fn load_acme_http01(connection: &Connection, state: &mut ProjectionState) -> Pro
                 .map_err(to_sql_error)?;
         let holder = LeaseHolder::new(row.get::<_, String>(3)?);
         let lease_epoch =
-            LeaseEpoch::from_u64(row.get::<_, i64>(4)? as u64).map_err(to_sql_error)?;
-        let claim_hash_json: String = row.get(5)?;
-        let claim_hash: LeaseContentHash =
-            serde_json::from_str(&claim_hash_json).map_err(to_sql_error)?;
-        let published_at = LeaseTimestamp::from_secs(row.get::<_, i64>(6)? as u64);
+            LeaseEpoch::from_u64(read_u64(row.get::<_, i64>(4)?, 4)?).map_err(to_sql_error)?;
+        let claim_hash =
+            LeaseContentHash::from_hex(&row.get::<_, String>(5)?).map_err(to_sql_error)?;
+        let published_at = LeaseTimestamp::from_secs(read_u64(row.get::<_, i64>(6)?, 6)?);
         Ok(AcmeHttp01ChallengeProjection {
             hostname,
             token,
@@ -619,6 +618,12 @@ fn parse_reason(value: &str) -> Result<ProjectionIgnoreReason, serde_json::Error
 
 fn to_sql_error(error: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(error))
+}
+
+fn read_u64(value: i64, column: usize) -> rusqlite::Result<u64> {
+    u64::try_from(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(column, Type::Integer, Box::new(error))
+    })
 }
 
 #[cfg(test)]

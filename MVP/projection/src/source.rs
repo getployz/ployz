@@ -163,7 +163,7 @@ pub fn classify_fact_key(key: &FactKey) -> FactKeyClassification {
 }
 
 #[must_use]
-pub fn is_reducible_conflict_kind(kind: FactKind) -> bool {
+pub(crate) fn is_reducible_conflict_kind(kind: FactKind) -> bool {
     matches!(
         kind,
         FactKind::LeaseClaimed

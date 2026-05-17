@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use mvp_acme::{AcmeChallengeId, AcmeHttp01ClearedFact, AcmeHttp01PresentedFact};
 use mvp_bus::{FactContentHash, FactPayload, IslandId};
-use mvp_lease::{LeaseClaimed, LeaseReleased, LeaseRenewed};
+use mvp_lease::{
+    LeaseClaimed, LeaseContentHash, LeaseEpoch, LeaseRelease, LeaseReleased, LeaseRenewed,
+    LeaseTimestamp,
+};
 
 use crate::facts::{
     DnsCommitFact, GatewayCommitFact, NodeId, NodeTombstonedFact, ProjectionFactPayload,
@@ -226,16 +229,16 @@ impl<'a> Reducer<'a> {
         let entries = self
             .acme_presented
             .iter()
-            .map(|(key, presentations)| (key.clone(), presentations.clone()))
+            .filter_map(|(key, presentations)| {
+                select_head(
+                    presentations.iter(),
+                    |fact| fact.epoch().value(),
+                    |fact| fact.key_authorization().as_str(),
+                )
+                .map(|selection| (key.clone(), selection))
+            })
             .collect::<Vec<_>>();
-        for (key, presentations) in entries {
-            let Some(presented) = select_head(
-                presentations.iter(),
-                |fact| fact.epoch().value(),
-                |fact| fact.key_authorization().as_str(),
-            ) else {
-                continue;
-            };
+        for (key, presented) in entries {
             self.ignore_many(ProjectionIgnoreReason::Superseded, presented.superseded);
             if self.is_acme_presentation_cleared(&key, &presented.fact) {
                 continue;
@@ -261,7 +264,7 @@ impl<'a> Reducer<'a> {
         key: &AcmeHttp01ChallengeKey,
         presented: &AcmeHttp01PresentedFact,
     ) -> bool {
-        let Some(clears) = self.acme_cleared.get(key).cloned() else {
+        let Some(clears) = self.acme_cleared.get(key) else {
             return false;
         };
         let Some(clear) = select_head(
@@ -580,20 +583,32 @@ enum KeyExpectation {
     DnsCommit {
         dns_commit_id: String,
     },
-    Lease {
+    LeaseClaimed {
         resource: String,
-        epoch: u64,
+        epoch: LeaseEpoch,
+    },
+    LeaseRenewed {
+        resource: String,
+        epoch: LeaseEpoch,
+        claim_hash: LeaseContentHash,
+        renewed_at: LeaseTimestamp,
+    },
+    LeaseReleased {
+        resource: String,
+        epoch: LeaseEpoch,
+        claim_hash: LeaseContentHash,
+        release: LeaseRelease,
     },
     AcmeHttp01Presented {
         hostname: String,
         token: String,
-        epoch: u64,
+        epoch: LeaseEpoch,
     },
     AcmeHttp01Cleared {
         hostname: String,
         token: String,
-        epoch: u64,
-        claim_hash: String,
+        epoch: LeaseEpoch,
+        claim_hash: LeaseContentHash,
     },
 }
 
@@ -643,20 +658,40 @@ fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPayloa
             ProjectionFactPayload::DnsCommit(fact),
         ) => fact.dns_commit_id == dns_commit_id,
         (
-            Some(KeyExpectation::Lease { resource, epoch }),
+            Some(KeyExpectation::LeaseClaimed { resource, epoch }),
             FactKind::LeaseClaimed,
             ProjectionFactPayload::LeaseClaimed(fact),
-        ) => fact.resource().as_str() == resource && fact.epoch().value() == epoch,
+        ) => fact.resource().as_str() == resource && fact.epoch() == epoch,
         (
-            Some(KeyExpectation::Lease { resource, epoch }),
+            Some(KeyExpectation::LeaseRenewed {
+                resource,
+                epoch,
+                claim_hash,
+                renewed_at,
+            }),
             FactKind::LeaseRenewed,
             ProjectionFactPayload::LeaseRenewed(fact),
-        ) => fact.resource().as_str() == resource && fact.epoch().value() == epoch,
+        ) => {
+            fact.resource().as_str() == resource
+                && fact.epoch() == epoch
+                && fact.claim_hash() == claim_hash
+                && fact.renewed_at() == renewed_at
+        }
         (
-            Some(KeyExpectation::Lease { resource, epoch }),
+            Some(KeyExpectation::LeaseReleased {
+                resource,
+                epoch,
+                claim_hash,
+                release,
+            }),
             FactKind::LeaseReleased,
             ProjectionFactPayload::LeaseReleased(fact),
-        ) => fact.resource().as_str() == resource && fact.epoch().value() == epoch,
+        ) => {
+            fact.resource().as_str() == resource
+                && fact.epoch() == epoch
+                && fact.claim_hash() == claim_hash
+                && fact.release() == release
+        }
         (
             Some(KeyExpectation::AcmeHttp01Presented {
                 hostname,
@@ -668,7 +703,7 @@ fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPayloa
         ) => {
             fact.id().hostname().as_str() == hostname
                 && fact.id().token().as_str() == token
-                && fact.epoch().value() == epoch
+                && fact.epoch() == epoch
         }
         (
             Some(KeyExpectation::AcmeHttp01Cleared {
@@ -682,8 +717,8 @@ fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPayloa
         ) => {
             fact.id().hostname().as_str() == hostname
                 && fact.id().token().as_str() == token
-                && fact.epoch().value() == epoch
-                && fact.claim_hash().as_hex() == claim_hash
+                && fact.epoch() == epoch
+                && fact.claim_hash() == claim_hash
         }
         _ => false,
     }
@@ -725,10 +760,57 @@ fn key_expectation(candidate: &FactCandidate) -> Option<KeyExpectation> {
             dns_commit_id: (*dns_commit_id).to_string(),
         }),
         ["facts", "lease", resource, "claimed", epoch]
-        | ["facts", "lease", resource, "renewed", epoch, ..]
-        | ["facts", "lease", resource, "released", epoch, ..] => Some(KeyExpectation::Lease {
+        | ["facts", "lease", resource, "claimed", epoch, _] => Some(KeyExpectation::LeaseClaimed {
             resource: (*resource).to_string(),
-            epoch: epoch.parse().ok()?,
+            epoch: parse_lease_epoch(epoch)?,
+        }),
+        [
+            "facts",
+            "lease",
+            resource,
+            "renewed",
+            epoch,
+            claim_hash,
+            renewed_at,
+        ]
+        | [
+            "facts",
+            "lease",
+            resource,
+            "renewed",
+            epoch,
+            claim_hash,
+            renewed_at,
+            _,
+        ] => Some(KeyExpectation::LeaseRenewed {
+            resource: (*resource).to_string(),
+            epoch: parse_lease_epoch(epoch)?,
+            claim_hash: LeaseContentHash::from_hex(claim_hash).ok()?,
+            renewed_at: parse_lease_timestamp(renewed_at)?,
+        }),
+        [
+            "facts",
+            "lease",
+            resource,
+            "released",
+            epoch,
+            claim_hash,
+            release,
+        ]
+        | [
+            "facts",
+            "lease",
+            resource,
+            "released",
+            epoch,
+            claim_hash,
+            release,
+            _,
+        ] => Some(KeyExpectation::LeaseReleased {
+            resource: (*resource).to_string(),
+            epoch: parse_lease_epoch(epoch)?,
+            claim_hash: LeaseContentHash::from_hex(claim_hash).ok()?,
+            release: parse_lease_release(release)?,
         }),
         [
             "facts",
@@ -751,7 +833,7 @@ fn key_expectation(candidate: &FactCandidate) -> Option<KeyExpectation> {
         ] => Some(KeyExpectation::AcmeHttp01Presented {
             hostname: (*hostname).to_string(),
             token: (*token).to_string(),
-            epoch: epoch.parse().ok()?,
+            epoch: parse_lease_epoch(epoch)?,
         }),
         [
             "facts",
@@ -776,11 +858,26 @@ fn key_expectation(candidate: &FactCandidate) -> Option<KeyExpectation> {
         ] => Some(KeyExpectation::AcmeHttp01Cleared {
             hostname: (*hostname).to_string(),
             token: (*token).to_string(),
-            epoch: epoch.parse().ok()?,
-            claim_hash: (*claim_hash).to_string(),
+            epoch: parse_lease_epoch(epoch)?,
+            claim_hash: LeaseContentHash::from_hex(claim_hash).ok()?,
         }),
         _ => None,
     }
+}
+
+fn parse_lease_epoch(value: &str) -> Option<LeaseEpoch> {
+    LeaseEpoch::from_u64(value.parse().ok()?).ok()
+}
+
+fn parse_lease_timestamp(value: &str) -> Option<LeaseTimestamp> {
+    Some(LeaseTimestamp::from_secs(value.parse().ok()?))
+}
+
+fn parse_lease_release(value: &str) -> Option<LeaseRelease> {
+    if value == "drop" {
+        return Some(LeaseRelease::DroppedWithoutTimestamp);
+    }
+    parse_lease_timestamp(value).map(LeaseRelease::At)
 }
 
 fn rejection_reason(candidate: &FactCandidate) -> Option<ProjectionIgnoreReason> {
@@ -805,6 +902,10 @@ mod tests {
     use crate::model::{ProjectionIgnoreReason, ProjectionState};
     use crate::source::{CandidateStatus, FactCandidate, FactKind};
     use mvp_bus::{FactContentHash, FactKey, FactPayload, IslandId, PrincipalId};
+    use mvp_lease::{
+        LeaseClaimed, LeaseEpoch, LeaseFact, LeaseHolder, LeaseReleased, LeaseRenewed,
+        LeaseResource, LeaseTimestamp,
+    };
     use std::collections::BTreeMap;
 
     fn island(value: &str) -> IslandId {
@@ -1580,6 +1681,44 @@ mod tests {
                 old_backends_to_drain: Vec::new(),
             }),
         );
+        let lease_resource = LeaseResource::from_segments(["acme", "http01", "example", "token"]);
+        let claim_hash = LeaseFact::Claimed(LeaseClaimed::new(
+            lease_resource.clone(),
+            LeaseHolder::new("issuer-a"),
+            LeaseEpoch::first(),
+            LeaseTimestamp::from_secs(100),
+            LeaseTimestamp::from_secs(160),
+        ))
+        .content_hash();
+        let other_claim_hash = LeaseFact::Claimed(LeaseClaimed::new(
+            lease_resource.clone(),
+            LeaseHolder::new("issuer-b"),
+            LeaseEpoch::first(),
+            LeaseTimestamp::from_secs(100),
+            LeaseTimestamp::from_secs(160),
+        ))
+        .content_hash();
+        let renewed_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::LeaseRenewed(LeaseRenewed::new(
+                lease_resource.clone(),
+                LeaseHolder::new("issuer-a"),
+                LeaseEpoch::first(),
+                claim_hash,
+                LeaseTimestamp::from_secs(120),
+                LeaseTimestamp::from_secs(180),
+            )),
+        );
+        let released_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::LeaseReleased(LeaseReleased::new_at(
+                lease_resource.clone(),
+                LeaseHolder::new("issuer-a"),
+                LeaseEpoch::first(),
+                claim_hash,
+                LeaseTimestamp::from_secs(130),
+            )),
+        );
         let candidates = vec![
             candidate(
                 "/facts/node/node-1/joined/1",
@@ -1592,6 +1731,22 @@ mod tests {
                 service_hash,
             ),
             candidate("/facts/routes/route-1", FactKind::RouteCommit, route_hash),
+            candidate(
+                &format!(
+                    "/facts/lease/{}/renewed/1/{}/120",
+                    lease_resource, other_claim_hash
+                ),
+                FactKind::LeaseRenewed,
+                renewed_hash,
+            ),
+            candidate(
+                &format!(
+                    "/facts/lease/{}/released/1/{}/999",
+                    lease_resource, claim_hash
+                ),
+                FactKind::LeaseReleased,
+                released_hash,
+            ),
         ];
 
         let state = reduce_facts(&island("prod"), &candidates, &payloads);
@@ -1601,7 +1756,7 @@ mod tests {
         assert!(state.gateway.is_none());
         assert_eq!(
             status_count(&state, ProjectionIgnoreReason::MalformedPayload),
-            3
+            5
         );
     }
 

@@ -217,6 +217,43 @@ impl LeaseContentHash {
     pub fn as_hex(self) -> String {
         self.to_string()
     }
+
+    pub fn from_hex(value: &str) -> Result<Self, LeaseContentHashParseError> {
+        if value.len() != 64 {
+            return Err(LeaseContentHashParseError::InvalidLength {
+                expected: 64,
+                actual: value.len(),
+            });
+        }
+        let mut bytes = [0_u8; 32];
+        for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+            let high = decode_hex_nibble(chunk[0])
+                .ok_or(LeaseContentHashParseError::InvalidHex { index: index * 2 })?;
+            let low =
+                decode_hex_nibble(chunk[1]).ok_or(LeaseContentHashParseError::InvalidHex {
+                    index: index * 2 + 1,
+                })?;
+            bytes[index] = (high << 4) | low;
+        }
+        Ok(Self(bytes))
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum LeaseContentHashParseError {
+    #[error("lease content hash must be {expected} hex characters, got {actual}")]
+    InvalidLength { expected: usize, actual: usize },
+    #[error("lease content hash contains invalid hex at byte index {index}")]
+    InvalidHex { index: usize },
+}
+
+fn decode_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

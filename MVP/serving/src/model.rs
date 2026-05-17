@@ -6,8 +6,9 @@ use std::time::{Duration, SystemTime};
 use mvp_acme::{AcmeChallengeToken, AcmeHostname, AcmeKeyAuthorization};
 use mvp_bus::IslandId;
 use mvp_projection::{
-    AcmeHttp01ChallengeProjection, DnsRecordProjection, DnsSnapshotFile, GatewayRouteProjection,
-    GatewaySnapshotFile, ProjectionError, load_dns_snapshot, load_gateway_snapshot,
+    AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsRecordProjection, DnsSnapshotFile,
+    GatewayRouteProjection, GatewaySnapshotFile, ProjectionError, load_dns_snapshot,
+    load_gateway_snapshot,
 };
 use serde::{Deserialize, Serialize};
 
@@ -35,7 +36,7 @@ pub struct ServingSnapshotBatch {
     pub dns: DnsSnapshotFile,
     route_by_hostname: BTreeMap<String, usize>,
     records_by_name_type: BTreeMap<DnsRecordKey, Vec<usize>>,
-    acme_http01_by_host_token: BTreeMap<AcmeHttp01LookupKey, usize>,
+    acme_http01_by_host_token: BTreeMap<AcmeHttp01ChallengeKey, usize>,
 }
 
 impl ServingSnapshotBatch {
@@ -76,7 +77,7 @@ impl ServingSnapshotBatch {
 
     #[must_use]
     pub fn acme_http01_challenge(&self, host: &str, token: &str) -> Option<AcmeKeyAuthorization> {
-        let key = AcmeHttp01LookupKey::new(host, token)?;
+        let key = acme_http01_lookup_key(host, token)?;
         self.acme_http01_by_host_token
             .get(&key)
             .and_then(|challenge_index| self.gateway.acme_http01.get(*challenge_index))
@@ -117,19 +118,11 @@ impl DnsRecordKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct AcmeHttp01LookupKey {
-    hostname: AcmeHostname,
-    token: AcmeChallengeToken,
-}
-
-impl AcmeHttp01LookupKey {
-    fn new(host: &str, token: &str) -> Option<Self> {
-        Some(Self {
-            hostname: AcmeHostname::parse_host_header(host.to_string()).ok()?,
-            token: AcmeChallengeToken::parse(token.to_string()).ok()?,
-        })
-    }
+fn acme_http01_lookup_key(host: &str, token: &str) -> Option<AcmeHttp01ChallengeKey> {
+    Some(AcmeHttp01ChallengeKey::new(
+        AcmeHostname::parse_host_header(host).ok()?,
+        AcmeChallengeToken::parse(token).ok()?,
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,14 +238,11 @@ fn index_dns_records(records: &[DnsRecordProjection]) -> BTreeMap<DnsRecordKey, 
 
 fn index_acme_http01(
     challenges: &[AcmeHttp01ChallengeProjection],
-) -> BTreeMap<AcmeHttp01LookupKey, usize> {
+) -> BTreeMap<AcmeHttp01ChallengeKey, usize> {
     let mut index = BTreeMap::new();
     for (challenge_index, challenge) in challenges.iter().enumerate() {
         index.insert(
-            AcmeHttp01LookupKey {
-                hostname: challenge.hostname.clone(),
-                token: challenge.token.clone(),
-            },
+            AcmeHttp01ChallengeKey::new(challenge.hostname.clone(), challenge.token.clone()),
             challenge_index,
         );
     }
