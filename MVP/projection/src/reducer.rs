@@ -4,6 +4,7 @@ use mvp_bus::{FactContentHash, FactPayload, IslandId};
 
 use crate::facts::{
     DnsCommitFact, GatewayCommitFact, NodeId, ProjectionFactPayload, RouteCommitFact, ServiceName,
+    ServingCommitFact,
 };
 use crate::model::{
     DnsProjection, DnsRecordProjection, GatewayProjection, GatewayRouteProjection, NodeProjection,
@@ -44,8 +45,9 @@ struct Reducer<'a> {
     state: ProjectionState,
     payloads: &'a BTreeMap<FactContentHash, FactPayload>,
     route_commits: BTreeMap<String, RouteCommitFact>,
-    gateway_commits: BTreeMap<String, GatewayCommitFact>,
-    dns_commits: BTreeMap<String, DnsCommitFact>,
+    serving_commits: BTreeMap<String, CommitCandidate<ServingCommitFact>>,
+    gateway_commits: BTreeMap<String, CommitCandidate<GatewayCommitFact>>,
+    dns_commits: BTreeMap<String, CommitCandidate<DnsCommitFact>>,
     node_conflicts: BTreeMap<NodeId, u64>,
     service_conflicts: BTreeMap<(ServiceName, NodeId), u64>,
     status_counts: BTreeMap<ProjectionIgnoreReason, usize>,
@@ -57,6 +59,7 @@ impl<'a> Reducer<'a> {
             state: ProjectionState::for_island(island),
             payloads,
             route_commits: BTreeMap::new(),
+            serving_commits: BTreeMap::new(),
             gateway_commits: BTreeMap::new(),
             dns_commits: BTreeMap::new(),
             node_conflicts: BTreeMap::new(),
@@ -90,10 +93,15 @@ impl<'a> Reducer<'a> {
             self.ignore(ProjectionIgnoreReason::MalformedPayload);
             return;
         }
-        self.apply_payload(candidate.kind(), payload);
+        self.apply_payload(candidate.kind(), candidate.content_hash().clone(), payload);
     }
 
-    fn apply_payload(&mut self, kind: FactKind, payload: ProjectionFactPayload) {
+    fn apply_payload(
+        &mut self,
+        kind: FactKind,
+        content_hash: FactContentHash,
+        payload: ProjectionFactPayload,
+    ) {
         match (kind, payload) {
             (FactKind::NodeJoined, ProjectionFactPayload::NodeJoined(fact)) => {
                 let node = NodeProjection {
@@ -118,20 +126,36 @@ impl<'a> Reducer<'a> {
                 self.route_commits
                     .insert(fact.route_commit_id.clone(), fact);
             }
+            (FactKind::ServingCommit, ProjectionFactPayload::ServingCommit(fact)) => {
+                self.serving_commits.insert(
+                    fact.serving_commit_id.clone(),
+                    CommitCandidate { content_hash, fact },
+                );
+            }
             (FactKind::GatewayCommit, ProjectionFactPayload::GatewayCommit(fact)) => {
-                self.gateway_commits
-                    .insert(fact.gateway_commit_id.clone(), fact);
+                self.gateway_commits.insert(
+                    fact.gateway_commit_id.clone(),
+                    CommitCandidate { content_hash, fact },
+                );
             }
             (FactKind::DnsCommit, ProjectionFactPayload::DnsCommit(fact)) => {
-                self.dns_commits.insert(fact.dns_commit_id.clone(), fact);
+                self.dns_commits.insert(
+                    fact.dns_commit_id.clone(),
+                    CommitCandidate { content_hash, fact },
+                );
             }
             _ => self.ignore(ProjectionIgnoreReason::MalformedPayload),
         }
     }
 
     fn finish(mut self) -> ProjectionState {
-        self.state.gateway = self.project_gateway();
-        self.state.dns = self.project_dns();
+        if let Some(commit) = self.serving_head() {
+            self.state.gateway = Some(project_gateway_from_serving(&commit));
+            self.state.dns = Some(project_dns_from_serving(commit));
+        } else {
+            self.state.gateway = self.project_gateway();
+            self.state.dns = self.project_dns();
+        }
         self.state.statuses = self
             .status_counts
             .into_iter()
@@ -181,6 +205,13 @@ impl<'a> Reducer<'a> {
 
     fn ignore(&mut self, reason: ProjectionIgnoreReason) {
         *self.status_counts.entry(reason).or_insert(0) += 1;
+    }
+
+    fn ignore_many(&mut self, reason: ProjectionIgnoreReason, count: usize) {
+        if count == 0 {
+            return;
+        }
+        *self.status_counts.entry(reason).or_insert(0) += count;
     }
 
     fn apply_node(&mut self, node: NodeProjection) {
@@ -239,42 +270,125 @@ impl<'a> Reducer<'a> {
     }
 
     fn gateway_head(&mut self) -> Option<GatewayCommitFact> {
-        let max_epoch = self
-            .gateway_commits
-            .values()
-            .map(|commit| commit.epoch)
-            .max()?;
-        let heads = self
-            .gateway_commits
-            .values()
-            .filter(|commit| commit.epoch == max_epoch)
-            .collect::<Vec<_>>();
-        match heads.as_slice() {
-            [head] => Some((*head).clone()),
-            [] => None,
-            _ => {
-                self.ignore(ProjectionIgnoreReason::Conflict);
-                None
-            }
-        }
+        let selection = select_head(
+            self.gateway_commits.values(),
+            |fact| fact.epoch,
+            |fact| fact.gateway_commit_id.as_str(),
+        )?;
+        self.ignore_many(ProjectionIgnoreReason::Superseded, selection.superseded);
+        Some(selection.fact)
     }
 
     fn dns_head(&mut self) -> Option<DnsCommitFact> {
-        let max_epoch = self.dns_commits.values().map(|commit| commit.epoch).max()?;
-        let heads = self
-            .dns_commits
-            .values()
-            .filter(|commit| commit.epoch == max_epoch)
-            .collect::<Vec<_>>();
-        match heads.as_slice() {
-            [head] => Some((*head).clone()),
-            [] => None,
-            _ => {
-                self.ignore(ProjectionIgnoreReason::Conflict);
-                None
+        let selection = select_head(
+            self.dns_commits.values(),
+            |fact| fact.epoch,
+            |fact| fact.dns_commit_id.as_str(),
+        )?;
+        self.ignore_many(ProjectionIgnoreReason::Superseded, selection.superseded);
+        Some(selection.fact)
+    }
+
+    fn serving_head(&mut self) -> Option<ServingCommitFact> {
+        let selection = select_head(
+            self.serving_commits.values(),
+            |fact| fact.epoch,
+            |fact| fact.serving_commit_id.as_str(),
+        )?;
+        self.ignore_many(ProjectionIgnoreReason::Superseded, selection.superseded);
+        Some(selection.fact)
+    }
+}
+
+fn project_gateway_from_serving(commit: &ServingCommitFact) -> GatewayProjection {
+    let mut hostnames = commit.hostnames.clone();
+    hostnames.sort();
+    let mut backends = commit.backends.clone();
+    backends.sort();
+    let mut old_backends_to_drain = commit.old_backends_to_drain.clone();
+    old_backends_to_drain.sort();
+    GatewayProjection {
+        gateway_commit_id: commit.gateway_commit_id.clone(),
+        route_commit_id: commit.route_commit_id.clone(),
+        routes: vec![GatewayRouteProjection {
+            route_id: commit.route_id.clone(),
+            hostnames,
+            backends,
+            old_backends_to_drain,
+        }],
+    }
+}
+
+fn project_dns_from_serving(commit: ServingCommitFact) -> DnsProjection {
+    let mut records = commit
+        .dns_records
+        .into_iter()
+        .map(DnsRecordProjection::from)
+        .collect::<Vec<_>>();
+    records.sort();
+    DnsProjection {
+        dns_commit_id: commit.dns_commit_id,
+        records,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CommitCandidate<T> {
+    content_hash: FactContentHash,
+    fact: T,
+}
+
+#[derive(Debug, Clone)]
+struct HeadSelection<T> {
+    fact: T,
+    superseded: usize,
+}
+
+fn select_head<'a, T, I, Epoch, Id>(candidates: I, epoch: Epoch, id: Id) -> Option<HeadSelection<T>>
+where
+    T: Clone + 'a,
+    I: IntoIterator<Item = &'a CommitCandidate<T>>,
+    Epoch: Fn(&T) -> u64,
+    Id: Fn(&T) -> &str,
+{
+    let mut selected: Option<&CommitCandidate<T>> = None;
+    let mut selected_epoch = 0;
+    let mut candidate_count: usize = 0;
+    for candidate in candidates {
+        candidate_count += 1;
+        let candidate_epoch = epoch(&candidate.fact);
+        if selected.is_none() || candidate_epoch > selected_epoch {
+            selected = Some(candidate);
+            selected_epoch = candidate_epoch;
+            continue;
+        }
+        if candidate_epoch == selected_epoch {
+            let Some(current) = selected else {
+                selected = Some(candidate);
+                continue;
+            };
+            if compare_commit_candidates(candidate, current, &id).is_lt() {
+                selected = Some(candidate);
             }
         }
     }
+    selected.map(|candidate| HeadSelection {
+        fact: candidate.fact.clone(),
+        superseded: candidate_count.saturating_sub(1),
+    })
+}
+
+fn compare_commit_candidates<T, Id>(
+    left: &CommitCandidate<T>,
+    right: &CommitCandidate<T>,
+    id: &Id,
+) -> std::cmp::Ordering
+where
+    Id: Fn(&T) -> &str,
+{
+    left.content_hash
+        .cmp(&right.content_hash)
+        .then_with(|| id(&left.fact).cmp(id(&right.fact)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,6 +404,9 @@ enum KeyExpectation {
     },
     RouteCommit {
         route_commit_id: String,
+    },
+    ServingCommit {
+        serving_commit_id: String,
     },
     GatewayCommit {
         gateway_commit_id: String,
@@ -325,6 +442,11 @@ fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPayloa
             ProjectionFactPayload::RouteCommit(fact),
         ) => fact.route_commit_id == route_commit_id,
         (
+            Some(KeyExpectation::ServingCommit { serving_commit_id }),
+            FactKind::ServingCommit,
+            ProjectionFactPayload::ServingCommit(fact),
+        ) => fact.serving_commit_id == serving_commit_id,
+        (
             Some(KeyExpectation::GatewayCommit { gateway_commit_id }),
             FactKind::GatewayCommit,
             ProjectionFactPayload::GatewayCommit(fact),
@@ -357,6 +479,9 @@ fn key_expectation(candidate: &FactCandidate) -> Option<KeyExpectation> {
         ["facts", "routes", route_commit_id] => Some(KeyExpectation::RouteCommit {
             route_commit_id: (*route_commit_id).to_string(),
         }),
+        ["facts", "serving", serving_commit_id] => Some(KeyExpectation::ServingCommit {
+            serving_commit_id: (*serving_commit_id).to_string(),
+        }),
         ["facts", "gateway", gateway_commit_id] => Some(KeyExpectation::GatewayCommit {
             gateway_commit_id: (*gateway_commit_id).to_string(),
         }),
@@ -383,6 +508,7 @@ mod tests {
     use crate::facts::{
         BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeId, NodeJoinedFact,
         ProjectionFactPayload, RouteCommitFact, RouteId, ServiceName, ServiceRegistrationFact,
+        ServingCommitFact,
     };
     use crate::model::{ProjectionIgnoreReason, ProjectionState};
     use crate::source::{CandidateStatus, FactCandidate, FactKind};
@@ -795,7 +921,7 @@ mod tests {
     }
 
     #[test]
-    fn reducer_marks_same_epoch_gateway_and_dns_head_conflicts() {
+    fn reducer_supersedes_same_epoch_gateway_and_dns_heads_deterministically() {
         let mut payloads = BTreeMap::new();
         let route_1 = insert_payload(
             &mut payloads,
@@ -849,6 +975,12 @@ mod tests {
                 records: Vec::new(),
             }),
         );
+        let expected_gateway = if gateway_1 <= gateway_2 {
+            ("gateway-1", "one.example.com")
+        } else {
+            ("gateway-2", "two.example.com")
+        };
+        let expected_dns = if dns_1 <= dns_2 { "dns-1" } else { "dns-2" };
         let candidates = vec![
             candidate("/facts/routes/route-1", FactKind::RouteCommit, route_1),
             candidate("/facts/routes/route-2", FactKind::RouteCommit, route_2),
@@ -868,9 +1000,90 @@ mod tests {
 
         let state = reduce_facts(&island("prod"), &candidates, &payloads);
 
-        assert!(state.gateway.is_none());
-        assert!(state.dns.is_none());
-        assert_eq!(status_count(&state, ProjectionIgnoreReason::Conflict), 2);
+        let gateway = state.gateway.as_ref().expect("gateway");
+        assert_eq!(gateway.gateway_commit_id, expected_gateway.0);
+        assert_eq!(gateway.routes[0].hostnames, vec![expected_gateway.1]);
+        assert_eq!(state.dns.as_ref().expect("dns").dns_commit_id, expected_dns);
+        assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 2);
+        assert_eq!(status_count(&state, ProjectionIgnoreReason::Conflict), 0);
+    }
+
+    #[test]
+    fn reducer_projects_serving_commit_as_single_gateway_dns_boundary() {
+        let mut payloads = BTreeMap::new();
+        let serving_1 = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::ServingCommit(ServingCommitFact {
+                serving_commit_id: "serving-1".to_string(),
+                route_commit_id: "route-1".to_string(),
+                gateway_commit_id: "gateway-1".to_string(),
+                dns_commit_id: "dns-1".to_string(),
+                route_id: RouteId::new("web-http"),
+                hostnames: vec!["one.example.com".to_string()],
+                backends: vec![BackendEndpoint {
+                    node_id: NodeId::new("node-1"),
+                    address: "fd00::1:8080".to_string(),
+                }],
+                old_backends_to_drain: Vec::new(),
+                dns_records: vec![DnsRecordFact {
+                    name: "one.example.com".to_string(),
+                    record_type: "AAAA".to_string(),
+                    value: "fd00::1".to_string(),
+                    ttl_seconds: 30,
+                }],
+                epoch: 1,
+            }),
+        );
+        let serving_2 = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::ServingCommit(ServingCommitFact {
+                serving_commit_id: "serving-2".to_string(),
+                route_commit_id: "route-2".to_string(),
+                gateway_commit_id: "gateway-2".to_string(),
+                dns_commit_id: "dns-2".to_string(),
+                route_id: RouteId::new("web-http"),
+                hostnames: vec!["two.example.com".to_string()],
+                backends: vec![BackendEndpoint {
+                    node_id: NodeId::new("node-2"),
+                    address: "fd00::2:8080".to_string(),
+                }],
+                old_backends_to_drain: Vec::new(),
+                dns_records: vec![DnsRecordFact {
+                    name: "two.example.com".to_string(),
+                    record_type: "AAAA".to_string(),
+                    value: "fd00::2".to_string(),
+                    ttl_seconds: 30,
+                }],
+                epoch: 1,
+            }),
+        );
+        let expected = if serving_1 <= serving_2 {
+            ("gateway-1", "dns-1", "one.example.com", "fd00::1")
+        } else {
+            ("gateway-2", "dns-2", "two.example.com", "fd00::2")
+        };
+        let candidates = vec![
+            candidate(
+                "/facts/serving/serving-1",
+                FactKind::ServingCommit,
+                serving_1,
+            ),
+            candidate(
+                "/facts/serving/serving-2",
+                FactKind::ServingCommit,
+                serving_2,
+            ),
+        ];
+
+        let state = reduce_facts(&island("prod"), &candidates, &payloads);
+
+        let gateway = state.gateway.as_ref().expect("gateway");
+        let dns = state.dns.as_ref().expect("dns");
+        assert_eq!(gateway.gateway_commit_id, expected.0);
+        assert_eq!(gateway.routes[0].hostnames, vec![expected.2]);
+        assert_eq!(dns.dns_commit_id, expected.1);
+        assert_eq!(dns.records[0].value, expected.3);
+        assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 1);
     }
 
     #[test]

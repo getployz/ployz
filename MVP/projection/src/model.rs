@@ -97,6 +97,7 @@ pub enum ProjectionIgnoreReason {
     Unverified,
     Unauthorized,
     Conflict,
+    Superseded,
     MissingPayload,
     MalformedPayload,
     UnsupportedFactKind,

@@ -10,6 +10,7 @@ use thiserror::Error;
 pub enum FactKind {
     NodeJoined,
     ServiceRegistered,
+    ServingCommit,
     RouteCommit,
     GatewayCommit,
     DnsCommit,
@@ -57,6 +58,9 @@ pub fn classify_fact_key(key: &FactKey) -> FactKeyClassification {
             epoch,
             _,
         ] => classify_epoch(FactKind::ServiceRegistered, epoch),
+        ["facts", "serving", _serving_commit] => {
+            FactKeyClassification::new(FactKind::ServingCommit, 0)
+        }
         ["facts", "routes", _route_commit] => FactKeyClassification::new(FactKind::RouteCommit, 0),
         ["facts", "gateway", _gateway_commit] => {
             FactKeyClassification::new(FactKind::GatewayCommit, 0)

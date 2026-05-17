@@ -2373,6 +2373,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mvp-deploy"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "mvp-bus",
+ "mvp-projection",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "mvp-e2e"
 version = "0.1.0"
 dependencies = [
@@ -2380,6 +2393,7 @@ dependencies = [
  "memory-stats",
  "mvp-acme",
  "mvp-bus",
+ "mvp-deploy",
  "mvp-iroh",
  "mvp-lease",
  "mvp-projection",
