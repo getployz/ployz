@@ -7,13 +7,14 @@ use mvp_bus::{
 };
 use mvp_identity::{NodeId, VisibleNodes};
 use mvp_projection::FactSource;
-use mvp_routing::{RoutingError, read_exact_serving_commit};
+use mvp_routing::{
+    BusServingFactWriter, RoutingError, ServingFactWriter, read_exact_serving_commit,
+};
 
 use crate::facts::{
     BusDeployFactWriter, DeployCleanupDoneFact, DeployDecisionCandidate, DeployDecisionFact,
     DeployFactWriter, read_deploy_cleanup_done, read_deploy_decision,
 };
-use crate::serving_commit::{BusServingFactWriter, ServingFactWriter};
 use crate::wire::{
     CapacityRequest, CleanupDeployCandidatesRequest, DrainInstanceRequest, InstanceCommandReply,
     InstanceCommandRequest, InstanceStartOutcome, StopInstanceRequest, decode,
@@ -279,6 +280,7 @@ where
                     .serving_writer
                     .write_serving_commit(&manifest.serving_commit)
                     .await
+                    .map_err(DeployError::from)
                 {
                     return Err(self
                         .classify_or_cleanup_pre_commit_failure(

@@ -14,6 +14,7 @@ use mvp_projection::{
     GatewayProjection, GatewayRouteProjection, ProjectionReport, ProjectionState, RouteId,
     SnapshotWriteReport,
 };
+use mvp_routing::{ServingFactWriter, WrittenServingFact, write_serving_commit};
 
 use crate::wire::{decode, encode};
 use crate::{
@@ -25,10 +26,9 @@ use crate::{
     InstanceCapacityRequirement, InstanceCommandReply, InstanceCommandRequest, InstanceId,
     InstancePlan, InstanceStartOutcome, PhaseId, PhasePolicy, PhaseReversibility,
     ProjectionCatchUp, RevisionId, RouteCommitId, ServingCommitId, ServingCommitPlan,
-    ServingFactWriter, StopInstanceRequest, WrittenDeployFact, WrittenServingFact,
-    decode_deploy_decision_fact, deploy_cleanup_done_fact_key, deploy_decision_fact_key,
-    deploy_decision_fact_payload, read_deploy_decision, select_deploy_decision,
-    write_serving_commit,
+    StopInstanceRequest, WrittenDeployFact, decode_deploy_decision_fact,
+    deploy_cleanup_done_fact_key, deploy_decision_fact_key, deploy_decision_fact_payload,
+    read_deploy_decision, select_deploy_decision,
 };
 
 fn serving_commit() -> ServingCommitPlan {
@@ -148,7 +148,8 @@ impl ServingFactWriter for RecordingServingFactWriter {
     fn write_serving_commit<'a>(
         &'a self,
         commit: &'a ServingCommitPlan,
-    ) -> Pin<Box<dyn Future<Output = crate::DeployResult<WrittenServingFact>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = mvp_routing::RoutingResult<WrittenServingFact>> + Send + 'a>>
+    {
         Box::pin(async move {
             self.events
                 .lock()
@@ -265,7 +266,10 @@ async fn conflicting_serving_commit_fact_rejects_cutover() {
         .await
         .expect_err("conflicting serving commit should be rejected");
 
-    assert!(matches!(error, DeployError::ServingFactConflict { .. }));
+    assert!(matches!(
+        error,
+        mvp_routing::RoutingError::ServingFactConflict { .. }
+    ));
 }
 
 #[test]

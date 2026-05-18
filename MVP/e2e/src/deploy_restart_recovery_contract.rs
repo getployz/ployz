@@ -12,7 +12,7 @@ use mvp_deploy::{
     InstanceCapacityRequirement, InstanceCommandReply, InstanceCommandRequest, InstanceId,
     InstancePlan, InstanceStartOutcome, PhaseId, PhasePlan, PhasePolicy, PhaseReversibility,
     ProjectionCatchUp, RevisionId, RouteCommitId, ServingCommitId, ServingCommitPlan,
-    ServingFactWriter, StopInstanceRequest, WrittenDeployFact, WrittenServingFact,
+    StopInstanceRequest, WrittenDeployFact,
 };
 use mvp_deploy_p2panda::{PandaDeployFactStore, PandaDeployFactWriter, PandaServingFactWriter};
 use mvp_identity::NodeId;
@@ -20,6 +20,7 @@ use mvp_p2panda_facts::{PandaFactAuthor, PandaFactOperation, PandaFactStore};
 use mvp_projection::{
     BackendEndpoint, DnsRecordFact, RouteId, ServiceName, load_dns_snapshot, load_gateway_snapshot,
 };
+use mvp_routing::{RoutingResult, ServingFactWriter, WrittenServingFact};
 use mvp_serving::{ServingActorHandle, ServingSnapshotPaths};
 use serde::Serialize;
 
@@ -387,7 +388,7 @@ where
     fn write_serving_commit<'a>(
         &'a self,
         commit: &'a ServingCommitPlan,
-    ) -> Pin<Box<dyn Future<Output = DeployResult<WrittenServingFact>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = RoutingResult<WrittenServingFact>> + Send + 'a>> {
         Box::pin(async move {
             let started = Instant::now();
             let written = self.inner.write_serving_commit(commit).await?;

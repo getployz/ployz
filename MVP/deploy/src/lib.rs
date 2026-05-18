@@ -2,7 +2,6 @@ mod coordinator;
 mod domain;
 mod error;
 mod facts;
-mod serving_commit;
 mod state_machine;
 mod wire;
 
@@ -30,10 +29,6 @@ pub use facts::{
 pub use mvp_routing::{
     DnsCommitId, GatewayCommitId, ProjectionCatchUp, RouteCommitId, RoutingError,
     ServingCommitFacts, ServingCommitId, ServingCommitPlan,
-};
-pub use serving_commit::{
-    BusServingFactWriter, ServingFactWriteStatus, ServingFactWriter, WrittenServingFact,
-    write_serving_commit,
 };
 pub use state_machine::{DeployStateMachine, PhaseState};
 pub use wire::{
