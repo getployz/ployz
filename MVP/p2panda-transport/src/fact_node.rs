@@ -247,6 +247,11 @@ impl PandaNetFactNode {
         }
     }
 
+    pub async fn refresh_publish_stream(&mut self) -> Result<(), PandaNetTransportError> {
+        drop(self.publish_stream.take());
+        self.ensure_publish_stream().await
+    }
+
     pub async fn publish_fact_payload(
         &mut self,
         session: &BusSession,
@@ -414,6 +419,31 @@ impl PandaNetFactNode {
         &mut self,
         operation: Operation<PandaFactExtensions>,
     ) -> Result<(), PandaNetTransportError> {
+        self.ensure_publish_stream().await?;
+        let handle = self
+            .publish_stream
+            .as_ref()
+            .expect("publish stream was inserted before lookup");
+        match handle.publish(operation.clone()).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                drop(self.publish_stream.take());
+                self.ensure_publish_stream().await?;
+                let handle = self
+                    .publish_stream
+                    .as_ref()
+                    .expect("publish stream was inserted before retry lookup");
+                handle.publish(operation).await.map_err(|retry_error| {
+                    PandaNetTransportError::startup(
+                        PandaNetStartupStep::Publish,
+                        format!("{error}; retry failed: {retry_error}"),
+                    )
+                })
+            }
+        }
+    }
+
+    async fn ensure_publish_stream(&mut self) -> Result<(), PandaNetTransportError> {
         if self.publish_stream.is_none() {
             let topic = self.topic.into_inner();
             let handle = with_startup_timeout(
@@ -423,14 +453,7 @@ impl PandaNetFactNode {
             .await?;
             self.publish_stream = Some(handle);
         }
-        let handle = self
-            .publish_stream
-            .as_ref()
-            .expect("publish stream was inserted before lookup");
-        handle
-            .publish(operation)
-            .await
-            .map_err(|error| PandaNetTransportError::startup(PandaNetStartupStep::Publish, error))
+        Ok(())
     }
 
     async fn import_operation(
