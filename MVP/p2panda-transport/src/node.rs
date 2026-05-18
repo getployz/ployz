@@ -1,23 +1,27 @@
+use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use p2panda_core_git::cbor::{decode_cbor, encode_cbor};
-use p2panda_core_git::{Operation, SigningKey, Topic};
+use p2panda_core::cbor::{decode_cbor, encode_cbor};
+use p2panda_core::{Hash, Operation, PrivateKey};
 use p2panda_net::addrs::NodeInfo;
-use p2panda_net::iroh_endpoint::{EndpointAddr, IrohConfig, from_verifying_key};
-use p2panda_net::{AddressBook, Discovery, Endpoint, Gossip, LogSync, NetworkId};
-use p2panda_store_git::SqliteStore;
-use p2panda_sync_git::FromSync;
-use p2panda_sync_git::protocols::TopicLogSyncEvent;
+use p2panda_net::iroh_endpoint::{EndpointAddr, IrohConfig, from_public_key};
+use p2panda_net::{AddressBook, Discovery, Endpoint, Gossip, LogSync, NetworkId, TopicId};
+use p2panda_sync::FromSync;
+use p2panda_sync::protocols::TopicLogSyncEvent;
 use thiserror::Error;
 use tokio::time::timeout;
 
-use crate::{PandaNetLogId, PandaNetQuarantineLog, PandaNetStartupStep, PandaNetTransportError};
+use crate::{
+    PandaNetLogId, PandaNetQuarantineLog, PandaNetStartupStep, PandaNetTransportError,
+    quarantine_log::{PandaNetStore, PandaNetTopicMap},
+};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const DEFAULT_REPLAY_CACHE_CAPACITY: usize = 8192;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PandaNetConfigError {
@@ -78,8 +82,8 @@ impl PandaNetNodeSeed {
         encode_hex(&self.0)
     }
 
-    fn signing_key(self) -> SigningKey {
-        SigningKey::from_bytes(&self.0)
+    fn private_key(self) -> PrivateKey {
+        PrivateKey::from_bytes(&self.0)
     }
 }
 
@@ -107,8 +111,8 @@ impl PandaNetTopic {
         encode_hex(&self.0)
     }
 
-    fn into_inner(self) -> Topic {
-        self.0.into()
+    fn into_inner(self) -> TopicId {
+        self.0
     }
 }
 
@@ -173,8 +177,13 @@ pub struct PandaNetNodeTicket {
 
 impl PandaNetNodeTicket {
     pub fn new(node_info: PandaNetNodeInfo) -> Result<Self, PandaNetConfigError> {
+        let endpoint_addr = EndpointAddr::try_from(node_info.0).map_err(|error| {
+            PandaNetConfigError::TicketEncode {
+                message: error.to_string(),
+            }
+        })?;
         let bytes =
-            encode_cbor(&node_info.0).map_err(|error| PandaNetConfigError::TicketEncode {
+            encode_cbor(&endpoint_addr).map_err(|error| PandaNetConfigError::TicketEncode {
                 message: error.to_string(),
             })?;
         Ok(Self {
@@ -201,19 +210,19 @@ impl PandaNetNodeTicket {
 
     fn node_info(&self) -> Result<PandaNetNodeInfo, PandaNetConfigError> {
         let bytes = decode_hex(self.encoded.as_str(), "node ticket")?;
-        let node_info = decode_cbor::<NodeInfo, _>(&bytes[..]).map_err(|error| {
+        let endpoint_addr = decode_cbor::<EndpointAddr, _>(&bytes[..]).map_err(|error| {
             PandaNetConfigError::TicketDecode {
                 message: error.to_string(),
             }
         })?;
-        Ok(PandaNetNodeInfo(node_info))
+        Ok(PandaNetNodeInfo(NodeInfo::from(endpoint_addr).bootstrap()))
     }
 }
 
 #[derive(Clone)]
 pub struct PandaNetNodeConfig {
     network_id: PandaNetNetworkId,
-    signing_key: SigningKey,
+    private_key: PrivateKey,
     bind: PandaNetBindConfig,
     bootstrap_nodes: Vec<PandaNetNodeInfo>,
 }
@@ -274,7 +283,7 @@ impl PandaNetNodeConfig {
     ) -> Self {
         Self {
             network_id,
-            signing_key: signing_key_seed.signing_key(),
+            private_key: signing_key_seed.private_key(),
             bind,
             bootstrap_nodes,
         }
@@ -300,15 +309,15 @@ pub struct PandaNetNode {
     discovery: Discovery,
     endpoint: Endpoint,
     gossip: Gossip,
-    log_sync: LogSync<SqliteStore, PandaNetLogId, ()>,
+    log_sync: LogSync<PandaNetStore, PandaNetLogId, (), PandaNetTopicMap>,
     quarantine_log: PandaNetQuarantineLog,
     node_info: PandaNetNodeInfo,
 }
 
 impl PandaNetNode {
     pub async fn spawn(config: PandaNetNodeConfig) -> Result<Self, PandaNetTransportError> {
-        let quarantine_log = PandaNetQuarantineLog::new(config.signing_key.clone()).await?;
-        let signing_key = config.signing_key.clone();
+        let quarantine_log = PandaNetQuarantineLog::new(config.private_key.clone());
+        let private_key = config.private_key.clone();
 
         let address_book = with_startup_timeout(
             PandaNetStartupStep::AddressBook,
@@ -329,11 +338,11 @@ impl PandaNetNode {
             Endpoint::builder(address_book.clone())
                 .network_id(config.network_id.into_inner())
                 .config(config.bind.iroh_config())
-                .signing_key(config.signing_key)
+                .private_key(config.private_key)
                 .spawn(),
         )
         .await?;
-        let node_info = node_info_from_endpoint(&signing_key, &endpoint).await?;
+        let node_info = node_info_from_endpoint(&private_key, &endpoint).await?;
 
         let discovery = with_startup_timeout(
             PandaNetStartupStep::Discovery,
@@ -349,7 +358,13 @@ impl PandaNetNode {
 
         let log_sync = with_startup_timeout(
             PandaNetStartupStep::LogSync,
-            LogSync::builder(quarantine_log.store(), endpoint.clone(), gossip.clone()).spawn(),
+            LogSync::builder(
+                quarantine_log.store(),
+                quarantine_log.topic_map(),
+                endpoint.clone(),
+                gossip.clone(),
+            )
+            .spawn(),
         )
         .await?;
 
@@ -396,7 +411,7 @@ impl PandaNetNode {
     ) -> Result<(), PandaNetTransportError> {
         let topic = topic.into_inner();
         self.quarantine_log
-            .append_to_topic(&topic, body, 0)
+            .append_to_topic(topic, body, 0)
             .await
             .map(|_| ())
     }
@@ -414,21 +429,108 @@ impl Drop for PandaNetNode {
 }
 
 pub struct PandaNetStream {
-    topic: Topic,
-    _handle: p2panda_net::sync::SyncHandle<Operation<()>, TopicLogSyncEvent>,
-    subscription: p2panda_net::sync::SyncSubscription<TopicLogSyncEvent>,
+    topic: TopicId,
+    _handle: p2panda_net::sync::SyncHandle<Operation<()>, TopicLogSyncEvent<()>>,
+    subscription: p2panda_net::sync::SyncSubscription<TopicLogSyncEvent<()>>,
+}
+
+pub(crate) struct PandaNetReplayCache {
+    order: VecDeque<Hash>,
+    set: HashSet<Hash>,
+    capacity: usize,
+}
+
+impl PandaNetReplayCache {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            order: VecDeque::new(),
+            set: HashSet::new(),
+            capacity,
+        }
+    }
+
+    fn remember(&mut self, hash: Hash) -> PandaNetReplayStatus {
+        if self.set.contains(&hash) {
+            return PandaNetReplayStatus::Replayed;
+        }
+        if self.capacity == 0 {
+            return PandaNetReplayStatus::Fresh;
+        }
+        self.set.insert(hash);
+        self.order.push_back(hash);
+        while self.order.len() > self.capacity {
+            let Some(expired) = self.order.pop_front() else {
+                return PandaNetReplayStatus::Fresh;
+            };
+            self.set.remove(&expired);
+        }
+        PandaNetReplayStatus::Fresh
+    }
+}
+
+enum PandaNetReplayStatus {
+    Fresh,
+    Replayed,
 }
 
 pub(crate) enum PandaNetStreamBody {
-    Body(Vec<u8>),
-    TooLarge { size: usize, max: usize },
+    Body {
+        operation_hash: Hash,
+        body: Vec<u8>,
+    },
+    TooLarge {
+        operation_hash: Hash,
+        size: usize,
+        max: usize,
+    },
+}
+
+impl PandaNetStreamBody {
+    pub(crate) fn operation_hash(&self) -> Hash {
+        match self {
+            Self::Body { operation_hash, .. } | Self::TooLarge { operation_hash, .. } => {
+                *operation_hash
+            }
+        }
+    }
 }
 
 impl PandaNetStream {
     pub async fn next_body(&mut self) -> Result<Vec<u8>, PandaNetTransportError> {
         match self.next_body_limited(usize::MAX).await? {
-            PandaNetStreamBody::Body(body) => Ok(body),
+            PandaNetStreamBody::Body { body, .. } => Ok(body),
             PandaNetStreamBody::TooLarge { .. } => unreachable!("usize::MAX accepts every body"),
+        }
+    }
+
+    pub(crate) async fn next_unique_body_limited(
+        &mut self,
+        max_body_bytes: usize,
+        replay_cache: &mut PandaNetReplayCache,
+    ) -> Result<PandaNetStreamBody, PandaNetTransportError> {
+        loop {
+            let stream_body = self.next_body_limited(max_body_bytes).await?;
+            match replay_cache.remember(stream_body.operation_hash()) {
+                PandaNetReplayStatus::Fresh => return Ok(stream_body),
+                PandaNetReplayStatus::Replayed => {}
+            }
+        }
+    }
+
+    pub(crate) async fn next_unique_body_limited_with_idle_timeout(
+        &mut self,
+        max_body_bytes: usize,
+        replay_cache: &mut PandaNetReplayCache,
+        idle_timeout: Duration,
+    ) -> Result<Option<PandaNetStreamBody>, PandaNetTransportError> {
+        match timeout(
+            idle_timeout,
+            self.next_unique_body_limited(max_body_bytes, replay_cache),
+        )
+        .await
+        {
+            Ok(stream_body) => stream_body.map(Some),
+            Err(_) => Ok(None),
         }
     }
 
@@ -451,13 +553,14 @@ impl PandaNetStream {
 
             match event {
                 FromSync {
-                    event: TopicLogSyncEvent::OperationReceived { operation, .. },
+                    event: TopicLogSyncEvent::Operation(operation),
                     ..
                 } => {
                     let body_size =
                         usize::try_from(operation.header.payload_size).unwrap_or(usize::MAX);
                     if body_size > max_body_bytes {
                         return Ok(PandaNetStreamBody::TooLarge {
+                            operation_hash: operation.hash,
                             size: body_size,
                             max: max_body_bytes,
                         });
@@ -465,7 +568,10 @@ impl PandaNetStream {
                     let Some(body) = operation.body else {
                         return Err(PandaNetTransportError::MissingBody { topic: self.topic });
                     };
-                    return Ok(PandaNetStreamBody::Body(body.to_bytes()));
+                    return Ok(PandaNetStreamBody::Body {
+                        operation_hash: operation.hash,
+                        body: body.to_bytes(),
+                    });
                 }
                 FromSync {
                     event: TopicLogSyncEvent::Failed { error },
@@ -478,11 +584,12 @@ impl PandaNetStream {
                 }
                 FromSync {
                     event:
-                        TopicLogSyncEvent::SyncFinished { .. }
-                        | TopicLogSyncEvent::SessionFinished { .. }
+                        TopicLogSyncEvent::SyncFinished(_)
                         | TopicLogSyncEvent::LiveModeStarted
-                        | TopicLogSyncEvent::SessionStarted
-                        | TopicLogSyncEvent::SyncStarted { .. },
+                        | TopicLogSyncEvent::LiveModeFinished(_)
+                        | TopicLogSyncEvent::Success
+                        | TopicLogSyncEvent::SyncStatus(_)
+                        | TopicLogSyncEvent::SyncStarted(_),
                     ..
                 } => {}
             }
@@ -491,7 +598,7 @@ impl PandaNetStream {
 }
 
 async fn node_info_from_endpoint(
-    signing_key: &SigningKey,
+    private_key: &PrivateKey,
     endpoint: &Endpoint,
 ) -> Result<PandaNetNodeInfo, PandaNetTransportError> {
     let iroh_endpoint =
@@ -502,8 +609,8 @@ async fn node_info_from_endpoint(
             message: "endpoint reported no bound sockets".to_string(),
         });
     };
-    let endpoint_addr = EndpointAddr::new(from_verifying_key(signing_key.verifying_key()))
-        .with_ip_addr(bound_socket);
+    let endpoint_addr =
+        EndpointAddr::new(from_public_key(private_key.public_key())).with_ip_addr(bound_socket);
     Ok(PandaNetNodeInfo(NodeInfo::from(endpoint_addr).bootstrap()))
 }
 

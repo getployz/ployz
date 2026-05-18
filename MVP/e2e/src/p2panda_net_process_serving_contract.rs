@@ -24,6 +24,7 @@ struct P2pandaNetProcessServingReport {
     scenario: &'static str,
     remote_updates_imported: usize,
     malformed_messages_rejected: usize,
+    stream_idle_refreshes_after_malformed: usize,
     local_mutation_failure: String,
     serving_process_alive_after_update: bool,
     baseline_gateway_revision: String,
@@ -176,6 +177,13 @@ async fn run_async() -> Result<(), String> {
             .is_some_and(|p2panda| p2panda.rejected >= 1)
     })
     .await?;
+    let malformed_refreshes = p2panda_status(&malformed_status)?.stream_idle_refreshes;
+    let malformed_after_refresh_status = wait_for_p2panda_net_status(&serving_socket, |status| {
+        status.p2panda_net().is_some_and(|p2panda| {
+            p2panda.stream_idle_refreshes > malformed_refreshes && p2panda.rejected == 1
+        })
+    })
+    .await?;
     assert_serving_role_answer(
         &serving_socket,
         "fd00::2:8080",
@@ -254,11 +262,12 @@ async fn run_async() -> Result<(), String> {
 
     let baseline_p2panda = p2panda_status(&baseline_status)?;
     let updated_p2panda = p2panda_status(&updated_status)?;
-    let malformed_p2panda = p2panda_status(&malformed_status)?;
+    let malformed_p2panda = p2panda_status(&malformed_after_refresh_status)?;
     let report = P2pandaNetProcessServingReport {
         scenario: SCENARIO,
         remote_updates_imported: updated_p2panda.imported,
         malformed_messages_rejected: malformed_p2panda.rejected,
+        stream_idle_refreshes_after_malformed: malformed_p2panda.stream_idle_refreshes,
         local_mutation_failure,
         serving_process_alive_after_update,
         baseline_gateway_revision,

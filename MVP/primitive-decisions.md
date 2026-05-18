@@ -15,11 +15,15 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
-- Slice 032 is planned as a dependency-substitution slice, not another product
-  feature. Current `p2panda-net 0.5.2` is available on crates.io and uses the
-  crates.io p2panda `0.5.2`/iroh `0.96` line, so the next implementation should
-  try to remove git-pinned p2panda transport dependencies before building more
-  process-role surface on top of them.
+- Slice 032 replaces the remaining git-pinned p2panda transport line with
+  crates.io `p2panda-net 0.5.2`, `p2panda-core 0.5.2`, `p2panda-store 0.5.2`,
+  and `p2panda-sync 0.5.2`. `mvp-iroh` now aligns to the compatible iroh
+  `0.96` family instead of forcing the newer direct-iroh line or RC iroh.
+- Slice 032 also made p2panda operation replay explicit at the fact-node
+  boundary. The process receiver now suppresses bounded, already-seen p2panda
+  wrapper operation hashes, so stream refreshes do not inflate import/rejection
+  counts while explicit duplicate Ployz fact operations still import as
+  duplicate facts.
 - Slice 031 adds a process-separated p2panda-net serving proof. A serving role
   owns a persistent p2panda store, `PandaNetFactNode`, import loop, projection
   actor, and last-good serving actor; remote publisher processes only submit
@@ -1210,7 +1214,7 @@ Why this:
   to align at once.
 
 Decision:
-- `mvp-p2panda-transport` owns the p2panda-net node wrapper and any git
+- `mvp-p2panda-transport` owns the p2panda-net node wrapper and the crates.io
   p2panda/iroh compatibility surface.
 - `PandaNetFactNode` combines a `PandaNetNode`, topic stream, replica session,
   and `SharedPandaFactStore`.
@@ -1236,9 +1240,15 @@ What it replaces:
 Costs:
 - The fact node currently proves in-process local p2panda-net nodes, not
   process-role lifecycle or production relay/discovery topology.
-- The transport crate still carries git p2panda crates. Slice 032 should retest
-  that cost against crates.io `p2panda-net 0.5.2`; if git remains, the decision
-  ledger must name the exact missing API or behavior.
+- Slice 032 removed the git p2panda transport split. The cost moved to version
+  alignment: crates.io `p2panda-net 0.5.2` requires the iroh `0.96` family, so
+  `mvp-iroh` is held on that compatible line until p2panda publishes a newer
+  crates.io release.
+- p2panda-net live stream refresh can replay already-seen wrapper operations.
+  `PandaNetFactNode` suppresses a bounded cache of wrapper operation hashes.
+  This is transport replay suppression, not Ployz fact deduplication; duplicate
+  Ployz fact envelopes carried by distinct p2panda operations still reach the
+  canonical store and are classified there.
 - The node ingests and reports only. It must not become a reconciler or command
   coordinator.
 - Topic material is island-replica material in this MVP. p2panda-net transport
@@ -1247,8 +1257,7 @@ Costs:
   not with ad hoc fact-node filtering.
 
 Revisit if:
-- Slice 032 proves crates.io `p2panda-net 0.5.2` cannot replace one of the git
-  transport APIs; record the exact blocker and retest when a newer crates.io
-  release lands.
+- A newer crates.io p2panda-net release moves to a newer iroh family and lets
+  `mvp-iroh` advance without a split.
 - Process-role serving replication needs long-lived supervisor/status surfaces.
 - p2panda-auth becomes ready to own island membership or replication grants.

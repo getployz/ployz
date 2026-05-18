@@ -546,6 +546,12 @@ Current proof status:
   accepts a delayed remote update from a stable publisher peer, rejects
   malformed transport bodies, and restarts from local p2panda state while the
   local coordinator remains absent.
+- Slice 032 keeps those p2panda-net E2Es unchanged while replacing the
+  git-pinned transport crates with crates.io p2panda `0.5.2`. The process
+  serving proof now also waits for an idle stream refresh and exercises bounded
+  replay suppression for p2panda wrapper operations: the malformed body is
+  rejected exactly once even if the transport replays the same wrapper
+  operation.
 
 ### E2E-8: Scale And Reliability Harness
 

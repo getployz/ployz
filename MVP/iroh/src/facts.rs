@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iroh::{Endpoint, endpoint::presets, protocol::Router};
+use iroh::{Endpoint, protocol::Router};
 use iroh_blobs::{
     ALPN as BLOBS_ALPN, BlobsProtocol, Hash as IrohHash, api::Store as BlobStore,
     store::mem::MemStore,
@@ -113,7 +113,7 @@ pub struct IrohFactNode {
 
 impl IrohFactNode {
     pub async fn memory() -> IrohFactResult<Self> {
-        let endpoint = Endpoint::bind(presets::Minimal)
+        let endpoint = Endpoint::bind()
             .await
             .map_err(|source| backend_error("bind endpoint", source))?;
         let blobs = MemStore::default();
