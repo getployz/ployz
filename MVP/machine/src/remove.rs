@@ -383,6 +383,8 @@ pub fn recover_pending_machine_remove_cleanup(
         }
         Err(error) => return Err(error.into()),
     }
+    let removal_started_fact_key =
+        validate_machine_remove_removal_started(source, island, session, &decision)?;
     if let Some(cleanup_done) =
         read_machine_remove_cleanup_done(source, island, session, remove_id)?
     {
@@ -390,10 +392,9 @@ pub fn recover_pending_machine_remove_cleanup(
         return Ok(MachineRemoveRecovery::Complete(removed_result_from_facts(
             &decision,
             cleanup_done,
+            removal_started_fact_key,
         )?));
     }
-    let removal_started_fact_key =
-        validate_machine_remove_removal_started(source, island, session, &decision)?;
     Ok(MachineRemoveRecovery::Pending(
         pending_remove_from_decision(decision, removal_started_fact_key),
     ))
@@ -562,6 +563,7 @@ fn decision_fact_from_request(request: &MachineRemoveRequest) -> MachineRemoveDe
 
 fn pending_remove_from_decision(
     decision: MachineRemoveDecisionFact,
+    removal_started_fact_key: FactKey,
 ) -> PendingMachineRemove {
     PendingMachineRemove {
         target_node_id: decision.target_node_id,
@@ -577,16 +579,14 @@ fn pending_remove_from_decision(
 fn removed_result_from_facts(
     decision: &MachineRemoveDecisionFact,
     cleanup_done: MachineRemoveCleanupDoneFact,
+    removal_started_fact_key: FactKey,
 ) -> MachineRemoveResult<MachineRemoveCommandResult> {
     Ok(MachineRemoveCommandResult {
         target_node_id: decision.target_node_id.clone(),
         outcome: MachineRemoveOutcome::Removed,
         visible_nodes: decision.visible_nodes.clone(),
         serving_commit_id: Some(decision.serving_commit.serving_commit_id.clone()),
-        removal_started_fact_key: Some(removal_started_fact_key(
-            &decision.target_node_id,
-            decision.removal_epoch,
-        )?),
+        removal_started_fact_key: Some(removal_started_fact_key),
         tombstone_fact_key: Some(cleanup_done.tombstone_fact_key),
         cleanup_status: RemoveCleanupStatus::Done,
     })
@@ -1321,6 +1321,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recovery_with_serving_commit_requires_removal_started_fact() {
+        let request = remove_request();
+        let decision = decision_fact_from_request(&request);
+        let source = recovery_source_with_decision_and_serving_without_removal_started(&decision);
+
+        let error = recover_pending_machine_remove_cleanup(
+            &source,
+            &IslandId::new("prod"),
+            &test_session(),
+            &decision.remove_id(),
+        )
+        .expect_err("missing removal started");
+
+        let expected_key =
+            removal_started_fact_key(&decision.target_node_id, decision.removal_epoch)
+                .expect("removal key");
+        assert!(
+            matches!(error, MachineRemoveError::CommandFactMissing { key } if key == expected_key)
+        );
+    }
+
+    #[tokio::test]
     async fn recovery_after_cleanup_done_requires_tombstone_fact() {
         let request = remove_request();
         let decision = decision_fact_from_request(&request);
@@ -1604,6 +1626,17 @@ mod tests {
     fn recovery_source_with_decision_and_serving(
         decision: &MachineRemoveDecisionFact,
     ) -> RecoveryFactSource {
+        recovery_source_with_decision_and_serving_without_removal_started(decision).with_payload(
+            removal_started_fact_key(&decision.target_node_id, decision.removal_epoch)
+                .expect("removal-started key"),
+            removal_started_payload(decision),
+            CandidateStatus::Verified,
+        )
+    }
+
+    fn recovery_source_with_decision_and_serving_without_removal_started(
+        decision: &MachineRemoveDecisionFact,
+    ) -> RecoveryFactSource {
         RecoveryFactSource::new()
             .with_payload(
                 machine_remove_decision_fact_key(&decision.remove_id()).expect("decision key"),
@@ -1616,6 +1649,17 @@ mod tests {
                 serving_commit_fact_payload(&decision.serving_commit).expect("serving payload"),
                 CandidateStatus::Verified,
             )
+    }
+
+    fn removal_started_payload(decision: &MachineRemoveDecisionFact) -> FactPayload {
+        ProjectionFactPayload::NodeRemovalStarted(NodeRemovalStartedFact {
+            node_id: decision.target_node_id.clone(),
+            epoch: decision.removal_epoch,
+            reason: decision.reason.clone(),
+        })
+        .to_fact_bytes()
+        .expect("serialize removal-started")
+        .into()
     }
 
     fn cleanup_done_fact(decision: &MachineRemoveDecisionFact) -> MachineRemoveCleanupDoneFact {
