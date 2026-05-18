@@ -34,6 +34,7 @@ mod membership_wireguard_contract {
     }
 }
 mod metrics;
+mod p2panda_acme_http01_contract;
 mod p2panda_fact_source_contract;
 #[cfg(unix)]
 mod p2panda_process_role_serving_contract;
@@ -133,6 +134,10 @@ const SCENARIOS: &[Scenario] = &[
     Scenario::new(
         "p2panda-sync-fact-source-contract",
         p2panda_sync_fact_source_contract::run,
+    ),
+    Scenario::new(
+        "p2panda-acme-http01-contract",
+        p2panda_acme_http01_contract::run,
     ),
     Scenario::new("iroh-docs-contract", iroh_docs_contract::run),
     Scenario::new("lease-acme-contract", lease_acme_contract::run),
