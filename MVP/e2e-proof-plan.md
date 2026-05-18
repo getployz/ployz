@@ -621,10 +621,10 @@ Current proof status:
   workflow engine.
 - Slice 036 adds `mvp-commands` and migrates environment promote/rollback onto
   `run_phased`. The same process-role E2E now proves promote and rollback can
-  pause after serving commit, resume from phase facts, avoid duplicate decision
-  and serving writes, and keep serving alive without the command adapter. The
-  command runner owns phase bookkeeping only; product phases stay in
-  `mvp-environment`.
+  pause after serving commit, resume from p2panda-backed phase facts after
+  reopening the command phase store, avoid duplicate decision and serving
+  writes, and keep serving alive without the command adapter. The command
+  runner owns phase bookkeeping only; product phases stay in `mvp-environment`.
 - Slice 016 removes parallel node identity and visible-node evidence types
   before the next node-facing product command. Deploy, lease/ACME, mesh, and
   E2E fixtures now use one shared `NodeId`/`VisibleNodes` type, and WireGuard
