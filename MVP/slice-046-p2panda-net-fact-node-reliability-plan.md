@@ -1,6 +1,6 @@
 ---
 title: Slice 046 p2panda-net Fact-node Reliability Plan
-status: active
+status: completed
 created: 2026-05-19
 origin:
   - VISION.md

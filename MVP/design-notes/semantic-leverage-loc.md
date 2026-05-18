@@ -91,6 +91,16 @@ also records a focused `p2panda-net-fact-node-contract` zero-import flake that
 passed on immediate rerun. The next work should therefore harden the transport
 proof before counting more product LOC wins on top of it.
 
+Slice 046 is another proof-quality win rather than a raw LOC win. It adds
+`PandaNetFactNodeStats`, a post-spawn address-book peer insertion hook, a
+repeated p2panda-net fact-node reliability E2E, and process-role import
+progress status. The added LOC is acceptable because it turns an intermittent
+transport failure into a bounded proof: 12 canonical fact-node roundtrips, 48
+attempted imports, and zero zero-import iterations. The semantic leverage test
+now moves back to product code: volume transfer should be able to reuse this
+transport/fact/status boundary instead of adding another feature-local sync
+path.
+
 ## Snapshot Counts
 
 ```text
@@ -131,9 +141,9 @@ shared foundation LOC per product primitive should fall.
 
 - `mvp-p2panda-facts` and `mvp-p2panda-transport` are valuable only if more
   commands use them without adding feature-local sync/storage wrappers.
-- `PandaNetFactNode` cannot be treated as invisible substrate until the
-  zero-import false failure is diagnosed and covered by a repeated reliability
-  proof.
+- `PandaNetFactNode` now has a repeated reliability gate, but it still carries
+  Ployz-local status and refresh glue. Future product slices should consume the
+  boundary without copying that glue.
 - The E2E harness is large enough that process-role and p2panda-net helpers
   should be reused aggressively instead of copied into each scenario.
 - Serving/projection is not a raw LOC win yet. Its value depends on becoming

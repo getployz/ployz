@@ -825,11 +825,12 @@ instrument p2panda-net fact-node reliability before adding more product surface
 on top of that transport. Volume transfer membership-backed facts should follow
 once the transport proof is stable.
 
-Slice 046 is planned as that reliability hardening pass:
-[MVP/slice-046-p2panda-net-fact-node-reliability-plan.md](slice-046-p2panda-net-fact-node-reliability-plan.md).
-The target is a repeated, bounded E2E proof for canonical p2panda-net fact-node
-transport, plus import-loop diagnostics that make idle refreshes, stream-ended
-refreshes, replay skips, attempted imports, and zero-import iterations visible.
-It should not migrate volume transfer or replace p2panda-net with a custom sync
-loop. If the transport proof stabilizes, volume transfer membership-backed
-facts are the next product slice.
+Slice 046 completed that reliability hardening pass:
+[MVP/slice-046-p2panda-net-fact-node-reliability.md](slice-046-p2panda-net-fact-node-reliability.md).
+It adds a repeated, bounded E2E proof for canonical p2panda-net fact-node
+transport, plus import-loop diagnostics that make idle refreshes, stream
+refreshes, stream failures, replay skips, attempted imports, and zero-import
+iterations visible. The first reliability run completed 12 fact-node roundtrips
+with 48 attempted imports and zero zero-import iterations. The next product
+slice should move volume transfer onto membership-backed p2panda facts and
+delete the last product-shaped manual-trust canary.
