@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::fmt::Display;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,7 +15,8 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::NodeId;
 use mvp_p2panda_facts::{
-    PandaFactAuthor, PandaFactError, PandaFactOperation, PandaFactStore, PandaFactWriteOutcome,
+    PandaFactAuthor, PandaFactError, PandaFactStore, PandaFactWriteOutcome,
+    harness::PandaFactWireEnvelope,
 };
 use mvp_projection::{CandidateStatus, FactSource, NodeJoinedFact, ProjectionFactPayload};
 
@@ -24,6 +27,7 @@ use crate::p2panda_projection_fixture::write_projection_fact;
 use crate::projection_harness::projection_actor;
 
 const NET_EVENT_TIMEOUT: Duration = Duration::from_secs(5);
+const NET_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 type NetEvent = Result<FromSync<TopicLogSyncEvent>, BroadcastStreamRecvError>;
@@ -42,6 +46,7 @@ struct P2pandaNetSyncReport {
     projection_rebuild_ms: u128,
     network_sync_ms: u128,
     repeated_import_noop: bool,
+    trusted_replica_required: bool,
     elapsed_ms: u128,
 }
 
@@ -86,6 +91,7 @@ async fn run_async() -> Result<(), String> {
             writer_b.author_key(),
         )
         .map_err(|error| format!("trust p2panda-net writer B: {error}"))?;
+    canonical.trust_replica_peer(&prod, sessions.right_replica.principal().clone());
 
     let first_wire = write_node_wire(
         &mut source_a,
@@ -169,11 +175,30 @@ async fn run_async() -> Result<(), String> {
     let mut duplicate_operations = 0;
     let mut untrusted_rejected = false;
     let mut cross_island_rejected = false;
-    for wire in transported {
-        let operation = PandaFactOperation::from_wire_bytes(&wire)
-            .map_err(|error| format!("decode transported p2panda fact operation: {error}"))?;
+    let transported = transported
+        .iter()
+        .map(|wire| {
+            PandaFactWireEnvelope::decode(wire)
+                .map_err(|error| format!("decode transported p2panda fact operation: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let untrusted_replica_error = canonical
+        .import_replica_operation(&sessions.untrusted_replica, &transported[0])
+        .await
+        .expect_err("untrusted same-island replica cannot import network facts");
+    let trusted_replica_required = matches!(
+        untrusted_replica_error,
+        PandaFactError::UnauthorizedReplicaImport { .. }
+    );
+    if !trusted_replica_required {
+        return Err(format!(
+            "untrusted replica import failed for wrong reason: {untrusted_replica_error}"
+        ));
+    }
+
+    for operation in transported {
         match canonical
-            .import_operation(&sessions.right_replica, &operation)
+            .import_replica_operation(&sessions.right_replica, &operation)
             .await
         {
             Ok(PandaFactWriteOutcome::Inserted(_)) | Ok(PandaFactWriteOutcome::Conflict(_)) => {
@@ -240,6 +265,18 @@ async fn run_async() -> Result<(), String> {
         .await
         .map_err(|error| format!("project p2panda-net canonical facts: {error}"))?;
     let projection_rebuild_ms = projection_started.elapsed().as_millis();
+    assert_eq_named(
+        "p2panda-net projected nodes",
+        projection.state.nodes.len(),
+        1,
+    )?;
+    if !projection
+        .state
+        .nodes
+        .contains_key(&NodeId::new("node-projected"))
+    {
+        return Err("p2panda-net projection missed the non-conflicting node".to_string());
+    }
 
     let report = P2pandaNetSyncReport {
         scenario: "p2panda-net-sync-contract",
@@ -254,6 +291,7 @@ async fn run_async() -> Result<(), String> {
         projection_rebuild_ms,
         network_sync_ms,
         repeated_import_noop: duplicate_operations == 1,
+        trusted_replica_required,
         elapsed_ms: started.elapsed().as_millis(),
     };
     let json = write_json(
@@ -271,6 +309,7 @@ struct NetBusSessions {
     untrusted_writer: BusSession,
     laptop_writer: BusSession,
     right_replica: BusSession,
+    untrusted_replica: BusSession,
     projection: BusSession,
 }
 
@@ -308,6 +347,11 @@ fn net_bus_sessions(
         right_replica: authority.grant_in(
             prod.clone(),
             PrincipalId::new("net-right-replica"),
+            Grant::empty(),
+        ),
+        untrusted_replica: authority.grant_in(
+            prod.clone(),
+            PrincipalId::new("net-untrusted-replica"),
             Grant::empty(),
         ),
         projection: authority.grant_in(
@@ -354,41 +398,61 @@ fn latest_wire_operation(store: &PandaFactStore) -> Result<Vec<u8>, String> {
     store
         .export_operations()
         .last()
-        .map(PandaFactOperation::to_wire_bytes)
+        .map(PandaFactWireEnvelope::encode)
         .ok_or_else(|| "source store did not export a p2panda fact operation".to_string())
 }
 
 async fn transport_wire_operations(wire_operations: Vec<Vec<u8>>) -> Result<Vec<Vec<u8>>, String> {
     let topic: Topic = [88; 32].into();
-    let mut receiver = p2panda_net::test_utils::TestNode::spawn([88; 32], None).await;
+    let mut receiver = net_timeout(
+        "receiver startup",
+        p2panda_net::test_utils::TestNode::spawn([88; 32], None),
+    )
+    .await?;
     let receiver_info = receiver.node_info();
-    let mut sender =
-        p2panda_net::test_utils::TestNode::spawn([89; 32], Some(receiver_info.bootstrap())).await;
+    let mut sender = net_timeout(
+        "sender startup",
+        p2panda_net::test_utils::TestNode::spawn([89; 32], Some(receiver_info.bootstrap())),
+    )
+    .await?;
 
-    let receiver_handle = receiver
-        .log_sync
-        .stream(topic, true)
-        .await
-        .map_err(|error| format!("open p2panda-net receiver stream: {error}"))?;
-    let mut receiver_events = receiver_handle
-        .subscribe()
-        .await
-        .map_err(|error| format!("subscribe p2panda-net receiver stream: {error}"))?;
+    let receiver_handle =
+        net_result("receiver log stream", receiver.log_sync.stream(topic, true)).await?;
+    let mut receiver_events =
+        net_result("receiver subscription", receiver_handle.subscribe()).await?;
 
     for wire in &wire_operations {
-        sender.client.create_operation(wire, 0).await;
+        net_timeout("operation creation", sender.client.create_operation(wire, 0)).await?;
     }
-    sender
-        .client
-        .associate(&topic, &HashMap::from([(sender.client_id(), vec![0])]))
-        .await;
-    let _sender_handle = sender
-        .log_sync
-        .stream(topic, true)
-        .await
-        .map_err(|error| format!("open p2panda-net sender stream: {error}"))?;
+    net_timeout(
+        "topic association",
+        sender
+            .client
+            .associate(&topic, &HashMap::from([(sender.client_id(), vec![0])])),
+    )
+    .await?;
+    let _sender_handle =
+        net_result("sender log stream", sender.log_sync.stream(topic, true)).await?;
 
     collect_transported_operations(&mut receiver_events, wire_operations.len()).await
+}
+
+async fn net_timeout<T>(
+    label: &'static str,
+    future: impl Future<Output = T>,
+) -> Result<T, String> {
+    timeout(NET_SETUP_TIMEOUT, future)
+        .await
+        .map_err(|_| format!("timed out waiting for p2panda-net {label}"))
+}
+
+async fn net_result<T, E: Display>(
+    label: &'static str,
+    future: impl Future<Output = Result<T, E>>,
+) -> Result<T, String> {
+    net_timeout(label, future)
+        .await?
+        .map_err(|error| format!("p2panda-net {label}: {error}"))
 }
 
 async fn collect_transported_operations(

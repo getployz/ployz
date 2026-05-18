@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+harness = []
+
 [dependencies]
 mvp-bus = { path = "../bus" }
 mvp-projection = { path = "../projection" }

@@ -49,12 +49,15 @@ pub enum PandaFactError {
     InvalidAuthorKey { message: String },
     #[error("p2panda operation extensions were invalid: {message}")]
     InvalidExtensions { message: String },
-    #[error("p2panda operation wire envelope is malformed: {message}")]
-    MalformedOperationEnvelope { message: String },
     #[error("cannot import {operation} operation through {session} island session")]
     ImportIslandMismatch {
         session: IslandId,
         operation: IslandId,
+    },
+    #[error("principal {principal} is not a trusted replica importer for island {island}")]
+    UnauthorizedReplicaImport {
+        island: IslandId,
+        principal: PrincipalId,
     },
     #[error("principal {principal} in island {island} has no trusted p2panda author key")]
     UntrustedAuthorKey {
@@ -414,9 +417,6 @@ pub struct PandaFactOperation {
 }
 
 impl PandaFactOperation {
-    const WIRE_MAGIC: &'static [u8; 4] = b"PFO1";
-    const HEADER_LEN_BYTES: usize = 4;
-
     fn new(header: Vec<u8>, body: Vec<u8>) -> Self {
         Self {
             header: header.into(),
@@ -435,52 +435,6 @@ impl PandaFactOperation {
     fn header_bytes(&self) -> Vec<u8> {
         self.header.to_vec()
     }
-
-    #[must_use]
-    pub fn to_wire_bytes(&self) -> Vec<u8> {
-        let header_len =
-            u32::try_from(self.header.len()).expect("p2panda operation header fits in u32");
-        let mut bytes = Vec::with_capacity(
-            Self::WIRE_MAGIC.len() + Self::HEADER_LEN_BYTES + self.header.len() + self.body.len(),
-        );
-        bytes.extend_from_slice(Self::WIRE_MAGIC);
-        bytes.extend_from_slice(&header_len.to_be_bytes());
-        bytes.extend_from_slice(&self.header);
-        bytes.extend_from_slice(&self.body);
-        bytes
-    }
-
-    pub fn from_wire_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < Self::WIRE_MAGIC.len() + Self::HEADER_LEN_BYTES {
-            return Err(PandaFactError::MalformedOperationEnvelope {
-                message: "too short".to_string(),
-            });
-        }
-        let (magic, rest) = bytes.split_at(Self::WIRE_MAGIC.len());
-        if magic != Self::WIRE_MAGIC {
-            return Err(PandaFactError::MalformedOperationEnvelope {
-                message: "bad magic".to_string(),
-            });
-        }
-        let (header_len, body) = rest.split_at(Self::HEADER_LEN_BYTES);
-        let header_len = u32::from_be_bytes(
-            header_len
-                .try_into()
-                .expect("split header length is exactly four bytes"),
-        ) as usize;
-        if body.len() < header_len {
-            return Err(PandaFactError::MalformedOperationEnvelope {
-                message: "declared header length exceeds envelope".to_string(),
-            });
-        }
-        let (header, body) = body.split_at(header_len);
-        if body.is_empty() {
-            return Err(PandaFactError::MalformedOperationEnvelope {
-                message: "missing operation body".to_string(),
-            });
-        }
-        Ok(Self::new(header.to_vec(), body.to_vec()))
-    }
 }
 
 pub struct PandaFactStore {
@@ -494,6 +448,70 @@ pub struct PandaFactStore {
     payloads: BTreeMap<FactContentHash, FactPayload>,
     trusted_author_keys: BTreeMap<(IslandId, PrincipalId), PublicKey>,
     trusted_replica_peers: BTreeSet<(IslandId, PrincipalId)>,
+}
+
+#[cfg(any(test, feature = "harness"))]
+pub mod harness {
+    use thiserror::Error;
+
+    use super::PandaFactOperation;
+
+    const WIRE_MAGIC: &[u8; 4] = b"PFO1";
+    const HEADER_LEN_BYTES: usize = 4;
+
+    #[derive(Debug, Error, PartialEq, Eq)]
+    pub enum PandaFactWireEnvelopeError {
+        #[error("p2panda operation wire envelope is too short")]
+        TooShort,
+        #[error("p2panda operation wire envelope has bad magic")]
+        BadMagic,
+        #[error("p2panda operation wire envelope declared header length exceeds envelope")]
+        HeaderLengthExceedsEnvelope,
+        #[error("p2panda operation wire envelope is missing operation body")]
+        MissingBody,
+    }
+
+    pub struct PandaFactWireEnvelope;
+
+    impl PandaFactWireEnvelope {
+        #[must_use]
+        pub fn encode(operation: &PandaFactOperation) -> Vec<u8> {
+            let header_len = u32::try_from(operation.header.len())
+                .expect("p2panda operation header fits in u32");
+            let mut bytes = Vec::with_capacity(
+                WIRE_MAGIC.len() + HEADER_LEN_BYTES + operation.header.len() + operation.body.len(),
+            );
+            bytes.extend_from_slice(WIRE_MAGIC);
+            bytes.extend_from_slice(&header_len.to_be_bytes());
+            bytes.extend_from_slice(&operation.header);
+            bytes.extend_from_slice(&operation.body);
+            bytes
+        }
+
+        pub fn decode(bytes: &[u8]) -> Result<PandaFactOperation, PandaFactWireEnvelopeError> {
+            if bytes.len() < WIRE_MAGIC.len() + HEADER_LEN_BYTES {
+                return Err(PandaFactWireEnvelopeError::TooShort);
+            }
+            let (magic, rest) = bytes.split_at(WIRE_MAGIC.len());
+            if magic != WIRE_MAGIC {
+                return Err(PandaFactWireEnvelopeError::BadMagic);
+            }
+            let (header_len, body) = rest.split_at(HEADER_LEN_BYTES);
+            let header_len = u32::from_be_bytes(
+                header_len
+                    .try_into()
+                    .expect("split header length is exactly four bytes"),
+            ) as usize;
+            if body.len() < header_len {
+                return Err(PandaFactWireEnvelopeError::HeaderLengthExceedsEnvelope);
+            }
+            let (header, body) = body.split_at(header_len);
+            if body.is_empty() {
+                return Err(PandaFactWireEnvelopeError::MissingBody);
+            }
+            Ok(PandaFactOperation::new(header.to_vec(), body.to_vec()))
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -702,6 +720,11 @@ impl PandaFactStore {
         Ok(self.record_fact_operation(metadata, payload, pre_ingest))
     }
 
+    /// Export stored operations for deterministic harnesses and debug tooling.
+    ///
+    /// Product replication should use [`sync_panda_fact_stores`] or a network
+    /// transport that carries these opaque operation envelopes back through
+    /// [`PandaFactStore::import_replica_operation`].
     pub fn export_operations(&self) -> impl Iterator<Item = &PandaFactOperation> {
         self.operations.iter()
     }
@@ -721,6 +744,15 @@ impl PandaFactStore {
             .await
     }
 
+    pub async fn import_replica_operation(
+        &mut self,
+        session: &BusSession,
+        operation: &PandaFactOperation,
+    ) -> Result<PandaFactWriteOutcome> {
+        self.require_trusted_replica_importer(session)?;
+        self.import_operation(session, operation).await
+    }
+
     async fn import_decoded_operation(
         &mut self,
         session: &BusSession,
@@ -735,6 +767,12 @@ impl PandaFactStore {
         let operation_hash = header.hash();
         let public_key = header.public_key;
         self.authorize_import(session, &metadata, public_key)?;
+        let candidate = Operation {
+            hash: operation_hash,
+            header: header.clone(),
+            body: Some(body.clone()),
+        };
+        validate_operation(&candidate).map_err(|_| PandaFactError::InvalidOperation)?;
         if self.operation_hashes.contains(&operation_hash) {
             return Ok(PandaFactWriteOutcome::AlreadyPresent(metadata));
         }
@@ -801,6 +839,19 @@ impl PandaFactStore {
             });
         }
         Ok(())
+    }
+
+    fn require_trusted_replica_importer(&self, session: &BusSession) -> Result<()> {
+        if self
+            .trusted_replica_peers
+            .contains(&(session.island().clone(), session.principal().clone()))
+        {
+            return Ok(());
+        }
+        Err(PandaFactError::UnauthorizedReplicaImport {
+            island: session.island().clone(),
+            principal: session.principal().clone(),
+        })
     }
 
     fn bind_author_key(
@@ -1033,6 +1084,11 @@ impl PandaFactStore {
 type SyncEvent = LogSyncEvent<PandaFactExtensions>;
 type SyncMessage = LogSyncMessage<IslandLog>;
 
+/// Synchronize two canonical fact stores while preserving Ployz import checks.
+///
+/// This remains the deterministic same-process proof path. Network transport
+/// may replace the message carrier, but received operations must still enter
+/// through the canonical import path before becoming projection-visible truth.
 pub async fn sync_panda_fact_stores(
     left: &mut PandaFactStore,
     left_session: &BusSession,
@@ -2743,6 +2799,8 @@ mod tests {
 
     #[tokio::test]
     async fn operation_wire_envelope_round_trips_and_rejects_malformed_bytes() {
+        use crate::harness::{PandaFactWireEnvelope, PandaFactWireEnvelopeError};
+
         let (mut store, authority) = store_with_authority();
         let writer = grant_prod(
             &authority,
@@ -2764,13 +2822,55 @@ mod tests {
             .next()
             .expect("operation was recorded");
 
-        let wire = operation.to_wire_bytes();
+        let wire = PandaFactWireEnvelope::encode(operation);
         let round_trip =
-            PandaFactOperation::from_wire_bytes(&wire).expect("decode wire operation envelope");
+            PandaFactWireEnvelope::decode(&wire).expect("decode wire operation envelope");
         assert_eq!(round_trip, *operation);
         assert!(matches!(
-            PandaFactOperation::from_wire_bytes(b"not an operation"),
-            Err(PandaFactError::MalformedOperationEnvelope { .. })
+            PandaFactWireEnvelope::decode(b"not an operation"),
+            Err(PandaFactWireEnvelopeError::BadMagic)
         ));
+    }
+
+    #[tokio::test]
+    async fn duplicate_import_rejects_same_header_with_corrupted_body() {
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let writer = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty()
+                .with_fact_write(pattern("/facts/>"))
+                .with_fact_read(pattern("/facts/>")),
+        );
+        let author = PandaFactAuthor::new(principal("writer"));
+        let mut source = store_from_bus(bus.clone());
+        source
+            .write_fact_payload(
+                &writer,
+                &author,
+                key("/facts/node/node-corrupt/joined/1"),
+                FactPayload::from_static(b"valid-payload"),
+            )
+            .await
+            .expect("write source operation");
+        let operation = source
+            .export_operations()
+            .next()
+            .expect("operation was recorded")
+            .clone();
+        let mut imported = store_from_bus(bus);
+        trust_author(&mut imported, &writer, &author);
+        imported
+            .import_operation(&writer, &operation)
+            .await
+            .expect("import valid operation once");
+
+        let corrupted =
+            PandaFactOperation::new(operation.header_bytes(), b"corrupted-body".to_vec());
+        let error = imported
+            .import_operation(&writer, &corrupted)
+            .await
+            .expect_err("same signed header with changed body is rejected");
+        assert!(matches!(error, PandaFactError::InvalidOperation));
     }
 }
