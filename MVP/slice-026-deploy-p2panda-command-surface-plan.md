@@ -206,8 +206,8 @@ Work:
   `SharedPandaFacts`, trusted-author setup, operation export/import,
   participant state, metric timings, process/serving choreography, and manifest
   fixtures.
-- Add or adjust focused tests in `mvp-deploy` before extraction if existing
-  tests do not cover p2panda decision/serving/cleanup-done write outcomes.
+- Do not add p2panda adapter tests in this unit. The feature and adapter do not
+  exist yet, so p2panda-specific write-outcome tests belong to Unit 2.
 
 Execution note: characterization-first. The first code commit should not change
 E2E behavior; it should make the extraction target explicit through tests or a
@@ -235,10 +235,19 @@ Work:
 - Gate the new adapter module and re-exports with `#[cfg(feature = "p2panda")]`.
 - Implement `DeployFactWriter` and `ServingFactWriter` for p2panda-backed
   writers.
-- The writer constructors take explicit `BusSession` and `PandaFactAuthor`
-  values plus a caller-owned mutable store/write closure shape. They must not
-  invent trusted author keys or authority. If implementation needs a shared
-  store wrapper, keep that wrapper E2E-local for this slice.
+- The public adapter shape should be concrete and narrow:
+  `PandaDeployFactWriter<F>` and `PandaServingFactWriter<F>` hold a cloneable
+  sink `F` plus explicit `BusSession` and `PandaFactAuthor` values.
+- `PandaDeployFactSink` has one async write method taking `(session, author,
+  key, payload)` and returning `PandaFactWriteOutcome`. It does not expose raw
+  store access, export/import, trusted-author setup, or `FactSource` reads.
+  Shape it like the existing writer traits: `fn write_fact<'a>(&'a self, ...)
+  -> Pin<Box<dyn Future<Output = Result<PandaFactWriteOutcome, DeployError>>
+  + Send + 'a>>`. This avoids adding `async-trait` and lets the E2E sink own
+  its `Arc<AsyncMutex<PandaFactStore>>` without changing coordinator traits.
+- `mvp-deploy` provides trait implementations and outcome mapping. The E2E
+  provides the concrete sink backed by `SharedPandaFacts` for this slice.
+  Writers must not invent trusted author keys or authority.
 - Preserve write outcome distinctions:
   - inserted,
   - already present,
@@ -255,8 +264,11 @@ Test scenarios:
 - Conflicting deploy decision returns `DeployFactConflict` with key, principal,
   and content hash.
 - Conflicting serving commit returns `ServingFactConflict`.
-- Writer construction does not require p2panda when the feature is disabled.
-- Optional adapter exports are unavailable without `--features p2panda`.
+- Writer construction for the bus-backed deploy path does not require p2panda
+  when the feature is disabled.
+- Adapter exports are gated with `#[cfg(feature = "p2panda")]`. The automated
+  gate for this slice is no-feature compilation plus review of the module and
+  re-export gates; do not add a compile-fail test solely for this.
 
 Verification:
 
