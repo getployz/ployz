@@ -555,6 +555,11 @@ membership operations. p2panda discovery/address-book can improve transport
 reachability after invite/bootstrap, but it does not replace visible nodes at
 command decision time.
 
+Slice 040 is planned as that deletion slice:
+[MVP/slice-040-delete-opaque-p2panda-net-transport-plan.md](slice-040-delete-opaque-p2panda-net-transport-plan.md).
+It should remove the old opaque p2panda-net body transport and keep
+`PandaNetFactNode` as the only product-shaped fact transport.
+
 ## Crate Scout Protocol
 
 Before each implementation slice, do a short dependency scout and record it in
