@@ -864,9 +864,9 @@ Decision:
   calls `compensate(next)`. That is the one case where the runner compensates a
   not-yet-recorded phase, because the side effects for that transition may
   already have happened but the phase record did not land.
-- Compensation is best effort. Compensation failures do not replace the
-  original foreground error because the caller's actionable audience is the
-  command failure or phase-write failure that triggered compensation.
+- Compensation is best effort, but compensation failures are still foreground
+  failures. The first compensation failure is returned to the caller so cleanup
+  failure has an audience instead of becoming log-only evidence.
 - Phase append is conditional on the latest phase observed before `step`.
   Concurrent runners that lose the append race get `PhaseAdvanced` and must not
   silently create duplicate semantic phases.

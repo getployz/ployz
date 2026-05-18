@@ -61,8 +61,7 @@ After review fixes, the final focused E2E reported `elapsed_ms: 359` with the
 same projection rebuild and serving-alive evidence. The runner tests also cover
 full-history resumed failure compensation, compensation after phase-write
 failure, stale concurrent phase append rejection, p2panda phase conflict
-rejection, and compensation-error suppression preserving the original caller
-error.
+rejection, and compensation errors returning to the caller.
 
 ## Semantic Leverage
 
