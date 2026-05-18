@@ -201,8 +201,9 @@ Current proof status:
   The spike proves manager-only mutation, non-write replica import membership,
   signed membership-operation boundary checks, re-add with new epoch/key, and
   strong-removal concurrency. E2E fact-import authority should not depend on it
-  until membership operations are durably persisted/replayed and replace manual
-  trust seeding.
+  until membership operations are durably persisted/replayed, fact operations
+  reference the membership operation/epoch they depend on, and authz-derived
+  checks replace manual trust seeding.
 - Slice 022 adds `p2panda-net-sync-contract`. Local p2panda-net nodes exchange
   opaque stable `PandaFactOperation` envelopes over the maintained
   iroh/gossip/log-sync stack; the receiver imports those envelopes through the

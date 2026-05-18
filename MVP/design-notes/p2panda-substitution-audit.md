@@ -148,11 +148,17 @@ p2panda-auth fits island membership and strong-removal group reduction, but it
 does not authenticate Ployz membership operations by itself.
 
 The spike includes a test-only signed membership-operation envelope: group
-operations are signed by the member key, scoped to one island/group, and checked
-before p2panda-auth reduction. The next adoption gate is making that envelope
-durable and replayable into `(island, principal, epoch, public key)` bindings.
-Without durable replay, p2panda-auth would only move the current in-memory trust
-problem into another adapter.
+operations are signed by a p2panda private key, verified against the member's
+bound public key, scoped to one island/group, and checked before p2panda-auth
+reduction. The next adoption gate is making that envelope durable and replayable
+into `(island, principal, epoch, public key)` bindings. Without durable replay,
+p2panda-auth would only move the current in-memory trust problem into another
+adapter.
+
+The authority view used by `PandaFactStore` must also be epoch/dependency-aware.
+A latest-state snapshot can answer status, but import/write authorization needs
+the membership operation or epoch a fact depends on so pre-remove,
+concurrent-remove, post-remove, and transitive facts reduce deterministically.
 
 The auth spike should map:
 
@@ -169,9 +175,9 @@ future proof shows conditions can express wildcard subjects, queue permissions,
 temporary reply permissions, and bridge imports/exports cleanly.
 
 After Slice 034, the recommended adoption slice is p2panda-auth-backed island
-membership for fact import: add the signed membership envelope, build an
-`IslandMembershipView`, then replace `trusted_author_keys` and
-`trusted_replica_peers` behind `PandaFactStore`.
+membership for fact import: add the durable signed membership envelope, build an
+epoch/dependency-aware `IslandMembershipView`, then replace
+`trusted_author_keys` and `trusted_replica_peers` behind `PandaFactStore`.
 
 ## p2panda-sync/net Result
 

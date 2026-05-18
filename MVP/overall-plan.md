@@ -477,11 +477,11 @@ The result is captured in
 `p2panda-auth` should graduate into the island membership authority path once
 membership operations are durably persisted and replayed. Ployz keeps the
 signed membership-operation envelope, root/admin anchoring, PloyzBus
-permissions, command conflicts, fact-key grants, and projection reducers. The
-smaller deletion candidates are not deleted yet; the slice names gates for
-retiring manual trust maps, replica importer sets, process JSON fact source,
-historical iroh-docs facts, the `PFO1` envelope, and the p2panda-net quarantine
-log wrapper.
+permissions, command conflicts, fact-key grants, projection reducers, and
+epoch/dependency-aware fact authorization. The smaller deletion candidates are
+not deleted yet; the slice names gates for retiring manual trust maps, replica
+importer sets, process JSON fact source, historical iroh-docs facts, the `PFO1`
+envelope, and the p2panda-net quarantine log wrapper.
 
 The next implementation/proof slice should keep paying down product semantic
 leverage rather than adding another generic substrate layer. Plan it against

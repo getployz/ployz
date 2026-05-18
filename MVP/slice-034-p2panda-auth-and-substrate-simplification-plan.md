@@ -1,6 +1,6 @@
 ---
 title: Slice 034 p2panda Auth And Substrate Simplification Plan
-status: active
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md

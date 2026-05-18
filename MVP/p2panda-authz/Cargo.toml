@@ -13,5 +13,9 @@ path = "src/lib.rs"
 blake3 = "1"
 mvp-bus = { path = "../bus" }
 p2panda-auth = { version = "0.5.2", features = ["serde"] }
+p2panda-core = "0.5.2"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+
+[dev-dependencies]
+p2panda-auth = { version = "0.5.2", features = ["test_utils"] }

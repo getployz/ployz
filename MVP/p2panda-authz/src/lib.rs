@@ -13,6 +13,9 @@ use p2panda_auth::traits::{
     Conditions, Groups as GroupsTrait, IdentityHandle, Operation, OperationId, Orderer,
 };
 use p2panda_auth::{Access, AccessLevel};
+use p2panda_core::PublicKey;
+#[cfg(test)]
+use p2panda_core::{PrivateKey, Signature};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -119,8 +122,7 @@ impl Display for IslandMemberId {
 pub struct IslandOperationId(AuthId);
 
 impl IslandOperationId {
-    #[must_use]
-    pub fn from_parts(tag: &'static [u8], parts: &[&[u8]]) -> Self {
+    fn from_parts(tag: &'static [u8], parts: &[&[u8]]) -> Self {
         Self(AuthId::derive(tag, parts))
     }
 
@@ -154,22 +156,26 @@ impl IslandMemberEpoch {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct IslandMemberKey([u8; 32]);
+pub struct IslandMemberAuthorKey(PublicKey);
 
-impl IslandMemberKey {
+impl IslandMemberAuthorKey {
     #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
+    pub fn from_public_key(public_key: PublicKey) -> Self {
+        Self(public_key)
     }
 
     #[cfg(test)]
-    fn from_seed(seed: impl AsRef<[u8]>) -> Self {
-        Self(*blake3::hash(seed.as_ref()).as_bytes())
+    fn from_private_key(private_key: &PrivateKey) -> Self {
+        Self(private_key.public_key())
     }
 
     #[must_use]
-    pub fn as_bytes(self) -> [u8; 32] {
+    pub fn public_key(self) -> PublicKey {
         self.0
+    }
+
+    fn as_bytes(self) -> [u8; 32] {
+        *self.0.as_bytes()
     }
 }
 
@@ -178,7 +184,7 @@ pub struct IslandMemberKeyBinding {
     island: IslandId,
     principal: PrincipalId,
     epoch: IslandMemberEpoch,
-    key: IslandMemberKey,
+    author_key: IslandMemberAuthorKey,
     member_id: IslandMemberId,
 }
 
@@ -188,7 +194,7 @@ impl IslandMemberKeyBinding {
         island: IslandId,
         principal: PrincipalId,
         epoch: IslandMemberEpoch,
-        key: IslandMemberKey,
+        author_key: IslandMemberAuthorKey,
     ) -> Self {
         let member_id = IslandMemberId(AuthId::derive(
             b"ployz:island-member",
@@ -196,14 +202,14 @@ impl IslandMemberKeyBinding {
                 island.as_str().as_bytes(),
                 principal.as_str().as_bytes(),
                 &epoch.get().to_be_bytes(),
-                &key.as_bytes(),
+                &author_key.as_bytes(),
             ],
         ));
         Self {
             island,
             principal,
             epoch,
-            key,
+            author_key,
             member_id,
         }
     }
@@ -224,8 +230,8 @@ impl IslandMemberKeyBinding {
     }
 
     #[must_use]
-    pub fn key(&self) -> IslandMemberKey {
-        self.key
+    pub fn author_key(&self) -> IslandMemberAuthorKey {
+        self.author_key
     }
 
     #[must_use]
@@ -248,6 +254,7 @@ pub enum ReplicaImportAccess {
 }
 
 impl ReplicaImportAccess {
+    #[cfg(test)]
     fn into_access(self) -> Access<IslandMemberCondition> {
         match self {
             Self::Pull => Access::pull(),
@@ -265,6 +272,7 @@ pub enum IslandMemberRole {
 }
 
 impl IslandMemberRole {
+    #[cfg(test)]
     fn into_access(self) -> Access<IslandMemberCondition> {
         match self {
             Self::Manager => Access::manage(),
@@ -403,16 +411,15 @@ type AuthCrdtError =
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct IslandMembershipSignature([u8; 32]);
+struct IslandMembershipPayload([u8; 32]);
 
 #[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IslandSignedOperation {
+struct IslandSignedOperation {
     operation: IslandAuthOperation,
     signer: IslandMemberId,
-    signer_key: IslandMemberKey,
     introduced_binding: Option<IslandMemberKeyBinding>,
-    signature: IslandMembershipSignature,
+    signature: Signature,
 }
 
 #[cfg(test)]
@@ -420,15 +427,14 @@ impl IslandSignedOperation {
     fn sign(
         operation: IslandAuthOperation,
         signer: IslandMemberId,
-        signer_key: IslandMemberKey,
+        signer_private_key: &PrivateKey,
         introduced_binding: Option<IslandMemberKeyBinding>,
     ) -> Self {
-        let signature =
-            sign_membership_operation(&operation, signer, signer_key, introduced_binding.as_ref());
+        let payload = membership_operation_payload(&operation, signer, introduced_binding.as_ref());
+        let signature = signer_private_key.sign(&payload.0);
         Self {
             operation,
             signer,
-            signer_key,
             introduced_binding,
             signature,
         }
@@ -437,11 +443,6 @@ impl IslandSignedOperation {
     #[must_use]
     pub fn operation_id(&self) -> IslandOperationId {
         self.operation.id()
-    }
-
-    #[must_use]
-    pub fn signer(&self) -> IslandMemberId {
-        self.signer
     }
 }
 
@@ -512,7 +513,8 @@ impl IslandAuthz {
         self.bindings.get(&member_id)
     }
 
-    pub fn add_manager(
+    #[cfg(test)]
+    fn add_manager(
         &mut self,
         manager: IslandMemberId,
         member: IslandMemberKeyBinding,
@@ -520,7 +522,8 @@ impl IslandAuthz {
         self.add_member(manager, member, IslandMemberRole::Manager)
     }
 
-    pub fn add_writer(
+    #[cfg(test)]
+    fn add_writer(
         &mut self,
         manager: IslandMemberId,
         member: IslandMemberKeyBinding,
@@ -528,7 +531,8 @@ impl IslandAuthz {
         self.add_member(manager, member, IslandMemberRole::Writer)
     }
 
-    pub fn add_replica_importer(
+    #[cfg(test)]
+    fn add_replica_importer(
         &mut self,
         manager: IslandMemberId,
         member: IslandMemberKeyBinding,
@@ -538,7 +542,7 @@ impl IslandAuthz {
     }
 
     #[cfg(test)]
-    pub fn apply_signed(
+    fn apply_signed(
         &mut self,
         signed: IslandSignedOperation,
     ) -> Result<IslandAuthChange, IslandAuthzError> {
@@ -553,7 +557,8 @@ impl IslandAuthz {
         Ok(change)
     }
 
-    pub fn remove_member(
+    #[cfg(test)]
+    fn remove_member(
         &mut self,
         manager: IslandMemberId,
         member: IslandMemberId,
@@ -564,7 +569,8 @@ impl IslandAuthz {
         })
     }
 
-    pub fn demote_member(
+    #[cfg(test)]
+    fn demote_member(
         &mut self,
         manager: IslandMemberId,
         member: IslandMemberId,
@@ -610,6 +616,7 @@ impl IslandAuthz {
         self.mutate(actor, |groups| groups.create(group_id, Vec::new()))
     }
 
+    #[cfg(test)]
     fn add_member(
         &mut self,
         manager: IslandMemberId,
@@ -684,7 +691,14 @@ impl IslandAuthz {
         };
         let actor = IslandMemberId(operation.author());
         let operation_id = operation.id();
-        let state = AuthCrdt::process(state, &operation).map_err(IslandAuthzError::from_crdt)?;
+        let original_state = state.clone();
+        let state = match AuthCrdt::process(state, &operation) {
+            Ok(state) => state,
+            Err(error) => {
+                self.state = Some(original_state);
+                return Err(IslandAuthzError::from_crdt(error));
+            }
+        };
         self.state = Some(state);
         self.observe_operation(operation_id)?;
         Ok(IslandAuthChange {
@@ -734,16 +748,16 @@ impl IslandAuthz {
         let Some(current_binding) = self.bindings.get(&signed.signer) else {
             return Err(IslandAuthzError::MissingBinding(signed.signer));
         };
-        if current_binding.key() != signed.signer_key {
-            return Err(IslandAuthzError::StaleSignerKey(signed.signer));
-        }
-        let expected_signature = sign_membership_operation(
+        let payload = membership_operation_payload(
             &signed.operation,
             signed.signer,
-            signed.signer_key,
             signed.introduced_binding.as_ref(),
         );
-        if expected_signature != signed.signature {
+        if !current_binding
+            .author_key()
+            .public_key()
+            .verify(&payload.0, &signed.signature)
+        {
             return Err(IslandAuthzError::InvalidSignature(signed.operation_id()));
         }
         let payload = signed.operation.payload();
@@ -826,16 +840,14 @@ fn reject_nested_group_member(member: GroupMember<AuthId>) -> Result<(), IslandA
 }
 
 #[cfg(test)]
-fn sign_membership_operation(
+fn membership_operation_payload(
     operation: &IslandAuthOperation,
     signer: IslandMemberId,
-    signer_key: IslandMemberKey,
     introduced_binding: Option<&IslandMemberKeyBinding>,
-) -> IslandMembershipSignature {
+) -> IslandMembershipPayload {
     let mut hasher = blake3::Hasher::new();
     hash_bytes(&mut hasher, b"ployz:p2panda-authz-membership-signature-v1");
     hash_auth_id(&mut hasher, signer.auth_id());
-    hash_bytes(&mut hasher, &signer_key.as_bytes());
     hash_operation_id(&mut hasher, operation.id());
     hash_auth_id(&mut hasher, operation.author());
     let dependencies = operation.dependencies();
@@ -851,14 +863,14 @@ fn sign_membership_operation(
             hash_str(&mut hasher, binding.island().as_str());
             hash_str(&mut hasher, binding.principal().as_str());
             hash_u64(&mut hasher, binding.epoch().get());
-            hash_bytes(&mut hasher, &binding.key().as_bytes());
+            hash_bytes(&mut hasher, &binding.author_key().as_bytes());
             hash_auth_id(&mut hasher, binding.member_id().auth_id());
         }
         None => {
             hasher.update(&[0]);
         }
     }
-    IslandMembershipSignature(*hasher.finalize().as_bytes())
+    IslandMembershipPayload(*hasher.finalize().as_bytes())
 }
 
 #[cfg(test)]
@@ -976,8 +988,6 @@ pub enum IslandAuthzError {
     },
     #[error("member {0} has no durable key binding")]
     MissingBinding(IslandMemberId),
-    #[error("member {0} signed with a stale or substituted key")]
-    StaleSignerKey(IslandMemberId),
     #[error("invalid membership operation signature for operation {0}")]
     InvalidSignature(IslandOperationId),
     #[error("membership operation is for group {actual}, expected {expected}")]
@@ -1089,13 +1099,28 @@ mod tests {
     }
 
     fn member(seed: &str, island: &IslandId, epoch: u64) -> IslandMemberKeyBinding {
+        member_with_private_key(seed, island, epoch).0
+    }
+
+    fn member_with_private_key(
+        seed: &str,
+        island: &IslandId,
+        epoch: u64,
+    ) -> (IslandMemberKeyBinding, PrivateKey) {
         let epoch = NonZeroU64::new(epoch).expect("test epochs are non-zero");
-        IslandMemberKeyBinding::new(
+        let private_key = member_private_key(seed, epoch.get());
+        let binding = IslandMemberKeyBinding::new(
             island.clone(),
             PrincipalId::new(seed),
             IslandMemberEpoch::new(epoch),
-            IslandMemberKey::from_seed(format!("{seed}:{epoch}")),
-        )
+            IslandMemberAuthorKey::from_private_key(&private_key),
+        );
+        (binding, private_key)
+    }
+
+    fn member_private_key(seed: &str, epoch: u64) -> PrivateKey {
+        let bytes = blake3::hash(format!("{seed}:{epoch}").as_bytes());
+        PrivateKey::from_bytes(bytes.as_bytes())
     }
 
     fn new_authz() -> (IslandAuthz, IslandMemberId) {
@@ -1189,6 +1214,7 @@ mod tests {
     fn signed_add_operation(
         authz: &IslandAuthz,
         signer: &IslandMemberKeyBinding,
+        signer_private_key: &PrivateKey,
         id: u64,
         member: IslandMemberKeyBinding,
         role: IslandMemberRole,
@@ -1201,7 +1227,12 @@ mod tests {
             role,
             &authz.current_heads(),
         );
-        IslandSignedOperation::sign(operation, signer.member_id(), signer.key(), Some(member))
+        IslandSignedOperation::sign(
+            operation,
+            signer.member_id(),
+            signer_private_key,
+            Some(member),
+        )
     }
 
     #[test]
@@ -1224,12 +1255,19 @@ mod tests {
     #[test]
     fn signed_membership_operation_adds_writer() {
         let island = island();
-        let root = member("root", &island, 1);
+        let (root, root_key) = member_with_private_key("root", &island, 1);
         let mut authz =
             IslandAuthz::create(island.clone(), root.clone()).expect("root group should create");
         let writer = member("writer", &island, 1);
         let writer_id = writer.member_id();
-        let signed = signed_add_operation(&authz, &root, 100, writer, IslandMemberRole::Writer);
+        let signed = signed_add_operation(
+            &authz,
+            &root,
+            &root_key,
+            100,
+            writer,
+            IslandMemberRole::Writer,
+        );
         authz
             .apply_signed(signed)
             .expect("signed add should be accepted");
@@ -1239,33 +1277,44 @@ mod tests {
     #[test]
     fn signed_membership_operation_rejects_substituted_signer_key() {
         let island = island();
-        let root = member("root", &island, 1);
+        let (root, root_key) = member_with_private_key("root", &island, 1);
         let mut authz =
             IslandAuthz::create(island.clone(), root.clone()).expect("root group should create");
         let writer = member("writer", &island, 1);
-        let mut signed = signed_add_operation(&authz, &root, 100, writer, IslandMemberRole::Writer);
-        signed.signer_key = IslandMemberKey::from_seed("substituted-root-key");
-        signed.signature = sign_membership_operation(
-            &signed.operation,
-            signed.signer,
-            signed.signer_key,
-            signed.introduced_binding.as_ref(),
+        let signed = signed_add_operation(
+            &authz,
+            &root,
+            &member_private_key("substituted-root-key", 1),
+            100,
+            writer,
+            IslandMemberRole::Writer,
+        );
+        assert_ne!(
+            root_key.public_key(),
+            member_private_key("substituted-root-key", 1).public_key()
         );
         assert!(matches!(
             authz.apply_signed(signed),
-            Err(IslandAuthzError::StaleSignerKey(_))
+            Err(IslandAuthzError::InvalidSignature(_))
         ));
     }
 
     #[test]
     fn signed_membership_operation_rejects_tampered_signature() {
         let island = island();
-        let root = member("root", &island, 1);
+        let (root, root_key) = member_with_private_key("root", &island, 1);
         let mut authz =
             IslandAuthz::create(island.clone(), root.clone()).expect("root group should create");
         let writer = member("writer", &island, 1);
-        let mut signed = signed_add_operation(&authz, &root, 100, writer, IslandMemberRole::Writer);
-        signed.signature = IslandMembershipSignature([7; 32]);
+        let mut signed = signed_add_operation(
+            &authz,
+            &root,
+            &root_key,
+            100,
+            writer,
+            IslandMemberRole::Writer,
+        );
+        signed.signature = Signature::from_bytes(&[7; 64]);
         assert!(matches!(
             authz.apply_signed(signed),
             Err(IslandAuthzError::InvalidSignature(_))
@@ -1275,7 +1324,7 @@ mod tests {
     #[test]
     fn signed_membership_operation_rejects_wrong_group() {
         let island = island();
-        let root = member("root", &island, 1);
+        let (root, root_key) = member_with_private_key("root", &island, 1);
         let mut authz =
             IslandAuthz::create(island.clone(), root.clone()).expect("root group should create");
         let writer = member("writer", &island, 1);
@@ -1288,7 +1337,7 @@ mod tests {
             &authz.current_heads(),
         );
         let signed =
-            IslandSignedOperation::sign(operation, root.member_id(), root.key(), Some(writer));
+            IslandSignedOperation::sign(operation, root.member_id(), &root_key, Some(writer));
         assert!(matches!(
             authz.apply_signed(signed),
             Err(IslandAuthzError::WrongGroup { .. })
@@ -1298,7 +1347,7 @@ mod tests {
     #[test]
     fn signed_membership_operation_rejects_nested_group_member() {
         let island = island();
-        let root = member("root", &island, 1);
+        let (root, root_key) = member_with_private_key("root", &island, 1);
         let mut authz =
             IslandAuthz::create(island.clone(), root.clone()).expect("root group should create");
         let nested = member("nested", &island, 1);
@@ -1313,7 +1362,7 @@ mod tests {
             },
         );
         let signed =
-            IslandSignedOperation::sign(operation, root.member_id(), root.key(), Some(nested));
+            IslandSignedOperation::sign(operation, root.member_id(), &root_key, Some(nested));
         assert!(matches!(
             authz.apply_signed(signed),
             Err(IslandAuthzError::NestedGroupsUnsupported(_))
@@ -1323,7 +1372,7 @@ mod tests {
     #[test]
     fn signed_membership_operation_requires_added_member_binding() {
         let island = island();
-        let root = member("root", &island, 1);
+        let (root, root_key) = member_with_private_key("root", &island, 1);
         let mut authz =
             IslandAuthz::create(island.clone(), root.clone()).expect("root group should create");
         let writer = member("writer", &island, 1);
@@ -1335,7 +1384,7 @@ mod tests {
             IslandMemberRole::Writer,
             &authz.current_heads(),
         );
-        let signed = IslandSignedOperation::sign(operation, root.member_id(), root.key(), None);
+        let signed = IslandSignedOperation::sign(operation, root.member_id(), &root_key, None);
         assert!(matches!(
             authz.apply_signed(signed),
             Err(IslandAuthzError::MissingIntroducedBinding(_))
@@ -1345,7 +1394,7 @@ mod tests {
     #[test]
     fn signed_membership_operation_rejects_remove_with_introduced_binding() {
         let island = island();
-        let root = member("root", &island, 1);
+        let (root, root_key) = member_with_private_key("root", &island, 1);
         let mut authz =
             IslandAuthz::create(island.clone(), root.clone()).expect("root group should create");
         let writer = member("writer", &island, 1);
@@ -1361,7 +1410,7 @@ mod tests {
             &authz.current_heads(),
         );
         let signed =
-            IslandSignedOperation::sign(operation, root.member_id(), root.key(), Some(writer));
+            IslandSignedOperation::sign(operation, root.member_id(), &root_key, Some(writer));
         assert!(matches!(
             authz.apply_signed(signed),
             Err(IslandAuthzError::UnexpectedIntroducedBinding(_))
@@ -1371,7 +1420,7 @@ mod tests {
     #[test]
     fn signed_membership_operation_demotes_without_introduced_binding() {
         let island = island();
-        let root = member("root", &island, 1);
+        let (root, root_key) = member_with_private_key("root", &island, 1);
         let mut authz =
             IslandAuthz::create(island.clone(), root.clone()).expect("root group should create");
         let writer = member("writer", &island, 1);
@@ -1387,12 +1436,42 @@ mod tests {
             IslandMemberRole::ReplicaImporter(ReplicaImportAccess::Read),
             &authz.current_heads(),
         );
-        let signed = IslandSignedOperation::sign(operation, root.member_id(), root.key(), None);
+        let signed = IslandSignedOperation::sign(operation, root.member_id(), &root_key, None);
         authz
             .apply_signed(signed)
             .expect("signed demote should be accepted");
         assert!(!authz.can_write_member(writer_id));
         assert!(authz.can_import_replica(writer_id));
+    }
+
+    #[test]
+    fn rejected_import_keeps_previous_state_available() {
+        let island = island();
+        let (root, root_key) = member_with_private_key("root", &island, 1);
+        let mut authz =
+            IslandAuthz::create(island.clone(), root.clone()).expect("root group should create");
+        let writer = member("writer", &island, 1);
+        let signed = signed_add_operation(
+            &authz,
+            &root,
+            &root_key,
+            100,
+            writer.clone(),
+            IslandMemberRole::Writer,
+        );
+        authz
+            .apply_signed(signed.clone())
+            .expect("first signed add should be accepted");
+        assert!(matches!(
+            authz.apply_signed(signed),
+            Err(IslandAuthzError::GroupGraphRejected { .. })
+        ));
+        assert!(authz.can_write_member(root.member_id()));
+        let next_writer = member("next-writer", &island, 1);
+        authz
+            .add_writer(root.member_id(), next_writer.clone())
+            .expect("state should remain usable after rejected import");
+        assert!(authz.can_write_member(next_writer.member_id()));
     }
 
     #[test]
@@ -1407,6 +1486,25 @@ mod tests {
         assert!(authz.is_active_member(writer_id));
         assert!(authz.can_write_member(writer_id));
         assert!(!authz.can_import_replica(writer_id));
+    }
+
+    #[test]
+    fn manager_demotes_writer_to_replica_importer() {
+        let (mut authz, root) = new_authz();
+        let writer = member("writer", authz.island(), 1);
+        let writer_id = writer.member_id();
+        authz
+            .add_writer(root, writer)
+            .expect("root manager should add writer");
+        authz
+            .demote_member(
+                root,
+                writer_id,
+                IslandMemberRole::ReplicaImporter(ReplicaImportAccess::Read),
+            )
+            .expect("root manager should demote writer");
+        assert!(!authz.can_write_member(writer_id));
+        assert!(authz.can_import_replica(writer_id));
     }
 
     #[test]
