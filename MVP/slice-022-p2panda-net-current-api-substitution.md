@@ -66,9 +66,9 @@ p2panda-net-sync-contract:
   no_cross_island_leakage: true
   projected_nodes: 1
   trusted_replica_required: true
-  network_sync_ms: 60
-  projection_rebuild_ms: 8
-  elapsed_ms: 102
+  network_sync_ms: 80
+  projection_rebuild_ms: 9
+  elapsed_ms: 124
 ```
 
 The full `mvp-e2e -- all` run completed inside the 120s budget. The scale
@@ -112,9 +112,9 @@ the in-process message carrier while preserving
   slice must own node startup/shutdown/error reporting instead of relying on
   `test_utils`.
 - The scenario uses live p2panda-net streams because that is the current API
-  path that works from the E2E binary. Every event wait has a deadline, but a
-  production integration should provide explicit bounded catch-up and lifecycle
-  control.
+  path that works from the E2E binary. Setup and event waits have deadlines,
+  but a production integration should provide explicit bounded catch-up and
+  lifecycle control.
 - Current git p2panda store/operation types remain a migration target, not
   canonical production types. Moving `PandaFactStore` itself to that API line
   should wait until the authority/import seam can become narrower, not larger.

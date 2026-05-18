@@ -204,7 +204,7 @@ Current proof status:
   records six transported operations, three inserted/conflict imports, one
   duplicate no-op, two conflict candidates, explicit untrusted-author and
   cross-island rejection, trusted-replica import gating, zero cross-island
-  leakage, an 8ms projection rebuild, and 60ms network sync in the latest full
+  leakage, a 9ms projection rebuild, and 80ms network sync in the latest full
   all-run.
 - Remaining E2E-4 work is replacing the `p2panda-net::test_utils` local-node
   harness with production-owned node lifecycle/discovery/error surfaces and
