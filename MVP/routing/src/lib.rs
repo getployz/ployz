@@ -346,6 +346,43 @@ pub fn read_exact_serving_commit(
     session: &BusSession,
     expected: &ServingCommitPlan,
 ) -> RoutingResult<ServingCommitFact> {
+    read_serving_commit_with_policy(
+        source,
+        island,
+        session,
+        expected,
+        ServingCommitReadPolicy::AllowMatchingConflict,
+    )
+}
+
+pub fn read_unconflicted_serving_commit(
+    source: &dyn FactSource,
+    island: &IslandId,
+    session: &BusSession,
+    expected: &ServingCommitPlan,
+) -> RoutingResult<ServingCommitFact> {
+    read_serving_commit_with_policy(
+        source,
+        island,
+        session,
+        expected,
+        ServingCommitReadPolicy::RejectConflicts,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServingCommitReadPolicy {
+    AllowMatchingConflict,
+    RejectConflicts,
+}
+
+fn read_serving_commit_with_policy(
+    source: &dyn FactSource,
+    island: &IslandId,
+    session: &BusSession,
+    expected: &ServingCommitPlan,
+    policy: ServingCommitReadPolicy,
+) -> RoutingResult<ServingCommitFact> {
     let key = serving_commit_fact_key(&expected.serving_commit_id)?;
     let expected_body = serving_commit_fact_body(expected);
     let pattern = FactKeyPattern::parse(key.as_str())?;
@@ -360,6 +397,13 @@ pub fn read_exact_serving_commit(
                 )
         })
         .collect::<Vec<_>>();
+    if policy == ServingCommitReadPolicy::RejectConflicts
+        && candidates
+            .iter()
+            .any(|candidate| candidate.status() == CandidateStatus::Conflict)
+    {
+        return Err(RoutingError::ServingFactConflict { key });
+    }
     let payloads = source.read_payloads(island, &candidates, session)?;
     for candidate in &candidates {
         let Some(payload) = payloads.get(candidate.content_hash()) else {
@@ -623,6 +667,48 @@ mod tests {
                     .expect("payload")
             )
         );
+    }
+
+    #[test]
+    fn unconflicted_serving_commit_read_rejects_conflict_candidate() {
+        let (bus, authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
+        let source = BusFactSource::new(bus.clone());
+        let writer_a = authority.grant_in(
+            IslandId::new("prod"),
+            PrincipalId::new("deploy-a"),
+            Grant::empty()
+                .with_fact_write(FactKeyPattern::parse("/facts/serving/>").expect("pattern"))
+                .with_fact_read(FactKeyPattern::parse("/facts/serving/>").expect("pattern")),
+        );
+        let writer_b = authority.grant_in(
+            IslandId::new("prod"),
+            PrincipalId::new("deploy-b"),
+            Grant::empty()
+                .with_fact_write(FactKeyPattern::parse("/facts/serving/>").expect("pattern"))
+                .with_fact_read(FactKeyPattern::parse("/facts/serving/>").expect("pattern")),
+        );
+        let expected = serving_commit();
+        let key = serving_commit_fact_key(&expected.serving_commit_id).expect("key");
+        let mut conflict = expected.clone();
+        conflict.hostnames = vec!["other.example.test".to_string()];
+        bus.write_fact_payload(
+            &writer_a,
+            key.clone(),
+            serving_commit_fact_payload(&conflict).expect("payload"),
+        )
+        .expect("write conflict");
+        bus.write_fact_payload(
+            &writer_b,
+            key,
+            serving_commit_fact_payload(&expected).expect("payload"),
+        )
+        .expect("write matching candidate");
+
+        let error =
+            read_unconflicted_serving_commit(&source, writer_a.island(), &writer_a, &expected)
+                .expect_err("conflict is rejected");
+
+        assert!(matches!(error, RoutingError::ServingFactConflict { .. }));
     }
 
     fn projection_report_for_commit(

@@ -589,6 +589,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn decision_read_rejects_payload_for_different_remove_id() {
+        let mut wrong = decision_fact();
+        wrong.target_node_id = NodeId::new("node-other");
+        let source = TestFactSource::new().with_payload(
+            decision_key(),
+            decision_payload(&wrong),
+            CandidateStatus::Verified,
+        );
+
+        let error =
+            read_machine_remove_decision(&source, &IslandId::new("prod"), &session(), &remove_id())
+                .expect_err("mismatched decision");
+
+        assert!(
+            matches!(error, MachineRemoveError::CommandFactMismatch { key } if key == decision_key())
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_done_read_rejects_payload_for_different_remove_id() {
+        let decision = decision_fact();
+        let mut wrong = decision.clone();
+        wrong.removal_epoch = 99;
+        let wrong_tombstone_key =
+            tombstone_fact_key(&wrong.target_node_id, wrong.tombstone_epoch).expect("key");
+        let wrong_cleanup =
+            MachineRemoveCleanupDoneFact::new(&wrong, wrong_tombstone_key).expect("cleanup");
+        let key = machine_remove_cleanup_done_fact_key(&decision.remove_id()).expect("key");
+        let source = TestFactSource::new().with_payload(
+            key.clone(),
+            machine_remove_cleanup_done_fact_payload(&wrong_cleanup).expect("payload"),
+            CandidateStatus::Verified,
+        );
+
+        let error = read_machine_remove_cleanup_done(
+            &source,
+            &IslandId::new("prod"),
+            &session(),
+            &decision.remove_id(),
+        )
+        .expect_err("mismatched cleanup");
+
+        assert!(
+            matches!(error, MachineRemoveError::CommandFactMismatch { key: error_key } if error_key == key)
+        );
+    }
+
+    #[tokio::test]
     async fn cleanup_validation_requires_expected_tombstone_fact() {
         let decision = decision_fact();
         let tombstone_key =
@@ -691,6 +739,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn removal_started_validation_rejects_verified_mismatched_fact() {
+        let decision = decision_fact();
+        let removal_key =
+            removal_started_fact_key(&decision.target_node_id, decision.removal_epoch)
+                .expect("key");
+        let payload = ProjectionFactPayload::NodeRemovalStarted(NodeRemovalStartedFact {
+            node_id: decision.target_node_id.clone(),
+            epoch: decision.removal_epoch,
+            reason: "different reason".to_string(),
+        })
+        .to_fact_bytes()
+        .expect("serialize removal-started")
+        .into();
+        let source = TestFactSource::new().with_payload(
+            removal_key.clone(),
+            payload,
+            CandidateStatus::Verified,
+        );
+
+        let error = validate_machine_remove_removal_started(
+            &source,
+            &IslandId::new("prod"),
+            &session(),
+            &decision,
+        )
+        .expect_err("mismatched removal started");
+
+        assert!(
+            matches!(error, MachineRemoveError::CommandFactMismatch { key } if key == removal_key)
+        );
+    }
+
+    #[tokio::test]
+    async fn removal_started_validation_rejects_wrong_fact_kind() {
+        let decision = decision_fact();
+        let removal_key =
+            removal_started_fact_key(&decision.target_node_id, decision.removal_epoch)
+                .expect("key");
+        let source = TestFactSource::new().with_payload(
+            removal_key.clone(),
+            tombstone_payload(&decision),
+            CandidateStatus::Verified,
+        );
+
+        let error = validate_machine_remove_removal_started(
+            &source,
+            &IslandId::new("prod"),
+            &session(),
+            &decision,
+        )
+        .expect_err("wrong kind");
+
+        assert!(matches!(
+            error,
+            MachineRemoveError::CommandFactKindMismatch {
+                key,
+                expected_kind: "node_removal_started"
+            } if key == removal_key
+        ));
+    }
+
+    #[tokio::test]
     async fn cleanup_validation_rejects_conflicted_tombstone_fact() {
         let decision = decision_fact();
         let tombstone_key =
@@ -723,6 +833,72 @@ mod tests {
         assert!(
             matches!(error, MachineRemoveError::CommandFactMismatch { key } if key == tombstone_key)
         );
+    }
+
+    #[tokio::test]
+    async fn cleanup_validation_rejects_verified_mismatched_tombstone_fact() {
+        let decision = decision_fact();
+        let tombstone_key =
+            tombstone_fact_key(&decision.target_node_id, decision.tombstone_epoch).expect("key");
+        let cleanup_done =
+            MachineRemoveCleanupDoneFact::new(&decision, tombstone_key.clone()).expect("cleanup");
+        let payload = ProjectionFactPayload::NodeTombstoned(NodeTombstonedFact {
+            node_id: decision.target_node_id.clone(),
+            epoch: decision.tombstone_epoch,
+            reason: "different reason".to_string(),
+        })
+        .to_fact_bytes()
+        .expect("serialize tombstone")
+        .into();
+        let source = TestFactSource::new().with_payload(
+            tombstone_key.clone(),
+            payload,
+            CandidateStatus::Verified,
+        );
+
+        let error = validate_machine_remove_cleanup_done(
+            &source,
+            &IslandId::new("prod"),
+            &session(),
+            &decision,
+            &cleanup_done,
+        )
+        .expect_err("mismatched tombstone");
+
+        assert!(
+            matches!(error, MachineRemoveError::CommandFactMismatch { key } if key == tombstone_key)
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_validation_rejects_wrong_tombstone_fact_kind() {
+        let decision = decision_fact();
+        let tombstone_key =
+            tombstone_fact_key(&decision.target_node_id, decision.tombstone_epoch).expect("key");
+        let cleanup_done =
+            MachineRemoveCleanupDoneFact::new(&decision, tombstone_key.clone()).expect("cleanup");
+        let source = TestFactSource::new().with_payload(
+            tombstone_key.clone(),
+            removal_started_payload(&decision),
+            CandidateStatus::Verified,
+        );
+
+        let error = validate_machine_remove_cleanup_done(
+            &source,
+            &IslandId::new("prod"),
+            &session(),
+            &decision,
+            &cleanup_done,
+        )
+        .expect_err("wrong kind");
+
+        assert!(matches!(
+            error,
+            MachineRemoveError::CommandFactKindMismatch {
+                key,
+                expected_kind: "node_tombstoned"
+            } if key == tombstone_key
+        ));
     }
 
     #[derive(Default)]
@@ -833,6 +1009,17 @@ mod tests {
         })
         .to_fact_bytes()
         .expect("serialize removal-started")
+        .into()
+    }
+
+    fn tombstone_payload(decision: &MachineRemoveDecisionFact) -> FactPayload {
+        ProjectionFactPayload::NodeTombstoned(NodeTombstonedFact {
+            node_id: decision.target_node_id.clone(),
+            epoch: decision.tombstone_epoch,
+            reason: decision.reason.clone(),
+        })
+        .to_fact_bytes()
+        .expect("serialize tombstone")
         .into()
     }
 
