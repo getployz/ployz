@@ -204,8 +204,7 @@ async fn run_async() -> Result<(), String> {
     let no_cross_island_leakage = right
         .list_candidates(&laptop, &fact_pattern("/facts/>")?, &sessions.laptop_writer)
         .map_err(|error| format!("list cross-island candidates after sync: {error}"))?
-        .iter()
-        .all(|candidate| candidate.island() != &laptop);
+        .is_empty();
     if !no_cross_island_leakage {
         return Err("prod p2panda sync leaked laptop island facts".to_string());
     }
@@ -564,8 +563,7 @@ async fn run_large_load_sync_case(
             &sessions.laptop_writer,
         )
         .map_err(|error| format!("list load sync laptop leakage for {fact_count}: {error}"))?
-        .iter()
-        .all(|candidate| candidate.island() != &laptop);
+        .is_empty();
     if !no_cross_island_leakage {
         return Err(format!(
             "load sync for {fact_count} facts leaked laptop island data"
