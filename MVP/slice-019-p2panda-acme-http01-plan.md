@@ -1,6 +1,6 @@
 ---
 title: Slice 019 P2panda-Backed ACME HTTP-01 Plan
-status: planned
+status: parked
 created: 2026-05-18
 origin:
   - VISION.md
@@ -16,6 +16,12 @@ origin:
 ---
 
 # Slice 019 P2panda-Backed ACME HTTP-01 Plan
+
+> Parked behind
+> [MVP/slice-019a-p2panda-substitution-audit-plan.md](slice-019a-p2panda-substitution-audit-plan.md).
+> ACME remains the likely next product canary, but the operator requested a
+> deeper p2panda substitution audit first so the next implementation slice does
+> not add more custom substrate that p2panda can replace.
 
 ## Problem Frame
 
@@ -66,12 +72,12 @@ the new fact substrate plus advisory lease semantics.
 
 ## Preconditions
 
-- Finish Slice 018 deploy restart recovery first. It is the current
-  commit-before-drain crash proof and should settle any fact-writer shape the
-  ACME slice can reuse.
-- Treat the uncommitted Slice 018b p2panda work as the preferred substrate once
-  it is committed and green. If its API changes before Slice 019 starts, update
-  this plan rather than implementing around stale names.
+- Slice 018c deploy restart recovery is finished and should be treated as the
+  current p2panda-backed deploy recovery proof.
+- Finish Slice 019a p2panda substitution audit first. If it promotes
+  persistent p2panda storage, p2panda-auth, or p2panda-sync ahead of ACME,
+  update this plan before implementation rather than coding against stale
+  substrate assumptions.
 - Keep all work under `MVP/`.
 
 ## Scope
