@@ -544,6 +544,13 @@ Current proof status:
   `FactSource` wrapper from this E2E into `mvp-deploy-p2panda`. The restart
   scenario still owns process choreography and operation export/import, but it
   no longer owns deploy-specific p2panda outcome mapping.
+- Slice 044 moves `deploy-restart-recovery-contract` from manual p2panda
+  author-key trust to membership-backed authority. Recovery imports exported
+  deploy/serving operations through a membership replica importer, direct writer
+  authority still requires active writer membership plus Ployz fact-key grants,
+  non-replica import is rejected, deploy-only and serving-only fact grants do
+  not leak across fact families, and foreign-island operations cannot enter the
+  local recovery store.
 - Slice 029 adds the machine-remove equivalent recovery proof. The target
   command coordinator is dropped after the p2panda-backed serving cutover and
   before stop/tombstone. A fresh store imports the surviving operations through

@@ -15,6 +15,19 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
+- Slice 044 moves `deploy-restart-recovery-contract` onto membership-backed
+  p2panda authority. The recovery store now installs an
+  `IslandAuthoritySnapshot` and imports surviving deploy/serving operations
+  through a replica-importer principal with `import_replica_operation`.
+- Slice 044 adds deploy-specific negative probes proving the authority layers
+  stay separate: replica importers cannot write even with bus fact grants,
+  non-replica principals cannot import, deploy-only and serving-only fact-key
+  grants reject the opposite fact family on import, and foreign-island deploy
+  operations are rejected before recovery.
+- Slice 043 moved `machine-remove-contract` onto membership-backed authority
+  for its primary, recovery, replay, and negative-probe stores. The remaining
+  manual-trust product candidate is volume transfer; p2panda-net fallback probes
+  stay classified as low-level regression fixtures.
 - Slice 042 moves the ACME HTTP-01 and main p2panda sync E2E proofs onto
   membership-backed authority. Product-shaped stores now open from
   `PandaFactAuthoritySource`, and sync scopes now derive from

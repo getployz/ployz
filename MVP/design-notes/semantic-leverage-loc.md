@@ -79,11 +79,17 @@ peer removal. That is the leverage target for the next product canaries:
 business contracts should reuse the membership/fact/projection substrate
 instead of creating their own trust model.
 
+Slice 044 applies the same substitution to deploy restart recovery. The E2E
+diff grows mostly from targeted negative probes rather than new substrate. That
+is not a raw LOC win, but it removes manual author-key trust from the central
+deploy crash-recovery proof and keeps deploy on the same membership-backed
+authority model as ACME, sync, machine remove, and process serving.
+
 ## Snapshot Counts
 
 ```text
 MVP core, excluding MVP/e2e and target:          ~35,500 LOC
-MVP E2E contracts and harness:                   ~18,650 LOC
+MVP E2E contracts and harness:                   ~19,000 LOC
 Old crates/ Rust total:                         ~111,000 LOC
 
 MVP deploy + deploy-p2panda:                      ~3,350 LOC

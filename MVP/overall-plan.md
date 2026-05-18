@@ -806,12 +806,16 @@ for its primary, recovery, replay, and negative-probe stores while preserving
 serving cutover, tombstone, projection rebuild, WireGuard behavior, and replica
 import semantics.
 
-Slice 044 is planned as the next targeted migration:
+Slice 044 completed the deploy restart recovery migration:
 [MVP/slice-044-membership-backed-deploy-recovery-plan.md](slice-044-membership-backed-deploy-recovery-plan.md).
 It moves `deploy-restart-recovery-contract` onto membership-backed writer and
 replica-import authority while preserving the deploy restart invariant: serving
 commit is durable before drain, coordinator death does not stop data-plane
-serving, and cleanup resumes from facts. The remaining manual-trust inventory
-after that should be planned separately, with volume transfer as the likely
-next product-shaped candidate and p2panda-net fallback probes treated as
-low-level regression fixtures unless a plan proves otherwise.
+serving, and cleanup resumes from facts. The E2E now also proves replica
+importers cannot write, non-replicas cannot import, deploy-vs-serving fact-key
+grants stay separated during import, and foreign-island recovery operations are
+rejected.
+
+The remaining manual-trust inventory should be planned separately, with volume
+transfer as the likely next product-shaped candidate and p2panda-net fallback
+probes treated as low-level regression fixtures unless a plan proves otherwise.
