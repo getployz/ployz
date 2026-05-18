@@ -84,8 +84,10 @@ Verified for this slice:
 
 ```bash
 cargo test --manifest-path MVP/Cargo.toml -p mvp-machine -p mvp-machine-p2panda
+cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-facts -p mvp-machine-p2panda
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- machine-remove-contract
 cargo clippy --manifest-path MVP/Cargo.toml -p mvp-machine -p mvp-machine-p2panda -p mvp-e2e --all-targets -- -D warnings
+MVP_E2E_ALL_TIMEOUT=120s cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- all
 ```
 
 ## Deferred
