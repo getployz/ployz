@@ -1,7 +1,8 @@
 ---
 title: Slice 029 Machine Remove Restart Recovery Plan
-status: active
+status: completed
 created: 2026-05-18
+completed: 2026-05-18
 origin:
   - VISION.md
   - MVP/overall-plan.md

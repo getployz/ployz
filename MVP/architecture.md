@@ -373,6 +373,8 @@ facts/deploy/<deploy_id>/computed_plan
 facts/deploy/<deploy_id>/phase/<n>/ready
 facts/deploy/<deploy_id>/phase/<n>/commit
 facts/deploy/<deploy_id>/done
+facts/machine-remove/<node_id>/<removal_epoch>/decision
+facts/machine-remove/<node_id>/<removal_epoch>/cleanup/done
 facts/routes/<route_commit_id>
 facts/lease/<resource>/<epoch>/claimed
 facts/lease/<resource>/<epoch>/released/<content_hash>
@@ -551,21 +553,31 @@ and failure semantics.
 
 ## Target Machine Remove Flow
 
-This is a target flow, not a committed first slice. The first implementation
-proof should establish at least one tombstone/removal invariant before expanding
-into graceful workload drain.
+Machine remove is a command-shaped flow. Membership facts describe cluster
+truth; command facts describe recoverable operator intent and completion.
+Projection state may prove catch-up, but it is not request context.
 
 Graceful remove:
 
-1. Write `NodeRemovalStarted`.
-2. Revoke scheduling or mark `no_new_work`.
-3. Request `node.<id>.rpc.drain_workloads`.
-4. Commit route facts removing active backends.
-5. Wait drain policy.
-6. Stop old workloads.
-7. Write `NodeTombstone`.
-8. Remove WireGuard peer.
-9. Expire service registry endpoints.
+1. Probe the target participant.
+2. Write `MachineRemoveDecision` with visible nodes, epochs, reason, and exact
+   serving plan.
+3. Write `NodeRemovalStarted`.
+4. Revoke scheduling or mark `no_new_work`.
+5. Request `node.<id>.rpc.drain_workloads`.
+6. Commit route facts removing active backends.
+7. Wait for local projection catch-up to the serving commit.
+8. Stop old workloads.
+9. Write `NodeTombstone`.
+10. Write `MachineRemoveCleanupDone`.
+11. Remove WireGuard peer.
+12. Expire service registry endpoints.
+
+If the coordinator dies after serving commit and before stop/tombstone, a fresh
+coordinator reads the decision plus exact serving commit from `FactSource` and
+resumes cleanup. It must not replay probe, drain, or serving writes. A raw
+tombstone excludes the node from projections, but cleanup is complete only when
+cleanup-done validates against the decision and the expected tombstone fact.
 
 Force remove:
 
