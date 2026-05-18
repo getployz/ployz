@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -24,6 +25,22 @@ use crate::projection_harness::projection_actor;
 
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(10);
 const LOAD_FACT_COUNTS: [usize; 3] = [200, 1_000, 10_000];
+const SQLITE_LOAD_FACT_COUNTS: [usize; 1] = [1_000];
+
+#[derive(Clone, Copy)]
+enum LoadStoreBackend {
+    Memory,
+    Sqlite,
+}
+
+impl LoadStoreBackend {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Memory => "memory",
+            Self::Sqlite => "sqlite",
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 struct P2pandaSyncFactSourceReport {
@@ -57,8 +74,11 @@ struct P2pandaSyncLoadRunReport {
     fact_count: usize,
     first_sync_received: u64,
     first_sync_imported: u64,
+    first_sync_conflicts: u64,
     repeat_sync_received: u64,
     projected_candidates: usize,
+    conflict_candidates: usize,
+    no_cross_island_leakage: bool,
     sync_ms: u128,
     repeat_sync_ms: u128,
     memory_before: MemorySnapshot,
@@ -103,8 +123,24 @@ async fn run_async() -> Result<(), String> {
     right.trust_replica_peer(&prod, sessions.right_replica.principal().clone());
 
     seed_projection_facts(&mut left, &sessions.left_writer, &left_author).await?;
-    seed_left_conflict(&mut left, &sessions.left_writer, &left_author).await?;
-    seed_right_conflict(&mut right, &sessions.right_writer, &right_author).await?;
+    seed_conflict(
+        &mut left,
+        &sessions.left_writer,
+        &left_author,
+        "fd00::10",
+        "iroh-left",
+        "wg-left",
+    )
+    .await?;
+    seed_conflict(
+        &mut right,
+        &sessions.right_writer,
+        &right_author,
+        "fd00::11",
+        "iroh-right",
+        "wg-right",
+    )
+    .await?;
     seed_laptop_fact(&mut left, &sessions.laptop_writer, &left_author).await?;
 
     let scope = PandaFactSyncScope::from_trusted_authors(
@@ -160,11 +196,13 @@ async fn run_async() -> Result<(), String> {
         sync_received(&repeat_sync),
         0,
     )?;
-    let load_runs = run_large_load_sync_cases(&bus, &prod, &sessions, &left_author).await?;
+    let load_runs =
+        run_large_load_sync_cases(&bus, &root, &prod, &sessions, &left_author, &right_author)
+            .await?;
 
     let laptop = IslandId::new("laptop");
     let no_cross_island_leakage = right
-        .list_candidates(&laptop, &fact_pattern("/facts/>")?, &sessions.projection)
+        .list_candidates(&laptop, &fact_pattern("/facts/>")?, &sessions.laptop_writer)
         .map_err(|error| format!("list cross-island candidates after sync: {error}"))?
         .iter()
         .all(|candidate| candidate.island() != &laptop);
@@ -306,7 +344,9 @@ fn sync_bus_sessions() -> (InMemoryBus, SyncBusSessions) {
         laptop_writer: authority.grant_in(
             IslandId::new("laptop"),
             PrincipalId::new("writer-left"),
-            Grant::empty().with_fact_write(fact_pattern("/facts/>").expect("fact pattern parses")),
+            Grant::empty()
+                .with_fact_write(fact_pattern("/facts/>").expect("fact pattern parses"))
+                .with_fact_read(fact_pattern("/facts/>").expect("fact pattern parses")),
         ),
         projection: authority.grant_in(
             IslandId::new("prod"),
@@ -334,45 +374,122 @@ fn sync_bus_sessions() -> (InMemoryBus, SyncBusSessions) {
 
 async fn run_large_load_sync_cases(
     bus: &InMemoryBus,
+    root: &Path,
     island: &IslandId,
     sessions: &SyncBusSessions,
-    author: &PandaFactAuthor,
+    left_author: &PandaFactAuthor,
+    right_author: &PandaFactAuthor,
 ) -> Result<Vec<P2pandaSyncLoadRunReport>, String> {
-    let mut reports = Vec::with_capacity(LOAD_FACT_COUNTS.len());
+    let context = LoadSyncCaseContext {
+        bus,
+        root,
+        island,
+        sessions,
+        left_author,
+        right_author,
+    };
+    let mut reports = Vec::with_capacity(LOAD_FACT_COUNTS.len() + SQLITE_LOAD_FACT_COUNTS.len());
     for fact_count in LOAD_FACT_COUNTS {
-        reports.push(run_large_load_sync_case(bus, island, sessions, author, fact_count).await?);
+        reports
+            .push(run_large_load_sync_case(&context, LoadStoreBackend::Memory, fact_count).await?);
+    }
+    for fact_count in SQLITE_LOAD_FACT_COUNTS {
+        reports
+            .push(run_large_load_sync_case(&context, LoadStoreBackend::Sqlite, fact_count).await?);
     }
     Ok(reports)
 }
 
+struct LoadSyncCaseContext<'a> {
+    bus: &'a InMemoryBus,
+    root: &'a Path,
+    island: &'a IslandId,
+    sessions: &'a SyncBusSessions,
+    left_author: &'a PandaFactAuthor,
+    right_author: &'a PandaFactAuthor,
+}
+
 async fn run_large_load_sync_case(
-    bus: &InMemoryBus,
-    island: &IslandId,
-    sessions: &SyncBusSessions,
-    author: &PandaFactAuthor,
+    context: &LoadSyncCaseContext<'_>,
+    backend: LoadStoreBackend,
     fact_count: usize,
 ) -> Result<P2pandaSyncLoadRunReport, String> {
+    let LoadSyncCaseContext {
+        bus,
+        root,
+        island,
+        sessions,
+        left_author,
+        right_author,
+    } = context;
     let memory_before = memory_snapshot();
-    let mut left = load_memory_store(bus, island, author)?;
-    let mut right = load_memory_store(bus, island, author)?;
+    let mut left = load_store(
+        backend,
+        bus,
+        root,
+        "left",
+        fact_count,
+        island,
+        &[left_author, right_author],
+    )
+    .await?;
+    let mut right = load_store(
+        backend,
+        bus,
+        root,
+        "right",
+        fact_count,
+        island,
+        &[left_author, right_author],
+    )
+    .await?;
     left.trust_replica_peer(island, sessions.left_replica.principal().clone());
     right.trust_replica_peer(island, sessions.right_replica.principal().clone());
 
     for index in 0..fact_count {
-        let key = fact_key(&format!("/facts/load/{fact_count}/{index}"))?;
+        let key = fact_key(&format!("/facts/load/{fact_count}/item/{index}"))?;
         left.write_fact_payload(
             &sessions.left_writer,
-            author,
+            left_author,
             key,
             FactPayload::from(format!("payload-{fact_count}-{index}").into_bytes()),
         )
         .await
         .map_err(|error| format!("write load fact {index} of {fact_count}: {error}"))?;
     }
+    let conflict_key = fact_key(&format!("/facts/load/{fact_count}/conflict"))?;
+    left.write_fact_payload(
+        &sessions.left_writer,
+        left_author,
+        conflict_key.clone(),
+        FactPayload::from(format!("left-conflict-{fact_count}").into_bytes()),
+    )
+    .await
+    .map_err(|error| format!("write left load conflict for {fact_count}: {error}"))?;
+    right
+        .write_fact_payload(
+            &sessions.right_writer,
+            right_author,
+            conflict_key,
+            FactPayload::from(format!("right-conflict-{fact_count}").into_bytes()),
+        )
+        .await
+        .map_err(|error| format!("write right load conflict for {fact_count}: {error}"))?;
+    left.write_fact_payload(
+        &sessions.laptop_writer,
+        left_author,
+        fact_key(&format!("/facts/load/{fact_count}/laptop-only"))?,
+        FactPayload::from(format!("laptop-only-{fact_count}").into_bytes()),
+    )
+    .await
+    .map_err(|error| format!("write laptop-only load fact for {fact_count}: {error}"))?;
 
     let scope = PandaFactSyncScope::from_trusted_authors(
-        island.clone(),
-        [(author.principal().clone(), author.author_key())],
+        (*island).clone(),
+        [
+            (left_author.principal().clone(), left_author.author_key()),
+            (right_author.principal().clone(), right_author.author_key()),
+        ],
     );
     let sync_started = Instant::now();
     let sync = sync_panda_fact_stores(
@@ -388,18 +505,21 @@ async fn run_large_load_sync_case(
     assert_eq_named(
         "load sync received operations",
         sync.right.received,
-        fact_count as u64,
+        fact_count as u64 + 1,
     )?;
     assert_eq_named(
         "load sync imported operations",
         sync.right.imported,
         fact_count as u64,
     )?;
+    assert_eq_named("right load sync conflicts", sync.right.conflict, 1)?;
+    assert_eq_named("left load sync received operations", sync.left.received, 1)?;
+    assert_eq_named("left load sync conflicts", sync.left.conflict, 1)?;
 
     let candidates = right
         .list_candidates(
             island,
-            &fact_pattern(&format!("/facts/load/{fact_count}/>"))?,
+            &fact_pattern(&format!("/facts/load/{fact_count}/item/>"))?,
             &sessions.left_writer,
         )
         .map_err(|error| format!("list load sync candidates for {fact_count}: {error}"))?;
@@ -414,6 +534,41 @@ async fn run_large_load_sync_case(
     {
         return Err(format!(
             "load sync for {fact_count} facts produced non-verified candidates"
+        ));
+    }
+    let conflict_candidates = right
+        .list_candidates(
+            island,
+            &fact_pattern(&format!("/facts/load/{fact_count}/conflict"))?,
+            &sessions.left_writer,
+        )
+        .map_err(|error| format!("list load sync conflict candidates for {fact_count}: {error}"))?;
+    assert_eq_named(
+        "load sync conflict candidates",
+        conflict_candidates.len(),
+        2,
+    )?;
+    if conflict_candidates
+        .iter()
+        .any(|candidate| candidate.status() != CandidateStatus::Conflict)
+    {
+        return Err(format!(
+            "load sync for {fact_count} facts did not preserve conflict status"
+        ));
+    }
+    let laptop = IslandId::new("laptop");
+    let no_cross_island_leakage = right
+        .list_candidates(
+            &laptop,
+            &fact_pattern(&format!("/facts/load/{fact_count}/>"))?,
+            &sessions.laptop_writer,
+        )
+        .map_err(|error| format!("list load sync laptop leakage for {fact_count}: {error}"))?
+        .iter()
+        .all(|candidate| candidate.island() != &laptop);
+    if !no_cross_island_leakage {
+        return Err(format!(
+            "load sync for {fact_count} facts leaked laptop island data"
         ));
     }
 
@@ -436,12 +591,15 @@ async fn run_large_load_sync_case(
     let memory_after = memory_snapshot();
 
     Ok(P2pandaSyncLoadRunReport {
-        store_backend: "memory",
+        store_backend: backend.label(),
         fact_count,
         first_sync_received: sync_received(&sync),
         first_sync_imported: sync.left.imported + sync.right.imported,
+        first_sync_conflicts: sync.left.conflict + sync.right.conflict,
         repeat_sync_received: sync_received(&repeat),
         projected_candidates: candidates.len(),
+        conflict_candidates: conflict_candidates.len(),
+        no_cross_island_leakage,
         sync_ms,
         repeat_sync_ms,
         memory_before,
@@ -449,16 +607,50 @@ async fn run_large_load_sync_case(
     })
 }
 
+async fn load_store(
+    backend: LoadStoreBackend,
+    bus: &InMemoryBus,
+    root: &Path,
+    side: &str,
+    fact_count: usize,
+    island: &IslandId,
+    authors: &[&PandaFactAuthor],
+) -> Result<PandaFactStore, String> {
+    match backend {
+        LoadStoreBackend::Memory => load_memory_store(bus, island, authors),
+        LoadStoreBackend::Sqlite => {
+            let path = root.join(format!(
+                "load-{}-{fact_count}-{side}-p2panda-facts.sqlite",
+                backend.label()
+            ));
+            open_sync_store(Arc::new(bus.clone()), path, island, authors).await
+        }
+    }
+}
+
 fn load_memory_store(
     bus: &InMemoryBus,
     island: &IslandId,
-    author: &PandaFactAuthor,
+    authors: &[&PandaFactAuthor],
 ) -> Result<PandaFactStore, String> {
     let mut store = PandaFactStore::new(Arc::new(bus.clone()));
-    store
-        .trust_author_key(island, author.principal().clone(), author.author_key())
-        .map_err(|error| format!("trust load p2panda author key: {error}"))?;
+    for trusted_island in trusted_sync_islands(island) {
+        trust_load_authors(&mut store, &trusted_island, authors)?;
+    }
     Ok(store)
+}
+
+fn trust_load_authors(
+    store: &mut PandaFactStore,
+    island: &IslandId,
+    authors: &[&PandaFactAuthor],
+) -> Result<(), String> {
+    for author in authors {
+        store
+            .trust_author_key(island, author.principal().clone(), author.author_key())
+            .map_err(|error| format!("trust load p2panda author key: {error}"))?;
+    }
+    Ok(())
 }
 
 async fn open_sync_store(
@@ -467,14 +659,17 @@ async fn open_sync_store(
     island: &IslandId,
     authors: &[&PandaFactAuthor],
 ) -> Result<PandaFactStore, String> {
+    let islands = trusted_sync_islands(island);
     let config = authors.iter().fold(
-        PandaSqliteOpenConfig::new(path, vec![island.clone()]),
+        PandaSqliteOpenConfig::new(path, islands.clone()),
         |config, author| {
-            config.with_trusted_author_key(PandaTrustedAuthorKey::new(
-                island.clone(),
-                author.principal().clone(),
-                author.author_key(),
-            ))
+            islands.iter().fold(config, |config, trusted_island| {
+                config.with_trusted_author_key(PandaTrustedAuthorKey::new(
+                    trusted_island.clone(),
+                    author.principal().clone(),
+                    author.author_key(),
+                ))
+            })
         },
     );
     PandaFactStore::open_sqlite(bus, config)
@@ -482,32 +677,22 @@ async fn open_sync_store(
         .map_err(|error| format!("open p2panda sync store: {error}"))
 }
 
-async fn seed_left_conflict(
-    store: &mut PandaFactStore,
-    session: &BusSession,
-    author: &PandaFactAuthor,
-) -> Result<(), String> {
-    write_projection_fact(
-        store,
-        session,
-        author,
-        "/facts/node/node-conflict/joined/1",
-        ProjectionFactPayload::NodeJoined(NodeJoinedFact {
-            node_id: NodeId::new("node-conflict"),
-            epoch: 1,
-            overlay_ip: "fd00::10".to_string(),
-            iroh_endpoint_id: "iroh-left".to_string(),
-            wg_public_key: "wg-left".to_string(),
-        }),
-    )
-    .await
-    .map(|_| ())
+fn trusted_sync_islands(island: &IslandId) -> Vec<IslandId> {
+    let laptop = IslandId::new("laptop");
+    if island == &laptop {
+        vec![island.clone()]
+    } else {
+        vec![island.clone(), laptop]
+    }
 }
 
-async fn seed_right_conflict(
+async fn seed_conflict(
     store: &mut PandaFactStore,
     session: &BusSession,
     author: &PandaFactAuthor,
+    overlay_ip: &str,
+    iroh_endpoint_id: &str,
+    wg_public_key: &str,
 ) -> Result<(), String> {
     write_projection_fact(
         store,
@@ -517,9 +702,9 @@ async fn seed_right_conflict(
         ProjectionFactPayload::NodeJoined(NodeJoinedFact {
             node_id: NodeId::new("node-conflict"),
             epoch: 1,
-            overlay_ip: "fd00::11".to_string(),
-            iroh_endpoint_id: "iroh-right".to_string(),
-            wg_public_key: "wg-right".to_string(),
+            overlay_ip: overlay_ip.to_string(),
+            iroh_endpoint_id: iroh_endpoint_id.to_string(),
+            wg_public_key: wg_public_key.to_string(),
         }),
     )
     .await
