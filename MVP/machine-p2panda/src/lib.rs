@@ -210,6 +210,9 @@ fn machine_fact_store_error(operation: &'static str, error: PandaFactError) -> M
         PandaFactError::UntrustedAuthorKey { island, principal } => {
             MachineRemoveError::UntrustedAuthorKey { island, principal }
         }
+        PandaFactError::MissingAuthorityEpoch {
+            island, principal, ..
+        } => MachineRemoveError::UntrustedAuthorKey { island, principal },
         PandaFactError::AuthorKeyMismatch { island, principal } => {
             MachineRemoveError::AuthorKeyMismatch { island, principal }
         }

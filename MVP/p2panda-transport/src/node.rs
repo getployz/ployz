@@ -495,32 +495,6 @@ impl PandaNetReplayCache {
     }
 }
 
-pub(crate) struct PandaNetAutoReplayCache {
-    cache: PandaNetReplayCache,
-}
-
-impl PandaNetAutoReplayCache {
-    pub(crate) fn new(capacity: usize) -> Self {
-        Self {
-            cache: PandaNetReplayCache::new(capacity),
-        }
-    }
-
-    fn remember(&mut self, hash: Hash) -> PandaNetReplayStatus {
-        if self.cache.contains(hash) {
-            self.cache.record_replay();
-            return PandaNetReplayStatus::Replayed;
-        }
-        self.cache.insert(hash);
-        PandaNetReplayStatus::Fresh
-    }
-}
-
-enum PandaNetReplayStatus {
-    Fresh,
-    Replayed,
-}
-
 pub(crate) enum PandaNetStreamBody {
     Body {
         operation_hash: Hash,
@@ -548,20 +522,6 @@ impl PandaNetStream {
         match self.next_body_limited(usize::MAX).await? {
             PandaNetStreamBody::Body { body, .. } => Ok(body),
             PandaNetStreamBody::TooLarge { .. } => unreachable!("usize::MAX accepts every body"),
-        }
-    }
-
-    pub(crate) async fn next_unique_body_limited(
-        &mut self,
-        max_body_bytes: usize,
-        replay_cache: &mut PandaNetAutoReplayCache,
-    ) -> Result<PandaNetStreamBody, PandaNetTransportError> {
-        loop {
-            let stream_body = self.next_body_limited(max_body_bytes).await?;
-            match replay_cache.remember(stream_body.operation_hash()) {
-                PandaNetReplayStatus::Fresh => return Ok(stream_body),
-                PandaNetReplayStatus::Replayed => {}
-            }
         }
     }
 

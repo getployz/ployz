@@ -2985,6 +2985,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "mvp-bus",
+ "mvp-p2panda-authz",
  "mvp-projection",
  "p2panda-core",
  "p2panda-store",

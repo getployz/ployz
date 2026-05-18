@@ -182,6 +182,12 @@ fn classify_fact_error(error: PandaFactError) -> PandaNetFactImportOutcome {
             island,
             principal,
         }),
+        PandaFactError::MissingAuthorityEpoch {
+            island, principal, ..
+        } => PandaNetFactImportOutcome::Rejected(PandaNetFactImportRejection::UntrustedAuthor {
+            island,
+            principal,
+        }),
         PandaFactError::AuthorKeyMismatch { island, principal } => {
             PandaNetFactImportOutcome::Rejected(PandaNetFactImportRejection::AuthorKeyMismatch {
                 island,
