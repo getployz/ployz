@@ -450,67 +450,62 @@ pub struct PandaFactStore {
     trusted_replica_peers: BTreeSet<(IslandId, PrincipalId)>,
 }
 
-#[cfg(any(test, feature = "harness"))]
-pub mod harness {
-    use thiserror::Error;
+const WIRE_MAGIC: &[u8; 4] = b"PFO1";
+const HEADER_LEN_BYTES: usize = 4;
 
-    use super::PandaFactOperation;
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PandaFactWireEnvelopeError {
+    #[error("p2panda operation wire envelope is too short")]
+    TooShort,
+    #[error("p2panda operation wire envelope has bad magic")]
+    BadMagic,
+    #[error("p2panda operation wire envelope declared header length exceeds envelope")]
+    HeaderLengthExceedsEnvelope,
+    #[error("p2panda operation wire envelope is missing operation body")]
+    MissingBody,
+}
 
-    const WIRE_MAGIC: &[u8; 4] = b"PFO1";
-    const HEADER_LEN_BYTES: usize = 4;
+pub struct PandaFactWireEnvelope;
 
-    #[derive(Debug, Error, PartialEq, Eq)]
-    pub enum PandaFactWireEnvelopeError {
-        #[error("p2panda operation wire envelope is too short")]
-        TooShort,
-        #[error("p2panda operation wire envelope has bad magic")]
-        BadMagic,
-        #[error("p2panda operation wire envelope declared header length exceeds envelope")]
-        HeaderLengthExceedsEnvelope,
-        #[error("p2panda operation wire envelope is missing operation body")]
-        MissingBody,
+impl PandaFactWireEnvelope {
+    #[must_use]
+    pub fn encode(operation: &PandaFactOperation) -> Vec<u8> {
+        let header_len =
+            u32::try_from(operation.header.len()).expect("p2panda operation header fits in u32");
+        let mut bytes = Vec::with_capacity(
+            WIRE_MAGIC.len() + HEADER_LEN_BYTES + operation.header.len() + operation.body.len(),
+        );
+        bytes.extend_from_slice(WIRE_MAGIC);
+        bytes.extend_from_slice(&header_len.to_be_bytes());
+        bytes.extend_from_slice(&operation.header);
+        bytes.extend_from_slice(&operation.body);
+        bytes
     }
 
-    pub struct PandaFactWireEnvelope;
-
-    impl PandaFactWireEnvelope {
-        #[must_use]
-        pub fn encode(operation: &PandaFactOperation) -> Vec<u8> {
-            let header_len = u32::try_from(operation.header.len())
-                .expect("p2panda operation header fits in u32");
-            let mut bytes = Vec::with_capacity(
-                WIRE_MAGIC.len() + HEADER_LEN_BYTES + operation.header.len() + operation.body.len(),
-            );
-            bytes.extend_from_slice(WIRE_MAGIC);
-            bytes.extend_from_slice(&header_len.to_be_bytes());
-            bytes.extend_from_slice(&operation.header);
-            bytes.extend_from_slice(&operation.body);
-            bytes
+    pub fn decode(
+        bytes: &[u8],
+    ) -> std::result::Result<PandaFactOperation, PandaFactWireEnvelopeError> {
+        if bytes.len() < WIRE_MAGIC.len() + HEADER_LEN_BYTES {
+            return Err(PandaFactWireEnvelopeError::TooShort);
         }
-
-        pub fn decode(bytes: &[u8]) -> Result<PandaFactOperation, PandaFactWireEnvelopeError> {
-            if bytes.len() < WIRE_MAGIC.len() + HEADER_LEN_BYTES {
-                return Err(PandaFactWireEnvelopeError::TooShort);
-            }
-            let (magic, rest) = bytes.split_at(WIRE_MAGIC.len());
-            if magic != WIRE_MAGIC {
-                return Err(PandaFactWireEnvelopeError::BadMagic);
-            }
-            let (header_len, body) = rest.split_at(HEADER_LEN_BYTES);
-            let header_len = u32::from_be_bytes(
-                header_len
-                    .try_into()
-                    .expect("split header length is exactly four bytes"),
-            ) as usize;
-            if body.len() < header_len {
-                return Err(PandaFactWireEnvelopeError::HeaderLengthExceedsEnvelope);
-            }
-            let (header, body) = body.split_at(header_len);
-            if body.is_empty() {
-                return Err(PandaFactWireEnvelopeError::MissingBody);
-            }
-            Ok(PandaFactOperation::new(header.to_vec(), body.to_vec()))
+        let (magic, rest) = bytes.split_at(WIRE_MAGIC.len());
+        if magic != WIRE_MAGIC {
+            return Err(PandaFactWireEnvelopeError::BadMagic);
         }
+        let (header_len, body) = rest.split_at(HEADER_LEN_BYTES);
+        let header_len = u32::from_be_bytes(
+            header_len
+                .try_into()
+                .expect("split header length is exactly four bytes"),
+        ) as usize;
+        if body.len() < header_len {
+            return Err(PandaFactWireEnvelopeError::HeaderLengthExceedsEnvelope);
+        }
+        let (header, body) = body.split_at(header_len);
+        if body.is_empty() {
+            return Err(PandaFactWireEnvelopeError::MissingBody);
+        }
+        Ok(PandaFactOperation::new(header.to_vec(), body.to_vec()))
     }
 }
 
@@ -2799,8 +2794,6 @@ mod tests {
 
     #[tokio::test]
     async fn operation_wire_envelope_round_trips_and_rejects_malformed_bytes() {
-        use crate::harness::{PandaFactWireEnvelope, PandaFactWireEnvelopeError};
-
         let (mut store, authority) = store_with_authority();
         let writer = grant_prod(
             &authority,

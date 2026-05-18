@@ -15,8 +15,7 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::NodeId;
 use mvp_p2panda_facts::{
-    PandaFactAuthor, PandaFactError, PandaFactStore, PandaFactWriteOutcome,
-    harness::PandaFactWireEnvelope,
+    PandaFactAuthor, PandaFactError, PandaFactStore, PandaFactWireEnvelope, PandaFactWriteOutcome,
 };
 use mvp_projection::{CandidateStatus, FactSource, NodeJoinedFact, ProjectionFactPayload};
 
