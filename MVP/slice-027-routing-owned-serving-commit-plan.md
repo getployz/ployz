@@ -1,6 +1,6 @@
 ---
 title: Slice 027 Routing-Owned Serving Commit Plan
-status: active
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md

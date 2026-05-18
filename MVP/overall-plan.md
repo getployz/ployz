@@ -409,6 +409,15 @@ p2panda-backed serving commit, projection catch-up, then drain as a
 consequence of that commit. See
 [MVP/slice-026-deploy-p2panda-command-surface.md](slice-026-deploy-p2panda-command-surface.md).
 
+The routing-owned serving commit correction then moved serving fact writer
+ownership to `mvp-routing`. Deploy and machine remove both consume the same
+`ServingFactWriter` contract, and the p2panda serving writer lives in
+`mvp-routing-p2panda` rather than deploy. Machine remove still uses its
+existing iroh-docs machine facts for this proof; p2panda machine remove is a
+separate canary because it must decide join-fact inputs and machine error
+mapping first. See
+[MVP/slice-027-routing-owned-serving-commit.md](slice-027-routing-owned-serving-commit.md).
+
 The next implementation/proof slice should keep paying down product semantic
 leverage rather than adding another generic substrate layer. Plan it against
 the current map and prefer a product rule that reuses bus, p2panda facts,
