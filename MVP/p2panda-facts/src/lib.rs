@@ -49,6 +49,8 @@ pub enum PandaFactError {
     InvalidAuthorKey { message: String },
     #[error("p2panda operation extensions were invalid: {message}")]
     InvalidExtensions { message: String },
+    #[error("p2panda operation wire envelope is malformed: {message}")]
+    MalformedOperationEnvelope { message: String },
     #[error("cannot import {operation} operation through {session} island session")]
     ImportIslandMismatch {
         session: IslandId,
@@ -412,6 +414,9 @@ pub struct PandaFactOperation {
 }
 
 impl PandaFactOperation {
+    const WIRE_MAGIC: &'static [u8; 4] = b"PFO1";
+    const HEADER_LEN_BYTES: usize = 4;
+
     fn new(header: Vec<u8>, body: Vec<u8>) -> Self {
         Self {
             header: header.into(),
@@ -429,6 +434,52 @@ impl PandaFactOperation {
 
     fn header_bytes(&self) -> Vec<u8> {
         self.header.to_vec()
+    }
+
+    #[must_use]
+    pub fn to_wire_bytes(&self) -> Vec<u8> {
+        let header_len =
+            u32::try_from(self.header.len()).expect("p2panda operation header fits in u32");
+        let mut bytes = Vec::with_capacity(
+            Self::WIRE_MAGIC.len() + Self::HEADER_LEN_BYTES + self.header.len() + self.body.len(),
+        );
+        bytes.extend_from_slice(Self::WIRE_MAGIC);
+        bytes.extend_from_slice(&header_len.to_be_bytes());
+        bytes.extend_from_slice(&self.header);
+        bytes.extend_from_slice(&self.body);
+        bytes
+    }
+
+    pub fn from_wire_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < Self::WIRE_MAGIC.len() + Self::HEADER_LEN_BYTES {
+            return Err(PandaFactError::MalformedOperationEnvelope {
+                message: "too short".to_string(),
+            });
+        }
+        let (magic, rest) = bytes.split_at(Self::WIRE_MAGIC.len());
+        if magic != Self::WIRE_MAGIC {
+            return Err(PandaFactError::MalformedOperationEnvelope {
+                message: "bad magic".to_string(),
+            });
+        }
+        let (header_len, body) = rest.split_at(Self::HEADER_LEN_BYTES);
+        let header_len = u32::from_be_bytes(
+            header_len
+                .try_into()
+                .expect("split header length is exactly four bytes"),
+        ) as usize;
+        if body.len() < header_len {
+            return Err(PandaFactError::MalformedOperationEnvelope {
+                message: "declared header length exceeds envelope".to_string(),
+            });
+        }
+        let (header, body) = body.split_at(header_len);
+        if body.is_empty() {
+            return Err(PandaFactError::MalformedOperationEnvelope {
+                message: "missing operation body".to_string(),
+            });
+        }
+        Ok(Self::new(header.to_vec(), body.to_vec()))
     }
 }
 
@@ -2688,5 +2739,38 @@ mod tests {
             resolved.get(&signing_key.verifying_key()),
             Some(&vec![log_id])
         );
+    }
+
+    #[tokio::test]
+    async fn operation_wire_envelope_round_trips_and_rejects_malformed_bytes() {
+        let (mut store, authority) = store_with_authority();
+        let writer = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty().with_fact_write(pattern("/facts/>")),
+        );
+        let author = PandaFactAuthor::new(principal("writer"));
+        store
+            .write_fact_payload(
+                &writer,
+                &author,
+                key("/facts/node/node-wire/joined/1"),
+                FactPayload::from_static(b"wire-payload"),
+            )
+            .await
+            .expect("write source operation");
+        let operation = store
+            .export_operations()
+            .next()
+            .expect("operation was recorded");
+
+        let wire = operation.to_wire_bytes();
+        let round_trip =
+            PandaFactOperation::from_wire_bytes(&wire).expect("decode wire operation envelope");
+        assert_eq!(round_trip, *operation);
+        assert!(matches!(
+            PandaFactOperation::from_wire_bytes(b"not an operation"),
+            Err(PandaFactError::MalformedOperationEnvelope { .. })
+        ));
     }
 }

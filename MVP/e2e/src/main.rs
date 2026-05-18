@@ -36,6 +36,7 @@ mod membership_wireguard_contract {
 mod metrics;
 mod p2panda_acme_http01_contract;
 mod p2panda_fact_source_contract;
+mod p2panda_net_sync_contract;
 #[cfg(unix)]
 mod p2panda_process_role_serving_contract;
 mod p2panda_projection_fixture;
@@ -139,6 +140,7 @@ const SCENARIOS: &[Scenario] = &[
         "p2panda-acme-http01-contract",
         p2panda_acme_http01_contract::run,
     ),
+    Scenario::new("p2panda-net-sync-contract", p2panda_net_sync_contract::run),
     Scenario::new("iroh-docs-contract", iroh_docs_contract::run),
     Scenario::new("lease-acme-contract", lease_acme_contract::run),
     Scenario::new(
