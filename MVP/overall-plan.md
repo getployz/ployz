@@ -504,13 +504,15 @@ no workflow-engine replay semantics or transport dependency changes were added.
 The report is
 [MVP/slice-036-phased-command-primitive.md](slice-036-phased-command-primitive.md).
 
-Slice 037 is planned as the second command-semantic-leverage proof:
-[MVP/slice-037-machine-remove-phased-command-plan.md](slice-037-machine-remove-phased-command-plan.md).
-It targets machine remove because it is node-facing, already has manual
-begin/finalize/recovery choreography, and directly exercises the daemon-down
-steady-state goal. The slice should migrate machine remove onto `run_phased`,
-extract the p2panda command phase-store adapter out of E2E-local code, and
-measure whether command-specific recovery surface actually shrinks.
+Slice 037 is planned as a p2panda `0.6` substrate-deletion investigation:
+[MVP/slice-037-p2panda-06-substrate-deletion-plan.md](slice-037-p2panda-06-substrate-deletion-plan.md).
+The operator explicitly wants to bias toward maintained p2panda crates rather
+than growing more MVP-local substrate. `p2panda-net 0.6.0` is now on crates.io
+and depends on the non-RC iroh `0.98` family, so the next slice should compile
+against the current p2panda API and decide whether `PFO1`,
+`PandaNetQuarantineLog`, manual trust fallbacks, process JSON facts, and
+historical iroh-docs proofs can be deleted or parked before adding another
+product feature.
 
 ## Crate Scout Protocol
 
