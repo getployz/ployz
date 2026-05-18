@@ -84,6 +84,38 @@ Checked on 2026-05-18:
   should be a later product slice. Do not mix blob migration into this transport
   dependency cleanup.
 
+Local dry-run update on 2026-05-18:
+
+- A mechanical manifest/import swap is not enough. Changing
+  `mvp-p2panda-transport` to crates.io `p2panda-* 0.5.2` and running
+  `cargo update --manifest-path MVP/Cargo.toml -p p2panda-net --precise 0.5.2`
+  exposed real API drift between the git rev and the crates.io packages.
+- The crates.io `p2panda-net 0.5.2` line resolves through `iroh 0.96.1`,
+  `iroh-base 0.96.1`, `iroh-gossip 0.96.0`, and the crates.io
+  `p2panda-core/store/sync 0.5.2` packages. The current MVP iroh slice is on
+  the newer iroh line. Treat any iroh downgrade as an explicit dependency
+  decision, not incidental cargo output.
+- First observed compile blockers from the dry run:
+  - `p2panda_core::Topic`, `SigningKey`, and `VerifyingKey` are not available
+    at the same paths as the git rev; the registry API uses different key/topic
+    names in places.
+  - `p2panda_net::iroh_endpoint::from_verifying_key` and endpoint builder
+    signing-key setup differ from the git rev.
+  - `p2panda_store::SqliteStore` is generic in the registry API, and the
+    `logs`, `topics`, `SqliteStoreBuilder`, and operation insert/associate
+    APIs differ from the git rev.
+  - `p2panda_sync::protocols::TopicLogSyncEvent` is generic and has variants
+    like `Operation`, `SyncStarted`, `SyncFinished`, `LiveModeStarted`, and
+    `LiveModeFinished`, not the git-rev variant names currently used by
+    `PandaNetStream`.
+  - `NodeInfo` ticket encoding via `p2panda_core::cbor` is not directly
+    available on the registry type as used by the git-rev wrapper.
+
+This slice should therefore start with an adapter spike, not a broad code
+rewrite. The desired outcome is still to remove the git dependency, but only if
+the transport wrapper can preserve the existing Ployz-facing API and E2E
+behavior without dragging registry p2panda types into product crates.
+
 ## Scope
 
 In scope:
@@ -126,24 +158,33 @@ Files:
 
 Plan:
 
+0. Create a short-lived adapter spike and compile it before reshaping the
+   public transport wrapper. Do not commit a half-migrated manifest.
 1. Change `mvp-p2panda-transport` from git p2panda dependencies to crates.io
    `p2panda-net = "0.5.2"`, `p2panda-core = "0.5.2"`,
    `p2panda-store = { version = "0.5.2", features = ["sqlite", "macros"] }`,
    and `p2panda-sync = "0.5.2"` as needed.
-2. Remove `*-git` import aliases from transport source.
-3. Compile `mvp-p2panda-transport`.
-4. If compile fails, classify each failure:
+2. Resolve the iroh-line decision deliberately:
+   - keep MVP iroh on the current line and retain git p2panda if crates.io
+     forces an incompatible downgrade, or
+   - move MVP iroh to the crates.io p2panda-compatible line and update the iroh
+     wrapper API deliberately.
+3. Remove `*-git` import aliases from transport source only after the registry
+   API adapter compiles.
+4. Compile `mvp-p2panda-transport` with the lockfile updated.
+5. If compile fails, classify each failure:
    - simple module/path rename,
    - missing feature flag,
    - behavioral API missing from crates.io,
    - incompatible p2panda operation type between transport and fact store.
-5. Fix simple rename/feature issues in this slice. If a real behavior is absent
+6. Fix simple rename/feature issues in this slice. If a real behavior is absent
    from crates.io, keep the git dependency only for that symbol and document it
    in the slice completion notes.
 
 Test scenarios:
 
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-transport --all-targets`
+- `cargo check --manifest-path MVP/Cargo.toml -p mvp-p2panda-transport --locked --all-targets`
 - Existing unit tests must still prove ticket round-trip, owned node sync,
   envelope-size rejection, deferred import retry, pending queue full,
   duplicate/conflict import reporting, and trusted-replica enforcement.
@@ -242,7 +283,10 @@ implementation commit.
 ## Success Criteria
 
 - `mvp-p2panda-transport` uses crates.io p2panda dependencies where public APIs
-  permit it.
+  permit it, or the completion note names exact unresolved API blockers and
+  leaves the git dependency intentionally.
+- `cargo check --manifest-path MVP/Cargo.toml -p mvp-p2panda-transport --locked --all-targets`
+  passes; lockfile consistency is part of the slice, not optional cleanup.
 - No product/domain crate learns raw p2panda-net types.
 - Existing p2panda-net E2Es pass without weakening assertions.
 - The decision ledger clearly says whether git p2panda is gone or exactly why
