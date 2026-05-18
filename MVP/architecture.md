@@ -396,13 +396,11 @@ p2panda fact operations
 
 p2panda-net is the preferred maintained transport for moving fact operations
 between nodes. In the current MVP shape it is a carrier, not the authority
-boundary: received network records carry opaque stable Ployz fact-operation
-envelopes, and those envelopes must be imported through the canonical
-`PandaFactStore` validation path before projection can observe them. A
-p2panda-net store populated before Ployz authorization is quarantine transport
-state, not durable cluster truth.
-Network-carried fact operations enter through a trusted same-island replica
-import gate before normal fact validation runs.
+boundary: live fact-node transport carries canonical
+`Operation<PandaFactExtensions>` values, and received operations must still be
+imported through the `PandaFactStore` trusted same-island replica gate before
+projection can observe them. A p2panda-net store populated before Ployz
+authorization is transport state, not durable cluster truth.
 
 Correctness must not depend on `applied_fact` bookkeeping. If projection state
 is uncertain, delete/rebuild SQLite from facts and atomically publish a fresh

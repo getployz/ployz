@@ -15,6 +15,19 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
+- Slice 038 proves that the active MVP workspace can use `p2panda-net 0.6.0`
+  on non-RC `iroh 0.98.2`. The earlier "can we use net without RC iroh?"
+  question is resolved in favor of using it.
+- Slice 038 moves the live `PandaNetFactNode` success path from opaque `PFO1`
+  wrapper bodies to canonical `Operation<PandaFactExtensions>` values backed by
+  `SharedPandaFactStore`. `PandaFactWireEnvelope`, `PandaNetNode`, and
+  `PandaNetQuarantineLog` remain only as legacy/direct-probe scaffolding and
+  are the first deletion targets for Slice 039.
+- Slice 039 is planned as a deletion audit, not a product-feature slice. The
+  audit should decide whether remaining opaque-body transport, bus/process/iroh
+  fact sources, and manual membership trust maps can be deleted, demoted to
+  fixtures, or replaced by p2panda-auth/net/store primitives before more
+  business code is added.
 - Slice 037 adds an excluded nested `mvp-p2panda-06-spike` crate because the
   active MVP workspace cannot resolve `iroh 0.96` and p2panda-net's
   `iroh 0.98` line together: the two iroh-base versions pin different exact

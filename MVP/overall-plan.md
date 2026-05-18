@@ -534,6 +534,20 @@ operation on the live transport path, with `PFO1`, `PandaFactWireEnvelope`, and
 `PandaNetQuarantineLog` deleted or pushed out of product success paths only
 after branchable import outcomes and process-serving E2Es still pass.
 
+The result is
+[MVP/slice-038-p2panda-06-canonical-transport.md](slice-038-p2panda-06-canonical-transport.md):
+the active MVP workspace resolves `p2panda-net 0.6.0` and non-RC `iroh 0.98`,
+and `PandaNetFactNode` now publishes/imports canonical
+`Operation<PandaFactExtensions>` values against `SharedPandaFactStore`.
+`PFO1`, the opaque-body `PandaNetNode`, and `PandaNetQuarantineLog` still exist
+as legacy/direct-probe scaffolding, not as the live fact-node success path.
+
+Slice 039 is a p2panda substitution deletion audit:
+[MVP/slice-039-p2panda-substitution-deletion-audit-plan.md](slice-039-p2panda-substitution-deletion-audit-plan.md).
+Now that p2panda-net works without RC iroh, the next decision is which
+remaining MVP-local plumbing can be deleted or demoted before another product
+feature is added.
+
 ## Crate Scout Protocol
 
 Before each implementation slice, do a short dependency scout and record it in
