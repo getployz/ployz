@@ -4,6 +4,7 @@ mod authority_contract;
 mod bridge_contract;
 mod bus_contract;
 mod bus_syntax;
+mod deploy_candidate_cleanup_contract;
 mod deploy_commit_drain_contract;
 mod deploy_restart_recovery_contract;
 mod docs_backed_acme_http01_contract;
@@ -159,6 +160,10 @@ const SCENARIOS: &[Scenario] = &[
     Scenario::new(
         "deploy-commit-drain-contract",
         deploy_commit_drain_contract::run,
+    ),
+    Scenario::new(
+        "deploy-candidate-cleanup-contract",
+        deploy_candidate_cleanup_contract::run,
     ),
     Scenario::new(
         "deploy-restart-recovery-contract",
