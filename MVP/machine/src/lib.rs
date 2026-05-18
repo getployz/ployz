@@ -7,7 +7,8 @@ pub use remove::{
     BusMachineFactWriter, CleanupFailureKind, MachineFactWriter, MachineRemoveCommandResult,
     MachineRemoveCoordinator, MachineRemoveOutcome, MachineRemoveRequest, MachineRemoveTimeouts,
     MachineRemoveValidationError, PendingMachineRemove, RemoveCleanupPendingReason,
-    RemoveCleanupStatus, WrittenMachineFact,
+    RemoveCleanupStatus, WrittenMachineFact, prepare_remove_subject,
+    stop_removed_workloads_subject,
 };
 pub use wire::{
     PrepareRemoveIntent, PrepareRemoveOutcome, PrepareRemoveReply, PrepareRemoveRequest,

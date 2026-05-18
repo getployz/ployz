@@ -210,9 +210,21 @@ Current proof status:
   peer table, tombstoned peers are rejected before opening a service
   connection, and peer endpoints come from the applied snapshot rather than
   caller-supplied addresses.
-- Remaining E2E-5 work is graceful remove with workload drain, route removal,
-  runtime stop, real host/container WireGuard interface mutation, and a
-  production join RPC over iroh/PloyzBus.
+- Slice 017 adds `machine-remove-contract`.
+- The graceful-remove proof uses four logical nodes: a target, remaining source
+  node, remaining destination node, and operator/observer. Membership/removal
+  facts are docs-backed through `mvp-iroh`; serving cutover still uses the
+  current bus-backed serving fact writer; projection reads both through one
+  combined `FactSource` for the scenario. The command probes the target before
+  mutation, writes `NodeRemovalStarted`, requires
+  `NoNewWorkAndDrained`, commits route removal, projects serving catch-up,
+  stops removed workloads, tombstones the node, rebuilds projection from facts,
+  replans the last-applied mesh snapshot, proves remaining source-to-destination
+  traffic still works, and rejects traffic to the removed target from the
+  applied peer table.
+- Remaining E2E-5 work is real host/container WireGuard interface mutation,
+  real runtime workload stop/transfer backends behind the same participant
+  contract, and a production join/remove RPC path over iroh/PloyzBus.
 
 ### E2E-6: Deploy Commit And Drain
 
