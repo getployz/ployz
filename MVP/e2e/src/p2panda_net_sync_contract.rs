@@ -1,22 +1,14 @@
-use std::collections::HashMap;
-use std::fmt::Display;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures_util::Stream;
-use p2panda_core_git::Topic;
-use p2panda_sync_git::{FromSync, protocols::TopicLogSyncEvent};
 use serde::Serialize;
-use tokio::time::timeout;
-use tokio_stream::StreamExt;
-use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::NodeId;
 use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, PandaFactWireEnvelope};
 use mvp_p2panda_transport::{
-    PandaNetFactImportOutcome, PandaNetFactImportRejection, import_fact_body,
+    PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetWireTransportConfig,
+    import_fact_body, transport_wire_bodies,
 };
 use mvp_projection::{CandidateStatus, FactSource, NodeJoinedFact, ProjectionFactPayload};
 
@@ -26,11 +18,7 @@ use crate::metrics::{reset_dir, scenario_dir, write_json};
 use crate::p2panda_projection_fixture::write_projection_fact;
 use crate::projection_harness::projection_actor;
 
-const NET_EVENT_TIMEOUT: Duration = Duration::from_secs(5);
-const NET_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(10);
-
-type NetEvent = Result<FromSync<TopicLogSyncEvent>, BroadcastStreamRecvError>;
 
 #[derive(Debug, Serialize)]
 struct P2pandaNetSyncReport {
@@ -397,93 +385,10 @@ fn latest_wire_operation(store: &PandaFactStore) -> Result<Vec<u8>, String> {
 }
 
 async fn transport_wire_operations(wire_operations: Vec<Vec<u8>>) -> Result<Vec<Vec<u8>>, String> {
-    let topic: Topic = [88; 32].into();
-    let mut receiver = net_timeout(
-        "receiver startup",
-        p2panda_net::test_utils::TestNode::spawn([88; 32], None),
+    transport_wire_bodies(
+        PandaNetWireTransportConfig::new([88; 32], [88; 32], [88; 32], [89; 32]),
+        wire_operations,
     )
-    .await?;
-    let receiver_info = receiver.node_info();
-    let mut sender = net_timeout(
-        "sender startup",
-        p2panda_net::test_utils::TestNode::spawn([89; 32], Some(receiver_info.bootstrap())),
-    )
-    .await?;
-
-    let receiver_handle =
-        net_result("receiver log stream", receiver.log_sync.stream(topic, true)).await?;
-    let mut receiver_events =
-        net_result("receiver subscription", receiver_handle.subscribe()).await?;
-
-    for wire in &wire_operations {
-        net_timeout(
-            "operation creation",
-            sender.client.create_operation(wire, 0),
-        )
-        .await?;
-    }
-    net_timeout(
-        "topic association",
-        sender
-            .client
-            .associate(&topic, &HashMap::from([(sender.client_id(), vec![0])])),
-    )
-    .await?;
-    let _sender_handle =
-        net_result("sender log stream", sender.log_sync.stream(topic, true)).await?;
-
-    collect_transported_operations(&mut receiver_events, wire_operations.len()).await
-}
-
-async fn net_timeout<T>(label: &'static str, future: impl Future<Output = T>) -> Result<T, String> {
-    timeout(NET_SETUP_TIMEOUT, future)
-        .await
-        .map_err(|_| format!("timed out waiting for p2panda-net {label}"))
-}
-
-async fn net_result<T, E: Display>(
-    label: &'static str,
-    future: impl Future<Output = Result<T, E>>,
-) -> Result<T, String> {
-    net_timeout(label, future)
-        .await?
-        .map_err(|error| format!("p2panda-net {label}: {error}"))
-}
-
-async fn collect_transported_operations(
-    events: &mut (impl Stream<Item = NetEvent> + Unpin),
-    expected: usize,
-) -> Result<Vec<Vec<u8>>, String> {
-    let mut received = Vec::with_capacity(expected);
-    while received.len() < expected {
-        let event = next_net_event(events, "operation").await?;
-        match event.event {
-            TopicLogSyncEvent::OperationReceived { operation, .. } => {
-                let Some(body) = operation.body else {
-                    return Err("p2panda-net delivered operation without a body".to_string());
-                };
-                received.push(body.to_bytes());
-            }
-            TopicLogSyncEvent::Failed { error } => {
-                return Err(format!("p2panda-net sync failed: {error}"));
-            }
-            TopicLogSyncEvent::SyncFinished { .. }
-            | TopicLogSyncEvent::SessionFinished { .. }
-            | TopicLogSyncEvent::LiveModeStarted
-            | TopicLogSyncEvent::SessionStarted
-            | TopicLogSyncEvent::SyncStarted { .. } => {}
-        }
-    }
-    Ok(received)
-}
-
-async fn next_net_event(
-    events: &mut (impl Stream<Item = NetEvent> + Unpin),
-    label: &'static str,
-) -> Result<FromSync<TopicLogSyncEvent>, String> {
-    timeout(NET_EVENT_TIMEOUT, events.next())
-        .await
-        .map_err(|_| format!("timed out waiting for p2panda-net {label} event"))?
-        .ok_or_else(|| format!("p2panda-net {label} stream ended"))?
-        .map_err(|error| format!("p2panda-net {label} stream lagged: {error}"))
+    .await
+    .map_err(|error| format!("transport p2panda-net sync bodies: {error}"))
 }

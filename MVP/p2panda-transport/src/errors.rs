@@ -1,4 +1,4 @@
-use p2panda_core_git::{Topic, VerifyingKey};
+use p2panda_core_git::Topic;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +25,8 @@ pub enum PandaNetTransportError {
         step: PandaNetStartupStep,
         message: String,
     },
+    #[error("p2panda-net localhost port probe failed: {message}")]
+    PortProbe { message: String },
     #[error("p2panda-net quarantine log operation failed: {message}")]
     QuarantineLog { message: String },
     #[error("p2panda-net operation for topic {topic:?} had no body")]
@@ -35,8 +37,6 @@ pub enum PandaNetTransportError {
     StreamLagged { topic: Topic, message: String },
     #[error("p2panda-net stream for topic {topic:?} failed: {message}")]
     StreamFailed { topic: Topic, message: String },
-    #[error("p2panda-net received operation from unexpected author {author}")]
-    UnexpectedAuthor { author: VerifyingKey },
 }
 
 impl PandaNetTransportError {

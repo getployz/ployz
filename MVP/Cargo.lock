@@ -2774,10 +2774,6 @@ dependencies = [
  "mvp-projection",
  "mvp-routing",
  "mvp-serving",
- "p2panda-core 0.5.2 (git+https://github.com/p2panda/p2panda?rev=f1087d347cded5912fd9c357066d4ebf2f91cac6)",
- "p2panda-net",
- "p2panda-store 0.5.2 (git+https://github.com/p2panda/p2panda?rev=f1087d347cded5912fd9c357066d4ebf2f91cac6)",
- "p2panda-sync 0.5.2 (git+https://github.com/p2panda/p2panda?rev=f1087d347cded5912fd9c357066d4ebf2f91cac6)",
  "serde",
  "serde_json",
  "tokio",
@@ -2870,20 +2866,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "mvp-p2panda-spike"
-version = "0.1.0"
-dependencies = [
- "mvp-bus",
- "mvp-projection",
- "p2panda-core 0.5.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "p2panda-store 0.5.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "p2panda-stream",
- "serde",
- "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]

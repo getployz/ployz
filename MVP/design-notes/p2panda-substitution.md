@@ -40,8 +40,8 @@ E2E proofs pass on top of it.
 
 ## Evidence
 
-The spike crate at `MVP/p2panda-spike` compiles against crates.io p2panda
-0.5.2 and proves the core fact-substrate fit:
+The retired spike crate at `MVP/p2panda-spike` compiled against crates.io
+p2panda 0.5.2 and proved the original fact-substrate fit:
 
 - a signed p2panda operation decodes into a Ployz `FactCandidate`;
 - two conflicting operations for the same Ployz fact key both reach the
@@ -52,17 +52,9 @@ The spike crate at `MVP/p2panda-spike` compiles against crates.io p2panda
 - p2panda log storage can group operations by island while preserving author
   identity through the operation public key and Ployz principal metadata.
 
-Verification run:
-
-```text
-cargo test -p mvp-p2panda-spike --lib
-```
-
-Result:
-
-```text
-3 passed
-```
+Slice 025 deleted the spike after `mvp-p2panda-facts` covered those behaviors
+with production-shaped operation writing, trusted import, persistence, sync,
+duplicate/conflict, and payload-read tests.
 
 ## Current Custom Substrate Inventory
 
@@ -234,8 +226,8 @@ Slice 018b added `MVP/p2panda-facts` as the production-shaped adapter:
 - `p2panda-fact-source-contract` proves existing reducers rebuild SQLite and
   gateway/DNS snapshots from p2panda-backed candidates.
 
-The spike crate remains temporarily as comparison evidence. New fact-substrate
-work should target `mvp-p2panda-facts`.
+The spike crate has been retired. New fact-substrate work should target
+`mvp-p2panda-facts`.
 
 ## Open Questions
 

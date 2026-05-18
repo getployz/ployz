@@ -4,7 +4,83 @@ use mvp_p2panda_facts::{
     PandaFactWriteOutcome,
 };
 
-use crate::{PandaNetStream, PandaNetTransportError};
+use crate::{
+    PandaNetNode, PandaNetNodeConfig, PandaNetStream, PandaNetTopic, PandaNetTransportError,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PandaNetWireTransportConfig {
+    network_id: [u8; 32],
+    topic: PandaNetTopic,
+    receiver_seed: [u8; 32],
+    sender_seed: [u8; 32],
+}
+
+impl PandaNetWireTransportConfig {
+    #[must_use]
+    pub fn new(
+        network_id: [u8; 32],
+        topic: [u8; 32],
+        receiver_seed: [u8; 32],
+        sender_seed: [u8; 32],
+    ) -> Self {
+        Self {
+            network_id,
+            topic: PandaNetTopic::new(topic),
+            receiver_seed,
+            sender_seed,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct PandaNetFactTransportReport {
+    pub replayed: usize,
+    pub imported: usize,
+    pub duplicate: usize,
+    pub conflict: usize,
+    pub deferred: Vec<PandaNetFactImportDeferred>,
+    pub rejected: Vec<PandaNetFactImportRejection>,
+    pub failed: Vec<PandaNetFactImportFailure>,
+}
+
+impl PandaNetFactTransportReport {
+    #[must_use]
+    pub fn new(replayed: usize) -> Self {
+        Self {
+            replayed,
+            imported: 0,
+            duplicate: 0,
+            conflict: 0,
+            deferred: Vec::new(),
+            rejected: Vec::new(),
+            failed: Vec::new(),
+        }
+    }
+
+    fn record(&mut self, outcome: PandaNetFactImportOutcome) {
+        match outcome {
+            PandaNetFactImportOutcome::Imported => {
+                self.imported += 1;
+            }
+            PandaNetFactImportOutcome::Duplicate => {
+                self.duplicate += 1;
+            }
+            PandaNetFactImportOutcome::Conflict => {
+                self.conflict += 1;
+            }
+            PandaNetFactImportOutcome::Deferred(deferred) => {
+                self.deferred.push(deferred);
+            }
+            PandaNetFactImportOutcome::Rejected(rejected) => {
+                self.rejected.push(rejected);
+            }
+            PandaNetFactImportOutcome::Failed(failed) => {
+                self.failed.push(failed);
+            }
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PandaNetFactImportOutcome {
@@ -84,6 +160,76 @@ pub async fn import_fact_body(
         Ok(PandaFactWriteOutcome::AlreadyPresent(_)) => PandaNetFactImportOutcome::Duplicate,
         Ok(PandaFactWriteOutcome::Conflict(_)) => PandaNetFactImportOutcome::Conflict,
         Err(error) => classify_fact_error(error),
+    }
+}
+
+pub async fn transport_exported_facts(
+    source: &PandaFactStore,
+    target: &mut PandaFactStore,
+    replica_session: &BusSession,
+    config: PandaNetWireTransportConfig,
+) -> Result<PandaNetFactTransportReport, PandaNetTransportError> {
+    let wires = source
+        .export_operations()
+        .map(PandaFactWireEnvelope::encode)
+        .collect::<Vec<_>>();
+    let bodies = transport_wire_bodies(config, wires).await?;
+    let mut report = PandaNetFactTransportReport::new(bodies.len());
+    for body in bodies {
+        report.record(import_fact_body(&body, target, replica_session).await);
+    }
+    Ok(report)
+}
+
+pub async fn transport_wire_bodies(
+    config: PandaNetWireTransportConfig,
+    bodies: Vec<Vec<u8>>,
+) -> Result<Vec<Vec<u8>>, PandaNetTransportError> {
+    let expected = bodies.len();
+    let mut harness = PandaNetWireHarness::spawn(config, bodies).await?;
+    let mut received = Vec::with_capacity(expected);
+    for _ in 0..expected {
+        received.push(harness.receiver_stream.next_body().await?);
+    }
+    Ok(received)
+}
+
+struct PandaNetWireHarness {
+    _receiver: PandaNetNode,
+    _sender: PandaNetNode,
+    _sender_stream: PandaNetStream,
+    receiver_stream: PandaNetStream,
+}
+
+impl PandaNetWireHarness {
+    async fn spawn(
+        config: PandaNetWireTransportConfig,
+        bodies: Vec<Vec<u8>>,
+    ) -> Result<Self, PandaNetTransportError> {
+        let receiver = PandaNetNode::spawn(PandaNetNodeConfig::localhost_ephemeral(
+            config.network_id,
+            config.receiver_seed,
+            Vec::new(),
+        )?)
+        .await?;
+        let receiver_info = receiver.node_info();
+        let receiver_stream = receiver.open_stream(config.topic, true).await?;
+        let mut sender = PandaNetNode::spawn(PandaNetNodeConfig::localhost_ephemeral(
+            config.network_id,
+            config.sender_seed,
+            vec![receiver_info],
+        )?)
+        .await?;
+        for body in bodies {
+            sender.append_to_topic(config.topic, &body).await?;
+        }
+        let sender_stream = sender.open_stream(config.topic, true).await?;
+        Ok(Self {
+            _receiver: receiver,
+            _sender: sender,
+            _sender_stream: sender_stream,
+            receiver_stream,
+        })
     }
 }
 

@@ -24,10 +24,6 @@ mvp-p2panda-transport = { path = "../p2panda-transport" }
 mvp-projection = { path = "../projection" }
 mvp-routing = { path = "../routing" }
 mvp-serving = { path = "../serving" }
-p2panda-core-git = { package = "p2panda-core", git = "https://github.com/p2panda/p2panda", rev = "f1087d347cded5912fd9c357066d4ebf2f91cac6" }
-p2panda-net = { git = "https://github.com/p2panda/p2panda", rev = "f1087d347cded5912fd9c357066d4ebf2f91cac6", features = ["test_utils"] }
-p2panda-store-git = { package = "p2panda-store", git = "https://github.com/p2panda/p2panda", rev = "f1087d347cded5912fd9c357066d4ebf2f91cac6", features = ["sqlite", "macros", "test_utils"] }
-p2panda-sync-git = { package = "p2panda-sync", git = "https://github.com/p2panda/p2panda", rev = "f1087d347cded5912fd9c357066d4ebf2f91cac6" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }

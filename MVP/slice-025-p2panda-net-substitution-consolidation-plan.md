@@ -1,6 +1,6 @@
 ---
 title: Slice 025 p2panda-net Substitution Consolidation Plan
-status: active
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md

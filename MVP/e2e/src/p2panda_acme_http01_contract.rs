@@ -20,14 +20,13 @@ use mvp_p2panda_facts::{
     sync_panda_fact_stores,
 };
 use mvp_p2panda_transport::{
-    PandaNetBindConfig, PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetNode,
-    PandaNetNodeConfig, PandaNetNodeInfo, import_fact_body, import_next_fact,
+    PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetFactTransportReport,
+    PandaNetWireTransportConfig, import_fact_body, transport_exported_facts,
 };
 use mvp_projection::{
     DnsCommitFact, FactSource, ProjectionFactPayload, ProjectionIgnoreReason, SqliteProjectionStore,
 };
 use mvp_serving::{ServingActorHandle, ServingSnapshotPaths, WireServingState, spawn_http_gateway};
-use p2panda_core_git::{SigningKey, Topic};
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -44,6 +43,10 @@ use crate::projection_harness::projection_actor;
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(10);
 const ACME_TOKEN: &str = "tokPanda0123456789abcdef";
 const OTHER_TOKEN: &str = "tokOther0123456789abcdef";
+const ACME_P2PANDA_NET_NETWORK: [u8; 32] = [91; 32];
+const ACME_P2PANDA_NET_TOPIC: [u8; 32] = [91; 32];
+const ACME_P2PANDA_NET_RECEIVER_SEED: [u8; 32] = [21; 32];
+const ACME_P2PANDA_NET_SENDER_SEED: [u8; 32] = [22; 32];
 
 #[derive(Debug, Serialize)]
 struct P2pandaAcmeHttp01Report {
@@ -74,9 +77,9 @@ struct P2pandaNetAcmeHttp01Report {
     key_authorization: String,
     replayed_operations_before_clear: usize,
     replayed_operations_after_clear: usize,
-    imported_before_clear: u64,
-    imported_after_clear: u64,
-    duplicate_after_clear: u64,
+    imported_before_clear: usize,
+    imported_after_clear: usize,
+    duplicate_after_clear: usize,
     trusted_replica_required: bool,
     projection_reload_ms: u128,
     http_request_us: u128,
@@ -201,7 +204,7 @@ async fn run_net_async() -> Result<(), String> {
     }
 
     let before_clear =
-        replay_all_exported_facts_via_net(&left, &mut right, &sessions.right_replica).await?;
+        replay_acme_exported_facts_via_net(&left, &mut right, &sessions.right_replica).await?;
     assert_eq_named(
         "p2panda-net ACME replay before clear",
         before_clear.replayed,
@@ -283,7 +286,7 @@ async fn run_net_async() -> Result<(), String> {
     }
 
     let after_clear =
-        replay_all_exported_facts_via_net(&left, &mut right, &sessions.right_replica).await?;
+        replay_acme_exported_facts_via_net(&left, &mut right, &sessions.right_replica).await?;
     assert_eq_named(
         "p2panda-net ACME replay after clear",
         after_clear.replayed,
@@ -935,128 +938,46 @@ fn acme_bus_sessions(
     Ok((bus, sessions))
 }
 
-#[derive(Debug)]
-struct NetTransportReport {
-    replayed: usize,
-    imported: u64,
-    duplicate: u64,
-}
-
-async fn replay_all_exported_facts_via_net(
+async fn replay_acme_exported_facts_via_net(
     source: &PandaFactStore,
     target: &mut PandaFactStore,
     replica_session: &BusSession,
-) -> Result<NetTransportReport, String> {
-    let wires = source
-        .export_operations()
-        .map(PandaFactWireEnvelope::encode)
-        .collect::<Vec<_>>();
-    let replayed = wires.len();
-    let mut net = AcmeNetHarness::spawn(wires).await?;
-    let mut imported = 0;
-    let mut duplicate = 0;
-    for _ in 0..replayed {
-        match import_next_fact(net.stream_mut(), target, replica_session)
-            .await
-            .map_err(|error| format!("import p2panda-net ACME fact: {error}"))?
-        {
-            PandaNetFactImportOutcome::Imported => {
-                imported += 1;
-            }
-            PandaNetFactImportOutcome::Duplicate => {
-                duplicate += 1;
-            }
-            PandaNetFactImportOutcome::Conflict => {
-                return Err("p2panda-net ACME canary received an unexpected conflict".to_string());
-            }
-            PandaNetFactImportOutcome::Rejected(rejection) => {
-                return Err(format!(
-                    "p2panda-net ACME transport rejected fact: {rejection:?}"
-                ));
-            }
-            PandaNetFactImportOutcome::Deferred(deferred) => {
-                return Err(format!(
-                    "p2panda-net ACME transport deferred fact: {deferred:?}"
-                ));
-            }
-            PandaNetFactImportOutcome::Failed(failure) => {
-                return Err(format!(
-                    "p2panda-net ACME transport failed locally: {failure:?}"
-                ));
-            }
-        }
+) -> Result<PandaNetFactTransportReport, String> {
+    let report = transport_exported_facts(
+        source,
+        target,
+        replica_session,
+        PandaNetWireTransportConfig::new(
+            ACME_P2PANDA_NET_NETWORK,
+            ACME_P2PANDA_NET_TOPIC,
+            ACME_P2PANDA_NET_RECEIVER_SEED,
+            ACME_P2PANDA_NET_SENDER_SEED,
+        ),
+    )
+    .await
+    .map_err(|error| format!("transport p2panda-net ACME facts: {error}"))?;
+    if report.conflict != 0 {
+        return Err("p2panda-net ACME canary received an unexpected conflict".to_string());
     }
-    Ok(NetTransportReport {
-        replayed,
-        imported,
-        duplicate,
-    })
-}
-
-struct AcmeNetHarness {
-    _receiver: PandaNetNode,
-    _sender: PandaNetNode,
-    _sender_stream: mvp_p2panda_transport::PandaNetStream,
-    receiver_stream: mvp_p2panda_transport::PandaNetStream,
-}
-
-impl AcmeNetHarness {
-    async fn spawn(wires: Vec<Vec<u8>>) -> Result<Self, String> {
-        let topic: Topic = [91; 32].into();
-        let receiver = PandaNetNode::spawn(acme_net_config([21; 32], free_port(), Vec::new()))
-            .await
-            .map_err(|error| format!("spawn p2panda-net ACME receiver: {error}"))?;
-        let receiver_info = receiver.node_info();
-        let receiver_stream = receiver
-            .open_stream(topic, true)
-            .await
-            .map_err(|error| format!("open p2panda-net ACME receiver stream: {error}"))?;
-        let mut sender =
-            PandaNetNode::spawn(acme_net_config([22; 32], free_port(), vec![receiver_info]))
-                .await
-                .map_err(|error| format!("spawn p2panda-net ACME sender: {error}"))?;
-        for wire in wires {
-            sender
-                .append_to_topic(&topic, &wire)
-                .await
-                .map_err(|error| format!("append p2panda-net ACME fact wire: {error}"))?;
-        }
-        let sender_stream = sender
-            .open_stream(topic, true)
-            .await
-            .map_err(|error| format!("open p2panda-net ACME sender stream: {error}"))?;
-        Ok(Self {
-            _receiver: receiver,
-            _sender: sender,
-            _sender_stream: sender_stream,
-            receiver_stream,
-        })
+    if !report.rejected.is_empty() {
+        return Err(format!(
+            "p2panda-net ACME transport rejected fact(s): {:?}",
+            report.rejected
+        ));
     }
-
-    fn stream_mut(&mut self) -> &mut mvp_p2panda_transport::PandaNetStream {
-        &mut self.receiver_stream
+    if !report.deferred.is_empty() {
+        return Err(format!(
+            "p2panda-net ACME transport deferred fact(s): {:?}",
+            report.deferred
+        ));
     }
-}
-
-fn acme_net_config(
-    seed: [u8; 32],
-    port: u16,
-    bootstrap_nodes: Vec<PandaNetNodeInfo>,
-) -> PandaNetNodeConfig {
-    PandaNetNodeConfig {
-        network_id: [91; 32],
-        signing_key: SigningKey::from_bytes(&seed),
-        bind: PandaNetBindConfig::localhost(port, free_port()),
-        bootstrap_nodes,
+    if !report.failed.is_empty() {
+        return Err(format!(
+            "p2panda-net ACME transport failed locally: {:?}",
+            report.failed
+        ));
     }
-}
-
-fn free_port() -> u16 {
-    std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("bind UDP port probe")
-        .local_addr()
-        .expect("read UDP port probe")
-        .port()
+    Ok(report)
 }
 
 async fn open_store(

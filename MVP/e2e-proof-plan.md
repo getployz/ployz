@@ -576,6 +576,11 @@ Current proof status:
   cert coordination/backend baseline is 1,055 LOC; the reusable command surface
   is 659 LOC plus focused tests, and the p2panda ACME E2E drops from roughly
   1,653 LOC to 1,218 LOC while preserving the same canary behavior.
+- Slice 025 is a maintenance-surface win, not a product-command win. It removes
+  direct git p2panda dependencies from `mvp-e2e`, deletes the ACME-local
+  p2panda-net harness, moves p2panda-net wire transport into
+  `mvp-p2panda-transport`, and deletes the 396-line `mvp-p2panda-spike` source
+  after production-shaped p2panda fact tests cover its behaviors.
 - Slice 022 is a mixed leverage result. It adds a 430-line E2E transport proof
   and 84 lines of fact-store envelope/test surface, but it prevents a worse
   fork: p2panda-net is now proven as the carrier while Ployz keeps one canonical
