@@ -2783,6 +2783,7 @@ dependencies = [
  "mvp-iroh",
  "mvp-lease",
  "mvp-machine",
+ "mvp-machine-p2panda",
  "mvp-mesh",
  "mvp-p2panda-facts",
  "mvp-p2panda-transport",
@@ -2844,6 +2845,21 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "mvp-machine-p2panda"
+version = "0.1.0"
+dependencies = [
+ "mvp-bus",
+ "mvp-identity",
+ "mvp-machine",
+ "mvp-mesh",
+ "mvp-p2panda-facts",
+ "mvp-projection",
+ "mvp-routing",
+ "mvp-routing-p2panda",
  "tokio",
 ]
 

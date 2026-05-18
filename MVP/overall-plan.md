@@ -420,11 +420,16 @@ p2panda adapter.
 The routing-owned serving commit correction then moved serving fact writer
 ownership to `mvp-routing`. Deploy and machine remove both consume the same
 `ServingFactWriter` contract, and the p2panda serving writer lives in
-`mvp-routing-p2panda` rather than deploy. Machine remove still uses its
-existing iroh-docs machine facts for this proof; p2panda machine remove is a
-separate canary because it must decide join-fact inputs and machine error
-mapping first. See
+`mvp-routing-p2panda` rather than deploy. See
 [MVP/slice-027-routing-owned-serving-commit.md](slice-027-routing-owned-serving-commit.md).
+
+Slice 028 completes that p2panda machine-remove canary:
+[MVP/slice-028-p2panda-machine-remove-facts.md](slice-028-p2panda-machine-remove-facts.md).
+`machine-remove-contract` now projects joined-node facts, removal/tombstone
+facts, and serving commits from one p2panda-backed fact source. The slice adds
+`mvp-machine-p2panda`, deletes the E2E-local iroh-docs machine writer and
+combined fact source, proves scoped join/machine/routing write authority, and
+keeps coordinator-resume after serving commit explicitly deferred.
 
 The next implementation/proof slice should keep paying down product semantic
 leverage rather than adding another generic substrate layer. Plan it against

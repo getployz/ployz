@@ -10,6 +10,7 @@ members = [
     "iroh",
     "lease",
     "machine",
+    "machine-p2panda",
     "mesh",
     "p2panda-facts",
     "p2panda-transport",

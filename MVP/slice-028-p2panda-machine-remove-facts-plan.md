@@ -1,6 +1,6 @@
 ---
 title: Slice 028 p2panda Machine Remove Facts Plan
-status: active
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md
