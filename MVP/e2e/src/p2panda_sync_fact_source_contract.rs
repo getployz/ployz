@@ -5,9 +5,10 @@ use std::time::{Duration, Instant};
 
 use mvp_bus::{BusSession, FactPayload, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::NodeId;
+use mvp_p2panda_authz::{IslandAuthoritySnapshot, ReplicaImportAccess};
 use mvp_p2panda_facts::{
-    PandaFactAuthor, PandaFactStore, PandaFactSyncReport, PandaFactSyncScope,
-    PandaSqliteOpenConfig, PandaTrustedAuthorKey, sync_panda_fact_stores,
+    PandaFactAuthor, PandaFactAuthoritySource, PandaFactStore, PandaFactSyncReport,
+    PandaFactSyncScope, PandaSqliteOpenConfig, sync_panda_fact_stores,
 };
 use mvp_projection::{
     CandidateStatus, FactSource, NodeJoinedFact, ProjectionFactPayload, ProjectionIgnoreReason,
@@ -19,7 +20,8 @@ use crate::assertions::assert_eq_named;
 use crate::bus_syntax::{fact_key, fact_pattern};
 use crate::metrics::{MemorySnapshot, memory_snapshot, reset_dir, scenario_dir, write_json};
 use crate::p2panda_projection_fixture::{
-    seed_projection_facts, status_count, write_projection_fact,
+    P2pandaMembershipFixture, create_p2panda_membership_fixture, seed_projection_facts,
+    status_count, write_projection_fact,
 };
 use crate::projection_harness::projection_actor;
 
@@ -104,23 +106,51 @@ async fn run_async() -> Result<(), String> {
     let left_author = PandaFactAuthor::new(sessions.left_writer.principal().clone());
     let right_author = PandaFactAuthor::new(sessions.right_writer.principal().clone());
     let prod = IslandId::new("prod");
+    let laptop = IslandId::new("laptop");
+    let left_replica_author = PandaFactAuthor::from_private_key_bytes(
+        sessions.left_replica.principal().clone(),
+        [61; 32],
+    );
+    let right_replica_author = PandaFactAuthor::from_private_key_bytes(
+        sessions.right_replica.principal().clone(),
+        [62; 32],
+    );
+    let memberships = SyncMembershipFixtures {
+        prod_island: prod.clone(),
+        laptop_island: laptop.clone(),
+        prod: create_p2panda_membership_fixture(
+            &root.join("prod-membership.sqlite"),
+            &prod,
+            &[&left_author, &right_author],
+            &[
+                (&left_replica_author, ReplicaImportAccess::Read),
+                (&right_replica_author, ReplicaImportAccess::Read),
+            ],
+        )
+        .await?,
+        laptop: create_p2panda_membership_fixture(
+            &root.join("laptop-membership.sqlite"),
+            &laptop,
+            &[&left_author],
+            &[],
+        )
+        .await?,
+    };
 
     let mut left = open_sync_store(
         Arc::new(bus.clone()),
         root.join("left-p2panda-facts.sqlite"),
         &prod,
-        &[&left_author, &right_author],
+        &memberships,
     )
     .await?;
     let mut right = open_sync_store(
         Arc::new(bus.clone()),
         root.join("right-p2panda-facts.sqlite"),
         &prod,
-        &[&left_author, &right_author],
+        &memberships,
     )
     .await?;
-    left.trust_replica_peer(&prod, sessions.left_replica.principal().clone());
-    right.trust_replica_peer(&prod, sessions.right_replica.principal().clone());
 
     seed_projection_facts(&mut left, &sessions.left_writer, &left_author).await?;
     seed_conflict(
@@ -143,13 +173,7 @@ async fn run_async() -> Result<(), String> {
     .await?;
     seed_laptop_fact(&mut left, &sessions.laptop_writer, &left_author).await?;
 
-    let scope = PandaFactSyncScope::from_trusted_authors(
-        prod.clone(),
-        [
-            (left_author.principal().clone(), left_author.author_key()),
-            (right_author.principal().clone(), right_author.author_key()),
-        ],
-    );
+    let scope = memberships.sync_scope(&prod).await?;
 
     let first_sync_started = Instant::now();
     let first_sync = sync_panda_fact_stores(
@@ -196,11 +220,17 @@ async fn run_async() -> Result<(), String> {
         sync_received(&repeat_sync),
         0,
     )?;
-    let load_runs =
-        run_large_load_sync_cases(&bus, &root, &prod, &sessions, &left_author, &right_author)
-            .await?;
+    let load_runs = run_large_load_sync_cases(
+        &bus,
+        &root,
+        &prod,
+        &sessions,
+        &left_author,
+        &right_author,
+        &memberships,
+    )
+    .await?;
 
-    let laptop = IslandId::new("laptop");
     let no_cross_island_leakage = right
         .list_candidates(&laptop, &fact_pattern("/facts/>")?, &sessions.laptop_writer)
         .map_err(|error| format!("list cross-island candidates after sync: {error}"))?
@@ -322,6 +352,54 @@ struct SyncBusSessions {
     right_replica: BusSession,
 }
 
+struct SyncMembershipFixtures {
+    prod_island: IslandId,
+    laptop_island: IslandId,
+    prod: P2pandaMembershipFixture,
+    laptop: P2pandaMembershipFixture,
+}
+
+impl SyncMembershipFixtures {
+    async fn sync_scope(&self, island: &IslandId) -> Result<PandaFactSyncScope, String> {
+        Ok(PandaFactSyncScope::from_authority(
+            &self.snapshot_for(island).await?,
+        ))
+    }
+
+    async fn authority_source(
+        &self,
+        island: &IslandId,
+    ) -> Result<PandaFactAuthoritySource, String> {
+        Ok(PandaFactAuthoritySource::from_snapshots(
+            self.snapshots_for_store(island).await?,
+        ))
+    }
+
+    async fn snapshots_for_store(
+        &self,
+        island: &IslandId,
+    ) -> Result<Vec<IslandAuthoritySnapshot>, String> {
+        let mut snapshots = Vec::new();
+        for sync_island in trusted_sync_islands(island) {
+            snapshots.push(self.snapshot_for(&sync_island).await?);
+        }
+        Ok(snapshots)
+    }
+
+    async fn snapshot_for(&self, island: &IslandId) -> Result<IslandAuthoritySnapshot, String> {
+        if island == &self.prod_island {
+            self.prod.authority_snapshot(island).await
+        } else if island == &self.laptop_island {
+            self.laptop.authority_snapshot(island).await
+        } else {
+            Err(format!(
+                "no p2panda membership fixture for island {}",
+                island.as_str()
+            ))
+        }
+    }
+}
+
 fn sync_bus_sessions() -> (InMemoryBus, SyncBusSessions) {
     let (bus, authority) = InMemoryBus::new_with_authority();
     let write_read = Grant::empty()
@@ -378,6 +456,7 @@ async fn run_large_load_sync_cases(
     sessions: &SyncBusSessions,
     left_author: &PandaFactAuthor,
     right_author: &PandaFactAuthor,
+    memberships: &SyncMembershipFixtures,
 ) -> Result<Vec<P2pandaSyncLoadRunReport>, String> {
     let context = LoadSyncCaseContext {
         bus,
@@ -386,6 +465,7 @@ async fn run_large_load_sync_cases(
         sessions,
         left_author,
         right_author,
+        memberships,
     };
     let mut reports = Vec::with_capacity(LOAD_FACT_COUNTS.len() + SQLITE_LOAD_FACT_COUNTS.len());
     for fact_count in LOAD_FACT_COUNTS {
@@ -406,6 +486,7 @@ struct LoadSyncCaseContext<'a> {
     sessions: &'a SyncBusSessions,
     left_author: &'a PandaFactAuthor,
     right_author: &'a PandaFactAuthor,
+    memberships: &'a SyncMembershipFixtures,
 }
 
 async fn run_large_load_sync_case(
@@ -420,30 +501,12 @@ async fn run_large_load_sync_case(
         sessions,
         left_author,
         right_author,
+        memberships,
     } = context;
     let memory_before = memory_snapshot();
-    let mut left = load_store(
-        backend,
-        bus,
-        root,
-        "left",
-        fact_count,
-        island,
-        &[left_author, right_author],
-    )
-    .await?;
-    let mut right = load_store(
-        backend,
-        bus,
-        root,
-        "right",
-        fact_count,
-        island,
-        &[left_author, right_author],
-    )
-    .await?;
-    left.trust_replica_peer(island, sessions.left_replica.principal().clone());
-    right.trust_replica_peer(island, sessions.right_replica.principal().clone());
+    let mut left = load_store(backend, bus, root, "left", fact_count, island, memberships).await?;
+    let mut right =
+        load_store(backend, bus, root, "right", fact_count, island, memberships).await?;
 
     for index in 0..fact_count {
         let key = fact_key(&format!("/facts/load/{fact_count}/item/{index}"))?;
@@ -483,13 +546,7 @@ async fn run_large_load_sync_case(
     .await
     .map_err(|error| format!("write laptop-only load fact for {fact_count}: {error}"))?;
 
-    let scope = PandaFactSyncScope::from_trusted_authors(
-        (*island).clone(),
-        [
-            (left_author.principal().clone(), left_author.author_key()),
-            (right_author.principal().clone(), right_author.author_key()),
-        ],
-    );
+    let scope = memberships.sync_scope(island).await?;
     let sync_started = Instant::now();
     let sync = sync_panda_fact_stores(
         &mut left,
@@ -612,65 +669,42 @@ async fn load_store(
     side: &str,
     fact_count: usize,
     island: &IslandId,
-    authors: &[&PandaFactAuthor],
+    memberships: &SyncMembershipFixtures,
 ) -> Result<PandaFactStore, String> {
     match backend {
-        LoadStoreBackend::Memory => load_memory_store(bus, island, authors),
+        LoadStoreBackend::Memory => load_memory_store(bus, island, memberships).await,
         LoadStoreBackend::Sqlite => {
             let path = root.join(format!(
                 "load-{}-{fact_count}-{side}-p2panda-facts.sqlite",
                 backend.label()
             ));
-            open_sync_store(Arc::new(bus.clone()), path, island, authors).await
+            open_sync_store(Arc::new(bus.clone()), path, island, memberships).await
         }
     }
 }
 
-fn load_memory_store(
+async fn load_memory_store(
     bus: &InMemoryBus,
     island: &IslandId,
-    authors: &[&PandaFactAuthor],
+    memberships: &SyncMembershipFixtures,
 ) -> Result<PandaFactStore, String> {
     let mut store = PandaFactStore::new(Arc::new(bus.clone()));
-    for trusted_island in trusted_sync_islands(island) {
-        trust_load_authors(&mut store, &trusted_island, authors)?;
+    for snapshot in memberships.snapshots_for_store(island).await? {
+        store.install_authority_snapshot(snapshot);
     }
     Ok(store)
-}
-
-fn trust_load_authors(
-    store: &mut PandaFactStore,
-    island: &IslandId,
-    authors: &[&PandaFactAuthor],
-) -> Result<(), String> {
-    for author in authors {
-        store
-            .trust_author_key(island, author.principal().clone(), author.author_key())
-            .map_err(|error| format!("trust load p2panda author key: {error}"))?;
-    }
-    Ok(())
 }
 
 async fn open_sync_store(
     bus: Arc<InMemoryBus>,
     path: std::path::PathBuf,
     island: &IslandId,
-    authors: &[&PandaFactAuthor],
+    memberships: &SyncMembershipFixtures,
 ) -> Result<PandaFactStore, String> {
     remove_stale_sqlite_store_files(&path)?;
     let islands = trusted_sync_islands(island);
-    let config = authors.iter().fold(
-        PandaSqliteOpenConfig::new(path, islands.clone()),
-        |config, author| {
-            islands.iter().fold(config, |config, trusted_island| {
-                config.with_trusted_author_key(PandaTrustedAuthorKey::new(
-                    trusted_island.clone(),
-                    author.principal().clone(),
-                    author.author_key(),
-                ))
-            })
-        },
-    );
+    let config = PandaSqliteOpenConfig::new(path, islands)
+        .with_authority_source(memberships.authority_source(island).await?);
     PandaFactStore::open_sqlite(bus, config)
         .await
         .map_err(|error| format!("open p2panda sync store: {error}"))
