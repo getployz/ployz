@@ -70,4 +70,5 @@ cargo run -p mvp-e2e -- p2panda-acme-http01-contract
 cargo run -p mvp-e2e -- p2panda-net-acme-http01-contract
 cargo run -p mvp-e2e -- docs-backed-acme-http01-contract
 cargo clippy -p mvp-acme-command -p mvp-e2e --all-targets -- -D warnings
+MVP_E2E_ALL_TIMEOUT=120s cargo run -p mvp-e2e -- all
 ```
