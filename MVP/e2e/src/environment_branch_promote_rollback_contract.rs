@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -7,10 +6,8 @@ use mvp_bus::{
     BusSession, FactAuthorizer, FactKey, FactKeyPattern, FactPayload, Grant, IslandId, PrincipalId,
     harness::InMemoryBus,
 };
-use mvp_commands::{
-    CommandContext, CommandError, CommandFact, CommandName, CommandPhaseStore, CommandResult,
-    IntentId, StoredCommandPhase, command_intent_fact_key, command_phase_fact_key,
-};
+use mvp_commands::CommandContext;
+use mvp_commands_p2panda::PandaCommandPhaseStore;
 use mvp_environment::{
     BranchEnvironmentCommand, BranchEnvironmentRequest, EnvironmentBranchId, EnvironmentCommandId,
     EnvironmentCommandResult, EnvironmentEpoch, EnvironmentFactPayload, EnvironmentFactWriter,
@@ -29,9 +26,8 @@ use mvp_p2panda_facts::{
     SharedPandaFactStore,
 };
 use mvp_projection::{
-    BackendEndpoint, CandidateStatus, DnsProjection, DnsRecordFact, FactCandidate, FactSource,
-    GatewayProjection, GatewayRouteProjection, ProjectionReport, ProjectionState, RouteId,
-    SnapshotWriteReport,
+    BackendEndpoint, DnsProjection, DnsRecordFact, FactSource, GatewayProjection,
+    GatewayRouteProjection, ProjectionReport, ProjectionState, RouteId, SnapshotWriteReport,
 };
 use mvp_routing::{
     DnsCommitId, GatewayCommitId, ProjectionCatchUp, RouteCommitId, ServingCommitId,
@@ -565,82 +561,6 @@ fn p2panda_writer_bus(island: &IslandId, principal: &PrincipalId) -> (InMemoryBu
     (bus, session)
 }
 
-struct PandaCommandPhaseStore {
-    store: SharedPandaFactStore,
-    session: BusSession,
-    author: Arc<PandaFactAuthor>,
-}
-
-impl PandaCommandPhaseStore {
-    fn new(store: SharedPandaFactStore, session: BusSession, author: Arc<PandaFactAuthor>) -> Self {
-        Self {
-            store,
-            session,
-            author,
-        }
-    }
-}
-
-impl CommandPhaseStore for PandaCommandPhaseStore {
-    fn read_phase_history(
-        &self,
-        command: &CommandName,
-        intent: &IntentId,
-    ) -> CommandResult<Vec<StoredCommandPhase>> {
-        let pattern = FactKeyPattern::parse(format!(
-            "/facts/command/{}/{}/phase/>",
-            command.as_str(),
-            intent.as_str()
-        ))?;
-        let candidates = self
-            .store
-            .list_candidates(self.session.island(), &pattern, &self.session)
-            .map_err(|error| CommandError::Store {
-                message: error.to_string(),
-            })?;
-        command_phase_history(&self.store, &self.session, command, intent, candidates)
-    }
-
-    fn write_intent(&self, fact: CommandFact) -> CommandResult<FactKey> {
-        let key = command_intent_fact_key(&fact.command, &fact.intent)?;
-        let payload = serde_json::to_vec(&fact)
-            .map(FactPayload::from)
-            .map_err(|error| CommandError::Store {
-                message: error.to_string(),
-            })?;
-        write_command_fact_payload(&self.store, &self.session, &self.author, key, payload)
-    }
-
-    fn append_phase(
-        &self,
-        command: &CommandName,
-        intent: &IntentId,
-        expected_previous: Option<&StoredCommandPhase>,
-        index: u64,
-        payload: FactPayload,
-    ) -> CommandResult<FactKey> {
-        let latest = self.read_latest_phase(command, intent)?;
-        let key = command_phase_fact_key(command, intent, index)?;
-        match latest.as_ref() {
-            Some(stored) if expected_previous != Some(stored) => {
-                return Err(CommandError::PhaseAdvanced {
-                    key: stored.key.clone(),
-                });
-            }
-            None if expected_previous.is_some() => {
-                return Err(CommandError::PhaseAdvanced {
-                    key: expected_previous
-                        .expect("expected previous checked above")
-                        .key
-                        .clone(),
-                });
-            }
-            Some(_) | None => {}
-        }
-        append_command_phase_payload(&self.store, &self.session, &self.author, key, payload)
-    }
-}
-
 async fn reopened_command_phase_context(
     fact_authorizer: &Arc<dyn FactAuthorizer>,
     store_path: &std::path::Path,
@@ -667,145 +587,6 @@ async fn reopened_command_phase_context(
         session.clone(),
         author,
     ))))
-}
-
-fn write_command_fact_payload(
-    store: &SharedPandaFactStore,
-    session: &BusSession,
-    author: &Arc<PandaFactAuthor>,
-    key: FactKey,
-    payload: FactPayload,
-) -> CommandResult<FactKey> {
-    let outcome = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(store.write_fact_payload(
-            session,
-            author,
-            key.clone(),
-            payload,
-        ))
-    })
-    .map_err(|error| CommandError::Store {
-        message: error.to_string(),
-    })?;
-    match outcome {
-        mvp_p2panda_facts::PandaFactWriteOutcome::Inserted(_)
-        | mvp_p2panda_facts::PandaFactWriteOutcome::AlreadyPresent(_) => Ok(key),
-        mvp_p2panda_facts::PandaFactWriteOutcome::Conflict(_) => {
-            Err(CommandError::PhaseConflict { key })
-        }
-    }
-}
-
-fn append_command_phase_payload(
-    store: &SharedPandaFactStore,
-    session: &BusSession,
-    author: &Arc<PandaFactAuthor>,
-    key: FactKey,
-    payload: FactPayload,
-) -> CommandResult<FactKey> {
-    let outcome = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(store.write_fact_payload(
-            session,
-            author,
-            key.clone(),
-            payload,
-        ))
-    })
-    .map_err(|error| CommandError::Store {
-        message: error.to_string(),
-    })?;
-    match outcome {
-        mvp_p2panda_facts::PandaFactWriteOutcome::Inserted(_)
-        | mvp_p2panda_facts::PandaFactWriteOutcome::AlreadyPresent(_) => Ok(key),
-        mvp_p2panda_facts::PandaFactWriteOutcome::Conflict(_) => {
-            Err(CommandError::PhaseConflict { key })
-        }
-    }
-}
-
-fn command_phase_history(
-    store: &SharedPandaFactStore,
-    session: &BusSession,
-    command: &CommandName,
-    intent: &IntentId,
-    candidates: Vec<FactCandidate>,
-) -> CommandResult<Vec<StoredCommandPhase>> {
-    let mut candidates_by_index = BTreeMap::<u64, Vec<FactCandidate>>::new();
-    for candidate in candidates {
-        if let Some(index) = command_phase_index(candidate.key(), command, intent) {
-            candidates_by_index
-                .entry(index)
-                .or_default()
-                .push(candidate);
-        }
-    }
-    let mut selected = Vec::with_capacity(candidates_by_index.len());
-    for (expected_index, (index, candidates)) in (1..).zip(candidates_by_index) {
-        if index != expected_index {
-            return Err(CommandError::PhaseHistoryGap {
-                command: command.clone(),
-                intent: intent.clone(),
-                expected_index,
-                actual_index: index,
-            });
-        }
-        let key = command_phase_fact_key(command, intent, index)?;
-        let [candidate] = candidates.as_slice() else {
-            return Err(CommandError::PhaseConflict { key });
-        };
-        if candidate.status() == CandidateStatus::Conflict {
-            return Err(CommandError::PhaseConflict { key });
-        }
-        selected.push(candidate.clone());
-    }
-    let payloads = store
-        .read_payloads(session.island(), &selected, session)
-        .map_err(|error| CommandError::Store {
-            message: error.to_string(),
-        })?;
-    selected
-        .into_iter()
-        .map(|candidate| {
-            let index = command_phase_index(candidate.key(), command, intent).ok_or_else(|| {
-                CommandError::Store {
-                    message: format!(
-                        "candidate key does not match command phase pattern: {}",
-                        candidate.key()
-                    ),
-                }
-            })?;
-            let payload = payloads
-                .get(candidate.content_hash())
-                .cloned()
-                .ok_or_else(|| CommandError::Store {
-                    message: format!("command phase payload missing for {}", candidate.key()),
-                })?;
-            Ok(StoredCommandPhase {
-                key: candidate.key().clone(),
-                index,
-                payload,
-            })
-        })
-        .collect()
-}
-
-fn command_phase_index(key: &FactKey, command: &CommandName, intent: &IntentId) -> Option<u64> {
-    let segments = key.segments().collect::<Vec<_>>();
-    let [
-        "facts",
-        "command",
-        command_segment,
-        intent_segment,
-        "phase",
-        index,
-    ] = segments.as_slice()
-    else {
-        return None;
-    };
-    if *command_segment != command.as_str() || *intent_segment != intent.as_str() {
-        return None;
-    }
-    index.parse().ok()
 }
 
 async fn rebuild_projection(socket: &std::path::Path) -> Result<(), String> {
@@ -918,6 +699,9 @@ fn catch_up(island: &IslandId, plan: &ServingCommitPlan) -> ProjectionCatchUp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mvp_commands::{
+        CommandError, CommandName, CommandPhaseStore, IntentId, command_phase_fact_key,
+    };
 
     #[tokio::test]
     async fn p2panda_command_phase_conflict_blocks_history_read() {

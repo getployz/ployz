@@ -1,0 +1,17 @@
+[package]
+name = "mvp-commands-p2panda"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+mvp-bus = { path = "../bus" }
+mvp-commands = { path = "../commands" }
+mvp-p2panda-facts = { path = "../p2panda-facts" }
+mvp-projection = { path = "../projection" }
+serde_json = "1"
+tokio = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
