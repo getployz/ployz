@@ -904,7 +904,7 @@ enum KeyExpectation {
     },
 }
 
-fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPayload) -> bool {
+pub fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPayload) -> bool {
     match (key_expectation(candidate), candidate.kind(), payload) {
         (
             Some(KeyExpectation::NodeJoined { node_id, epoch }),

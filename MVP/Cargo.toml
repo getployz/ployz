@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "acme",
+    "acme-command",
     "bus",
     "deploy",
     "e2e",

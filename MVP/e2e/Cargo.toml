@@ -15,6 +15,7 @@ mvp-deploy = { path = "../deploy" }
 mvp-identity = { path = "../identity" }
 mvp-iroh = { path = "../iroh" }
 mvp-acme = { path = "../acme", features = ["harness"] }
+mvp-acme-command = { path = "../acme-command" }
 mvp-lease = { path = "../lease", features = ["harness"] }
 mvp-machine = { path = "../machine" }
 mvp-mesh = { path = "../mesh" }
