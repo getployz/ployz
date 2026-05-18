@@ -319,18 +319,21 @@ The question is whether maintained p2panda crates can replace enough custom
 fact/auth/sync/blob substrate to reduce the long-term maintenance burden before
 the deploy restart recovery proof hardens those boundaries.
 
-That investigation is complete. The next implementation slice should be a
-p2panda-backed fact substrate slice using `p2panda-core`, `p2panda-store`, and
-`p2panda-stream` behind the existing projection-facing `FactSource` boundary.
+That investigation is complete. Slice 018b added the first p2panda-backed fact
+substrate using `p2panda-core`, `p2panda-store`, and `p2panda-stream` behind the
+existing projection-facing `FactSource` boundary.
 See
 [MVP/design-notes/p2panda-substitution.md](design-notes/p2panda-substitution.md).
-The slice plan is
-[MVP/slice-018b-p2panda-fact-substrate-plan.md](slice-018b-p2panda-fact-substrate-plan.md).
+The slice plan and report are
+[MVP/slice-018b-p2panda-fact-substrate-plan.md](slice-018b-p2panda-fact-substrate-plan.md)
+and
+[MVP/slice-018b-p2panda-fact-substrate.md](slice-018b-p2panda-fact-substrate.md).
 
 The next product-feature slices remain:
 
-1. ACME on the new primitives.
-2. Deploy commit-before-drain rebuilt on the new primitives.
+1. Deploy restart recovery and commit-before-drain rebuilt on the p2panda fact
+   boundary.
+2. ACME moved onto the p2panda fact boundary and advisory lease semantics.
 
 ACME is the canary because it forces the advisory lease primitive to be honest:
 TTL, renewal, epoch fencing, RAII release-on-drop for local holders, and

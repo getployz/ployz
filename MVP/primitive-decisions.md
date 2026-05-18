@@ -168,6 +168,22 @@ the decision concrete.
   candidates behind `FactSource`; `p2panda-auth` should be spiked for island
   membership; `p2panda-net`, `p2panda-discovery`, and `p2panda-blobs` are
   deferred for now because of transport-version/API fit.
+- Slice 018b adds `mvp-p2panda-facts` as the first production-shaped fact
+  substrate adapter. p2panda now owns signed operation envelopes, body-hash
+  validation, author append-log ingestion, and local operation storage for that
+  path. Ployz still owns island grants, principal binding, candidate statuses,
+  reducers, and business semantics.
+- Slice 018b keeps a small in-memory projection index beside the p2panda store
+  because the existing `FactSource` trait is synchronous while p2panda store
+  queries are async. The index is derived state, not durable truth. Future
+  persistent/sync work should rebuild it from p2panda operations.
+- Slice 018b makes p2panda fact writes session-bound. The p2panda keypair is
+  the operation-signing identity, but the bus session remains the authority
+  boundary for Ployz fact writes.
+- Slice 018b leaves `BusFactSource`, `IrohDocsFactSource`,
+  `ProcessFactSource`, and `MVP/p2panda-spike` in place as migration fixtures
+  or comparison evidence. They are no longer the preferred direction for new
+  fact-substrate work.
 
 ## Documented Design Gaps
 
