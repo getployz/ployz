@@ -1,4 +1,5 @@
 use mvp_bus::{BusError, FactKey, FactKeyParseError};
+use mvp_commands::CommandError;
 use mvp_projection::{CandidateStatus, FactSourceError};
 use thiserror::Error;
 
@@ -54,6 +55,8 @@ pub enum EnvironmentError {
     Serialization { message: String },
     #[error("environment serving write failed: {message}")]
     ServingWrite { message: String },
+    #[error(transparent)]
+    Command(#[from] CommandError),
     #[error(transparent)]
     Bus(#[from] BusError),
     #[error(transparent)]

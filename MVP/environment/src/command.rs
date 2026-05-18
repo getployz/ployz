@@ -2,9 +2,14 @@ use std::future::Future;
 use std::pin::Pin;
 
 use mvp_bus::FactKey;
+use mvp_commands::{
+    Command, CommandContext, CommandFact, CommandName, IntentId, PhaseTransition, PhasedCommand,
+    run_phased,
+};
 use mvp_identity::VisibleNodes;
 use mvp_projection::FactSource;
 use mvp_routing::{ProjectionCatchUp, RoutingError, ServingCommitPlan, ServingFactWriter};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     EnvironmentBranchFact, EnvironmentBranchId, EnvironmentCommandId, EnvironmentEpoch,
@@ -245,6 +250,21 @@ where
         &self,
         request: PromoteEnvironmentRequest,
     ) -> EnvironmentResult<PendingEnvironmentPromote> {
+        let decision = self.prepare_promote_decision(&request)?;
+        self.fact_writer
+            .write_promote_decision(decision.clone())
+            .await?;
+        self.serving_writer
+            .write_serving_commit(&request.serving_commit)
+            .await
+            .map_err(map_serving_error)?;
+        Ok(PendingEnvironmentPromote { decision })
+    }
+
+    fn prepare_promote_decision(
+        &self,
+        request: &PromoteEnvironmentRequest,
+    ) -> EnvironmentResult<EnvironmentPromoteDecisionFact> {
         let production = require_expected_environment_epoch(
             self.source,
             self.session,
@@ -259,12 +279,12 @@ where
         )?;
         let decision = EnvironmentPromoteDecisionFact {
             environment: request.environment.clone(),
-            command_id: request.command_id,
+            command_id: request.command_id.clone(),
             previous_head: production.fact.reference(),
             branch_head: branch.fact.reference(),
             target_serving_commit_id: request.serving_commit.serving_commit_id.clone(),
             target_volume_refs: branch.fact.volume_refs.clone(),
-            visible_nodes: request.visible_nodes,
+            visible_nodes: request.visible_nodes.clone(),
         };
         let current_production = require_expected_environment_epoch(
             self.source,
@@ -290,14 +310,24 @@ where
             &branch,
             &current_branch,
         )?;
-        self.fact_writer
-            .write_promote_decision(decision.clone())
-            .await?;
-        self.serving_writer
-            .write_serving_commit(&request.serving_commit)
-            .await
-            .map_err(map_serving_error)?;
-        Ok(PendingEnvironmentPromote { decision })
+        Ok(decision)
+    }
+
+    pub async fn execute_phased(
+        &self,
+        cx: &CommandContext,
+        request: PromoteEnvironmentRequest,
+        catch_up: Option<ProjectionCatchUp>,
+    ) -> EnvironmentResult<EnvironmentCommandResult> {
+        run_phased(
+            cx,
+            &PromoteEnvironmentPhasedCommand {
+                owner: self,
+                request,
+                catch_up,
+            },
+        )
+        .await
     }
 
     pub async fn finalize(
@@ -329,6 +359,141 @@ where
         Ok(EnvironmentCommandResult::Complete {
             head: Box::new(head),
         })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+enum PromoteEnvironmentPhase {
+    Start,
+    DecisionWritten {
+        decision: EnvironmentPromoteDecisionFact,
+    },
+    ServingCommitWritten {
+        decision: EnvironmentPromoteDecisionFact,
+    },
+    HeadWritten {
+        head: Box<EnvironmentHeadFact>,
+    },
+}
+
+struct PromoteEnvironmentPhasedCommand<'a, W, S> {
+    owner: &'a PromoteEnvironmentCommand<'a, W, S>,
+    request: PromoteEnvironmentRequest,
+    catch_up: Option<ProjectionCatchUp>,
+}
+
+impl<W, S> Command for PromoteEnvironmentPhasedCommand<'_, W, S>
+where
+    W: EnvironmentFactWriter,
+    S: ServingFactWriter,
+{
+    type Output = EnvironmentCommandResult;
+    type Error = EnvironmentError;
+
+    fn name(&self) -> CommandName {
+        CommandName::parse("environment-promote").expect("static command name validates")
+    }
+
+    fn intent_id(&self) -> IntentId {
+        IntentId::parse(self.request.command_id.as_str()).expect("command ids validate as intents")
+    }
+
+    fn intent_fact(&self) -> CommandFact {
+        CommandFact::new(self.name(), self.intent_id())
+    }
+}
+
+impl<W, S> PhasedCommand for PromoteEnvironmentPhasedCommand<'_, W, S>
+where
+    W: EnvironmentFactWriter,
+    S: ServingFactWriter,
+{
+    type Phase = PromoteEnvironmentPhase;
+
+    fn initial_phase(&self) -> Self::Phase {
+        PromoteEnvironmentPhase::Start
+    }
+
+    fn step<'b>(
+        &'b self,
+        _cx: &'b CommandContext,
+        phase: Self::Phase,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        PhaseTransition<Self::Phase, Self::Output>,
+                        <Self as Command>::Error,
+                    >,
+                > + Send
+                + 'b,
+        >,
+    > {
+        Box::pin(async move {
+            match phase {
+                PromoteEnvironmentPhase::Start => {
+                    let decision = self.owner.prepare_promote_decision(&self.request)?;
+                    self.owner
+                        .fact_writer
+                        .write_promote_decision(decision.clone())
+                        .await?;
+                    Ok(PhaseTransition::Continue(
+                        PromoteEnvironmentPhase::DecisionWritten { decision },
+                    ))
+                }
+                PromoteEnvironmentPhase::DecisionWritten { decision } => {
+                    self.owner
+                        .serving_writer
+                        .write_serving_commit(&self.request.serving_commit)
+                        .await
+                        .map_err(map_serving_error)?;
+                    Ok(PhaseTransition::Continue(
+                        PromoteEnvironmentPhase::ServingCommitWritten { decision },
+                    ))
+                }
+                PromoteEnvironmentPhase::ServingCommitWritten { decision } => {
+                    let Some(catch_up) = &self.catch_up else {
+                        return Ok(PhaseTransition::Done(EnvironmentCommandResult::Pending {
+                            reason: EnvironmentServingPendingReason::ProjectionCatchUpMissing,
+                        }));
+                    };
+                    if catch_up.serving_commit_id() != &decision.target_serving_commit_id {
+                        return Ok(PhaseTransition::Done(EnvironmentCommandResult::Pending {
+                            reason: EnvironmentServingPendingReason::ProjectionCatchUpMismatch,
+                        }));
+                    }
+                    let head = EnvironmentHeadFact {
+                        environment: decision.environment,
+                        epoch: decision.previous_head.epoch.next()?,
+                        head_id: environment_head_id_for_command(&decision.command_id),
+                        source_command_id: decision.command_id,
+                        serving_commit_id: decision.target_serving_commit_id,
+                        previous_head: Some(decision.previous_head),
+                        volume_refs: decision.target_volume_refs,
+                        source_branch_id: None,
+                    };
+                    self.owner.fact_writer.write_head(head.clone()).await?;
+                    Ok(PhaseTransition::Continue(
+                        PromoteEnvironmentPhase::HeadWritten {
+                            head: Box::new(head),
+                        },
+                    ))
+                }
+                PromoteEnvironmentPhase::HeadWritten { head } => {
+                    Ok(PhaseTransition::Done(EnvironmentCommandResult::Complete {
+                        head,
+                    }))
+                }
+            }
+        })
+    }
+
+    fn compensate<'b>(
+        &'b self,
+        _cx: &'b CommandContext,
+        _phase: Self::Phase,
+    ) -> Pin<Box<dyn Future<Output = Result<(), <Self as Command>::Error>> + Send + 'b>> {
+        Box::pin(async { Ok(()) })
     }
 }
 

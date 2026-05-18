@@ -11,6 +11,7 @@ hdrhistogram = "7"
 hickory-proto = { version = "=0.26.0-beta.4", default-features = false, features = ["std"] }
 memory-stats = "1"
 mvp-bus = { path = "../bus" }
+mvp-commands = { path = "../commands" }
 mvp-deploy = { path = "../deploy" }
 mvp-deploy-p2panda = { path = "../deploy-p2panda" }
 mvp-environment = { path = "../environment" }

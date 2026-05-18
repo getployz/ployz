@@ -9,7 +9,7 @@ use crate::{
     EnvironmentHeadId, EnvironmentId, EnvironmentResult, EnvironmentRouteRef, EnvironmentVolumeRef,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EnvironmentFactPayload {
     Head(EnvironmentHeadFact),
@@ -18,7 +18,7 @@ pub enum EnvironmentFactPayload {
     RollbackDecision(EnvironmentRollbackDecisionFact),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EnvironmentHeadReference {
     pub environment: EnvironmentId,
     pub epoch: EnvironmentEpoch,
@@ -27,7 +27,7 @@ pub struct EnvironmentHeadReference {
     pub volume_refs: Vec<EnvironmentVolumeRef>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EnvironmentHeadFact {
     pub environment: EnvironmentId,
     pub epoch: EnvironmentEpoch,
@@ -52,7 +52,7 @@ impl EnvironmentHeadFact {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EnvironmentBranchFact {
     pub source_environment: EnvironmentId,
     pub source_epoch: EnvironmentEpoch,
@@ -64,7 +64,7 @@ pub struct EnvironmentBranchFact {
     pub visible_nodes: VisibleNodes,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EnvironmentPromoteDecisionFact {
     pub environment: EnvironmentId,
     pub command_id: EnvironmentCommandId,
@@ -75,7 +75,7 @@ pub struct EnvironmentPromoteDecisionFact {
     pub visible_nodes: VisibleNodes,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EnvironmentRollbackDecisionFact {
     pub environment: EnvironmentId,
     pub command_id: EnvironmentCommandId,
