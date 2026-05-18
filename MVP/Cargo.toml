@@ -25,6 +25,7 @@ members = [
     "serving",
     "volume",
 ]
+exclude = ["p2panda-06-spike"]
 resolver = "3"
 
 [workspace.package]

@@ -97,8 +97,9 @@ Checked on 2026-05-19:
 In scope:
 
 - Add a temporary, isolated `MVP/p2panda-06-spike` crate or equivalent
-  workspace-local compile spike using dependency aliases such as
-  `p2panda-core-06 = { package = "p2panda-core", version = "0.6.0" }`.
+  compile spike. If the existing MVP workspace cannot resolve both the old
+  iroh `0.96` line and p2panda-net's iroh `0.98` line at once, keep the spike
+  as an excluded nested workspace and run it by manifest path.
 - Prove the current MVP can compile against p2panda `0.6.0` APIs without using
   RC iroh. `p2panda-net 0.6.0` brings `iroh 0.98.2`, which is acceptable.
 - Build tiny tests or examples for:
@@ -138,7 +139,7 @@ Goal: find whether p2panda `0.6.0` can become the single MVP p2panda line.
 
 Steps:
 
-1. Add an isolated compile spike with aliases for `p2panda-core 0.6.0`,
+1. Add an isolated compile spike with `p2panda-core 0.6.0`,
    `p2panda-store 0.6.0`, `p2panda-sync 0.6.0`, `p2panda-net 0.6.0`, and
    `p2panda-auth 0.6.0`.
 2. Run `cargo tree -p mvp-p2panda-06-spike` and record the iroh family.
@@ -291,9 +292,9 @@ Target checks for this slice:
 
 ```text
 cd MVP && cargo fmt --all -- --check
-cd MVP && cargo check -p mvp-p2panda-06-spike
-cd MVP && cargo test -p mvp-p2panda-06-spike
-cd MVP && cargo tree -p mvp-p2panda-06-spike
+cd MVP && cargo check --manifest-path p2panda-06-spike/Cargo.toml
+cd MVP && cargo test --manifest-path p2panda-06-spike/Cargo.toml
+cd MVP && cargo tree --manifest-path p2panda-06-spike/Cargo.toml
 ```
 
 If the spike touches shared workspace dependency versions, also run:
