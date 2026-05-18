@@ -1,16 +1,22 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use mvp_identity::NodeId;
+use mvp_bus::{FactContentHash, FactKeyPattern, Grant, IslandId, PrincipalId};
+use mvp_identity::{NodeId, VisibleNodes};
 use mvp_projection::{
-    BackendEndpoint, DnsProjection, DnsRecordFact, DnsRecordProjection, GatewayProjection,
-    GatewayRouteProjection, ProjectionReport, ProjectionState, RouteId, SnapshotWriteReport,
+    BackendEndpoint, BusFactSource, DnsProjection, DnsRecordFact, DnsRecordProjection,
+    GatewayProjection, GatewayRouteProjection, ProjectionReport, ProjectionState, RouteId,
+    SnapshotWriteReport,
 };
 
 use crate::{
-    CleanupFailureKind, CleanupStatus, DeployError, DeployId, DeployOutcome, DeployStateMachine,
-    DnsCommitId, GatewayCommitId, PhaseId, PhasePolicy, ProjectionCatchUp, RouteCommitId,
-    ServingCommitId, ServingCommitPlan, write_serving_commit,
+    BusDeployFactWriter, CleanupFailureKind, CleanupStatus, DeployDecisionCandidate,
+    DeployDecisionFact, DeployError, DeployFactPayload, DeployFactWriteStatus, DeployFactWriter,
+    DeployId, DeployManifest, DeployOutcome, DeployStateMachine, DnsCommitId, GatewayCommitId,
+    PhaseId, PhasePolicy, ProjectionCatchUp, RouteCommitId, ServingCommitId, ServingCommitPlan,
+    decode_deploy_decision_fact, deploy_cleanup_done_fact_key, deploy_decision_fact_key,
+    deploy_decision_fact_payload, read_deploy_decision, select_deploy_decision,
+    write_serving_commit,
 };
 
 fn serving_commit() -> ServingCommitPlan {
@@ -37,6 +43,20 @@ fn serving_commit() -> ServingCommitPlan {
         }],
         epoch: 1,
     }
+}
+
+fn manifest(deploy_id: &str, serving_epoch: u64) -> DeployManifest {
+    let mut serving = serving_commit();
+    serving.epoch = serving_epoch;
+    DeployManifest::new(DeployId::new(deploy_id), Vec::new(), serving)
+}
+
+fn visible_nodes() -> VisibleNodes {
+    VisibleNodes::new([NodeId::new("node-new"), NodeId::new("node-old")])
+}
+
+fn decision_fact(deploy_id: &str, serving_epoch: u64) -> DeployDecisionFact {
+    DeployDecisionFact::new(manifest(deploy_id, serving_epoch), visible_nodes())
 }
 
 #[test]
@@ -142,6 +162,179 @@ fn projection_catch_up_allows_unrelated_gateway_revision_suffix() {
     let proof = ProjectionCatchUp::from_report(&commit, &report).expect("catch-up proof");
 
     assert_eq!(proof.serving_commit_id(), &commit.serving_commit_id);
+}
+
+#[test]
+fn deploy_fact_keys_are_deploy_id_scoped() {
+    let deploy_id = DeployId::new("deploy-1");
+
+    assert_eq!(
+        deploy_decision_fact_key(&deploy_id)
+            .expect("decision key")
+            .as_str(),
+        "/facts/deploy/deploy-1/decision"
+    );
+    assert_eq!(
+        deploy_cleanup_done_fact_key(&deploy_id)
+            .expect("cleanup key")
+            .as_str(),
+        "/facts/deploy/deploy-1/cleanup/done"
+    );
+}
+
+#[tokio::test]
+async fn duplicate_deploy_decision_is_already_present() {
+    let (bus, authority, _raw_bus) = mvp_bus::harness::actor_with_authority();
+    let session = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("deploy"),
+        Grant::allow_all(),
+    );
+    let writer = BusDeployFactWriter::new(bus, session);
+    let fact = decision_fact("deploy-1", 1);
+
+    let inserted = writer
+        .write_decision(fact.clone())
+        .await
+        .expect("insert decision");
+    let repeated = writer.write_decision(fact).await.expect("repeat decision");
+
+    assert_eq!(inserted.status(), DeployFactWriteStatus::Inserted);
+    assert_eq!(repeated.status(), DeployFactWriteStatus::AlreadyPresent);
+    assert_eq!(inserted.content_hash(), repeated.content_hash());
+}
+
+#[tokio::test]
+async fn conflicting_deploy_decision_returns_structured_conflict() {
+    let (bus, authority, _raw_bus) = mvp_bus::harness::actor_with_authority();
+    let session = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("deploy"),
+        Grant::allow_all(),
+    );
+    let writer = BusDeployFactWriter::new(bus, session);
+    writer
+        .write_decision(decision_fact("deploy-1", 1))
+        .await
+        .expect("insert decision");
+
+    let error = writer
+        .write_decision(decision_fact("deploy-1", 2))
+        .await
+        .expect_err("conflicting decision should fail");
+
+    assert!(matches!(
+        error,
+        DeployError::DeployFactConflict {
+            key,
+            principal,
+            ..
+        } if key.as_str() == "/facts/deploy/deploy-1/decision"
+            && principal == PrincipalId::new("deploy")
+    ));
+}
+
+#[test]
+fn deploy_decision_selection_uses_epoch_desc_then_hash_asc() {
+    let key = deploy_decision_fact_key(&DeployId::new("deploy-1")).expect("key");
+    let low_epoch = DeployDecisionCandidate {
+        fact: decision_fact("deploy-1", 1),
+        author: PrincipalId::new("deploy-a"),
+        content_hash: FactContentHash::new("b3:0002"),
+    };
+    let high_epoch_high_hash = DeployDecisionCandidate {
+        fact: decision_fact("deploy-1", 2),
+        author: PrincipalId::new("deploy-b"),
+        content_hash: FactContentHash::new("b3:ffff"),
+    };
+    let high_epoch_low_hash = DeployDecisionCandidate {
+        fact: decision_fact("deploy-1", 2),
+        author: PrincipalId::new("deploy-c"),
+        content_hash: FactContentHash::new("b3:0001"),
+    };
+
+    let selection = select_deploy_decision(
+        vec![
+            low_epoch,
+            high_epoch_high_hash.clone(),
+            high_epoch_low_hash.clone(),
+        ],
+        key,
+    )
+    .expect("select decision");
+
+    assert_eq!(selection.winner, high_epoch_low_hash);
+    assert_eq!(selection.superseded[0], high_epoch_high_hash);
+}
+
+#[test]
+fn malformed_deploy_fact_payload_is_structured() {
+    let key = deploy_decision_fact_key(&DeployId::new("deploy-1")).expect("key");
+    let error = decode_deploy_decision_fact(&key, &b"{not-json".as_slice().into())
+        .expect_err("malformed payload should fail");
+
+    assert!(matches!(error, DeployError::WirePayload { .. }));
+}
+
+#[test]
+fn wrong_deploy_fact_kind_is_structured() {
+    let key = deploy_decision_fact_key(&DeployId::new("deploy-1")).expect("key");
+    let cleanup =
+        DeployFactPayload::CleanupDone(crate::DeployCleanupDoneFact::new(&manifest("deploy-1", 1)))
+            .to_fact_bytes()
+            .expect("cleanup payload");
+    let error = decode_deploy_decision_fact(&key, &cleanup.into())
+        .expect_err("wrong fact kind should fail");
+
+    assert!(matches!(
+        error,
+        DeployError::DeployFactKindMismatch {
+            expected_kind: "decision",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn deploy_decision_reader_selects_conflict_candidate_without_operator_choice() {
+    let (raw_bus, authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
+    let source = BusFactSource::new(raw_bus.clone());
+    let writer_a = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("deploy-a"),
+        Grant::empty()
+            .with_fact_write(FactKeyPattern::parse("/facts/deploy/>").expect("pattern"))
+            .with_fact_read(FactKeyPattern::parse("/facts/deploy/>").expect("pattern")),
+    );
+    let writer_b = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("deploy-b"),
+        Grant::empty()
+            .with_fact_write(FactKeyPattern::parse("/facts/deploy/>").expect("pattern"))
+            .with_fact_read(FactKeyPattern::parse("/facts/deploy/>").expect("pattern")),
+    );
+    let deploy_id = DeployId::new("deploy-1");
+    let key = deploy_decision_fact_key(&deploy_id).expect("key");
+    raw_bus
+        .write_fact_payload(
+            &writer_a,
+            key.clone(),
+            deploy_decision_fact_payload(&decision_fact("deploy-1", 1)).expect("payload"),
+        )
+        .expect("first write");
+    let _ = raw_bus
+        .write_fact_payload(
+            &writer_b,
+            key,
+            deploy_decision_fact_payload(&decision_fact("deploy-1", 2)).expect("payload"),
+        )
+        .expect("second write reports conflict after storing candidate");
+
+    let selection = read_deploy_decision(&source, writer_a.island(), &writer_a, &deploy_id)
+        .expect("read conflicted decisions");
+
+    assert_eq!(selection.winner.fact.serving_epoch, 2);
+    assert_eq!(selection.superseded.len(), 1);
 }
 
 fn projection_report_for_commit(

@@ -1,9 +1,13 @@
 use std::fmt::{self, Display, Formatter};
 
-use mvp_bus::{BusActorHandle, BusError, BusSession, FactKey, FactKeyParseError, FactWriteOutcome};
+use mvp_bus::{
+    BusActorHandle, BusError, BusSession, FactKey, FactKeyParseError, FactKeyPattern, FactPayload,
+    FactWriteOutcome, IslandId,
+};
 use mvp_projection::{
-    BackendEndpoint, DnsRecordFact, DnsRecordProjection, GatewayRouteProjection,
-    ProjectionFactPayload, ProjectionReport, RouteId, ServingCommitFact,
+    BackendEndpoint, CandidateStatus, DnsRecordFact, DnsRecordProjection, FactSource,
+    FactSourceError, GatewayRouteProjection, ProjectionFactPayload, ProjectionReport, RouteId,
+    ServingCommitFact,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -18,6 +22,12 @@ pub enum RoutingError {
     ProjectionCatchUpMismatch { serving_commit_id: ServingCommitId },
     #[error("serving fact already has a conflicting candidate: {key}")]
     ServingFactConflict { key: FactKey },
+    #[error("serving fact is missing: {key}")]
+    ServingFactMissing { key: FactKey },
+    #[error("serving fact payload was not a serving commit: {key}")]
+    ServingFactKindMismatch { key: FactKey },
+    #[error("serving fact payload does not match serving commit {serving_commit_id}")]
+    ServingFactMismatch { serving_commit_id: ServingCommitId },
     #[error("invalid wire payload: {context}: {source}")]
     WirePayload {
         context: &'static str,
@@ -26,6 +36,8 @@ pub enum RoutingError {
     },
     #[error(transparent)]
     Bus(#[from] BusError),
+    #[error(transparent)]
+    FactSource(#[from] FactSourceError),
     #[error(transparent)]
     FactKeyParse(#[from] FactKeyParseError),
 }
@@ -180,35 +192,111 @@ pub async fn write_serving_commit(
     session: &BusSession,
     commit: &ServingCommitPlan,
 ) -> RoutingResult<ServingCommitFacts> {
-    let serving = write_projection_fact(
-        bus,
-        session,
-        &format!("/facts/serving/{}", commit.serving_commit_id),
-        ProjectionFactPayload::ServingCommit(ServingCommitFact {
-            serving_commit_id: commit.serving_commit_id.to_string(),
-            route_commit_id: commit.route_commit_id.to_string(),
-            gateway_commit_id: commit.gateway_commit_id.to_string(),
-            dns_commit_id: commit.dns_commit_id.to_string(),
-            route_id: commit.route_id.clone(),
-            hostnames: commit.hostnames.clone(),
-            backends: commit.active_backends.clone(),
-            old_backends_to_drain: commit.old_backends_to_drain.clone(),
-            dns_records: commit.dns_records.clone(),
-            epoch: commit.epoch,
-        }),
-    )
-    .await?;
+    let key = serving_commit_fact_key(&commit.serving_commit_id)?;
+    let payload = serving_commit_fact_payload(commit)?;
+    let serving = write_projection_fact(bus, session, key, payload).await?;
     Ok(ServingCommitFacts { serving })
+}
+
+pub fn serving_commit_fact_key(serving_commit_id: &ServingCommitId) -> RoutingResult<FactKey> {
+    FactKey::parse(format!("/facts/serving/{serving_commit_id}")).map_err(RoutingError::from)
+}
+
+pub fn serving_commit_fact_body(commit: &ServingCommitPlan) -> ServingCommitFact {
+    ServingCommitFact {
+        serving_commit_id: commit.serving_commit_id.to_string(),
+        route_commit_id: commit.route_commit_id.to_string(),
+        gateway_commit_id: commit.gateway_commit_id.to_string(),
+        dns_commit_id: commit.dns_commit_id.to_string(),
+        route_id: commit.route_id.clone(),
+        hostnames: commit.hostnames.clone(),
+        backends: commit.active_backends.clone(),
+        old_backends_to_drain: commit.old_backends_to_drain.clone(),
+        dns_records: commit.dns_records.clone(),
+        epoch: commit.epoch,
+    }
+}
+
+pub fn serving_commit_fact_payload(commit: &ServingCommitPlan) -> RoutingResult<FactPayload> {
+    encode_projection_payload(
+        &ProjectionFactPayload::ServingCommit(serving_commit_fact_body(commit)),
+        "serving commit fact",
+    )
+    .map(Into::into)
+}
+
+pub fn decode_serving_commit_fact_payload(
+    key: &FactKey,
+    payload: &FactPayload,
+) -> RoutingResult<ServingCommitFact> {
+    match ProjectionFactPayload::from_fact_bytes(payload.as_bytes()).map_err(|source| {
+        RoutingError::WirePayload {
+            context: "decode serving commit fact",
+            source,
+        }
+    })? {
+        ProjectionFactPayload::ServingCommit(fact) => Ok(fact),
+        _ => Err(RoutingError::ServingFactKindMismatch { key: key.clone() }),
+    }
+}
+
+pub fn validate_serving_commit_fact(
+    expected: &ServingCommitPlan,
+    fact: &ServingCommitFact,
+) -> RoutingResult<()> {
+    if *fact == serving_commit_fact_body(expected) {
+        Ok(())
+    } else {
+        Err(RoutingError::ServingFactMismatch {
+            serving_commit_id: expected.serving_commit_id.clone(),
+        })
+    }
+}
+
+pub fn read_exact_serving_commit(
+    source: &dyn FactSource,
+    island: &IslandId,
+    session: &BusSession,
+    expected: &ServingCommitPlan,
+) -> RoutingResult<ServingCommitFact> {
+    let key = serving_commit_fact_key(&expected.serving_commit_id)?;
+    let pattern = FactKeyPattern::parse(key.as_str())?;
+    let candidates = source
+        .list_candidates(island, &pattern, session)?
+        .into_iter()
+        .filter(|candidate| {
+            candidate.key() == &key
+                && matches!(
+                    candidate.status(),
+                    CandidateStatus::Verified | CandidateStatus::Conflict
+                )
+        })
+        .collect::<Vec<_>>();
+    let payloads = source.read_payloads(island, &candidates, session)?;
+    for candidate in &candidates {
+        let Some(payload) = payloads.get(candidate.content_hash()) else {
+            continue;
+        };
+        let fact = decode_serving_commit_fact_payload(&key, payload)?;
+        if validate_serving_commit_fact(expected, &fact).is_ok() {
+            return Ok(fact);
+        }
+    }
+    if candidates.is_empty() {
+        Err(RoutingError::ServingFactMissing { key })
+    } else {
+        Err(RoutingError::ServingFactMismatch {
+            serving_commit_id: expected.serving_commit_id.clone(),
+        })
+    }
 }
 
 async fn write_projection_fact(
     bus: &BusActorHandle,
     session: &BusSession,
-    key: &str,
-    payload: ProjectionFactPayload,
+    key: FactKey,
+    payload: FactPayload,
 ) -> RoutingResult<FactWriteOutcome> {
-    let key = FactKey::parse(key)?;
-    let payload = encode_projection_payload(&payload, "projection fact")?;
     let outcome = bus
         .write_fact_payload(session, key.clone(), payload)
         .await?;
@@ -295,10 +383,11 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
+    use mvp_bus::{FactContentHash, FactKeyPattern, Grant, IslandId, PrincipalId};
     use mvp_identity::NodeId;
     use mvp_projection::{
-        BackendEndpoint, DnsProjection, DnsRecordFact, GatewayProjection, ProjectionState,
-        SnapshotWriteReport,
+        BackendEndpoint, BusFactSource, DnsProjection, DnsRecordFact, GatewayProjection,
+        ProjectionState, SnapshotWriteReport,
     };
 
     use super::*;
@@ -341,6 +430,92 @@ mod tests {
         let proof = ProjectionCatchUp::from_report(&commit, &report).expect("catch-up proof");
 
         assert_eq!(proof.serving_commit_id(), &commit.serving_commit_id);
+    }
+
+    #[test]
+    fn serving_commit_fact_helpers_round_trip() {
+        let commit = serving_commit();
+        let key = serving_commit_fact_key(&commit.serving_commit_id).expect("key");
+        let payload = serving_commit_fact_payload(&commit).expect("payload");
+        let decoded = decode_serving_commit_fact_payload(&key, &payload).expect("decode");
+
+        assert_eq!(key.as_str(), "/facts/serving/serving-commit-1");
+        assert_eq!(decoded, serving_commit_fact_body(&commit));
+    }
+
+    #[test]
+    fn exact_serving_commit_read_refuses_mismatched_epoch() {
+        let (bus, authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
+        let source = BusFactSource::new(bus.clone());
+        let session = authority.grant_in(
+            IslandId::new("prod"),
+            PrincipalId::new("deploy"),
+            Grant::empty()
+                .with_fact_write(FactKeyPattern::parse("/facts/serving/>").expect("pattern"))
+                .with_fact_read(FactKeyPattern::parse("/facts/serving/>").expect("pattern")),
+        );
+        let expected = serving_commit();
+        let mut stored = expected.clone();
+        stored.epoch = 2;
+        bus.write_fact_payload(
+            &session,
+            serving_commit_fact_key(&expected.serving_commit_id).expect("key"),
+            serving_commit_fact_payload(&stored).expect("payload"),
+        )
+        .expect("write stored serving fact");
+
+        let error = read_exact_serving_commit(&source, session.island(), &session, &expected)
+            .expect_err("mismatched serving fact should be rejected");
+
+        assert!(matches!(error, RoutingError::ServingFactMismatch { .. }));
+    }
+
+    #[test]
+    fn exact_serving_commit_read_uses_matching_conflict_candidate() {
+        let (bus, authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
+        let source = BusFactSource::new(bus.clone());
+        let writer_a = authority.grant_in(
+            IslandId::new("prod"),
+            PrincipalId::new("deploy-a"),
+            Grant::empty()
+                .with_fact_write(FactKeyPattern::parse("/facts/serving/>").expect("pattern"))
+                .with_fact_read(FactKeyPattern::parse("/facts/serving/>").expect("pattern")),
+        );
+        let writer_b = authority.grant_in(
+            IslandId::new("prod"),
+            PrincipalId::new("deploy-b"),
+            Grant::empty()
+                .with_fact_write(FactKeyPattern::parse("/facts/serving/>").expect("pattern"))
+                .with_fact_read(FactKeyPattern::parse("/facts/serving/>").expect("pattern")),
+        );
+        let expected = serving_commit();
+        let key = serving_commit_fact_key(&expected.serving_commit_id).expect("key");
+        let mut conflict = expected.clone();
+        conflict.hostnames = vec!["other.example.test".to_string()];
+        bus.write_fact_payload(
+            &writer_a,
+            key.clone(),
+            serving_commit_fact_payload(&conflict).expect("payload"),
+        )
+        .expect("write conflict");
+        bus.write_fact_payload(
+            &writer_b,
+            key,
+            serving_commit_fact_payload(&expected).expect("payload"),
+        )
+        .expect("write matching candidate");
+
+        let fact = read_exact_serving_commit(&source, writer_a.island(), &writer_a, &expected)
+            .expect("matching conflict candidate is accepted");
+
+        assert_eq!(
+            FactContentHash::for_payload(&serving_commit_fact_payload(&expected).expect("payload")),
+            FactContentHash::for_payload(
+                &ProjectionFactPayload::ServingCommit(fact)
+                    .to_fact_bytes()
+                    .expect("payload")
+            )
+        );
     }
 
     fn projection_report_for_commit(
