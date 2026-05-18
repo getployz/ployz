@@ -1,6 +1,6 @@
 ---
 title: Slice 022 p2panda-net Current API Substitution Plan
-status: active
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md

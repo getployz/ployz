@@ -197,9 +197,19 @@ Current proof status:
   through the HTTP-01 wire proof. Scoped ACME grants, trusted replica sessions,
   stale synced candidates, no-op repeat sync, and deleted-SQLite rebuild are
   all part of the scenario.
-- Remaining E2E-4 work is binding this sync path to real iroh transport and
-  adding propagation histograms once multiple process roles exchange p2panda
-  sync messages instead of paired in-memory channels.
+- Slice 022 adds `p2panda-net-sync-contract`. Local p2panda-net nodes exchange
+  opaque stable `PandaFactOperation` envelopes over the maintained
+  iroh/gossip/log-sync stack; the receiver imports those envelopes through the
+  canonical Ployz validation path before projection can see them. The scenario
+  records six transported operations, three inserted/conflict imports, one
+  duplicate no-op, two conflict candidates, explicit untrusted-author and
+  cross-island rejection, trusted-replica import gating, zero cross-island
+  leakage, an 8ms projection rebuild, and 60ms network sync in the latest full
+  all-run.
+- Remaining E2E-4 work is replacing the `p2panda-net::test_utils` local-node
+  harness with production-owned node lifecycle/discovery/error surfaces and
+  adding propagation histograms once multiple process roles exchange p2panda-net
+  traffic continuously.
 
 ### E2E-5: Machine Add And Remove
 
@@ -541,6 +551,12 @@ Current proof status:
   `crates/ployzd/src/daemon/cert_coordination.rs`; the MVP comparison should
   count the E2E-local adapter and focused domain tests, not placeholder Hyper
   serving polish.
+- Slice 022 is a mixed leverage result. It adds a 430-line E2E transport proof
+  and 84 lines of fact-store envelope/test surface, but it prevents a worse
+  fork: p2panda-net is now proven as the carrier while Ployz keeps one canonical
+  import/authority path. No product business logic moved; the semantic gain is
+  deleting the future need to hand-roll iroh transport for fact sync, not yet
+  shrinking the current stable `PandaFactStore` implementation.
 
 ## Required Test Artifacts
 
