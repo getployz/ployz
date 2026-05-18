@@ -402,6 +402,15 @@ imported through the `PandaFactStore` trusted same-island replica gate before
 projection can observe them. A p2panda-net store populated before Ployz
 authorization is transport state, not durable cluster truth.
 
+p2panda-auth-backed island membership is the preferred authority source for
+p2panda fact stores. `IslandAuthzStore` durably records signed membership
+operations, and `PandaFactAuthoritySource` turns the replayed membership view
+into active writer and replica-importer snapshots. Transport identity and
+p2panda author keys still do not grant product authority by themselves: Ployz
+root anchoring, principal/key/epoch bindings, bus grants, and fact-key grants
+remain separate checks. Manual trusted-author maps are fixture/legacy fallback
+only when no membership snapshot is installed.
+
 Correctness must not depend on `applied_fact` bookkeeping. If projection state
 is uncertain, delete/rebuild SQLite from facts and atomically publish a fresh
 snapshot.

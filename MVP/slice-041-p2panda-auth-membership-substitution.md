@@ -1,6 +1,6 @@
 ---
 title: Slice 041 p2panda-auth Membership Substitution
-status: active
+status: completed
 created: 2026-05-19
 origin:
   - MVP/slice-041-p2panda-auth-membership-substitution-plan.md
@@ -113,3 +113,82 @@ cargo run -p mvp-e2e -- environment-branch-promote-rollback-contract
 cargo run -p mvp-e2e -- p2panda-net-process-serving-contract
 cargo test -p mvp-e2e
 ```
+
+## Unit 4 Result: Process Role Membership Wiring
+
+Product-shaped process roles now receive p2panda fact authority from durable
+membership, not general trusted-author command-line flags. The serving
+projection role and p2panda-net serving projection role both open the
+membership store, validate configured fact writers against active membership,
+install membership authority into the fact store, and keep local fact-key grant
+policy explicit. The p2panda-net receiver also validates its replica importer
+principal and refreshes membership authority before import batches.
+
+## Unit 5 Result: Membership E2E Contract
+
+`p2panda-auth-membership-contract` is now part of `mvp-e2e -- all`. It proves
+the durable membership store is not just a process-role wiring detail:
+
+- root creates an island membership log;
+- root adds writers and replica importers;
+- active writers can write p2panda facts;
+- replica importers can import active writer operations on another store;
+- Ployz fact-key grants still reject a member that has membership but no write
+  grant;
+- Ployz fact-key grants do not authorize a non-member writer;
+- replica import still checks the original fact author's write grant, not the
+  importer session's read grant;
+- a demoted writer loses write authority but can import as a replica importer;
+- a removed writer cannot write or import fresh facts;
+- a fresh operation created from a stale pre-removal authority snapshot is
+  rejected by a receiver with current membership;
+- a reinvited principal with a new epoch/key can write;
+- the old epoch/key cannot write or import after reinvite;
+- reopening the membership store replays old add/remove/reinvite operations
+  without resurrecting the old key binding;
+- a prod operation offered through another island is rejected;
+- unauthorized imports accepted is asserted exactly zero.
+
+The scenario emits structured counts for accepted/rejected writes/imports and
+the restart/replay decision booleans. This is intentionally product-shaped:
+all fact writes/imports go through `PandaFactStore` with a
+`PandaFactAuthoritySource` rebuilt from `IslandAuthzStore`.
+
+Verification:
+
+```text
+cd MVP && cargo run -p mvp-e2e -- p2panda-auth-membership-contract
+```
+
+## Unit 6 Result: Deletion And Containment Ledger
+
+Manual p2panda trust APIs still exist, but Slice 041 moves them out of
+product-shaped process-serving paths. The containment grep is now classified as
+follows:
+
+```text
+cd MVP && rg "p2panda-trusted-author|p2panda-author|p2panda-author-key|TrustedP2pandaAuthor|trusted_author_keys|trusted_replica_peers|trust_replica_peer|trust_author_key" \
+  p2panda-authz p2panda-facts p2panda-transport e2e/src
+```
+
+Retained deliberately:
+
+- `p2panda-facts/src/lib.rs`: manual trust maps and APIs remain as legacy
+  fallback/fixture compatibility for stores without an installed membership
+  snapshot. They are not the product path after Slice 041.
+- `p2panda-transport/src/tests.rs`: fixture-only setup for transport tests.
+- older E2E contracts such as deploy restart recovery, sync, machine remove,
+  volume transfer, and p2panda-net direct probes still use manual trust
+  fixtures until each product slice migrates to membership-backed authority.
+
+Deleted from product-shaped process roles:
+
+- `--p2panda-author`
+- `--p2panda-author-key`
+- `--p2panda-trusted-author`
+- `TrustedP2pandaAuthor`
+- serving-role trusted-author configuration as the authority boundary.
+
+The next migration slice should move ACME and the core p2panda sync proof onto
+the same membership-backed authority shape, then classify the remaining manual
+trust call sites as fixture-only or delete them.

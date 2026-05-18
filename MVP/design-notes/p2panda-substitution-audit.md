@@ -279,6 +279,29 @@ Future p2panda work should not add custom byte transports around p2panda-net.
 The next substitution target remains durable p2panda-auth membership replacing
 manual trusted author and replica maps.
 
+## Slice 041 Membership Substitution Result
+
+Slice 041 moves durable p2panda-auth membership from spike to product-shaped
+authority source. `IslandAuthzStore` persists signed membership operations and
+`PandaFactAuthoritySource` feeds replayed active writers/replica importers into
+`PandaFactStore`.
+
+The product-shaped serving/projection roles no longer accept general
+trusted-author flags. They open a membership store, validate configured fact
+writers against active membership, and refresh membership authority before
+p2panda-net import batches. The retained manual trust APIs are legacy fallback
+and fixture scaffolding, not the preferred authority path.
+
+`p2panda-auth-membership-contract` closes the gap left by the earlier unit
+spike: root creation, writer add, replica importer add, membership-vs-fact-key
+grant separation, demotion, removal, stale-writer rejection, reinvite,
+cross-island rejection, and restart/replay decisions now run through the actual
+fact-store write/import path with exact zero unauthorized imports accepted.
+
+Remaining substitution target: ACME and the core p2panda sync proof still have
+manual-trust fixture setup. The next slice should migrate those to
+membership-backed authority and then re-run the containment grep.
+
 ## Verification
 
 Slice 039 changed planning and decision documents only. Slice 040 is the
