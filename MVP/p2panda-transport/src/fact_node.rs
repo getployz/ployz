@@ -20,8 +20,8 @@ use crate::{
     PandaNetTopic, PandaNetTransportError,
     fact_driver::import_p2panda_operation_into_shared_store,
     node::{
-        DEFAULT_REPLAY_CACHE_CAPACITY, PandaNetReplayCache, PandaNetReplayPolicy,
-        PandaNetReplayStatus, node_info_from_endpoint, with_startup_timeout,
+        DEFAULT_REPLAY_CACHE_CAPACITY, PandaNetReplayCache, PandaNetReplayStatus,
+        node_info_from_endpoint, with_startup_timeout,
     },
 };
 
@@ -153,14 +153,6 @@ impl PandaNetFactNode {
             return Err(PandaNetTransportError::MissingLocalOperation);
         }
         Ok(write.into_outcome())
-    }
-
-    #[cfg(any(test, feature = "harness"))]
-    pub async fn publish_operation(
-        &mut self,
-        operation: &PandaFactOperation,
-    ) -> Result<(), PandaNetTransportError> {
-        self.append_operation(operation).await
     }
 
     pub async fn import_next_fact(
@@ -456,10 +448,7 @@ impl PandaNetFactStream {
     ) -> Result<PandaNetStreamOperation, PandaNetTransportError> {
         loop {
             let stream_operation = self.next_operation_limited(max_operation_bytes).await?;
-            match replay_cache.remember(
-                stream_operation.operation_hash(),
-                PandaNetReplayPolicy::CheckOnly,
-            ) {
+            match replay_cache.check_seen(stream_operation.operation_hash()) {
                 PandaNetReplayStatus::Fresh => return Ok(stream_operation),
                 PandaNetReplayStatus::Replayed => {}
             }

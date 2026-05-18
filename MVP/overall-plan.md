@@ -555,10 +555,14 @@ membership operations. p2panda discovery/address-book can improve transport
 reachability after invite/bootstrap, but it does not replace visible nodes at
 command decision time.
 
-Slice 040 is planned as that deletion slice:
+Slice 040 is that deletion slice:
 [MVP/slice-040-delete-opaque-p2panda-net-transport-plan.md](slice-040-delete-opaque-p2panda-net-transport-plan.md).
-It should remove the old opaque p2panda-net body transport and keep
-`PandaNetFactNode` as the only product-shaped fact transport.
+The result is
+[MVP/slice-040-delete-opaque-p2panda-net-transport.md](slice-040-delete-opaque-p2panda-net-transport.md):
+the old opaque p2panda-net body transport is gone from active Rust sources.
+`PandaNetFactNode` is now the only product-shaped p2panda-net fact transport,
+direct rejection probes operate on canonical p2panda operations, and the
+redundant opaque-body E2Es were removed from `mvp-e2e -- all`.
 
 ## Crate Scout Protocol
 

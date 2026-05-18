@@ -1,6 +1,6 @@
 ---
 title: Slice 040 Delete Opaque p2panda-net Transport Plan
-status: active
+status: completed
 created: 2026-05-19
 origin:
   - VISION.md

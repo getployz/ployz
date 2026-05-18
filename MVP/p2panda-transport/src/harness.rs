@@ -1,105 +1,23 @@
 use mvp_bus::BusSession;
-use mvp_p2panda_facts::PandaFactStore;
+use mvp_p2panda_facts::{PandaFactExtensions, SharedPandaFactStore};
+use p2panda_core::Operation;
 
 use crate::{
-    PandaNetFactImportReport, PandaNetNetworkId, PandaNetNode, PandaNetNodeConfig,
-    PandaNetNodeSeed, PandaNetStream, PandaNetTopic, PandaNetTransportError, import_fact_body,
-    node::{DEFAULT_REPLAY_CACHE_CAPACITY, PandaNetReplayCache, PandaNetStreamBody},
+    PandaNetFactImportOutcome, PandaNetTopic,
+    fact_driver::import_p2panda_operation_into_shared_store,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PandaNetWireTransportConfig {
-    network_id: PandaNetNetworkId,
-    topic: PandaNetTopic,
-    receiver_seed: PandaNetNodeSeed,
-    sender_seed: PandaNetNodeSeed,
-}
-
-impl PandaNetWireTransportConfig {
-    #[must_use]
-    pub const fn new(
-        network_id: PandaNetNetworkId,
-        topic: PandaNetTopic,
-        receiver_seed: PandaNetNodeSeed,
-        sender_seed: PandaNetNodeSeed,
-    ) -> Self {
-        Self {
-            network_id,
-            topic,
-            receiver_seed,
-            sender_seed,
-        }
-    }
-}
-
-pub async fn import_fact_bodies(
-    bodies: Vec<Vec<u8>>,
-    store: &mut PandaFactStore,
+pub async fn import_p2panda_operation(
+    operation: Operation<PandaFactExtensions>,
+    store: &SharedPandaFactStore,
     replica_session: &BusSession,
-) -> PandaNetFactImportReport {
-    let mut report = PandaNetFactImportReport::new(bodies.len());
-    for body in bodies {
-        report.record(import_fact_body(&body, store, replica_session).await);
-    }
-    report
-}
-
-pub async fn transport_wire_bodies(
-    config: PandaNetWireTransportConfig,
-    bodies: Vec<Vec<u8>>,
-) -> Result<Vec<Vec<u8>>, PandaNetTransportError> {
-    let expected = bodies.len();
-    let mut harness = PandaNetWireHarness::spawn(config, bodies).await?;
-    let mut received = Vec::with_capacity(expected);
-    let mut replay_cache = PandaNetReplayCache::new(DEFAULT_REPLAY_CACHE_CAPACITY);
-    while received.len() < expected {
-        match harness
-            .receiver_stream
-            .next_unique_body_limited(usize::MAX, &mut replay_cache)
-            .await?
-        {
-            PandaNetStreamBody::Body { body, .. } => received.push(body),
-            PandaNetStreamBody::TooLarge { .. } => unreachable!("usize::MAX accepts every body"),
-        }
-    }
-    Ok(received)
-}
-
-struct PandaNetWireHarness {
-    _receiver: PandaNetNode,
-    _sender: PandaNetNode,
-    _sender_stream: PandaNetStream,
-    receiver_stream: PandaNetStream,
-}
-
-impl PandaNetWireHarness {
-    async fn spawn(
-        config: PandaNetWireTransportConfig,
-        bodies: Vec<Vec<u8>>,
-    ) -> Result<Self, PandaNetTransportError> {
-        let receiver = PandaNetNode::spawn(PandaNetNodeConfig::localhost_ephemeral(
-            config.network_id,
-            config.receiver_seed,
-            Vec::new(),
-        ))
-        .await?;
-        let receiver_info = receiver.node_info();
-        let receiver_stream = receiver.open_stream(config.topic, true).await?;
-        let mut sender = PandaNetNode::spawn(PandaNetNodeConfig::localhost_ephemeral(
-            config.network_id,
-            config.sender_seed,
-            vec![receiver_info],
-        ))
-        .await?;
-        for body in bodies {
-            sender.append_to_topic(config.topic, &body).await?;
-        }
-        let sender_stream = sender.open_stream(config.topic, true).await?;
-        Ok(Self {
-            _receiver: receiver,
-            _sender: sender,
-            _sender_stream: sender_stream,
-            receiver_stream,
-        })
-    }
+    topic: PandaNetTopic,
+) -> PandaNetFactImportOutcome {
+    import_p2panda_operation_into_shared_store(
+        operation,
+        store,
+        replica_session,
+        topic.into_inner(),
+    )
+    .await
 }

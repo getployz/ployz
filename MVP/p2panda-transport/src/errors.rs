@@ -25,10 +25,6 @@ pub enum PandaNetTransportError {
         step: PandaNetStartupStep,
         message: String,
     },
-    #[error("p2panda-net quarantine log operation failed: {message}")]
-    QuarantineLog { message: String },
-    #[error("p2panda-net operation for topic {topic:?} had no body")]
-    MissingBody { topic: Topic },
     #[error("p2panda-net stream for topic {topic:?} ended")]
     StreamEnded { topic: Topic },
     #[error("p2panda-net stream for topic {topic:?} lagged: {message}")]

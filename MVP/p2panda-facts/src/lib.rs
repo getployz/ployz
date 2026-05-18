@@ -714,65 +714,6 @@ fn require_manual_author_key(
     }
 }
 
-const WIRE_MAGIC: &[u8; 4] = b"PFO1";
-const HEADER_LEN_BYTES: usize = 4;
-
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum PandaFactWireEnvelopeError {
-    #[error("p2panda operation wire envelope is too short")]
-    TooShort,
-    #[error("p2panda operation wire envelope has bad magic")]
-    BadMagic,
-    #[error("p2panda operation wire envelope declared header length exceeds envelope")]
-    HeaderLengthExceedsEnvelope,
-    #[error("p2panda operation wire envelope is missing operation body")]
-    MissingBody,
-}
-
-pub struct PandaFactWireEnvelope;
-
-impl PandaFactWireEnvelope {
-    #[must_use]
-    pub fn encode(operation: &PandaFactOperation) -> Vec<u8> {
-        let header_len =
-            u32::try_from(operation.header.len()).expect("p2panda operation header fits in u32");
-        let mut bytes = Vec::with_capacity(
-            WIRE_MAGIC.len() + HEADER_LEN_BYTES + operation.header.len() + operation.body.len(),
-        );
-        bytes.extend_from_slice(WIRE_MAGIC);
-        bytes.extend_from_slice(&header_len.to_be_bytes());
-        bytes.extend_from_slice(&operation.header);
-        bytes.extend_from_slice(&operation.body);
-        bytes
-    }
-
-    pub fn decode(
-        bytes: &[u8],
-    ) -> std::result::Result<PandaFactOperation, PandaFactWireEnvelopeError> {
-        if bytes.len() < WIRE_MAGIC.len() + HEADER_LEN_BYTES {
-            return Err(PandaFactWireEnvelopeError::TooShort);
-        }
-        let (magic, rest) = bytes.split_at(WIRE_MAGIC.len());
-        if magic != WIRE_MAGIC {
-            return Err(PandaFactWireEnvelopeError::BadMagic);
-        }
-        let (header_len, body) = rest.split_at(HEADER_LEN_BYTES);
-        let header_len = u32::from_be_bytes(
-            header_len
-                .try_into()
-                .expect("split header length is exactly four bytes"),
-        ) as usize;
-        if body.len() < header_len {
-            return Err(PandaFactWireEnvelopeError::HeaderLengthExceedsEnvelope);
-        }
-        let (header, body) = body.split_at(header_len);
-        if body.is_empty() {
-            return Err(PandaFactWireEnvelopeError::MissingBody);
-        }
-        Ok(PandaFactOperation::new(header.to_vec(), body.to_vec()))
-    }
-}
-
 #[derive(Clone)]
 enum PandaFactBackend {
     Memory(PandaMemoryStore),
@@ -4645,39 +4586,6 @@ mod tests {
                 .expect("list destination candidates")
                 .is_empty()
         );
-    }
-
-    #[tokio::test]
-    async fn operation_wire_envelope_round_trips_and_rejects_malformed_bytes() {
-        let (mut store, authority) = store_with_authority();
-        let writer = grant_prod(
-            &authority,
-            "writer",
-            Grant::empty().with_fact_write(pattern("/facts/>")),
-        );
-        let author = PandaFactAuthor::new(principal("writer"));
-        store
-            .write_fact_payload(
-                &writer,
-                &author,
-                key("/facts/node/node-wire/joined/1"),
-                FactPayload::from_static(b"wire-payload"),
-            )
-            .await
-            .expect("write source operation");
-        let operation = store
-            .export_operations()
-            .next()
-            .expect("operation was recorded");
-
-        let wire = PandaFactWireEnvelope::encode(operation);
-        let round_trip =
-            PandaFactWireEnvelope::decode(&wire).expect("decode wire operation envelope");
-        assert_eq!(round_trip, *operation);
-        assert!(matches!(
-            PandaFactWireEnvelope::decode(b"not an operation"),
-            Err(PandaFactWireEnvelopeError::BadMagic)
-        ));
     }
 
     #[tokio::test]

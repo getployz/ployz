@@ -1,7 +1,6 @@
 use mvp_bus::{BusSession, FactKey, IslandId, PrincipalId};
 use mvp_p2panda_facts::{
-    PandaFactError, PandaFactExtensions, PandaFactOperation, PandaFactStore, PandaFactWireEnvelope,
-    PandaFactWireEnvelopeError, PandaFactWriteOutcome, SharedPandaFactStore,
+    PandaFactError, PandaFactExtensions, PandaFactWriteOutcome, SharedPandaFactStore,
 };
 use p2panda_core::{Operation, Topic};
 
@@ -85,7 +84,6 @@ pub enum PandaNetFactImportFailure {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PandaNetFactImportRejection {
-    MalformedEnvelope(PandaFactWireEnvelopeError),
     MalformedOperation {
         message: String,
     },
@@ -113,37 +111,6 @@ pub enum PandaNetFactImportRejection {
     InvalidExtensions,
 }
 
-pub async fn import_fact_body(
-    body: &[u8],
-    store: &mut PandaFactStore,
-    replica_session: &BusSession,
-) -> PandaNetFactImportOutcome {
-    let operation = match decode_fact_body(body) {
-        Ok(operation) => operation,
-        Err(outcome) => return outcome,
-    };
-    import_decoded_fact_operation(store, replica_session, &operation).await
-}
-
-pub async fn import_fact_body_into_shared_store(
-    body: &[u8],
-    store: &SharedPandaFactStore,
-    replica_session: &BusSession,
-) -> PandaNetFactImportOutcome {
-    let operation = match decode_fact_body(body) {
-        Ok(operation) => operation,
-        Err(outcome) => return outcome,
-    };
-
-    match store
-        .import_replica_operation(replica_session, &operation)
-        .await
-    {
-        Ok(outcome) => classify_write_outcome(outcome),
-        Err(error) => classify_fact_error(error),
-    }
-}
-
 pub(crate) async fn import_p2panda_operation_into_shared_store(
     operation: Operation<PandaFactExtensions>,
     store: &SharedPandaFactStore,
@@ -159,26 +126,6 @@ pub(crate) async fn import_p2panda_operation_into_shared_store(
     }
     match store
         .import_replica_p2panda_operation(replica_session, topic, operation)
-        .await
-    {
-        Ok(outcome) => classify_write_outcome(outcome),
-        Err(error) => classify_fact_error(error),
-    }
-}
-
-fn decode_fact_body(body: &[u8]) -> Result<PandaFactOperation, PandaNetFactImportOutcome> {
-    PandaFactWireEnvelope::decode(body).map_err(|error| {
-        PandaNetFactImportOutcome::Rejected(PandaNetFactImportRejection::MalformedEnvelope(error))
-    })
-}
-
-async fn import_decoded_fact_operation(
-    store: &mut PandaFactStore,
-    replica_session: &BusSession,
-    operation: &PandaFactOperation,
-) -> PandaNetFactImportOutcome {
-    match store
-        .import_replica_operation(replica_session, operation)
         .await
     {
         Ok(outcome) => classify_write_outcome(outcome),

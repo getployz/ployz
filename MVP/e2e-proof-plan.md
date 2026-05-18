@@ -204,21 +204,21 @@ Current proof status:
   until membership operations are durably persisted/replayed, fact operations
   reference the membership operation/epoch they depend on, and authz-derived
   checks replace manual trust seeding.
-- Slice 022 adds `p2panda-net-sync-contract`. Local p2panda-net nodes exchange
+- Slice 022 added `p2panda-net-sync-contract`. Local p2panda-net nodes exchange
   opaque stable `PandaFactOperation` envelopes over the maintained
   iroh/gossip/log-sync stack; the receiver imports those envelopes through the
   canonical Ployz validation path before projection can see them. The scenario
   records six transported operations, three inserted/conflict imports, one
   duplicate no-op, two conflict candidates, explicit untrusted-author and
   cross-island rejection, trusted-replica import gating, zero cross-island
-  leakage, a 9ms projection rebuild, and 80ms network sync in the latest full
-  all-run.
-- Slice 023 adds `p2panda-net-owned-node-contract`. The scenario uses owned
+  leakage, a 9ms projection rebuild, and 80ms network sync in its final
+  full-suite run. Slice 040 retires this opaque-body proof.
+- Slice 023 added `p2panda-net-owned-node-contract`. The scenario uses owned
   p2panda-net nodes rather than `test_utils`, imports through the shared
   transport fact driver, proves trusted-replica gating with a known envelope
   instead of depending on network delivery order, rejects untrusted author,
   cross-island, and malformed envelopes, and projects only the valid
-  non-conflicting node fact.
+  non-conflicting node fact. Slice 040 retires this opaque-body proof.
 - Slice 030 adds `p2panda-net-fact-node-contract`. The scenario gives the
   receiver a running p2panda-net fact node and projects from that node's local
   `SharedPandaFactStore`; the E2E no longer performs the main success-path
@@ -233,12 +233,15 @@ Current proof status:
   existing p2panda-net E2Es should be replaced during the 0.6 migration so they
   move canonical fact operations instead of opaque `PFO1` envelopes while still
   proving duplicate/conflict/malformed/oversized/wrong-author/unauthorized
-  outcomes. Keep them in `all` until that replacement exists.
+  outcomes. Slice 040 completes that replacement by keeping canonical
+  `p2panda-net-fact-node-contract` and removing the opaque-body scenarios from
+  `all`.
 - Slice 024 extracts ACME claim/present/clear into `mvp-acme-command`. The
-  p2panda ACME and p2panda-net ACME scenarios still prove the same transport,
-  projection, last-good serving, scoped-grant, stale-write, trusted-replica,
-  and SQLite rebuild behavior, but the command semantics now live in reusable
-  business code instead of the E2E fixture.
+  p2panda ACME scenario proves projection, last-good serving, scoped-grant,
+  stale-write, trusted-replica, and SQLite rebuild behavior, while the retired
+  p2panda-net ACME scenario proved the now-deleted opaque net transport path.
+  Command semantics now live in reusable business code instead of the E2E
+  fixture.
 - Remaining E2E-4 work is continuous propagation histograms once multiple
   process roles exchange p2panda-net traffic, plus production shutdown/status
   hardening beyond drop-based local-node cleanup.
@@ -542,11 +545,13 @@ Current proof status:
   dropped, a later p2panda sync/rebuild clears the challenge explicitly, stale
   synced lower-epoch facts cannot roll serving back from the takeover winner,
   and deleting `projections.sqlite` rebuilds from the synced p2panda store.
-- Slice 023 adds `p2panda-net-acme-http01-contract`. ACME lease/challenge facts
+- Slice 023 added `p2panda-net-acme-http01-contract`. ACME lease/challenge facts
   move over owned p2panda-net nodes, import through the canonical
   trusted-replica path, project on the receiving node, serve HTTP-01 while the
   issuer adapter is absent, clear to 404 after a transported clear fact, and
-  rebuild SQLite from transported p2panda operations.
+  rebuild SQLite from transported p2panda operations. Slice 040 retires this
+  opaque-body net variant; ACME product behavior remains covered by
+  `p2panda-acme-http01-contract` and process-role p2panda-net serving.
 - Slice 023 adds the explicit pre-serving/pre-commit deploy cleanup ABI proof.
 - Slice 030 proves a running p2panda-net fact node can ingest into a local
   `SharedPandaFactStore` and rebuild serving projections from that store. This
@@ -715,6 +720,16 @@ Current proof status:
   no active all-suite success path encoding `PFO1`, while preserving the
   branchable import outcomes and process-serving behavior already proven by
   Slice 038.
+- Slice 040 deletes that opaque path. The remaining p2panda-net proof surface
+  is `p2panda-net-fact-node-contract` for canonical operation transport and
+  import outcomes, including ACME lease/present/clear facts that drive HTTP-01
+  200-before-clear and 404-after-clear serving over live `PandaNetFactNode`.
+  `p2panda-net-process-serving-contract` covers process-role serving behavior,
+  delayed remote updates, restart, rebuild, and untrusted-author rejection
+  classification over the same canonical transport. The removed
+  `p2panda-net-sync-contract`, `p2panda-net-owned-node-contract`, and
+  standalone `p2panda-net-acme-http01-contract` were legacy opaque-body proofs
+  and are no longer part of `mvp-e2e -- all`.
 
 ## Required Test Artifacts
 

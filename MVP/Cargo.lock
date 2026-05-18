@@ -2973,11 +2973,9 @@ dependencies = [
  "mvp-p2panda-facts",
  "p2panda-core",
  "p2panda-net",
- "p2panda-store",
  "p2panda-sync",
  "thiserror 2.0.18",
  "tokio",
- "tokio-stream",
 ]
 
 [[package]]
