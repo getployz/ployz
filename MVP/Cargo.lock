@@ -2856,6 +2856,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mvp-environment"
+version = "0.1.0"
+dependencies = [
+ "mvp-bus",
+ "mvp-identity",
+ "mvp-projection",
+ "mvp-routing",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "mvp-identity"
 version = "0.1.0"
 dependencies = [

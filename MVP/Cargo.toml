@@ -6,6 +6,7 @@ members = [
     "deploy",
     "deploy-p2panda",
     "e2e",
+    "environment",
     "identity",
     "iroh",
     "lease",

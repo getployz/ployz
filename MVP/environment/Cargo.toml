@@ -1,0 +1,19 @@
+[package]
+name = "mvp-environment"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "mvp_environment"
+path = "src/lib.rs"
+
+[dependencies]
+mvp-bus = { path = "../bus" }
+mvp-identity = { path = "../identity" }
+mvp-projection = { path = "../projection" }
+mvp-routing = { path = "../routing" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
