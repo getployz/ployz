@@ -515,12 +515,12 @@ Decision:
   its first mutation.
 - If preconditions already conflict, the command fails with a structured
   `Conflict` variant that names the conflicting fact, principal, and time.
-- If the command proceeds, it writes intent/lifecycle facts durably to local
-  docs and returns.
+- If the command proceeds, it writes intent/lifecycle facts durably to the local
+  fact store and returns.
 - Every command result includes visible nodes at decision time.
-- Replication to other nodes is eventual through iroh-docs. There is no
-  `min_replicas` knob, no `store.pin_fact` commit path, and no witness-ack
-  collection.
+- Replication to other nodes is eventual through the chosen fact substrate.
+  There is no `min_replicas` knob, no `store.pin_fact` commit path, and no
+  witness-ack collection.
 
 What it replaces:
 - Durability quorum language that made `store.pin_fact` look like a required
@@ -545,8 +545,8 @@ Revisit if:
 ## Conflict Candidates And Supersession
 
 Why this:
-- iroh-docs is a replicated set. Conflicts are possible facts, not transport
-  exceptions.
+- The fact substrate is eventually replicated. Conflicts are possible facts,
+  not transport exceptions.
 - Operators should not be asked to pick a winner interactively for every
   surviving race. The command surface should fail before mutation when it sees
   the conflict, and reducers should handle later races deterministically.
@@ -608,7 +608,8 @@ What it replaces:
 - Named singleton service registration as an authority mechanism.
 
 Costs:
-- A lease is not a linearizable lock on top of iroh-docs.
+- A lease is not a linearizable lock on top of an eventually replicated fact
+  store.
 - A holder may lose in projection after a surviving race. The operator status
   surface must show that supersession loudly for commands they initiated.
 - Resource adapters still need their own fencing or conflict behavior. The
@@ -619,16 +620,18 @@ Revisit:
   add a resource-specific enforcement primitive. Do not add a hidden "strict
   lease" mode.
 
-## Iroh Toolchain And Docs Adapter
+## Iroh Toolchain And Parked Docs Adapter
 
 Why this:
-- The MVP strategy depends on iroh, iroh-gossip, iroh-blobs, and iroh-docs as
-  deployed substrate, not only as future references.
+- The MVP still depends on iroh, iroh-gossip, and iroh-blobs as connectivity
+  and payload candidates.
+- The old iroh-docs adapter proved useful semantics, but Slice 019a moved the
+  durable fact direction to p2panda signed operations and local stores.
 - Several completed slices intentionally proved semantics in memory first. That
-  phase is no longer enough; future transport/fact slices must bind the
+  phase is no longer enough; future transport slices must bind bus/sync
   semantics to real iroh APIs.
 - The projection path must stay synchronous from the reducer's point of view:
-  async docs sync updates a local view, and projection reads that local view
+  async replication updates a local view, and projection reads that local view
   through `FactSource`.
 
 Decision:
@@ -639,6 +642,8 @@ Decision:
 - Raw endpoint/docs/blob/gossip types are confined to `mvp-iroh` internals and
   E2E harness setup. Business reducers, deploy logic, and bus semantics should
   consume typed Ployz contracts.
+- New fact-substrate work should target `mvp-p2panda-facts` and p2panda-store,
+  not grow the iroh-docs local-view wrapper.
 - Docs author IDs map through explicit Ployz principal bindings. Unknown docs
   authors are unverified; docs access is not authority.
 - Malformed docs entries are reported through the `mvp-iroh` local-view
@@ -773,9 +778,9 @@ Crates:
 - `thiserror` keeps projection errors structured without hand-written boilerplate.
 
 Revisit if:
-- The iroh-docs/toolchain slice chooses to raise `MVP/` to Rust 1.91 for current
-  `iroh-docs`, or pins an older compatible iroh-docs line. That slice should
-  implement the adapter behind the fact-source contract, not rewrite reducers.
+- A future transport slice proves iroh-docs is useful as a narrow bridge under
+  the p2panda fact model. That slice should implement the adapter behind the
+  fact-source contract, not rewrite reducers.
 - HTTP/DNS serving needs a binary or version-negotiated state format after the
   MVP-local JSON schema has proven too slow or too rigid.
 

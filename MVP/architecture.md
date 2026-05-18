@@ -39,7 +39,7 @@ The candidate substrate becomes:
 | Local structure | Kameo actors, supervision, bounded mailboxes |
 | Notifications | PloyzBus over iroh streams and iroh-gossip |
 | Request/reply | PloyzBus inbox protocol over iroh QUIC streams |
-| Durable facts | iroh-docs replicated fact set |
+| Durable facts | p2panda signed operation log plus local store behind `FactSource` |
 | Large payloads | iroh-blobs content-addressed payloads |
 | Local queries | SQLite projection/cache |
 | Data plane | WireGuard |
@@ -157,8 +157,10 @@ Ownership rules to preserve as these boundaries become real:
   fact-write authorization.
 - `ServiceRegistryActor` owns local service registrations and projects remote
   service facts into bus interest.
-- `DocsActor` owns iroh-docs replicas and fact ingestion.
-- `ProjectionActor` owns deterministic reduction from docs facts into SQLite.
+- `FactStoreActor` owns signed fact operations, local persistence, and fact
+  ingestion.
+- `ProjectionActor` owns deterministic reduction from fact candidates into
+  SQLite.
 - Serving-state writers publish atomic local state consumed by HTTP/DNS serving
   roles. The exact gateway/DNS state shape is a slice-level design decision.
 - `WireGuardActor` owns full-mesh peer reconciliation for the MVP.
@@ -340,7 +342,9 @@ prove subject, response, queue, bridge, and fact-write authorization.
 
 ## Facts And Projections
 
-iroh-docs is the replicated durable fact set. SQLite is a local projection.
+p2panda signed operations are the preferred durable fact substrate. SQLite is a
+local projection. iroh-docs remains historical proof/reference material unless a
+future slice explicitly reintroduces it for a narrower bridge.
 
 Fact envelope:
 
@@ -377,7 +381,7 @@ facts/gateway/<commit_id>
 Projection pipeline:
 
 ```text
-iroh-docs facts
+p2panda fact operations
   -> deterministic reducer
   -> projections.sqlite
   -> gateway.snapshot / dns.snapshot
@@ -390,14 +394,14 @@ snapshot.
 
 ### Fact Store Contract
 
-iroh-docs is a replicated document/key-value substrate, not an append-only log
-or consensus system. Ployz imposes the fact-ledger rules above it:
+The fact substrate is an append-only signed operation log, not a consensus
+system. Ployz imposes the fact-ledger rules above it:
 
 - Fact keys are write-once by Ployz policy.
 - Reusing a fact key with a different content hash is a conflict.
 - The operator's connected node is the consistency boundary for a command.
-  Foreground commands write durably to that node's local docs store and return.
-  Other nodes learn the fact through eventual iroh-docs replication.
+  Foreground commands write durably to that node's local fact store and return.
+  Other nodes learn the fact through eventual replication.
 - There is no commit quorum, `min_replicas`, or witness-ack collection for fact
   writes.
 - Commands read relevant durable facts before their first mutation. If the
@@ -481,7 +485,7 @@ replicate to other nodes eventually
 ```
 
 The route commit is durable when the coordinator's connected node has persisted
-the fact to its local docs store. The command result reports visible nodes at
+the fact to its local fact store. The command result reports visible nodes at
 decision time, but it does not wait for peer acknowledgements before moving to
 the next command-state transition. If another race survives into replication,
 the reducer's deterministic supersession rules make the projected winner and
