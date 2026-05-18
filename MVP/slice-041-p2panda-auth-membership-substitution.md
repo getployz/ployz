@@ -70,3 +70,22 @@ Verification:
 ```text
 cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-authz
 ```
+
+## Unit 3 Partial Result: Durable Authority Source
+
+`mvp-p2panda-facts` now has `PandaFactAuthoritySource`, a narrow bridge from
+durable p2panda-auth membership state into fact-store authority snapshots.
+`PandaSqliteOpenConfig::with_authority_source` installs those snapshots during
+fact-store open, so callers no longer need to manually translate a durable
+membership store into trusted author keys.
+
+This is only the first Unit 3 step. Remaining Unit 3 work still needs to move
+product-shaped process paths off manual trust, add the explicit fact-policy
+grant source, and resolve the accepted-at-ingest authority evidence/rebuild
+gate from the plan.
+
+Verification:
+
+```text
+cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-facts sqlite_open_config_installs_durable_membership_authority_source
+```

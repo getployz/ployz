@@ -11,7 +11,10 @@ use mvp_bus::{
     BusSession, FactAccess, FactAuthorizer, FactContentHash, FactKey, FactKeyPattern, FactPayload,
     IslandId, PrincipalId,
 };
-use mvp_p2panda_authz::{IslandAuthoritySnapshot, IslandMemberAuthorKey, IslandMemberEpoch};
+use mvp_p2panda_authz::{
+    IslandAuthoritySnapshot, IslandAuthzError, IslandAuthzStore, IslandMemberAuthorKey,
+    IslandMemberEpoch,
+};
 use mvp_projection::{
     CandidateStatus, FactCandidate, FactSource, FactSourceError, FactSourceResult,
     classify_fact_key,
@@ -419,6 +422,36 @@ impl PandaTrustedAuthorKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PandaFactAuthoritySource {
+    snapshots: Vec<IslandAuthoritySnapshot>,
+}
+
+impl PandaFactAuthoritySource {
+    #[must_use]
+    pub fn from_snapshots(snapshots: Vec<IslandAuthoritySnapshot>) -> Self {
+        Self { snapshots }
+    }
+
+    pub async fn from_membership_store(
+        store: &IslandAuthzStore,
+    ) -> std::result::Result<Self, PandaAuthoritySourceError> {
+        Ok(Self {
+            snapshots: vec![store.authority_snapshot().await?],
+        })
+    }
+
+    fn into_snapshots(self) -> Vec<IslandAuthoritySnapshot> {
+        self.snapshots
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum PandaAuthoritySourceError {
+    #[error(transparent)]
+    Authz(#[from] IslandAuthzError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PandaSqliteOpenConfig {
     path: PathBuf,
     known_islands: Vec<IslandId>,
@@ -448,6 +481,12 @@ impl PandaSqliteOpenConfig {
     #[must_use]
     pub fn with_authority_snapshot(mut self, authority: IslandAuthoritySnapshot) -> Self {
         self.authority_snapshots.push(authority);
+        self
+    }
+
+    #[must_use]
+    pub fn with_authority_source(mut self, authority: PandaFactAuthoritySource) -> Self {
+        self.authority_snapshots.extend(authority.into_snapshots());
         self
     }
 
@@ -2576,8 +2615,8 @@ mod tests {
 
     use mvp_bus::{BusAuthority, Grant, harness::InMemoryBus};
     use mvp_p2panda_authz::{
-        IslandAuthz, IslandAuthzMemoryLog, IslandMemberAuthorKey, IslandMemberEpoch,
-        IslandMemberKeyBinding, ReplicaImportAccess,
+        IslandAuthz, IslandAuthzMemoryLog, IslandAuthzStore, IslandMemberAuthorKey,
+        IslandMemberEpoch, IslandMemberKeyBinding, IslandRootAuthority, ReplicaImportAccess,
     };
     use tempfile::tempdir;
 
@@ -2709,6 +2748,88 @@ mod tests {
         authority_fixture_for_writer_and_replica(island, writer, replica)
             .await
             .snapshot()
+    }
+
+    async fn durable_authority_store_for_writer_and_replica(
+        root: &Path,
+        island: &IslandId,
+        writer: &PandaFactAuthor,
+        replica: &PandaFactAuthor,
+    ) -> IslandAuthzStore {
+        let root_private_key = SigningKey::from_bytes(&[9; 32]);
+        let root_binding = IslandMemberKeyBinding::new(
+            island.clone(),
+            PrincipalId::new("root"),
+            IslandMemberEpoch::new(NonZeroU64::new(1).expect("test epoch is non-zero")),
+            IslandMemberAuthorKey::from_public_key(root_private_key.verifying_key()),
+        );
+        let store = IslandAuthzStore::open(
+            root.join("membership.sqlite"),
+            island.clone(),
+            IslandRootAuthority::new(root_binding.clone()),
+        )
+        .await
+        .expect("durable authority store opens");
+        let mut authz = store
+            .create_root(root_binding.clone(), &root_private_key)
+            .await
+            .expect("root membership persists");
+        store
+            .add_writer(
+                &mut authz,
+                &root_binding,
+                &root_private_key,
+                authz_binding(island, writer, 1),
+            )
+            .await
+            .expect("writer membership persists");
+        store
+            .add_replica_importer(
+                &mut authz,
+                &root_binding,
+                &root_private_key,
+                authz_binding(island, replica, 1),
+                ReplicaImportAccess::Read,
+            )
+            .await
+            .expect("replica membership persists");
+        store
+    }
+
+    #[tokio::test]
+    async fn sqlite_open_config_installs_durable_membership_authority_source() {
+        let tempdir = tempdir().expect("tempdir");
+        let island = island("prod");
+        let writer = PandaFactAuthor::from_private_key_bytes(principal("writer"), [1; 32]);
+        let replica = PandaFactAuthor::from_private_key_bytes(principal("replica"), [2; 32]);
+        let authority_store = durable_authority_store_for_writer_and_replica(
+            tempdir.path(),
+            &island,
+            &writer,
+            &replica,
+        )
+        .await;
+        let authority_source = PandaFactAuthoritySource::from_membership_store(&authority_store)
+            .await
+            .expect("authority source rebuilds from membership store");
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let writer_session = authority.grant_in(
+            island.clone(),
+            PrincipalId::new("writer"),
+            Grant::empty().with_fact_write(pattern("/facts/>")),
+        );
+        let store = PandaFactStore::open_sqlite(
+            Arc::new(bus),
+            PandaSqliteOpenConfig::new(tempdir.path().join("facts.sqlite"), vec![island.clone()])
+                .with_authority_source(authority_source),
+        )
+        .await
+        .expect("fact store opens with durable authority source");
+
+        assert!(
+            store.can_write_fact(&writer_session, &key("/facts/routes/commit-1")),
+            "durable membership-derived authority and Ployz fact grant should both pass"
+        );
     }
 
     #[tokio::test]
