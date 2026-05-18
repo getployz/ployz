@@ -324,6 +324,8 @@ p2panda-backed fact substrate slice using `p2panda-core`, `p2panda-store`, and
 `p2panda-stream` behind the existing projection-facing `FactSource` boundary.
 See
 [MVP/design-notes/p2panda-substitution.md](design-notes/p2panda-substitution.md).
+The slice plan is
+[MVP/slice-018b-p2panda-fact-substrate-plan.md](slice-018b-p2panda-fact-substrate-plan.md).
 
 The next product-feature slices remain:
 
