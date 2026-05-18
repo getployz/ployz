@@ -31,7 +31,7 @@ use thiserror::Error;
 use tokio::sync::broadcast;
 
 const LOG_SYNC_MESSAGE_CAPACITY: usize = 128;
-const LOG_SYNC_EVENT_CAPACITY: usize = 65_536;
+const LOG_SYNC_EVENT_CAPACITY: usize = 1_024;
 
 #[derive(Debug, Error)]
 pub enum PandaFactError {
@@ -274,6 +274,18 @@ impl PandaFactSyncScope {
     }
 
     #[must_use]
+    pub fn from_trusted_authors(
+        island: IslandId,
+        authors: impl IntoIterator<Item = (PrincipalId, PandaFactAuthorKey)>,
+    ) -> Self {
+        authors
+            .into_iter()
+            .fold(Self::new(island), |scope, (principal, author_key)| {
+                scope.with_trusted_author(principal, author_key)
+            })
+    }
+
+    #[must_use]
     pub fn island(&self) -> &IslandId {
         &self.island
     }
@@ -294,17 +306,6 @@ pub struct PandaFactSyncPeerReport {
     pub conflict: u64,
     pub bytes_received: u64,
     pub bytes_sent: u64,
-}
-
-impl PandaFactSyncPeerReport {
-    fn add(&mut self, other: Self) {
-        self.received += other.received;
-        self.imported += other.imported;
-        self.duplicate += other.duplicate;
-        self.conflict += other.conflict;
-        self.bytes_received += other.bytes_received;
-        self.bytes_sent += other.bytes_sent;
-    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -522,18 +523,7 @@ impl PandaFactBackend {
 impl PandaFactStore {
     #[must_use]
     pub fn new(authorizer: Arc<dyn FactAuthorizer>) -> Self {
-        Self {
-            backend: PandaFactBackend::Memory(MemoryStore::new()),
-            authorizer,
-            fact_index: BTreeMap::new(),
-            operations: Vec::new(),
-            operation_hashes: BTreeSet::new(),
-            facts: Vec::new(),
-            facts_by_identity: BTreeMap::new(),
-            payloads: BTreeMap::new(),
-            trusted_author_keys: BTreeMap::new(),
-            trusted_replica_peers: BTreeSet::new(),
-        }
+        Self::from_backend(authorizer, PandaFactBackend::Memory(MemoryStore::new()))
     }
 
     pub async fn open_sqlite(
@@ -547,8 +537,18 @@ impl PandaFactStore {
             .await
             .map_err(store_error)?;
         run_pending_migrations(&pool).await.map_err(store_error)?;
-        let mut store = Self {
-            backend: PandaFactBackend::Sqlite(SqliteStore::new(pool)),
+        let mut store =
+            Self::from_backend(authorizer, PandaFactBackend::Sqlite(SqliteStore::new(pool)));
+        for trusted in config.trusted_author_keys {
+            store.bind_author_key(&trusted.island, &trusted.principal, trusted.author_key.0)?;
+        }
+        store.rebuild_indexes(&config.known_islands).await?;
+        Ok(store)
+    }
+
+    fn from_backend(authorizer: Arc<dyn FactAuthorizer>, backend: PandaFactBackend) -> Self {
+        Self {
+            backend,
             authorizer,
             fact_index: BTreeMap::new(),
             operations: Vec::new(),
@@ -558,12 +558,7 @@ impl PandaFactStore {
             payloads: BTreeMap::new(),
             trusted_author_keys: BTreeMap::new(),
             trusted_replica_peers: BTreeSet::new(),
-        };
-        for trusted in config.trusted_author_keys {
-            store.bind_author_key(&trusted.island, &trusted.principal, trusted.author_key.0)?;
         }
-        store.rebuild_indexes(&config.known_islands).await?;
-        Ok(store)
     }
 
     pub fn trust_author_key(
@@ -668,8 +663,21 @@ impl PandaFactStore {
             decode_cbor(operation.header()).map_err(|error| PandaFactError::InvalidExtensions {
                 message: error.to_string(),
             })?;
-        let body = Body::new(operation.body());
-        let payload = FactPayload::from(operation.body().to_vec());
+        let body_bytes = operation.body().to_vec();
+        let body = Body::new(&body_bytes);
+        self.import_decoded_operation(session, header, body, operation.header_bytes(), body_bytes)
+            .await
+    }
+
+    async fn import_decoded_operation(
+        &mut self,
+        session: &BusSession,
+        header: Header<PandaFactExtensions>,
+        body: Body,
+        header_bytes: Vec<u8>,
+        body_bytes: Vec<u8>,
+    ) -> Result<PandaFactWriteOutcome> {
+        let payload = FactPayload::from(body_bytes.clone());
         let content_hash = FactContentHash::for_payload(&payload);
         let metadata = metadata_from_header(&header, content_hash)?;
         let operation_hash = header.hash();
@@ -683,7 +691,7 @@ impl PandaFactStore {
             .ingest_operation(
                 header,
                 Some(body),
-                operation.header_bytes(),
+                header_bytes.clone(),
                 &IslandLog::from(&metadata.island),
             )
             .await?;
@@ -708,7 +716,10 @@ impl PandaFactStore {
         validate_operation(&imported).map_err(|_| PandaFactError::InvalidOperation)?;
 
         let pre_ingest = self.pre_ingest_status(&metadata);
-        self.record_operation(operation_hash, operation.clone());
+        self.record_operation(
+            operation_hash,
+            PandaFactOperation::new(header_bytes, body_bytes),
+        );
         Ok(self.record_fact_operation(metadata, payload, pre_ingest))
     }
 
@@ -977,37 +988,22 @@ pub async fn sync_panda_fact_stores(
     right_session: &BusSession,
     scope: &PandaFactSyncScope,
 ) -> SyncResult<PandaFactSyncReport> {
-    let mut report =
-        sync_panda_fact_stores_once(left, left_session, right, right_session, scope).await?;
-    let reverse =
-        sync_panda_fact_stores_once(right, right_session, left, left_session, scope).await?;
-    report.left.add(reverse.right);
-    report.right.add(reverse.left);
-    Ok(report)
-}
-
-async fn sync_panda_fact_stores_once(
-    left: &mut PandaFactStore,
-    left_session: &BusSession,
-    right: &mut PandaFactStore,
-    right_session: &BusSession,
-    scope: &PandaFactSyncScope,
-) -> SyncResult<PandaFactSyncReport> {
     left.validate_sync_scope(PandaFactSyncSide::Left, left_session, scope)?;
     right.validate_sync_scope(PandaFactSyncSide::Right, right_session, scope)?;
 
+    let logs = scope.logs();
     let events = match (left.backend.clone(), right.backend.clone()) {
         (PandaFactBackend::Memory(left_backend), PandaFactBackend::Memory(right_backend)) => {
-            run_log_sync_pair(left_backend, right_backend, scope.logs()).await?
+            run_log_sync_pair(left_backend, right_backend, logs).await?
         }
         (PandaFactBackend::Memory(left_backend), PandaFactBackend::Sqlite(right_backend)) => {
-            run_log_sync_pair(left_backend, right_backend, scope.logs()).await?
+            run_log_sync_pair(left_backend, right_backend, logs).await?
         }
         (PandaFactBackend::Sqlite(left_backend), PandaFactBackend::Memory(right_backend)) => {
-            run_log_sync_pair(left_backend, right_backend, scope.logs()).await?
+            run_log_sync_pair(left_backend, right_backend, logs).await?
         }
         (PandaFactBackend::Sqlite(left_backend), PandaFactBackend::Sqlite(right_backend)) => {
-            run_log_sync_pair(left_backend, right_backend, scope.logs()).await?
+            run_log_sync_pair(left_backend, right_backend, logs).await?
         }
     };
 
@@ -1035,10 +1031,15 @@ async fn sync_panda_fact_stores_once(
 }
 
 struct PandaFactSyncEvents {
-    left_received: Vec<PandaFactOperation>,
-    right_received: Vec<PandaFactOperation>,
+    left_received: Vec<PandaFactSyncOperation>,
+    right_received: Vec<PandaFactSyncOperation>,
     left_metrics: LogSyncMetrics,
     right_metrics: LogSyncMetrics,
+}
+
+struct PandaFactSyncOperation {
+    header: Header<PandaFactExtensions>,
+    body: Body,
 }
 
 async fn run_log_sync_pair<LeftStore, RightStore>(
@@ -1112,7 +1113,7 @@ where
 async fn collect_sync_events(
     side: PandaFactSyncSide,
     mut events: broadcast::Receiver<SyncEvent>,
-) -> SyncResult<Vec<PandaFactOperation>> {
+) -> SyncResult<Vec<PandaFactSyncOperation>> {
     let mut operations = Vec::new();
     loop {
         match events.recv().await {
@@ -1134,26 +1135,37 @@ async fn collect_sync_events(
 fn operation_from_sync_event(
     side: PandaFactSyncSide,
     operation: Operation<PandaFactExtensions>,
-) -> SyncResult<PandaFactOperation> {
+) -> SyncResult<PandaFactSyncOperation> {
     let body = operation
         .body
         .ok_or(PandaFactSyncError::MissingOperationBody { side })?;
-    Ok(PandaFactOperation::new(
-        operation.header.to_bytes(),
-        body.to_bytes(),
-    ))
+    Ok(PandaFactSyncOperation {
+        header: operation.header,
+        body,
+    })
 }
 
 async fn import_synced_operations(
     side: PandaFactSyncSide,
     store: &mut PandaFactStore,
     session: &BusSession,
-    operations: Vec<PandaFactOperation>,
+    operations: Vec<PandaFactSyncOperation>,
     report: &mut PandaFactSyncPeerReport,
 ) -> SyncResult<()> {
     for operation in operations {
         report.received += 1;
-        match store.import_operation(session, &operation).await {
+        let header_bytes = operation.header.to_bytes();
+        let body_bytes = operation.body.to_bytes();
+        match store
+            .import_decoded_operation(
+                session,
+                operation.header,
+                operation.body,
+                header_bytes,
+                body_bytes,
+            )
+            .await
+        {
             Ok(PandaFactWriteOutcome::Inserted(_)) => report.imported += 1,
             Ok(PandaFactWriteOutcome::AlreadyPresent(_)) => report.duplicate += 1,
             Ok(PandaFactWriteOutcome::Conflict(_)) => report.conflict += 1,
@@ -1446,11 +1458,11 @@ mod tests {
     }
 
     fn sync_scope(session: &BusSession, authors: &[&PandaFactAuthor]) -> PandaFactSyncScope {
-        authors.iter().fold(
-            PandaFactSyncScope::new(session.island().clone()),
-            |scope, author| {
-                scope.with_trusted_author(author.principal().clone(), author.author_key())
-            },
+        PandaFactSyncScope::from_trusted_authors(
+            session.island().clone(),
+            authors
+                .iter()
+                .map(|author| (author.principal().clone(), author.author_key())),
         )
     }
 

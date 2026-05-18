@@ -37,6 +37,7 @@ mod metrics;
 mod p2panda_fact_source_contract;
 #[cfg(unix)]
 mod p2panda_process_role_serving_contract;
+mod p2panda_projection_fixture;
 mod p2panda_sync_fact_source_contract;
 #[cfg(not(unix))]
 mod p2panda_process_role_serving_contract {
