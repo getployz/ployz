@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
@@ -15,13 +15,14 @@ use thiserror::Error;
 use tokio::time::timeout;
 
 use crate::{
-    PandaNetLogId, PandaNetQuarantineLog, PandaNetStartupStep, PandaNetTransportError,
-    quarantine_log::{PandaNetStore, PandaNetTopicMap},
+    PandaNetStartupStep, PandaNetTransportError,
+    quarantine_log::{PandaNetLogId, PandaNetQuarantineLog, PandaNetStore, PandaNetTopicMap},
 };
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const DEFAULT_REPLAY_CACHE_CAPACITY: usize = 8192;
+type PandaNetSyncHandle = p2panda_net::sync::SyncHandle<Operation<()>, TopicLogSyncEvent<()>>;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PandaNetConfigError {
@@ -311,6 +312,7 @@ pub struct PandaNetNode {
     gossip: Gossip,
     log_sync: LogSync<PandaNetStore, PandaNetLogId, (), PandaNetTopicMap>,
     quarantine_log: PandaNetQuarantineLog,
+    publish_streams: HashMap<TopicId, PandaNetSyncHandle>,
     node_info: PandaNetNodeInfo,
 }
 
@@ -375,6 +377,7 @@ impl PandaNetNode {
             gossip,
             log_sync,
             quarantine_log,
+            publish_streams: HashMap::new(),
             node_info,
         })
     }
@@ -401,6 +404,7 @@ impl PandaNetNode {
             topic,
             _handle: handle,
             subscription,
+            quarantine_log: self.quarantine_log.clone(),
         })
     }
 
@@ -410,10 +414,23 @@ impl PandaNetNode {
         body: &[u8],
     ) -> Result<(), PandaNetTransportError> {
         let topic = topic.into_inner();
-        self.quarantine_log
-            .append_to_topic(topic, body, 0)
+        let operation = self.quarantine_log.append_to_topic(topic, body, 0).await?;
+        if !self.publish_streams.contains_key(&topic) {
+            let handle = with_startup_timeout(
+                PandaNetStartupStep::Stream,
+                self.log_sync.stream(topic, true),
+            )
+            .await?;
+            self.publish_streams.insert(topic, handle);
+        }
+        let handle = self
+            .publish_streams
+            .get(&topic)
+            .expect("publish stream was inserted before lookup");
+        handle
+            .publish(operation)
             .await
-            .map(|_| ())
+            .map_err(|error| PandaNetTransportError::startup(PandaNetStartupStep::Publish, error))
     }
 }
 
@@ -430,14 +447,16 @@ impl Drop for PandaNetNode {
 
 pub struct PandaNetStream {
     topic: TopicId,
-    _handle: p2panda_net::sync::SyncHandle<Operation<()>, TopicLogSyncEvent<()>>,
+    _handle: PandaNetSyncHandle,
     subscription: p2panda_net::sync::SyncSubscription<TopicLogSyncEvent<()>>,
+    quarantine_log: PandaNetQuarantineLog,
 }
 
 pub(crate) struct PandaNetReplayCache {
     order: VecDeque<Hash>,
     set: HashSet<Hash>,
     capacity: usize,
+    skipped: u64,
 }
 
 impl PandaNetReplayCache {
@@ -446,24 +465,53 @@ impl PandaNetReplayCache {
             order: VecDeque::new(),
             set: HashSet::new(),
             capacity,
+            skipped: 0,
+        }
+    }
+
+    pub(crate) fn contains(&self, hash: Hash) -> bool {
+        self.set.contains(&hash)
+    }
+
+    pub(crate) fn insert(&mut self, hash: Hash) {
+        if self.capacity == 0 || !self.set.insert(hash) {
+            return;
+        }
+        self.order.push_back(hash);
+        while self.order.len() > self.capacity {
+            let Some(expired) = self.order.pop_front() else {
+                return;
+            };
+            self.set.remove(&expired);
+        }
+    }
+
+    pub(crate) fn record_replay(&mut self) {
+        self.skipped = self.skipped.saturating_add(1);
+    }
+
+    pub(crate) fn skipped(&self) -> u64 {
+        self.skipped
+    }
+}
+
+pub(crate) struct PandaNetAutoReplayCache {
+    cache: PandaNetReplayCache,
+}
+
+impl PandaNetAutoReplayCache {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            cache: PandaNetReplayCache::new(capacity),
         }
     }
 
     fn remember(&mut self, hash: Hash) -> PandaNetReplayStatus {
-        if self.set.contains(&hash) {
+        if self.cache.contains(hash) {
+            self.cache.record_replay();
             return PandaNetReplayStatus::Replayed;
         }
-        if self.capacity == 0 {
-            return PandaNetReplayStatus::Fresh;
-        }
-        self.set.insert(hash);
-        self.order.push_back(hash);
-        while self.order.len() > self.capacity {
-            let Some(expired) = self.order.pop_front() else {
-                return PandaNetReplayStatus::Fresh;
-            };
-            self.set.remove(&expired);
-        }
+        self.cache.insert(hash);
         PandaNetReplayStatus::Fresh
     }
 }
@@ -506,7 +554,7 @@ impl PandaNetStream {
     pub(crate) async fn next_unique_body_limited(
         &mut self,
         max_body_bytes: usize,
-        replay_cache: &mut PandaNetReplayCache,
+        replay_cache: &mut PandaNetAutoReplayCache,
     ) -> Result<PandaNetStreamBody, PandaNetTransportError> {
         loop {
             let stream_body = self.next_body_limited(max_body_bytes).await?;
@@ -517,7 +565,23 @@ impl PandaNetStream {
         }
     }
 
-    pub(crate) async fn next_unique_body_limited_with_idle_timeout(
+    pub(crate) async fn next_unseen_body_limited(
+        &mut self,
+        max_body_bytes: usize,
+        replay_cache: &mut PandaNetReplayCache,
+    ) -> Result<PandaNetStreamBody, PandaNetTransportError> {
+        loop {
+            let stream_body = self.next_body_limited(max_body_bytes).await?;
+            let operation_hash = stream_body.operation_hash();
+            if replay_cache.contains(operation_hash) {
+                replay_cache.record_replay();
+                continue;
+            }
+            return Ok(stream_body);
+        }
+    }
+
+    pub(crate) async fn next_unseen_body_limited_with_idle_timeout(
         &mut self,
         max_body_bytes: usize,
         replay_cache: &mut PandaNetReplayCache,
@@ -525,7 +589,7 @@ impl PandaNetStream {
     ) -> Result<Option<PandaNetStreamBody>, PandaNetTransportError> {
         match timeout(
             idle_timeout,
-            self.next_unique_body_limited(max_body_bytes, replay_cache),
+            self.next_unseen_body_limited(max_body_bytes, replay_cache),
         )
         .await
         {
@@ -556,6 +620,9 @@ impl PandaNetStream {
                     event: TopicLogSyncEvent::Operation(operation),
                     ..
                 } => {
+                    self.quarantine_log
+                        .store_received_operation(self.topic, &operation, 0)
+                        .await?;
                     let body_size =
                         usize::try_from(operation.header.payload_size).unwrap_or(usize::MAX);
                     if body_size > max_body_bytes {

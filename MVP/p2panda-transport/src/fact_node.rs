@@ -127,7 +127,7 @@ impl PandaNetFactNode {
         &mut self,
     ) -> Result<PandaNetStreamBody, PandaNetTransportError> {
         self.stream
-            .next_unique_body_limited(self.max_fact_envelope_bytes, &mut self.replay_cache)
+            .next_unseen_body_limited(self.max_fact_envelope_bytes, &mut self.replay_cache)
             .await
     }
 
@@ -136,7 +136,7 @@ impl PandaNetFactNode {
         idle_timeout: Duration,
     ) -> Result<Option<PandaNetStreamBody>, PandaNetTransportError> {
         self.stream
-            .next_unique_body_limited_with_idle_timeout(
+            .next_unseen_body_limited_with_idle_timeout(
                 self.max_fact_envelope_bytes,
                 &mut self.replay_cache,
                 idle_timeout,
@@ -148,6 +148,7 @@ impl PandaNetFactNode {
         &mut self,
         stream_body: PandaNetStreamBody,
     ) -> Vec<PandaNetFactImportOutcome> {
+        let operation_hash = stream_body.operation_hash();
         let outcome = match stream_body {
             PandaNetStreamBody::Body { body, .. } => self.import_body(body).await,
             PandaNetStreamBody::TooLarge { size, max, .. } => {
@@ -157,6 +158,9 @@ impl PandaNetFactNode {
                 })
             }
         };
+        if import_outcome_is_terminal_or_queued(&outcome) {
+            self.replay_cache.insert(operation_hash);
+        }
         let can_unblock_pending = import_can_unblock_pending(&outcome);
         let mut outcomes = vec![outcome];
         if can_unblock_pending {
@@ -243,6 +247,22 @@ impl PandaNetFactNode {
             }
         }
     }
+
+    #[must_use]
+    pub fn replayed_operations_skipped(&self) -> u64 {
+        self.replay_cache.skipped()
+    }
+}
+
+fn import_outcome_is_terminal_or_queued(outcome: &PandaNetFactImportOutcome) -> bool {
+    matches!(
+        outcome,
+        PandaNetFactImportOutcome::Imported
+            | PandaNetFactImportOutcome::Duplicate
+            | PandaNetFactImportOutcome::Conflict
+            | PandaNetFactImportOutcome::Deferred(_)
+            | PandaNetFactImportOutcome::Rejected(_)
+    )
 }
 
 fn import_can_unblock_pending(outcome: &PandaNetFactImportOutcome) -> bool {

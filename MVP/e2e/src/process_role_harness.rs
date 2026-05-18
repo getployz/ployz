@@ -1531,12 +1531,14 @@ async fn run_p2panda_net_import_apply_loop(
         let batch = match batch {
             Ok(Some(batch)) => batch,
             Ok(None) => {
-                let refresh = {
+                let (refresh, replayed_operations_skipped) = {
                     let mut fact_node = fact_node.lock().await;
-                    fact_node.refresh_stream().await
+                    let refresh = fact_node.refresh_stream().await;
+                    (refresh, fact_node.replayed_operations_skipped())
                 };
                 let mut status = import_status.lock().await;
                 status.stream_idle_refreshes += 1;
+                status.replayed_operations_skipped = replayed_operations_skipped;
                 if let Err(error) = refresh {
                     status.last_failure =
                         Some(format!("stream refresh after idle failed: {error}"));
@@ -1561,11 +1563,16 @@ async fn run_p2panda_net_import_apply_loop(
             }
         };
         let should_apply = batch.iter().any(import_outcome_should_apply);
+        let replayed_operations_skipped = {
+            let fact_node = fact_node.lock().await;
+            fact_node.replayed_operations_skipped()
+        };
         {
             let mut status = import_status.lock().await;
             for outcome in batch {
                 status.record(outcome);
             }
+            status.replayed_operations_skipped = replayed_operations_skipped;
         }
         if should_apply {
             let projection_result = project_once(Arc::clone(&state)).await;
@@ -2578,6 +2585,7 @@ async fn role_status_kind(
         imported: status.imported,
         rejected: status.rejected,
         stream_idle_refreshes: status.stream_idle_refreshes,
+        replayed_operations_skipped: status.replayed_operations_skipped,
         last_failure: status.last_failure.clone(),
         last_reload: status.last_reload.clone(),
     })
@@ -2619,6 +2627,7 @@ struct P2pandaNetImportStatus {
     imported: usize,
     rejected: usize,
     stream_idle_refreshes: usize,
+    replayed_operations_skipped: u64,
     last_failure: Option<String>,
     last_reload: Option<RoleServingStatus>,
 }
@@ -3440,6 +3449,7 @@ pub(crate) struct P2pandaNetRoleStatus {
     pub(crate) imported: usize,
     pub(crate) rejected: usize,
     pub(crate) stream_idle_refreshes: usize,
+    pub(crate) replayed_operations_skipped: u64,
     pub(crate) last_failure: Option<String>,
     pub(crate) last_reload: Option<RoleServingStatus>,
 }
