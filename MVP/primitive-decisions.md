@@ -15,6 +15,15 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
+- Slice 024 extracts ACME HTTP-01 claim, present, and clear command semantics
+  into `mvp-acme-command`. The p2panda ACME E2Es now exercise reusable business
+  code instead of carrying a fixture-local lease/fact state machine.
+- Slice 024 promotes lease fact replay from a harness-only importer to a narrow
+  production `LeaseBook::record_observed_fact` API. Command code can reduce
+  observed CRDT candidates without enabling `mvp-lease`'s harness feature.
+- Slice 024 reuses `mvp-projection::payload_matches_key` for command-side
+  lease candidate validation. Projection remains the owner of fact-key/payload
+  shape checks; ACME command code should not keep a parallel parser.
 - Slice 023 closes the deploy pre-serving cleanup gap with an explicit
   participant ABI. Candidate cleanup is foreground RPC plus a structured command
   result, not a background reconciler and not a reuse of the post-serving
