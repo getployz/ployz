@@ -532,7 +532,7 @@ async fn run_async() -> Result<(), String> {
     reset_dir(&rebuild_root)?;
     let rebuild_started = Instant::now();
     let rebuild_projection = projection_actor(
-        Arc::new(rebuilt_facts.clone()),
+        Arc::new(completed_replay.clone()),
         projection_session.clone(),
         &rebuild_root,
     )?;
