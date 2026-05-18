@@ -68,6 +68,13 @@ Checked on 2026-05-18:
 - The non-RC iroh path is acceptable. This slice should not change iroh at all,
   and future command work should keep command traits independent from iroh,
   p2panda, or transport crate versions.
+- `cargo search` shows `restate-sdk` 0.10.0 exists, `async-trait` 0.1.89 is
+  current, and `trait-variant` 0.1.2 is available. `cargo info` shows
+  `restate-sdk` brings a durable-execution SDK surface and HTTP/runtime
+  dependencies; adopting it would move Ployz toward an external workflow
+  runtime instead of the fact-backed command primitive this slice is testing.
+  `async-trait` and `trait-variant` stay as simplify-pass options, not default
+  dependencies.
 
 Decision: build the smallest Ployz-owned command primitive because existing
 workflow crates solve a broader problem with replay/server semantics we do not
@@ -90,8 +97,9 @@ In scope:
   - `PhaseTransition`
   - `CommandContext`
   - `run_phased`
-- Back `CommandContext` with narrow traits for phase reads/writes, phase data,
-  bus request/request-many, fact pin/local durability, and advisory leases.
+- Back `CommandContext` with narrow traits for phase reads/writes and phase
+  data. Do not add bus request/request-many, fact pin, or advisory lease
+  methods until a migrated command actually exercises them.
 - Store phase facts as ordinary MVP facts. The primitive must not create a
   second persistence model.
 - Migrate exactly one product command path as the proof.
@@ -111,6 +119,25 @@ Out of scope:
 - No migration outside `MVP/`.
 - No iroh dependency changes, RC or otherwise.
 - No replacement for p2panda facts, PloyzBus, advisory leases, or projections.
+
+## Requirements Traceability
+
+- `VISION.md` says operations must be command-shaped, explicit, retryable, and
+  honest about partial progress. `run_phased` must therefore return structured
+  command results instead of hiding retries or background convergence.
+- `MVP/design-notes/phased-command.md` sets the trigger: lift the phase pattern
+  only when three or more commands repeat it. That threshold is now met by
+  deploy, machine remove, environment promote/rollback, and volume transfer.
+- `MVP/e2e-proof-plan.md` E2E-9 requires semantic-leverage evidence. This
+  slice must report command LOC and phase-bookkeeping shape, not just add a
+  new crate.
+- `MVP/overall-plan.md` keeps scale and reliability as mandatory proof work,
+  but it also names Slice 036 as the first command-semantic-leverage proof.
+  This slice should not close the remaining E2E-8 randomized-failure and
+  packet-delay/drop gaps; those stay queued as a separate reliability harness
+  slice after the command primitive has a real product migration.
+- The user constraint remains hard: all new code and docs stay under `MVP/`,
+  and the GitHub PR stays draft.
 
 ## Candidate Migration
 
@@ -133,6 +160,22 @@ today, so it is a weaker proof of resume.
 Do not migrate ACME first. ACME claim/present/clear are valuable product
 canaries, but they are currently plain commands and should stay plain until
 certificate issuance grows enough phase boundaries.
+
+## Existing Patterns To Follow
+
+- `MVP/environment/src/command.rs` is the proof target. Its promote and
+  rollback paths already separate `begin` from `finalize`, write decision facts
+  before serving commits, and return pending projection-catch-up results.
+- `MVP/machine/src/remove.rs` shows the heavier recovery shape this primitive
+  should eventually absorb, but it should not be migrated in this slice.
+- `MVP/deploy/src/coordinator.rs` shows commit-before-drain invariants and
+  cleanup recovery. Use it as a reviewer reference for failure semantics, not
+  as the first migration target.
+- `MVP/volume/src/command.rs` shows the side-effect-before-commit pattern that
+  will benefit later, but its durable phase facts are not present yet.
+- `MVP/environment-p2panda/src/lib.rs` is the current reusable environment fact
+  writer. The migration should reuse that boundary instead of teaching
+  `mvp-commands` about p2panda.
 
 ## Design
 
@@ -238,14 +281,12 @@ what the migrated command needs in this slice:
 - `read_phase_data`
 - `write_phase_data`
 - `write_intent`
-- `request`
-- `request_many`
-- `acquire_lease`
-- `pin_facts` or local durable write acknowledgement
 
 Each method should delegate to narrow traits so product crates can test command
 logic without p2panda or iroh. Avoid importing p2panda types into
-`mvp-commands`.
+`mvp-commands`. Later commands may add request, request-many, lease, and pin
+helpers when they migrate, but unused context methods are not allowed in the
+first lift.
 
 ### Migration Shape
 
@@ -275,6 +316,117 @@ Business code after migration should be one `match phase` with visible steps:
 If projection catch-up is absent or mismatched, return a pending result without
 pretending the command failed. This preserves the current foreground audience.
 
+## Implementation Units
+
+### Unit 1: `mvp-commands` Core
+
+Files:
+
+- `MVP/Cargo.toml`
+- `MVP/commands/Cargo.toml`
+- `MVP/commands/src/lib.rs`
+- `MVP/commands/src/tests.rs`
+
+Build the smallest crate that can run one migrated command:
+
+- identity newtypes for command name, intent id, and phase index/name,
+- `Command`, `Phase`, `PhasedCommand`, and `PhaseTransition`,
+- a `CommandContext` backed by narrow traits for phase read/write and phase
+  data read/write,
+- an in-memory test store for command facts,
+- `run_phased` with no replay and no hidden retry loop.
+
+Test scenarios:
+
+- fresh command starts at `initial_phase`,
+- persisted phase resumes from that phase instead of starting over,
+- `Continue(next)` writes exactly one next-phase fact before the next step,
+- `Done(output)` returns without writing another phase,
+- compensation walks committed phases in reverse,
+- compensation does not run for the failing phase,
+- compensation failure does not hide the original command error,
+- conflicting phase candidates return a structured command error instead of
+  picking silently.
+
+### Unit 2: Environment Promote/Rollback Migration
+
+Files:
+
+- `MVP/environment/Cargo.toml`
+- `MVP/environment/src/command.rs`
+- `MVP/environment/src/error.rs`
+- `MVP/environment/src/tests.rs`
+
+Migrate promote and rollback onto `run_phased` while preserving their public
+command behavior. Keep the environment-specific phase enum in
+`mvp-environment`; do not put product phases in `mvp-commands`.
+
+Test scenarios:
+
+- promote writes decision before serving commit,
+- promote returns pending when projection catch-up is missing,
+- promote completes from a persisted serving-commit phase without writing a
+  second decision or serving commit,
+- promote completes from a persisted head-written phase without replaying side
+  effects,
+- rollback writes a forward head using previous volume refs,
+- rollback resumes from serving-commit phase and preserves pending catch-up
+  semantics,
+- stale expected epoch still fails before any mutation,
+- serving write conflict still maps to the existing structured environment
+  error.
+
+### Unit 3: Environment E2E Proof
+
+Files:
+
+- `MVP/e2e/src/environment_branch_promote_rollback_contract.rs`
+- `MVP/e2e/src/main.rs`
+
+Update the existing environment product canary rather than adding a second
+nearly identical scenario. The E2E should prove the migrated command path over
+the p2panda-backed environment writer and serving process boundary.
+
+Test scenarios:
+
+- fresh branch/promote/rollback flow still passes,
+- promote recovery from `DecisionWritten` resumes without duplicating the
+  decision fact,
+- promote recovery from `ServingCommitWritten` waits for or accepts projection
+  catch-up,
+- rollback recovery from `ServingCommitWritten` reaches a forward head,
+- serving process still answers last-good state while the command adapter is
+  absent,
+- command result keeps visible nodes at decision time.
+
+### Unit 4: Documentation And Semantic-Leverage Accounting
+
+Files:
+
+- `MVP/e2e-proof-plan.md`
+- `MVP/primitive-decisions.md`
+- `MVP/overall-plan.md`
+- `MVP/slice-036-phased-command-primitive.md`
+
+Record the decision and the evidence:
+
+- what command bookkeeping moved into `mvp-commands`,
+- what product logic stayed in `mvp-environment`,
+- before/after LOC for promote/rollback command code and E2E harness code,
+- remaining hand-rolled phase command candidates,
+- why ACME remains a plain command.
+
+### Unit 5: Simplify Pass
+
+Files:
+
+- Same files changed by Units 1-3.
+
+After the first green implementation commit, run a dedicated simplify pass and
+land it separately. Delete unused context methods, reduce duplicated phase
+helpers, and only add `async-trait` or `trait-variant` if they make the real
+migrated command easier to read.
+
 ## E2E Proof
 
 Add or update E2Es to prove:
@@ -288,6 +440,12 @@ Add or update E2Es to prove:
 - command result includes visible nodes at decision time.
 
 Keep E2E time-budgeted under `cargo run -p mvp-e2e -- all`.
+
+The remaining E2E-8 scale-reliability items are deliberately not mixed into
+this slice. The next reliability slice should still add 100 deploy attempts
+with deterministic node failures and bus delay/drop simulation. Pulling that
+into this command-primitive migration would make it hard to tell whether
+failures came from the new substrate or the stress harness.
 
 ## Simplify Pass Targets
 
@@ -313,18 +471,37 @@ Before shipping the slice:
   creep, command context overreach, and wildcard enum matches.
 - Address real findings before final response.
 
+Do not run a heavyweight review on plan-only edits or tiny mechanical fixes.
+Run the subagent review after the implementation and simplify commits exist.
+
+## Risks
+
+- The primitive could become a workflow framework. Guardrail: no registry,
+  timers, background scheduler, macros, or replay model in this slice.
+- `CommandContext` could become a service locator. Guardrail: include only
+  methods exercised by the migrated environment command and tests.
+- Environment migration could obscure the product behavior. Guardrail: the
+  phase enum and `match phase` business logic stay in `mvp-environment`.
+- Boxed futures could make the migrated command noisier than the explicit
+  begin/finalize code. Guardrail: simplify pass may add `async-trait`, but only
+  after the first implementation proves the public surface.
+- E2E runtime could grow. Guardrail: update the existing environment scenario
+  and keep `MVP_E2E_ALL_TIMEOUT` at the existing budget unless measurements
+  prove a needed adjustment.
+
 ## Verification
 
 Required before commit/push:
 
 ```text
-cargo fmt --all -- --check
-cargo check --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test -p mvp-commands
-cargo test -p mvp-environment
-cargo run -p mvp-e2e -- <new-or-updated-environment-command-scenario>
-just test
+cd MVP && cargo fmt --all -- --check
+cd MVP && cargo check --workspace --all-targets
+cd MVP && cargo clippy --workspace --all-targets -- -D warnings
+cd MVP && cargo test -p mvp-commands
+cd MVP && cargo test -p mvp-environment
+cd MVP && cargo run -p mvp-e2e -- environment-branch-promote-rollback-contract
+cd MVP && MVP_E2E_ALL_TIMEOUT=120s cargo run -p mvp-e2e -- all
+cd MVP && just test
 ```
 
 If the migrated command is not environment, replace package/scenario names with
