@@ -451,12 +451,14 @@ collecting network bodies and manually importing them in the scenario. The
 non-RC-iroh decision remains isolated inside `mvp-p2panda-transport`; domain
 crates do not learn git p2panda transport types.
 
-Slice 031 is planned next:
+Slice 031 connects the Slice 030 fact-node proof to the daemon-down serving
+invariant:
 [MVP/slice-031-p2panda-net-process-serving-plan.md](slice-031-p2panda-net-process-serving-plan.md).
-It should connect the Slice 030 fact-node proof to the daemon-down serving
-invariant: a separate serving/projection process receives p2panda-net fact
-traffic, imports into its local store, rebuilds gateway/DNS projections, and
-reloads last-good serving state while the local coordinator remains dead.
+A separate serving/projection process now receives p2panda-net fact traffic,
+imports into its local store, rebuilds gateway/DNS projections, reloads
+last-good serving state, applies a delayed update from a stable publisher peer,
+and restarts from local p2panda state while the local coordinator socket is
+absent.
 
 The next implementation/proof slice should keep paying down product semantic
 leverage rather than adding another generic substrate layer. Plan it against

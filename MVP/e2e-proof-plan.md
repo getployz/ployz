@@ -540,10 +540,12 @@ Current proof status:
   p2panda-net serving replication, production WireGuard adapter proof, and
   replacing the HTTP/DNS fallback crates with Pingora/`hickory-server` if those
   become the chosen production protocol primitives.
-- Slice 031 is planned to close the process-role p2panda-net serving
-  replication gap: a separate serving/projection process should import
-  p2panda-net facts into its local store, rebuild gateway/DNS projections, and
-  reload last-good serving state while the local coordinator remains dead.
+- Slice 031 closes the process-role p2panda-net serving replication gap: a
+  separate serving/projection process imports p2panda-net facts into its local
+  store, rebuilds gateway/DNS projections, reloads last-good serving state,
+  accepts a delayed remote update from a stable publisher peer, rejects
+  malformed transport bodies, and restarts from local p2panda state while the
+  local coordinator remains absent.
 
 ### E2E-8: Scale And Reliability Harness
 
