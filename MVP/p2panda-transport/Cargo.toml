@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+harness = []
+
 [dependencies]
 futures-util = "0.3"
 mvp-bus = { path = "../bus" }

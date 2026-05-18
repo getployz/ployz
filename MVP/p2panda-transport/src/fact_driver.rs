@@ -4,11 +4,12 @@ use mvp_p2panda_facts::{
     PandaFactWriteOutcome,
 };
 
-use crate::{
-    PandaNetNode, PandaNetNodeConfig, PandaNetStream, PandaNetTopic, PandaNetTransportError,
-};
+#[cfg(feature = "harness")]
+use crate::{PandaNetNode, PandaNetNodeConfig, PandaNetTopic};
+use crate::{PandaNetStream, PandaNetTransportError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(feature = "harness")]
 pub struct PandaNetWireTransportConfig {
     network_id: [u8; 32],
     topic: PandaNetTopic,
@@ -16,6 +17,7 @@ pub struct PandaNetWireTransportConfig {
     sender_seed: [u8; 32],
 }
 
+#[cfg(feature = "harness")]
 impl PandaNetWireTransportConfig {
     #[must_use]
     pub fn new(
@@ -34,6 +36,7 @@ impl PandaNetWireTransportConfig {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+#[cfg(feature = "harness")]
 pub struct PandaNetFactTransportReport {
     pub replayed: usize,
     pub imported: usize,
@@ -44,6 +47,7 @@ pub struct PandaNetFactTransportReport {
     pub failed: Vec<PandaNetFactImportFailure>,
 }
 
+#[cfg(feature = "harness")]
 impl PandaNetFactTransportReport {
     #[must_use]
     pub fn new(replayed: usize) -> Self {
@@ -163,6 +167,7 @@ pub async fn import_fact_body(
     }
 }
 
+#[cfg(feature = "harness")]
 pub async fn transport_exported_facts(
     source: &PandaFactStore,
     target: &mut PandaFactStore,
@@ -181,6 +186,7 @@ pub async fn transport_exported_facts(
     Ok(report)
 }
 
+#[cfg(feature = "harness")]
 pub async fn transport_wire_bodies(
     config: PandaNetWireTransportConfig,
     bodies: Vec<Vec<u8>>,
@@ -194,6 +200,7 @@ pub async fn transport_wire_bodies(
     Ok(received)
 }
 
+#[cfg(feature = "harness")]
 struct PandaNetWireHarness {
     _receiver: PandaNetNode,
     _sender: PandaNetNode,
@@ -201,6 +208,7 @@ struct PandaNetWireHarness {
     receiver_stream: PandaNetStream,
 }
 
+#[cfg(feature = "harness")]
 impl PandaNetWireHarness {
     async fn spawn(
         config: PandaNetWireTransportConfig,

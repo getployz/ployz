@@ -5,8 +5,11 @@ mod quarantine_log;
 
 pub use errors::{PandaNetStartupStep, PandaNetTransportError};
 pub use fact_driver::{
-    PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetFactTransportReport,
-    PandaNetWireTransportConfig, import_fact_body, import_next_fact, transport_exported_facts,
+    PandaNetFactImportOutcome, PandaNetFactImportRejection, import_fact_body, import_next_fact,
+};
+#[cfg(feature = "harness")]
+pub use fact_driver::{
+    PandaNetFactTransportReport, PandaNetWireTransportConfig, transport_exported_facts,
     transport_wire_bodies,
 };
 pub use node::{
