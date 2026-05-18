@@ -14,9 +14,10 @@ use mvp_acme_command::{
 use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::{NodeId, VisibleNodes};
 use mvp_lease::{LeaseEpoch, LeaseTimestamp};
+use mvp_p2panda_authz::ReplicaImportAccess;
 use mvp_p2panda_facts::{
-    PandaFactAuthor, PandaFactAuthorKey, PandaFactStore, PandaFactSyncError, PandaFactSyncScope,
-    PandaFactSyncSide, PandaSqliteOpenConfig, PandaTrustedAuthorKey, sync_panda_fact_stores,
+    PandaFactAuthor, PandaFactStore, PandaFactSyncError, PandaFactSyncScope, PandaFactSyncSide,
+    PandaSqliteOpenConfig, sync_panda_fact_stores,
 };
 use mvp_projection::{
     DnsCommitFact, FactSource, ProjectionFactPayload, ProjectionIgnoreReason, SqliteProjectionStore,
@@ -31,7 +32,8 @@ use crate::assertions::assert_eq_named;
 use crate::bus_syntax::fact_pattern;
 use crate::metrics::{reset_dir, scenario_dir, write_json};
 use crate::p2panda_projection_fixture::{
-    status_count, write_projection_fact as write_panda_projection_fact,
+    P2pandaMembershipFixture, create_p2panda_membership_fixture, status_count,
+    write_projection_fact as write_panda_projection_fact,
 };
 use crate::projection_harness::projection_actor;
 
@@ -97,40 +99,42 @@ async fn run_async() -> Result<(), String> {
         PandaFactAuthor::new(sessions.issuer_b.principal().clone()),
         visible_nodes,
     );
-    let trusted_authors = vec![
-        (
-            adapter_a.author().principal().clone(),
-            adapter_a.author().author_key(),
-        ),
-        (
-            adapter_b.author().principal().clone(),
-            adapter_b.author().author_key(),
-        ),
-        (dns_author.principal().clone(), dns_author.author_key()),
-    ];
+    let left_replica_author = PandaFactAuthor::from_private_key_bytes(
+        sessions.left_replica.principal().clone(),
+        [51; 32],
+    );
+    let right_replica_author = PandaFactAuthor::from_private_key_bytes(
+        sessions.right_replica.principal().clone(),
+        [52; 32],
+    );
+    let membership = create_p2panda_membership_fixture(
+        &root.join("p2panda-membership.sqlite"),
+        &prod,
+        &[adapter_a.author(), adapter_b.author(), &dns_author],
+        &[
+            (&left_replica_author, ReplicaImportAccess::Read),
+            (&right_replica_author, ReplicaImportAccess::Read),
+        ],
+    )
+    .await?;
 
     let mut left = open_store(
         bus.clone(),
         root.join("left-p2panda-facts.sqlite"),
         &prod,
-        &trusted_authors,
+        &membership,
     )
     .await?;
     let mut right = open_store(
         bus.clone(),
         root.join("right-p2panda-facts.sqlite"),
         &prod,
-        &trusted_authors,
+        &membership,
     )
     .await?;
-    left.trust_replica_peer(&prod, sessions.left_replica.principal().clone());
-    right.trust_replica_peer(&prod, sessions.right_replica.principal().clone());
     let timeline = LeaseTimeline::fresh()?;
-    let scope = trusted_authors
-        .iter()
-        .fold(PandaFactSyncScope::new(prod.clone()), |scope, author| {
-            scope.with_trusted_author(author.0.clone(), author.1)
-        });
+    let authority_snapshot = membership.authority_snapshot(&prod).await?;
+    let scope = PandaFactSyncScope::from_authority(&authority_snapshot);
 
     write_panda_projection_fact(
         &mut left,
@@ -246,7 +250,7 @@ async fn run_async() -> Result<(), String> {
     let duplicate_sync_noop = repeat.left.received + repeat.right.received == 0;
 
     let mut projection =
-        project_from_reopened_store(&root, bus.clone(), &prod, &trusted_authors, &sessions).await?;
+        project_from_reopened_store(&root, bus.clone(), &prod, &membership, &sessions).await?;
     assert_eq_named(
         "initial p2panda ACME projection count",
         projection.state.acme_http01.len(),
@@ -322,7 +326,7 @@ async fn run_async() -> Result<(), String> {
     .await
     .map_err(|error| format!("sync pending clear after adapter drop: {error}"))?;
     projection =
-        project_from_reopened_store(&root, bus.clone(), &prod, &trusted_authors, &sessions).await?;
+        project_from_reopened_store(&root, bus.clone(), &prod, &membership, &sessions).await?;
     serving
         .reload()
         .await
@@ -408,7 +412,7 @@ async fn run_async() -> Result<(), String> {
     .map_err(|error| format!("sync takeover and stale fact: {error}"))?;
     let projection_reload_started = Instant::now();
     projection =
-        project_from_reopened_store(&root, bus.clone(), &prod, &trusted_authors, &sessions).await?;
+        project_from_reopened_store(&root, bus.clone(), &prod, &membership, &sessions).await?;
     serving
         .reload()
         .await
@@ -472,7 +476,7 @@ async fn run_async() -> Result<(), String> {
     .await
     .map_err(|error| format!("sync final clear: {error}"))?;
     projection =
-        project_from_reopened_store(&root, bus.clone(), &prod, &trusted_authors, &sessions).await?;
+        project_from_reopened_store(&root, bus.clone(), &prod, &membership, &sessions).await?;
     serving
         .reload()
         .await
@@ -497,7 +501,7 @@ async fn run_async() -> Result<(), String> {
     std::fs::remove_file(&sqlite_path)
         .map_err(|error| format!("delete p2panda ACME projection sqlite: {error}"))?;
     let rebuilt =
-        project_from_reopened_store(&root, bus.clone(), &prod, &trusted_authors, &sessions).await?;
+        project_from_reopened_store(&root, bus.clone(), &prod, &membership, &sessions).await?;
     let sqlite = SqliteProjectionStore::new(sqlite_path);
     let row_counts = sqlite
         .row_counts()
@@ -628,18 +632,10 @@ async fn open_store(
     bus: Arc<InMemoryBus>,
     path: PathBuf,
     island: &IslandId,
-    trusted_authors: &[(PrincipalId, PandaFactAuthorKey)],
+    membership: &P2pandaMembershipFixture,
 ) -> Result<PandaFactStore, String> {
-    let config = trusted_authors.iter().fold(
-        PandaSqliteOpenConfig::new(path, vec![island.clone()]),
-        |config, (principal, author_key)| {
-            config.with_trusted_author_key(PandaTrustedAuthorKey::new(
-                island.clone(),
-                principal.clone(),
-                *author_key,
-            ))
-        },
-    );
+    let config = PandaSqliteOpenConfig::new(path, vec![island.clone()])
+        .with_authority_source(membership.authority_source(island).await?);
     PandaFactStore::open_sqlite(bus, config)
         .await
         .map_err(|error| format!("open p2panda ACME store: {error}"))
@@ -649,14 +645,14 @@ async fn project_from_reopened_store(
     root: &Path,
     bus: Arc<InMemoryBus>,
     island: &IslandId,
-    trusted_authors: &[(PrincipalId, PandaFactAuthorKey)],
+    membership: &P2pandaMembershipFixture,
     sessions: &AcmeBusSessions,
 ) -> Result<mvp_projection::ProjectionReport, String> {
     let source = open_store(
         bus,
         root.join("right-p2panda-facts.sqlite"),
         island,
-        trusted_authors,
+        membership,
     )
     .await?;
     let actor = projection_actor(Arc::new(source), sessions.projection.clone(), root)?;

@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use mvp_bus::{BusSession, IslandId, PrincipalId};
 use mvp_identity::NodeId;
 use mvp_p2panda_authz::{
-    IslandAuthzStore, IslandMemberAuthorKey, IslandMemberEpoch, IslandMemberKeyBinding,
-    IslandRootAuthority, ReplicaImportAccess,
+    IslandAuthoritySnapshot, IslandAuthzStore, IslandMemberAuthorKey, IslandMemberEpoch,
+    IslandMemberKeyBinding, IslandRootAuthority, ReplicaImportAccess,
 };
 use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactAuthoritySource, PandaFactStore, PandaFactWriteOutcome,
@@ -42,6 +42,15 @@ impl P2pandaMembershipFixture {
         &self,
         island: &IslandId,
     ) -> Result<PandaFactAuthoritySource, String> {
+        Ok(PandaFactAuthoritySource::from_snapshots(vec![
+            self.authority_snapshot(island).await?,
+        ]))
+    }
+
+    pub(crate) async fn authority_snapshot(
+        &self,
+        island: &IslandId,
+    ) -> Result<IslandAuthoritySnapshot, String> {
         let authority_store = IslandAuthzStore::open(
             &self.path,
             island.clone(),
@@ -49,7 +58,8 @@ impl P2pandaMembershipFixture {
         )
         .await
         .map_err(|error| format!("open p2panda membership authority: {error}"))?;
-        PandaFactAuthoritySource::from_membership_store(&authority_store)
+        authority_store
+            .authority_snapshot()
             .await
             .map_err(|error| format!("load p2panda membership authority: {error}"))
     }
