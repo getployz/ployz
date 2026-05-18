@@ -109,7 +109,19 @@ async fn run_async() -> Result<(), String> {
     )
     .await?;
     let serving_process_alive_after_update = serving.is_running()?;
-    request_project_once(&serving_socket).await?;
+
+    fs::remove_file(root.join("projections.sqlite")).map_err(|error| {
+        format!("delete p2panda process-role projection sqlite during rebuild: {error}")
+    })?;
+    let token = request_begin_rebuild(&serving_socket).await?;
+    assert_serving_role_answer(
+        &serving_socket,
+        "fd00::1:8080",
+        "fd00::1",
+        "p2panda process role",
+    )
+    .await?;
+    request_await_rebuild(&serving_socket, token).await?;
     let updated_status = request_reload(&serving_socket).await?;
     assert_serving_role_answer(
         &serving_socket,
@@ -119,27 +131,6 @@ async fn run_async() -> Result<(), String> {
     )
     .await?;
     let updated_gateway_revision = serving_role_gateway_revision(&updated_status)?;
-
-    fs::remove_file(root.join("projections.sqlite")).map_err(|error| {
-        format!("delete p2panda process-role projection sqlite during rebuild: {error}")
-    })?;
-    let token = request_begin_rebuild(&serving_socket).await?;
-    assert_serving_role_answer(
-        &serving_socket,
-        "fd00::2:8080",
-        "fd00::2",
-        "p2panda process role",
-    )
-    .await?;
-    request_await_rebuild(&serving_socket, token).await?;
-    request_reload(&serving_socket).await?;
-    assert_serving_role_answer(
-        &serving_socket,
-        "fd00::2:8080",
-        "fd00::2",
-        "p2panda process role",
-    )
-    .await?;
 
     request_role(&serving_socket, &RoleRequest::Shutdown)
         .await
