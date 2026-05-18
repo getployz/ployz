@@ -1,5 +1,4 @@
 use std::future::Future;
-use std::net::UdpSocket;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
@@ -19,11 +18,51 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const STREAM_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PandaNetNetworkId([u8; 32]);
+
+impl PandaNetNetworkId {
+    #[must_use]
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    fn into_inner(self) -> NetworkId {
+        self.0
+    }
+}
+
+impl From<[u8; 32]> for PandaNetNetworkId {
+    fn from(bytes: [u8; 32]) -> Self {
+        Self::new(bytes)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PandaNetNodeSeed([u8; 32]);
+
+impl PandaNetNodeSeed {
+    #[must_use]
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    fn signing_key(self) -> SigningKey {
+        SigningKey::from_bytes(&self.0)
+    }
+}
+
+impl From<[u8; 32]> for PandaNetNodeSeed {
+    fn from(bytes: [u8; 32]) -> Self {
+        Self::new(bytes)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PandaNetTopic([u8; 32]);
 
 impl PandaNetTopic {
     #[must_use]
-    pub fn new(bytes: [u8; 32]) -> Self {
+    pub const fn new(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
@@ -57,6 +96,11 @@ impl PandaNetBindConfig {
         }
     }
 
+    #[must_use]
+    pub fn localhost_ephemeral() -> Self {
+        Self::localhost(0, 0)
+    }
+
     fn iroh_config(self) -> IrohConfig {
         IrohConfig {
             bind_ip_v4: self.ipv4,
@@ -64,10 +108,6 @@ impl PandaNetBindConfig {
             bind_ip_v6: self.ipv6,
             bind_port_v6: self.port_v6,
         }
-    }
-
-    fn direct_addr(self) -> SocketAddr {
-        (self.ipv4, self.port_v4).into()
     }
 }
 
@@ -83,7 +123,7 @@ impl PandaNetNodeInfo {
 
 #[derive(Clone)]
 pub struct PandaNetNodeConfig {
-    network_id: NetworkId,
+    network_id: PandaNetNetworkId,
     signing_key: SigningKey,
     bind: PandaNetBindConfig,
     bootstrap_nodes: Vec<PandaNetNodeInfo>,
@@ -92,30 +132,31 @@ pub struct PandaNetNodeConfig {
 impl PandaNetNodeConfig {
     #[must_use]
     pub fn localhost(
-        network_id: [u8; 32],
-        signing_key_seed: [u8; 32],
+        network_id: PandaNetNetworkId,
+        signing_key_seed: PandaNetNodeSeed,
         bind: PandaNetBindConfig,
         bootstrap_nodes: Vec<PandaNetNodeInfo>,
     ) -> Self {
         Self {
             network_id,
-            signing_key: SigningKey::from_bytes(&signing_key_seed),
+            signing_key: signing_key_seed.signing_key(),
             bind,
             bootstrap_nodes,
         }
     }
 
+    #[must_use]
     pub fn localhost_ephemeral(
-        network_id: [u8; 32],
-        signing_key_seed: [u8; 32],
+        network_id: PandaNetNetworkId,
+        signing_key_seed: PandaNetNodeSeed,
         bootstrap_nodes: Vec<PandaNetNodeInfo>,
-    ) -> Result<Self, PandaNetTransportError> {
-        Ok(Self::localhost(
+    ) -> Self {
+        Self::localhost(
             network_id,
             signing_key_seed,
-            PandaNetBindConfig::localhost(free_localhost_port()?, free_localhost_port()?),
+            PandaNetBindConfig::localhost_ephemeral(),
             bootstrap_nodes,
-        ))
+        )
     }
 }
 
@@ -132,7 +173,7 @@ pub struct PandaNetNode {
 impl PandaNetNode {
     pub async fn spawn(config: PandaNetNodeConfig) -> Result<Self, PandaNetTransportError> {
         let quarantine_log = PandaNetQuarantineLog::new(config.signing_key.clone()).await?;
-        let node_info = node_info_from_config(&config);
+        let signing_key = config.signing_key.clone();
 
         let address_book = with_startup_timeout(
             PandaNetStartupStep::AddressBook,
@@ -151,12 +192,13 @@ impl PandaNetNode {
         let endpoint = with_startup_timeout(
             PandaNetStartupStep::Endpoint,
             Endpoint::builder(address_book.clone())
-                .network_id(config.network_id)
+                .network_id(config.network_id.into_inner())
                 .config(config.bind.iroh_config())
                 .signing_key(config.signing_key)
                 .spawn(),
         )
         .await?;
+        let node_info = node_info_from_endpoint(&signing_key, &endpoint).await?;
 
         let discovery = with_startup_timeout(
             PandaNetStartupStep::Discovery,
@@ -290,10 +332,29 @@ impl PandaNetStream {
     }
 }
 
-fn node_info_from_config(config: &PandaNetNodeConfig) -> PandaNetNodeInfo {
-    let endpoint_addr = EndpointAddr::new(from_verifying_key(config.signing_key.verifying_key()))
-        .with_ip_addr(config.bind.direct_addr());
-    PandaNetNodeInfo(NodeInfo::from(endpoint_addr).bootstrap())
+async fn node_info_from_endpoint(
+    signing_key: &SigningKey,
+    endpoint: &Endpoint,
+) -> Result<PandaNetNodeInfo, PandaNetTransportError> {
+    let iroh_endpoint =
+        with_startup_timeout(PandaNetStartupStep::Endpoint, endpoint.endpoint()).await?;
+    let Some(bound_socket) = preferred_bound_socket(iroh_endpoint.bound_sockets()) else {
+        return Err(PandaNetTransportError::Startup {
+            step: PandaNetStartupStep::Endpoint,
+            message: "endpoint reported no bound sockets".to_string(),
+        });
+    };
+    let endpoint_addr = EndpointAddr::new(from_verifying_key(signing_key.verifying_key()))
+        .with_ip_addr(bound_socket);
+    Ok(PandaNetNodeInfo(NodeInfo::from(endpoint_addr).bootstrap()))
+}
+
+fn preferred_bound_socket(bound_sockets: Vec<SocketAddr>) -> Option<SocketAddr> {
+    bound_sockets
+        .iter()
+        .copied()
+        .find(SocketAddr::is_ipv4)
+        .or_else(|| bound_sockets.first().copied())
 }
 
 async fn with_startup_timeout<T, E: ToString>(
@@ -307,16 +368,4 @@ async fn with_startup_timeout<T, E: ToString>(
             timeout_ms: STARTUP_TIMEOUT.as_millis() as u64,
         })?
         .map_err(|error| PandaNetTransportError::startup(step, error))
-}
-
-fn free_localhost_port() -> Result<u16, PandaNetTransportError> {
-    UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .map_err(|error| PandaNetTransportError::PortProbe {
-            message: error.to_string(),
-        })?
-        .local_addr()
-        .map_err(|error| PandaNetTransportError::PortProbe {
-            message: error.to_string(),
-        })
-        .map(|address| address.port())
 }

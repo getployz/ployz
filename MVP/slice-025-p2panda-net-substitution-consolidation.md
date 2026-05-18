@@ -22,6 +22,12 @@ Met:
 - `MVP/e2e/src/p2panda_net_owned_node_contract.rs` and
   `MVP/e2e/src/p2panda_net_sync_contract.rs` keep scenario assertions but use
   the shared transport helper for wire movement.
+- p2panda-net proof helpers live behind the `mvp-p2panda-transport` `harness`
+  feature and `harness` module. The production-shaped root API stays focused on
+  node lifecycle, streams, typed transport identities, and canonical import.
+- The transport wrapper now advertises the actual socket bound by the
+  underlying iroh endpoint instead of pre-probing localhost ports. Parallel E2E
+  runs should not race on a port chosen before endpoint startup.
 - `MVP/p2panda-spike` was deleted after mapping its three behaviors to
   `mvp-p2panda-facts` coverage: signed operation candidates, conflict
   candidates, payload reads by content hash, plus the newer persistence/import
@@ -34,11 +40,12 @@ surface removed:
 
 - E2E direct git p2panda dependencies: 4 dependency entries removed.
 - E2E direct git p2panda imports: removed from all p2panda-net canaries.
-- E2E source delta across the three affected p2panda-net scenarios: 61 added,
-  303 removed.
-- Shared transport crate delta: 222 added, 47 removed.
+- E2E source delta across the three affected p2panda-net scenarios: 161 added,
+  363 removed.
+- Shared transport crate delta, including the feature-gated harness module: 308
+  added, 68 removed.
 - Obsolete spike crate removed: 411 lines.
-- Total slice diff before docs: 283 added, 765 removed.
+- Total implementation diff before docs: 470 added, 848 removed.
 
 The useful shape is that p2panda-net remains a carrier/quarantine boundary.
 Received bytes still decode as stable `PandaFactWireEnvelope` values and enter
@@ -51,7 +58,7 @@ Passed:
 
 ```bash
 cargo check --manifest-path MVP/Cargo.toml -p mvp-p2panda-transport -p mvp-e2e
-cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-transport
+cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-transport --features harness
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-net-sync-contract
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-net-owned-node-contract
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-net-acme-http01-contract

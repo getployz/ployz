@@ -4,9 +4,12 @@ use std::time::{Duration, Instant};
 use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::NodeId;
 use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, PandaFactWireEnvelope};
+use mvp_p2panda_transport::harness::{
+    PandaNetWireTransportConfig, import_fact_bodies, transport_wire_bodies,
+};
 use mvp_p2panda_transport::{
-    PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetWireTransportConfig,
-    import_fact_body, transport_wire_bodies,
+    PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetNetworkId, PandaNetNodeSeed,
+    PandaNetTopic, import_fact_body,
 };
 use mvp_projection::{CandidateStatus, FactSource, NodeJoinedFact, ProjectionFactPayload};
 use serde::Serialize;
@@ -171,50 +174,57 @@ async fn run_async() -> Result<(), String> {
     ];
     let network_started = Instant::now();
     let transported = transport_wire_bodies(
-        PandaNetWireTransportConfig::new([73; 32], [73; 32], [11; 32], [12; 32]),
+        PandaNetWireTransportConfig::new(
+            PandaNetNetworkId::new([73; 32]),
+            PandaNetTopic::new([73; 32]),
+            PandaNetNodeSeed::new([11; 32]),
+            PandaNetNodeSeed::new([12; 32]),
+        ),
         wire_operations,
     )
     .await
     .map_err(|error| format!("transport owned p2panda-net bodies: {error}"))?;
     let network_sync_ms = network_started.elapsed().as_millis();
 
-    let mut imported_operations = 0;
-    let mut duplicate_operations = 0;
-    let mut untrusted_author_rejected = false;
-    let mut cross_island_rejected = false;
-    let mut malformed_rejected = false;
-    for body in transported {
-        match import_fact_body(&body, &mut canonical, &sessions.right_replica).await {
-            PandaNetFactImportOutcome::Imported | PandaNetFactImportOutcome::Conflict => {
-                imported_operations += 1;
-            }
-            PandaNetFactImportOutcome::Duplicate => {
-                duplicate_operations += 1;
-            }
-            PandaNetFactImportOutcome::Rejected(PandaNetFactImportRejection::UntrustedAuthor {
-                principal,
-                ..
-            }) if principal == *sessions.untrusted_writer.principal() => {
-                untrusted_author_rejected = true;
-            }
-            PandaNetFactImportOutcome::Rejected(PandaNetFactImportRejection::CrossIsland {
-                operation,
-                ..
-            }) if operation == laptop => {
-                cross_island_rejected = true;
-            }
-            PandaNetFactImportOutcome::Rejected(
-                PandaNetFactImportRejection::MalformedEnvelope(_),
-            ) => {
-                malformed_rejected = true;
-            }
-            outcome => {
-                return Err(format!(
-                    "unexpected owned p2panda-net import outcome: {outcome:?}"
-                ));
-            }
-        }
+    let import_report =
+        import_fact_bodies(transported, &mut canonical, &sessions.right_replica).await;
+    if !import_report.deferred.is_empty()
+        || !import_report.failed.is_empty()
+        || import_report.rejected.iter().any(|rejection| {
+            !matches!(
+                rejection,
+                PandaNetFactImportRejection::UntrustedAuthor { principal, .. }
+                    if principal == sessions.untrusted_writer.principal()
+            ) && !matches!(
+                rejection,
+                PandaNetFactImportRejection::CrossIsland { operation, .. }
+                    if operation == &laptop
+            ) && !matches!(rejection, PandaNetFactImportRejection::MalformedEnvelope(_))
+        })
+    {
+        return Err(format!(
+            "unexpected owned p2panda-net import report: {import_report:?}"
+        ));
     }
+    let imported_operations = (import_report.imported + import_report.conflict) as u64;
+    let duplicate_operations = import_report.duplicate as u64;
+    let untrusted_author_rejected = import_report.rejected.iter().any(|rejection| {
+        matches!(
+            rejection,
+            PandaNetFactImportRejection::UntrustedAuthor { principal, .. }
+                if principal == sessions.untrusted_writer.principal()
+        )
+    });
+    let cross_island_rejected = import_report.rejected.iter().any(|rejection| {
+        matches!(
+            rejection,
+            PandaNetFactImportRejection::CrossIsland { operation, .. } if operation == &laptop
+        )
+    });
+    let malformed_rejected = import_report
+        .rejected
+        .iter()
+        .any(|rejection| matches!(rejection, PandaNetFactImportRejection::MalformedEnvelope(_)));
 
     assert_eq_named(
         "owned p2panda-net imported operations",

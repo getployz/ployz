@@ -1,12 +1,14 @@
-use crate::{PandaNetNode, PandaNetNodeConfig, PandaNetTopic};
+use crate::{PandaNetNetworkId, PandaNetNode, PandaNetNodeConfig, PandaNetNodeSeed, PandaNetTopic};
 
 #[tokio::test]
 async fn owned_nodes_sync_one_opaque_body_with_explicit_bootstrap() {
     let topic = PandaNetTopic::new([42; 32]);
-    let receiver = PandaNetNode::spawn(
-        PandaNetNodeConfig::localhost_ephemeral([7; 32], [1; 32], Vec::new())
-            .expect("receiver config"),
-    )
+    let network_id = PandaNetNetworkId::new([7; 32]);
+    let receiver = PandaNetNode::spawn(PandaNetNodeConfig::localhost_ephemeral(
+        network_id,
+        PandaNetNodeSeed::new([1; 32]),
+        Vec::new(),
+    ))
     .await
     .expect("spawn receiver node");
     let receiver_info = receiver.node_info();
@@ -15,10 +17,11 @@ async fn owned_nodes_sync_one_opaque_body_with_explicit_bootstrap() {
         .await
         .expect("open receiver stream");
 
-    let mut sender = PandaNetNode::spawn(
-        PandaNetNodeConfig::localhost_ephemeral([7; 32], [2; 32], vec![receiver_info])
-            .expect("sender config"),
-    )
+    let mut sender = PandaNetNode::spawn(PandaNetNodeConfig::localhost_ephemeral(
+        network_id,
+        PandaNetNodeSeed::new([2; 32]),
+        vec![receiver_info],
+    ))
     .await
     .expect("spawn sender node");
     sender
