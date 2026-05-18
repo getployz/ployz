@@ -16,6 +16,7 @@ external:
   - https://docs.rs/p2panda-net
   - https://docs.rs/p2panda-store
   - https://docs.rs/p2panda-sync
+  - https://p2panda.org/2025/07/09/streams-transactions-crash-resilience.html
 reviewed_by:
   - ce-feasibility-reviewer
   - ce-scope-guardian-reviewer
@@ -60,10 +61,11 @@ projection through one p2panda-backed fact source:
 6. exported p2panda operations imported into a fresh store reproduce the final
    removed-node projection.
 
-If the old `machine-remove-contract` can be migrated directly, do that instead
-of adding a second scenario. A parallel `p2panda-machine-remove-contract` is
-acceptable only if direct migration makes the existing mesh/data-plane proof too
-hard to keep readable in one slice.
+The old `machine-remove-contract` is the target. Do not add a parallel
+`p2panda-machine-remove-contract` in this slice. If direct migration makes the
+existing mesh/data-plane proof too hard to keep readable, stop and revise the
+plan instead of shipping a duplicate scenario that leaves the old proof on the
+old substrate.
 
 ## Requirements Trace
 
@@ -90,7 +92,10 @@ Checked on 2026-05-18:
   by the MVP transport path. No new transport crate is needed for this slice.
 - `p2panda-store` is already wrapped by `mvp-p2panda-facts::PandaFactStore`.
   Machine remove should use that existing wrapper, not import p2panda store APIs
-  directly.
+  directly. Upstream p2panda is actively working through transaction and crash
+  resilience concerns in `p2panda-store`, which reinforces the direction of
+  using the maintained p2panda storage boundary rather than rebuilding local
+  operation-log mechanics in Ployz feature code.
 - `p2panda-sync` is already surfaced through the existing sync/import boundary.
   This slice needs local p2panda write/rebuild proof; network sync is already
   covered by prior E2Es.
@@ -132,6 +137,8 @@ Out of scope:
 - Pending-remove recovery contracts or coordinator-resume after serving commit.
 - New quorum, witness acks, or strict machine locks.
 - Deleting the standalone iroh-docs contract.
+- Adding a `tombstone_epoch == removal_epoch + 1` rule or changing
+  machine-remove epoch semantics.
 - Changes outside `MVP/`.
 
 ## Key Decisions
@@ -199,12 +206,12 @@ between serving commit and tombstone. Any pending-remove recovery contract is a
 separate future slice.
 
 The current durable facts do not fully encode the original request's
-`tombstone_epoch` unless the command constrains it to `removal_epoch + 1` or
-persists it elsewhere. That is a real future design fork, not something to hide
-inside a p2panda substitution slice. For Slice 028, constrain
-`tombstone_epoch == removal_epoch + 1` in machine-remove preconditions, or add
-an explicit test showing non-adjacent epochs are preserved only as raw fact
-state and do not imply resumability.
+`tombstone_epoch` for resume if a coordinator dies between serving commit and
+tombstone. That is a real future design fork, not something to hide inside a
+p2panda substitution slice. Slice 028 must not add an adjacency rule or other
+epoch semantics. It should only state, and test where useful, that final
+fresh-store import can rebuild completed removal state; it does not imply
+mid-command resumability.
 
 ## Implementation Units
 
@@ -230,9 +237,8 @@ Work:
 - Implement `MachineFactWriter` for removal-started and tombstone writes.
 - Map p2panda write outcomes and backend errors into structured
   `MachineRemoveError` variants.
-- Add or plan a machine-remove precondition for adjacent removal/tombstone
-  epochs, unless implementation explicitly chooses the non-adjacent epoch test
-  path described above.
+- Do not change machine-remove epoch validation. Keep this slice scoped to the
+  storage boundary.
 
 Test scenarios:
 
@@ -243,6 +249,8 @@ Test scenarios:
   either named as accepted idempotency or rejected by single-writer authority,
 - conflicting machine fact is `FactConflict`,
 - unauthorized machine fact write is foreground failure,
+- p2panda backend/write failure maps to a structured machine fact storage
+  error with the failed operation named,
 - serving commit can be written through `PandaServingFactWriter` against the
   same store,
 - adapter projects joined, removal-started, tombstone, and serving facts through
@@ -377,8 +385,12 @@ git diff --check
 - Machine remove, joined-node inputs, and serving cutover project from one
   p2panda-backed fact source in the proof.
 - Machine fact write conflicts fail loudly.
+- p2panda backend/write failures map to structured machine fact storage errors
+  instead of stringly backend fallbacks.
 - Scoped grants prove join, machine-remove, and routing writers cannot mutate
   each other's fact namespaces.
+- Fresh-store import recreates equivalent scoped grants and trusts join,
+  machine-remove, and routing author keys before replaying exported operations.
 - Final p2panda operations can be imported into a fresh store and rebuild the
   removed-node projection.
 - Existing graceful remove ordering invariants remain intact.
