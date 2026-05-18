@@ -470,6 +470,17 @@ projection, and process-serving contracts stayed intact; the only runtime
 change is bounded replay suppression for already-seen p2panda wrapper operation
 hashes after stream refresh.
 
+Slice 034 is the next p2panda substitution pass:
+[MVP/slice-034-p2panda-auth-and-substrate-simplification-plan.md](slice-034-p2panda-auth-and-substrate-simplification-plan.md).
+It should answer whether `p2panda-auth` can own island membership, author-key
+trust, replica-import membership, and strong-removal behavior before the MVP
+adds more custom membership/revocation substrate. It should also score smaller
+deletion candidates such as the process JSON fact source, historical
+iroh-docs product proofs, the custom `PFO1` operation envelope, and the
+p2panda-net quarantine log wrapper. The bias remains toward adoption, but the
+slice must keep PloyzBus permissions, command conflicts, and projection
+reducers Ployz-owned.
+
 The next implementation/proof slice should keep paying down product semantic
 leverage rather than adding another generic substrate layer. Plan it against
 the current map and prefer a product rule that reuses bus, p2panda facts,
