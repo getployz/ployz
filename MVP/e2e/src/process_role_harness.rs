@@ -2,6 +2,7 @@ use std::env;
 use std::fmt::{self, Display, Formatter};
 use std::fs;
 use std::net::SocketAddr;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, ExitStatus, Stdio};
 use std::sync::Arc;
@@ -12,9 +13,13 @@ use mvp_bus::{BusSession, FactKeyPattern, Grant, IslandId, PrincipalId, harness:
 use mvp_deploy::{DnsCommitId, GatewayCommitId, RouteCommitId, ServingCommitId, ServingCommitPlan};
 use mvp_identity::NodeId;
 use mvp_mesh::{WireGuardAppliedSnapshot, WireGuardSnapshotPaths, load_applied_snapshot};
+use mvp_p2panda_authz::{
+    IslandAuthoritySnapshot, IslandAuthzStore, IslandMemberAuthorKey, IslandMemberEpoch,
+    IslandMemberKeyBinding, IslandRootAuthority,
+};
 use mvp_p2panda_facts::{
-    PandaFactAuthor, PandaFactAuthorKey, PandaFactStore, PandaSqliteOpenConfig,
-    PandaTrustedAuthorKey, SharedPandaFactStore,
+    PandaFactAuthor, PandaFactAuthorKey, PandaFactAuthoritySource, PandaFactStore,
+    PandaSqliteOpenConfig, SharedPandaFactStore,
 };
 use mvp_p2panda_transport::{
     PandaNetFactImportOutcome, PandaNetFactNode, PandaNetFactNodeConfig, PandaNetNetworkId,
@@ -745,13 +750,16 @@ enum ServingProjectionFactSourceConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct P2pandaSqliteFactSourceConfig {
     path: PathBuf,
-    trusted_authors: Vec<TrustedP2pandaAuthor>,
+    authority: P2pandaMembershipAuthorityConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct TrustedP2pandaAuthor {
-    principal: PrincipalId,
-    author_key: PandaFactAuthorKey,
+struct P2pandaMembershipAuthorityConfig {
+    path: PathBuf,
+    root_principal: PrincipalId,
+    root_author_key: PandaFactAuthorKey,
+    root_epoch: IslandMemberEpoch,
+    fact_writers: Vec<PrincipalId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -763,7 +771,7 @@ pub(crate) struct P2pandaNetServingProjectionRoleConfig {
     topic: PandaNetTopic,
     seed: PandaNetNodeSeed,
     replica_principal: PrincipalId,
-    trusted_authors: Vec<TrustedP2pandaAuthor>,
+    authority: P2pandaMembershipAuthorityConfig,
     bootstrap: Vec<PandaNetNodeTicket>,
 }
 
@@ -822,8 +830,11 @@ fn parse_serving_projection_flags(args: &[String]) -> Result<ServingProjectionRo
     let mut socket = None;
     let mut fact_source = ServingProjectionFactSourceKind::ProcessFiles;
     let mut p2panda_path = None;
-    let mut p2panda_author = None;
-    let mut p2panda_author_key = None;
+    let mut membership_path = None;
+    let mut root_principal = None;
+    let mut root_author_key = None;
+    let mut root_epoch = None;
+    let mut fact_writers = Vec::new();
     let mut remaining = args;
     while let [flag, value, tail @ ..] = remaining {
         match flag.as_str() {
@@ -841,13 +852,17 @@ fn parse_serving_projection_flags(args: &[String]) -> Result<ServingProjectionRo
                 };
             }
             "--p2panda-path" => p2panda_path = Some(PathBuf::from(value)),
-            "--p2panda-author" => p2panda_author = Some(PrincipalId::new(value.clone())),
-            "--p2panda-author-key" => {
-                p2panda_author_key =
-                    Some(PandaFactAuthorKey::parse_hex(value).map_err(|error| {
-                        format!("{role} --p2panda-author-key failed validation: {error}")
-                    })?)
+            "--p2panda-membership-path" => membership_path = Some(PathBuf::from(value)),
+            "--p2panda-root-principal" => root_principal = Some(PrincipalId::new(value.clone())),
+            "--p2panda-root-author-key" => {
+                root_author_key = Some(parse_author_key_flag(
+                    role,
+                    "--p2panda-root-author-key",
+                    value,
+                )?)
             }
+            "--p2panda-root-epoch" => root_epoch = Some(parse_member_epoch_flag(role, value)?),
+            "--p2panda-fact-writer" => fact_writers.push(PrincipalId::new(value.clone())),
             other => return Err(format!("unknown {role} flag '{other}'")),
         }
         remaining = tail;
@@ -865,12 +880,14 @@ fn parse_serving_projection_flags(args: &[String]) -> Result<ServingProjectionRo
             ServingProjectionFactSourceConfig::P2pandaSqlite(Box::new(
                 P2pandaSqliteFactSourceConfig {
                     path: p2panda_path.ok_or_else(|| format!("{role} requires --p2panda-path"))?,
-                    trusted_authors: vec![TrustedP2pandaAuthor {
-                        principal: p2panda_author
-                            .ok_or_else(|| format!("{role} requires --p2panda-author"))?,
-                        author_key: p2panda_author_key
-                            .ok_or_else(|| format!("{role} requires --p2panda-author-key"))?,
-                    }],
+                    authority: parse_membership_authority_config(
+                        role,
+                        membership_path,
+                        root_principal,
+                        root_author_key,
+                        root_epoch,
+                        fact_writers,
+                    )?,
                 },
             ))
         }
@@ -893,7 +910,11 @@ fn parse_p2panda_net_serving_projection_flags(
     let mut topic = None;
     let mut seed = None;
     let mut replica_principal = None;
-    let mut trusted_authors = Vec::new();
+    let mut membership_path = None;
+    let mut root_principal = None;
+    let mut root_author_key = None;
+    let mut root_epoch = None;
+    let mut fact_writers = Vec::new();
     let mut bootstrap = Vec::new();
     let mut remaining = args;
     while let [flag, value, tail @ ..] = remaining {
@@ -907,9 +928,17 @@ fn parse_p2panda_net_serving_projection_flags(
             "--p2panda-topic" => topic = Some(parse_topic_flag(role, "--p2panda-topic", value)?),
             "--p2panda-seed" => seed = Some(parse_seed_flag(role, "--p2panda-seed", value)?),
             "--p2panda-replica" => replica_principal = Some(PrincipalId::new(value.clone())),
-            "--p2panda-trusted-author" => {
-                trusted_authors.push(parse_trusted_author_flag(role, value)?);
+            "--p2panda-membership-path" => membership_path = Some(PathBuf::from(value)),
+            "--p2panda-root-principal" => root_principal = Some(PrincipalId::new(value.clone())),
+            "--p2panda-root-author-key" => {
+                root_author_key = Some(parse_author_key_flag(
+                    role,
+                    "--p2panda-root-author-key",
+                    value,
+                )?)
             }
+            "--p2panda-root-epoch" => root_epoch = Some(parse_member_epoch_flag(role, value)?),
+            "--p2panda-fact-writer" => fact_writers.push(PrincipalId::new(value.clone())),
             "--p2panda-bootstrap" => bootstrap.push(parse_ticket_flag(role, value)?),
             other => return Err(format!("unknown {role} flag '{other}'")),
         }
@@ -929,19 +958,16 @@ fn parse_p2panda_net_serving_projection_flags(
         seed: seed.ok_or_else(|| format!("{role} requires --p2panda-seed"))?,
         replica_principal: replica_principal
             .ok_or_else(|| format!("{role} requires --p2panda-replica"))?,
-        trusted_authors: require_trusted_authors(role, trusted_authors)?,
+        authority: parse_membership_authority_config(
+            role,
+            membership_path,
+            root_principal,
+            root_author_key,
+            root_epoch,
+            fact_writers,
+        )?,
         bootstrap,
     })
-}
-
-fn require_trusted_authors(
-    role: &'static str,
-    trusted_authors: Vec<TrustedP2pandaAuthor>,
-) -> Result<Vec<TrustedP2pandaAuthor>, String> {
-    if trusted_authors.is_empty() {
-        return Err(format!("{role} requires --p2panda-trusted-author"));
-    }
-    Ok(trusted_authors)
 }
 
 fn parse_p2panda_net_serving_scripted_publisher_flags(
@@ -1100,19 +1126,40 @@ fn parse_ticket_flag(role: &'static str, value: &str) -> Result<PandaNetNodeTick
     PandaNetNodeTicket::parse(value).map_err(|error| format!("{role} --p2panda-bootstrap: {error}"))
 }
 
-fn parse_trusted_author_flag(
+fn parse_author_key_flag(
     role: &'static str,
+    flag: &'static str,
     value: &str,
-) -> Result<TrustedP2pandaAuthor, String> {
-    let Some((principal, author_key)) = value.split_once(':') else {
-        return Err(format!(
-            "{role} --p2panda-trusted-author must be principal:author_key"
-        ));
-    };
-    Ok(TrustedP2pandaAuthor {
-        principal: PrincipalId::new(principal.to_string()),
-        author_key: PandaFactAuthorKey::parse_hex(author_key)
-            .map_err(|error| format!("{role} --p2panda-trusted-author: {error}"))?,
+) -> Result<PandaFactAuthorKey, String> {
+    PandaFactAuthorKey::parse_hex(value).map_err(|error| format!("{role} {flag}: {error}"))
+}
+
+fn parse_member_epoch_flag(role: &'static str, value: &str) -> Result<IslandMemberEpoch, String> {
+    let raw = parse_u64_flag(role, "--p2panda-root-epoch", value)?;
+    NonZeroU64::new(raw)
+        .map(IslandMemberEpoch::new)
+        .ok_or_else(|| format!("{role} --p2panda-root-epoch must be non-zero"))
+}
+
+fn parse_membership_authority_config(
+    role: &'static str,
+    path: Option<PathBuf>,
+    root_principal: Option<PrincipalId>,
+    root_author_key: Option<PandaFactAuthorKey>,
+    root_epoch: Option<IslandMemberEpoch>,
+    fact_writers: Vec<PrincipalId>,
+) -> Result<P2pandaMembershipAuthorityConfig, String> {
+    if fact_writers.is_empty() {
+        return Err(format!("{role} requires --p2panda-fact-writer"));
+    }
+    Ok(P2pandaMembershipAuthorityConfig {
+        path: path.ok_or_else(|| format!("{role} requires --p2panda-membership-path"))?,
+        root_principal: root_principal
+            .ok_or_else(|| format!("{role} requires --p2panda-root-principal"))?,
+        root_author_key: root_author_key
+            .ok_or_else(|| format!("{role} requires --p2panda-root-author-key"))?,
+        root_epoch: root_epoch.unwrap_or_else(|| IslandMemberEpoch::new(NonZeroU64::MIN)),
+        fact_writers,
     })
 }
 
@@ -1424,7 +1471,7 @@ pub(crate) async fn run_p2panda_net_serving_projection_role(
         projection_session,
         ServingProjectionFactSourceConfig::P2pandaSqlite(Box::new(P2pandaSqliteFactSourceConfig {
             path: config.store_path.clone(),
-            trusted_authors: config.trusted_authors.clone(),
+            authority: config.authority.clone(),
         })),
         config.root,
         snapshot_paths,
@@ -1477,43 +1524,21 @@ async fn open_p2panda_net_shared_store(
     projection_principal: &PrincipalId,
     pattern: &FactKeyPattern,
 ) -> Result<(SharedPandaFactStore, BusSession, BusSession), String> {
-    let (bus, authority) = InMemoryBus::new_with_authority();
-    let projection_session = authority.grant_in(
-        island.clone(),
-        projection_principal.clone(),
-        Grant::empty().with_fact_read(pattern.clone()),
-    );
-    let replica_session = authority.grant_in(
-        island.clone(),
-        config.replica_principal.clone(),
-        Grant::empty(),
-    );
-    for trusted_author in &config.trusted_authors {
-        authority.grant_in(
-            island.clone(),
-            trusted_author.principal.clone(),
-            Grant::empty()
-                .with_fact_write(pattern.clone())
-                .with_fact_read(pattern.clone()),
-        );
-    }
-    let mut open_config =
-        PandaSqliteOpenConfig::new(config.store_path.clone(), vec![island.clone()]);
-    for trusted_author in &config.trusted_authors {
-        open_config = open_config.with_trusted_author_key(PandaTrustedAuthorKey::new(
-            island.clone(),
-            trusted_author.principal.clone(),
-            trusted_author.author_key,
-        ));
-    }
-    let store = PandaFactStore::open_sqlite(Arc::new(bus), open_config)
-        .await
-        .map_err(|error| format!("open p2panda-net serving store: {error}"))?;
-    let store = SharedPandaFactStore::new(store);
-    store
-        .trust_replica_peer(island, replica_session.principal().clone())
-        .await;
-    Ok((store, projection_session, replica_session))
+    let opened = open_membership_backed_p2panda_store(MembershipBackedStoreConfig {
+        store_path: config.store_path.clone(),
+        authority: &config.authority,
+        island,
+        projection_principal,
+        pattern,
+        writer_read_access: WriterReadAccess::ReadWrite,
+        replica_principal: Some(&config.replica_principal),
+        error_context: "p2panda-net serving store",
+    })
+    .await?;
+    let Some(replica_session) = opened.replica_session else {
+        return Err("p2panda-net serving store did not create replica session".to_string());
+    };
+    Ok((opened.store, opened.projection_session, replica_session))
 }
 
 async fn run_p2panda_net_import_apply_loop(
@@ -2817,33 +2842,130 @@ async fn open_serving_fact_source(
             Ok(Arc::new(source))
         }
         ServingProjectionFactSourceConfig::P2pandaSqlite(config) => {
-            let (bus, authority) = InMemoryBus::new_with_authority();
-            authority.grant_in(
-                island.clone(),
-                projection_principal.clone(),
-                Grant::empty().with_fact_read(pattern.clone()),
-            );
-            for trusted_author in &config.trusted_authors {
-                authority.grant_in(
-                    island.clone(),
-                    trusted_author.principal.clone(),
-                    Grant::empty().with_fact_write(pattern.clone()),
-                );
-            }
-            let mut open_config =
-                PandaSqliteOpenConfig::new(config.path.clone(), vec![island.clone()]);
-            for trusted_author in &config.trusted_authors {
-                open_config = open_config.with_trusted_author_key(PandaTrustedAuthorKey::new(
-                    island.clone(),
-                    trusted_author.principal.clone(),
-                    trusted_author.author_key,
-                ));
-            }
-            let store = PandaFactStore::open_sqlite(Arc::new(bus), open_config)
-                .await
-                .map_err(|error| format!("open p2panda serving fact source: {error}"))?;
-            Ok(Arc::new(store))
+            let opened = open_membership_backed_p2panda_store(MembershipBackedStoreConfig {
+                store_path: config.path.clone(),
+                authority: &config.authority,
+                island,
+                projection_principal,
+                pattern,
+                writer_read_access: WriterReadAccess::WriteOnly,
+                replica_principal: None,
+                error_context: "p2panda serving fact source",
+            })
+            .await?;
+            Ok(Arc::new(opened.store))
         }
+    }
+}
+
+struct OpenedMembershipBackedStore {
+    store: SharedPandaFactStore,
+    projection_session: BusSession,
+    replica_session: Option<BusSession>,
+}
+
+struct MembershipBackedStoreConfig<'a> {
+    store_path: PathBuf,
+    authority: &'a P2pandaMembershipAuthorityConfig,
+    island: &'a IslandId,
+    projection_principal: &'a PrincipalId,
+    pattern: &'a FactKeyPattern,
+    writer_read_access: WriterReadAccess,
+    replica_principal: Option<&'a PrincipalId>,
+    error_context: &'static str,
+}
+
+#[derive(Clone, Copy)]
+enum WriterReadAccess {
+    WriteOnly,
+    ReadWrite,
+}
+
+async fn open_membership_backed_p2panda_store(
+    config: MembershipBackedStoreConfig<'_>,
+) -> Result<OpenedMembershipBackedStore, String> {
+    let (bus, authority) = InMemoryBus::new_with_authority();
+    let projection_session = authority.grant_in(
+        config.island.clone(),
+        config.projection_principal.clone(),
+        Grant::empty().with_fact_read(config.pattern.clone()),
+    );
+    let replica_session = config.replica_principal.map(|principal| {
+        authority.grant_in(config.island.clone(), principal.clone(), Grant::empty())
+    });
+    let membership = membership_authority_for(config.authority, config.island).await?;
+    for writer in &config.authority.fact_writers {
+        require_membership_writer(&membership.snapshot, writer)?;
+        let grant = match config.writer_read_access {
+            WriterReadAccess::WriteOnly => Grant::empty().with_fact_write(config.pattern.clone()),
+            WriterReadAccess::ReadWrite => Grant::empty()
+                .with_fact_write(config.pattern.clone())
+                .with_fact_read(config.pattern.clone()),
+        };
+        authority.grant_in(config.island.clone(), writer.clone(), grant);
+    }
+    let open_config = PandaSqliteOpenConfig::new(config.store_path, vec![config.island.clone()])
+        .with_authority_source(membership.into_source());
+    let store = PandaFactStore::open_sqlite(Arc::new(bus), open_config)
+        .await
+        .map_err(|error| format!("open {}: {error}", config.error_context))?;
+    Ok(OpenedMembershipBackedStore {
+        store: SharedPandaFactStore::new(store),
+        projection_session,
+        replica_session,
+    })
+}
+
+struct MembershipAuthority {
+    snapshot: IslandAuthoritySnapshot,
+}
+
+impl MembershipAuthority {
+    fn into_source(self) -> PandaFactAuthoritySource {
+        PandaFactAuthoritySource::from_snapshots(vec![self.snapshot])
+    }
+}
+
+async fn membership_authority_for(
+    config: &P2pandaMembershipAuthorityConfig,
+    island: &IslandId,
+) -> Result<MembershipAuthority, String> {
+    let store = IslandAuthzStore::open(
+        &config.path,
+        island.clone(),
+        IslandRootAuthority::new(config.root_binding(island)),
+    )
+    .await
+    .map_err(|error| format!("open p2panda membership authority: {error}"))?;
+    let snapshot = store
+        .authority_snapshot()
+        .await
+        .map_err(|error| format!("rebuild p2panda membership authority: {error}"))?;
+    Ok(MembershipAuthority { snapshot })
+}
+
+fn require_membership_writer(
+    snapshot: &IslandAuthoritySnapshot,
+    principal: &PrincipalId,
+) -> Result<(), String> {
+    if snapshot.active_writer(principal).is_some() {
+        return Ok(());
+    }
+    Err(format!(
+        "p2panda fact writer {} is not an active membership writer for island {}",
+        principal.as_str(),
+        snapshot.island().as_str()
+    ))
+}
+
+impl P2pandaMembershipAuthorityConfig {
+    fn root_binding(&self, island: &IslandId) -> IslandMemberKeyBinding {
+        IslandMemberKeyBinding::new(
+            island.clone(),
+            self.root_principal.clone(),
+            self.root_epoch,
+            IslandMemberAuthorKey::from(self.root_author_key),
+        )
     }
 }
 

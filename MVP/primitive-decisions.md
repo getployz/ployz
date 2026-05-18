@@ -15,6 +15,22 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
+- Slice 041 persists signed p2panda-auth island membership operations in
+  `IslandAuthzStore` and replays them through the Ployz-owned
+  `GroupCrdt<AuthId, IslandOperationId, ...>` wrapper. The p2panda operation
+  envelope now provides durable storage/log integrity while Ployz keeps root
+  anchoring and `(island, principal, epoch, author key)` bindings.
+- Slice 041 adds `PandaFactAuthoritySource` so fact stores can install
+  authority from durable membership state during SQLite open. Product-shaped
+  process-serving paths now pass membership-store/root-authority config instead
+  of `--p2panda-author`, `--p2panda-author-key`, or
+  `--p2panda-trusted-author` flags.
+- Slice 041 keeps fact-key grants explicitly Ployz-owned. Process roles require
+  explicit `--p2panda-fact-writer` principals, validate each one is active in
+  membership, and then apply local grant patterns outside p2panda-auth.
+- Slice 041 keeps manual `PandaFactStore` trust helpers only as fallback and
+  fixture APIs. The next deletion pass should either hide them behind a harness
+  feature or delete them once the remaining non-product probes are migrated.
 - Slice 038 proves that the active MVP workspace can use `p2panda-net 0.6.0`
   on non-RC `iroh 0.98.2`. The earlier "can we use net without RC iroh?"
   question is resolved in favor of using it.

@@ -71,7 +71,7 @@ Verification:
 cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-authz
 ```
 
-## Unit 3 Partial Result: Durable Authority Source
+## Unit 3 Result: Durable Fact Authority Source
 
 `mvp-p2panda-facts` now has `PandaFactAuthoritySource`, a narrow bridge from
 durable p2panda-auth membership state into fact-store authority snapshots.
@@ -79,13 +79,33 @@ durable p2panda-auth membership state into fact-store authority snapshots.
 fact-store open, so callers no longer need to manually translate a durable
 membership store into trusted author keys.
 
-This is only the first Unit 3 step. Remaining Unit 3 work still needs to move
-product-shaped process paths off manual trust, add the explicit fact-policy
-grant source, and resolve the accepted-at-ingest authority evidence/rebuild
-gate from the plan.
+The product-shaped process-serving paths now consume durable membership
+authority instead of general trusted-author flags:
+
+- `serving-projection --fact-source p2panda-sqlite` takes a membership store
+  path plus root authority identity.
+- `p2panda-net-serving-projection` takes the same membership authority path
+  plus explicit `--p2panda-fact-writer` principals for local fact-key grant
+  policy.
+- Replica import authority comes from membership-backed
+  `ReplicaImporter(Pull)` membership, not `trust_replica_peer`.
+- Fact-key authorization remains Ployz-owned: the process harness still grants
+  `/facts/>` write/read policy explicitly to requested writers after verifying
+  each one is active in membership.
+
+Accepted-at-ingest evidence remains deliberately strict: reopened/rebuilt
+authority-backed fact stores validate stored operations against the current
+membership snapshot and fail closed for removed/demoted writers. That keeps the
+Slice 035 gate intact until a future fact-log frontier proof makes historical
+pre-removal imports safe.
 
 Verification:
 
 ```text
 cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-facts sqlite_open_config_installs_durable_membership_authority_source
+cargo check -p mvp-e2e
+cargo run -p mvp-e2e -- p2panda-process-role-serving-contract
+cargo run -p mvp-e2e -- environment-branch-promote-rollback-contract
+cargo run -p mvp-e2e -- p2panda-net-process-serving-contract
+cargo test -p mvp-e2e
 ```

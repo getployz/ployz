@@ -564,14 +564,14 @@ the old opaque p2panda-net body transport is gone from active Rust sources.
 direct rejection probes operate on canonical p2panda operations, and the
 redundant opaque-body E2Es were removed from `mvp-e2e -- all`.
 
-Slice 041 is planned as the next p2panda substitution slice:
+Slice 041 is active:
 [MVP/slice-041-p2panda-auth-membership-substitution-plan.md](slice-041-p2panda-auth-membership-substitution-plan.md).
-The target is durable p2panda-auth-backed island membership as the normal
-authority source for p2panda fact stores, replacing product-shaped manual
-trusted-author and replica-importer plumbing. The slice keeps Ployz-owned
-policy boundaries intact: root anchoring, principal/key/epoch binding, fact-key
-grants, subject permissions, command preconditions, visible-node evidence, and
-tombstone semantics remain outside p2panda-auth.
+Durable p2panda-auth-backed island membership now feeds fact-store authority
+through `PandaFactAuthoritySource`, and product-shaped process-serving paths no
+longer take general trusted-author flags. The slice keeps Ployz-owned policy
+boundaries intact: root anchoring, principal/key/epoch binding, fact-key grants,
+subject permissions, command preconditions, visible-node evidence, and tombstone
+semantics remain outside p2panda-auth.
 
 ## Crate Scout Protocol
 

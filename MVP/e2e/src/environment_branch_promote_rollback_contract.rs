@@ -22,8 +22,7 @@ use mvp_environment::{
 use mvp_environment_p2panda::PandaEnvironmentFactWriter;
 use mvp_identity::{NodeId, VisibleNodes};
 use mvp_p2panda_facts::{
-    PandaFactAuthor, PandaFactStore, PandaSqliteOpenConfig, PandaTrustedAuthorKey,
-    SharedPandaFactStore,
+    PandaFactAuthor, PandaFactStore, PandaSqliteOpenConfig, SharedPandaFactStore,
 };
 use mvp_projection::{
     BackendEndpoint, DnsProjection, DnsRecordFact, FactSource, GatewayProjection,
@@ -39,6 +38,9 @@ use serde::Serialize;
 use crate::assertions::assert_eq_named;
 use crate::bus_syntax::fact_pattern;
 use crate::metrics::{reset_dir, scenario_dir, write_json};
+use crate::p2panda_projection_fixture::{
+    P2pandaMembershipFixture, create_p2panda_membership_fixture,
+};
 use crate::process_role_harness::{
     RoleRequest, assert_serving_role_answer,
     cleanup_orphaned_children as cleanup_process_role_children, request_await_rebuild,
@@ -85,18 +87,21 @@ async fn run_async() -> Result<(), String> {
         "environment-operator",
     )));
     let store_path = root.join("p2panda-facts.sqlite");
+    let membership = create_p2panda_membership_fixture(
+        &root.join("p2panda-membership.sqlite"),
+        &island,
+        &[&author],
+        &[],
+    )
+    .await?;
     let (raw_bus, session) = p2panda_writer_bus(&island, author.principal());
     let fact_authorizer: Arc<dyn FactAuthorizer> = Arc::new(raw_bus);
+    let authority_source = membership.authority_source(&island).await?;
     let store = SharedPandaFactStore::new(
         PandaFactStore::open_sqlite(
             Arc::clone(&fact_authorizer),
-            PandaSqliteOpenConfig::new(&store_path, vec![island.clone()]).with_trusted_author_key(
-                PandaTrustedAuthorKey::new(
-                    island.clone(),
-                    author.principal().clone(),
-                    author.author_key(),
-                ),
-            ),
+            PandaSqliteOpenConfig::new(&store_path, vec![island.clone()])
+                .with_authority_source(authority_source),
         )
         .await
         .map_err(|error| format!("open environment p2panda store: {error}"))?,
@@ -136,10 +141,14 @@ async fn run_async() -> Result<(), String> {
         "p2panda-sqlite".to_string(),
         "--p2panda-path".to_string(),
         p2panda_path,
-        "--p2panda-author".to_string(),
+        "--p2panda-membership-path".to_string(),
+        membership.path().display().to_string(),
+        "--p2panda-root-principal".to_string(),
+        membership.root_principal().as_str().to_string(),
+        "--p2panda-root-author-key".to_string(),
+        membership.root_author_key_hex().to_string(),
+        "--p2panda-fact-writer".to_string(),
         author.principal().as_str().to_string(),
-        "--p2panda-author-key".to_string(),
-        author.author_key().as_hex(),
     ];
     let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
     let mut serving = spawn_process_role(
@@ -254,6 +263,7 @@ async fn run_async() -> Result<(), String> {
         &island,
         &session,
         Arc::clone(&author),
+        &membership,
     )
     .await?;
     rebuild_projection(&serving_socket).await?;
@@ -328,6 +338,7 @@ async fn run_async() -> Result<(), String> {
         &island,
         &session,
         Arc::clone(&author),
+        &membership,
     )
     .await?;
     rebuild_projection(&serving_socket).await?;
@@ -383,13 +394,8 @@ async fn run_async() -> Result<(), String> {
     let reopened = SharedPandaFactStore::new(
         PandaFactStore::open_sqlite(
             Arc::clone(&fact_authorizer),
-            PandaSqliteOpenConfig::new(&store_path, vec![island.clone()]).with_trusted_author_key(
-                PandaTrustedAuthorKey::new(
-                    island.clone(),
-                    author.principal().clone(),
-                    author.author_key(),
-                ),
-            ),
+            PandaSqliteOpenConfig::new(&store_path, vec![island.clone()])
+                .with_authority_source(membership.authority_source(&island).await?),
         )
         .await
         .map_err(|error| format!("reopen environment p2panda store: {error}"))?,
@@ -567,17 +573,13 @@ async fn reopened_command_phase_context(
     island: &IslandId,
     session: &BusSession,
     author: Arc<PandaFactAuthor>,
+    membership: &P2pandaMembershipFixture,
 ) -> Result<CommandContext, String> {
     let reopened = SharedPandaFactStore::new(
         PandaFactStore::open_sqlite(
             Arc::clone(fact_authorizer),
-            PandaSqliteOpenConfig::new(store_path, vec![island.clone()]).with_trusted_author_key(
-                PandaTrustedAuthorKey::new(
-                    island.clone(),
-                    author.principal().clone(),
-                    author.author_key(),
-                ),
-            ),
+            PandaSqliteOpenConfig::new(store_path, vec![island.clone()])
+                .with_authority_source(membership.authority_source(island).await?),
         )
         .await
         .map_err(|error| format!("reopen command phase p2panda store: {error}"))?,
@@ -702,6 +704,7 @@ mod tests {
     use mvp_commands::{
         CommandError, CommandName, CommandPhaseStore, IntentId, command_phase_fact_key,
     };
+    use mvp_p2panda_facts::PandaTrustedAuthorKey;
 
     #[tokio::test]
     async fn p2panda_command_phase_conflict_blocks_history_read() {
