@@ -799,11 +799,19 @@ Future slice plans should resolve these only when they become blocking:
 
 ## First Next Step
 
-Slice 043 completed the next targeted manual-trust migration:
+Slice 043 completed the targeted machine-remove manual-trust migration:
 [MVP/slice-043-membership-backed-machine-remove-plan.md](slice-043-membership-backed-machine-remove-plan.md).
 `machine-remove-contract` now uses the shared membership-backed authority shape
 for its primary, recovery, replay, and negative-probe stores while preserving
 serving cutover, tombstone, projection rebuild, WireGuard behavior, and replica
-import semantics. The next slice should continue the targeted manual-trust
-inventory rather than broad cleanup; good candidates are deploy restart
-recovery, volume transfer, or p2panda-net fallback probe containment.
+import semantics.
+
+Slice 044 is planned as the next targeted migration:
+[MVP/slice-044-membership-backed-deploy-recovery-plan.md](slice-044-membership-backed-deploy-recovery-plan.md).
+It moves `deploy-restart-recovery-contract` onto membership-backed writer and
+replica-import authority while preserving the deploy restart invariant: serving
+commit is durable before drain, coordinator death does not stop data-plane
+serving, and cleanup resumes from facts. The remaining manual-trust inventory
+after that should be planned separately, with volume transfer as the likely
+next product-shaped candidate and p2panda-net fallback probes treated as
+low-level regression fixtures unless a plan proves otherwise.
