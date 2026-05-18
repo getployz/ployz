@@ -50,10 +50,19 @@ async fn run_async() -> Result<(), String> {
     reset_dir(&root)?;
 
     let (mut store, projection_session) = p2panda_store_with_projection_session();
-    seed_projection_facts(&mut store, &projection_session).await?;
-    let conflict_write_recorded = seed_conflict_facts(&mut store, &projection_session).await?;
+    let author = PandaFactAuthor::new(projection_session.principal().clone());
+    seed_projection_facts(&mut store, &projection_session, &author).await?;
+    let conflict_write_recorded =
+        seed_conflict_facts(&mut store, &projection_session, &author).await?;
     let exported = store.export_operations().cloned().collect::<Vec<_>>();
     let (mut imported_store, imported_session) = p2panda_store_with_projection_session();
+    imported_store
+        .trust_author_key(
+            imported_session.island(),
+            author.principal().clone(),
+            author.author_key(),
+        )
+        .map_err(|error| format!("trust p2panda author key for projection import: {error}"))?;
     for operation in &exported {
         imported_store
             .import_operation(&imported_session, operation)
@@ -179,12 +188,12 @@ fn p2panda_store_with_projection_session() -> (PandaFactStore, BusSession) {
 async fn seed_projection_facts(
     store: &mut PandaFactStore,
     session: &BusSession,
+    author: &PandaFactAuthor,
 ) -> Result<(), String> {
-    let author = PandaFactAuthor::new(session.principal().clone());
     write_projection_fact(
         store,
         session,
-        &author,
+        author,
         "/facts/node/node-1/joined/1",
         ProjectionFactPayload::NodeJoined(NodeJoinedFact {
             node_id: NodeId::new("node-1"),
@@ -198,7 +207,7 @@ async fn seed_projection_facts(
     write_projection_fact(
         store,
         session,
-        &author,
+        author,
         "/facts/service/web/node-1/registered/1",
         ProjectionFactPayload::ServiceRegistered(ServiceRegistrationFact {
             service: ServiceName::new("web"),
@@ -212,7 +221,7 @@ async fn seed_projection_facts(
     write_projection_fact(
         store,
         session,
-        &author,
+        author,
         "/facts/routes/route-1",
         ProjectionFactPayload::RouteCommit(RouteCommitFact {
             route_commit_id: "route-1".to_string(),
@@ -232,7 +241,7 @@ async fn seed_projection_facts(
     write_projection_fact(
         store,
         session,
-        &author,
+        author,
         "/facts/gateway/gateway-1",
         ProjectionFactPayload::GatewayCommit(GatewayCommitFact {
             gateway_commit_id: "gateway-1".to_string(),
@@ -244,7 +253,7 @@ async fn seed_projection_facts(
     write_projection_fact(
         store,
         session,
-        &author,
+        author,
         "/facts/dns/dns-1",
         ProjectionFactPayload::DnsCommit(DnsCommitFact {
             dns_commit_id: "dns-1".to_string(),
@@ -264,13 +273,13 @@ async fn seed_projection_facts(
 async fn seed_conflict_facts(
     store: &mut PandaFactStore,
     session: &BusSession,
+    author: &PandaFactAuthor,
 ) -> Result<bool, String> {
-    let author = PandaFactAuthor::new(session.principal().clone());
     let key = "/facts/node/node-conflict/joined/1";
     write_projection_fact(
         store,
         session,
-        &author,
+        author,
         key,
         ProjectionFactPayload::NodeJoined(NodeJoinedFact {
             node_id: NodeId::new("node-conflict"),
@@ -284,7 +293,7 @@ async fn seed_conflict_facts(
     let outcome = write_projection_fact(
         store,
         session,
-        &author,
+        author,
         key,
         ProjectionFactPayload::NodeJoined(NodeJoinedFact {
             node_id: NodeId::new("node-conflict"),

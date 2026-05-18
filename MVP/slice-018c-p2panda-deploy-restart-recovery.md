@@ -27,17 +27,20 @@ exchange is proven separately from the deploy coordinator.
 `export_operations`/`import_operation`. Export is an iterator over stored
 operations rather than a full-vector clone. Import validates the p2panda
 operation, requires same-island ingestion, checks the original author's
-fact-write grant, and leaves read authorization to the normal `FactSource`
-candidate/payload boundary.
+fact-write grant, requires the claimed Ployz author to match a trusted p2panda
+author key, and leaves read authorization to the normal `FactSource`
+candidate/payload boundary. Payload reads match exact stored fact identity
+before returning content by hash, so caller-supplied candidates cannot relabel
+private content as a readable fact.
 
 The deploy and serving p2panda writers remain E2E-local adapters. That keeps
 deploy/routing semantics Ployz-owned and prevents `mvp-deploy` from depending
 on p2panda details before the adapter shape has survived more than one command.
 
-`deploy-restart-recovery-contract` kills the deploy coordinator object, not the
-fact role. The surviving roles are the p2panda fact store, projection, and
-serving state. Persistent p2panda storage and fact-store process restart remain
-future substrate work.
+`deploy-restart-recovery-contract` kills the deploy coordinator object, exports
+the surviving p2panda operations, imports them into a fresh fact store, and
+recovers pending cleanup from that imported fact boundary. Persistent p2panda
+storage and fact-store process restart remain future substrate work.
 
 ## Proof
 
@@ -61,8 +64,8 @@ git diff --check
 - projection catch-up happens after the coordinator object is dropped,
 - the serving actor answers typed gateway/DNS queries while the coordinator is
   absent,
-- recovery reads deploy decision and serving commit facts instead of replaying
-  pre-commit work,
+- recovery imports p2panda operations and reads deploy decision and serving
+  commit facts instead of replaying pre-commit work,
 - capacity/prepare/start are not re-run after restart,
 - cleanup-pending after restart preserves visible nodes and serving commit id,
 - final cleanup writes cleanup-done,
@@ -92,10 +95,13 @@ The simplify/review pass also tightened the p2panda fact substrate:
 
 - operation import authorizes the signed fact author, not the importing session,
   while still requiring same-island ingestion,
+- operation import binds the claimed Ployz principal to a trusted p2panda
+  author key,
 - cross-principal import is covered by a unit test,
 - operation bytes stay opaque to callers and export does not clone the full
   operation history by default,
-- payload reads use a content-hash index instead of rescanning every operation,
+- payload reads require exact stored fact identity before using the content-hash
+  payload index,
 - write/import duplicate and conflict classification share one helper,
 - cleanup target assertions require the exact expected drain/stop sequence.
 
