@@ -22,8 +22,8 @@ use mvp_p2panda_facts::{
     PandaSqliteOpenConfig, SharedPandaFactStore,
 };
 use mvp_p2panda_transport::{
-    PandaNetFactImportOutcome, PandaNetFactNode, PandaNetFactNodeConfig, PandaNetNetworkId,
-    PandaNetNodeConfig, PandaNetNodeSeed, PandaNetNodeTicket, PandaNetTopic,
+    PandaNetFactImportOutcome, PandaNetFactNode, PandaNetFactNodeConfig, PandaNetFactNodeStats,
+    PandaNetNetworkId, PandaNetNodeConfig, PandaNetNodeSeed, PandaNetNodeTicket, PandaNetTopic,
 };
 use mvp_projection::{
     BackendEndpoint, DnsRecordFact, DnsRecordProjection, FactSource, GatewayRouteProjection,
@@ -1464,7 +1464,7 @@ pub(crate) async fn run_p2panda_net_serving_projection_role(
         .to_ticket()
         .map_err(|error| format!("encode p2panda-net serving node ticket: {error}"))?;
     let fact_node = Arc::new(Mutex::new(fact_node));
-    let import_status = Arc::new(Mutex::new(P2pandaNetImportStatus::default()));
+    let import_status = Arc::new(Mutex::new(P2pandaNetImportStatus::new()));
 
     let state = Arc::new(Mutex::new(ServingProjectionState::from_source(
         expected_island,
@@ -1564,14 +1564,13 @@ async fn run_p2panda_net_import_apply_loop(
         let batch = match batch {
             Ok(Some(batch)) => batch,
             Ok(None) => {
-                let (refresh, replayed_operations_skipped) = {
+                let (refresh, stats) = {
                     let mut fact_node = fact_node.lock().await;
                     let refresh = fact_node.refresh_stream().await;
-                    (refresh, fact_node.replayed_operations_skipped())
+                    (refresh, fact_node.stats())
                 };
                 let mut status = import_status.lock().await;
-                status.stream_idle_refreshes += 1;
-                status.replayed_operations_skipped = replayed_operations_skipped;
+                status.record_node_stats(stats);
                 if let Err(error) = refresh {
                     status.last_failure =
                         Some(format!("stream refresh after idle failed: {error}"));
@@ -1580,9 +1579,10 @@ async fn run_p2panda_net_import_apply_loop(
                 continue;
             }
             Err(error) => {
-                let refresh = {
+                let (refresh, stats) = {
                     let mut fact_node = fact_node.lock().await;
-                    fact_node.refresh_stream().await
+                    let refresh = fact_node.refresh_stream().await;
+                    (refresh, fact_node.stats())
                 };
                 let message = match refresh {
                     Ok(()) => format!("{error}; stream refreshed"),
@@ -1590,22 +1590,25 @@ async fn run_p2panda_net_import_apply_loop(
                         format!("{error}; stream refresh failed: {refresh_error}")
                     }
                 };
-                import_status.lock().await.last_failure = Some(message);
+                let mut status = import_status.lock().await;
+                status.record_node_stats(stats);
+                status.last_failure = Some(message);
                 sleep(ROLE_REQUEST_PAUSE).await;
                 continue;
             }
         };
         let should_apply = batch.iter().any(import_outcome_should_apply);
-        let replayed_operations_skipped = {
+        let stats = {
             let fact_node = fact_node.lock().await;
-            fact_node.replayed_operations_skipped()
+            fact_node.stats()
         };
         {
             let mut status = import_status.lock().await;
+            status.attempted_import_batches += 1;
             for outcome in batch {
                 status.record(outcome);
             }
-            status.replayed_operations_skipped = replayed_operations_skipped;
+            status.record_node_stats(stats);
         }
         if should_apply {
             let projection_result = project_once(Arc::clone(&state)).await;
@@ -2651,10 +2654,21 @@ async fn role_status_kind(
     let status = status.lock().await;
     RoleStatusKind::P2pandaNetServingProjection(P2pandaNetRoleStatus {
         node_ticket,
+        attempted_import_batches: status.attempted_import_batches,
         imported: status.imported,
         rejected: status.rejected,
         stream_idle_refreshes: status.stream_idle_refreshes,
+        stream_refreshes: status.stream_refreshes,
+        stream_refresh_failures: status.stream_refresh_failures,
+        stream_ended: status.stream_ended,
+        stream_lagged: status.stream_lagged,
+        stream_failed: status.stream_failed,
         replayed_operations_skipped: status.replayed_operations_skipped,
+        session_started: status.session_started,
+        sync_started: status.sync_started,
+        sync_finished: status.sync_finished,
+        live_mode_started: status.live_mode_started,
+        session_finished: status.session_finished,
         last_failure: status.last_failure.clone(),
         last_reload: status.last_reload.clone(),
     })
@@ -2691,17 +2705,50 @@ struct P2pandaNetServingRuntime {
     task: JoinHandle<()>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct P2pandaNetImportStatus {
+    attempted_import_batches: usize,
     imported: usize,
     rejected: usize,
     stream_idle_refreshes: usize,
+    stream_refreshes: u64,
+    stream_refresh_failures: u64,
+    stream_ended: u64,
+    stream_lagged: u64,
+    stream_failed: u64,
     replayed_operations_skipped: u64,
+    session_started: u64,
+    sync_started: u64,
+    sync_finished: u64,
+    live_mode_started: u64,
+    session_finished: u64,
     last_failure: Option<String>,
     last_reload: Option<RoleServingStatus>,
 }
 
 impl P2pandaNetImportStatus {
+    fn new() -> Self {
+        Self {
+            attempted_import_batches: 0,
+            imported: 0,
+            rejected: 0,
+            stream_idle_refreshes: 0,
+            stream_refreshes: 0,
+            stream_refresh_failures: 0,
+            stream_ended: 0,
+            stream_lagged: 0,
+            stream_failed: 0,
+            replayed_operations_skipped: 0,
+            session_started: 0,
+            sync_started: 0,
+            sync_finished: 0,
+            live_mode_started: 0,
+            session_finished: 0,
+            last_failure: None,
+            last_reload: None,
+        }
+    }
+
     fn record(&mut self, outcome: PandaNetFactImportOutcome) {
         match outcome {
             PandaNetFactImportOutcome::Imported => self.imported += 1,
@@ -2717,6 +2764,25 @@ impl P2pandaNetImportStatus {
             }
         }
     }
+
+    fn record_node_stats(&mut self, stats: PandaNetFactNodeStats) {
+        self.stream_idle_refreshes = u64_to_usize_saturating(stats.idle_timeouts);
+        self.stream_refreshes = stats.stream_refreshes;
+        self.stream_refresh_failures = stats.stream_refresh_failures;
+        self.stream_ended = stats.stream_ended;
+        self.stream_lagged = stats.stream_lagged;
+        self.stream_failed = stats.stream_failed;
+        self.replayed_operations_skipped = stats.replayed_operations_skipped;
+        self.session_started = stats.session_started;
+        self.sync_started = stats.sync_started;
+        self.sync_finished = stats.sync_finished;
+        self.live_mode_started = stats.live_mode_started;
+        self.session_finished = stats.session_finished;
+    }
+}
+
+fn u64_to_usize_saturating(value: u64) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
 }
 
 struct HttpGatewayRoleState {
@@ -3629,10 +3695,21 @@ pub(crate) enum RoleStatusKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct P2pandaNetRoleStatus {
     pub(crate) node_ticket: String,
+    pub(crate) attempted_import_batches: usize,
     pub(crate) imported: usize,
     pub(crate) rejected: usize,
     pub(crate) stream_idle_refreshes: usize,
+    pub(crate) stream_refreshes: u64,
+    pub(crate) stream_refresh_failures: u64,
+    pub(crate) stream_ended: u64,
+    pub(crate) stream_lagged: u64,
+    pub(crate) stream_failed: u64,
     pub(crate) replayed_operations_skipped: u64,
+    pub(crate) session_started: u64,
+    pub(crate) sync_started: u64,
+    pub(crate) sync_finished: u64,
+    pub(crate) live_mode_started: u64,
+    pub(crate) session_finished: u64,
     pub(crate) last_failure: Option<String>,
     pub(crate) last_reload: Option<RoleServingStatus>,
 }
