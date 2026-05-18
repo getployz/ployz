@@ -570,6 +570,12 @@ impl PandaFactStore {
             .insert((island.clone(), principal));
     }
 
+    #[must_use]
+    pub fn can_write_fact(&self, session: &BusSession, key: &FactKey) -> bool {
+        self.authorizer
+            .can_session_access_fact(session, key, FactAccess::Write)
+    }
+
     pub async fn write_fact_payload(
         &mut self,
         session: &BusSession,
@@ -1165,6 +1171,7 @@ impl FactSource for PandaFactStore {
         let candidates = self
             .facts
             .iter()
+            .filter(|stored| stored.metadata.island == *island)
             .filter_map(|stored| self.candidate_for(stored, island, pattern, session))
             .collect::<Vec<_>>();
         Ok(candidates)

@@ -7,11 +7,11 @@ use mvp_acme::{
     AcmeChallengeId, AcmeChallengeToken, AcmeHostname, AcmeHttp01ClearedFact,
     AcmeHttp01PresentedFact, AcmeKeyAuthorization,
 };
-use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
+use mvp_bus::{BusSession, FactKey, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::{NodeId, VisibleNodes};
 use mvp_lease::{
-    LeaseClaimed, LeaseContentHash, LeaseEpoch, LeaseFact, LeaseHolder, LeaseReleased, LeaseState,
-    LeaseTimestamp,
+    LeaseClaimed, LeaseContentHash, LeaseEpoch, LeaseFact, LeaseHolder, LeaseRelease,
+    LeaseReleased, LeaseState, LeaseTimestamp,
 };
 use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactAuthorKey, PandaFactStore, PandaFactSyncError, PandaFactSyncScope,
@@ -75,7 +75,15 @@ async fn run_async() -> Result<(), String> {
     reset_dir(&root)?;
 
     let prod = IslandId::new("prod");
-    let (bus, sessions) = acme_bus_sessions(&prod)?;
+    let challenge = AcmeChallengeId::new(
+        AcmeHostname::parse("example.test").map_err(|error| error.to_string())?,
+        AcmeChallengeToken::parse(ACME_TOKEN).map_err(|error| error.to_string())?,
+    );
+    let other_challenge = AcmeChallengeId::new(
+        AcmeHostname::parse("example.test").map_err(|error| error.to_string())?,
+        AcmeChallengeToken::parse(OTHER_TOKEN).map_err(|error| error.to_string())?,
+    );
+    let (bus, sessions) = acme_bus_sessions(&prod, &challenge)?;
     let bus = Arc::new(bus);
     let dns_author = PandaFactAuthor::new(sessions.dns_writer.principal().clone());
     let visible_nodes = VisibleNodes::new([NodeId::new("node-a"), NodeId::new("node-b")]);
@@ -117,15 +125,6 @@ async fn run_async() -> Result<(), String> {
     .await?;
     left.trust_replica_peer(&prod, sessions.left_replica.principal().clone());
     right.trust_replica_peer(&prod, sessions.right_replica.principal().clone());
-
-    let challenge = AcmeChallengeId::new(
-        AcmeHostname::parse("example.test").map_err(|error| error.to_string())?,
-        AcmeChallengeToken::parse(ACME_TOKEN).map_err(|error| error.to_string())?,
-    );
-    let other_challenge = AcmeChallengeId::new(
-        AcmeHostname::parse("example.test").map_err(|error| error.to_string())?,
-        AcmeChallengeToken::parse(OTHER_TOKEN).map_err(|error| error.to_string())?,
-    );
     let timeline = LeaseTimeline::fresh()?;
     let scope = trusted_authors
         .iter()
@@ -178,7 +177,7 @@ async fn run_async() -> Result<(), String> {
         stale_before_mutation,
         AcmeAdapterError::Conflict { .. }
     ));
-    let other_claim = adapter_a
+    let wrong_scope = adapter_a
         .claim(
             &mut left,
             &other_challenge,
@@ -186,17 +185,7 @@ async fn run_async() -> Result<(), String> {
             timeline.expires_at,
         )
         .await
-        .map_err(|error| error.to_string())?;
-    let wrong_scope = adapter_a
-        .present(
-            &mut left,
-            &other_challenge,
-            &other_claim.lease,
-            "thumbprint-wrong-scope",
-            timeline.published_at,
-        )
-        .await
-        .expect_err("ACME grant scoped to one challenge rejects another");
+        .expect_err("ACME grant scoped to one challenge rejects another lease");
     assert!(matches!(wrong_scope, AcmeAdapterError::Fact(_)));
 
     let sync_started = Instant::now();
@@ -291,7 +280,6 @@ async fn run_async() -> Result<(), String> {
         .clear(&mut left, &challenge, &claim_a.lease, timeline.cleared_at)
         .await
         .map_err(|error| error.to_string())?;
-    drop(adapter_a);
     let outage_http = timed_http_get(
         gateway.listen_addr(),
         "example.test",
@@ -301,10 +289,11 @@ async fn run_async() -> Result<(), String> {
     if outage_http.response.starts_with("HTTP/1.1 200 OK")
         && outage_http.response.ends_with(&initial_key_authorization)
     {
-        outage_success_count += 1;
+        // This proves the last-good snapshot is still serving before synced
+        // projection observes the clear.
     } else {
         return Err(format!(
-            "p2panda ACME serving did not preserve last-good response while adapter was down: {}",
+            "p2panda ACME serving did not preserve last-good response before clear sync: {}",
             outage_http.response
         ));
     }
@@ -349,6 +338,28 @@ async fn run_async() -> Result<(), String> {
         )
         .await
         .map_err(|error| error.to_string())?;
+    let before_stale_present =
+        visible_candidate_count(&left, &sessions.issuer_a).map_err(|error| error.to_string())?;
+    let stale_present_attempt = adapter_a
+        .present(
+            &mut left,
+            &challenge,
+            &claim_a.lease,
+            "thumbprint-stale-local",
+            timeline.stale_arrival_at,
+        )
+        .await
+        .expect_err("stale local ACME presenter is rejected before mutation");
+    assert!(matches!(
+        stale_present_attempt,
+        AcmeAdapterError::StaleLease
+    ));
+    assert_eq_named(
+        "stale local ACME present did not append facts",
+        visible_candidate_count(&left, &sessions.issuer_a).map_err(|error| error.to_string())?,
+        before_stale_present,
+    )?;
+    drop(adapter_a);
     let stale_present = stale_presented_fact(
         challenge.clone(),
         &claim_a.lease,
@@ -398,6 +409,24 @@ async fn run_async() -> Result<(), String> {
         return Err(format!(
             "stale synced ACME fact rolled back serving: {}",
             takeover_http.response
+        ));
+    }
+    let adapter_dropped_http = timed_http_get(
+        gateway.listen_addr(),
+        "example.test",
+        &format!("/.well-known/acme-challenge/{ACME_TOKEN}"),
+    )
+    .await?;
+    if adapter_dropped_http.response.starts_with("HTTP/1.1 200 OK")
+        && adapter_dropped_http
+            .response
+            .ends_with(present_b.key_authorization.as_str())
+    {
+        outage_success_count += 1;
+    } else {
+        return Err(format!(
+            "p2panda ACME serving did not preserve winner after adapter drop: {}",
+            adapter_dropped_http.response
         ));
     }
 
@@ -484,7 +513,7 @@ async fn run_async() -> Result<(), String> {
         projection_reload_ms,
         http_request_us: initial_http.elapsed_us,
         command_adapter_outage_serving_success_count: outage_success_count,
-        stale_mutation_rejections: 1,
+        stale_mutation_rejections: 2,
         scoped_grant_rejections: 1,
         stale_sync_preserved_winner,
         release_fact_recorded: pending_clear.release_recorded && final_clear.release_recorded,
@@ -529,12 +558,16 @@ struct AcmeBusSessions {
     right_replica: BusSession,
 }
 
-fn acme_bus_sessions(prod: &IslandId) -> Result<(InMemoryBus, AcmeBusSessions), String> {
+fn acme_bus_sessions(
+    prod: &IslandId,
+    challenge: &AcmeChallengeId,
+) -> Result<(InMemoryBus, AcmeBusSessions), String> {
     let (bus, authority) = InMemoryBus::new_with_authority();
     let acme_pattern = fact_pattern(&format!("/facts/acme/http01/example.test/{ACME_TOKEN}/>"))?;
+    let lease_pattern = fact_pattern(&format!("/facts/lease/{}/>", challenge.lease_resource()))?;
     let issuer_grant = Grant::empty()
-        .with_fact_write(fact_pattern("/facts/lease/>")?)
-        .with_fact_read(fact_pattern("/facts/lease/>")?)
+        .with_fact_write(lease_pattern.clone())
+        .with_fact_read(lease_pattern)
         .with_fact_write(acme_pattern.clone())
         .with_fact_read(acme_pattern);
     let sessions = AcmeBusSessions {
@@ -701,11 +734,16 @@ impl AcmeP2pandaCommandAdapter {
             lease.claim_hash,
             cleared_at,
         );
+        let release_key =
+            challenge.lease_released_fact_key(lease.epoch, lease.claim_hash, release.release());
+        let clear_key = challenge.cleared_fact_key(lease.epoch, lease.claim_hash);
+        preflight_fact_write(store, &self.session, &release_key)?;
+        preflight_fact_write(store, &self.session, &clear_key)?;
         write_panda_projection_fact(
             store,
             &self.session,
             &self.author,
-            &challenge.lease_released_fact_key(lease.epoch, lease.claim_hash, release.release()),
+            &release_key,
             ProjectionFactPayload::LeaseReleased(release),
         )
         .await?;
@@ -720,7 +758,7 @@ impl AcmeP2pandaCommandAdapter {
             store,
             &self.session,
             &self.author,
-            &challenge.cleared_fact_key(lease.epoch, lease.claim_hash),
+            &clear_key,
             ProjectionFactPayload::AcmeHttp01Cleared(clear),
         )
         .await?;
@@ -742,6 +780,8 @@ enum AcmeAdapterError {
         actual: String,
     },
     StaleLease,
+    UnreadableLeaseCandidate,
+    MalformedLeaseCandidate,
     EpochOverflow,
     Acme(String),
     Fact(String),
@@ -763,6 +803,12 @@ impl std::fmt::Display for AcmeAdapterError {
                 )
             }
             Self::StaleLease => formatter.write_str("ACME lease is stale"),
+            Self::UnreadableLeaseCandidate => {
+                formatter.write_str("ACME lease state contains unreadable candidates")
+            }
+            Self::MalformedLeaseCandidate => {
+                formatter.write_str("ACME lease state contains malformed candidates")
+            }
             Self::EpochOverflow => formatter.write_str("ACME lease epoch overflow"),
             Self::Acme(message) | Self::Fact(message) => formatter.write_str(message),
         }
@@ -819,6 +865,21 @@ fn challenge_label(challenge: &AcmeChallengeId) -> String {
     format!("{} {}", challenge.hostname(), challenge.token())
 }
 
+fn preflight_fact_write(
+    store: &PandaFactStore,
+    session: &BusSession,
+    key: &str,
+) -> Result<(), AcmeAdapterError> {
+    let key = FactKey::parse(key).map_err(|error| AcmeAdapterError::Fact(error.to_string()))?;
+    if store.can_write_fact(session, &key) {
+        return Ok(());
+    }
+    Err(AcmeAdapterError::Fact(format!(
+        "principal {} cannot write fact {key}",
+        session.principal()
+    )))
+}
+
 fn assert_current_lease(
     store: &PandaFactStore,
     session: &BusSession,
@@ -856,12 +917,21 @@ fn lease_state_from_store(
     let book = mvp_lease::LeaseBook::new();
     let importer = book.importer();
     for candidate in lease_candidates(&candidates) {
+        if !matches!(
+            candidate.status(),
+            CandidateStatus::Verified | CandidateStatus::Conflict
+        ) {
+            return Err(AcmeAdapterError::UnreadableLeaseCandidate);
+        }
         let Some(payload) = payloads.get(candidate.content_hash()) else {
-            continue;
+            return Err(AcmeAdapterError::UnreadableLeaseCandidate);
         };
-        match ProjectionFactPayload::from_fact_bytes(payload.as_bytes())
-            .map_err(|error| AcmeAdapterError::Fact(error.to_string()))?
-        {
+        let payload = ProjectionFactPayload::from_fact_bytes(payload.as_bytes())
+            .map_err(|error| AcmeAdapterError::Fact(error.to_string()))?;
+        if !lease_payload_matches_key(candidate, &payload) {
+            return Err(AcmeAdapterError::MalformedLeaseCandidate);
+        }
+        match payload {
             ProjectionFactPayload::LeaseClaimed(fact) => {
                 importer.record(LeaseFact::Claimed(fact));
             }
@@ -889,13 +959,122 @@ fn lease_state_from_store(
 fn lease_candidates(candidates: &[FactCandidate]) -> impl Iterator<Item = &FactCandidate> {
     candidates.iter().filter(|candidate| {
         matches!(
-            candidate.status(),
-            CandidateStatus::Verified | CandidateStatus::Conflict
-        ) && matches!(
             candidate.kind(),
             FactKind::LeaseClaimed | FactKind::LeaseRenewed | FactKind::LeaseReleased
         )
     })
+}
+
+fn lease_payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPayload) -> bool {
+    let segments = candidate.key().segments().collect::<Vec<_>>();
+    match (segments.as_slice(), candidate.kind(), payload) {
+        (
+            ["facts", "lease", resource, "claimed", epoch],
+            FactKind::LeaseClaimed,
+            ProjectionFactPayload::LeaseClaimed(fact),
+        )
+        | (
+            ["facts", "lease", resource, "claimed", epoch, _],
+            FactKind::LeaseClaimed,
+            ProjectionFactPayload::LeaseClaimed(fact),
+        ) => {
+            fact.resource().as_str() == *resource && parse_lease_epoch(epoch) == Some(fact.epoch())
+        }
+        (
+            [
+                "facts",
+                "lease",
+                resource,
+                "renewed",
+                epoch,
+                claim_hash,
+                renewed_at,
+            ],
+            FactKind::LeaseRenewed,
+            ProjectionFactPayload::LeaseRenewed(fact),
+        )
+        | (
+            [
+                "facts",
+                "lease",
+                resource,
+                "renewed",
+                epoch,
+                claim_hash,
+                renewed_at,
+                _,
+            ],
+            FactKind::LeaseRenewed,
+            ProjectionFactPayload::LeaseRenewed(fact),
+        ) => {
+            fact.resource().as_str() == *resource
+                && parse_lease_epoch(epoch) == Some(fact.epoch())
+                && parse_lease_hash(claim_hash) == Some(fact.claim_hash())
+                && parse_lease_timestamp(renewed_at) == Some(fact.renewed_at())
+        }
+        (
+            [
+                "facts",
+                "lease",
+                resource,
+                "released",
+                epoch,
+                claim_hash,
+                release,
+            ],
+            FactKind::LeaseReleased,
+            ProjectionFactPayload::LeaseReleased(fact),
+        )
+        | (
+            [
+                "facts",
+                "lease",
+                resource,
+                "released",
+                epoch,
+                claim_hash,
+                release,
+                _,
+            ],
+            FactKind::LeaseReleased,
+            ProjectionFactPayload::LeaseReleased(fact),
+        ) => {
+            fact.resource().as_str() == *resource
+                && parse_lease_epoch(epoch) == Some(fact.epoch())
+                && parse_lease_hash(claim_hash) == Some(fact.claim_hash())
+                && parse_lease_release(release) == Some(fact.release())
+        }
+        _ => false,
+    }
+}
+
+fn parse_lease_epoch(value: &str) -> Option<LeaseEpoch> {
+    LeaseEpoch::from_u64(value.parse().ok()?).ok()
+}
+
+fn parse_lease_hash(value: &str) -> Option<LeaseContentHash> {
+    LeaseContentHash::from_hex(value).ok()
+}
+
+fn parse_lease_timestamp(value: &str) -> Option<LeaseTimestamp> {
+    Some(LeaseTimestamp::from_secs(value.parse().ok()?))
+}
+
+fn parse_lease_release(value: &str) -> Option<LeaseRelease> {
+    if value == "drop" {
+        return Some(LeaseRelease::DroppedWithoutTimestamp);
+    }
+    parse_lease_timestamp(value).map(LeaseRelease::At)
+}
+
+fn visible_candidate_count(
+    store: &PandaFactStore,
+    session: &BusSession,
+) -> Result<usize, AcmeAdapterError> {
+    store
+        .list_candidates(session.island(), &fact_pattern("/facts/>")?, session)
+        .map(|candidates| candidates.len())
+        .map_err(|error| AcmeAdapterError::Fact(error.to_string()))
 }
 
 async fn open_store(
