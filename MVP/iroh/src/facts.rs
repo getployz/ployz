@@ -58,6 +58,52 @@ pub enum IrohFactError {
 
 pub type IrohFactResult<T> = std::result::Result<T, IrohFactError>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IrohFactMetadata {
+    island: IslandId,
+    key: FactKey,
+    author: PrincipalId,
+    content_hash: FactContentHash,
+}
+
+impl IrohFactMetadata {
+    fn from_local(metadata: &LocalFactMetadata) -> Self {
+        Self {
+            island: metadata.island.clone(),
+            key: metadata.key.clone(),
+            author: metadata.author.clone(),
+            content_hash: metadata.content_hash.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn island(&self) -> &IslandId {
+        &self.island
+    }
+
+    #[must_use]
+    pub fn key(&self) -> &FactKey {
+        &self.key
+    }
+
+    #[must_use]
+    pub fn author(&self) -> &PrincipalId {
+        &self.author
+    }
+
+    #[must_use]
+    pub fn content_hash(&self) -> &FactContentHash {
+        &self.content_hash
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IrohImmutableWriteOutcome {
+    Inserted(IrohFactMetadata),
+    AlreadyPresent(IrohFactMetadata),
+    Conflict(IrohFactMetadata),
+}
+
 pub struct IrohFactNode {
     router: Router,
     docs: DocsApi,
@@ -232,6 +278,71 @@ impl IrohFactDoc {
             payload: Some(payload),
         })?;
         Ok(fact_hash)
+    }
+
+    pub async fn write_immutable_fact_payload(
+        &self,
+        author: &IrohFactAuthor,
+        key: FactKey,
+        payload: FactPayload,
+        authorizer: &dyn FactAuthorizer,
+    ) -> IrohFactResult<IrohImmutableWriteOutcome> {
+        if !authorizer.can_principal_access_fact(
+            &self.island,
+            author.principal(),
+            &key,
+            FactAccess::Write,
+        ) {
+            return Err(IrohFactError::UnauthorizedWrite {
+                island: self.island.clone(),
+                principal: author.principal().clone(),
+                key,
+            });
+        }
+
+        self.bind_author(author)?;
+        self.refresh_key(&key).await?;
+        let content_hash = FactContentHash::for_payload(&payload);
+        let authorized =
+            self.local_view
+                .authorized_entries_for_key(&self.island, &key, authorizer)?;
+        if let Some(existing) = authorized
+            .iter()
+            .find(|metadata| metadata.content_hash == content_hash)
+        {
+            return Ok(IrohImmutableWriteOutcome::AlreadyPresent(
+                IrohFactMetadata::from_local(existing),
+            ));
+        }
+        if let Some(existing) = authorized.first() {
+            return Ok(IrohImmutableWriteOutcome::Conflict(
+                IrohFactMetadata::from_local(existing),
+            ));
+        }
+
+        let iroh_hash = self
+            .doc
+            .set_bytes(
+                author.raw,
+                key.as_str().as_bytes().to_vec(),
+                payload.as_bytes().to_vec(),
+            )
+            .await
+            .map_err(|source| backend_error("write immutable fact payload", source))?;
+        let written = LocalFactMetadata {
+            island: self.island.clone(),
+            key,
+            author: author.principal().clone(),
+            author_verified: true,
+            content_hash: iroh_hash_to_fact_hash(iroh_hash),
+        };
+        self.local_view.upsert(LocalFactEntry {
+            metadata: written.clone(),
+            payload: Some(payload),
+        })?;
+        Ok(IrohImmutableWriteOutcome::Inserted(
+            IrohFactMetadata::from_local(&written),
+        ))
     }
 
     pub async fn share(&self) -> IrohFactResult<IrohFactDocTicket> {
@@ -559,6 +670,27 @@ impl IrohFactLocalView {
         }
         Ok(payloads)
     }
+
+    fn authorized_entries_for_key(
+        &self,
+        island: &IslandId,
+        key: &FactKey,
+        authorizer: &dyn FactAuthorizer,
+    ) -> IrohFactResult<Vec<LocalFactMetadata>> {
+        Ok(self
+            .entries
+            .read()
+            .map_err(|source| backend_error("lock local fact view", source))?
+            .values()
+            .map(|entry| &entry.metadata)
+            .filter(|metadata| {
+                metadata.island == *island
+                    && metadata.key == *key
+                    && metadata_has_write_authority(metadata, authorizer)
+            })
+            .cloned()
+            .collect())
+    }
 }
 
 #[derive(Clone)]
@@ -788,8 +920,8 @@ mod tests {
     };
 
     use super::{
-        IrohDocsFactSource, IrohFactError, IrohFactLocalView, IrohFactNode, IrohRejectedFactReason,
-        LocalFactEntry, LocalFactMetadata,
+        IrohDocsFactSource, IrohFactError, IrohFactLocalView, IrohFactNode,
+        IrohImmutableWriteOutcome, IrohRejectedFactReason, LocalFactEntry, LocalFactMetadata,
     };
 
     fn island(value: &str) -> IslandId {
@@ -1262,6 +1394,155 @@ mod tests {
         assert_eq!(*candidates[0].content_hash(), second_hash);
         assert_eq!(payloads.len(), 1);
         assert!(payloads.contains_key(&second_hash));
+
+        node.shutdown().await.expect("shutdown node");
+    }
+
+    #[tokio::test]
+    async fn immutable_write_reports_already_present_for_same_payload() {
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let writer = authority.grant_in(
+            island("prod"),
+            principal("node-1"),
+            Grant::empty().with_fact_write(pattern("/facts/node/>")),
+        );
+
+        let node = IrohFactNode::memory().await.expect("spawn node");
+        let doc = node
+            .create_fact_doc(island("prod"))
+            .await
+            .expect("create fact doc");
+        let author = node
+            .create_author(writer.principal().clone())
+            .await
+            .expect("create author");
+        let fact_key = key("/facts/node/node-1/joined/1");
+        let payload = node_joined_payload("node-1", 1, "fd00::1");
+        let inserted = doc
+            .write_immutable_fact_payload(&author, fact_key.clone(), payload.clone(), &bus)
+            .await
+            .expect("insert immutable fact");
+        let repeated = doc
+            .write_immutable_fact_payload(&author, fact_key, payload, &bus)
+            .await
+            .expect("repeat immutable fact");
+
+        assert!(matches!(inserted, IrohImmutableWriteOutcome::Inserted(_)));
+        assert!(matches!(
+            repeated,
+            IrohImmutableWriteOutcome::AlreadyPresent(_)
+        ));
+
+        node.shutdown().await.expect("shutdown node");
+    }
+
+    #[tokio::test]
+    async fn immutable_write_rejects_same_author_changed_payload_before_overwrite() {
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let writer = authority.grant_in(
+            island("prod"),
+            principal("node-1"),
+            Grant::empty().with_fact_write(pattern("/facts/node/>")),
+        );
+
+        let node = IrohFactNode::memory().await.expect("spawn node");
+        let doc = node
+            .create_fact_doc(island("prod"))
+            .await
+            .expect("create fact doc");
+        let author = node
+            .create_author(writer.principal().clone())
+            .await
+            .expect("create author");
+        let fact_key = key("/facts/node/node-1/joined/1");
+        doc.write_immutable_fact_payload(
+            &author,
+            fact_key.clone(),
+            node_joined_payload("node-1", 1, "fd00::1"),
+            &bus,
+        )
+        .await
+        .expect("insert immutable fact");
+        let conflict = doc
+            .write_immutable_fact_payload(
+                &author,
+                fact_key.clone(),
+                node_joined_payload("node-1", 1, "fd00::2"),
+                &bus,
+            )
+            .await
+            .expect("changed immutable write reports conflict");
+
+        let source = IrohDocsFactSource::new(node.local_view(), Arc::new(bus.clone()));
+        let projection = authority.grant_in(
+            island("prod"),
+            principal("projection"),
+            Grant::empty().with_fact_read(pattern("/facts/node/>")),
+        );
+        let candidates = source
+            .list_candidates(&island("prod"), &pattern("/facts/node/>"), &projection)
+            .expect("list candidates");
+
+        assert!(matches!(conflict, IrohImmutableWriteOutcome::Conflict(_)));
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            *candidates[0].content_hash(),
+            FactContentHash::for_payload(&node_joined_payload("node-1", 1, "fd00::1"))
+        );
+
+        node.shutdown().await.expect("shutdown node");
+    }
+
+    #[tokio::test]
+    async fn immutable_write_detects_authorized_conflict_without_read_grant() {
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let writer_one = authority.grant_in(
+            island("prod"),
+            principal("node-1"),
+            Grant::empty().with_fact_write(pattern("/facts/node/>")),
+        );
+        let writer_two = authority.grant_in(
+            island("prod"),
+            principal("node-2"),
+            Grant::empty().with_fact_write(pattern("/facts/node/>")),
+        );
+
+        let node = IrohFactNode::memory().await.expect("spawn node");
+        let doc = node
+            .create_fact_doc(island("prod"))
+            .await
+            .expect("create fact doc");
+        let author_one = node
+            .create_author(writer_one.principal().clone())
+            .await
+            .expect("create author one");
+        let author_two = node
+            .create_author(writer_two.principal().clone())
+            .await
+            .expect("create author two");
+        let fact_key = key("/facts/node/node-1/joined/1");
+        doc.write_immutable_fact_payload(
+            &author_one,
+            fact_key.clone(),
+            node_joined_payload("node-1", 1, "fd00::1"),
+            &bus,
+        )
+        .await
+        .expect("insert first immutable fact");
+        let conflict = doc
+            .write_immutable_fact_payload(
+                &author_two,
+                fact_key,
+                node_joined_payload("node-1", 1, "fd00::2"),
+                &bus,
+            )
+            .await
+            .expect("second writer sees conflict");
+
+        let IrohImmutableWriteOutcome::Conflict(existing) = conflict else {
+            panic!("expected immutable conflict");
+        };
+        assert_eq!(existing.author(), writer_one.principal());
 
         node.shutdown().await.expect("shutdown node");
     }

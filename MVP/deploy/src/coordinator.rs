@@ -478,11 +478,19 @@ fn cleanup_failure_kind(error: &DeployError) -> CleanupFailureKind {
         | DeployError::DeployStillRunning
         | DeployError::ServingCommitPhaseRequired
         | DeployError::ServingFactConflict { .. }
+        | DeployError::ServingFactMissing { .. }
+        | DeployError::ServingFactKindMismatch { .. }
+        | DeployError::ServingFactMismatch { .. }
+        | DeployError::DeployFactConflict { .. }
+        | DeployError::DeployFactMissing { .. }
+        | DeployError::DeployFactKindMismatch { .. }
+        | DeployError::DeployFactMismatch { .. }
         | DeployError::PlannedNodeNotVisible { .. }
         | DeployError::InsufficientCapacity { .. }
         | DeployError::CapacityReplyNodeMismatch { .. }
         | DeployError::InstanceNotReady { .. }
         | DeployError::WirePayload { .. }
+        | DeployError::FactSource(_)
         | DeployError::SubjectParse(_)
         | DeployError::FactKeyParse(_)
         | DeployError::Bus(BusError::SubjectParse(_))
