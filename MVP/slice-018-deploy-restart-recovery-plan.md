@@ -50,6 +50,10 @@ before destructive cleanup.
 - Slice 017 should ship first. Graceful machine remove is the next active
   product proof, and it will finish extracting route/serving commit semantics
   out of deploy ownership.
+- Run the p2panda substitution investigation in
+  `MVP/slice-018a-p2panda-substitution-investigation-plan.md` before
+  implementing this plan. If that investigation adopts a p2panda-backed fact,
+  auth, sync, or blob substrate, revise this plan around that boundary first.
 - This plan assumes `mvp-routing` remains the owner of serving commit facts and
   projection catch-up proof.
 - The deploy recovery slice should start from a clean committed Slice 017
