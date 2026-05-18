@@ -229,6 +229,20 @@ a fact writer into the coordinator, keep the bus for request/reply, and let the
 E2E provide a docs-backed writer while focused tests may use an in-memory or
 bus-backed writer.
 
+The deploy writer boundary should stay narrow:
+
+```text
+DeployFactWriter
+  write_decision(...)
+  write_cleanup_done(...)
+```
+
+The writer outcome can be deploy-local and lighter than
+`mvp_bus::FactWriteOutcome`: command code only needs inserted/already-present as
+success and structured conflict as a branchable error. Bus-backed adapters may
+translate from `FactWriteOutcome`; docs-backed adapters should translate from
+the iroh-specific immutable write outcome.
+
 Do not make the E2E pass by writing the serving commit through the in-memory bus
 while decision and cleanup-done live in iroh-docs. That would leave the cutover
 truth outside the recovery substrate.
@@ -252,9 +266,26 @@ the Ployz immutable fact contract before mutation:
    treats them as conflict candidates and applies the deterministic selection
    rule described below.
 
-This can be a small helper in `mvp-iroh` or a deploy-local docs writer adapter.
+This should be a small helper in `mvp-iroh` with an iroh-specific outcome type,
+not a forced reuse of `mvp_bus::FactWriteOutcome`. The bus `Fact` constructor is
+private, and that is a good boundary: the docs helper only needs to report the
+key, content hash, author/principal, and conflict candidate metadata that deploy
+can branch on.
+
+The write preflight must inspect existing exact-key candidates by write
+authority, not by the caller's read grant. Do not use
+`IrohDocsFactSource::list_candidates` as the write preflight, because that API
+correctly filters for projection/read access. Conflict detection for immutable
+writes needs to see existing authorized writers even when the current writer
+does not have read permission for those facts.
+
 The important contract is that command entry does not knowingly overwrite a
 different same-key fact.
+
+Deploy recovery reads can use `FactSource` as the existing narrow read boundary,
+but deploy facts must decode their own payload bytes. `/facts/deploy/...` keys
+will classify as unsupported by projection, and that is acceptable; unsupported
+classification must not force deploy facts into `ProjectionFactPayload`.
 
 ### Coordinator Death Boundary
 
@@ -317,6 +348,23 @@ only if multiple commands prove that need.
 
 The serving commit payload itself remains the existing `ServingCommitFact`
 owned by `mvp-routing`.
+
+`mvp-routing` should expose pure helpers for serving fact construction and exact
+read validation:
+
+```text
+serving_commit_fact_key(...)
+serving_commit_fact_payload(...)
+serving_commit_fact_body(...)
+decode_serving_commit_fact_payload(...)
+read_exact_serving_commit(...)
+```
+
+The exact reader must validate the requested serving commit id against the
+decoded `ProjectionFactPayload::ServingCommit` and reject mismatched epoch,
+active backends, old backends, and the rest of the serving plan. Recovery must
+never ask the projection reducer for the current serving head to decide what to
+resume.
 
 ### Recovery State
 
@@ -414,6 +462,9 @@ Work:
 
 - Add deploy decision and cleanup-done fact payload structs and fact key
   constructors.
+- Shape `DeployDecisionFact` around the manifest, visible nodes, expected
+  serving commit id, and serving epoch. Shape `DeployCleanupDoneFact` around
+  deploy id, serving commit id, cleanup targets, and serving epoch.
 - Expose pure serving commit key/payload helpers from `mvp-routing` so serving
   commits can be written through the same fact substrate used by deploy facts
   in the recovery E2E.
@@ -428,11 +479,23 @@ Work:
   adapters: bus/in-memory focused tests and docs-backed E2E recovery.
   Keep the boundary specific to decision, serving commit, and cleanup-done
   facts; do not introduce a whole-store facade.
+- Use `FactSource` for deploy recovery reads where it fits, but keep deploy
+  payload decoding in `mvp-deploy`. Do not teach projection about deploy
+  decision or cleanup-done payloads.
 - Add a docs-backed immutable write helper or adapter that returns
   inserted/already-present/conflict outcomes before deploy uses iroh-docs as
-  its recovery substrate.
+  its recovery substrate. Prefer `IrohImmutableWriteOutcome` or similarly
+  narrow naming over exposing bus internals.
+- Bind the iroh author before exact-key read/refresh in that helper so same
+  author candidates classify as verified during the preflight.
+- Detect conflicts against existing authorized writers even when the current
+  writer would not be allowed to read those facts through `FactSource`.
 - Add a persistent `mvp-iroh` fact node helper if the E2E needs to recreate the
   docs node from disk instead of sharing an in-memory local view.
+- Do not copy the machine-remove E2E's split-source shape where machine facts
+  come from docs but serving facts stay bus-backed. Slice 018's restart proof
+  needs deploy decision, serving commit, and cleanup-done on the same docs-backed
+  substrate.
 - Add structured errors for conflicting decision facts, missing recovery facts,
   malformed deploy fact payloads, and malformed serving commit payloads.
 - Keep serving commit fact shape and pure key/payload helpers in `mvp-routing`.
@@ -447,6 +510,8 @@ Tests:
 - Conflicting decision for the same deploy id returns structured conflict.
 - Docs-backed immutable writes return already-present for identical bytes and
   structured conflict for different same-key bytes.
+- Docs-backed immutable writes detect an existing authorized conflicting writer
+  without relying on caller read permission.
 - Recovery over two authorized decision candidates selects the deterministic
   winner and reports superseded candidates without operator choice.
 - Cleanup-done fact uses one deterministic deploy-id-scoped key.
