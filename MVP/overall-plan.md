@@ -349,12 +349,9 @@ serving state.
 
 The next implementation/proof slices currently remain:
 
-1. p2panda-net fact replication between persistent stores, replacing manual
-   operation copying as the main replication proof. Crates.io
-   `p2panda-net@0.5.2` is not currently usable as a straight dependency, but
-   git `main` compiles when `p2panda-store/sqlite` is enabled explicitly. Bias
-   toward that workaround before writing more custom net/sync code.
-2. ACME moved onto the p2panda fact boundary, p2panda net/sync replication, and
+1. p2panda-sync fact replication between persistent stores, replacing manual
+   operation copying as the main replication proof.
+2. ACME moved onto the p2panda fact boundary, p2panda-sync replication, and
    advisory lease semantics.
 3. The next product or process-role proof that closes remaining E2E-7 gaps:
    pre-serving candidate adoption/cleanup ABI, p2panda-auth membership, or
@@ -367,11 +364,11 @@ cluster locks. They are foreground coordination hints and fencing tokens;
 resource-level enforcement, such as the ACME directory or storage backend, is
 where real exclusivity lives.
 
-The p2panda-net/sync slice is not another open-ended substrate detour. It
-closes the specific false boundary left after persistence: manual export/import
-is good deterministic harness plumbing, but ACME should not harden that shape
-into the product canary. After the sync proof, the next slice should pay it off
-with ACME rather than adding another generic substrate layer.
+The p2panda-sync slice is not another open-ended substrate detour. It closes
+the specific false boundary left after persistence: manual export/import is
+good deterministic harness plumbing, but ACME should not harden that shape into
+the product canary. After the sync proof, the next slice should pay it off with
+ACME rather than adding another generic substrate layer.
 
 The shipped deploy restart slice did not port old `deploy.rs`. It expressed the
 smallest durable state machine from `MVP/architecture.md`: request-many

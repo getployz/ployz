@@ -182,12 +182,10 @@ Current proof status:
   `p2panda-process-role-serving-contract`, proving Ployz indexes rebuild from
   the p2panda operation log and serving projection can use the persistent store
   while preserving last-good gateway/DNS state.
-- Remaining E2E-4 work is p2panda-net sync between persistent stores where
-  workable, remote service registry projection, route/DNS commit projection
-  through the final synced fact substrate, and propagation histograms beyond
-  the single local sync scenario. If p2panda-net blocks Ployz authorization or
-  metrics, the same proof may fall back to lower-level p2panda-sync with the
-  net blocker documented.
+- Remaining E2E-4 work is p2panda-sync between persistent stores, remote
+  service registry projection, route/DNS commit projection through the final
+  synced fact substrate, and propagation histograms beyond the single local
+  sync scenario.
 
 ### E2E-5: Machine Add And Remove
 
