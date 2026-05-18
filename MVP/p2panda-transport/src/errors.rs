@@ -35,6 +35,10 @@ pub enum PandaNetTransportError {
     StreamLagged { topic: Topic, message: String },
     #[error("p2panda-net stream for topic {topic:?} failed: {message}")]
     StreamFailed { topic: Topic, message: String },
+    #[error("p2panda-net fact store operation failed: {message}")]
+    FactStore { message: String },
+    #[error("p2panda-net fact publish had no local operation to send")]
+    MissingLocalOperation,
 }
 
 impl PandaNetTransportError {

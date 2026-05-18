@@ -411,6 +411,33 @@ pub enum PandaFactWriteOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PandaFactWrite {
+    outcome: PandaFactWriteOutcome,
+    operation: Option<PandaFactOperation>,
+}
+
+impl PandaFactWrite {
+    fn new(outcome: PandaFactWriteOutcome, operation: Option<PandaFactOperation>) -> Self {
+        Self { outcome, operation }
+    }
+
+    #[must_use]
+    pub fn outcome(&self) -> &PandaFactWriteOutcome {
+        &self.outcome
+    }
+
+    #[must_use]
+    pub fn operation(&self) -> Option<&PandaFactOperation> {
+        self.operation.as_ref()
+    }
+
+    #[must_use]
+    pub fn into_outcome(self) -> PandaFactWriteOutcome {
+        self.outcome
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PandaFactOperation {
     header: Arc<[u8]>,
     body: Arc<[u8]>,
@@ -1350,6 +1377,27 @@ impl SharedPandaFactStore {
             .await
             .write_fact_payload(session, author, key, payload)
             .await
+    }
+
+    pub async fn write_fact_payload_with_operation(
+        &self,
+        session: &BusSession,
+        author: &PandaFactAuthor,
+        key: FactKey,
+        payload: FactPayload,
+    ) -> Result<PandaFactWrite> {
+        let mut store = self.store.lock().await;
+        let operation_index = store.operations.len();
+        let outcome = store
+            .write_fact_payload(session, author, key, payload)
+            .await?;
+        let operation = match outcome {
+            PandaFactWriteOutcome::Inserted(_) | PandaFactWriteOutcome::Conflict(_) => {
+                store.operations.get(operation_index).cloned()
+            }
+            PandaFactWriteOutcome::AlreadyPresent(_) => None,
+        };
+        Ok(PandaFactWrite::new(outcome, operation))
     }
 
     pub async fn trust_author_key(

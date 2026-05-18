@@ -1,6 +1,6 @@
 ---
 title: Slice 030 p2panda-net Fact Node Plan
-status: active
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md

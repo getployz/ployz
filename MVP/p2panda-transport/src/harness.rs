@@ -2,8 +2,7 @@ use mvp_bus::BusSession;
 use mvp_p2panda_facts::PandaFactStore;
 
 use crate::{
-    PandaNetFactImportDeferred, PandaNetFactImportFailure, PandaNetFactImportOutcome,
-    PandaNetFactImportRejection, PandaNetNetworkId, PandaNetNode, PandaNetNodeConfig,
+    PandaNetFactImportReport, PandaNetNetworkId, PandaNetNode, PandaNetNodeConfig,
     PandaNetNodeSeed, PandaNetStream, PandaNetTopic, PandaNetTransportError, import_fact_body,
 };
 
@@ -28,55 +27,6 @@ impl PandaNetWireTransportConfig {
             topic,
             receiver_seed,
             sender_seed,
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct PandaNetFactImportReport {
-    pub attempted: usize,
-    pub imported: usize,
-    pub duplicate: usize,
-    pub conflict: usize,
-    pub deferred: Vec<PandaNetFactImportDeferred>,
-    pub rejected: Vec<PandaNetFactImportRejection>,
-    pub failed: Vec<PandaNetFactImportFailure>,
-}
-
-impl PandaNetFactImportReport {
-    #[must_use]
-    pub fn new(attempted: usize) -> Self {
-        Self {
-            attempted,
-            imported: 0,
-            duplicate: 0,
-            conflict: 0,
-            deferred: Vec::new(),
-            rejected: Vec::new(),
-            failed: Vec::new(),
-        }
-    }
-
-    pub fn record(&mut self, outcome: PandaNetFactImportOutcome) {
-        match outcome {
-            PandaNetFactImportOutcome::Imported => {
-                self.imported += 1;
-            }
-            PandaNetFactImportOutcome::Duplicate => {
-                self.duplicate += 1;
-            }
-            PandaNetFactImportOutcome::Conflict => {
-                self.conflict += 1;
-            }
-            PandaNetFactImportOutcome::Deferred(deferred) => {
-                self.deferred.push(deferred);
-            }
-            PandaNetFactImportOutcome::Rejected(rejected) => {
-                self.rejected.push(rejected);
-            }
-            PandaNetFactImportOutcome::Failed(failed) => {
-                self.failed.push(failed);
-            }
         }
     }
 }

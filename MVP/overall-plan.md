@@ -441,6 +441,16 @@ wrapper mechanics in `SharedPandaFactStore`, so deploy, routing, machine, and
 volume fixtures share the same storage shell while domain writers keep their
 own error semantics.
 
+Slice 030 upgrades the p2panda-net proof shape:
+[MVP/slice-030-p2panda-net-fact-node.md](slice-030-p2panda-net-fact-node.md).
+The transport crate now exposes a running fact-node wrapper: p2panda-net owns
+the iroh/gossip/log-sync carrier, while `SharedPandaFactStore` owns Ployz
+authorization, trusted replica import, conflict candidates, and projection
+reads. The E2E projects from the receiver's synced local store instead of
+collecting network bodies and manually importing them in the scenario. The
+non-RC-iroh decision remains isolated inside `mvp-p2panda-transport`; domain
+crates do not learn git p2panda transport types.
+
 The next implementation/proof slice should keep paying down product semantic
 leverage rather than adding another generic substrate layer. Plan it against
 the current map and prefer a product rule that reuses bus, p2panda facts,

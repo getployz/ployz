@@ -37,6 +37,7 @@ mod membership_wireguard_contract {
 mod metrics;
 mod p2panda_acme_http01_contract;
 mod p2panda_fact_source_contract;
+mod p2panda_net_fact_node_contract;
 mod p2panda_net_owned_node_contract;
 mod p2panda_net_sync_contract;
 #[cfg(unix)]
@@ -148,6 +149,10 @@ const SCENARIOS: &[Scenario] = &[
         p2panda_acme_http01_contract::run_net,
     ),
     Scenario::new("p2panda-net-sync-contract", p2panda_net_sync_contract::run),
+    Scenario::new(
+        "p2panda-net-fact-node-contract",
+        p2panda_net_fact_node_contract::run,
+    ),
     Scenario::new(
         "p2panda-net-owned-node-contract",
         p2panda_net_owned_node_contract::run,
