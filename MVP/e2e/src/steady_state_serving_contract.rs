@@ -4,14 +4,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mvp_bus::{Grant, IslandId, PrincipalId};
-use mvp_deploy::{
-    DnsCommitId, GatewayCommitId, RouteCommitId, ServingCommitId, ServingCommitPlan,
-    write_serving_commit,
-};
+use mvp_deploy::{DnsCommitId, GatewayCommitId, RouteCommitId, ServingCommitId, ServingCommitPlan};
 use mvp_identity::NodeId;
 use mvp_projection::{
     BackendEndpoint, BusFactSource, DnsRecordFact, DnsSnapshotFile, RouteId, load_dns_snapshot,
 };
+use mvp_routing::write_serving_commit;
 use mvp_serving::{
     ServingActorHandle, ServingError, ServingFailureKind, ServingFreshness, ServingSnapshotKind,
     ServingSnapshotPaths, ServingStatus,

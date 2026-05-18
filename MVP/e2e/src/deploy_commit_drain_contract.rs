@@ -800,7 +800,7 @@ async fn serving_conflict_after_irreversible_variant() -> Result<(), String> {
     );
     let mut conflicting = manifest.clone();
     conflicting.serving_commit.hostnames = vec!["other.example.test".to_string()];
-    mvp_deploy::write_serving_commit(&bus, &operator, &conflicting.serving_commit)
+    mvp_routing::write_serving_commit(&bus, &operator, &conflicting.serving_commit)
         .await
         .map_err(|error| format!("preseed conflicting serving commit: {error}"))?;
 
@@ -956,7 +956,7 @@ async fn supersession_variant(
         "dns-race",
         1,
     );
-    mvp_deploy::write_serving_commit(bus, projection, &manifest.serving_commit)
+    mvp_routing::write_serving_commit(bus, projection, &manifest.serving_commit)
         .await
         .map_err(|error| format!("write superseded serving commit: {error}"))?;
     let source = Arc::new(BusFactSource::new(raw_bus.clone()));
