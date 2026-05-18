@@ -25,8 +25,6 @@ pub enum PandaNetTransportError {
         step: PandaNetStartupStep,
         message: String,
     },
-    #[error("p2panda-net localhost port probe failed: {message}")]
-    PortProbe { message: String },
     #[error("p2panda-net quarantine log operation failed: {message}")]
     QuarantineLog { message: String },
     #[error("p2panda-net operation for topic {topic:?} had no body")]

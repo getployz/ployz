@@ -395,8 +395,9 @@ machine. See
 
 Slice 025 then consolidated p2panda-net behind `mvp-p2panda-transport`. Product
 E2Es no longer import git p2panda network/store/sync APIs directly, ACME lost
-its local p2panda-net harness, and the obsolete `mvp-p2panda-spike` crate was
-deleted after `mvp-p2panda-facts` covered its proof value. See
+its local p2panda-net harness, test wire helpers are feature-gated under the
+transport crate's harness module, and the obsolete `mvp-p2panda-spike` crate
+was deleted after `mvp-p2panda-facts` covered its proof value. See
 [MVP/slice-025-p2panda-net-substitution-consolidation.md](slice-025-p2panda-net-substitution-consolidation.md).
 
 The next implementation/proof slice should return to product semantic leverage:

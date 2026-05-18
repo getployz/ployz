@@ -19,9 +19,12 @@ use mvp_p2panda_facts::{
     PandaFactSyncSide, PandaFactWireEnvelope, PandaSqliteOpenConfig, PandaTrustedAuthorKey,
     sync_panda_fact_stores,
 };
+use mvp_p2panda_transport::harness::{
+    PandaNetWireTransportConfig, import_fact_bodies, transport_wire_bodies,
+};
 use mvp_p2panda_transport::{
-    PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetFactTransportReport,
-    PandaNetWireTransportConfig, import_fact_body, transport_exported_facts,
+    PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetNetworkId, PandaNetNodeSeed,
+    PandaNetTopic, import_fact_body,
 };
 use mvp_projection::{
     DnsCommitFact, FactSource, ProjectionFactPayload, ProjectionIgnoreReason, SqliteProjectionStore,
@@ -43,10 +46,10 @@ use crate::projection_harness::projection_actor;
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(10);
 const ACME_TOKEN: &str = "tokPanda0123456789abcdef";
 const OTHER_TOKEN: &str = "tokOther0123456789abcdef";
-const ACME_P2PANDA_NET_NETWORK: [u8; 32] = [91; 32];
-const ACME_P2PANDA_NET_TOPIC: [u8; 32] = [91; 32];
-const ACME_P2PANDA_NET_RECEIVER_SEED: [u8; 32] = [21; 32];
-const ACME_P2PANDA_NET_SENDER_SEED: [u8; 32] = [22; 32];
+const ACME_P2PANDA_NET_NETWORK: PandaNetNetworkId = PandaNetNetworkId::new([91; 32]);
+const ACME_P2PANDA_NET_TOPIC: PandaNetTopic = PandaNetTopic::new([91; 32]);
+const ACME_P2PANDA_NET_RECEIVER_SEED: PandaNetNodeSeed = PandaNetNodeSeed::new([21; 32]);
+const ACME_P2PANDA_NET_SENDER_SEED: PandaNetNodeSeed = PandaNetNodeSeed::new([22; 32]);
 
 #[derive(Debug, Serialize)]
 struct P2pandaAcmeHttp01Report {
@@ -88,6 +91,13 @@ struct P2pandaNetAcmeHttp01Report {
     sqlite_rebuild_after_delete: bool,
     http_404_after_clear: bool,
     elapsed_ms: u128,
+}
+
+#[derive(Debug)]
+struct AcmeNetFactReplayReport {
+    replayed: usize,
+    imported: usize,
+    duplicate: usize,
 }
 
 pub(crate) fn run() -> Result<(), String> {
@@ -942,20 +952,24 @@ async fn replay_acme_exported_facts_via_net(
     source: &PandaFactStore,
     target: &mut PandaFactStore,
     replica_session: &BusSession,
-) -> Result<PandaNetFactTransportReport, String> {
-    let report = transport_exported_facts(
-        source,
-        target,
-        replica_session,
+) -> Result<AcmeNetFactReplayReport, String> {
+    let wires = source
+        .export_operations()
+        .map(PandaFactWireEnvelope::encode)
+        .collect::<Vec<_>>();
+    let replayed = wires.len();
+    let bodies = transport_wire_bodies(
         PandaNetWireTransportConfig::new(
             ACME_P2PANDA_NET_NETWORK,
             ACME_P2PANDA_NET_TOPIC,
             ACME_P2PANDA_NET_RECEIVER_SEED,
             ACME_P2PANDA_NET_SENDER_SEED,
         ),
+        wires,
     )
     .await
     .map_err(|error| format!("transport p2panda-net ACME facts: {error}"))?;
+    let report = import_fact_bodies(bodies, target, replica_session).await;
     if report.conflict != 0 {
         return Err("p2panda-net ACME canary received an unexpected conflict".to_string());
     }
@@ -977,7 +991,11 @@ async fn replay_acme_exported_facts_via_net(
             report.failed
         ));
     }
-    Ok(report)
+    Ok(AcmeNetFactReplayReport {
+        replayed,
+        imported: report.imported,
+        duplicate: report.duplicate,
+    })
 }
 
 async fn open_store(

@@ -6,9 +6,12 @@ use serde::Serialize;
 use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::NodeId;
 use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, PandaFactWireEnvelope};
+use mvp_p2panda_transport::harness::{
+    PandaNetWireTransportConfig, import_fact_bodies, transport_wire_bodies,
+};
 use mvp_p2panda_transport::{
-    PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetWireTransportConfig,
-    import_fact_body, transport_wire_bodies,
+    PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetNetworkId, PandaNetNodeSeed,
+    PandaNetTopic, import_fact_body,
 };
 use mvp_projection::{CandidateStatus, FactSource, NodeJoinedFact, ProjectionFactPayload};
 
@@ -159,10 +162,6 @@ async fn run_async() -> Result<(), String> {
     .await?;
     let network_sync_ms = network_started.elapsed().as_millis();
 
-    let mut imported_operations = 0;
-    let mut duplicate_operations = 0;
-    let mut untrusted_rejected = false;
-    let mut cross_island_rejected = false;
     let untrusted_replica_error =
         import_fact_body(&transported[0], &mut canonical, &sessions.untrusted_replica).await;
     let trusted_replica_required = matches!(
@@ -177,33 +176,41 @@ async fn run_async() -> Result<(), String> {
         ));
     }
 
-    for wire in transported {
-        match import_fact_body(&wire, &mut canonical, &sessions.right_replica).await {
-            PandaNetFactImportOutcome::Imported | PandaNetFactImportOutcome::Conflict => {
-                imported_operations += 1;
-            }
-            PandaNetFactImportOutcome::Duplicate => {
-                duplicate_operations += 1;
-            }
-            PandaNetFactImportOutcome::Rejected(PandaNetFactImportRejection::UntrustedAuthor {
-                principal,
-                ..
-            }) if principal == *sessions.untrusted_writer.principal() => {
-                untrusted_rejected = true;
-            }
-            PandaNetFactImportOutcome::Rejected(PandaNetFactImportRejection::CrossIsland {
-                operation,
-                ..
-            }) if operation == laptop => {
-                cross_island_rejected = true;
-            }
-            outcome => {
-                return Err(format!(
-                    "unexpected p2panda-net canonical import outcome: {outcome:?}"
-                ));
-            }
-        }
+    let import_report =
+        import_fact_bodies(transported, &mut canonical, &sessions.right_replica).await;
+    if !import_report.deferred.is_empty()
+        || !import_report.failed.is_empty()
+        || import_report.rejected.iter().any(|rejection| {
+            !matches!(
+                rejection,
+                PandaNetFactImportRejection::UntrustedAuthor { principal, .. }
+                    if principal == sessions.untrusted_writer.principal()
+            ) && !matches!(
+                rejection,
+                PandaNetFactImportRejection::CrossIsland { operation, .. }
+                    if operation == &laptop
+            )
+        })
+    {
+        return Err(format!(
+            "unexpected p2panda-net canonical import report: {import_report:?}"
+        ));
     }
+    let imported_operations = (import_report.imported + import_report.conflict) as u64;
+    let duplicate_operations = import_report.duplicate as u64;
+    let untrusted_rejected = import_report.rejected.iter().any(|rejection| {
+        matches!(
+            rejection,
+            PandaNetFactImportRejection::UntrustedAuthor { principal, .. }
+                if principal == sessions.untrusted_writer.principal()
+        )
+    });
+    let cross_island_rejected = import_report.rejected.iter().any(|rejection| {
+        matches!(
+            rejection,
+            PandaNetFactImportRejection::CrossIsland { operation, .. } if operation == &laptop
+        )
+    });
 
     assert_eq_named("p2panda-net imported operations", imported_operations, 3)?;
     assert_eq_named("p2panda-net duplicate operations", duplicate_operations, 1)?;
@@ -386,7 +393,12 @@ fn latest_wire_operation(store: &PandaFactStore) -> Result<Vec<u8>, String> {
 
 async fn transport_wire_operations(wire_operations: Vec<Vec<u8>>) -> Result<Vec<Vec<u8>>, String> {
     transport_wire_bodies(
-        PandaNetWireTransportConfig::new([88; 32], [88; 32], [88; 32], [89; 32]),
+        PandaNetWireTransportConfig::new(
+            PandaNetNetworkId::new([88; 32]),
+            PandaNetTopic::new([88; 32]),
+            PandaNetNodeSeed::new([88; 32]),
+            PandaNetNodeSeed::new([89; 32]),
+        ),
         wire_operations,
     )
     .await

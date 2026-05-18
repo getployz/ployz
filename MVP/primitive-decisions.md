@@ -20,6 +20,11 @@ the decision concrete.
   network/store/sync APIs directly; they move stable Ployz fact envelopes
   through a Ployz-owned transport helper and then re-enter the canonical
   trusted-replica import path.
+- Slice 025 keeps p2panda-net wire-movement helpers in a feature-gated
+  `mvp-p2panda-transport::harness` module. Normal callers see typed
+  `PandaNetNetworkId`, `PandaNetTopic`, and `PandaNetNodeSeed` values, not raw
+  byte-array slots, and nodes advertise the socket actually bound by the
+  underlying iroh endpoint.
 - Slice 025 deletes `mvp-p2panda-spike`. Its proof value is now covered by
   `mvp-p2panda-facts` tests and E2Es: signed operation candidates, duplicate
   and conflict handling, content-hash payload reads, trusted import,
