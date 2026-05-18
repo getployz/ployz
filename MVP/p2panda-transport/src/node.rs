@@ -1,0 +1,262 @@
+use std::future::Future;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
+
+use futures_util::StreamExt;
+use p2panda_core_git::{Operation, SigningKey, Topic};
+use p2panda_net::addrs::NodeInfo;
+use p2panda_net::iroh_endpoint::{EndpointAddr, IrohConfig, from_verifying_key};
+use p2panda_net::{AddressBook, Discovery, Endpoint, Gossip, LogSync, NetworkId, NodeId};
+use p2panda_store_git::SqliteStore;
+use p2panda_sync_git::FromSync;
+use p2panda_sync_git::protocols::TopicLogSyncEvent;
+use tokio::time::timeout;
+
+use crate::{PandaNetLogId, PandaNetQuarantineLog, PandaNetStartupStep, PandaNetTransportError};
+
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+const STREAM_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PandaNetBindConfig {
+    pub ipv4: Ipv4Addr,
+    pub port_v4: u16,
+    pub ipv6: Ipv6Addr,
+    pub port_v6: u16,
+}
+
+impl PandaNetBindConfig {
+    #[must_use]
+    pub fn localhost(port_v4: u16, port_v6: u16) -> Self {
+        Self {
+            ipv4: Ipv4Addr::LOCALHOST,
+            port_v4,
+            ipv6: Ipv6Addr::LOCALHOST,
+            port_v6,
+        }
+    }
+
+    fn iroh_config(self) -> IrohConfig {
+        IrohConfig {
+            bind_ip_v4: self.ipv4,
+            bind_port_v4: self.port_v4,
+            bind_ip_v6: self.ipv6,
+            bind_port_v6: self.port_v6,
+        }
+    }
+
+    fn direct_addr(self) -> SocketAddr {
+        (self.ipv4, self.port_v4).into()
+    }
+}
+
+#[derive(Clone)]
+pub struct PandaNetNodeInfo(NodeInfo);
+
+impl PandaNetNodeInfo {
+    #[must_use]
+    pub fn into_inner(self) -> NodeInfo {
+        self.0
+    }
+}
+
+#[derive(Clone)]
+pub struct PandaNetNodeConfig {
+    pub network_id: NetworkId,
+    pub signing_key: SigningKey,
+    pub bind: PandaNetBindConfig,
+    pub bootstrap_nodes: Vec<PandaNetNodeInfo>,
+}
+
+pub struct PandaNetNode {
+    address_book: AddressBook,
+    discovery: Discovery,
+    endpoint: Endpoint,
+    gossip: Gossip,
+    log_sync: LogSync<SqliteStore, PandaNetLogId, ()>,
+    quarantine_log: PandaNetQuarantineLog,
+    node_info: PandaNetNodeInfo,
+}
+
+impl PandaNetNode {
+    pub async fn spawn(config: PandaNetNodeConfig) -> Result<Self, PandaNetTransportError> {
+        let quarantine_log = PandaNetQuarantineLog::new(config.signing_key.clone()).await?;
+        let node_info = node_info_from_config(&config);
+
+        let address_book = with_startup_timeout(
+            PandaNetStartupStep::AddressBook,
+            AddressBook::builder().spawn(),
+        )
+        .await?;
+
+        for bootstrap in config.bootstrap_nodes {
+            with_startup_timeout(
+                PandaNetStartupStep::BootstrapNode,
+                address_book.insert_node_info(bootstrap.into_inner()),
+            )
+            .await?;
+        }
+
+        let endpoint = with_startup_timeout(
+            PandaNetStartupStep::Endpoint,
+            Endpoint::builder(address_book.clone())
+                .network_id(config.network_id)
+                .config(config.bind.iroh_config())
+                .signing_key(config.signing_key)
+                .spawn(),
+        )
+        .await?;
+
+        let discovery = with_startup_timeout(
+            PandaNetStartupStep::Discovery,
+            Discovery::builder(address_book.clone(), endpoint.clone()).spawn(),
+        )
+        .await?;
+
+        let gossip = with_startup_timeout(
+            PandaNetStartupStep::Gossip,
+            Gossip::builder(address_book.clone(), endpoint.clone()).spawn(),
+        )
+        .await?;
+
+        let log_sync = with_startup_timeout(
+            PandaNetStartupStep::LogSync,
+            LogSync::builder(quarantine_log.store(), endpoint.clone(), gossip.clone()).spawn(),
+        )
+        .await?;
+
+        Ok(Self {
+            address_book,
+            discovery,
+            endpoint,
+            gossip,
+            log_sync,
+            quarantine_log,
+            node_info,
+        })
+    }
+
+    #[must_use]
+    pub fn node_id(&self) -> NodeId {
+        self.endpoint.node_id()
+    }
+
+    #[must_use]
+    pub fn node_info(&self) -> PandaNetNodeInfo {
+        self.node_info.clone()
+    }
+
+    pub async fn open_stream(
+        &self,
+        topic: Topic,
+        live_mode: bool,
+    ) -> Result<PandaNetStream, PandaNetTransportError> {
+        let handle = with_startup_timeout(
+            PandaNetStartupStep::Stream,
+            self.log_sync.stream(topic, live_mode),
+        )
+        .await?;
+        let subscription =
+            with_startup_timeout(PandaNetStartupStep::Stream, handle.subscribe()).await?;
+        Ok(PandaNetStream {
+            topic,
+            _handle: handle,
+            subscription,
+        })
+    }
+
+    pub async fn append_to_topic(
+        &mut self,
+        topic: &Topic,
+        body: &[u8],
+    ) -> Result<(), PandaNetTransportError> {
+        self.quarantine_log
+            .append_to_topic(topic, body, 0)
+            .await
+            .map(|_| ())
+    }
+}
+
+impl Drop for PandaNetNode {
+    fn drop(&mut self) {
+        let _ = (
+            &self.address_book,
+            &self.discovery,
+            &self.endpoint,
+            &self.gossip,
+        );
+    }
+}
+
+pub struct PandaNetStream {
+    topic: Topic,
+    _handle: p2panda_net::sync::SyncHandle<Operation<()>, TopicLogSyncEvent>,
+    subscription: p2panda_net::sync::SyncSubscription<TopicLogSyncEvent>,
+}
+
+impl PandaNetStream {
+    pub async fn next_body(&mut self) -> Result<Vec<u8>, PandaNetTransportError> {
+        loop {
+            let event = timeout(STREAM_TIMEOUT, self.subscription.next())
+                .await
+                .map_err(|_| PandaNetTransportError::Timeout {
+                    step: PandaNetStartupStep::Stream,
+                    timeout_ms: STREAM_TIMEOUT.as_millis() as u64,
+                })?
+                .ok_or(PandaNetTransportError::StreamEnded { topic: self.topic })?
+                .map_err(|error| PandaNetTransportError::StreamLagged {
+                    topic: self.topic,
+                    message: error.to_string(),
+                })?;
+
+            match event {
+                FromSync {
+                    event: TopicLogSyncEvent::OperationReceived { operation, .. },
+                    ..
+                } => {
+                    let Some(body) = operation.body else {
+                        return Err(PandaNetTransportError::MissingBody { topic: self.topic });
+                    };
+                    return Ok(body.to_bytes());
+                }
+                FromSync {
+                    event: TopicLogSyncEvent::Failed { error },
+                    ..
+                } => {
+                    return Err(PandaNetTransportError::StreamFailed {
+                        topic: self.topic,
+                        message: error.to_string(),
+                    });
+                }
+                FromSync {
+                    event:
+                        TopicLogSyncEvent::SyncFinished { .. }
+                        | TopicLogSyncEvent::SessionFinished { .. }
+                        | TopicLogSyncEvent::LiveModeStarted
+                        | TopicLogSyncEvent::SessionStarted
+                        | TopicLogSyncEvent::SyncStarted { .. },
+                    ..
+                } => {}
+            }
+        }
+    }
+}
+
+fn node_info_from_config(config: &PandaNetNodeConfig) -> PandaNetNodeInfo {
+    let endpoint_addr = EndpointAddr::new(from_verifying_key(config.signing_key.verifying_key()))
+        .with_ip_addr(config.bind.direct_addr());
+    PandaNetNodeInfo(NodeInfo::from(endpoint_addr).bootstrap())
+}
+
+async fn with_startup_timeout<T, E: ToString>(
+    step: PandaNetStartupStep,
+    future: impl Future<Output = Result<T, E>>,
+) -> Result<T, PandaNetTransportError> {
+    timeout(STARTUP_TIMEOUT, future)
+        .await
+        .map_err(|_| PandaNetTransportError::Timeout {
+            step,
+            timeout_ms: STARTUP_TIMEOUT.as_millis() as u64,
+        })?
+        .map_err(|error| PandaNetTransportError::startup(step, error))
+}
