@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::convert::Infallible;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use futures::{StreamExt, channel::mpsc};
 use mvp_bus::{
     BusSession, FactAccess, FactAuthorizer, FactContentHash, FactKey, FactKeyPattern, FactPayload,
     IslandId, PrincipalId,
@@ -18,10 +20,18 @@ use p2panda_core::{
 use p2panda_store::sqlite::store::{
     SqliteStore, connection_pool, create_database, run_pending_migrations,
 };
-use p2panda_store::{LogStore, MemoryStore};
+use p2panda_store::{LogStore, MemoryStore, OperationStore};
 use p2panda_stream::operation::{IngestError, IngestResult, ingest_operation};
+use p2panda_sync::protocols::{
+    LogSync, LogSyncError, LogSyncEvent, LogSyncMessage, LogSyncMetrics, LogSyncStatus, Logs,
+};
+use p2panda_sync::traits::Protocol;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::sync::broadcast;
+
+const LOG_SYNC_MESSAGE_CAPACITY: usize = 128;
+const LOG_SYNC_EVENT_CAPACITY: usize = 65_536;
 
 #[derive(Debug, Error)]
 pub enum PandaFactError {
@@ -86,7 +96,73 @@ pub enum PandaFactError {
 
 pub type Result<T> = std::result::Result<T, PandaFactError>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PandaFactSyncSide {
+    Left,
+    Right,
+}
+
+impl Display for PandaFactSyncSide {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Left => formatter.write_str("left"),
+            Self::Right => formatter.write_str("right"),
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum PandaFactSyncError {
+    #[error("sync {side} replica session is for island {session}, but scope is for {scope}")]
+    ReplicaIslandMismatch {
+        side: PandaFactSyncSide,
+        session: IslandId,
+        scope: IslandId,
+    },
+    #[error("sync {side} principal {principal} is not a trusted replica for island {island}")]
+    UnauthorizedReplica {
+        side: PandaFactSyncSide,
+        island: IslandId,
+        principal: PrincipalId,
+    },
+    #[error("sync {side} scope principal {principal} has no trusted author key in island {island}")]
+    ScopeAuthorKeyMissing {
+        side: PandaFactSyncSide,
+        island: IslandId,
+        principal: PrincipalId,
+    },
+    #[error(
+        "sync {side} scope principal {principal} has a mismatched author key in island {island}"
+    )]
+    ScopeAuthorKeyMismatch {
+        side: PandaFactSyncSide,
+        island: IslandId,
+        principal: PrincipalId,
+    },
+    #[error("sync {side} protocol failed: {source}")]
+    Protocol {
+        side: PandaFactSyncSide,
+        #[source]
+        source: LogSyncError,
+    },
+    #[error("sync {side} event stream failed: {message}")]
+    Event {
+        side: PandaFactSyncSide,
+        message: String,
+    },
+    #[error("sync {side} received an operation without payload bytes")]
+    MissingOperationBody { side: PandaFactSyncSide },
+    #[error("sync {side} import failed: {source}")]
+    Import {
+        side: PandaFactSyncSide,
+        #[source]
+        source: PandaFactError,
+    },
+}
+
+pub type SyncResult<T> = std::result::Result<T, PandaFactSyncError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct IslandLog(String);
 
 impl From<&IslandId> for IslandLog {
@@ -159,6 +235,77 @@ impl PandaFactAuthorKey {
     pub fn as_hex(self) -> String {
         self.0.to_hex()
     }
+
+    fn public_key(self) -> PublicKey {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PandaFactSyncScope {
+    island: IslandId,
+    trusted_authors: BTreeMap<PrincipalId, PandaFactAuthorKey>,
+}
+
+impl PandaFactSyncScope {
+    #[must_use]
+    pub fn new(island: IslandId) -> Self {
+        Self {
+            island,
+            trusted_authors: BTreeMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_trusted_author(
+        mut self,
+        principal: PrincipalId,
+        author_key: PandaFactAuthorKey,
+    ) -> Self {
+        self.trusted_authors.insert(principal, author_key);
+        self
+    }
+
+    #[must_use]
+    pub fn island(&self) -> &IslandId {
+        &self.island
+    }
+
+    fn logs(&self) -> Logs<IslandLog> {
+        self.trusted_authors
+            .values()
+            .map(|key| (key.public_key(), vec![IslandLog::from(&self.island)]))
+            .collect()
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PandaFactSyncPeerReport {
+    pub received: u64,
+    pub imported: u64,
+    pub duplicate: u64,
+    pub conflict: u64,
+    pub failed: u64,
+    pub bytes_received: u64,
+    pub bytes_sent: u64,
+}
+
+impl PandaFactSyncPeerReport {
+    fn add(&mut self, other: Self) {
+        self.received += other.received;
+        self.imported += other.imported;
+        self.duplicate += other.duplicate;
+        self.conflict += other.conflict;
+        self.failed += other.failed;
+        self.bytes_received += other.bytes_received;
+        self.bytes_sent += other.bytes_sent;
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PandaFactSyncReport {
+    pub left: PandaFactSyncPeerReport,
+    pub right: PandaFactSyncPeerReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -294,8 +441,10 @@ pub struct PandaFactStore {
     facts_by_identity: BTreeMap<StoredFactIdentity, usize>,
     payloads: BTreeMap<FactContentHash, FactPayload>,
     trusted_author_keys: BTreeMap<(IslandId, PrincipalId), PublicKey>,
+    trusted_replica_peers: BTreeSet<(IslandId, PrincipalId)>,
 }
 
+#[derive(Clone)]
 enum PandaFactBackend {
     Memory(MemoryStore<IslandLog, PandaFactExtensions>),
     Sqlite(SqliteStore<IslandLog, PandaFactExtensions>),
@@ -378,6 +527,7 @@ impl PandaFactStore {
             facts_by_identity: BTreeMap::new(),
             payloads: BTreeMap::new(),
             trusted_author_keys: BTreeMap::new(),
+            trusted_replica_peers: BTreeSet::new(),
         }
     }
 
@@ -402,6 +552,7 @@ impl PandaFactStore {
             facts_by_identity: BTreeMap::new(),
             payloads: BTreeMap::new(),
             trusted_author_keys: BTreeMap::new(),
+            trusted_replica_peers: BTreeSet::new(),
         };
         for trusted in config.trusted_author_keys {
             store.bind_author_key(&trusted.island, &trusted.principal, trusted.author_key.0)?;
@@ -417,6 +568,11 @@ impl PandaFactStore {
         author_key: PandaFactAuthorKey,
     ) -> Result<()> {
         self.bind_author_key(island, &principal, author_key.0)
+    }
+
+    pub fn trust_replica_peer(&mut self, island: &IslandId, principal: PrincipalId) {
+        self.trusted_replica_peers
+            .insert((island.clone(), principal));
     }
 
     pub async fn write_fact_payload(
@@ -627,6 +783,54 @@ impl PandaFactStore {
         }
     }
 
+    fn validate_sync_scope(
+        &self,
+        side: PandaFactSyncSide,
+        session: &BusSession,
+        scope: &PandaFactSyncScope,
+    ) -> SyncResult<()> {
+        if session.island() != scope.island() {
+            return Err(PandaFactSyncError::ReplicaIslandMismatch {
+                side,
+                session: session.island().clone(),
+                scope: scope.island().clone(),
+            });
+        }
+        if !self
+            .trusted_replica_peers
+            .contains(&(scope.island().clone(), session.principal().clone()))
+        {
+            return Err(PandaFactSyncError::UnauthorizedReplica {
+                side,
+                island: scope.island().clone(),
+                principal: session.principal().clone(),
+            });
+        }
+        for (principal, author_key) in &scope.trusted_authors {
+            match self
+                .trusted_author_keys
+                .get(&(scope.island().clone(), principal.clone()))
+            {
+                Some(existing) if *existing == author_key.public_key() => {}
+                Some(_) => {
+                    return Err(PandaFactSyncError::ScopeAuthorKeyMismatch {
+                        side,
+                        island: scope.island().clone(),
+                        principal: principal.clone(),
+                    });
+                }
+                None => {
+                    return Err(PandaFactSyncError::ScopeAuthorKeyMissing {
+                        side,
+                        island: scope.island().clone(),
+                        principal: principal.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn next_log_position(
         &self,
         island: &IslandId,
@@ -757,6 +961,217 @@ impl PandaFactStore {
             FactPreIngestStatus::Conflict => PandaFactWriteOutcome::Conflict(metadata),
             FactPreIngestStatus::AlreadyPresent => PandaFactWriteOutcome::AlreadyPresent(metadata),
         }
+    }
+}
+
+type SyncEvent = LogSyncEvent<PandaFactExtensions>;
+type SyncMessage = LogSyncMessage<IslandLog>;
+
+pub async fn sync_panda_fact_stores(
+    left: &mut PandaFactStore,
+    left_session: &BusSession,
+    right: &mut PandaFactStore,
+    right_session: &BusSession,
+    scope: &PandaFactSyncScope,
+) -> SyncResult<PandaFactSyncReport> {
+    let mut report =
+        sync_panda_fact_stores_once(left, left_session, right, right_session, scope).await?;
+    let reverse =
+        sync_panda_fact_stores_once(right, right_session, left, left_session, scope).await?;
+    report.left.add(reverse.right);
+    report.right.add(reverse.left);
+    Ok(report)
+}
+
+async fn sync_panda_fact_stores_once(
+    left: &mut PandaFactStore,
+    left_session: &BusSession,
+    right: &mut PandaFactStore,
+    right_session: &BusSession,
+    scope: &PandaFactSyncScope,
+) -> SyncResult<PandaFactSyncReport> {
+    left.validate_sync_scope(PandaFactSyncSide::Left, left_session, scope)?;
+    right.validate_sync_scope(PandaFactSyncSide::Right, right_session, scope)?;
+
+    let events = match (left.backend.clone(), right.backend.clone()) {
+        (PandaFactBackend::Memory(left_backend), PandaFactBackend::Memory(right_backend)) => {
+            run_log_sync_pair(left_backend, right_backend, scope.logs()).await?
+        }
+        (PandaFactBackend::Memory(left_backend), PandaFactBackend::Sqlite(right_backend)) => {
+            run_log_sync_pair(left_backend, right_backend, scope.logs()).await?
+        }
+        (PandaFactBackend::Sqlite(left_backend), PandaFactBackend::Memory(right_backend)) => {
+            run_log_sync_pair(left_backend, right_backend, scope.logs()).await?
+        }
+        (PandaFactBackend::Sqlite(left_backend), PandaFactBackend::Sqlite(right_backend)) => {
+            run_log_sync_pair(left_backend, right_backend, scope.logs()).await?
+        }
+    };
+
+    let mut report = PandaFactSyncReport {
+        left: peer_report_from_metrics(&events.left_metrics),
+        right: peer_report_from_metrics(&events.right_metrics),
+    };
+    import_synced_operations(
+        PandaFactSyncSide::Left,
+        left,
+        left_session,
+        events.left_received,
+        &mut report.left,
+    )
+    .await?;
+    import_synced_operations(
+        PandaFactSyncSide::Right,
+        right,
+        right_session,
+        events.right_received,
+        &mut report.right,
+    )
+    .await?;
+    Ok(report)
+}
+
+struct PandaFactSyncEvents {
+    left_received: Vec<PandaFactOperation>,
+    right_received: Vec<PandaFactOperation>,
+    left_metrics: LogSyncMetrics,
+    right_metrics: LogSyncMetrics,
+}
+
+async fn run_log_sync_pair<LeftStore, RightStore>(
+    left_store: LeftStore,
+    right_store: RightStore,
+    logs: Logs<IslandLog>,
+) -> SyncResult<PandaFactSyncEvents>
+where
+    LeftStore: LogStore<IslandLog, PandaFactExtensions>
+        + OperationStore<IslandLog, PandaFactExtensions>
+        + Send
+        + 'static,
+    RightStore: LogStore<IslandLog, PandaFactExtensions>
+        + OperationStore<IslandLog, PandaFactExtensions>
+        + Send
+        + 'static,
+{
+    let (left_tx, right_rx) = mpsc::channel::<SyncMessage>(LOG_SYNC_MESSAGE_CAPACITY);
+    let (right_tx, left_rx) = mpsc::channel::<SyncMessage>(LOG_SYNC_MESSAGE_CAPACITY);
+    let (left_event_tx, left_event_rx) = broadcast::channel(LOG_SYNC_EVENT_CAPACITY);
+    let (right_event_tx, right_event_rx) = broadcast::channel(LOG_SYNC_EVENT_CAPACITY);
+
+    let left_events = tokio::spawn(collect_sync_events(PandaFactSyncSide::Left, left_event_rx));
+    let right_events = tokio::spawn(collect_sync_events(
+        PandaFactSyncSide::Right,
+        right_event_rx,
+    ));
+
+    let mut left_sink = left_tx;
+    let mut right_sink = right_tx;
+    let mut left_stream = left_rx.map(Ok::<_, Infallible>);
+    let mut right_stream = right_rx.map(Ok::<_, Infallible>);
+    let left_sync = LogSync::new(left_store, logs.clone(), left_event_tx);
+    let right_sync = LogSync::new(right_store, logs, right_event_tx);
+
+    let (left_result, right_result) = tokio::join!(
+        left_sync.run(&mut left_sink, &mut left_stream),
+        right_sync.run(&mut right_sink, &mut right_stream)
+    );
+    let (_, left_metrics) = left_result.map_err(|source| PandaFactSyncError::Protocol {
+        side: PandaFactSyncSide::Left,
+        source,
+    })?;
+    let (_, right_metrics) = right_result.map_err(|source| PandaFactSyncError::Protocol {
+        side: PandaFactSyncSide::Right,
+        source,
+    })?;
+    let left_received = left_events
+        .await
+        .map_err(|error| PandaFactSyncError::Event {
+            side: PandaFactSyncSide::Left,
+            message: error.to_string(),
+        })??;
+    let right_received = right_events
+        .await
+        .map_err(|error| PandaFactSyncError::Event {
+            side: PandaFactSyncSide::Right,
+            message: error.to_string(),
+        })??;
+
+    Ok(PandaFactSyncEvents {
+        left_received,
+        right_received,
+        left_metrics,
+        right_metrics,
+    })
+}
+
+async fn collect_sync_events(
+    side: PandaFactSyncSide,
+    mut events: broadcast::Receiver<SyncEvent>,
+) -> SyncResult<Vec<PandaFactOperation>> {
+    let mut operations = Vec::new();
+    loop {
+        match events.recv().await {
+            Ok(LogSyncEvent::Data(operation)) => {
+                operations.push(operation_from_sync_event(side, *operation)?);
+            }
+            Ok(LogSyncEvent::Status(LogSyncStatus::Completed { .. })) => return Ok(operations),
+            Ok(LogSyncEvent::Status(_)) => {}
+            Err(broadcast::error::RecvError::Closed) => {
+                return Err(PandaFactSyncError::Event {
+                    side,
+                    message: "p2panda sync event stream closed before completion".to_string(),
+                });
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                return Err(PandaFactSyncError::Event {
+                    side,
+                    message: "p2panda sync event receiver lagged".to_string(),
+                });
+            }
+        }
+    }
+}
+
+fn operation_from_sync_event(
+    side: PandaFactSyncSide,
+    operation: Operation<PandaFactExtensions>,
+) -> SyncResult<PandaFactOperation> {
+    let body = operation
+        .body
+        .ok_or(PandaFactSyncError::MissingOperationBody { side })?;
+    Ok(PandaFactOperation::new(
+        operation.header.to_bytes(),
+        body.to_bytes(),
+    ))
+}
+
+async fn import_synced_operations(
+    side: PandaFactSyncSide,
+    store: &mut PandaFactStore,
+    session: &BusSession,
+    operations: Vec<PandaFactOperation>,
+    report: &mut PandaFactSyncPeerReport,
+) -> SyncResult<()> {
+    for operation in operations {
+        report.received += 1;
+        match store.import_operation(session, &operation).await {
+            Ok(PandaFactWriteOutcome::Inserted(_)) => report.imported += 1,
+            Ok(PandaFactWriteOutcome::AlreadyPresent(_)) => report.duplicate += 1,
+            Ok(PandaFactWriteOutcome::Conflict(_)) => report.conflict += 1,
+            Err(source) => {
+                report.failed += 1;
+                return Err(PandaFactSyncError::Import { side, source });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn peer_report_from_metrics(metrics: &LogSyncMetrics) -> PandaFactSyncPeerReport {
+    PandaFactSyncPeerReport {
+        bytes_received: metrics.total_bytes_received,
+        bytes_sent: metrics.total_bytes_sent,
+        ..PandaFactSyncPeerReport::default()
     }
 }
 
@@ -1030,6 +1445,19 @@ mod tests {
                 author.author_key(),
             )
             .expect("trust p2panda author key");
+    }
+
+    fn trust_replica(store: &mut PandaFactStore, session: &BusSession) {
+        store.trust_replica_peer(session.island(), session.principal().clone());
+    }
+
+    fn sync_scope(session: &BusSession, authors: &[&PandaFactAuthor]) -> PandaFactSyncScope {
+        authors.iter().fold(
+            PandaFactSyncScope::new(session.island().clone()),
+            |scope, author| {
+                scope.with_trusted_author(author.principal().clone(), author.author_key())
+            },
+        )
     }
 
     #[tokio::test]
@@ -1706,6 +2134,231 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn p2panda_sync_imports_missing_operations_and_repeated_sync_is_noop() {
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let writer = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty()
+                .with_fact_write(pattern("/facts/>"))
+                .with_fact_read(pattern("/facts/>")),
+        );
+        let left_replica = grant_prod(&authority, "left-replica", Grant::empty());
+        let right_replica = grant_prod(&authority, "right-replica", Grant::empty());
+        let author = PandaFactAuthor::new(principal("writer"));
+        let mut left = store_from_bus(bus.clone());
+        let mut right = store_from_bus(bus);
+        trust_author(&mut left, &writer, &author);
+        trust_author(&mut right, &writer, &author);
+        trust_replica(&mut left, &left_replica);
+        trust_replica(&mut right, &right_replica);
+
+        left.write_fact_payload(
+            &writer,
+            &author,
+            key("/facts/node/node-1/joined/1"),
+            FactPayload::from_static(b"joined"),
+        )
+        .await
+        .expect("write source fact");
+        let scope = sync_scope(&writer, &[&author]);
+
+        let report =
+            sync_panda_fact_stores(&mut left, &left_replica, &mut right, &right_replica, &scope)
+                .await
+                .expect("sync stores");
+        assert_eq!(report.right.received, 1);
+        assert_eq!(report.right.imported, 1);
+        let candidates = right
+            .list_candidates(writer.island(), &pattern("/facts/node/>"), &writer)
+            .expect("list synced candidates");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].status(), CandidateStatus::Verified);
+
+        let no_op =
+            sync_panda_fact_stores(&mut left, &left_replica, &mut right, &right_replica, &scope)
+                .await
+                .expect("repeat sync stores");
+        assert_eq!(no_op.left.received + no_op.right.received, 0);
+    }
+
+    #[tokio::test]
+    async fn p2panda_sync_preserves_bidirectional_conflict_candidates() {
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let writer_a = grant_prod(
+            &authority,
+            "writer-a",
+            Grant::empty()
+                .with_fact_write(pattern("/facts/>"))
+                .with_fact_read(pattern("/facts/>")),
+        );
+        let writer_b = grant_prod(
+            &authority,
+            "writer-b",
+            Grant::empty()
+                .with_fact_write(pattern("/facts/>"))
+                .with_fact_read(pattern("/facts/>")),
+        );
+        let left_replica = grant_prod(&authority, "left-replica", Grant::empty());
+        let right_replica = grant_prod(&authority, "right-replica", Grant::empty());
+        let author_a = PandaFactAuthor::new(principal("writer-a"));
+        let author_b = PandaFactAuthor::new(principal("writer-b"));
+        let mut left = store_from_bus(bus.clone());
+        let mut right = store_from_bus(bus);
+        for store in [&mut left, &mut right] {
+            trust_author(store, &writer_a, &author_a);
+            trust_author(store, &writer_b, &author_b);
+        }
+        trust_replica(&mut left, &left_replica);
+        trust_replica(&mut right, &right_replica);
+
+        let fact_key = key("/facts/node/node-1/joined/1");
+        left.write_fact_payload(
+            &writer_a,
+            &author_a,
+            fact_key.clone(),
+            FactPayload::from_static(b"left"),
+        )
+        .await
+        .expect("write left fact");
+        right
+            .write_fact_payload(
+                &writer_b,
+                &author_b,
+                fact_key,
+                FactPayload::from_static(b"right"),
+            )
+            .await
+            .expect("write right fact");
+
+        let scope = sync_scope(&writer_a, &[&author_a, &author_b]);
+        let report =
+            sync_panda_fact_stores(&mut left, &left_replica, &mut right, &right_replica, &scope)
+                .await
+                .expect("sync bidirectional stores");
+        assert_eq!(report.left.conflict, 1);
+        assert_eq!(report.right.conflict, 1);
+
+        for store in [&left, &right] {
+            let candidates = store
+                .list_candidates(writer_a.island(), &pattern("/facts/node/>"), &writer_a)
+                .expect("list conflict candidates");
+            assert_eq!(candidates.len(), 2);
+            assert!(
+                candidates
+                    .iter()
+                    .all(|candidate| candidate.status() == CandidateStatus::Conflict)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn p2panda_sync_rejects_untrusted_replica_and_scope_key_substitution() {
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let writer = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty().with_fact_write(pattern("/facts/>")),
+        );
+        let left_replica = grant_prod(&authority, "left-replica", Grant::empty());
+        let right_replica = grant_prod(&authority, "right-replica", Grant::empty());
+        let untrusted_replica = grant_prod(&authority, "untrusted-replica", Grant::empty());
+        let author = PandaFactAuthor::new(principal("writer"));
+        let imposter = PandaFactAuthor::new(principal("writer"));
+        let mut left = store_from_bus(bus.clone());
+        let mut right = store_from_bus(bus);
+        trust_author(&mut left, &writer, &author);
+        trust_author(&mut right, &writer, &author);
+        trust_replica(&mut left, &left_replica);
+        trust_replica(&mut right, &right_replica);
+
+        let scope = sync_scope(&writer, &[&author]);
+        let error = sync_panda_fact_stores(
+            &mut left,
+            &untrusted_replica,
+            &mut right,
+            &right_replica,
+            &scope,
+        )
+        .await
+        .expect_err("untrusted replica cannot start sync");
+        assert!(matches!(
+            error,
+            PandaFactSyncError::UnauthorizedReplica {
+                side: PandaFactSyncSide::Left,
+                ..
+            }
+        ));
+
+        let substituted = sync_scope(&writer, &[&imposter]);
+        let error = sync_panda_fact_stores(
+            &mut left,
+            &left_replica,
+            &mut right,
+            &right_replica,
+            &substituted,
+        )
+        .await
+        .expect_err("scope key substitution is rejected");
+        assert!(matches!(
+            error,
+            PandaFactSyncError::ScopeAuthorKeyMismatch {
+                side: PandaFactSyncSide::Left,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn p2panda_sync_rejects_received_operation_without_writer_grant() {
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let writer = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty().with_fact_write(pattern("/facts/>")),
+        );
+        let left_replica = grant_prod(&authority, "left-replica", Grant::empty());
+        let right_replica = grant_prod(&authority, "right-replica", Grant::empty());
+        let author = PandaFactAuthor::new(principal("writer"));
+        let mut left = store_from_bus(bus.clone());
+        let mut right = store_from_bus(bus);
+        for store in [&mut left, &mut right] {
+            trust_author(store, &writer, &author);
+        }
+        trust_replica(&mut left, &left_replica);
+        trust_replica(&mut right, &right_replica);
+
+        left.write_fact_payload(
+            &writer,
+            &author,
+            key("/facts/node/node-1/joined/1"),
+            FactPayload::from_static(b"payload"),
+        )
+        .await
+        .expect("write source fact before grant revocation");
+        authority.revoke(&writer);
+
+        let scope = sync_scope(&writer, &[&author]);
+        let error =
+            sync_panda_fact_stores(&mut left, &left_replica, &mut right, &right_replica, &scope)
+                .await
+                .expect_err("received operation without writer grant is rejected");
+        assert!(matches!(
+            error,
+            PandaFactSyncError::Import {
+                side: PandaFactSyncSide::Right,
+                source: PandaFactError::UnauthorizedWrite { .. },
+            }
+        ));
+        assert!(
+            right
+                .list_candidates(writer.island(), &pattern("/facts/>"), &writer)
+                .expect("list destination candidates")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn p2panda_net_git_stack_spawns_local_log_sync_nodes() {
         let topic: p2panda_core_git::Topic = [42; 32].into();
         let mut bootstrap = p2panda_net::test_utils::TestNode::spawn([1; 32], None).await;
