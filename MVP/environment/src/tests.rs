@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use mvp_bus::{
     BusSession, FactContentHash, FactKey, FactKeyPattern, FactPayload, Grant, IslandId, PrincipalId,
@@ -17,6 +15,7 @@ use mvp_projection::{
 use mvp_routing::{
     DnsCommitId, GatewayCommitId, ProjectionCatchUp, RouteCommitId, RoutingResult, ServingCommitId,
     ServingCommitPlan, ServingFactWriter, WrittenServingFact, serving_commit_fact_key,
+    serving_commit_fact_payload,
 };
 
 use crate::{
@@ -638,7 +637,7 @@ enum RecordedEnvironmentEvent {
     RollbackDecision,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RecordingEnvironmentWriter {
     events: Arc<Mutex<Vec<RecordedEnvironmentEvent>>>,
 }
@@ -646,6 +645,10 @@ struct RecordingEnvironmentWriter {
 impl RecordingEnvironmentWriter {
     fn events(&self) -> Vec<RecordedEnvironmentEvent> {
         self.events.lock().expect("events lock").clone()
+    }
+
+    fn record(&self, event: RecordedEnvironmentEvent) {
+        self.events.lock().expect("events lock").push(event);
     }
 }
 
@@ -656,10 +659,7 @@ impl EnvironmentFactWriter for RecordingEnvironmentWriter {
     ) -> Pin<Box<dyn Future<Output = crate::EnvironmentResult<WrittenEnvironmentFact>> + Send + 'a>>
     {
         Box::pin(async move {
-            self.events
-                .lock()
-                .expect("events lock")
-                .push(RecordedEnvironmentEvent::Head);
+            self.record(RecordedEnvironmentEvent::Head);
             Ok(WrittenEnvironmentFact {
                 key: environment_head_fact_key(&fact.environment, fact.epoch)?,
             })
@@ -672,10 +672,7 @@ impl EnvironmentFactWriter for RecordingEnvironmentWriter {
     ) -> Pin<Box<dyn Future<Output = crate::EnvironmentResult<WrittenEnvironmentFact>> + Send + 'a>>
     {
         Box::pin(async move {
-            self.events
-                .lock()
-                .expect("events lock")
-                .push(RecordedEnvironmentEvent::Branch);
+            self.record(RecordedEnvironmentEvent::Branch);
             Ok(WrittenEnvironmentFact {
                 key: environment_branch_fact_key(&fact.source_environment, &fact.branch_id)?,
             })
@@ -688,10 +685,7 @@ impl EnvironmentFactWriter for RecordingEnvironmentWriter {
     ) -> Pin<Box<dyn Future<Output = crate::EnvironmentResult<WrittenEnvironmentFact>> + Send + 'a>>
     {
         Box::pin(async move {
-            self.events
-                .lock()
-                .expect("events lock")
-                .push(RecordedEnvironmentEvent::PromoteDecision);
+            self.record(RecordedEnvironmentEvent::PromoteDecision);
             Ok(WrittenEnvironmentFact {
                 key: environment_promote_decision_fact_key(&fact.environment, &fact.command_id)?,
             })
@@ -704,10 +698,7 @@ impl EnvironmentFactWriter for RecordingEnvironmentWriter {
     ) -> Pin<Box<dyn Future<Output = crate::EnvironmentResult<WrittenEnvironmentFact>> + Send + 'a>>
     {
         Box::pin(async move {
-            self.events
-                .lock()
-                .expect("events lock")
-                .push(RecordedEnvironmentEvent::RollbackDecision);
+            self.record(RecordedEnvironmentEvent::RollbackDecision);
             Ok(WrittenEnvironmentFact {
                 key: environment_rollback_decision_fact_key(&fact.environment, &fact.command_id)?,
             })
@@ -715,7 +706,7 @@ impl EnvironmentFactWriter for RecordingEnvironmentWriter {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RecordingForkParticipant {
     requests: Arc<Mutex<Vec<EnvironmentVolumeForkRequest>>>,
     forged_source: Option<EnvironmentVolumeRef>,
@@ -724,7 +715,7 @@ struct RecordingForkParticipant {
 impl RecordingForkParticipant {
     fn with_forged_source(forged_source: EnvironmentVolumeRef) -> Self {
         Self {
-            requests: Arc::default(),
+            requests: Arc::new(Mutex::new(Vec::new())),
             forged_source: Some(forged_source),
         }
     }
@@ -763,7 +754,7 @@ impl EnvironmentVolumeForkParticipant for RecordingForkParticipant {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RecordingServingWriter {
     writes: Arc<Mutex<Vec<ServingCommitId>>>,
 }
@@ -786,9 +777,26 @@ impl ServingFactWriter for RecordingServingWriter {
                 .push(commit.serving_commit_id.clone());
             Ok(WrittenServingFact::inserted(
                 serving_commit_fact_key(&commit.serving_commit_id)?,
-                FactContentHash::new(format!("hash-{}", commit.serving_commit_id)),
+                FactContentHash::for_payload(&serving_commit_fact_payload(commit)?),
             ))
         })
+    }
+}
+
+fn branch_head(
+    branch_environment: &EnvironmentId,
+    branch_id: &EnvironmentBranchId,
+    volumes: Vec<&str>,
+) -> EnvironmentHeadFact {
+    EnvironmentHeadFact {
+        environment: branch_environment.clone(),
+        epoch: epoch(1),
+        head_id: EnvironmentHeadId::parse("head-pr-123").expect("head id"),
+        source_command_id: command_id("branch-1"),
+        serving_commit_id: ServingCommitId::new("serving-pr-1"),
+        previous_head: None,
+        volume_refs: volumes.into_iter().map(volume).collect(),
+        source_branch_id: Some(branch_id.clone()),
     }
 }
 
@@ -800,86 +808,80 @@ fn command_id(value: &str) -> EnvironmentCommandId {
     EnvironmentCommandId::parse(value).expect("command id")
 }
 
-fn branch_head(
-    branch_environment: &EnvironmentId,
-    branch_id: &EnvironmentBranchId,
-    volumes: Vec<&str>,
-) -> EnvironmentHeadFact {
-    let mut head = head(
-        branch_environment,
-        1,
-        "head-pr-1",
-        "serving-pr-1",
-        volumes,
-        None,
-    );
-    head.source_branch_id = Some(branch_id.clone());
-    head
-}
-
 fn visible_nodes() -> VisibleNodes {
     VisibleNodes::new([NodeId::new("node-1"), NodeId::new("node-2")])
 }
 
-fn serving_plan(id: &str, node: &str, address: &str, epoch: u64) -> ServingCommitPlan {
+fn serving_plan(
+    serving_commit_id: &str,
+    node_id: &str,
+    address: &str,
+    epoch_value: u64,
+) -> ServingCommitPlan {
+    let hostname = "app.example.test".to_string();
     ServingCommitPlan {
-        serving_commit_id: ServingCommitId::new(id),
-        route_commit_id: RouteCommitId::new(format!("{id}-route")),
-        gateway_commit_id: GatewayCommitId::new(format!("{id}-gateway")),
-        dns_commit_id: DnsCommitId::new(format!("{id}-dns")),
+        serving_commit_id: ServingCommitId::new(serving_commit_id),
+        route_commit_id: RouteCommitId::new(format!("route-{serving_commit_id}")),
+        gateway_commit_id: GatewayCommitId::new(format!("gateway-{serving_commit_id}")),
+        dns_commit_id: DnsCommitId::new(format!("dns-{serving_commit_id}")),
         route_id: RouteId::new("web"),
-        hostnames: vec!["app.example.test".to_string()],
+        hostnames: vec![hostname.clone()],
         active_backends: vec![BackendEndpoint {
-            node_id: NodeId::new(node),
+            node_id: NodeId::new(node_id),
             address: address.to_string(),
         }],
         old_backends_to_drain: Vec::new(),
         dns_records: vec![DnsRecordFact {
-            name: "app.example.test".to_string(),
+            name: hostname,
             record_type: "AAAA".to_string(),
             value: "fd00::1".to_string(),
             ttl_seconds: 30,
         }],
-        epoch,
+        epoch: epoch_value,
     }
 }
 
-fn catch_up(fixture: &Fixture, plan: &ServingCommitPlan) -> ProjectionCatchUp {
+fn catch_up(fixture: &Fixture, commit: &ServingCommitPlan) -> ProjectionCatchUp {
     let mut state = ProjectionState::for_island(fixture.island.clone());
     state.gateway = Some(GatewayProjection {
-        gateway_commit_id: plan.gateway_commit_id.to_string(),
-        route_commit_id: plan.route_commit_id.to_string(),
+        gateway_commit_id: commit.gateway_commit_id.to_string(),
+        route_commit_id: commit.route_commit_id.to_string(),
         routes: vec![GatewayRouteProjection {
-            route_id: plan.route_id.clone(),
-            hostnames: plan.hostnames.clone(),
-            backends: plan.active_backends.clone(),
-            old_backends_to_drain: plan.old_backends_to_drain.clone(),
+            route_id: commit.route_id.clone(),
+            hostnames: commit.hostnames.clone(),
+            backends: commit.active_backends.clone(),
+            old_backends_to_drain: commit.old_backends_to_drain.clone(),
         }],
     });
     state.dns = Some(DnsProjection {
-        dns_commit_id: plan.dns_commit_id.to_string(),
-        records: plan.dns_records.iter().cloned().map(Into::into).collect(),
+        dns_commit_id: commit.dns_commit_id.to_string(),
+        records: commit
+            .dns_records
+            .clone()
+            .into_iter()
+            .map(Into::into)
+            .collect(),
     });
     ProjectionCatchUp::from_report(
-        plan,
+        commit,
         &ProjectionReport {
             state,
-            sqlite_path: PathBuf::from("projection.sqlite"),
+            sqlite_path: std::path::PathBuf::from("/tmp/mvp-environment-test.sqlite"),
             gateway_snapshot: Some(SnapshotWriteReport {
-                path: PathBuf::from("gateway.snapshot"),
+                path: std::path::PathBuf::from("/tmp/mvp-gateway.snapshot"),
                 bytes_written: 1,
                 revision: format!(
-                    "gateway:{}:{}",
-                    plan.gateway_commit_id, plan.route_commit_id
+                    "gateway:{}:{}:acme:none",
+                    commit.gateway_commit_id, commit.route_commit_id
                 ),
             }),
             dns_snapshot: Some(SnapshotWriteReport {
-                path: PathBuf::from("dns.snapshot"),
+                path: std::path::PathBuf::from("/tmp/mvp-dns.snapshot"),
                 bytes_written: 1,
-                revision: format!("dns:{}", plan.dns_commit_id),
+                revision: format!("dns:{}", commit.dns_commit_id),
             }),
-            duration: Duration::from_millis(1),
+            duration: std::time::Duration::from_millis(1),
         },
     )
-    .expect("projection catchup")
+    .expect("projection catch-up")
 }

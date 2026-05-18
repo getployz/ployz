@@ -2870,6 +2870,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mvp-environment-p2panda"
+version = "0.1.0"
+dependencies = [
+ "mvp-bus",
+ "mvp-environment",
+ "mvp-identity",
+ "mvp-p2panda-facts",
+ "mvp-projection",
+ "mvp-routing",
+ "tokio",
+]
+
+[[package]]
 name = "mvp-identity"
 version = "0.1.0"
 dependencies = [
