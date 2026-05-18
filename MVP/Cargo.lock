@@ -2446,6 +2446,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mvp-machine"
+version = "0.1.0"
+dependencies = [
+ "mvp-bus",
+ "mvp-identity",
+ "mvp-mesh",
+ "mvp-projection",
+ "mvp-routing",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "mvp-mesh"
 version = "0.1.0"
 dependencies = [
