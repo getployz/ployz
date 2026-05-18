@@ -212,6 +212,11 @@ Current proof status:
   instead of depending on network delivery order, rejects untrusted author,
   cross-island, and malformed envelopes, and projects only the valid
   non-conflicting node fact.
+- Slice 024 extracts ACME claim/present/clear into `mvp-acme-command`. The
+  p2panda ACME and p2panda-net ACME scenarios still prove the same transport,
+  projection, last-good serving, scoped-grant, stale-write, trusted-replica,
+  and SQLite rebuild behavior, but the command semantics now live in reusable
+  business code instead of the E2E fixture.
 - Remaining E2E-4 work is continuous propagation histograms once multiple
   process roles exchange p2panda-net traffic, plus production shutdown/status
   hardening beyond drop-based local-node cleanup.
@@ -567,6 +572,10 @@ Current proof status:
   `crates/ployzd/src/daemon/cert_coordination.rs`; the MVP comparison should
   count the E2E-local adapter and focused domain tests, not placeholder Hyper
   serving polish.
+- Slice 024 turns that E2E-local ACME adapter into `mvp-acme-command`. The old
+  cert coordination/backend baseline is 1,055 LOC; the reusable command surface
+  is 659 LOC plus focused tests, and the p2panda ACME E2E drops from roughly
+  1,653 LOC to 1,218 LOC while preserving the same canary behavior.
 - Slice 022 is a mixed leverage result. It adds a 430-line E2E transport proof
   and 84 lines of fact-store envelope/test surface, but it prevents a worse
   fork: p2panda-net is now proven as the carrier while Ployz keeps one canonical
