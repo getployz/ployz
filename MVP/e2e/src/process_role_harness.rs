@@ -386,14 +386,8 @@ pub(crate) struct P2pandaNetScriptedPublisherProcess<'a> {
     pub(crate) bootstrap: &'a str,
     pub(crate) author: &'a str,
     pub(crate) author_seed: &'a str,
-    pub(crate) first_commit_id: &'a str,
-    pub(crate) first_backend: &'a str,
-    pub(crate) first_dns: &'a str,
-    pub(crate) first_epoch: u64,
-    pub(crate) second_commit_id: &'a str,
-    pub(crate) second_backend: &'a str,
-    pub(crate) second_dns: &'a str,
-    pub(crate) second_epoch: u64,
+    pub(crate) first: ServingCommitInput,
+    pub(crate) second: ServingCommitInput,
     pub(crate) second_delay_ms: u64,
     pub(crate) publish_malformed: bool,
 }
@@ -420,21 +414,21 @@ pub(crate) fn spawn_p2panda_net_scripted_publisher_process(
         .arg("--author-seed")
         .arg(config.author_seed)
         .arg("--first-commit-id")
-        .arg(config.first_commit_id)
+        .arg(&config.first.commit_id)
         .arg("--first-backend")
-        .arg(config.first_backend)
+        .arg(&config.first.backend_address)
         .arg("--first-dns")
-        .arg(config.first_dns)
+        .arg(&config.first.dns_value)
         .arg("--first-epoch")
-        .arg(config.first_epoch.to_string())
+        .arg(config.first.epoch.to_string())
         .arg("--second-commit-id")
-        .arg(config.second_commit_id)
+        .arg(&config.second.commit_id)
         .arg("--second-backend")
-        .arg(config.second_backend)
+        .arg(&config.second.backend_address)
         .arg("--second-dns")
-        .arg(config.second_dns)
+        .arg(&config.second.dns_value)
         .arg("--second-epoch")
-        .arg(config.second_epoch.to_string())
+        .arg(config.second.epoch.to_string())
         .arg("--second-delay-ms")
         .arg(config.second_delay_ms.to_string())
         .arg("--publish-malformed")
