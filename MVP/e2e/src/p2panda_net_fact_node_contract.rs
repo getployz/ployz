@@ -383,6 +383,10 @@ async fn run_async() -> Result<(), String> {
     let restart_projection_started = Instant::now();
     fs::remove_file(root.join("projections.sqlite"))
         .map_err(|error| format!("delete fact-node sqlite projection: {error}"))?;
+    fs::remove_file(root.join("gateway.snapshot"))
+        .map_err(|error| format!("delete fact-node gateway snapshot: {error}"))?;
+    fs::remove_file(root.join("dns.snapshot"))
+        .map_err(|error| format!("delete fact-node dns snapshot: {error}"))?;
     let restarted = actor
         .project_once(PROJECT_TIMEOUT)
         .await
@@ -391,6 +395,28 @@ async fn run_async() -> Result<(), String> {
     if restarted.state != projection.state {
         return Err("fact-node projection changed after sqlite rebuild".to_string());
     }
+    let reloaded = sqlite
+        .load()
+        .map_err(|error| format!("load rebuilt fact-node sqlite projection: {error}"))?;
+    if reloaded != restarted.state {
+        return Err("rebuilt fact-node sqlite projection did not match actor state".to_string());
+    }
+    assert_eq_named(
+        "rebuilt fact-node gateway routes",
+        load_gateway_snapshot(root.join("gateway.snapshot"), &prod)
+            .map_err(|error| format!("load rebuilt fact-node gateway snapshot: {error}"))?
+            .routes
+            .len(),
+        1,
+    )?;
+    assert_eq_named(
+        "rebuilt fact-node dns records",
+        load_dns_snapshot(root.join("dns.snapshot"), &prod)
+            .map_err(|error| format!("load rebuilt fact-node dns snapshot: {error}"))?
+            .records
+            .len(),
+        1,
+    )?;
 
     let report = P2pandaNetFactNodeReport {
         scenario: "p2panda-net-fact-node-contract",
