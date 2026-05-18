@@ -151,6 +151,9 @@ Decision:
   unreadable during implementation.
 - Add a small Ployz-facing constructor for persistent storage; do not expose
   `sqlx` or p2panda SQLite pool types through business crates.
+- If implementation needs direct SQLite access for Ployz-owned metadata such as
+  known-island manifests or public trust bindings, add `sqlx` as an explicit
+  dependency. Do not rely on p2panda-store's transitive dependencies.
 
 ## Design Decisions
 
@@ -163,7 +166,7 @@ that allows:
 
 ```text
 PandaFactStore::memory(authorizer)
-PandaFactStore::open_sqlite(path, authorizer).await
+PandaFactStore::open_sqlite(path, open_config, authorizer).await
 ```
 
 The public `PandaFactStore::new(authorizer)` can remain as a compatibility
@@ -172,8 +175,9 @@ alias for memory. The persistent constructor should:
 1. create/open the SQLite database file,
 2. run p2panda migrations,
 3. load the p2panda `SqliteStore`,
-4. rebuild Ployz indexes from operations,
-5. return a `PandaFactStore` ready to serve `FactSource` reads.
+4. load explicit known islands and trusted public author-key bindings,
+5. rebuild Ployz indexes from operations,
+6. return a `PandaFactStore` ready to serve `FactSource` reads.
 
 Do not make reducers or E2E scenarios know which backend is in use.
 
@@ -203,6 +207,13 @@ metadata. A restarted role that creates a fresh p2panda key for an existing
 Ployz principal should fail with `AuthorKeyMismatch`, not silently fork
 authority.
 
+Private p2panda signing keys need their own storage boundary. Coordinator and
+remote-injector roles may load role-local private keys from files under the
+scenario root for this MVP proof, but those files must be atomically created,
+mode-restricted on Unix where possible, never logged, never exported, and kept
+separate from public trust bindings. Serving/projection roles must not receive
+private author keys.
+
 Execution-time unknown:
 
 - p2panda `get_log_heights(log_id)` requires the Ployz log id. If the store
@@ -216,17 +227,30 @@ Execution-time unknown:
 Persistent writes and imports must still go through `p2panda-stream` ingestion.
 Do not write rows directly to SQLite for convenience.
 
+Remote import and local rebuild are different authority moments. New writes and
+remote imports by a currently revoked or unauthorized author fail before append.
+Already durable operations that were validly accepted earlier remain in the
+operation log; rebuild should surface them as `Unverified` when current grants
+no longer authorize the author, and payload reads/reducers must not treat them
+as authority.
+
 Rebuild also needs validation. If a stored operation is malformed, missing
-payload, unauthorized for its author, or untrusted for its claimed principal,
-it should not poison the store. The projection-facing result should match the
-current contract:
+payload, or untrusted for its claimed principal, it should not poison the store.
+The projection-facing result should match the current contract:
 
 - valid and authorized -> `Verified` or `Conflict`,
-- revoked author -> `Unverified`,
+- new write/import by revoked author -> structured write/import failure and no
+  append,
+- already durable operation by now-revoked author -> `Unverified` candidate
+  with no authority-bearing payload read,
 - unreadable session -> `Unauthorized`,
 - missing payload -> candidate can exist but payload read returns absent,
 - malformed operation -> skipped with visible rebuild status or structured
   store error.
+
+Implementation should split code paths clearly enough that rebuild does not
+call the remote-import authorization branch and accidentally reject historical
+operations that should now be projected as `Unverified`.
 
 ### Process Role Proof Targets The Serving Projection Path
 
@@ -275,13 +299,41 @@ projection rebuilds from reopened p2panda operation log
 serving survives during rebuild
 ```
 
-The simplest first implementation can make the coordinator and serving roles
-open the same persistent p2panda store path directly. A separate fact-store
-process role is still the intended proof target if the harness shape stays
-small. If a dedicated fact-store role adds too much IPC surface for this slice,
-prove store reopen across two OS process roles and record the dedicated role as
-the next process-boundary refinement. Do not ship the slice with only an
-in-process reopen proof.
+Slice 019b must include a restartable fact-store role. The coordinator and
+serving/projection roles must not rely on "same SQLite path" as a visibility
+mechanism. `PandaFactStore` serves projection reads from derived in-memory
+indexes; a role that opened the database before another role appended
+operations will stay stale until it receives an explicit refresh/reopen request
+or reads through a fact-store role that owns the live derived index. The process
+proof must therefore include one of these concrete boundaries:
+
+1. one fact-store process owns the p2panda store, exposes write/import/read or
+   refresh requests, and projection reads from its refreshed view; or
+2. projection/serving roles open a read-only store and the harness sends an
+   explicit refresh/reopen command after coordinator/injector writes.
+
+Do not treat SQLite file sharing as enough.
+
+Coordinator/injector roles may receive write/import capability and private
+author keys. Serving/projection roles must not receive private author keys and
+must not be able to append/import facts after coordinator death.
+
+Authority bootstrap is part of the process proof, not an implementation detail.
+Each writer-capable role needs a config/file/API path that supplies:
+
+- stable private p2panda author key material for the principal it writes as;
+- public trusted author-key bindings for every principal whose operations may
+  be rebuilt or imported;
+- a `FactAuthorizer` grant set that permits only the intended fact keys.
+
+The existing process harness' empty-session path is not sufficient for the
+p2panda proof because `write_fact_payload` checks both the trusted author key
+and write authorization before appending.
+
+Do not ship this slice by proving only in-process reopen or by deferring the
+fact-store role to the next process-boundary refinement. If the first
+implementation pass proves in-process reopen, keep it as an incremental commit
+inside the slice and continue to the OS process fact-role proof before shipping.
 
 ## Implementation Units
 
@@ -298,6 +350,8 @@ Approach:
 - Add a persistent constructor such as `PandaFactStore::open_sqlite`.
 - Keep `PandaFactStore::new` memory-backed.
 - Keep p2panda SQLite setup private to `mvp-p2panda-facts`.
+- Add open config for known islands, public trust bindings, and read/write
+  mode.
 - Preserve existing public write/import/export/read methods.
 
 Test scenarios:
@@ -307,6 +361,8 @@ Test scenarios:
 - Reopening an empty persistent store returns no candidates.
 - Store errors surface as structured `PandaFactError::Store`, not stringly
   panics.
+- Opening without required known-island/trust config fails visibly instead of
+  guessing authority from stored operations.
 
 Verification:
 
@@ -325,6 +381,8 @@ Approach:
   use one path.
 - Add a rebuild function that walks stored p2panda logs for known island ids
   and authors, validates operations, and reconstructs derived indexes.
+- Validate log continuity during rebuild with p2panda primitives such as
+  backlink validation or a temporary ingestion pass.
 - Make payload storage derived from operation bodies; do not keep a second
   durable payload store.
 - Keep trusted author-key bindings explicit and supplied before or during
@@ -336,9 +394,43 @@ Test scenarios:
 - Reopen preserves duplicate idempotency.
 - Reopen preserves same-key/different-content conflict candidates.
 - Reopen preserves exact identity-based payload reads.
-- Reopen with revoked author marks candidates `Unverified` or denies payloads
-  according to the existing contract.
+- New import by a revoked author fails and is not appended.
+- Reopen of already durable facts by a now-revoked author marks candidates
+  `Unverified` and does not expose authority-bearing payloads.
 - Rebuild handles missing payloads without serving stale bytes.
+- Rebuild detects a missing predecessor or broken backlink.
+
+Verification:
+
+- `cd MVP && cargo test -p mvp-p2panda-facts --lib`
+
+### U2a: Persistent Author Key Material
+
+Files:
+
+- Modify `MVP/p2panda-facts/src/lib.rs`
+- Modify `MVP/e2e/src/process_role_harness.rs`
+
+Approach:
+
+- Add a small MVP-local key loading/creation helper for p2panda author private
+  keys.
+- Store private keys in role-local files under the scenario root for this MVP
+  proof, with atomic create/load and restrictive Unix permissions where
+  available.
+- Store or pass public trusted author-key bindings separately from private key
+  files.
+- Ensure serving/projection roles receive only public trust bindings and
+  read-only fact-source access.
+- Never log, export, or serialize private key bytes into metrics.
+
+Test scenarios:
+
+- Coordinator restart reuses the same p2panda author key and can append the
+  next operation.
+- Replacing the coordinator key file for an already trusted principal causes a
+  structured `AuthorKeyMismatch`.
+- Serving/projection roles cannot access private key material.
 
 Verification:
 
@@ -390,10 +482,21 @@ Approach:
 - The new scenario should reuse the existing Unix-socket role harness patterns,
   cleanup registry, status requests, projection rebuild request/await flow, and
   serving queries.
+- Add a fact-source refresh/reopen request, or route projection reads through a
+  fact-store role that owns the refreshed derived index. A projection role that
+  opened `PandaFactStore` before coordinator writes must not be expected to see
+  those writes just because the SQLite path is shared.
 - Add explicit author-key trust bootstrap for local coordinator and remote
   injector authors, and make the p2panda author keys stable across coordinator,
   injector, and fact-store restart. Do not trust claimed author metadata from
   imported operations.
+- Add explicit process-role config for stable writer private keys, public trust
+  bindings, and `FactAuthorizer` grants. Fresh `PandaFactAuthor::new` keys are
+  acceptable only when first creating the role-local key file, not on every
+  restart.
+- Keep serving/projection access read-only: no private author keys, no direct
+  append/import capability, and an E2E denial when a serving/projection role is
+  asked to mutate after coordinator death.
 - Make the scenario restart or reopen the p2panda fact store while serving
   continues from last-good state.
 
@@ -406,6 +509,8 @@ Test scenarios:
 - Reopening/restarting the p2panda fact store preserves fact truth.
 - Reopening/restarting with a different key for a trusted principal fails
   loudly instead of writing a second trusted author identity.
+- Serving/projection cannot write or import facts directly after coordinator
+  death.
 - Remote already-authorized serving commit is accepted after fact-store reopen.
 - Projection SQLite deletion/rebuild works from reopened p2panda operation log.
 - Serving continues to answer during projection rebuild.
@@ -452,6 +557,12 @@ Verification:
 - **Trust bootstrap drift:** do not rebuild trusted principal/key bindings from
   claimed operation metadata. Treat missing trusted keys as visible untrusted
   operations.
+- **Private key leakage:** private p2panda signing keys are role-local secret
+  material. Do not log them, include them in metrics, pass them to read-only
+  roles, or store them in the same file as public trust bindings.
+- **Read/write boundary drift:** read-only projection/serving roles may open
+  durable operations for projection, but mutation still belongs to
+  coordinator/injector roles through `FactAuthorizer`.
 - **Silent stale state:** serving last-good state is acceptable only with
   freshness/status metadata. A failed fact-store reopen or projection rebuild
   must have an audience in role status.
