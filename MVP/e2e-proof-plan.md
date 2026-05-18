@@ -589,6 +589,12 @@ Current proof status:
   replay suppression for p2panda wrapper operations: the malformed body is
   rejected exactly once even if the transport replays the same wrapper
   operation.
+- Slice 045's substitution-gains investigation found that
+  `p2panda-net-fact-node-contract` can still fail with zero attempted imports
+  and then pass on immediate rerun. The next p2panda-net proof should be a
+  repeated reliability harness that records startup, stream-ended refresh,
+  idle refresh, replay-skip, and zero-import retry metrics before more product
+  commands depend on this transport path.
 
 ### E2E-8: Scale And Reliability Harness
 
