@@ -2,9 +2,10 @@ use mvp_bus::{
     BusSession, FactContentHash, FactKey, FactKeyPattern, FactPayload, IslandId, PrincipalId,
 };
 use mvp_identity::{NodeId, VisibleNodes};
-use mvp_mesh::tombstone_fact_key;
+use mvp_mesh::{removal_started_fact_key, tombstone_fact_key};
 use mvp_projection::{
-    CandidateStatus, FactCandidate, FactSource, NodeTombstonedFact, ProjectionFactPayload,
+    CandidateStatus, FactCandidate, FactSource, NodeRemovalStartedFact, NodeTombstonedFact,
+    ProjectionFactPayload,
 };
 use mvp_routing::{ServingCommitId, ServingCommitPlan};
 use serde::{Deserialize, Serialize};
@@ -113,6 +114,11 @@ impl MachineRemoveCleanupDoneFact {
             serving_epoch: decision.serving_commit.epoch,
             tombstone_fact_key: tombstone_key,
         })
+    }
+
+    #[must_use]
+    pub fn remove_id(&self) -> MachineRemoveId {
+        MachineRemoveId::new(self.target_node_id.clone(), self.removal_epoch)
     }
 }
 
@@ -235,20 +241,48 @@ pub fn validate_machine_remove_cleanup_done(
     cleanup_done: &MachineRemoveCleanupDoneFact,
 ) -> MachineRemoveResult<()> {
     let cleanup_key = machine_remove_cleanup_done_fact_key(&decision.remove_id())?;
-    if cleanup_done.target_node_id != decision.target_node_id
-        || cleanup_done.removal_epoch != decision.removal_epoch
-        || cleanup_done.tombstone_epoch != decision.tombstone_epoch
-        || cleanup_done.serving_commit_id != decision.serving_commit.serving_commit_id
-        || cleanup_done.serving_epoch != decision.serving_commit.epoch
-    {
-        return Err(MachineRemoveError::CommandFactMismatch { key: cleanup_key });
-    }
     let expected_tombstone_key =
         tombstone_fact_key(&decision.target_node_id, decision.tombstone_epoch)?;
-    if cleanup_done.tombstone_fact_key != expected_tombstone_key {
+    let expected_cleanup_done =
+        MachineRemoveCleanupDoneFact::new(decision, expected_tombstone_key.clone())?;
+    if cleanup_done != &expected_cleanup_done {
         return Err(MachineRemoveError::CommandFactMismatch { key: cleanup_key });
     }
     require_expected_tombstone_fact(source, island, session, decision, &expected_tombstone_key)
+}
+
+pub fn validate_machine_remove_removal_started(
+    source: &dyn FactSource,
+    island: &IslandId,
+    session: &BusSession,
+    decision: &MachineRemoveDecisionFact,
+) -> MachineRemoveResult<FactKey> {
+    let key = removal_started_fact_key(&decision.target_node_id, decision.removal_epoch)?;
+    let candidates = list_recovery_candidates(source, island, session, &key)?;
+    let payloads = source.read_payloads(island, &candidates, session)?;
+    let expected = NodeRemovalStartedFact {
+        node_id: decision.target_node_id.clone(),
+        epoch: decision.removal_epoch,
+        reason: decision.reason.clone(),
+    };
+    let readable_candidates = candidates
+        .iter()
+        .filter(|candidate| candidate_payload_is_recovery_authoritative(candidate.status()))
+        .collect::<Vec<_>>();
+    for candidate in &readable_candidates {
+        let Some(payload) = payloads.get(candidate.content_hash()) else {
+            continue;
+        };
+        let fact = decode_removal_started_fact(&key, payload)?;
+        if fact == expected {
+            return Ok(key);
+        }
+    }
+    if candidates.is_empty() {
+        Err(MachineRemoveError::CommandFactMissing { key })
+    } else {
+        Err(MachineRemoveError::CommandFactMismatch { key })
+    }
 }
 
 fn require_expected_tombstone_fact(
@@ -265,7 +299,11 @@ fn require_expected_tombstone_fact(
         epoch: decision.tombstone_epoch,
         reason: decision.reason.clone(),
     };
-    for candidate in &candidates {
+    let readable_candidates = candidates
+        .iter()
+        .filter(|candidate| candidate_payload_is_recovery_authoritative(candidate.status()))
+        .collect::<Vec<_>>();
+    for candidate in &readable_candidates {
         let Some(payload) = payloads.get(candidate.content_hash()) else {
             continue;
         };
@@ -276,6 +314,8 @@ fn require_expected_tombstone_fact(
     }
     if candidates.is_empty() {
         Err(MachineRemoveError::CommandFactMissing { key: key.clone() })
+    } else if readable_candidates.is_empty() {
+        Err(MachineRemoveError::CommandFactMismatch { key: key.clone() })
     } else {
         Err(MachineRemoveError::CommandFactMismatch { key: key.clone() })
     }
@@ -349,6 +389,10 @@ fn list_recovery_candidates(
         .collect())
 }
 
+fn candidate_payload_is_recovery_authoritative(status: CandidateStatus) -> bool {
+    matches!(status, CandidateStatus::Verified)
+}
+
 fn select_single_candidate(
     mut candidates: Vec<MachineRemoveDecisionCandidate>,
     key: FactKey,
@@ -404,6 +448,24 @@ fn decode_tombstone_fact(
         _ => Err(MachineRemoveError::CommandFactKindMismatch {
             key: key.clone(),
             expected_kind: "node_tombstoned",
+        }),
+    }
+}
+
+fn decode_removal_started_fact(
+    key: &FactKey,
+    payload: &FactPayload,
+) -> MachineRemoveResult<NodeRemovalStartedFact> {
+    match ProjectionFactPayload::from_fact_bytes(payload.as_bytes()).map_err(|source| {
+        MachineRemoveError::WirePayload {
+            context: "decode removal-started fact",
+            source,
+        }
+    })? {
+        ProjectionFactPayload::NodeRemovalStarted(fact) => Ok(fact),
+        _ => Err(MachineRemoveError::CommandFactKindMismatch {
+            key: key.clone(),
+            expected_kind: "node_removal_started",
         }),
     }
 }
@@ -582,6 +644,41 @@ mod tests {
         .expect("valid cleanup");
     }
 
+    #[tokio::test]
+    async fn cleanup_validation_rejects_conflicted_tombstone_fact() {
+        let decision = decision_fact();
+        let tombstone_key =
+            tombstone_fact_key(&decision.target_node_id, decision.tombstone_epoch).expect("key");
+        let cleanup_done =
+            MachineRemoveCleanupDoneFact::new(&decision, tombstone_key.clone()).expect("cleanup");
+        let tombstone_payload = ProjectionFactPayload::NodeTombstoned(NodeTombstonedFact {
+            node_id: decision.target_node_id.clone(),
+            epoch: decision.tombstone_epoch,
+            reason: decision.reason.clone(),
+        })
+        .to_fact_bytes()
+        .expect("serialize tombstone")
+        .into();
+        let source = TestFactSource::new().with_payload(
+            tombstone_key.clone(),
+            tombstone_payload,
+            CandidateStatus::Conflict,
+        );
+
+        let error = validate_machine_remove_cleanup_done(
+            &source,
+            &IslandId::new("prod"),
+            &session(),
+            &decision,
+            &cleanup_done,
+        )
+        .expect_err("conflicted tombstone");
+
+        assert!(
+            matches!(error, MachineRemoveError::CommandFactMismatch { key } if key == tombstone_key)
+        );
+    }
+
     #[derive(Default)]
     struct TestFactSource {
         records: Vec<TestFactRecord>,
@@ -644,7 +741,11 @@ mod tests {
                 .filter_map(|candidate| {
                     self.records
                         .iter()
-                        .find(|record| record.key == *candidate.key())
+                        .find(|record| {
+                            record.key == *candidate.key()
+                                && FactContentHash::for_payload(&record.payload)
+                                    == *candidate.content_hash()
+                        })
                         .map(|record| (candidate.content_hash().clone(), record.payload.clone()))
                 })
                 .collect())

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use mvp_bus::{BusSession, FactKey, FactPayload};
 use mvp_machine::{
     MachineFactWriter, MachineRemoveCleanupDoneFact, MachineRemoveDecisionFact, MachineRemoveError,
-    MachineRemoveId, MachineRemoveResult, WrittenMachineFact, machine_remove_cleanup_done_fact_key,
+    MachineRemoveResult, WrittenMachineFact, machine_remove_cleanup_done_fact_key,
     machine_remove_cleanup_done_fact_payload, machine_remove_decision_fact_key,
     machine_remove_decision_fact_payload,
 };
@@ -79,12 +79,6 @@ impl PandaMachineFactStore {
     }
 }
 
-impl From<PandaMachineFactStore> for SharedPandaFactStore {
-    fn from(value: PandaMachineFactStore) -> Self {
-        value.inner
-    }
-}
-
 impl mvp_projection::FactSource for PandaMachineFactStore {
     fn list_candidates(
         &self,
@@ -136,7 +130,6 @@ impl PandaMachineFactWriter {
     ) -> MachineRemoveResult<WrittenMachineFact> {
         let outcome = self
             .facts
-            .shared()
             .write_fact_payload(&self.session, self.author.as_ref(), key, payload)
             .await
             .map_err(|error| machine_fact_store_error(operation, error))?;
@@ -192,10 +185,7 @@ impl MachineFactWriter for PandaMachineFactWriter {
         fact: MachineRemoveCleanupDoneFact,
     ) -> Pin<Box<dyn Future<Output = MachineRemoveResult<WrittenMachineFact>> + Send + 'a>> {
         Box::pin(async move {
-            let key = machine_remove_cleanup_done_fact_key(&MachineRemoveId::new(
-                fact.target_node_id.clone(),
-                fact.removal_epoch,
-            ))?;
+            let key = machine_remove_cleanup_done_fact_key(&fact.remove_id())?;
             let payload = machine_remove_cleanup_done_fact_payload(&fact)?;
             self.write_machine_fact(key, payload, "write machine-remove cleanup-done fact")
                 .await

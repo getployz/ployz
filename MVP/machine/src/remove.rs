@@ -18,7 +18,7 @@ use crate::facts::{
     machine_remove_cleanup_done_fact_key, machine_remove_cleanup_done_fact_payload,
     machine_remove_decision_fact_key, machine_remove_decision_fact_payload,
     read_machine_remove_cleanup_done, read_machine_remove_decision,
-    validate_machine_remove_cleanup_done,
+    validate_machine_remove_cleanup_done, validate_machine_remove_removal_started,
 };
 use crate::wire::{
     PrepareRemoveIntent, PrepareRemoveOutcome, PrepareRemoveReply, PrepareRemoveRequest,
@@ -127,10 +127,7 @@ impl MachineFactWriter for BusMachineFactWriter {
         fact: MachineRemoveCleanupDoneFact,
     ) -> Pin<Box<dyn Future<Output = MachineRemoveResult<WrittenMachineFact>> + Send + 'a>> {
         Box::pin(async move {
-            let key = machine_remove_cleanup_done_fact_key(&MachineRemoveId::new(
-                fact.target_node_id.clone(),
-                fact.removal_epoch,
-            ))?;
+            let key = machine_remove_cleanup_done_fact_key(&fact.remove_id())?;
             let payload = machine_remove_cleanup_done_fact_payload(&fact)?;
             write_machine_fact(&self.bus, &self.session, key, payload).await
         })
@@ -228,41 +225,6 @@ where
             serving_commit: request.serving_commit,
             removal_started_fact_key: removal_started.key,
         })
-    }
-
-    pub fn recover_pending_cleanup(
-        source: &dyn mvp_projection::FactSource,
-        island: &mvp_bus::IslandId,
-        session: &BusSession,
-        remove_id: &MachineRemoveId,
-    ) -> MachineRemoveResult<MachineRemoveRecovery> {
-        let decision_candidate = read_machine_remove_decision(source, island, session, remove_id)?;
-        let decision = decision_candidate.fact;
-        match read_exact_serving_commit(source, island, session, &decision.serving_commit) {
-            Ok(_) => {}
-            Err(RoutingError::ServingFactMissing { .. }) => {
-                return Ok(MachineRemoveRecovery::PreCommitIncomplete { decision });
-            }
-            Err(error) => return Err(error.into()),
-        }
-        if let Some(cleanup_done) =
-            read_machine_remove_cleanup_done(source, island, session, remove_id)?
-        {
-            validate_machine_remove_cleanup_done(
-                source,
-                island,
-                session,
-                &decision,
-                &cleanup_done,
-            )?;
-            return Ok(MachineRemoveRecovery::Complete(removed_result_from_facts(
-                &decision,
-                cleanup_done,
-            )?));
-        }
-        Ok(MachineRemoveRecovery::Pending(
-            pending_remove_from_decision(decision)?,
-        ))
     }
 
     pub async fn finish_cleanup(
@@ -404,6 +366,37 @@ where
             }
         }
     }
+}
+
+pub fn recover_pending_machine_remove_cleanup(
+    source: &dyn mvp_projection::FactSource,
+    island: &mvp_bus::IslandId,
+    session: &BusSession,
+    remove_id: &MachineRemoveId,
+) -> MachineRemoveResult<MachineRemoveRecovery> {
+    let decision_candidate = read_machine_remove_decision(source, island, session, remove_id)?;
+    let decision = decision_candidate.fact;
+    match read_exact_serving_commit(source, island, session, &decision.serving_commit) {
+        Ok(_) => {}
+        Err(RoutingError::ServingFactMissing { .. }) => {
+            return Ok(MachineRemoveRecovery::PreCommitIncomplete { decision });
+        }
+        Err(error) => return Err(error.into()),
+    }
+    if let Some(cleanup_done) =
+        read_machine_remove_cleanup_done(source, island, session, remove_id)?
+    {
+        validate_machine_remove_cleanup_done(source, island, session, &decision, &cleanup_done)?;
+        return Ok(MachineRemoveRecovery::Complete(removed_result_from_facts(
+            &decision,
+            cleanup_done,
+        )?));
+    }
+    let removal_started_fact_key =
+        validate_machine_remove_removal_started(source, island, session, &decision)?;
+    Ok(MachineRemoveRecovery::Pending(
+        pending_remove_from_decision(decision, removal_started_fact_key),
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -569,10 +562,8 @@ fn decision_fact_from_request(request: &MachineRemoveRequest) -> MachineRemoveDe
 
 fn pending_remove_from_decision(
     decision: MachineRemoveDecisionFact,
-) -> MachineRemoveResult<PendingMachineRemove> {
-    let removal_started_fact_key =
-        removal_started_fact_key(&decision.target_node_id, decision.removal_epoch)?;
-    Ok(PendingMachineRemove {
+) -> PendingMachineRemove {
+    PendingMachineRemove {
         target_node_id: decision.target_node_id,
         removal_epoch: decision.removal_epoch,
         reason: decision.reason,
@@ -580,7 +571,7 @@ fn pending_remove_from_decision(
         visible_nodes: decision.visible_nodes,
         serving_commit: decision.serving_commit,
         removal_started_fact_key,
-    })
+    }
 }
 
 fn removed_result_from_facts(
@@ -716,9 +707,17 @@ mod tests {
     #[derive(Clone, Default)]
     struct RecordingFactWriter {
         events: Arc<Mutex<Vec<RecordedEvent>>>,
+        fail_decision: bool,
     }
 
     impl RecordingFactWriter {
+        fn failing_decision() -> Self {
+            Self {
+                events: Arc::new(Mutex::new(Vec::new())),
+                fail_decision: true,
+            }
+        }
+
         fn events(&self) -> Vec<RecordedEvent> {
             self.events.lock().expect("event log").clone()
         }
@@ -731,13 +730,15 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = MachineRemoveResult<WrittenMachineFact>> + Send + 'a>>
         {
             Box::pin(async move {
+                let key = machine_remove_decision_fact_key(&fact.remove_id())?;
+                if self.fail_decision {
+                    return Err(MachineRemoveError::FactConflict { key });
+                }
                 self.events
                     .lock()
                     .expect("event log")
                     .push(RecordedEvent::Decision(fact.target_node_id.clone()));
-                Ok(WrittenMachineFact {
-                    key: machine_remove_decision_fact_key(&fact.remove_id())?,
-                })
+                Ok(WrittenMachineFact { key })
             })
         }
 
@@ -784,10 +785,7 @@ mod tests {
                     .expect("event log")
                     .push(RecordedEvent::CleanupDone(fact.target_node_id.clone()));
                 Ok(WrittenMachineFact {
-                    key: machine_remove_cleanup_done_fact_key(&MachineRemoveId::new(
-                        fact.target_node_id.clone(),
-                        fact.removal_epoch,
-                    ))?,
+                    key: machine_remove_cleanup_done_fact_key(&fact.remove_id())?,
                 })
             })
         }
@@ -1011,6 +1009,28 @@ mod tests {
                 RecordedEvent::PrepareDrain
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn decision_fact_failure_stops_before_removal_started_or_drain() {
+        let (bus, session) = test_bus();
+        let writer = RecordingFactWriter::failing_decision();
+        register_prepare(
+            &bus,
+            &session,
+            writer.events.clone(),
+            PrepareRemoveOutcome::NoNewWorkAndDrained,
+        )
+        .await;
+        let coordinator = coordinator(bus, session, writer.clone());
+
+        let error = coordinator
+            .execute_until_serving_commit(remove_request())
+            .await
+            .expect_err("decision conflict");
+
+        assert!(matches!(error, MachineRemoveError::FactConflict { .. }));
+        assert_eq!(writer.events(), vec![RecordedEvent::Probe]);
     }
 
     #[tokio::test]
@@ -1253,7 +1273,7 @@ mod tests {
             CandidateStatus::Verified,
         );
 
-        let recovery = TestCoordinator::recover_pending_cleanup(
+        let recovery = recover_pending_machine_remove_cleanup(
             &source,
             &IslandId::new("prod"),
             &test_session(),
@@ -1275,7 +1295,7 @@ mod tests {
         let decision = decision_fact_from_request(&request);
         let source = recovery_source_with_decision_and_serving(&decision);
 
-        let recovery = TestCoordinator::recover_pending_cleanup(
+        let recovery = recover_pending_machine_remove_cleanup(
             &source,
             &IslandId::new("prod"),
             &test_session(),
@@ -1311,7 +1331,7 @@ mod tests {
             CandidateStatus::Verified,
         );
 
-        let error = TestCoordinator::recover_pending_cleanup(
+        let error = recover_pending_machine_remove_cleanup(
             &source,
             &IslandId::new("prod"),
             &test_session(),
@@ -1341,7 +1361,7 @@ mod tests {
                 CandidateStatus::Verified,
             );
 
-        let recovery = TestCoordinator::recover_pending_cleanup(
+        let recovery = recover_pending_machine_remove_cleanup(
             &source,
             &IslandId::new("prod"),
             &test_session(),
@@ -1367,9 +1387,6 @@ mod tests {
         let serving_writer = RecordingServingFactWriter::succeeds(writer.events.clone());
         coordinator_with_serving(bus, session, writer, serving_writer)
     }
-
-    type TestCoordinator =
-        MachineRemoveCoordinator<RecordingFactWriter, RecordingServingFactWriter>;
 
     #[derive(Default)]
     struct RecoveryFactSource {
@@ -1434,7 +1451,11 @@ mod tests {
                 .filter_map(|candidate| {
                     self.records
                         .iter()
-                        .find(|record| record.key == *candidate.key())
+                        .find(|record| {
+                            record.key == *candidate.key()
+                                && FactContentHash::for_payload(&record.payload)
+                                    == *candidate.content_hash()
+                        })
                         .map(|record| (candidate.content_hash().clone(), record.payload.clone()))
                 })
                 .collect())

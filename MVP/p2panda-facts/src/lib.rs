@@ -445,6 +445,7 @@ pub struct PandaFactStore {
     operation_hashes: BTreeSet<Hash>,
     facts: Vec<StoredFactOperation>,
     facts_by_identity: BTreeMap<StoredFactIdentity, usize>,
+    facts_by_key_hash: BTreeMap<StoredFactKeyHash, usize>,
     payloads: BTreeMap<FactContentHash, FactPayload>,
     trusted_author_keys: BTreeMap<(IslandId, PrincipalId), PublicKey>,
     trusted_replica_peers: BTreeSet<(IslandId, PrincipalId)>,
@@ -614,6 +615,7 @@ impl PandaFactStore {
             operation_hashes: BTreeSet::new(),
             facts: Vec::new(),
             facts_by_identity: BTreeMap::new(),
+            facts_by_key_hash: BTreeMap::new(),
             payloads: BTreeMap::new(),
             trusted_author_keys: BTreeMap::new(),
             trusted_replica_peers: BTreeSet::new(),
@@ -986,6 +988,7 @@ impl PandaFactStore {
         self.operation_hashes.clear();
         self.facts.clear();
         self.facts_by_identity.clear();
+        self.facts_by_key_hash.clear();
         self.payloads.clear();
     }
 
@@ -1063,9 +1066,11 @@ impl PandaFactStore {
             .entry(metadata.content_hash.clone())
             .or_insert(payload);
         let identity = StoredFactIdentity::from_metadata(&metadata);
+        let key_hash = StoredFactKeyHash::from_metadata(&metadata);
         self.facts_by_identity.entry(identity).or_insert_with(|| {
             let index = self.facts.len();
             self.facts.push(StoredFactOperation::new(metadata.clone()));
+            self.facts_by_key_hash.insert(key_hash, index);
             index
         });
         match status {
@@ -1270,6 +1275,9 @@ impl FactSource for PandaFactStore {
         if island != session.island() {
             return Ok(Vec::new());
         }
+        if let Ok(exact_key) = FactKey::parse(pattern.as_str()) {
+            return Ok(self.exact_candidates(island, &exact_key, pattern, session));
+        }
         let candidates = self
             .facts
             .iter()
@@ -1454,6 +1462,29 @@ fn candidate_payload_is_readable(status: CandidateStatus) -> bool {
 }
 
 impl PandaFactStore {
+    fn exact_candidates(
+        &self,
+        island: &IslandId,
+        key: &FactKey,
+        pattern: &FactKeyPattern,
+        session: &BusSession,
+    ) -> Vec<FactCandidate> {
+        let Some(content_hashes) = self.fact_index.get(&(island.clone(), key.clone())) else {
+            return Vec::new();
+        };
+        content_hashes
+            .iter()
+            .filter_map(|content_hash| {
+                let identity =
+                    StoredFactKeyHash::new(island.clone(), key.clone(), content_hash.clone());
+                self.facts_by_key_hash
+                    .get(&identity)
+                    .and_then(|index| self.facts.get(*index))
+                    .and_then(|stored| self.candidate_for(stored, island, pattern, session))
+            })
+            .collect()
+    }
+
     fn candidate_for(
         &self,
         stored: &StoredFactOperation,
@@ -1535,6 +1566,31 @@ impl StoredFactIdentity {
             key: candidate.key().clone(),
             author: candidate.author().clone(),
             content_hash: candidate.content_hash().clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct StoredFactKeyHash {
+    island: IslandId,
+    key: FactKey,
+    content_hash: FactContentHash,
+}
+
+impl StoredFactKeyHash {
+    fn new(island: IslandId, key: FactKey, content_hash: FactContentHash) -> Self {
+        Self {
+            island,
+            key,
+            content_hash,
+        }
+    }
+
+    fn from_metadata(metadata: &PandaFactMetadata) -> Self {
+        Self {
+            island: metadata.island.clone(),
+            key: metadata.key.clone(),
+            content_hash: metadata.content_hash.clone(),
         }
     }
 }
@@ -2166,10 +2222,7 @@ mod tests {
             .await
             .expect("repeat shared fact");
         assert!(matches!(inserted, PandaFactWriteOutcome::Inserted(_)));
-        assert!(matches!(
-            repeated,
-            PandaFactWriteOutcome::AlreadyPresent(_)
-        ));
+        assert!(matches!(repeated, PandaFactWriteOutcome::AlreadyPresent(_)));
 
         let candidates = shared
             .list_candidates(session.island(), &pattern("/facts/node/>"), &session)
@@ -2250,7 +2303,10 @@ mod tests {
             .await
             .expect("trust replica author");
         replica_import
-            .trust_replica_peer(replica_importer.island(), replica_importer.principal().clone())
+            .trust_replica_peer(
+                replica_importer.island(),
+                replica_importer.principal().clone(),
+            )
             .await;
         let imported = replica_import
             .import_replica_operation(&replica_importer, &operations[0])
@@ -2295,6 +2351,13 @@ mod tests {
         let error = shared
             .list_candidates(session.island(), &pattern("/facts/>"), &session)
             .expect_err("locked store");
+        assert!(matches!(
+            error,
+            FactSourceError::Unavailable { name } if name == "p2panda fact store"
+        ));
+        let error = shared
+            .try_can_write_fact(&session, &key("/facts/node/node-1/joined/1"))
+            .expect_err("locked preflight");
         assert!(matches!(
             error,
             FactSourceError::Unavailable { name } if name == "p2panda fact store"

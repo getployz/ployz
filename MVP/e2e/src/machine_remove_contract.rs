@@ -14,7 +14,7 @@ use mvp_machine::{
     MachineRemoveTimeouts, PrepareRemoveIntent, PrepareRemoveOutcome, PrepareRemoveReply,
     PrepareRemoveRequest, RemoveCleanupStatus, StopRemovedWorkloadsOutcome,
     StopRemovedWorkloadsReply, StopRemovedWorkloadsRequest, WrittenMachineFact,
-    prepare_remove_subject, stop_removed_workloads_subject,
+    prepare_remove_subject, recover_pending_machine_remove_cleanup, stop_removed_workloads_subject,
 };
 use mvp_machine_p2panda::{PandaMachineFactStore, PandaMachineFactWriter};
 use mvp_mesh::{
@@ -409,10 +409,7 @@ async fn run_async() -> Result<(), String> {
         },
     );
     let recovery_read_started = Instant::now();
-    let recovered_pending = match MachineRemoveCoordinator::<
-        RecordingMachineFactWriter<PandaMachineFactWriter>,
-        PandaServingFactWriter,
-    >::recover_pending_cleanup(
+    let recovered_pending = match recover_pending_machine_remove_cleanup(
         &rebuilt_facts,
         &island,
         &projection_session,
@@ -494,11 +491,29 @@ async fn run_async() -> Result<(), String> {
     let tombstone_convergence_ms = tombstone_started.elapsed().as_millis();
 
     let stop_attempts_after_cleanup = events.stop_attempts.load(Ordering::SeqCst);
-    let recovered_complete = MachineRemoveCoordinator::<
-        RecordingMachineFactWriter<PandaMachineFactWriter>,
-        PandaServingFactWriter,
-    >::recover_pending_cleanup(
-        &rebuilt_facts,
+    let completed_operations = rebuilt_facts.export_operations().await;
+    let completed_replay = PandaMachineFactStore::new(PandaFactStore::new(Arc::new(raw_bus.clone())));
+    completed_replay
+        .trust_replica_peer(&island, replica_session.principal().clone())
+        .await;
+    trust_fresh_store_authors(
+        &completed_replay,
+        &island,
+        &[
+            (&join_writer_session, join_author.as_ref()),
+            (&machine_writer_session, machine_author.as_ref()),
+            (&routing_writer_session, routing_author.as_ref()),
+        ],
+    )
+    .await?;
+    for operation in &completed_operations {
+        completed_replay
+            .import_replica_operation(&replica_session, operation)
+            .await
+            .map_err(|error| format!("import completed machine remove operation: {error}"))?;
+    }
+    let recovered_complete = recover_pending_machine_remove_cleanup(
+        &completed_replay,
         &island,
         &projection_session,
         &MachineRemoveId::new(NodeId::new("node-target"), 2),
