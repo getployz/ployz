@@ -504,6 +504,14 @@ no workflow-engine replay semantics or transport dependency changes were added.
 The report is
 [MVP/slice-036-phased-command-primitive.md](slice-036-phased-command-primitive.md).
 
+Slice 037 is planned as the second command-semantic-leverage proof:
+[MVP/slice-037-machine-remove-phased-command-plan.md](slice-037-machine-remove-phased-command-plan.md).
+It targets machine remove because it is node-facing, already has manual
+begin/finalize/recovery choreography, and directly exercises the daemon-down
+steady-state goal. The slice should migrate machine remove onto `run_phased`,
+extract the p2panda command phase-store adapter out of E2E-local code, and
+measure whether command-specific recovery surface actually shrinks.
+
 ## Crate Scout Protocol
 
 Before each implementation slice, do a short dependency scout and record it in
