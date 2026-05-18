@@ -526,18 +526,66 @@ fn replay_signed_membership_operations(
             actual: root_authority.binding().island().clone(),
         });
     }
-    signed_operations.sort_by_key(|(header, _)| (header.seq_num, header.hash()));
-    let Some((_, root_signed)) = signed_operations.first() else {
+    if signed_operations.is_empty() {
         return Err(IslandAuthzError::EmptyMembershipLog {
             island: island.clone(),
         });
-    };
-    validate_root_anchor(island, root_authority.binding(), root_signed)?;
+    }
+    let all_operation_ids = signed_operations
+        .iter()
+        .map(|(_, signed)| signed.operation_id())
+        .collect::<BTreeSet<_>>();
+    let root_index = signed_operations
+        .iter()
+        .position(|(_, signed)| {
+            signed.signer == root_authority.binding().member_id()
+                && matches!(signed.operation.action, GroupAction::Create { .. })
+        })
+        .ok_or_else(|| {
+            IslandAuthzError::UnanchoredRootCreate(root_authority.binding().member_id())
+        })?;
+    let (root_header, root_signed) = signed_operations.remove(root_index);
+    validate_root_anchor(island, root_authority.binding(), &root_header, &root_signed)?;
     let mut authz = IslandAuthz::empty_with_root(island.clone(), root_authority.binding().clone())?;
-    authz.apply_signed(root_signed.clone())?;
+    authz.apply_signed_from_panda_header(&root_header, root_signed.clone())?;
+    let mut applied_operation_ids = BTreeSet::from([root_signed.operation_id()]);
 
-    for (_, signed) in signed_operations.into_iter().skip(1) {
-        authz.apply_signed(signed)?;
+    while !signed_operations.is_empty() {
+        let starting_len = signed_operations.len();
+        let mut waiting = Vec::new();
+        for (header, signed) in signed_operations {
+            let dependencies = signed.operation.dependencies();
+            if dependencies
+                .iter()
+                .all(|dependency| applied_operation_ids.contains(dependency))
+            {
+                let operation_id = signed.operation_id();
+                authz.apply_signed_from_panda_header(&header, signed)?;
+                applied_operation_ids.insert(operation_id);
+            } else {
+                waiting.push((header, signed));
+            }
+        }
+        if waiting.len() == starting_len {
+            let (_, signed) = waiting
+                .first()
+                .expect("non-empty waiting set follows non-empty signed operation set");
+            if let Some(missing) = signed
+                .operation
+                .dependencies()
+                .into_iter()
+                .find(|dependency| !all_operation_ids.contains(dependency))
+            {
+                return Err(IslandAuthzError::DependencyMissing {
+                    operation: signed.operation_id(),
+                    dependency: missing,
+                });
+            }
+            return Err(IslandAuthzError::DependencyCycle {
+                operation: signed.operation_id(),
+            });
+        }
+        signed_operations = waiting;
     }
     Ok(authz)
 }
@@ -545,6 +593,7 @@ fn replay_signed_membership_operations(
 fn validate_root_anchor(
     island: &IslandId,
     root: &IslandMemberKeyBinding,
+    header: &Header<IslandMembershipExtensions>,
     signed: &IslandSignedOperation,
 ) -> Result<(), IslandAuthzError> {
     if root.island() != island {
@@ -560,6 +609,10 @@ fn validate_root_anchor(
     if !matches!(signed.operation.action, GroupAction::Create { .. }) {
         return Err(IslandAuthzError::UnanchoredRootCreate(root.member_id()));
     }
+    if !signed.operation.dependencies().is_empty() {
+        return Err(IslandAuthzError::UnanchoredRootCreate(root.member_id()));
+    }
+    validate_panda_envelope_author(root, header)?;
     let signature_payload = membership_operation_payload(&signed.operation, signed.signer, None);
     if !root
         .author_key()
@@ -569,6 +622,19 @@ fn validate_root_anchor(
         return Err(IslandAuthzError::InvalidSignature(signed.operation_id()));
     }
     Ok(())
+}
+
+fn validate_panda_envelope_author(
+    binding: &IslandMemberKeyBinding,
+    header: &Header<IslandMembershipExtensions>,
+) -> Result<(), IslandAuthzError> {
+    if header.verifying_key == binding.author_key().public_key() {
+        Ok(())
+    } else {
+        Err(IslandAuthzError::PandaEnvelopeAuthorMismatch {
+            signer: binding.member_id(),
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1093,6 +1159,12 @@ impl IslandAuthzStore {
             .find(|(_, signed)| signed.operation_id() == candidate.1.operation_id())
         {
             if existing_signed == &candidate.1 {
+                replay_signed_membership_operations(
+                    &self.island,
+                    &self.root_authority,
+                    existing.clone(),
+                )?
+                .validate_panda_envelope_author(&candidate.0, &candidate.1)?;
                 return Ok(IslandAuthChange {
                     operation_id: existing_signed.operation_id(),
                     actor: existing_signed.signer(),
@@ -1433,6 +1505,26 @@ impl IslandAuthz {
     ) -> Result<IslandAuthChange, IslandAuthzError> {
         self.validate_signed(&signed)?;
         self.apply_validated_signed(signed)
+    }
+
+    fn apply_signed_from_panda_header(
+        &mut self,
+        header: &Header<IslandMembershipExtensions>,
+        signed: IslandSignedOperation,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
+        self.validate_panda_envelope_author(header, &signed)?;
+        self.apply_signed(signed)
+    }
+
+    fn validate_panda_envelope_author(
+        &self,
+        header: &Header<IslandMembershipExtensions>,
+        signed: &IslandSignedOperation,
+    ) -> Result<(), IslandAuthzError> {
+        let Some(binding) = self.bindings.get(&signed.signer) else {
+            return Err(IslandAuthzError::MissingBinding(signed.signer));
+        };
+        validate_panda_envelope_author(binding, header)
     }
 
     fn apply_validated_signed(
@@ -1941,6 +2033,8 @@ pub enum IslandAuthzError {
     },
     #[error("member {0} has no durable key binding")]
     MissingBinding(IslandMemberId),
+    #[error("p2panda envelope author key does not match durable key binding for {signer}")]
+    PandaEnvelopeAuthorMismatch { signer: IslandMemberId },
     #[error("invalid membership operation signature for operation {0}")]
     InvalidSignature(IslandOperationId),
     #[error("membership operation is for group {actual}, expected {expected}")]
@@ -1971,6 +2065,22 @@ pub enum IslandAuthzError {
     MissingMembershipPayload { operation: Hash },
     #[error("membership operation {0} already exists with different payload")]
     DuplicateMembershipOperation(IslandOperationId),
+    #[error("membership operation {operation} depends on missing operation {dependency}")]
+    DependencyMissing {
+        operation: IslandOperationId,
+        dependency: IslandOperationId,
+    },
+    #[error("membership operation {operation} is stuck behind a dependency cycle")]
+    DependencyCycle { operation: IslandOperationId },
+    #[error("membership graph references missing states {dependencies:?}")]
+    DependencyGraphMissing {
+        dependencies: Vec<IslandOperationId>,
+    },
+    #[error("membership operation {operation} was authored by unauthorized member {actor}")]
+    UnauthorizedMembershipMutation {
+        operation: IslandOperationId,
+        actor: IslandMemberId,
+    },
     #[error("island {island} has no durable membership operations")]
     EmptyMembershipLog { island: IslandId },
     #[error("island {island} already has a pinned root membership operation")]
@@ -1985,8 +2095,25 @@ pub enum IslandAuthzError {
 
 impl IslandAuthzError {
     fn from_crdt(value: AuthCrdtError) -> Self {
-        Self::GroupGraphRejected {
-            reason: value.to_string(),
+        match value {
+            GroupCrdtError::Inner(GroupCrdtInnerError::StatesNotFound(dependencies)) => {
+                Self::DependencyGraphMissing { dependencies }
+            }
+            GroupCrdtError::DuplicateOperation(operation, _) => {
+                Self::DuplicateMembershipOperation(operation)
+            }
+            GroupCrdtError::StateChangeError(
+                operation,
+                GroupMembershipError::InsufficientAccess(actor)
+                | GroupMembershipError::InactiveActor(actor)
+                | GroupMembershipError::UnrecognisedActor(actor),
+            ) => Self::UnauthorizedMembershipMutation {
+                operation,
+                actor: IslandMemberId(actor.id()),
+            },
+            error => Self::GroupGraphRejected {
+                reason: error.to_string(),
+            },
         }
     }
 }
@@ -2178,6 +2305,16 @@ mod tests {
             signer_private_key,
             Some(member),
         )
+    }
+
+    fn rewrap_membership_operation(
+        mut operation: IslandMembershipOperation,
+        signer_private_key: &SigningKey,
+    ) -> IslandMembershipOperation {
+        operation.header.verifying_key = signer_private_key.verifying_key();
+        operation.header.sign(signer_private_key);
+        operation.hash = operation.header.hash();
+        operation
     }
 
     type ProcessorLogId = u64;
@@ -2479,6 +2616,127 @@ mod tests {
                 .expect("target membership should replay")
                 .can_write_member(writer_id)
         );
+    }
+
+    #[tokio::test]
+    async fn sqlite_membership_store_rejects_rewrapped_membership_envelope() {
+        let island = island();
+        let (root, root_key) = member_with_private_key("root", &island, 1);
+        let root_authority = IslandRootAuthority::new(root.clone());
+        let writer = member("writer", &island, 1);
+        let tempdir = tempfile::tempdir().expect("tempdir");
+
+        let source = IslandAuthzStore::open(
+            tempdir.path().join("source.sqlite"),
+            island.clone(),
+            root_authority.clone(),
+        )
+        .await
+        .expect("open source membership store");
+        let mut source_authz = source
+            .create_root(root.clone(), &root_key)
+            .await
+            .expect("source root create should persist");
+        source
+            .add_writer(&mut source_authz, &root, &root_key, writer)
+            .await
+            .expect("source writer add should persist");
+        let operations = source
+            .export_operations()
+            .await
+            .expect("source operations should export");
+
+        let target = IslandAuthzStore::open(
+            tempdir.path().join("target.sqlite"),
+            island.clone(),
+            root_authority,
+        )
+        .await
+        .expect("open target membership store");
+        target
+            .import_operation(operations[0].clone())
+            .await
+            .expect("root import should persist");
+
+        let attacker_key = member_private_key("attacker-envelope-key", 1);
+        let rewrapped = rewrap_membership_operation(operations[1].clone(), &attacker_key);
+        let error = match target.import_operation(rewrapped).await {
+            Ok(_) => panic!("rewrapped membership envelope should fail"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            IslandAuthzError::PandaEnvelopeAuthorMismatch { signer }
+                if signer == root.member_id()
+        ));
+        target
+            .import_operation(operations[1].clone())
+            .await
+            .expect("canonical operation should still import after rejected envelope");
+    }
+
+    #[tokio::test]
+    async fn sqlite_membership_store_rejects_missing_dependency_with_structured_error() {
+        let island = island();
+        let (root, root_key) = member_with_private_key("root", &island, 1);
+        let root_authority = IslandRootAuthority::new(root.clone());
+        let writer = member("writer", &island, 1);
+        let replica = member("replica", &island, 1);
+        let tempdir = tempfile::tempdir().expect("tempdir");
+
+        let source = IslandAuthzStore::open(
+            tempdir.path().join("source.sqlite"),
+            island.clone(),
+            root_authority.clone(),
+        )
+        .await
+        .expect("open source membership store");
+        let mut source_authz = source
+            .create_root(root.clone(), &root_key)
+            .await
+            .expect("source root create should persist");
+        source
+            .add_writer(&mut source_authz, &root, &root_key, writer)
+            .await
+            .expect("source writer add should persist");
+        source
+            .add_replica_importer(
+                &mut source_authz,
+                &root,
+                &root_key,
+                replica,
+                ReplicaImportAccess::Read,
+            )
+            .await
+            .expect("source replica add should persist");
+        let operations = source
+            .export_operations()
+            .await
+            .expect("source operations should export");
+        let missing_dependency = signed_from_membership_operation(&island, operations[1].clone())
+            .expect("writer operation should decode")
+            .1
+            .operation_id();
+
+        let target =
+            IslandAuthzStore::open(tempdir.path().join("target.sqlite"), island, root_authority)
+                .await
+                .expect("open target membership store");
+        target
+            .import_operation(operations[0].clone())
+            .await
+            .expect("root import should persist");
+        let error = match target.import_operation(operations[2].clone()).await {
+            Ok(_) => panic!("membership op with missing dependency should fail"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            IslandAuthzError::DependencyMissing { dependency, .. }
+                if dependency == missing_dependency
+        ));
     }
 
     #[tokio::test]
@@ -2875,7 +3133,7 @@ mod tests {
             .expect("first signed add should be accepted");
         assert!(matches!(
             authz.apply_signed(signed),
-            Err(IslandAuthzError::GroupGraphRejected { .. })
+            Err(IslandAuthzError::DuplicateMembershipOperation(_))
         ));
         assert!(authz.can_write_member(root.member_id()));
         let next_writer = member("next-writer", &island, 1);
