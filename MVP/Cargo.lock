@@ -2753,6 +2753,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mvp-deploy-p2panda"
+version = "0.1.0"
+dependencies = [
+ "mvp-bus",
+ "mvp-deploy",
+ "mvp-identity",
+ "mvp-p2panda-facts",
+ "mvp-projection",
+ "mvp-routing",
+ "tokio",
+]
+
+[[package]]
 name = "mvp-e2e"
 version = "0.1.0"
 dependencies = [
@@ -2764,6 +2777,7 @@ dependencies = [
  "mvp-acme-command",
  "mvp-bus",
  "mvp-deploy",
+ "mvp-deploy-p2panda",
  "mvp-identity",
  "mvp-iroh",
  "mvp-lease",

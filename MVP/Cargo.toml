@@ -4,6 +4,7 @@ members = [
     "acme-command",
     "bus",
     "deploy",
+    "deploy-p2panda",
     "e2e",
     "identity",
     "iroh",

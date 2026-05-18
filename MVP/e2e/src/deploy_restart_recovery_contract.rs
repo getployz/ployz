@@ -1,37 +1,27 @@
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use mvp_bus::{
-    BusActorHandle, BusError, BusSession, FactContentHash, FactKeyPattern, FactPayload, Grant,
-    HandlerFailure, IslandId, PrincipalId,
-};
+use mvp_bus::{BusActorHandle, BusError, BusSession, Grant, HandlerFailure, IslandId, PrincipalId};
 use mvp_deploy::{
     CapacityReply, CleanupFailureKind, CleanupPendingReason, CleanupStatus, DeployCleanupDoneFact,
-    DeployCoordinator, DeployDecisionFact, DeployError, DeployFactWriter, DeployId, DeployManifest,
-    DeployOutcome, DeployRecovery, DeployResult, DeployTimeouts, DnsCommitId, DrainInstanceRequest,
-    DrainStatus, GatewayCommitId, InstanceCapacityRequirement, InstanceCommandReply,
-    InstanceCommandRequest, InstanceId, InstancePlan, InstanceStartOutcome, PhaseId, PhasePlan,
-    PhasePolicy, PhaseReversibility, ProjectionCatchUp, RevisionId, RouteCommitId, ServingCommitId,
-    ServingCommitPlan, ServingFactWriter, StopInstanceRequest, WrittenDeployFact,
-    WrittenServingFact, deploy_cleanup_done_fact_key, deploy_cleanup_done_fact_payload,
-    deploy_decision_fact_key, deploy_decision_fact_payload,
+    DeployCoordinator, DeployFactWriter, DeployId, DeployManifest, DeployOutcome, DeployRecovery,
+    DeployResult, DeployTimeouts, DnsCommitId, DrainInstanceRequest, DrainStatus, GatewayCommitId,
+    InstanceCapacityRequirement, InstanceCommandReply, InstanceCommandRequest, InstanceId,
+    InstancePlan, InstanceStartOutcome, PhaseId, PhasePlan, PhasePolicy, PhaseReversibility,
+    ProjectionCatchUp, RevisionId, RouteCommitId, ServingCommitId, ServingCommitPlan,
+    ServingFactWriter, StopInstanceRequest, WrittenDeployFact, WrittenServingFact,
 };
+use mvp_deploy_p2panda::{PandaDeployFactStore, PandaDeployFactWriter, PandaServingFactWriter};
 use mvp_identity::NodeId;
-use mvp_p2panda_facts::{
-    PandaFactAuthor, PandaFactOperation, PandaFactStore, PandaFactWriteOutcome,
-};
+use mvp_p2panda_facts::{PandaFactAuthor, PandaFactOperation, PandaFactStore};
 use mvp_projection::{
-    BackendEndpoint, DnsRecordFact, FactCandidate, FactSource, FactSourceError, FactSourceResult,
-    RouteId, ServiceName, load_dns_snapshot, load_gateway_snapshot,
+    BackendEndpoint, DnsRecordFact, RouteId, ServiceName, load_dns_snapshot, load_gateway_snapshot,
 };
-use mvp_routing::{serving_commit_fact_key, serving_commit_fact_payload};
 use mvp_serving::{ServingActorHandle, ServingSnapshotPaths};
 use serde::Serialize;
-use tokio::sync::Mutex as AsyncMutex;
 
 use crate::assertions::assert_eq_named;
 use crate::bus_syntax::pattern;
@@ -95,7 +85,7 @@ async fn run_async() -> Result<(), String> {
         Grant::allow_all(),
     );
 
-    let facts = SharedPandaFacts::new(PandaFactStore::new(Arc::new(raw_bus.clone())));
+    let facts = PandaDeployFactStore::new(PandaFactStore::new(Arc::new(raw_bus.clone())));
     let operator_author = Arc::new(PandaFactAuthor::new(operator.principal().clone()));
     let timings = Arc::new(FactWriteTimings::default());
     let participant_state = Arc::new(ParticipantState::default());
@@ -162,7 +152,7 @@ async fn run_async() -> Result<(), String> {
         assert_serving_answers_without_coordinator(&serving).await?;
     let coordinator_outage_ms = outage_started.elapsed().as_millis();
     let exported_recovery_operations = facts.export_operations().await;
-    let recovered_facts = import_shared_panda_facts(
+    let recovered_facts = import_panda_deploy_facts(
         raw_bus.clone(),
         &prod,
         &operator,
@@ -325,70 +315,13 @@ async fn run_async() -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Clone)]
-struct SharedPandaFacts {
-    store: Arc<AsyncMutex<PandaFactStore>>,
-}
-
-impl SharedPandaFacts {
-    fn new(store: PandaFactStore) -> Self {
-        Self {
-            store: Arc::new(AsyncMutex::new(store)),
-        }
-    }
-
-    async fn write(
-        &self,
-        session: &BusSession,
-        author: &PandaFactAuthor,
-        key: mvp_bus::FactKey,
-        payload: FactPayload,
-    ) -> Result<PandaFactWriteOutcome, DeployError> {
-        self.store
-            .lock()
-            .await
-            .write_fact_payload(session, author, key, payload)
-            .await
-            .map_err(|error| DeployError::FactSource(error.into()))
-    }
-
-    async fn write_timed(
-        &self,
-        session: &BusSession,
-        author: &PandaFactAuthor,
-        key: mvp_bus::FactKey,
-        payload: FactPayload,
-        elapsed_ms: &AtomicU64,
-    ) -> Result<PandaFactWriteOutcome, DeployError> {
-        let started = Instant::now();
-        let outcome = self.write(session, author, key, payload).await?;
-        elapsed_ms.store(started.elapsed().as_millis() as u64, Ordering::SeqCst);
-        Ok(outcome)
-    }
-
-    async fn export_operations(&self) -> Vec<PandaFactOperation> {
-        self.store
-            .lock()
-            .await
-            .export_operations()
-            .cloned()
-            .collect()
-    }
-
-    fn unavailable() -> FactSourceError {
-        FactSourceError::Unavailable {
-            name: "p2panda fact store is locked by a writer".to_string(),
-        }
-    }
-}
-
-async fn import_shared_panda_facts(
+async fn import_panda_deploy_facts(
     authorizer: mvp_bus::harness::InMemoryBus,
     island: &IslandId,
     session: &BusSession,
     author: &PandaFactAuthor,
     operations: &[PandaFactOperation],
-) -> Result<SharedPandaFacts, String> {
+) -> Result<PandaDeployFactStore, String> {
     let mut imported = PandaFactStore::new(Arc::new(authorizer));
     imported
         .trust_author_key(island, author.principal().clone(), author.author_key())
@@ -399,33 +332,7 @@ async fn import_shared_panda_facts(
             .await
             .map_err(|error| format!("import p2panda restart recovery operation: {error}"))?;
     }
-    Ok(SharedPandaFacts::new(imported))
-}
-
-impl FactSource for SharedPandaFacts {
-    fn list_candidates(
-        &self,
-        island: &IslandId,
-        pattern: &FactKeyPattern,
-        session: &BusSession,
-    ) -> FactSourceResult<Vec<FactCandidate>> {
-        self.store
-            .try_lock()
-            .map_err(|_| Self::unavailable())?
-            .list_candidates(island, pattern, session)
-    }
-
-    fn read_payloads(
-        &self,
-        island: &IslandId,
-        candidates: &[FactCandidate],
-        session: &BusSession,
-    ) -> FactSourceResult<BTreeMap<FactContentHash, FactPayload>> {
-        self.store
-            .try_lock()
-            .map_err(|_| Self::unavailable())?
-            .read_payloads(island, candidates, session)
-    }
+    Ok(PandaDeployFactStore::new(imported))
 }
 
 #[derive(Default)]
@@ -435,32 +342,26 @@ struct FactWriteTimings {
     cleanup_done_ms: AtomicU64,
 }
 
-struct PandaDeployFactWriter {
-    facts: SharedPandaFacts,
-    session: BusSession,
-    author: Arc<PandaFactAuthor>,
+struct TimedFactWriter<W> {
+    inner: W,
     timings: Arc<FactWriteTimings>,
 }
 
-impl DeployFactWriter for PandaDeployFactWriter {
+impl<W> DeployFactWriter for TimedFactWriter<W>
+where
+    W: DeployFactWriter,
+{
     fn write_decision<'a>(
         &'a self,
-        fact: DeployDecisionFact,
+        fact: mvp_deploy::DeployDecisionFact,
     ) -> Pin<Box<dyn Future<Output = DeployResult<WrittenDeployFact>> + Send + 'a>> {
         Box::pin(async move {
-            let key = deploy_decision_fact_key(&fact.deploy_id)?;
-            let payload = deploy_decision_fact_payload(&fact)?;
-            let outcome = self
-                .facts
-                .write_timed(
-                    &self.session,
-                    self.author.as_ref(),
-                    key.clone(),
-                    payload,
-                    &self.timings.decision_ms,
-                )
-                .await?;
-            deploy_fact_outcome(key, outcome)
+            let started = Instant::now();
+            let written = self.inner.write_decision(fact).await?;
+            self.timings
+                .decision_ms
+                .store(started.elapsed().as_millis() as u64, Ordering::SeqCst);
+            Ok(written)
         })
     }
 
@@ -469,49 +370,31 @@ impl DeployFactWriter for PandaDeployFactWriter {
         fact: DeployCleanupDoneFact,
     ) -> Pin<Box<dyn Future<Output = DeployResult<WrittenDeployFact>> + Send + 'a>> {
         Box::pin(async move {
-            let key = deploy_cleanup_done_fact_key(&fact.deploy_id)?;
-            let payload = deploy_cleanup_done_fact_payload(&fact)?;
-            let outcome = self
-                .facts
-                .write_timed(
-                    &self.session,
-                    self.author.as_ref(),
-                    key.clone(),
-                    payload,
-                    &self.timings.cleanup_done_ms,
-                )
-                .await?;
-            deploy_fact_outcome(key, outcome)
+            let started = Instant::now();
+            let written = self.inner.write_cleanup_done(fact).await?;
+            self.timings
+                .cleanup_done_ms
+                .store(started.elapsed().as_millis() as u64, Ordering::SeqCst);
+            Ok(written)
         })
     }
 }
 
-struct PandaServingFactWriter {
-    facts: SharedPandaFacts,
-    session: BusSession,
-    author: Arc<PandaFactAuthor>,
-    timings: Arc<FactWriteTimings>,
-}
-
-impl ServingFactWriter for PandaServingFactWriter {
+impl<W> ServingFactWriter for TimedFactWriter<W>
+where
+    W: ServingFactWriter,
+{
     fn write_serving_commit<'a>(
         &'a self,
         commit: &'a ServingCommitPlan,
     ) -> Pin<Box<dyn Future<Output = DeployResult<WrittenServingFact>> + Send + 'a>> {
         Box::pin(async move {
-            let key = serving_commit_fact_key(&commit.serving_commit_id)?;
-            let payload = serving_commit_fact_payload(commit)?;
-            let outcome = self
-                .facts
-                .write_timed(
-                    &self.session,
-                    self.author.as_ref(),
-                    key.clone(),
-                    payload,
-                    &self.timings.serving_ms,
-                )
-                .await?;
-            serving_fact_outcome(key, outcome)
+            let started = Instant::now();
+            let written = self.inner.write_serving_commit(commit).await?;
+            self.timings
+                .serving_ms
+                .store(started.elapsed().as_millis() as u64, Ordering::SeqCst);
+            Ok(written)
         })
     }
 }
@@ -519,65 +402,26 @@ impl ServingFactWriter for PandaServingFactWriter {
 fn coordinator_with_panda_facts(
     bus: BusActorHandle,
     session: BusSession,
-    facts: SharedPandaFacts,
+    facts: PandaDeployFactStore,
     author: Arc<PandaFactAuthor>,
     timings: Arc<FactWriteTimings>,
-) -> DeployCoordinator<PandaDeployFactWriter, PandaServingFactWriter> {
+) -> DeployCoordinator<
+    TimedFactWriter<PandaDeployFactWriter>,
+    TimedFactWriter<PandaServingFactWriter>,
+> {
     DeployCoordinator::with_fact_writers(
         bus,
         session.clone(),
-        PandaDeployFactWriter {
-            facts: facts.clone(),
-            author: Arc::clone(&author),
-            session: session.clone(),
+        TimedFactWriter {
+            inner: PandaDeployFactWriter::new(facts.clone(), session.clone(), Arc::clone(&author)),
             timings: Arc::clone(&timings),
         },
-        PandaServingFactWriter {
-            facts,
-            author,
-            session,
+        TimedFactWriter {
+            inner: PandaServingFactWriter::new(facts, session, author),
             timings,
         },
         test_timeouts(),
     )
-}
-
-fn deploy_fact_outcome(
-    key: mvp_bus::FactKey,
-    outcome: PandaFactWriteOutcome,
-) -> DeployResult<WrittenDeployFact> {
-    match outcome {
-        PandaFactWriteOutcome::Inserted(metadata) => Ok(WrittenDeployFact::inserted(
-            key,
-            metadata.content_hash().clone(),
-        )),
-        PandaFactWriteOutcome::AlreadyPresent(metadata) => Ok(WrittenDeployFact::already_present(
-            key,
-            metadata.content_hash().clone(),
-        )),
-        PandaFactWriteOutcome::Conflict(metadata) => Err(DeployError::DeployFactConflict {
-            key,
-            principal: metadata.author().clone(),
-            content_hash: metadata.content_hash().clone(),
-        }),
-    }
-}
-
-fn serving_fact_outcome(
-    key: mvp_bus::FactKey,
-    outcome: PandaFactWriteOutcome,
-) -> DeployResult<WrittenServingFact> {
-    match outcome {
-        PandaFactWriteOutcome::Inserted(metadata) => Ok(WrittenServingFact::inserted(
-            key,
-            metadata.content_hash().clone(),
-        )),
-        PandaFactWriteOutcome::AlreadyPresent(metadata) => Ok(WrittenServingFact::already_present(
-            key,
-            metadata.content_hash().clone(),
-        )),
-        PandaFactWriteOutcome::Conflict(_) => Err(DeployError::ServingFactConflict { key }),
-    }
 }
 
 #[derive(Default)]
