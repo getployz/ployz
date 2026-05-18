@@ -139,8 +139,8 @@ Scenarios:
 
 ### E2E-4: Fact Replication And Projection
 
-Purpose: prove iroh-docs is the anti-entropy fact source and SQLite is
-rebuildable.
+Purpose: prove signed p2panda operations are the durable fact source and
+SQLite is rebuildable.
 
 Scenarios:
 
@@ -149,7 +149,7 @@ Scenarios:
 3. Route commit fact projects into `gateway.snapshot`.
 4. DNS commit fact projects into `dns.snapshot`.
 5. Delete `projections.sqlite`; projection rebuilds deterministically from
-   docs facts.
+   signed p2panda operations.
 6. Drop notification delivery; periodic/full projection pass catches up.
 7. Conflicting fact candidates remain reducer-visible, and unauthorized or
    unverified candidates are ignored with visible status.
@@ -178,9 +178,16 @@ Current proof status:
   claimed principal, and reader permissions still control candidate status and
   payload visibility. Payload reads require exact stored fact identity before
   using content-hash storage.
-- Remaining E2E-4 work is remote service registry projection, route/DNS commit
-  projection through the final synced fact substrate, and propagation histograms
-  beyond the single local sync scenario.
+- Slice 019b adds persistent p2panda SQLite storage and
+  `p2panda-process-role-serving-contract`, proving Ployz indexes rebuild from
+  the p2panda operation log and serving projection can use the persistent store
+  while preserving last-good gateway/DNS state.
+- Remaining E2E-4 work is p2panda-net sync between persistent stores where
+  workable, remote service registry projection, route/DNS commit projection
+  through the final synced fact substrate, and propagation histograms beyond
+  the single local sync scenario. If p2panda-net blocks Ployz authorization or
+  metrics, the same proof may fall back to lower-level p2panda-sync with the
+  net blocker documented.
 
 ### E2E-5: Machine Add And Remove
 
@@ -327,8 +334,8 @@ Current proof status:
   structured active-holder conflict, expiry takeover, stale publish/delete
   rejection with state preservation, deterministic supersession, same-epoch
   loser fencing, local-only command success, and best-effort drop release.
-- Remaining work is docs-backed lease facts over real iroh replication and
-  gateway HTTP challenge serving.
+- Remaining work is p2panda-backed lease facts over the Slice 020 sync boundary
+  and gateway HTTP challenge serving.
 
 Metrics:
 
@@ -359,7 +366,8 @@ Scenarios:
    publishes fresh serving state without traffic interruption.
 7. Coordinator dies permanently after local route commit before other nodes see
    the fact; the connected node reports the local commit and visible nodes at
-   decision time, and other nodes converge through eventual docs replication.
+   decision time, and other nodes converge through eventual p2panda operation
+   sync.
 8. Coordinator is down while service-to-service traffic crosses nodes over
    last-applied WireGuard config; traffic continues and the node exposes
    coordinator health as stale/unavailable for mutations.
@@ -439,11 +447,10 @@ Current proof status:
   and deploy decision, serving commit, and cleanup-done facts live in one fact
   substrate for the proof.
 - Remaining E2E-7 work is pre-serving/pre-commit candidate adoption and
-  explicit participant cleanup ABI, docs-backed or p2panda-backed cross-node
-  serving replication beyond the local harness, p2panda fact-store process
-  crash/persistent-storage recovery, production WireGuard adapter proof, and
-  replacing the HTTP/DNS fallback crates with Pingora/`hickory-server` if those
-  become the chosen production protocol primitives.
+  explicit participant cleanup ABI, p2panda-sync cross-node serving replication
+  beyond the local harness, production WireGuard adapter proof, and replacing
+  the HTTP/DNS fallback crates with Pingora/`hickory-server` if those become
+  the chosen production protocol primitives.
 
 ### E2E-8: Scale And Reliability Harness
 

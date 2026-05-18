@@ -223,6 +223,22 @@ the decision concrete.
   not a bus-permission replacement. Subject wildcards, queue permissions,
   temporary response permission, RPC grants, and bridge imports/exports remain
   PloyzBus authority semantics.
+- Slice 019b adds persistent p2panda SQLite storage behind `PandaFactStore`.
+  The p2panda operation log is durable truth; Ployz fact indexes and projection
+  SQLite remain derived, disposable state rebuilt from stored operations.
+- Slice 019b also proves a p2panda-fed process-role serving path. Normal
+  `ProjectOnce` uses the already-open projection source; `BeginRebuild` is the
+  explicit expensive source-refresh boundary. This keeps hot projection
+  requests from reopening/rebuilding the persistent p2panda store.
+- Direction after Slice 019b: replace manual p2panda export/import with a
+  p2panda-sync proof before ACME. Manual operation copying remains deterministic
+  harness/debug plumbing, not the product replication contract.
+- Follow-up Slice 020 planning probes changed the net bias: crates.io
+  `p2panda-net@0.5.2` is not usable as a straight dependency today, but git
+  `main` compiles when `p2panda-store/sqlite` is enabled explicitly. Slice 020
+  should try git `p2panda-net` first for endpoint/gossip/log-sync and fall back
+  to lower-level `p2panda-sync` only if the API blocks Ployz authorization,
+  candidate-status reporting, or scale metrics.
 
 ## Documented Design Gaps
 

@@ -256,12 +256,12 @@ Decision criteria:
 Inputs:
 
 - Results from Units 1-4.
-- Existing `MVP/slice-019-p2panda-acme-http01-plan.md`.
+- Existing `MVP/slice-021-p2panda-acme-http01-plan.md`.
 
 Output:
 
 - Updated `MVP/overall-plan.md`.
-- Updated or superseded `MVP/slice-019-p2panda-acme-http01-plan.md` if ACME is
+- Updated or superseded `MVP/slice-021-p2panda-acme-http01-plan.md` if ACME is
   no longer the next implementation slice.
 
 Decision choices:

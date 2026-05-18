@@ -341,17 +341,24 @@ Slice 019a then ran the deep p2panda substitution audit:
 [MVP/slice-019a-p2panda-substitution-audit-plan.md](slice-019a-p2panda-substitution-audit-plan.md).
 The report is
 [MVP/design-notes/p2panda-substitution-audit.md](design-notes/p2panda-substitution-audit.md).
-The audit decision is to move one more substrate slice ahead of ACME:
-persistent p2panda fact storage, derived-index rebuild, and a restartable
-fact-store role. ACME on the current in-memory p2panda fact role would prove the
-right product semantics on the wrong durability boundary.
+The audit decision moved persistent p2panda fact storage ahead of ACME. Slice
+019b completed that proof: p2panda operations now persist in SQLite, derived
+Ployz indexes rebuild from the operation log, and a process-role serving proof
+can project from the persistent p2panda store while preserving last-good
+serving state.
 
 The next implementation/proof slices currently remain:
 
-1. Persistent p2panda fact store and restartable fact role.
-2. ACME moved onto the p2panda fact boundary and advisory lease semantics.
-3. The next large-load or process-role proof that closes remaining E2E-7 gaps:
-   pre-serving candidate adoption/cleanup ABI or cross-node operation sync.
+1. p2panda-net fact replication between persistent stores, replacing manual
+   operation copying as the main replication proof. Crates.io
+   `p2panda-net@0.5.2` is not currently usable as a straight dependency, but
+   git `main` compiles when `p2panda-store/sqlite` is enabled explicitly. Bias
+   toward that workaround before writing more custom net/sync code.
+2. ACME moved onto the p2panda fact boundary, p2panda net/sync replication, and
+   advisory lease semantics.
+3. The next product or process-role proof that closes remaining E2E-7 gaps:
+   pre-serving candidate adoption/cleanup ABI, p2panda-auth membership, or
+   iroh transport for sync/bus traffic.
 
 ACME is the canary because it forces the advisory lease primitive to be honest:
 TTL, renewal, epoch fencing, RAII release-on-drop for local holders, and
@@ -360,11 +367,11 @@ cluster locks. They are foreground coordination hints and fencing tokens;
 resource-level enforcement, such as the ACME directory or storage backend, is
 where real exclusivity lives.
 
-The persistent p2panda slice is not a product-feature detour. It is the
-substrate proof required by the daemon/data-plane invariant: fact truth must
-survive process-role restart, projections must rebuild from operation logs, and
-serving roles must keep last-good state while coordinator and fact roles have
-separate fates.
+The p2panda-net/sync slice is not another open-ended substrate detour. It
+closes the specific false boundary left after persistence: manual export/import
+is good deterministic harness plumbing, but ACME should not harden that shape
+into the product canary. After the sync proof, the next slice should pay it off
+with ACME rather than adding another generic substrate layer.
 
 The shipped deploy restart slice did not port old `deploy.rs`. It expressed the
 smallest durable state machine from `MVP/architecture.md`: request-many

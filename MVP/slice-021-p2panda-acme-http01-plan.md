@@ -1,5 +1,5 @@
 ---
-title: Slice 020 P2panda-Backed ACME HTTP-01 Plan
+title: Slice 021 P2panda-Backed ACME HTTP-01 Plan
 status: parked
 created: 2026-05-18
 origin:
@@ -15,14 +15,13 @@ origin:
   - MVP/slice-018b-p2panda-fact-substrate-plan.md
 ---
 
-# Slice 020 P2panda-Backed ACME HTTP-01 Plan
+# Slice 021 P2panda-Backed ACME HTTP-01 Plan
 
 > Parked behind
-> [MVP/design-notes/p2panda-substitution-audit.md](design-notes/p2panda-substitution-audit.md).
-> ACME remains the next product canary, but the audit moved persistent
-> p2panda fact storage, derived-index rebuild, and a restartable fact-store
-> role ahead of this slice so ACME does not harden the current in-memory fact
-> boundary.
+> [MVP/slice-020-p2panda-sync-fact-replication-plan.md](slice-020-p2panda-sync-fact-replication-plan.md).
+> ACME remains the next product canary, but Slice 020 should first replace
+> manual operation copying with a p2panda-sync proof so ACME does not harden
+> harness replication plumbing.
 
 ## Problem Frame
 
@@ -75,8 +74,8 @@ the new fact substrate plus advisory lease semantics.
 
 - Slice 018c deploy restart recovery is finished and should be treated as the
   current p2panda-backed deploy recovery proof.
-- Finish the persistent p2panda storage/restartable fact-role slice first. The
-  Slice 019a audit promoted that substrate work ahead of ACME.
+- Finish Slice 020's p2panda-sync fact replication proof first, so this ACME
+  canary runs on the real p2panda operation-sync boundary.
 - Keep all work under `MVP/`.
 
 ## Scope
@@ -87,10 +86,10 @@ In scope:
   `mvp-lease` domain types.
 - Write lease claim/renew/release and ACME present/clear facts through
   `mvp-p2panda-facts`, not `IrohFactDoc`.
-- Add a small p2panda operation export/import path suitable for deterministic
-  two-node E2E replication if Slice 018b does not already expose one.
+- Use the p2panda-sync fact replication path from Slice 020 for the two-node
+  E2E proof.
 - Project ACME facts from a second local p2panda-backed `FactSource` after
-  imported-operation exchange into SQLite and gateway snapshots.
+  p2panda sync into SQLite and gateway snapshots.
 - Serve HTTP-01 challenge responses from last-good serving state after the
   issuer/coordinator role is dropped.
 - Preserve local command results that include visible nodes at decision time.
@@ -135,9 +134,8 @@ Decision for this slice:
 - Add no ACME client dependency.
 - Keep using the existing Hyper-based serving proof.
 - Keep using the p2panda crates already introduced by `mvp-p2panda-facts`.
-- If the slice needs two-store operation exchange in the harness, add the
-  smallest export/import API to `mvp-p2panda-facts` instead of pulling in
-  p2panda-net.
+- Use the Slice 020 p2panda-sync adapter for two-store replication in the
+  harness. Do not add a second ACME-specific export/import path.
 
 ## Design Decisions
 
@@ -168,27 +166,30 @@ replay fact state. Add or reuse pure helpers that reduce lease facts from a
 `FactSource` into `LeaseState` and validate ACME present/clear facts against a
 holder, epoch, and claim hash before mutation.
 
-### Operation Replication Is Explicit Test Plumbing
+### P2panda Sync Is The Replication Boundary
 
 The E2E should use two local p2panda stores to keep the old "node A writes,
 node B projects/serves" proof shape from Slice 015.
 
-The replication path can be deterministic and harness-local:
+The replication path should be deterministic and harness-local, but it should
+go through the Slice 020 sync adapter:
 
 ```text
-node-a PandaFactStore exports signed fact operations
-node-b PandaFactStore imports them
+node-a PandaFactStore writes signed fact operations
+p2panda-sync exchanges missing operations
+node-b PandaFactStore imports received operations through Ployz validation
 node-b projection reads through FactSource
 ```
 
-This proves the fact boundary moves as p2panda operations without committing to
-production p2panda-net transport yet. Transport comes later.
+This proves ACME business semantics over the real p2panda operation-sync
+boundary without committing to production p2panda-net transport yet. Transport
+comes later.
 
-The first export shape should be deliberately narrow: opaque signed operation
-header bytes plus payload bytes when import validation needs the body. Island,
-fact key, author, content hash, candidate status, and payload availability
-should be derived again by the importing store and `FactSource`, not trusted as
-copied metadata.
+The synced operation payload shape should remain the Slice 020 shape: signed
+p2panda operation data plus payload bytes when import validation needs the
+body. Island, fact key, author, content hash, candidate status, and payload
+availability should be derived again by the receiving store and `FactSource`,
+not trusted as copied metadata.
 
 ### Leases Stay Advisory
 
@@ -217,48 +218,42 @@ actual `mvp-commands` planning remains a separate future slice.
 
 ## Implementation Units
 
-### Unit 1: P2panda Operation Exchange Surface
+### Unit 1: P2panda Sync Boundary Reuse
 
 Files:
 
 - `MVP/p2panda-facts/src/lib.rs`
 - `MVP/e2e/src/p2panda_fact_source_contract.rs`
+- `MVP/e2e/src/p2panda_sync_fact_source_contract.rs`
 
 Work:
 
-- Add a small exported operation type if needed, carrying the signed p2panda
-  operation header bytes plus payload bytes only when the importer needs the
-  body for validation.
-- Add export/import or merge helpers that keep p2panda validation and author
-  binding checks in one place.
-- Define the import validation model explicitly:
-  - verified when the signature validates, payload hash matches, and public key
-    is bound to the claimed principal,
-  - unverified when signature/body validation fails or the principal binding
-    is missing,
-  - unauthorized when the reader lacks grants even though the operation itself
-    is structurally valid.
-- Keep the API named and documented as local deterministic operation exchange,
-  not production sync or replication.
+- Reuse the Slice 020 p2panda-sync adapter and report types for the ACME E2E
+  proof.
+- Do not add a new exported operation type, ACME-specific merge helper, or
+  manual export/import surface.
+- Keep p2panda validation and author binding checks in the shared
+  `PandaFactStore::import_operation` path reached by sync events.
 - Preserve the existing `FactSource` behavior: unreadable, cross-island,
   unverified, and unauthorized candidates remain visible as statuses but do
   not provide payloads.
-- Extend the existing p2panda fact-source E2E to prove a second store can
-  import operations and rebuild projection from imported state.
+- Extend the ACME E2E to prove a second store can sync operations and rebuild
+  projection from synced state.
 
 Tests:
 
-- Importing an exported operation into an empty store yields the same
-  candidate metadata and payload.
-- Duplicate imported operations are idempotent.
-- Same-key different-payload imports surface conflict candidates.
-- Imported operations whose public key is not bound to the claimed principal
-  remain unverified/unreadable.
-- Unauthorized readers cannot read imported payloads.
+- The ACME scenario consumes the existing p2panda-sync helper rather than
+  manual operation copying.
+- Duplicate synced operations are idempotent.
+- Same-key different-payload synced operations surface conflict candidates.
+- Synced operations whose public key is not bound to the claimed principal
+  remain unverified/unreadable through the shared import path.
+- Unauthorized readers cannot read synced payloads.
 
 Verification:
 
 - `cd MVP && cargo test -p mvp-p2panda-facts`
+- `cd MVP && cargo run -p mvp-e2e -- p2panda-sync-fact-source-contract`
 - `cd MVP && cargo run -p mvp-e2e -- p2panda-fact-source-contract`
 
 ### Unit 2: Public Lease/ACME Fact Replay Boundary
@@ -348,20 +343,20 @@ Work:
 - Add `p2panda-acme-http01-contract`.
 - Use two p2panda stores and two principals:
   - node A writes lease/challenge facts,
-  - operation exchange copies signed operations to node B,
+  - Slice 020 p2panda sync moves signed operations to node B,
   - node B projects from the p2panda `FactSource`,
   - node B reloads serving from gateway snapshot and serves HTTP-01.
 - Make the coordinator boundary explicit: node A's ACME command adapter is the
   killed/dropped coordinator role; node A's already-written fact store may
-  remain available only as an operation-export fixture; node B's fact import,
+  remain available only as a sync source fixture; node B's sync import,
   projection, snapshot reload, and serving roles remain alive.
 - Drop the node A command adapter after projection and prove node B continues
-  serving the last-good challenge response. Then import already-written later
+  serving the last-good challenge response. Then sync already-written later
   facts into node B and prove node B can still project/reload them without a
   live node A command adapter.
-- Write/import a higher-epoch presentation, project/reload, and prove serving
+- Write/sync a higher-epoch presentation, project/reload, and prove serving
   switches to the new key authorization.
-- Write/import a clear fact from the winning holder and prove serving returns
+- Write/sync a clear fact from the winning holder and prove serving returns
   `404`.
 - Align ACME presentation and clear reduction with the global conflict rule:
   `(epoch desc, content_hash asc)`. Do not keep payload-field tie-breakers such
@@ -375,18 +370,18 @@ Required assertions:
 - no quorum or witness ack path is invoked,
 - one stale-present or stale-clear smoke check fails before mutation, with
   broader stale behavior covered by focused `mvp-acme` tests,
-- one imported same-key race produces superseded projection status, with
+- one synced same-key race produces superseded projection status, with
   broader conflict ordering covered by focused reducer tests,
 - HTTP gateway serves the selected key authorization with no trailing newline,
 - serving still answers while the command adapter is absent,
-- SQLite can be deleted and rebuilt from imported p2panda operations.
+- SQLite can be deleted and rebuilt from synced p2panda operations.
 
 Metrics:
 
 Required:
 
 - elapsed scenario time,
-- operation export/import duration,
+- p2panda sync duration,
 - projection and gateway reload duration,
 - HTTP challenge request duration,
 - command-adapter outage serving success count.
@@ -414,18 +409,18 @@ Files:
 - `MVP/e2e-proof-plan.md`
 - `MVP/overall-plan.md`
 - `MVP/architecture.md`
-- `MVP/slice-019-p2panda-acme-http01.md`
+- `MVP/slice-021-p2panda-acme-http01-plan.md`
 
 Work:
 
 - Add a "Changed Since Last Slice" entry explaining what moved from iroh-docs
   to p2panda operations.
 - Update E2E-6a/E2E-7/E2E-9 proof status with the new p2panda ACME scenario.
-- Record whether operation export/import remains a harness fixture or became a
-  reusable substrate API.
+- Record that ACME reused the Slice 020 sync boundary rather than adding
+  product-specific replication plumbing.
 - Record semantic-leverage evidence against the old ACME coordination baseline
   without counting placeholder wire serving polish as product logic.
-- Record whether Slice 019 adds another repeated phase/resume data point. Do
+- Record whether Slice 021 adds another repeated phase/resume data point. Do
   not plan or implement `mvp-commands` in this slice.
 
 ## Verification
@@ -449,11 +444,11 @@ instead of raising the budget by default.
 Use subagents for the product slice review, not for tiny mechanical fixes:
 
 - correctness: lease epoch/claim-hash fencing, stale clear rejection,
-  conflict-as-candidate reduction, operation import idempotency,
+  conflict-as-candidate reduction, synced operation idempotency,
 - security: hostname/token/key-authorization validation, no token echoing from
   request to response, grants separated for lease and challenge writes,
 - reliability: serving continuity after command adapter/coordinator drop,
-  imported operation projection rebuilds deleted SQLite,
+  synced operation projection rebuilds deleted SQLite,
 - simplicity: ACME business code should read as acquire/check/present/project/
   serve, with p2panda plumbing isolated at the fact boundary.
 
@@ -466,7 +461,7 @@ The slice is complete when:
 
 - `p2panda-acme-http01-contract` passes and writes lease/challenge facts only
   through `mvp-p2panda-facts`,
-- a second local p2panda-backed projection fed by imported signed operations
+- a second local p2panda-backed projection fed by synced signed operations
   produces a gateway snapshot with HTTP-01 challenge state,
 - HTTP serving answers from last-good projected state while the issuer/
   coordinator adapter is absent,
@@ -480,7 +475,7 @@ The slice is complete when:
 - stale publish/clear attempts fail before mutation with structured errors,
 - same-epoch races reduce deterministically and surface superseded losers,
 - command results include visible nodes at decision time,
-- SQLite rebuild from imported p2panda operations is proven,
+- SQLite rebuild from synced p2panda operations is proven,
 - no quorum, witness ack, strict lease, hidden active-partition, or
   `store.pin_fact` behavior is introduced,
 - maintainer docs explain what moved from iroh-docs to p2panda and why.
