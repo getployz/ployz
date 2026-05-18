@@ -460,6 +460,16 @@ last-good serving state, applies a delayed update from a stable publisher peer,
 and restarts from local p2panda state while the local coordinator socket is
 absent.
 
+Slice 032 should run the p2panda-net dependency substitution while the transport
+surface is still small:
+[MVP/slice-032-p2panda-net-crates-io-substitution-plan.md](slice-032-p2panda-net-crates-io-substitution-plan.md).
+Current `p2panda-net 0.5.2` is published on crates.io and uses the crates.io
+p2panda `0.5.2`/iroh `0.96` line, so the next implementation should bias
+toward deleting git-pinned p2panda transport dependencies rather than carrying
+a permanent split between stable fact-store crates and git network crates. The
+slice must keep Ployz authority/projection boundaries intact and record exact
+blockers if any git dependency remains.
+
 The next implementation/proof slice should keep paying down product semantic
 leverage rather than adding another generic substrate layer. Plan it against
 the current map and prefer a product rule that reuses bus, p2panda facts,
