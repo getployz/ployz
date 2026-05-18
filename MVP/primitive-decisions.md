@@ -15,6 +15,18 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
+- Slice 027 routing-owned serving commit work moves the serving writer
+  contract into `mvp-routing`. Deploy and machine remove now consume
+  `ServingFactWriter` instead of owning or bypassing serving-write semantics.
+  The p2panda serving adapter lives in `mvp-routing-p2panda`; `mvp-deploy`
+  remains p2panda-free.
+- p2panda machine-remove facts remain intentionally deferred. The next canary
+  must first decide how joined-node facts enter the p2panda projection input
+  and how `PandaFactError` maps into `MachineRemoveError`.
+- `PandaServingFactSink` is deliberately narrow and adapter-local. There is
+  only one production implementor today, so do not promote it into
+  `mvp-p2panda-facts` or a broader store facade until a second command repeats
+  the same storage boundary.
 - Slice 026 extracts deploy p2panda fact-writing glue from
   `deploy-restart-recovery-contract` into `mvp-deploy-p2panda`. Core
   `mvp-deploy` stays free of p2panda dependencies; the adapter crate owns

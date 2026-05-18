@@ -590,6 +590,12 @@ Current proof status:
   restart-recovery E2E shrinks from 945 to 789 lines and stops carrying
   deploy-specific p2panda writer/outcome glue; `mvp-deploy-p2panda` is the
   reusable 492-line adapter plus focused tests.
+- The routing-owned serving commit correction moves the serving writer contract
+  from deploy to routing and updates machine remove to consume the same writer
+  seam. This is a maintenance-leverage proof rather than a new product proof:
+  serving cutover facts now have one owner, deploy loses duplicate serving
+  writer code, and machine remove no longer bypasses routing's writer
+  semantics.
 - A read-only LOC check after Slice 026 says the old
   `crates/ployzd/src/daemon/handlers/deploy.rs` baseline is 4,558 lines. The
   MVP deploy domain/coordinator plus p2panda adapter is roughly 2,700 lines
