@@ -557,6 +557,7 @@ async fn pre_commit_recovery_cleans_planned_candidates_without_rerunning_prepare
     let cleanup = coordinator.cleanup_pre_commit_incomplete(&recovery).await;
 
     assert_eq!(cleanup.status, CandidateCleanupStatus::Done);
+    assert_eq!(cleanup.visible_nodes, visible_nodes());
     let [attempted] = cleanup.attempted.as_slice() else {
         panic!("expected one planned candidate cleanup target");
     };
@@ -618,9 +619,10 @@ async fn recovery_with_decision_but_no_serving_commit_is_pre_commit_incomplete()
     let DeployRecovery::PreCommitIncomplete(status) = recovery else {
         panic!("expected pre-commit incomplete recovery");
     };
-    assert_eq!(status.deploy_id, manifest.deploy_id);
+    assert_eq!(status.manifest.deploy_id, manifest.deploy_id);
+    assert_eq!(status.visible_nodes, visible_nodes());
     assert_eq!(
-        status.serving_commit_id,
+        status.manifest.serving_commit.serving_commit_id,
         manifest.serving_commit.serving_commit_id
     );
 }

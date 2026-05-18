@@ -202,12 +202,21 @@ async fn run_net_async() -> Result<(), String> {
 
     let before_clear =
         replay_all_exported_facts_via_net(&left, &mut right, &sessions.right_replica).await?;
-    if before_clear.imported < 3 {
-        return Err(format!(
-            "expected p2panda-net ACME to import lease, challenge, and DNS facts, got {}",
-            before_clear.imported
-        ));
-    }
+    assert_eq_named(
+        "p2panda-net ACME replay before clear",
+        before_clear.replayed,
+        3,
+    )?;
+    assert_eq_named(
+        "p2panda-net ACME imports before clear",
+        before_clear.imported,
+        3,
+    )?;
+    assert_eq_named(
+        "p2panda-net ACME duplicates before clear",
+        before_clear.duplicate,
+        0,
+    )?;
 
     let projection_reload_started = Instant::now();
     let mut projection =
@@ -268,6 +277,21 @@ async fn run_net_async() -> Result<(), String> {
 
     let after_clear =
         replay_all_exported_facts_via_net(&left, &mut right, &sessions.right_replica).await?;
+    assert_eq_named(
+        "p2panda-net ACME replay after clear",
+        after_clear.replayed,
+        5,
+    )?;
+    assert_eq_named(
+        "p2panda-net ACME imports after clear",
+        after_clear.imported,
+        2,
+    )?;
+    assert_eq_named(
+        "p2panda-net ACME duplicates after clear",
+        after_clear.duplicate,
+        3,
+    )?;
     projection =
         project_from_reopened_store(&root, bus.clone(), &prod, &trusted_authors, &sessions).await?;
     serving

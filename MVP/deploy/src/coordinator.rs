@@ -28,6 +28,7 @@ use crate::{
 };
 
 const CAPACITY_PROBE_CONCURRENCY: usize = 32;
+const CANDIDATE_CLEANUP_CONCURRENCY: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeployTimeouts {
@@ -62,17 +63,14 @@ pub struct RecoveredPendingCleanup {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreCommitIncompleteRecovery {
-    pub deploy_id: crate::DeployId,
     pub manifest: DeployManifest,
     pub visible_nodes: VisibleNodes,
-    pub serving_commit_id: crate::ServingCommitId,
-    pub superseded_decisions: Vec<DeployDecisionCandidate>,
 }
 
 #[derive(Debug)]
 pub enum DeployRecovery {
     Pending(Box<RecoveredPendingCleanup>),
-    PreCommitIncomplete(PreCommitIncompleteRecovery),
+    PreCommitIncomplete(Box<PreCommitIncompleteRecovery>),
     CleanupDone(DeployCommandResult),
 }
 
@@ -330,15 +328,12 @@ where
         ) {
             Ok(_serving) => {}
             Err(RoutingError::ServingFactMissing { .. }) => {
-                return Ok(DeployRecovery::PreCommitIncomplete(
+                return Ok(DeployRecovery::PreCommitIncomplete(Box::new(
                     PreCommitIncompleteRecovery {
-                        deploy_id: decision.deploy_id.clone(),
                         manifest: decision.manifest,
                         visible_nodes: decision.visible_nodes,
-                        serving_commit_id: decision.expected_serving_commit_id,
-                        superseded_decisions: selection.superseded,
                     },
-                ));
+                )));
             }
             Err(error) => return Err(error.into()),
         }
@@ -366,7 +361,7 @@ where
     ) -> PreCommitCleanupReport {
         let candidates = CandidateCleanupTracker::from_manifest_planned(&recovery.manifest);
         self.cleanup_candidate_targets(
-            &recovery.deploy_id,
+            &recovery.manifest.deploy_id,
             recovery.visible_nodes.clone(),
             candidates.node_targets(),
         )
@@ -485,16 +480,23 @@ where
             );
         }
 
-        let mut failures = Vec::new();
-        for target in &attempted {
-            if let Err(error) = self.cleanup_node_candidates(deploy_id, target).await {
-                failures.push(CandidateCleanupFailure::new(
-                    target.node_id.clone(),
-                    target.candidates.clone(),
-                    cleanup_failure_kind(&error),
-                ));
-            }
-        }
+        let failures = stream::iter(attempted.iter())
+            .map(|target| async move {
+                self.cleanup_node_candidates(deploy_id, target)
+                    .await
+                    .err()
+                    .map(|error| {
+                        CandidateCleanupFailure::new(
+                            target.node_id.clone(),
+                            target.candidates.clone(),
+                            cleanup_failure_kind(&error),
+                        )
+                    })
+            })
+            .buffered(CANDIDATE_CLEANUP_CONCURRENCY)
+            .filter_map(|failure| async move { failure })
+            .collect::<Vec<_>>()
+            .await;
         let status = if failures.is_empty() {
             CandidateCleanupStatus::Done
         } else {
