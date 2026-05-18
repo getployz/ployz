@@ -65,6 +65,18 @@ struct P2pandaNetFactNodeReport {
     startup_ms: u128,
     sync_import_ms: u128,
     acme_clear_import_ms: u128,
+    idle_timeouts: u64,
+    stream_refreshes: u64,
+    stream_refresh_failures: u64,
+    stream_ended: u64,
+    stream_lagged: u64,
+    stream_failed: u64,
+    replayed_operations_skipped: u64,
+    session_started: u64,
+    sync_started: u64,
+    sync_finished: u64,
+    live_mode_started: u64,
+    session_finished: u64,
     projection_rebuild_ms: u128,
     restart_projection_rebuild_ms: u128,
     elapsed_ms: u128,
@@ -117,6 +129,10 @@ async fn run_async() -> Result<(), String> {
         vec![receiver_info.clone()],
     )
     .await?;
+    receiver
+        .add_node_info(sender.node_info())
+        .await
+        .map_err(|error| format!("add sender to receiver p2panda-net address book: {error}"))?;
     trust_manual_fallback_author(&sender, &prod, &sessions.untrusted_writer, &untrusted).await?;
     trust_manual_fallback_author(&sender, &laptop, &sessions.laptop_writer, &laptop_author).await?;
     let startup_ms = startup_started.elapsed().as_millis();
@@ -579,6 +595,7 @@ async fn run_async() -> Result<(), String> {
         1,
     )?;
 
+    let stats = receiver.stats();
     let report = P2pandaNetFactNodeReport {
         scenario: "p2panda-net-fact-node-contract",
         attempted_imports: import_report.attempted,
@@ -614,6 +631,18 @@ async fn run_async() -> Result<(), String> {
         startup_ms,
         sync_import_ms,
         acme_clear_import_ms,
+        idle_timeouts: stats.idle_timeouts,
+        stream_refreshes: stats.stream_refreshes,
+        stream_refresh_failures: stats.stream_refresh_failures,
+        stream_ended: stats.stream_ended,
+        stream_lagged: stats.stream_lagged,
+        stream_failed: stats.stream_failed,
+        replayed_operations_skipped: stats.replayed_operations_skipped,
+        session_started: stats.session_started,
+        sync_started: stats.sync_started,
+        sync_finished: stats.sync_finished,
+        live_mode_started: stats.live_mode_started,
+        session_finished: stats.session_finished,
         projection_rebuild_ms,
         restart_projection_rebuild_ms,
         elapsed_ms: started.elapsed().as_millis(),
@@ -663,7 +692,8 @@ async fn import_until_contract_terminal_outcomes(
         }
     }
     Err(format!(
-        "p2panda-net fact-node terminal outcomes did not arrive: {report:?}"
+        "p2panda-net fact-node terminal outcomes did not arrive: {report:?}; stats={:?}",
+        receiver.stats()
     ))
 }
 
@@ -713,7 +743,8 @@ async fn import_until_imports(
         }
     }
     Err(format!(
-        "p2panda-net fact-node imports did not arrive: {report:?}"
+        "p2panda-net fact-node imports did not arrive: {report:?}; stats={:?}",
+        receiver.stats()
     ))
 }
 

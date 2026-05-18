@@ -35,7 +35,7 @@ type PandaNetFactSyncHandle = p2panda_net::sync::SyncHandle<
 >;
 
 pub struct PandaNetFactNode {
-    _address_book: AddressBook,
+    address_book: AddressBook,
     _discovery: Discovery,
     _endpoint: Endpoint,
     _gossip: Gossip,
@@ -191,7 +191,7 @@ impl PandaNetFactNode {
         .await?;
         let stream = open_fact_stream(&log_sync, config.topic).await?;
         Ok(Self {
-            _address_book: address_book,
+            address_book,
             _discovery: discovery,
             _endpoint: endpoint,
             _gossip: gossip,
@@ -218,6 +218,18 @@ impl PandaNetFactNode {
     #[must_use]
     pub fn store(&self) -> SharedPandaFactStore {
         self.store.clone()
+    }
+
+    pub async fn add_node_info(
+        &self,
+        node_info: PandaNetNodeInfo,
+    ) -> Result<(), PandaNetTransportError> {
+        with_startup_timeout(
+            PandaNetStartupStep::BootstrapNode,
+            self.address_book.insert_node_info(node_info.into_inner()),
+        )
+        .await
+        .map(|_inserted| ())
     }
 
     pub async fn refresh_stream(&mut self) -> Result<(), PandaNetTransportError> {
