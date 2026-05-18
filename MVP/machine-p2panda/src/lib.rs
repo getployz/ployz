@@ -16,16 +16,6 @@ use mvp_projection::{
 use mvp_routing_p2panda::PandaServingFactSink;
 use tokio::sync::Mutex;
 
-pub trait PandaMachineFactSink: Send + Sync {
-    fn write_fact_payload<'a>(
-        &'a self,
-        session: &'a BusSession,
-        author: &'a PandaFactAuthor,
-        key: FactKey,
-        payload: FactPayload,
-    ) -> Pin<Box<dyn Future<Output = mvp_p2panda_facts::Result<PandaFactWriteOutcome>> + Send + 'a>>;
-}
-
 #[derive(Clone)]
 pub struct PandaMachineFactStore {
     store: Arc<Mutex<PandaFactStore>>,
@@ -113,19 +103,6 @@ impl PandaServingFactSink for PandaMachineFactStore {
     }
 }
 
-impl PandaMachineFactSink for PandaMachineFactStore {
-    fn write_fact_payload<'a>(
-        &'a self,
-        session: &'a BusSession,
-        author: &'a PandaFactAuthor,
-        key: FactKey,
-        payload: FactPayload,
-    ) -> Pin<Box<dyn Future<Output = mvp_p2panda_facts::Result<PandaFactWriteOutcome>> + Send + 'a>>
-    {
-        Box::pin(async move { self.write_fact_payload(session, author, key, payload).await })
-    }
-}
-
 impl FactSource for PandaMachineFactStore {
     fn list_candidates(
         &self,
@@ -145,59 +122,34 @@ impl FactSource for PandaMachineFactStore {
         candidates: &[FactCandidate],
         session: &BusSession,
     ) -> FactSourceResult<BTreeMap<FactContentHash, FactPayload>> {
-        let store = self.store.try_lock().map_err(|_| Self::unavailable())?;
-        validate_candidates_still_current(&store, island, candidates, session)?;
-        store.read_payloads(island, candidates, session)
+        self.store
+            .try_lock()
+            .map_err(|_| Self::unavailable())?
+            .read_payloads(island, candidates, session)
     }
-}
-
-fn validate_candidates_still_current(
-    store: &PandaFactStore,
-    island: &IslandId,
-    candidates: &[FactCandidate],
-    session: &BusSession,
-) -> FactSourceResult<()> {
-    for candidate in candidates {
-        let pattern = FactKeyPattern::parse(candidate.key().as_str()).map_err(|error| {
-            FactSourceError::Unavailable {
-                name: format!("candidate key no longer parses as an exact pattern: {error}"),
-            }
-        })?;
-        let current = store.list_candidates(island, &pattern, session)?;
-        if !current.iter().any(|stored| stored == candidate) {
-            return Err(FactSourceError::Unavailable {
-                name: format!(
-                    "p2panda machine fact candidate changed while projection was reading {}",
-                    candidate.key()
-                ),
-            });
-        }
-    }
-    Ok(())
 }
 
 #[derive(Clone)]
-pub struct PandaMachineFactWriter<S = PandaMachineFactStore> {
-    facts: S,
+pub struct PandaMachineFactWriter {
+    facts: PandaMachineFactStore,
     session: BusSession,
     author: Arc<PandaFactAuthor>,
 }
 
-impl<S> PandaMachineFactWriter<S> {
+impl PandaMachineFactWriter {
     #[must_use]
-    pub fn new(facts: S, session: BusSession, author: Arc<PandaFactAuthor>) -> Self {
+    pub fn new(
+        facts: PandaMachineFactStore,
+        session: BusSession,
+        author: Arc<PandaFactAuthor>,
+    ) -> Self {
         Self {
             facts,
             session,
             author,
         }
     }
-}
 
-impl<S> PandaMachineFactWriter<S>
-where
-    S: PandaMachineFactSink,
-{
     async fn write_machine_fact(
         &self,
         key: FactKey,
@@ -213,10 +165,7 @@ where
     }
 }
 
-impl<S> MachineFactWriter for PandaMachineFactWriter<S>
-where
-    S: PandaMachineFactSink,
-{
+impl MachineFactWriter for PandaMachineFactWriter {
     fn write_removal_started<'a>(
         &'a self,
         fact: NodeRemovalStartedFact,
@@ -294,8 +243,6 @@ fn written_machine_fact_from_outcome(
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
-    use std::pin::Pin;
     use std::sync::Arc;
 
     use mvp_bus::{
@@ -304,9 +251,7 @@ mod tests {
     use mvp_identity::NodeId;
     use mvp_machine::{MachineFactWriter, MachineRemoveError};
     use mvp_mesh::{removal_started_fact_key, tombstone_fact_key};
-    use mvp_p2panda_facts::{
-        PandaFactAuthor, PandaFactError, PandaFactStore, PandaFactWriteOutcome,
-    };
+    use mvp_p2panda_facts::{PandaFactAuthor, PandaFactError, PandaFactStore};
     use mvp_projection::{
         BackendEndpoint, DnsRecordFact, FactSource, NodeJoinedFact, NodeRemovalStartedFact,
         NodeTombstonedFact, ProjectionFactPayload, RouteId,
@@ -317,7 +262,7 @@ mod tests {
     };
     use mvp_routing_p2panda::PandaServingFactWriter;
 
-    use crate::{PandaMachineFactSink, PandaMachineFactStore, PandaMachineFactWriter};
+    use crate::{PandaMachineFactStore, PandaMachineFactWriter, machine_fact_store_error};
 
     struct Fixture {
         facts: PandaMachineFactStore,
@@ -387,27 +332,6 @@ mod tests {
             fixture.machine_a.clone(),
             Arc::clone(&fixture.machine_author_a),
         )
-    }
-
-    #[derive(Clone)]
-    struct FailingSink;
-
-    impl PandaMachineFactSink for FailingSink {
-        fn write_fact_payload<'a>(
-            &'a self,
-            _session: &'a mvp_bus::BusSession,
-            _author: &'a PandaFactAuthor,
-            _key: FactKey,
-            _payload: FactPayload,
-        ) -> Pin<
-            Box<dyn Future<Output = mvp_p2panda_facts::Result<PandaFactWriteOutcome>> + Send + 'a>,
-        > {
-            Box::pin(async {
-                Err(PandaFactError::Store {
-                    message: "simulated store outage".to_string(),
-                })
-            })
-        }
     }
 
     fn removal_started(reason: &str) -> NodeRemovalStartedFact {
@@ -562,17 +486,12 @@ mod tests {
 
     #[tokio::test]
     async fn backend_failure_is_foreground_fact_store_error() {
-        let fixture = fixture();
-        let writer = PandaMachineFactWriter::new(
-            FailingSink,
-            fixture.machine_a,
-            Arc::clone(&fixture.machine_author_a),
+        let error = machine_fact_store_error(
+            "write removal-started fact",
+            PandaFactError::Store {
+                message: "simulated store outage".to_string(),
+            },
         );
-
-        let error = writer
-            .write_removal_started(removal_started("remove"))
-            .await
-            .expect_err("backend failure");
 
         assert!(matches!(
             error,
@@ -584,7 +503,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_candidate_read_fails_after_conflict_changes_status() {
+    async fn stale_candidate_read_filters_candidate_after_conflict_changes_status() {
         let fixture = fixture();
         let writer_a = machine_writer(&fixture);
         let writer_b = PandaMachineFactWriter::new(
@@ -610,14 +529,12 @@ mod tests {
             .write_removal_started(removal_started("second"))
             .await
             .expect_err("second write conflicts");
-        let error = fixture
+        let payloads = fixture
             .facts
             .read_payloads(fixture.reader.island(), &candidates, &fixture.reader)
-            .expect_err("stale candidate status should fail");
+            .expect("stale candidate status is filtered");
 
-        assert!(
-            matches!(error, mvp_projection::FactSourceError::Unavailable { name } if name.contains("changed while projection was reading"))
-        );
+        assert!(payloads.is_empty());
     }
 
     #[tokio::test]

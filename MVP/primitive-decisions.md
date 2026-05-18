@@ -40,6 +40,10 @@ the decision concrete.
   trusted replica principal. A read-only projection principal may read facts but
   must not be the import authority for rebuilding a store from signed
   operations.
+- Slice 028 simplification moves stale-candidate filtering into
+  `PandaFactStore::read_payloads`: if a caller lists one candidate and the
+  candidate's current status changes before payload read, the store withholds
+  the stale payload instead of making each adapter revalidate exact keys.
 - `PandaServingFactSink` is deliberately narrow and adapter-local. There is
   only one production implementor today, so do not promote it into
   `mvp-p2panda-facts` or a broader store facade until a second command repeats

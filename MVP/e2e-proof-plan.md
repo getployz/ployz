@@ -625,7 +625,7 @@ Current proof status:
   extracted after a second volume/storage command repeats it.
 - Slice 028 moves machine remove from a mixed iroh-docs/bus fact proof to a
   single p2panda-backed fact source. Raw LOC increases: the E2E grows from 934
-  to 1,055 LOC and `mvp-machine-p2panda` adds 749 LOC including tests. The
+  to 1,037 LOC and `mvp-machine-p2panda` adds 666 LOC including tests. The
   leverage win is boundary clarity rather than line count: `DocsMachineFactWriter`
   and `CombinedFactSource` are gone, joined-node/removal/tombstone/serving facts
   rebuild from one p2panda store, and scoped author checks are explicit.

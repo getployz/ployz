@@ -36,6 +36,7 @@ use serde::Serialize;
 use crate::assertions::assert_eq_named;
 use crate::bus_syntax::{fact_pattern, pattern};
 use crate::metrics::{reset_dir, scenario_dir, write_json};
+use crate::p2panda_projection_fixture::status_count;
 use crate::process_role_harness::{
     MeshRoleClientError, MeshRoleFailureKind as HarnessMeshFailureKind, MeshRoleRequest,
     MeshRoleSuccess, cleanup_orphaned_children as cleanup_process_children, request_mesh_role,
@@ -63,9 +64,6 @@ struct MachineRemoveReport {
     removed_peer_rejected: bool,
     removal_started_before_route_cutover: bool,
     fresh_rebuild_conflict_count: usize,
-    join_writer_tombstone_denied: bool,
-    machine_writer_join_denied: bool,
-    conflicting_tombstone_not_projected: bool,
     elapsed_ms: u128,
 }
 
@@ -394,7 +392,7 @@ async fn run_async() -> Result<(), String> {
     trust_fresh_store_authors(
         &rebuilt_facts,
         &island,
-        [
+        &[
             (&join_writer_session, join_author.as_ref()),
             (&machine_writer_session, machine_author.as_ref()),
             (&routing_writer_session, routing_author.as_ref()),
@@ -485,9 +483,6 @@ async fn run_async() -> Result<(), String> {
         removed_peer_rejected,
         removal_started_before_route_cutover,
         fresh_rebuild_conflict_count,
-        join_writer_tombstone_denied: true,
-        machine_writer_join_denied: true,
-        conflicting_tombstone_not_projected: true,
         elapsed_ms: started.elapsed().as_millis(),
     };
 
@@ -504,9 +499,6 @@ async fn run_async() -> Result<(), String> {
     assert!(report.removed_peer_rejected);
     assert!(report.removal_started_before_route_cutover);
     assert_eq!(report.fresh_rebuild_conflict_count, 0);
-    assert!(report.join_writer_tombstone_denied);
-    assert!(report.machine_writer_join_denied);
-    assert!(report.conflicting_tombstone_not_projected);
 
     let json = write_json(&root.join("machine-remove-contract-metrics.json"), &report)?;
     println!("{json}");
@@ -577,10 +569,10 @@ async fn register_stop_handler(
     .map_err(|error| format!("register stop_removed_workloads handler: {error}"))
 }
 
-async fn trust_fresh_store_authors<const N: usize>(
+async fn trust_fresh_store_authors(
     facts: &PandaMachineFactStore,
     island: &IslandId,
-    authors: [(&BusSession, &PandaFactAuthor); N],
+    authors: &[(&BusSession, &PandaFactAuthor)],
 ) -> Result<(), String> {
     for (session, author) in authors {
         facts
@@ -609,16 +601,6 @@ fn assert_fact_key_present(
         return Ok(());
     }
     Err(format!("fact key {key} was not present"))
-}
-
-fn status_count(
-    statuses: &[mvp_projection::ProjectionStatus],
-    reason: ProjectionIgnoreReason,
-) -> usize {
-    statuses
-        .iter()
-        .find(|status| status.reason == reason)
-        .map_or(0, |status| status.count)
 }
 
 async fn assert_join_writer_cannot_tombstone(
