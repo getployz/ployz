@@ -11,6 +11,7 @@ members = [
     "mesh",
     "p2panda-facts",
     "p2panda-spike",
+    "p2panda-transport",
     "projection",
     "routing",
     "serving",
