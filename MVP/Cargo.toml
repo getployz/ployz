@@ -3,6 +3,7 @@ members = [
     "acme",
     "acme-command",
     "bus",
+    "commands",
     "deploy",
     "deploy-p2panda",
     "e2e",

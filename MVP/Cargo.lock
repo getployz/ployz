@@ -2795,6 +2795,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mvp-commands"
+version = "0.1.0"
+dependencies = [
+ "mvp-bus",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "mvp-deploy"
 version = "0.1.0"
 dependencies = [
@@ -2833,6 +2844,7 @@ dependencies = [
  "mvp-acme",
  "mvp-acme-command",
  "mvp-bus",
+ "mvp-commands",
  "mvp-deploy",
  "mvp-deploy-p2panda",
  "mvp-environment",
@@ -2864,6 +2876,7 @@ name = "mvp-environment"
 version = "0.1.0"
 dependencies = [
  "mvp-bus",
+ "mvp-commands",
  "mvp-identity",
  "mvp-projection",
  "mvp-routing",

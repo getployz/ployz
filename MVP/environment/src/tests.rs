@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use mvp_bus::{
     BusSession, FactContentHash, FactKey, FactKeyPattern, FactPayload, Grant, IslandId, PrincipalId,
 };
+use mvp_commands::{CommandContext, InMemoryCommandPhaseStore};
 use mvp_identity::{NodeId, VisibleNodes};
 use mvp_projection::{
     BackendEndpoint, CandidateStatus, DnsProjection, DnsRecordFact, FactCandidate, FactKind,
@@ -428,6 +429,90 @@ async fn promote_writes_decision_before_serving_and_requires_projection_catchup(
     assert!(
         matches!(complete, EnvironmentCommandResult::Complete { head } if head.volume_refs == vec![volume("db-pr-123")])
     );
+}
+
+#[tokio::test]
+async fn phased_promote_resumes_after_serving_commit_without_rewriting_decision() {
+    let fixture = Fixture::new();
+    let env = environment("prod");
+    let branch_env = environment("pr-123");
+    let production = head(
+        &env,
+        1,
+        "head-prod-1",
+        "serving-prod-1",
+        vec!["db-prod"],
+        None,
+    );
+    let branch = head(
+        &branch_env,
+        1,
+        "head-pr-1",
+        "serving-pr-1",
+        vec!["db-pr-123"],
+        None,
+    );
+    let mut source = MemoryFactSource::default();
+    source.insert_head(
+        &fixture,
+        PrincipalId::new("prod"),
+        CandidateStatus::Verified,
+        production,
+    );
+    source.insert_head(
+        &fixture,
+        PrincipalId::new("branch"),
+        CandidateStatus::Verified,
+        branch,
+    );
+    let writer = RecordingEnvironmentWriter::default();
+    let serving = RecordingServingWriter::default();
+    let plan = serving_plan("serving-promote-1", "node-branch", "fd00::2:8080", 2);
+    let command = PromoteEnvironmentCommand::new(&source, &fixture.session, &writer, &serving);
+    let cx = CommandContext::new(Arc::new(InMemoryCommandPhaseStore::default()));
+    let request = PromoteEnvironmentRequest {
+        command_id: command_id("promote-1"),
+        environment: env,
+        expected_environment_epoch: epoch(1),
+        branch_environment: branch_env,
+        expected_branch_epoch: epoch(1),
+        serving_commit: plan.clone(),
+        visible_nodes: visible_nodes(),
+    };
+
+    let pending = command
+        .execute_phased(&cx, request.clone(), None)
+        .await
+        .expect("phased promote pending");
+
+    assert!(matches!(
+        pending,
+        EnvironmentCommandResult::Pending {
+            reason: EnvironmentServingPendingReason::ProjectionCatchUpMissing
+        }
+    ));
+    assert_eq!(
+        writer.events(),
+        vec![RecordedEnvironmentEvent::PromoteDecision]
+    );
+    assert_eq!(serving.writes(), vec![plan.serving_commit_id.clone()]);
+
+    let complete = command
+        .execute_phased(&cx, request, Some(catch_up(&fixture, &plan)))
+        .await
+        .expect("phased promote resumes");
+
+    assert!(
+        matches!(complete, EnvironmentCommandResult::Complete { head } if head.volume_refs == vec![volume("db-pr-123")])
+    );
+    assert_eq!(
+        writer.events(),
+        vec![
+            RecordedEnvironmentEvent::PromoteDecision,
+            RecordedEnvironmentEvent::Head
+        ]
+    );
+    assert_eq!(serving.writes(), vec![plan.serving_commit_id]);
 }
 
 #[tokio::test]

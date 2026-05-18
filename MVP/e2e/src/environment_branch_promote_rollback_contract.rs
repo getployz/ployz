@@ -6,6 +6,7 @@ use mvp_bus::{
     BusSession, FactAuthorizer, FactKey, FactKeyPattern, FactPayload, Grant, IslandId, PrincipalId,
     harness::InMemoryBus,
 };
+use mvp_commands::{CommandContext, InMemoryCommandPhaseStore};
 use mvp_environment::{
     BranchEnvironmentCommand, BranchEnvironmentRequest, EnvironmentBranchId, EnvironmentCommandId,
     EnvironmentCommandResult, EnvironmentEpoch, EnvironmentFactPayload, EnvironmentFactWriter,
@@ -215,40 +216,33 @@ async fn run_async() -> Result<(), String> {
     let promote_plan = serving_plan("serving-promote-1", "fd00::2:8080", "fd00::2", 2);
     let promote_command =
         PromoteEnvironmentCommand::new(&store, &session, &environment_writer, &serving_writer);
-    let pending_promote = promote_command
-        .begin(PromoteEnvironmentRequest {
-            command_id: command_id("promote-1")?,
-            environment: prod.clone(),
-            expected_environment_epoch: epoch(1)?,
-            branch_environment: branch_env,
-            expected_branch_epoch: epoch(1)?,
-            serving_commit: promote_plan.clone(),
-            visible_nodes: visible_nodes(),
-        })
-        .await
-        .map_err(|error| format!("begin promote: {error}"))?;
-    let promote_decision = read_promote_decision(
-        &store,
-        &island,
-        &session,
-        &prod,
-        pending_promote.decision().command_id.clone(),
-    )?;
-    assert_eq_named(
-        "promote decision target volumes",
-        promote_decision.target_volume_refs.clone(),
-        vec![volume("db-pr-123")?],
-    )?;
+    let promote_cx = CommandContext::new(Arc::new(InMemoryCommandPhaseStore::default()));
+    let promote_request = PromoteEnvironmentRequest {
+        command_id: command_id("promote-1")?,
+        environment: prod.clone(),
+        expected_environment_epoch: epoch(1)?,
+        branch_environment: branch_env,
+        expected_branch_epoch: epoch(1)?,
+        serving_commit: promote_plan.clone(),
+        visible_nodes: visible_nodes(),
+    };
     let still_pending = promote_command
-        .finalize(pending_promote.clone(), None)
+        .execute_phased(&promote_cx, promote_request.clone(), None)
         .await
-        .map_err(|error| format!("finalize promote without catchup: {error}"))?;
+        .map_err(|error| format!("phased promote without catchup: {error}"))?;
     assert!(matches!(
         still_pending,
         EnvironmentCommandResult::Pending {
             reason: EnvironmentServingPendingReason::ProjectionCatchUpMissing
         }
     ));
+    let promote_decision =
+        read_promote_decision(&store, &island, &session, &prod, command_id("promote-1")?)?;
+    assert_eq_named(
+        "promote decision target volumes",
+        promote_decision.target_volume_refs.clone(),
+        vec![volume("db-pr-123")?],
+    )?;
     rebuild_projection(&serving_socket).await?;
     let promoted_status = request_reload(&serving_socket).await?;
     assert_serving_role_answer(
@@ -259,9 +253,13 @@ async fn run_async() -> Result<(), String> {
     )
     .await?;
     promote_command
-        .finalize(pending_promote, Some(catch_up(&island, &promote_plan)))
+        .execute_phased(
+            &promote_cx,
+            promote_request,
+            Some(catch_up(&island, &promote_plan)),
+        )
         .await
-        .map_err(|error| format!("finalize promote: {error}"))?;
+        .map_err(|error| format!("resume phased promote: {error}"))?;
     let promoted_gateway_revision = serving_role_gateway_revision(&promoted_status)?;
     let promoted_head = read_environment_heads(&store, &session, &prod)
         .map_err(|error| format!("read promoted head: {error}"))?
