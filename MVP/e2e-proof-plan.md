@@ -590,12 +590,12 @@ Current proof status:
   restart-recovery E2E shrinks from 945 to 789 lines and stops carrying
   deploy-specific p2panda writer/outcome glue; `mvp-deploy-p2panda` is the
   reusable 492-line adapter plus focused tests.
-- A read-only LOC check after Slice 026 says the representative deploy surface
-  is now about 2,636 MVP LOC versus about 14,288 old production deploy LOC, or
-  roughly 81 percent smaller before E2E tests. Counting old deploy tests and
-  MVP deploy E2Es, the comparison is about 6,323 versus 23,950 LOC. This is a
-  real feature-surface win, but the MVP foundation itself is already large, so
-  future slices must track how much new shared substrate they add.
+- A read-only LOC check after Slice 026 says the old
+  `crates/ployzd/src/daemon/handlers/deploy.rs` baseline is 4,558 lines. The
+  MVP deploy domain/coordinator plus p2panda adapter is roughly 2,700 lines
+  before tests, with deploy E2Es carrying the product proofs separately. This
+  is a real feature-surface win, but the MVP foundation itself is already
+  large, so future slices must track how much new shared substrate they add.
 - Slice 022 is a mixed leverage result. It adds a 430-line E2E transport proof
   and 84 lines of fact-store envelope/test surface, but it prevents a worse
   fork: p2panda-net is now proven as the carrier while Ployz keeps one canonical
