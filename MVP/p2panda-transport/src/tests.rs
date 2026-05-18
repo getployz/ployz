@@ -4,9 +4,9 @@ use mvp_p2panda_facts::{
 };
 
 use crate::{
-    PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetFactNode,
-    PandaNetFactNodeConfig, PandaNetNetworkId, PandaNetNode, PandaNetNodeConfig, PandaNetNodeSeed,
-    PandaNetTopic, import_fact_body_into_shared_store,
+    PandaNetFactImportFailure, PandaNetFactImportOutcome, PandaNetFactImportRejection,
+    PandaNetFactNode, PandaNetFactNodeConfig, PandaNetNetworkId, PandaNetNode, PandaNetNodeConfig,
+    PandaNetNodeSeed, PandaNetTopic, import_fact_body_into_shared_store,
 };
 
 #[tokio::test]
@@ -231,6 +231,52 @@ async fn fact_node_retries_deferred_import_after_predecessor_arrives() {
     assert_eq!(report.deferred.len(), 1);
     assert_eq!(report.imported, 2);
     assert_eq!(receiver.store().export_operations().await.len(), 2);
+}
+
+#[tokio::test]
+async fn fact_node_reports_pending_queue_full() {
+    let fixture = FactNodeFixture::new("fact-node-pending-cap");
+    let receiver_store = fixture.trusted_store(ReplicaTrust::Trusted).await;
+    let mut receiver = PandaNetFactNode::spawn(
+        PandaNetFactNodeConfig::new(
+            PandaNetNodeConfig::localhost_ephemeral(
+                fixture.network_id,
+                PandaNetNodeSeed::new([43; 32]),
+                Vec::new(),
+            ),
+            fixture.topic,
+            receiver_store,
+            fixture.replica.clone(),
+        )
+        .with_max_pending_imports(0),
+    )
+    .await
+    .expect("spawn receiver with no pending capacity");
+    let receiver_info = receiver.node_info();
+    let mut sender = fixture
+        .node([44; 32], vec![receiver_info], ReplicaTrust::Trusted)
+        .await
+        .expect("spawn sender fact node");
+    let operations = fixture
+        .two_linked_operations()
+        .await
+        .expect("create linked operations");
+
+    sender
+        .publish_operation(&operations[1])
+        .await
+        .expect("publish child operation without predecessor");
+
+    let outcome = receiver
+        .import_next_fact()
+        .await
+        .expect("receiver imports capped pending stream");
+
+    assert!(matches!(
+        outcome,
+        PandaNetFactImportOutcome::Failed(PandaNetFactImportFailure::PendingQueueFull { max: 0 })
+    ));
+    assert!(receiver.store().export_operations().await.is_empty());
 }
 
 #[tokio::test]

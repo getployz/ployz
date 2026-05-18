@@ -284,8 +284,23 @@ pub struct PandaNetStream {
     subscription: p2panda_net::sync::SyncSubscription<TopicLogSyncEvent>,
 }
 
+pub(crate) enum PandaNetStreamBody {
+    Body(Vec<u8>),
+    TooLarge { size: usize, max: usize },
+}
+
 impl PandaNetStream {
     pub async fn next_body(&mut self) -> Result<Vec<u8>, PandaNetTransportError> {
+        match self.next_body_limited(usize::MAX).await? {
+            PandaNetStreamBody::Body(body) => Ok(body),
+            PandaNetStreamBody::TooLarge { .. } => unreachable!("usize::MAX accepts every body"),
+        }
+    }
+
+    pub(crate) async fn next_body_limited(
+        &mut self,
+        max_body_bytes: usize,
+    ) -> Result<PandaNetStreamBody, PandaNetTransportError> {
         loop {
             let event = timeout(STREAM_TIMEOUT, self.subscription.next())
                 .await
@@ -304,10 +319,18 @@ impl PandaNetStream {
                     event: TopicLogSyncEvent::OperationReceived { operation, .. },
                     ..
                 } => {
+                    let body_size =
+                        usize::try_from(operation.header.payload_size).unwrap_or(usize::MAX);
+                    if body_size > max_body_bytes {
+                        return Ok(PandaNetStreamBody::TooLarge {
+                            size: body_size,
+                            max: max_body_bytes,
+                        });
+                    }
                     let Some(body) = operation.body else {
                         return Err(PandaNetTransportError::MissingBody { topic: self.topic });
                     };
-                    return Ok(body.to_bytes());
+                    return Ok(PandaNetStreamBody::Body(body.to_bytes()));
                 }
                 FromSync {
                     event: TopicLogSyncEvent::Failed { error },

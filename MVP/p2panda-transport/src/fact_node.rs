@@ -10,6 +10,7 @@ use crate::{
     PandaNetFactImportFailure, PandaNetFactImportOutcome, PandaNetFactImportRejection,
     PandaNetFactImportReport, PandaNetNode, PandaNetNodeConfig, PandaNetNodeInfo, PandaNetStream,
     PandaNetTopic, PandaNetTransportError, import_fact_body_into_shared_store,
+    node::PandaNetStreamBody,
 };
 
 const DEFAULT_MAX_FACT_ENVELOPE_BYTES: usize = 8 * 1024 * 1024;
@@ -97,8 +98,17 @@ impl PandaNetFactNode {
     pub async fn import_next_fact_batch(
         &mut self,
     ) -> Result<Vec<PandaNetFactImportOutcome>, PandaNetTransportError> {
-        let body = self.stream.next_body().await?;
-        let outcome = self.import_body(body).await;
+        let outcome =
+            match self
+                .stream
+                .next_body_limited(self.max_fact_envelope_bytes)
+                .await?
+            {
+                PandaNetStreamBody::Body(body) => self.import_body(body).await,
+                PandaNetStreamBody::TooLarge { size, max } => PandaNetFactImportOutcome::Rejected(
+                    PandaNetFactImportRejection::EnvelopeTooLarge { size, max },
+                ),
+            };
         let can_unblock_pending = import_can_unblock_pending(&outcome);
         let mut outcomes = vec![outcome];
         if can_unblock_pending {
