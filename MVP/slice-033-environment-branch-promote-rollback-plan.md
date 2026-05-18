@@ -1,6 +1,6 @@
 ---
 title: Slice 033 Environment Branch Promote Rollback Plan
-status: planned
+status: implemented
 created: 2026-05-18
 origin:
   - VISION.md

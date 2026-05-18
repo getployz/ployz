@@ -121,7 +121,8 @@ mod tests {
         EnvironmentBranchFact, EnvironmentBranchId, EnvironmentCommandId, EnvironmentEpoch,
         EnvironmentFactWriter, EnvironmentHeadFact, EnvironmentHeadId, EnvironmentId,
         EnvironmentPromoteDecisionFact, EnvironmentRollbackDecisionFact, EnvironmentRouteRef,
-        EnvironmentVolumeRef, environment_head_fact_key,
+        EnvironmentVolumeRef, environment_branch_fact_key, environment_head_fact_key,
+        environment_promote_decision_fact_key, environment_rollback_decision_fact_key,
     };
     use mvp_identity::{NodeId, VisibleNodes};
     use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, SharedPandaFactStore};
@@ -145,22 +146,37 @@ mod tests {
 
         let inserted = writer.write_head(head.clone()).await.expect("write head");
         let repeated = writer.write_head(head.clone()).await.expect("repeat head");
-        writer
+        let branch_write = writer
             .write_branch(branch.clone())
             .await
             .expect("write branch");
-        writer
-            .write_promote_decision(promote)
+        let promote_write = writer
+            .write_promote_decision(promote.clone())
             .await
             .expect("write promote decision");
-        writer
-            .write_rollback_decision(rollback)
+        let rollback_write = writer
+            .write_rollback_decision(rollback.clone())
             .await
             .expect("write rollback decision");
 
         assert_eq!(
             inserted.key,
             environment_head_fact_key(&head.environment, head.epoch).expect("head key")
+        );
+        assert_eq!(
+            branch_write.key,
+            environment_branch_fact_key(&branch.source_environment, &branch.branch_id)
+                .expect("branch key")
+        );
+        assert_eq!(
+            promote_write.key,
+            environment_promote_decision_fact_key(&promote.environment, &promote.command_id)
+                .expect("promote key")
+        );
+        assert_eq!(
+            rollback_write.key,
+            environment_rollback_decision_fact_key(&rollback.environment, &rollback.command_id)
+                .expect("rollback key")
         );
         assert_eq!(repeated.key, inserted.key);
         assert_eq!(store.export_operations().await.len(), 4);

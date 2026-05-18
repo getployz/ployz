@@ -13,6 +13,8 @@ memory-stats = "1"
 mvp-bus = { path = "../bus" }
 mvp-deploy = { path = "../deploy" }
 mvp-deploy-p2panda = { path = "../deploy-p2panda" }
+mvp-environment = { path = "../environment" }
+mvp-environment-p2panda = { path = "../environment-p2panda" }
 mvp-identity = { path = "../identity" }
 mvp-iroh = { path = "../iroh" }
 mvp-acme = { path = "../acme", features = ["harness"] }

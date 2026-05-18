@@ -606,6 +606,12 @@ Metrics:
 
 Current proof status:
 
+- Slice 033 adds `environment-branch-promote-rollback-contract`. It proves a
+  p2panda-backed production head, branch volume lineage, promote decision before
+  serving cutover, rollback as a forward head, serving process survival without
+  the command adapter, and projection rebuild recovery. This covers the north
+  star branch/promote/rollback primitive at product-proof depth without adding a
+  workflow engine.
 - Slice 016 removes parallel node identity and visible-node evidence types
   before the next node-facing product command. Deploy, lease/ACME, mesh, and
   E2E fixtures now use one shared `NodeId`/`VisibleNodes` type, and WireGuard

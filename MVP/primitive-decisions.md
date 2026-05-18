@@ -1261,3 +1261,37 @@ Revisit if:
   `mvp-iroh` advance without a split.
 - Process-role serving replication needs long-lived supervisor/status surfaces.
 - p2panda-auth becomes ready to own island membership or replication grants.
+
+## Environment Branch/Promote/Rollback Commands
+
+Why this:
+- `VISION.md` names branch, promote, and rollback as core primitives. This is
+  the first product proof that they can be written without a controller or
+  desired-state environment reconciler.
+
+Decision:
+- Environment facts are immutable references: heads point at routing-owned
+  serving commits and typed volume refs. They do not embed gateway routes, DNS
+  records, or backend payloads.
+- Branch validates source-head epoch, forks volume refs through a participant
+  ABI, revalidates the source head, then writes branch/head facts. It never
+  changes production serving.
+- Promote and rollback write a decision fact before serving cutover, write the
+  serving commit through `mvp-routing`, and only finalize the environment head
+  after projection catch-up.
+- Rollback is a new forward head using the previous head's serving/volume refs,
+  not deletion or mutation of promote facts.
+- `mvp-commands` remains deferred. This slice added explicit begin/finalize
+  code, but the phase/resume trigger has not crossed the documented threshold.
+
+Costs:
+- The E2E uses projection rebuilds for p2panda-sqlite visibility between
+  process roles. That is acceptable for this product proof; live p2panda-net
+  process replication remains a separate serving-transport proof.
+- The volume fork participant is still a typed ABI fixture, not production ZFS.
+
+Revisit if:
+- Volume branch/fork and environment branch repeat enough fact-store or
+  participant glue to justify a shared volume adapter.
+- A third command grows a persisted phase enum plus resume logic, triggering the
+  `mvp-commands` slice.

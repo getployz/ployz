@@ -4,16 +4,17 @@ use std::pin::Pin;
 use mvp_bus::FactKey;
 use mvp_identity::VisibleNodes;
 use mvp_projection::FactSource;
-use mvp_routing::{ProjectionCatchUp, ServingCommitPlan, ServingFactWriter};
+use mvp_routing::{ProjectionCatchUp, RoutingError, ServingCommitPlan, ServingFactWriter};
 
 use crate::{
     EnvironmentBranchFact, EnvironmentBranchId, EnvironmentCommandId, EnvironmentEpoch,
-    EnvironmentError, EnvironmentHeadFact, EnvironmentId, EnvironmentPromoteDecisionFact,
-    EnvironmentResult, EnvironmentRollbackDecisionFact, EnvironmentRouteRef, EnvironmentVolumeRef,
-    environment_branch_fact_key, environment_branch_fact_payload, environment_head_fact_key,
-    environment_head_fact_payload, environment_promote_decision_fact_key,
-    environment_promote_decision_fact_payload, environment_rollback_decision_fact_key,
-    environment_rollback_decision_fact_payload, require_expected_environment_epoch,
+    EnvironmentError, EnvironmentHeadCandidate, EnvironmentHeadFact, EnvironmentId,
+    EnvironmentPromoteDecisionFact, EnvironmentResult, EnvironmentRollbackDecisionFact,
+    EnvironmentRouteRef, EnvironmentVolumeRef, environment_branch_fact_key,
+    environment_branch_fact_payload, environment_head_fact_key, environment_head_fact_payload,
+    environment_promote_decision_fact_key, environment_promote_decision_fact_payload,
+    environment_rollback_decision_fact_key, environment_rollback_decision_fact_payload,
+    require_expected_environment_epoch,
 };
 use mvp_bus::BusSession;
 
@@ -150,7 +151,7 @@ where
             &request.source_environment,
             request.expected_source_epoch,
         )?;
-        if current.fact.head_id != source_head.fact.head_id {
+        if !same_head_candidate(&current, &source_head) {
             return Err(EnvironmentError::StaleExpectedEpoch {
                 environment: request.source_environment,
                 expected: request.expected_source_epoch,
@@ -203,8 +204,14 @@ pub struct PromoteEnvironmentRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingEnvironmentPromote {
-    pub decision: EnvironmentPromoteDecisionFact,
-    pub serving_fact_key: FactKey,
+    decision: EnvironmentPromoteDecisionFact,
+}
+
+impl PendingEnvironmentPromote {
+    #[must_use]
+    pub fn decision(&self) -> &EnvironmentPromoteDecisionFact {
+        &self.decision
+    }
 }
 
 pub struct PromoteEnvironmentCommand<'a, W, S> {
@@ -259,20 +266,38 @@ where
             target_volume_refs: branch.fact.volume_refs.clone(),
             visible_nodes: request.visible_nodes,
         };
+        let current_production = require_expected_environment_epoch(
+            self.source,
+            self.session,
+            &request.environment,
+            request.expected_environment_epoch,
+        )?;
+        reject_if_head_changed(
+            &request.environment,
+            request.expected_environment_epoch,
+            &production,
+            &current_production,
+        )?;
+        let current_branch = require_expected_environment_epoch(
+            self.source,
+            self.session,
+            &request.branch_environment,
+            request.expected_branch_epoch,
+        )?;
+        reject_if_head_changed(
+            &request.branch_environment,
+            request.expected_branch_epoch,
+            &branch,
+            &current_branch,
+        )?;
         self.fact_writer
             .write_promote_decision(decision.clone())
             .await?;
-        let serving = self
-            .serving_writer
+        self.serving_writer
             .write_serving_commit(&request.serving_commit)
             .await
-            .map_err(|error| EnvironmentError::ServingWrite {
-                message: error.to_string(),
-            })?;
-        Ok(PendingEnvironmentPromote {
-            decision,
-            serving_fact_key: serving.key().clone(),
-        })
+            .map_err(map_serving_error)?;
+        Ok(PendingEnvironmentPromote { decision })
     }
 
     pub async fn finalize(
@@ -318,8 +343,14 @@ pub struct RollbackEnvironmentRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingEnvironmentRollback {
-    pub decision: EnvironmentRollbackDecisionFact,
-    pub serving_fact_key: FactKey,
+    decision: EnvironmentRollbackDecisionFact,
+}
+
+impl PendingEnvironmentRollback {
+    #[must_use]
+    pub fn decision(&self) -> &EnvironmentRollbackDecisionFact {
+        &self.decision
+    }
 }
 
 pub struct RollbackEnvironmentCommand<'a, W, S> {
@@ -375,20 +406,26 @@ where
             rollback_target,
             visible_nodes: request.visible_nodes,
         };
+        let current_before_write = require_expected_environment_epoch(
+            self.source,
+            self.session,
+            &request.environment,
+            request.expected_environment_epoch,
+        )?;
+        reject_if_head_changed(
+            &request.environment,
+            request.expected_environment_epoch,
+            &current,
+            &current_before_write,
+        )?;
         self.fact_writer
             .write_rollback_decision(decision.clone())
             .await?;
-        let serving = self
-            .serving_writer
+        self.serving_writer
             .write_serving_commit(&request.serving_commit)
             .await
-            .map_err(|error| EnvironmentError::ServingWrite {
-                message: error.to_string(),
-            })?;
-        Ok(PendingEnvironmentRollback {
-            decision,
-            serving_fact_key: serving.key().clone(),
-        })
+            .map_err(map_serving_error)?;
+        Ok(PendingEnvironmentRollback { decision })
     }
 
     pub async fn finalize(
@@ -457,6 +494,35 @@ fn validate_fork_evidence(
                 request.command_id.as_str()
             ))?,
         })
+    }
+}
+
+fn reject_if_head_changed(
+    environment: &EnvironmentId,
+    expected: EnvironmentEpoch,
+    original: &EnvironmentHeadCandidate,
+    current: &EnvironmentHeadCandidate,
+) -> EnvironmentResult<()> {
+    if same_head_candidate(original, current) {
+        return Ok(());
+    }
+    Err(EnvironmentError::StaleExpectedEpoch {
+        environment: environment.clone(),
+        expected,
+        actual: Some(current.fact.epoch),
+    })
+}
+
+fn same_head_candidate(left: &EnvironmentHeadCandidate, right: &EnvironmentHeadCandidate) -> bool {
+    left.key == right.key && left.content_hash == right.content_hash
+}
+
+fn map_serving_error(error: RoutingError) -> EnvironmentError {
+    match error {
+        RoutingError::ServingFactConflict { key } => EnvironmentError::ServingFactConflict { key },
+        other => EnvironmentError::ServingWrite {
+            message: other.to_string(),
+        },
     }
 }
 

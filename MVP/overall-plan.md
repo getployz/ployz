@@ -620,6 +620,12 @@ Each future slice should improve at least one of these gates:
 
 Recent semantic-leverage proof:
 
+- Slice 033 adds the environment branch/promote/rollback product proof. The
+  command shape stayed on existing primitives: p2panda facts, routing-owned
+  serving commits, projection catch-up, visible-node evidence, and explicit
+  begin/finalize boundaries. No generic workflow engine was introduced, so
+  `mvp-commands` remains deferred until a third persisted phase/resume command
+  actually repeats enough bookkeeping to justify it.
 - Slice 026 extracts deploy p2panda fact-writing/recovery glue from the
   restart-recovery E2E into `mvp-deploy-p2panda`. The deploy coordinator stays
   core-only, while the p2panda adapter becomes reusable business plumbing for
