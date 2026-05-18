@@ -300,7 +300,6 @@ pub enum ReplicaImportAccess {
 }
 
 impl ReplicaImportAccess {
-    #[cfg(test)]
     fn into_access(self) -> Access<IslandMemberCondition> {
         match self {
             Self::Pull => Access::pull(),
@@ -318,7 +317,6 @@ pub enum IslandMemberRole {
 }
 
 impl IslandMemberRole {
-    #[cfg(test)]
     fn into_access(self) -> Access<IslandMemberCondition> {
         match self {
             Self::Manager => Access::manage(),
@@ -549,6 +547,123 @@ impl IslandMembershipExtensions {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IslandAuthorityMember {
+    member_id: IslandMemberId,
+    principal: PrincipalId,
+    epoch: IslandMemberEpoch,
+    author_key: IslandMemberAuthorKey,
+}
+
+impl IslandAuthorityMember {
+    fn from_binding(binding: &IslandMemberKeyBinding) -> Self {
+        Self {
+            member_id: binding.member_id(),
+            principal: binding.principal().clone(),
+            epoch: binding.epoch(),
+            author_key: binding.author_key(),
+        }
+    }
+
+    #[must_use]
+    pub fn member_id(&self) -> IslandMemberId {
+        self.member_id
+    }
+
+    #[must_use]
+    pub fn principal(&self) -> &PrincipalId {
+        &self.principal
+    }
+
+    #[must_use]
+    pub fn epoch(&self) -> IslandMemberEpoch {
+        self.epoch
+    }
+
+    #[must_use]
+    pub fn author_key(&self) -> IslandMemberAuthorKey {
+        self.author_key
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IslandAuthoritySnapshot {
+    island: IslandId,
+    active_writers: BTreeMap<PrincipalId, IslandAuthorityMember>,
+    active_replica_importers: BTreeMap<PrincipalId, IslandAuthorityMember>,
+    historical_writers: BTreeMap<(PrincipalId, IslandMemberEpoch), IslandAuthorityMember>,
+}
+
+impl IslandAuthoritySnapshot {
+    fn from_authz(authz: &IslandAuthz) -> Self {
+        let mut active_writers = BTreeMap::new();
+        let mut active_replica_importers = BTreeMap::new();
+        let mut historical_writers = authz.historical_writers.clone();
+
+        for binding in authz.bindings.values() {
+            let member = IslandAuthorityMember::from_binding(binding);
+            if authz.can_write_member(binding.member_id()) {
+                insert_newest_authority_member(&mut active_writers, member.clone());
+                historical_writers
+                    .insert((member.principal().clone(), member.epoch()), member.clone());
+            }
+            if authz.can_import_replica(binding.member_id()) {
+                insert_newest_authority_member(&mut active_replica_importers, member);
+            }
+        }
+
+        Self {
+            island: authz.island.clone(),
+            active_writers,
+            active_replica_importers,
+            historical_writers,
+        }
+    }
+
+    #[must_use]
+    pub fn island(&self) -> &IslandId {
+        &self.island
+    }
+
+    #[must_use]
+    pub fn active_writer(&self, principal: &PrincipalId) -> Option<&IslandAuthorityMember> {
+        self.active_writers.get(principal)
+    }
+
+    #[must_use]
+    pub fn active_replica_importer(
+        &self,
+        principal: &PrincipalId,
+    ) -> Option<&IslandAuthorityMember> {
+        self.active_replica_importers.get(principal)
+    }
+
+    #[must_use]
+    pub fn historical_writer(
+        &self,
+        principal: &PrincipalId,
+        epoch: IslandMemberEpoch,
+    ) -> Option<&IslandAuthorityMember> {
+        self.historical_writers.get(&(principal.clone(), epoch))
+    }
+
+    pub fn active_writers(&self) -> impl Iterator<Item = &IslandAuthorityMember> {
+        self.active_writers.values()
+    }
+}
+
+fn insert_newest_authority_member(
+    members: &mut BTreeMap<PrincipalId, IslandAuthorityMember>,
+    member: IslandAuthorityMember,
+) {
+    match members.get(member.principal()) {
+        Some(existing) if existing.epoch() > member.epoch() => {}
+        _ => {
+            members.insert(member.principal().clone(), member);
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IslandRootAuthority {
     binding: IslandMemberKeyBinding,
 }
@@ -620,6 +735,118 @@ impl IslandAuthzMemoryLog {
         let mut candidate = authz.clone();
         let change = candidate.apply_validated_signed(signed.clone())?;
         self.insert_signed(&signed, signer_private_key).await?;
+        *authz = candidate;
+        Ok(change)
+    }
+
+    pub async fn add_writer(
+        &mut self,
+        authz: &mut IslandAuthz,
+        manager: &IslandMemberKeyBinding,
+        manager_private_key: &PrivateKey,
+        member: IslandMemberKeyBinding,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
+        self.add_member(
+            authz,
+            manager,
+            manager_private_key,
+            member,
+            IslandMemberRole::Writer,
+        )
+        .await
+    }
+
+    pub async fn add_replica_importer(
+        &mut self,
+        authz: &mut IslandAuthz,
+        manager: &IslandMemberKeyBinding,
+        manager_private_key: &PrivateKey,
+        member: IslandMemberKeyBinding,
+        access: ReplicaImportAccess,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
+        self.add_member(
+            authz,
+            manager,
+            manager_private_key,
+            member,
+            IslandMemberRole::ReplicaImporter(access),
+        )
+        .await
+    }
+
+    pub async fn remove_member(
+        &mut self,
+        authz: &mut IslandAuthz,
+        manager: &IslandMemberKeyBinding,
+        manager_private_key: &PrivateKey,
+        member: IslandMemberId,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
+        let mut candidate = authz.clone();
+        candidate.remember_current_writers();
+        let operation = candidate.remove_member_operation(manager.member_id(), member)?;
+        let change = IslandAuthChange {
+            operation_id: operation.id(),
+            actor: manager.member_id(),
+        };
+        let signed =
+            IslandSignedOperation::sign(operation, manager.member_id(), manager_private_key, None);
+        self.insert_signed(&signed, manager_private_key).await?;
+        *authz = candidate;
+        Ok(change)
+    }
+
+    pub async fn demote_to_replica_importer(
+        &mut self,
+        authz: &mut IslandAuthz,
+        manager: &IslandMemberKeyBinding,
+        manager_private_key: &PrivateKey,
+        member: IslandMemberId,
+        access: ReplicaImportAccess,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
+        let mut candidate = authz.clone();
+        candidate.remember_current_writers();
+        let operation = candidate.demote_member_operation(
+            manager.member_id(),
+            member,
+            IslandMemberRole::ReplicaImporter(access),
+        )?;
+        let change = IslandAuthChange {
+            operation_id: operation.id(),
+            actor: manager.member_id(),
+        };
+        let signed =
+            IslandSignedOperation::sign(operation, manager.member_id(), manager_private_key, None);
+        self.insert_signed(&signed, manager_private_key).await?;
+        *authz = candidate;
+        Ok(change)
+    }
+
+    async fn add_member(
+        &mut self,
+        authz: &mut IslandAuthz,
+        manager: &IslandMemberKeyBinding,
+        manager_private_key: &PrivateKey,
+        member: IslandMemberKeyBinding,
+        role: IslandMemberRole,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
+        let mut candidate = authz.clone();
+        let member_id = member.member_id();
+        let operation = candidate.add_member_operation(manager.member_id(), member_id, role)?;
+        let change = IslandAuthChange {
+            operation_id: operation.id(),
+            actor: manager.member_id(),
+        };
+        let signed = IslandSignedOperation::sign(
+            operation,
+            manager.member_id(),
+            manager_private_key,
+            Some(member),
+        );
+        self.insert_signed(&signed, manager_private_key).await?;
+        if let Some(binding) = signed.introduced_binding.clone() {
+            candidate.bindings.insert(member_id, binding);
+        }
+        candidate.remember_current_writers();
         *authz = candidate;
         Ok(change)
     }
@@ -775,7 +1002,10 @@ impl IslandAuthzMemoryLog {
         {
             return Err(IslandAuthzError::UnanchoredRootCreate(root.member_id()));
         }
-        if !matches!(signed.operation.payload().action, GroupAction::Create { .. }) {
+        if !matches!(
+            signed.operation.payload().action,
+            GroupAction::Create { .. }
+        ) {
             return Err(IslandAuthzError::UnanchoredRootCreate(root.member_id()));
         }
         let signature_payload =
@@ -850,6 +1080,7 @@ pub struct IslandAuthz {
     group_id: IslandGroupId,
     state: Option<AuthState>,
     bindings: BTreeMap<IslandMemberId, IslandMemberKeyBinding>,
+    historical_writers: BTreeMap<(PrincipalId, IslandMemberEpoch), IslandAuthorityMember>,
 }
 
 impl IslandAuthz {
@@ -881,11 +1112,18 @@ impl IslandAuthz {
         }
         let group_id = IslandGroupId::from_island(&island);
         let actor = root.member_id();
+        let mut historical_writers = BTreeMap::new();
+        let root_member = IslandAuthorityMember::from_binding(&root);
+        historical_writers.insert(
+            (root_member.principal().clone(), root_member.epoch()),
+            root_member,
+        );
         Ok(Self {
             island,
             group_id,
             state: Some(AuthCrdt::init(IslandOrdererState::new(actor.auth_id()))),
             bindings: BTreeMap::from([(actor, root)]),
+            historical_writers,
         })
     }
 
@@ -902,6 +1140,11 @@ impl IslandAuthz {
     #[must_use]
     pub fn binding(&self, member_id: IslandMemberId) -> Option<&IslandMemberKeyBinding> {
         self.bindings.get(&member_id)
+    }
+
+    #[must_use]
+    pub fn authority_snapshot(&self) -> IslandAuthoritySnapshot {
+        IslandAuthoritySnapshot::from_authz(self)
     }
 
     #[cfg(test)]
@@ -949,6 +1192,7 @@ impl IslandAuthz {
         if let Some(binding) = introduced_binding {
             self.bindings.insert(binding.member_id(), binding);
         }
+        self.remember_current_writers();
         Ok(change)
     }
 
@@ -1011,6 +1255,51 @@ impl IslandAuthz {
         self.with_groups_operation(actor, |groups| groups.create(group_id, Vec::new()))
     }
 
+    fn add_member_operation(
+        &mut self,
+        manager: IslandMemberId,
+        member: IslandMemberId,
+        role: IslandMemberRole,
+    ) -> Result<IslandAuthOperation, IslandAuthzError> {
+        let group_id = self.group_id.auth_id();
+        self.with_groups_operation(manager, |groups| {
+            groups.add(
+                group_id,
+                manager.auth_id(),
+                member.auth_id(),
+                role.into_access(),
+            )
+        })
+    }
+
+    fn remove_member_operation(
+        &mut self,
+        manager: IslandMemberId,
+        member: IslandMemberId,
+    ) -> Result<IslandAuthOperation, IslandAuthzError> {
+        let group_id = self.group_id.auth_id();
+        self.with_groups_operation(manager, |groups| {
+            groups.remove(group_id, manager.auth_id(), member.auth_id())
+        })
+    }
+
+    fn demote_member_operation(
+        &mut self,
+        manager: IslandMemberId,
+        member: IslandMemberId,
+        role: IslandMemberRole,
+    ) -> Result<IslandAuthOperation, IslandAuthzError> {
+        let group_id = self.group_id.auth_id();
+        self.with_groups_operation(manager, |groups| {
+            groups.demote(
+                group_id,
+                manager.auth_id(),
+                member.auth_id(),
+                role.into_access(),
+            )
+        })
+    }
+
     #[cfg(test)]
     fn add_member(
         &mut self,
@@ -1024,17 +1313,14 @@ impl IslandAuthz {
                 actual: member.island().clone(),
             });
         }
-        let group_id = self.group_id.auth_id();
         let member_id = member.member_id();
-        let change = self.mutate(manager, |groups| {
-            groups.add(
-                group_id,
-                manager.auth_id(),
-                member_id.auth_id(),
-                role.into_access(),
-            )
-        })?;
+        let operation = self.add_member_operation(manager, member_id, role)?;
+        let change = IslandAuthChange {
+            operation_id: operation.id,
+            actor: manager,
+        };
         self.bindings.insert(member_id, member);
+        self.remember_current_writers();
         Ok(change)
     }
 
@@ -1127,6 +1413,17 @@ impl IslandAuthz {
             .orderer_y
             .set_heads(state.inner.heads().into_iter().collect());
         Ok(())
+    }
+
+    fn remember_current_writers(&mut self) {
+        for binding in self.bindings.values() {
+            if !self.can_write_member(binding.member_id()) {
+                continue;
+            }
+            let member = IslandAuthorityMember::from_binding(binding);
+            self.historical_writers
+                .insert((member.principal().clone(), member.epoch()), member);
+        }
     }
 
     fn access(&self, member: IslandMemberId) -> Option<Access<IslandMemberCondition>> {
