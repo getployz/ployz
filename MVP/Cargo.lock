@@ -2383,6 +2383,7 @@ dependencies = [
  "mvp-bus",
  "mvp-identity",
  "mvp-projection",
+ "mvp-routing",
  "serde",
  "serde_json",
  "thiserror",
@@ -2476,6 +2477,18 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "mvp-routing"
+version = "0.1.0"
+dependencies = [
+ "mvp-bus",
+ "mvp-identity",
+ "mvp-projection",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

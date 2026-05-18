@@ -9,6 +9,7 @@ members = [
     "lease",
     "mesh",
     "projection",
+    "routing",
     "serving",
 ]
 resolver = "3"
