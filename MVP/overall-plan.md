@@ -331,24 +331,27 @@ and
 
 Slice 018c then moved deploy restart recovery onto that p2panda-backed fact
 boundary. Deploy decision, serving commit, and cleanup-done facts now share one
-p2panda-backed proof path; a fresh coordinator can recover pending cleanup
-after the original coordinator dies post-serving-commit and before drain. The
-slice report is
+p2panda-backed proof path; recovery exports the surviving operations, imports
+them into a fresh fact store, and a fresh coordinator can recover pending
+cleanup after the original coordinator dies post-serving-commit and before
+drain. The slice report is
 [MVP/slice-018c-p2panda-deploy-restart-recovery.md](slice-018c-p2panda-deploy-restart-recovery.md).
 
-Before the next product-feature implementation slice, Slice 019a should run a
-deep p2panda substitution audit:
+Slice 019a then ran the deep p2panda substitution audit:
 [MVP/slice-019a-p2panda-substitution-audit-plan.md](slice-019a-p2panda-substitution-audit-plan.md).
-The goal is to decide whether persistent p2panda storage, p2panda-auth, or
-p2panda-sync can delete enough custom substrate to justify moving them ahead of
-more product proof code.
+The report is
+[MVP/design-notes/p2panda-substitution-audit.md](design-notes/p2panda-substitution-audit.md).
+The audit decision is to move one more substrate slice ahead of ACME:
+persistent p2panda fact storage, derived-index rebuild, and a restartable
+fact-store role. ACME on the current in-memory p2panda fact role would prove the
+right product semantics on the wrong durability boundary.
 
 The next product-feature slices currently remain:
 
-1. ACME moved onto the p2panda fact boundary and advisory lease semantics.
-2. The next large-load or process-role proof that closes remaining E2E-7 gaps:
-   pre-serving candidate adoption/cleanup ABI, p2panda fact-store process
-   restart, or cross-node operation sync.
+1. Persistent p2panda fact store and restartable fact role.
+2. ACME moved onto the p2panda fact boundary and advisory lease semantics.
+3. The next large-load or process-role proof that closes remaining E2E-7 gaps:
+   pre-serving candidate adoption/cleanup ABI or cross-node operation sync.
 
 ACME is the canary because it forces the advisory lease primitive to be honest:
 TTL, renewal, epoch fencing, RAII release-on-drop for local holders, and
@@ -356,6 +359,12 @@ conflict-as-candidate facts on the existing fact contract. Leases are not
 cluster locks. They are foreground coordination hints and fencing tokens;
 resource-level enforcement, such as the ACME directory or storage backend, is
 where real exclusivity lives.
+
+The persistent p2panda slice is not a product-feature detour. It is the
+substrate proof required by the daemon/data-plane invariant: fact truth must
+survive process-role restart, projections must rebuild from operation logs, and
+serving roles must keep last-good state while coordinator and fact roles have
+separate fates.
 
 The shipped deploy restart slice did not port old `deploy.rs`. It expressed the
 smallest durable state machine from `MVP/architecture.md`: request-many

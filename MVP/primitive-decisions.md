@@ -190,16 +190,39 @@ the decision concrete.
   candidate status and payload reads. Export returns opaque operation handles
   through an iterator so callers do not depend on p2panda wire framing. It is
   not a production sync protocol.
+- Slice 018c hardens p2panda import authority by binding each
+  `(island, principal)` to a trusted p2panda author key. Imported operations
+  cannot claim another Ployz principal through unsigned extension metadata, and
+  payload reads must match an exact stored `(island, key, author, content_hash)`
+  identity before the content-hash payload is returned.
 - Slice 018c moves the deploy restart-recovery proof onto one p2panda-backed
   fact boundary for deploy decision, serving commit, and cleanup-done facts.
   The coordinator can die after serving commit, a fresh coordinator recovers
-  pending cleanup from facts, and no capacity/prepare/start work is replayed.
+  pending cleanup from exported/imported p2panda operations, and no
+  capacity/prepare/start work is replayed.
 - Slice 018c keeps the p2panda writer adapters E2E-local. Deploy and routing
   still own business payloads and conflict semantics; p2panda owns only signed
   operation envelopes, validation, ingestion, and local operation storage.
 - Slice 018c proves coordinator fate separation, not fact-store process death.
   The p2panda fact role survives in the harness. Persistent p2panda storage,
   network sync, and process restart remain future substrate work.
+- Slice 019a audits the remaining custom fact substrate and moves persistent
+  p2panda storage ahead of the next product feature. `p2panda-store` SQLite
+  plus rebuildable Ployz indexes is the next deletion path for
+  `ProcessFactSource`, bus-backed fact fixtures, and the large custom
+  iroh-docs local-view wrapper.
+- Slice 019a keeps `FactSource` as the Ployz projection seam. p2panda should
+  feed candidate facts, payload reads, operation validation, and local
+  persistence below that seam; reducers, advisory leases, deploy semantics,
+  ACME challenge ownership, and machine behavior stay Ployz-owned.
+- Slice 019a defers `p2panda-sync` until persistent stores exist on both sides.
+  Manual export/import remains acceptable for deterministic local E2E proofs
+  until a sync slice can prove offline catch-up, duplicate/out-of-order
+  idempotency, and latency/lag at scale.
+- Slice 019a promotes `p2panda-auth` to a future membership/revocation spike,
+  not a bus-permission replacement. Subject wildcards, queue permissions,
+  temporary response permission, RPC grants, and bridge imports/exports remain
+  PloyzBus authority semantics.
 
 ## Documented Design Gaps
 

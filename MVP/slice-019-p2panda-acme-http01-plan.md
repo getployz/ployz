@@ -18,10 +18,11 @@ origin:
 # Slice 019 P2panda-Backed ACME HTTP-01 Plan
 
 > Parked behind
-> [MVP/slice-019a-p2panda-substitution-audit-plan.md](slice-019a-p2panda-substitution-audit-plan.md).
-> ACME remains the likely next product canary, but the operator requested a
-> deeper p2panda substitution audit first so the next implementation slice does
-> not add more custom substrate that p2panda can replace.
+> [MVP/design-notes/p2panda-substitution-audit.md](design-notes/p2panda-substitution-audit.md).
+> ACME remains the next product canary, but the audit moved persistent
+> p2panda fact storage, derived-index rebuild, and a restartable fact-store
+> role ahead of this slice so ACME does not harden the current in-memory fact
+> boundary.
 
 ## Problem Frame
 
@@ -74,10 +75,8 @@ the new fact substrate plus advisory lease semantics.
 
 - Slice 018c deploy restart recovery is finished and should be treated as the
   current p2panda-backed deploy recovery proof.
-- Finish Slice 019a p2panda substitution audit first. If it promotes
-  persistent p2panda storage, p2panda-auth, or p2panda-sync ahead of ACME,
-  update this plan before implementation rather than coding against stale
-  substrate assumptions.
+- Finish the persistent p2panda storage/restartable fact-role slice first. The
+  Slice 019a audit promoted that substrate work ahead of ACME.
 - Keep all work under `MVP/`.
 
 ## Scope
