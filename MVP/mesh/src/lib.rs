@@ -14,6 +14,7 @@ pub use error::{MeshError, MeshResult};
 pub use invite::{
     InviteId, InviteSecret, JoinCommand, JoinCommandResult, JoinRequest, TombstoneCommand,
     TombstoneCommandResult, removal_started_fact_key, removal_started_fact_payload,
+    tombstone_fact_key,
 };
 pub use snapshot::{
     WireGuardAppliedSnapshot, WireGuardSnapshotPaths, load_applied_snapshot, write_applied_snapshot,
