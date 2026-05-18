@@ -1,7 +1,5 @@
 use mvp_bus::{FactKey, Grant, IslandId, PrincipalId, harness::InMemoryBus};
-use mvp_p2panda_facts::{
-    PandaFactAuthor, PandaFactStore, PandaFactWireEnvelope, SharedPandaFactStore,
-};
+use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, SharedPandaFactStore};
 
 use crate::{
     PandaNetConfigError, PandaNetFactImportFailure, PandaNetFactImportOutcome,
@@ -131,17 +129,6 @@ async fn fact_nodes_import_into_shared_store_and_report_status() {
         )
         .await
         .expect("publish inserted fact");
-    let duplicate_operation = sender
-        .store()
-        .export_operations()
-        .await
-        .last()
-        .cloned()
-        .expect("sender has inserted operation");
-    sender
-        .publish_operation(&duplicate_operation)
-        .await
-        .expect("publish duplicate operation");
     sender
         .publish_fact_payload(
             &fixture.writer,
@@ -151,28 +138,68 @@ async fn fact_nodes_import_into_shared_store_and_report_status() {
         )
         .await
         .expect("publish conflict fact");
-    sender
-        .publish_body(b"bad-envelope".to_vec())
-        .await
-        .expect("publish malformed body");
-
     let report = receiver
-        .import_until_attempted(4)
+        .import_until_attempted(2)
         .await
         .expect("receiver imports fact-node stream");
 
     assert_eq!(report.imported, 1);
-    assert_eq!(report.duplicate, 1);
     assert_eq!(report.conflict, 1);
+    assert_eq!(report.duplicate, 0);
     assert!(report.deferred.is_empty());
     assert!(report.failed.is_empty());
-    assert!(
-        report.rejected.iter().any(|rejection| matches!(
-            rejection,
-            PandaNetFactImportRejection::MalformedEnvelope(_)
-        ))
-    );
+    assert!(report.rejected.is_empty());
     assert_eq!(receiver.store().export_operations().await.len(), 2);
+}
+
+#[tokio::test]
+async fn fact_node_receives_after_refreshing_stream() {
+    let fixture = FactNodeFixture::new("fact-node-refresh");
+    let mut receiver = fixture
+        .node([25; 32], Vec::new(), ReplicaTrust::Trusted)
+        .await
+        .expect("spawn receiver fact node");
+    let receiver_info = receiver.node_info();
+    let mut sender = fixture
+        .node([26; 32], vec![receiver_info], ReplicaTrust::Trusted)
+        .await
+        .expect("spawn sender fact node");
+
+    sender
+        .publish_fact_payload(
+            &fixture.writer,
+            &fixture.author,
+            key("/facts/node/before-refresh/joined/1"),
+            "before".to_string().into(),
+        )
+        .await
+        .expect("publish first fact");
+    assert_eq!(
+        receiver
+            .import_next_fact()
+            .await
+            .expect("import before refresh"),
+        PandaNetFactImportOutcome::Imported
+    );
+
+    receiver.refresh_stream().await.expect("refresh stream");
+    sender
+        .publish_fact_payload(
+            &fixture.writer,
+            &fixture.author,
+            key("/facts/node/after-refresh/joined/1"),
+            "after".to_string().into(),
+        )
+        .await
+        .expect("publish second fact");
+
+    assert_eq!(
+        receiver
+            .import_next_fact()
+            .await
+            .expect("import after refresh"),
+        PandaNetFactImportOutcome::Imported
+    );
 }
 
 #[tokio::test]
@@ -213,7 +240,7 @@ async fn fact_node_requires_trusted_replica_session() {
 }
 
 #[tokio::test]
-async fn fact_node_rejects_oversized_envelope_before_import() {
+async fn fact_node_rejects_oversized_operation_before_import() {
     let fixture = FactNodeFixture::new("fact-node-size-cap");
     let receiver_store = fixture.trusted_store(ReplicaTrust::Trusted).await;
     let mut receiver = PandaNetFactNode::spawn(
@@ -227,7 +254,7 @@ async fn fact_node_rejects_oversized_envelope_before_import() {
             receiver_store,
             fixture.replica.clone(),
         )
-        .with_max_fact_envelope_bytes(4),
+        .with_max_fact_operation_bytes(4),
     )
     .await
     .expect("spawn capped receiver fact node");
@@ -238,21 +265,26 @@ async fn fact_node_rejects_oversized_envelope_before_import() {
         .expect("spawn sender fact node");
 
     sender
-        .publish_body(b"too-large".to_vec())
+        .publish_fact_payload(
+            &fixture.writer,
+            &fixture.author,
+            key("/facts/node/too-large/joined/1"),
+            "too-large".to_string().into(),
+        )
         .await
-        .expect("publish oversized body");
+        .expect("publish oversized fact");
 
     let outcome = receiver
         .import_next_fact()
         .await
-        .expect("receiver reads oversized body");
+        .expect("receiver reads oversized operation");
 
     assert!(matches!(
         outcome,
-        PandaNetFactImportOutcome::Rejected(PandaNetFactImportRejection::EnvelopeTooLarge {
-            size: 9,
+        PandaNetFactImportOutcome::Rejected(PandaNetFactImportRejection::OperationTooLarge {
+            size,
             max: 4,
-        })
+        }) if size > 4
     ));
     assert!(receiver.store().export_operations().await.is_empty());
 }
@@ -265,31 +297,29 @@ async fn fact_node_retries_deferred_import_after_predecessor_arrives() {
         .await
         .expect("spawn receiver fact node");
     let receiver_info = receiver.node_info();
-    let mut sender = fixture
+    let sender = fixture
         .node([34; 32], vec![receiver_info], ReplicaTrust::Trusted)
         .await
         .expect("spawn sender fact node");
     let operations = fixture
-        .two_linked_operations()
+        .linked_operations_from_store(&sender.store(), 2)
         .await
         .expect("create linked operations");
 
-    sender
-        .publish_operation(&operations[1])
-        .await
-        .expect("publish child operation first");
-    sender
-        .publish_operation(&operations[0])
-        .await
-        .expect("publish predecessor second");
+    let child_outcome = receiver
+        .import_operation_for_test(operations[1].clone())
+        .await;
+    let parent_outcome = receiver
+        .import_operation_for_test(operations[0].clone())
+        .await;
+    let retry_outcomes = receiver.retry_pending_imports_for_test().await;
 
-    let report = receiver
-        .import_until_attempted(2)
-        .await
-        .expect("receiver imports out-of-order stream");
-
-    assert_eq!(report.deferred.len(), 1);
-    assert_eq!(report.imported, 2);
+    assert!(matches!(
+        child_outcome,
+        PandaNetFactImportOutcome::Deferred(_)
+    ));
+    assert_eq!(parent_outcome, PandaNetFactImportOutcome::Imported);
+    assert_eq!(retry_outcomes, vec![PandaNetFactImportOutcome::Imported]);
     assert_eq!(receiver.store().export_operations().await.len(), 2);
 }
 
@@ -313,24 +343,18 @@ async fn fact_node_reports_pending_queue_full() {
     .await
     .expect("spawn receiver with no pending capacity");
     let receiver_info = receiver.node_info();
-    let mut sender = fixture
+    let sender = fixture
         .node([44; 32], vec![receiver_info], ReplicaTrust::Trusted)
         .await
         .expect("spawn sender fact node");
     let operations = fixture
-        .two_linked_operations()
+        .linked_operations_from_store(&sender.store(), 2)
         .await
         .expect("create linked operations");
 
-    sender
-        .publish_operation(&operations[1])
-        .await
-        .expect("publish child operation without predecessor");
-
     let outcome = receiver
-        .import_next_fact()
-        .await
-        .expect("receiver imports capped pending stream");
+        .import_operation_for_test(operations[1].clone())
+        .await;
 
     assert!(matches!(
         outcome,
@@ -347,35 +371,42 @@ async fn fact_node_retries_transitive_deferred_imports_until_no_progress() {
         .await
         .expect("spawn receiver fact node");
     let receiver_info = receiver.node_info();
-    let mut sender = fixture
+    let sender = fixture
         .node([38; 32], vec![receiver_info], ReplicaTrust::Trusted)
         .await
         .expect("spawn sender fact node");
     let operations = fixture
-        .linked_operations(3)
+        .linked_operations_from_store(&sender.store(), 3)
         .await
         .expect("create linked operations");
 
-    sender
-        .publish_operation(&operations[2])
-        .await
-        .expect("publish grandchild operation first");
-    sender
-        .publish_operation(&operations[1])
-        .await
-        .expect("publish child operation second");
-    sender
-        .publish_operation(&operations[0])
-        .await
-        .expect("publish parent operation third");
+    let grandchild_outcome = receiver
+        .import_operation_for_test(operations[2].clone())
+        .await;
+    let child_outcome = receiver
+        .import_operation_for_test(operations[1].clone())
+        .await;
+    let parent_outcome = receiver
+        .import_operation_for_test(operations[0].clone())
+        .await;
+    let retry_outcomes = receiver.retry_pending_imports_for_test().await;
 
-    let report = receiver
-        .import_until_attempted(3)
-        .await
-        .expect("receiver imports transitive out-of-order stream");
-
-    assert_eq!(report.deferred.len(), 2);
-    assert_eq!(report.imported, 3);
+    assert!(matches!(
+        grandchild_outcome,
+        PandaNetFactImportOutcome::Deferred(_)
+    ));
+    assert!(matches!(
+        child_outcome,
+        PandaNetFactImportOutcome::Deferred(_)
+    ));
+    assert_eq!(parent_outcome, PandaNetFactImportOutcome::Imported);
+    assert_eq!(
+        retry_outcomes,
+        vec![
+            PandaNetFactImportOutcome::Imported,
+            PandaNetFactImportOutcome::Imported
+        ]
+    );
     assert_eq!(receiver.store().export_operations().await.len(), 3);
 }
 
@@ -405,12 +436,12 @@ async fn fact_node_republishes_already_present_fact_operations() {
     }
 
     let report = receiver
-        .import_until_attempted(2)
+        .import_until_attempted(1)
         .await
-        .expect("receiver imports original and republished operation");
+        .expect("receiver imports original operation");
 
     assert_eq!(report.imported, 1);
-    assert_eq!(report.duplicate, 1);
+    assert_eq!(report.duplicate, 0);
     assert_eq!(receiver.store().export_operations().await.len(), 1);
 }
 
@@ -432,7 +463,7 @@ async fn import_reports_author_key_mismatch_as_authorization_rejection() {
     let body = source
         .export_operations()
         .last()
-        .map(PandaFactWireEnvelope::encode)
+        .map(mvp_p2panda_facts::PandaFactWireEnvelope::encode)
         .expect("source operation exists");
 
     let outcome = import_fact_body_into_shared_store(&body, &trusted_store, &fixture.replica).await;
@@ -481,8 +512,8 @@ impl FactNodeFixture {
             author: PandaFactAuthor::new(writer.principal().clone()),
             writer,
             replica,
-            network_id: PandaNetNetworkId::new([41; 32]),
-            topic: PandaNetTopic::new([42; 32]),
+            network_id: PandaNetNetworkId::new(stable_test_id(label, b'n')),
+            topic: PandaNetTopic::new(stable_test_id(label, b't')),
             bus,
         }
     }
@@ -532,17 +563,11 @@ impl FactNodeFixture {
         PandaFactStore::new(std::sync::Arc::new(self.bus.clone()))
     }
 
-    async fn two_linked_operations(
+    async fn linked_operations_from_store(
         &self,
-    ) -> mvp_p2panda_facts::Result<Vec<mvp_p2panda_facts::PandaFactOperation>> {
-        self.linked_operations(2).await
-    }
-
-    async fn linked_operations(
-        &self,
+        store: &SharedPandaFactStore,
         count: usize,
     ) -> mvp_p2panda_facts::Result<Vec<mvp_p2panda_facts::PandaFactOperation>> {
-        let mut store = self.raw_store();
         for index in 0..count {
             store
                 .write_fact_payload(
@@ -553,7 +578,7 @@ impl FactNodeFixture {
                 )
                 .await?;
         }
-        Ok(store.export_operations().cloned().collect())
+        Ok(store.export_operations().await)
     }
 }
 
@@ -563,4 +588,16 @@ fn key(value: &str) -> FactKey {
 
 fn pattern(value: &str) -> mvp_bus::FactKeyPattern {
     mvp_bus::FactKeyPattern::parse(value).expect("fact key pattern parses")
+}
+
+fn stable_test_id(label: &str, salt: u8) -> [u8; 32] {
+    let mut bytes = [salt; 32];
+    for (index, byte) in label.as_bytes().iter().enumerate() {
+        let slot = index % bytes.len();
+        bytes[slot] = bytes[slot]
+            .wrapping_mul(31)
+            .wrapping_add(*byte)
+            .wrapping_add(index as u8);
+    }
+    bytes
 }

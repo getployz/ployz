@@ -1,8 +1,9 @@
 use mvp_bus::{BusSession, FactKey, IslandId, PrincipalId};
 use mvp_p2panda_facts::{
-    PandaFactError, PandaFactOperation, PandaFactStore, PandaFactWireEnvelope,
+    PandaFactError, PandaFactExtensions, PandaFactOperation, PandaFactStore, PandaFactWireEnvelope,
     PandaFactWireEnvelopeError, PandaFactWriteOutcome, SharedPandaFactStore,
 };
+use p2panda_core::{Operation, Topic};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PandaNetFactImportOutcome {
@@ -85,7 +86,10 @@ pub enum PandaNetFactImportFailure {
 #[derive(Debug, PartialEq, Eq)]
 pub enum PandaNetFactImportRejection {
     MalformedEnvelope(PandaFactWireEnvelopeError),
-    EnvelopeTooLarge {
+    MalformedOperation {
+        message: String,
+    },
+    OperationTooLarge {
         size: usize,
         max: usize,
     },
@@ -133,6 +137,28 @@ pub async fn import_fact_body_into_shared_store(
 
     match store
         .import_replica_operation(replica_session, &operation)
+        .await
+    {
+        Ok(outcome) => classify_write_outcome(outcome),
+        Err(error) => classify_fact_error(error),
+    }
+}
+
+pub(crate) async fn import_p2panda_operation_into_shared_store(
+    operation: Operation<PandaFactExtensions>,
+    store: &SharedPandaFactStore,
+    replica_session: &BusSession,
+    topic: Topic,
+) -> PandaNetFactImportOutcome {
+    if operation.body().is_none() {
+        return PandaNetFactImportOutcome::Rejected(
+            PandaNetFactImportRejection::MalformedOperation {
+                message: "p2panda operation has no payload body".to_string(),
+            },
+        );
+    }
+    match store
+        .import_replica_p2panda_operation(replica_session, topic, operation)
         .await
     {
         Ok(outcome) => classify_write_outcome(outcome),

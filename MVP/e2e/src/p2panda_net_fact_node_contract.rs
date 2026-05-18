@@ -10,9 +10,9 @@ use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactStore, PandaFactWireEnvelope, SharedPandaFactStore,
 };
 use mvp_p2panda_transport::{
-    PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetFactNode,
-    PandaNetFactNodeConfig, PandaNetNetworkId, PandaNetNodeConfig, PandaNetNodeSeed, PandaNetTopic,
-    import_fact_body_into_shared_store,
+    PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetFactImportReport,
+    PandaNetFactNode, PandaNetFactNodeConfig, PandaNetNetworkId, PandaNetNodeConfig,
+    PandaNetNodeSeed, PandaNetTopic, PandaNetTransportError, import_fact_body_into_shared_store,
 };
 use mvp_projection::{
     BackendEndpoint, CandidateStatus, DnsCommitFact, DnsRecordFact, FactSource, GatewayCommitFact,
@@ -40,7 +40,7 @@ struct P2pandaNetFactNodeReport {
     unauthorized_replica_rejected: bool,
     untrusted_author_rejected: bool,
     cross_island_rejected: bool,
-    malformed_rejected: bool,
+    author_mismatch_rejected: bool,
     no_cross_island_leakage: bool,
     projected_nodes: usize,
     projected_services: usize,
@@ -74,7 +74,6 @@ async fn run_async() -> Result<(), String> {
     let writer_b = PandaFactAuthor::new(sessions.writer_b.principal().clone());
     let untrusted = PandaFactAuthor::new(sessions.untrusted_writer.principal().clone());
     let laptop_author = PandaFactAuthor::new(sessions.laptop_writer.principal().clone());
-
     let startup_started = Instant::now();
     let mut receiver = fact_node(
         &bus,
@@ -98,9 +97,27 @@ async fn run_async() -> Result<(), String> {
             (&sessions.writer_b, &writer_b),
         ],
         [52; 32],
-        vec![receiver_info],
+        vec![receiver_info.clone()],
     )
     .await?;
+    sender
+        .store()
+        .trust_author_key(
+            &prod,
+            sessions.untrusted_writer.principal().clone(),
+            untrusted.author_key(),
+        )
+        .await
+        .map_err(|error| format!("trust p2panda-net untrusted sender author: {error}"))?;
+    sender
+        .store()
+        .trust_author_key(
+            &laptop,
+            sessions.laptop_writer.principal().clone(),
+            laptop_author.author_key(),
+        )
+        .await
+        .map_err(|error| format!("trust p2panda-net laptop sender author: {error}"))?;
     let startup_ms = startup_started.elapsed().as_millis();
 
     sender
@@ -112,18 +129,14 @@ async fn run_async() -> Result<(), String> {
         )
         .await
         .map_err(|error| format!("publish fact-node first fact: {error}"))?;
-    let duplicate_body = wire_operation_from_store(
-        &bus,
-        &sessions.writer_a,
-        &writer_a,
-        "/facts/node/node-net/joined/1",
-        node_joined_payload("node-net", "fd00::20", "iroh-fact-a", "wg-fact-a")?,
-    )
-    .await?;
-    sender
-        .publish_body(duplicate_body.clone())
+    let duplicate_operation = sender
+        .store()
+        .export_operations()
         .await
-        .map_err(|error| format!("publish fact-node duplicate fact: {error}"))?;
+        .last()
+        .cloned()
+        .ok_or_else(|| "sender store did not export first fact-node operation".to_string())?;
+    let unauthorized_replica_probe_body = PandaFactWireEnvelope::encode(&duplicate_operation);
     sender
         .publish_fact_payload(
             &sessions.writer_a,
@@ -184,46 +197,33 @@ async fn run_async() -> Result<(), String> {
         .await
         .map_err(|error| format!("publish fact-node conflict fact: {error}"))?;
     sender
-        .publish_body(
-            wire_operation_from_store(
-                &bus,
-                &sessions.untrusted_writer,
-                &untrusted,
-                "/facts/node/node-untrusted/joined/1",
-                node_joined_payload(
-                    "node-untrusted",
-                    "fd00::22",
-                    "iroh-fact-untrusted",
-                    "wg-fact-untrusted",
-                )?,
-            )
-            .await?,
+        .publish_fact_payload(
+            &sessions.untrusted_writer,
+            &untrusted,
+            fact_key("/facts/node/node-untrusted/joined/1")?,
+            node_joined_payload(
+                "node-untrusted",
+                "fd00::22",
+                "iroh-fact-untrusted",
+                "wg-fact-untrusted",
+            )?,
         )
         .await
         .map_err(|error| format!("publish fact-node untrusted fact: {error}"))?;
     sender
-        .publish_body(
-            wire_operation_from_store(
-                &bus,
-                &sessions.laptop_writer,
-                &laptop_author,
-                "/facts/node/laptop-net/joined/1",
-                node_joined_payload(
-                    "laptop-net",
-                    "fd00::23",
-                    "iroh-fact-laptop",
-                    "wg-fact-laptop",
-                )?,
-            )
-            .await?,
+        .publish_fact_payload(
+            &sessions.laptop_writer,
+            &laptop_author,
+            fact_key("/facts/node/laptop-net/joined/1")?,
+            node_joined_payload(
+                "laptop-net",
+                "fd00::23",
+                "iroh-fact-laptop",
+                "wg-fact-laptop",
+            )?,
         )
         .await
         .map_err(|error| format!("publish fact-node cross-island fact: {error}"))?;
-    sender
-        .publish_body(b"bad-envelope".to_vec())
-        .await
-        .map_err(|error| format!("publish fact-node malformed body: {error}"))?;
-
     let unauthorized_store = trusted_store(
         &bus,
         &prod,
@@ -235,7 +235,7 @@ async fn run_async() -> Result<(), String> {
     )
     .await?;
     let unauthorized = import_fact_body_into_shared_store(
-        &duplicate_body,
+        &unauthorized_replica_probe_body,
         &unauthorized_store,
         &sessions.untrusted_replica,
     )
@@ -252,11 +252,43 @@ async fn run_async() -> Result<(), String> {
         ));
     }
 
-    let sync_started = Instant::now();
-    let import_report = receiver
-        .import_until_attempted(11)
+    let mut mismatch_source = PandaFactStore::new(bus.clone());
+    let mismatched_writer_a = PandaFactAuthor::new(sessions.writer_a.principal().clone());
+    mismatch_source
+        .write_fact_payload(
+            &sessions.writer_a,
+            &mismatched_writer_a,
+            fact_key("/facts/node/node-mismatch/joined/1")?,
+            node_joined_payload(
+                "node-mismatch",
+                "fd00::25",
+                "iroh-fact-mismatch",
+                "wg-fact-mismatch",
+            )?,
+        )
         .await
-        .map_err(|error| format!("import p2panda-net fact-node stream: {error}"))?;
+        .map_err(|error| format!("write fact-node author-key mismatch source: {error}"))?;
+    let mismatch_body = mismatch_source
+        .export_operations()
+        .last()
+        .map(PandaFactWireEnvelope::encode)
+        .ok_or_else(|| "author-key mismatch source produced no operation".to_string())?;
+    let author_mismatch = import_fact_body_into_shared_store(
+        &mismatch_body,
+        &receiver.store(),
+        &sessions.receiver_replica,
+    )
+    .await;
+    let author_mismatch_rejected = matches!(
+        author_mismatch,
+        PandaNetFactImportOutcome::Rejected(PandaNetFactImportRejection::AuthorKeyMismatch {
+            principal,
+            ..
+        }) if principal == *sessions.writer_a.principal()
+    );
+
+    let sync_started = Instant::now();
+    let import_report = import_until_contract_terminal_outcomes(&mut receiver).await?;
     let sync_import_ms = sync_started.elapsed().as_millis();
 
     let untrusted_author_rejected = import_report.rejected.iter().any(|rejection| {
@@ -272,10 +304,6 @@ async fn run_async() -> Result<(), String> {
             PandaNetFactImportRejection::CrossIsland { operation, .. } if operation == &laptop
         )
     });
-    let malformed_rejected = import_report
-        .rejected
-        .iter()
-        .any(|rejection| matches!(rejection, PandaNetFactImportRejection::MalformedEnvelope(_)));
     let unexpected_rejection = import_report.rejected.iter().any(|rejection| {
         !matches!(
             rejection,
@@ -284,7 +312,7 @@ async fn run_async() -> Result<(), String> {
         ) && !matches!(
             rejection,
             PandaNetFactImportRejection::CrossIsland { operation, .. } if operation == &laptop
-        ) && !matches!(rejection, PandaNetFactImportRejection::MalformedEnvelope(_))
+        )
     });
 
     if !import_report.deferred.is_empty()
@@ -309,9 +337,9 @@ async fn run_async() -> Result<(), String> {
     assert_eq_named(
         "fact-node duplicate operations",
         import_report.duplicate as u64,
-        1,
+        0,
     )?;
-    if !untrusted_author_rejected || !cross_island_rejected || !malformed_rejected {
+    if !untrusted_author_rejected || !cross_island_rejected || !author_mismatch_rejected {
         return Err(format!(
             "fact-node did not surface expected rejection classes: {import_report:?}"
         ));
@@ -429,7 +457,7 @@ async fn run_async() -> Result<(), String> {
         unauthorized_replica_rejected,
         untrusted_author_rejected,
         cross_island_rejected,
-        malformed_rejected,
+        author_mismatch_rejected,
         no_cross_island_leakage,
         projected_nodes: projection.state.nodes.len(),
         projected_services: projection.state.services.len(),
@@ -456,6 +484,55 @@ async fn run_async() -> Result<(), String> {
     println!("{json}");
     eprintln!("PASS p2panda-net-fact-node-contract");
     Ok(())
+}
+
+async fn import_until_contract_terminal_outcomes(
+    receiver: &mut PandaNetFactNode,
+) -> Result<PandaNetFactImportReport, String> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut report = PandaNetFactImportReport::new(0);
+    while Instant::now() < deadline {
+        let batch = match receiver
+            .import_next_fact_batch_with_idle_timeout(Duration::from_millis(250))
+            .await
+        {
+            Ok(batch) => batch,
+            Err(PandaNetTransportError::StreamEnded { .. }) => {
+                receiver
+                    .refresh_stream()
+                    .await
+                    .map_err(|error| format!("refresh p2panda-net fact-node stream: {error}"))?;
+                continue;
+            }
+            Err(error) => return Err(format!("import p2panda-net fact-node stream: {error}")),
+        };
+        let Some(batch) = batch else {
+            receiver
+                .refresh_stream()
+                .await
+                .map_err(|error| format!("refresh p2panda-net fact-node stream: {error}"))?;
+            continue;
+        };
+        report.attempted += 1;
+        for outcome in batch {
+            report.record(outcome);
+        }
+        if fact_node_contract_terminal_outcomes_arrived(&report) {
+            return Ok(report);
+        }
+    }
+    Err(format!(
+        "p2panda-net fact-node terminal outcomes did not arrive: {report:?}"
+    ))
+}
+
+fn fact_node_contract_terminal_outcomes_arrived(report: &PandaNetFactImportReport) -> bool {
+    report.imported >= 6
+        && report.duplicate == 0
+        && report.conflict >= 1
+        && report.rejected.len() >= 2
+        && report.deferred.is_empty()
+        && report.failed.is_empty()
 }
 
 struct FactNodeBusSessions {
@@ -560,25 +637,6 @@ async fn trusted_store(
             .await;
     }
     Ok(store)
-}
-
-async fn wire_operation_from_store(
-    bus: &Arc<InMemoryBus>,
-    session: &BusSession,
-    author: &PandaFactAuthor,
-    key: &str,
-    payload: FactPayload,
-) -> Result<Vec<u8>, String> {
-    let mut store = PandaFactStore::new(bus.clone());
-    store
-        .write_fact_payload(session, author, fact_key(key)?, payload)
-        .await
-        .map_err(|error| format!("write source p2panda-net fact operation: {error}"))?;
-    store
-        .export_operations()
-        .last()
-        .map(PandaFactWireEnvelope::encode)
-        .ok_or_else(|| "source store did not export p2panda-net fact operation".to_string())
 }
 
 fn node_joined_payload(

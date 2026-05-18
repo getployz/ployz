@@ -55,7 +55,7 @@ impl PandaNetNetworkId {
         encode_hex(&self.0)
     }
 
-    fn into_inner(self) -> NetworkId {
+    pub(crate) fn into_inner(self) -> NetworkId {
         self.0
     }
 }
@@ -113,7 +113,7 @@ impl PandaNetTopic {
         encode_hex(&self.0)
     }
 
-    fn into_inner(self) -> Topic {
+    pub(crate) fn into_inner(self) -> Topic {
         self.0.into()
     }
 }
@@ -148,7 +148,7 @@ impl PandaNetBindConfig {
         Self::localhost(0, 0)
     }
 
-    fn iroh_config(self) -> IrohConfig {
+    pub(crate) fn iroh_config(self) -> IrohConfig {
         IrohConfig {
             bind_ip_v4: self.ipv4,
             bind_port_v4: self.port_v4,
@@ -302,6 +302,22 @@ impl PandaNetNodeConfig {
             signing_key_seed,
             PandaNetBindConfig::localhost_ephemeral(),
             bootstrap_nodes,
+        )
+    }
+
+    pub(crate) fn clone_parts(
+        &self,
+    ) -> (
+        PandaNetNetworkId,
+        p2panda_core::SigningKey,
+        PandaNetBindConfig,
+        Vec<PandaNetNodeInfo>,
+    ) {
+        (
+            self.network_id,
+            self.signing_key.clone(),
+            self.bind,
+            self.bootstrap_nodes.clone(),
         )
     }
 }
@@ -485,7 +501,11 @@ impl PandaNetReplayCache {
         self.skipped = self.skipped.saturating_add(1);
     }
 
-    fn remember(&mut self, hash: Hash, policy: PandaNetReplayPolicy) -> PandaNetReplayStatus {
+    pub(crate) fn remember(
+        &mut self,
+        hash: Hash,
+        policy: PandaNetReplayPolicy,
+    ) -> PandaNetReplayStatus {
         if self.contains(hash) {
             self.record_replay();
             return PandaNetReplayStatus::Replayed;
@@ -503,13 +523,13 @@ impl PandaNetReplayCache {
     }
 }
 
-enum PandaNetReplayPolicy {
+pub(crate) enum PandaNetReplayPolicy {
     CheckOnly,
     #[cfg(feature = "harness")]
     InsertFresh,
 }
 
-enum PandaNetReplayStatus {
+pub(crate) enum PandaNetReplayStatus {
     Fresh,
     Replayed,
 }
@@ -527,6 +547,7 @@ pub(crate) enum PandaNetStreamBody {
 }
 
 impl PandaNetStreamBody {
+    #[cfg(feature = "harness")]
     pub(crate) fn operation_hash(&self) -> Hash {
         match self {
             Self::Body { operation_hash, .. } | Self::TooLarge { operation_hash, .. } => {
@@ -539,8 +560,21 @@ impl PandaNetStreamBody {
 impl PandaNetStream {
     pub async fn next_body(&mut self) -> Result<Vec<u8>, PandaNetTransportError> {
         match self.next_body_limited(usize::MAX).await? {
-            PandaNetStreamBody::Body { body, .. } => Ok(body),
-            PandaNetStreamBody::TooLarge { .. } => unreachable!("usize::MAX accepts every body"),
+            PandaNetStreamBody::Body {
+                operation_hash,
+                body,
+            } => {
+                let _ = operation_hash;
+                Ok(body)
+            }
+            PandaNetStreamBody::TooLarge {
+                operation_hash,
+                size,
+                max,
+            } => {
+                let _ = (operation_hash, size, max);
+                unreachable!("usize::MAX accepts every body")
+            }
         }
     }
 
@@ -559,40 +593,6 @@ impl PandaNetStream {
                 PandaNetReplayStatus::Fresh => return Ok(stream_body),
                 PandaNetReplayStatus::Replayed => {}
             }
-        }
-    }
-
-    pub(crate) async fn next_unseen_body_limited(
-        &mut self,
-        max_body_bytes: usize,
-        replay_cache: &mut PandaNetReplayCache,
-    ) -> Result<PandaNetStreamBody, PandaNetTransportError> {
-        loop {
-            let stream_body = self.next_body_limited(max_body_bytes).await?;
-            match replay_cache.remember(
-                stream_body.operation_hash(),
-                PandaNetReplayPolicy::CheckOnly,
-            ) {
-                PandaNetReplayStatus::Fresh => return Ok(stream_body),
-                PandaNetReplayStatus::Replayed => {}
-            }
-        }
-    }
-
-    pub(crate) async fn next_unseen_body_limited_with_idle_timeout(
-        &mut self,
-        max_body_bytes: usize,
-        replay_cache: &mut PandaNetReplayCache,
-        idle_timeout: Duration,
-    ) -> Result<Option<PandaNetStreamBody>, PandaNetTransportError> {
-        match timeout(
-            idle_timeout,
-            self.next_unseen_body_limited(max_body_bytes, replay_cache),
-        )
-        .await
-        {
-            Ok(stream_body) => stream_body.map(Some),
-            Err(_) => Ok(None),
         }
     }
 
@@ -661,7 +661,7 @@ impl PandaNetStream {
     }
 }
 
-async fn node_info_from_endpoint(
+pub(crate) async fn node_info_from_endpoint(
     signing_key: &SigningKey,
     endpoint: &Endpoint,
 ) -> Result<PandaNetNodeInfo, PandaNetTransportError> {
@@ -686,7 +686,7 @@ fn preferred_bound_socket(bound_sockets: Vec<SocketAddr>) -> Option<SocketAddr> 
         .or_else(|| bound_sockets.first().copied())
 }
 
-async fn with_startup_timeout<T, E: ToString>(
+pub(crate) async fn with_startup_timeout<T, E: ToString>(
     step: PandaNetStartupStep,
     future: impl Future<Output = Result<T, E>>,
 ) -> Result<T, PandaNetTransportError> {

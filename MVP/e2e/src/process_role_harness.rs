@@ -389,7 +389,7 @@ pub(crate) struct P2pandaNetScriptedPublisherProcess<'a> {
     pub(crate) first: ServingCommitInput,
     pub(crate) second: Option<ServingCommitInput>,
     pub(crate) second_delay_ms: u64,
-    pub(crate) publish_malformed: bool,
+    pub(crate) publish_rejected: bool,
 }
 
 pub(crate) fn spawn_p2panda_net_scripted_publisher_process(
@@ -435,8 +435,8 @@ pub(crate) fn spawn_p2panda_net_scripted_publisher_process(
             .arg(config.second_delay_ms.to_string());
     }
     command
-        .arg("--publish-malformed")
-        .arg(if config.publish_malformed {
+        .arg("--publish-rejected")
+        .arg(if config.publish_rejected {
             "true"
         } else {
             "false"
@@ -786,7 +786,7 @@ pub(crate) struct P2pandaNetServingScriptedPublisherConfig {
     first: ServingCommitInput,
     second: Option<ServingCommitInput>,
     second_delay: Duration,
-    publish_malformed: bool,
+    publish_rejected: bool,
 }
 
 impl P2pandaNetServingScriptedPublisherConfig {
@@ -965,7 +965,7 @@ fn parse_p2panda_net_serving_scripted_publisher_flags(
     let mut second_dns = None;
     let mut second_epoch = None;
     let mut second_delay = Duration::from_secs(5);
-    let mut publish_malformed = false;
+    let mut publish_rejected = false;
     let mut remaining = args;
     while let [flag, value, tail @ ..] = remaining {
         match flag.as_str() {
@@ -993,8 +993,8 @@ fn parse_p2panda_net_serving_scripted_publisher_flags(
                 second_delay =
                     Duration::from_millis(parse_u64_flag(role, "--second-delay-ms", value)?);
             }
-            "--publish-malformed" => {
-                publish_malformed = parse_bool_flag(role, "--publish-malformed", value)?;
+            "--publish-rejected" => {
+                publish_rejected = parse_bool_flag(role, "--publish-rejected", value)?;
             }
             other => return Err(format!("unknown {role} flag '{other}'")),
         }
@@ -1029,7 +1029,7 @@ fn parse_p2panda_net_serving_scripted_publisher_flags(
             second_epoch,
         )?,
         second_delay,
-        publish_malformed,
+        publish_rejected,
     })
 }
 
@@ -1632,6 +1632,14 @@ pub(crate) async fn run_p2panda_net_serving_scripted_publisher(
             .with_fact_write(fact_pattern("/facts/>")?)
             .with_fact_read(fact_pattern("/facts/>")?),
     );
+    let rejected_principal = PrincipalId::new(format!("{}-rejected", config.author.as_str()));
+    let rejected_session = authority.grant_in(
+        config.island.clone(),
+        rejected_principal.clone(),
+        Grant::empty()
+            .with_fact_write(fact_pattern("/facts/>")?)
+            .with_fact_read(fact_pattern("/facts/>")?),
+    );
     let replica = authority.grant_in(
         config.island.clone(),
         PrincipalId::new("p2panda-net-scripted-publisher-replica"),
@@ -1663,11 +1671,16 @@ pub(crate) async fn run_p2panda_net_serving_scripted_publisher(
         sleep(config.second_delay).await;
         publish_serving_input(&mut node, &session, &author, second).await?;
     }
-    if config.publish_malformed {
+    if config.publish_rejected {
         sleep(ROLE_REQUEST_PAUSE).await;
-        node.publish_body(b"bad-envelope".to_vec())
-            .await
-            .map_err(|error| format!("publish scripted malformed p2panda-net body: {error}"))?;
+        let rejected_author = PandaFactAuthor::new(rejected_principal);
+        publish_serving_input(
+            &mut node,
+            &rejected_session,
+            &rejected_author,
+            ServingCommitInput::new("serving-rejected", "fd00::250:8080", "fd00::250", 999),
+        )
+        .await?;
     }
     sleep(P2PANDA_NET_PUBLISHER_HOLD).await;
     Ok(())
