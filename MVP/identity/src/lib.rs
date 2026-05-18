@@ -23,7 +23,7 @@ impl Display for NodeId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisibleNodes(BTreeSet<NodeId>);
 
 impl VisibleNodes {

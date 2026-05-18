@@ -216,7 +216,7 @@ async fn run_async() -> Result<(), String> {
     let promote_plan = serving_plan("serving-promote-1", "fd00::2:8080", "fd00::2", 2);
     let promote_command =
         PromoteEnvironmentCommand::new(&store, &session, &environment_writer, &serving_writer);
-    let promote_cx = CommandContext::new(Arc::new(InMemoryCommandPhaseStore::default()));
+    let promote_cx = CommandContext::new(Arc::new(InMemoryCommandPhaseStore::empty()));
     let promote_request = PromoteEnvironmentRequest {
         command_id: command_id("promote-1")?,
         environment: prod.clone(),
@@ -277,23 +277,26 @@ async fn run_async() -> Result<(), String> {
     let rollback_plan = serving_plan("serving-rollback-1", "fd00::1:8080", "fd00::1", 3);
     let rollback_command =
         RollbackEnvironmentCommand::new(&store, &session, &environment_writer, &serving_writer);
+    let rollback_cx = CommandContext::new(Arc::new(InMemoryCommandPhaseStore::empty()));
+    let rollback_request = RollbackEnvironmentRequest {
+        command_id: command_id("rollback-1")?,
+        environment: prod.clone(),
+        expected_environment_epoch: epoch(2)?,
+        serving_commit: rollback_plan.clone(),
+        visible_nodes: visible_nodes(),
+    };
     let pending_rollback = rollback_command
-        .begin(RollbackEnvironmentRequest {
-            command_id: command_id("rollback-1")?,
-            environment: prod.clone(),
-            expected_environment_epoch: epoch(2)?,
-            serving_commit: rollback_plan.clone(),
-            visible_nodes: visible_nodes(),
-        })
+        .execute_phased(&rollback_cx, rollback_request.clone(), None)
         .await
-        .map_err(|error| format!("begin rollback: {error}"))?;
-    let rollback_decision = read_rollback_decision(
-        &store,
-        &island,
-        &session,
-        &prod,
-        pending_rollback.decision().command_id.clone(),
-    )?;
+        .map_err(|error| format!("phased rollback without catchup: {error}"))?;
+    assert!(matches!(
+        pending_rollback,
+        EnvironmentCommandResult::Pending {
+            reason: EnvironmentServingPendingReason::ProjectionCatchUpMissing
+        }
+    ));
+    let rollback_decision =
+        read_rollback_decision(&store, &island, &session, &prod, command_id("rollback-1")?)?;
     assert_eq_named(
         "rollback decision target volumes",
         rollback_decision.target_volume_refs.clone(),
@@ -309,9 +312,13 @@ async fn run_async() -> Result<(), String> {
     )
     .await?;
     rollback_command
-        .finalize(pending_rollback, Some(catch_up(&island, &rollback_plan)))
+        .execute_phased(
+            &rollback_cx,
+            rollback_request,
+            Some(catch_up(&island, &rollback_plan)),
+        )
         .await
-        .map_err(|error| format!("finalize rollback: {error}"))?;
+        .map_err(|error| format!("resume phased rollback: {error}"))?;
     let rollback_gateway_revision = serving_role_gateway_revision(&rollback_status)?;
 
     let rollback_head = read_environment_heads(&store, &session, &prod)
