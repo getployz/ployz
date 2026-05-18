@@ -182,10 +182,18 @@ Current proof status:
   `p2panda-process-role-serving-contract`, proving Ployz indexes rebuild from
   the p2panda operation log and serving projection can use the persistent store
   while preserving last-good gateway/DNS state.
-- Remaining E2E-4 work is p2panda-sync between persistent stores, remote
-  service registry projection, route/DNS commit projection through the final
-  synced fact substrate, and propagation histograms beyond the single local
-  sync scenario.
+- Slice 020 adds `p2panda-sync-fact-source-contract`. Two persistent p2panda
+  stores exchange missing signed operations through `p2panda-sync`, not manual
+  operation copying; the remote store projects node/service/route/DNS facts
+  into SQLite and gateway/DNS snapshots; deleting projection SQLite rebuilds
+  from synced p2panda operations; repeated sync is a no-op; same-key races
+  remain conflict candidates; sync egress requires trusted same-island replica
+  sessions; and payload reads still require read grants. The same scenario
+  records exact 200/1,000/10,000 sync/import convergence using in-memory stores
+  for the load probe.
+- Remaining E2E-4 work is binding this sync path to real iroh transport and
+  adding propagation histograms once multiple process roles exchange p2panda
+  sync messages instead of paired in-memory channels.
 
 ### E2E-5: Machine Add And Remove
 

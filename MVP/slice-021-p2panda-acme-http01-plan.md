@@ -17,11 +17,9 @@ origin:
 
 # Slice 021 P2panda-Backed ACME HTTP-01 Plan
 
-> Parked behind
+> Unparked after
 > [MVP/slice-020-p2panda-sync-fact-replication-plan.md](slice-020-p2panda-sync-fact-replication-plan.md).
-> ACME remains the next product canary, but Slice 020 should first replace
-> manual operation copying with a p2panda-sync proof so ACME does not harden
-> harness replication plumbing.
+> ACME is now the next product canary on the Slice 020 p2panda-sync boundary.
 
 ## Problem Frame
 
@@ -74,8 +72,9 @@ the new fact substrate plus advisory lease semantics.
 
 - Slice 018c deploy restart recovery is finished and should be treated as the
   current p2panda-backed deploy recovery proof.
-- Finish Slice 020's p2panda-sync fact replication proof first, so this ACME
-  canary runs on the real p2panda operation-sync boundary.
+- Slice 020's p2panda-sync fact replication proof is finished. This ACME
+  canary must use that operation-sync boundary instead of manual operation
+  copying.
 - Keep all work under `MVP/`.
 
 ## Scope

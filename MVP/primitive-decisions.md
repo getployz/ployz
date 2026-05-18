@@ -246,6 +246,27 @@ the decision concrete.
   stable crates.io `p2panda-core/store/stream 0.5.2` API. The git
   `p2panda-net` stack is a dev/test dependency until a separate migration
   updates the production fact store to p2panda's current git API.
+- Slice 020 adds the production-facing `p2panda-sync` adapter in
+  `mvp-p2panda-facts`. The adapter runs `LogSync`, drains protocol data events,
+  and imports every received operation through the existing Ployz validation
+  path: island match, trusted author key, original writer grant, p2panda
+  validation, duplicate handling, and conflict-as-candidate indexing.
+- Slice 020 makes replica egress explicit. `PandaFactSyncScope` remains
+  selection-only; each store checks that requested author keys match its own
+  trusted bindings and that the peer session is a trusted same-island replica
+  before payload bytes leave the local store.
+- Slice 020 adds `p2panda-sync-fact-source-contract`: two persistent SQLite
+  p2panda stores sync without manual operation copying, the synced store
+  rebuilds projection SQLite plus gateway/DNS snapshots, repeated sync is a
+  no-op, same-key races remain conflict candidates, and unauthorized payload
+  reads still fail. The 200/1,000/10,000 large-load probe uses in-memory
+  `PandaFactStore` instances deliberately: the persistent-store proof is
+  covered by the main scenario, while the stress probe measures the sync/import
+  boundary without turning every E2E run into a SQLite write benchmark.
+- Manual p2panda `export_operations` / `import_operation` remains
+  deterministic harness/debug plumbing. Product proofs after Slice 020 should
+  use `sync_panda_fact_stores` or a future iroh transport carrying the same
+  p2panda-sync messages, not a new feature-specific operation-copy loop.
 
 ## Documented Design Gaps
 
