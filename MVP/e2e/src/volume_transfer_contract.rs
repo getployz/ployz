@@ -50,7 +50,6 @@ struct VolumeTransferReport {
     expired_lease_rejections: usize,
     preflight_rejections: usize,
     forged_receive_rejections: usize,
-    pre_commit_drop_left_owner_unchanged: bool,
     recovered_owner: String,
     source_cleanup: &'static str,
     elapsed_ms: u128,
@@ -91,12 +90,7 @@ async fn run_async() -> Result<(), String> {
 
     let participant_state = Arc::new(ParticipantState::default());
     register_participants(&bus, &node_session, Arc::clone(&participant_state)).await?;
-    let executor = VolumeTransferExecutor::new(
-        operator.clone(),
-        BusVolumeParticipantClient::new(bus.clone()),
-        VisibleNodes::new([NodeId::new("node-a"), NodeId::new("node-b")]),
-        VolumeTransferTimeouts::new(std::time::Duration::from_secs(2)),
-    );
+    let executor = volume_transfer_executor(&operator, &bus);
 
     let mut success_store = store.clone();
     let result = executor
@@ -121,6 +115,8 @@ async fn run_async() -> Result<(), String> {
     )?;
     assert_eq_named("snapshot count", participant_state.snapshot_count(), 1)?;
     assert_eq_named("receive count", participant_state.receive_count(), 1)?;
+    let success_snapshot_requests = participant_state.snapshot_count();
+    let success_receive_requests = participant_state.receive_count();
 
     let recovery_started = Instant::now();
     let exported = store.export_operations().await;
@@ -156,7 +152,7 @@ async fn run_async() -> Result<(), String> {
         1,
     )?;
 
-    let active_conflict_rejections = prove_active_conflict_rejects_before_rpc(
+    prove_active_conflict_rejects_before_rpc(
         &operator,
         &bus,
         &namespace,
@@ -165,7 +161,7 @@ async fn run_async() -> Result<(), String> {
         Arc::clone(&fact_authorizer),
     )
     .await?;
-    let stale_mutation_rejections = prove_stale_holder_rejects_before_commit(
+    prove_stale_holder_rejects_before_commit(
         &operator,
         &bus,
         &namespace,
@@ -174,7 +170,7 @@ async fn run_async() -> Result<(), String> {
         Arc::clone(&fact_authorizer),
     )
     .await?;
-    let stale_ownership_rejections = prove_stale_ownership_rejects_before_commit(
+    prove_stale_ownership_rejects_before_commit(
         &operator,
         &bus,
         &namespace,
@@ -183,7 +179,7 @@ async fn run_async() -> Result<(), String> {
         Arc::clone(&fact_authorizer),
     )
     .await?;
-    let expired_lease_rejections = prove_expired_lease_rejects_before_commit(
+    prove_expired_lease_rejects_before_commit(
         &operator,
         &bus,
         &namespace,
@@ -192,14 +188,14 @@ async fn run_async() -> Result<(), String> {
         Arc::clone(&fact_authorizer),
     )
     .await?;
-    let preflight_rejections = prove_ownership_preflight_rejects_before_side_effect(
+    prove_ownership_preflight_rejects_before_side_effect(
         &bus,
         &namespace,
         &volume,
         &participant_state,
     )
     .await?;
-    let forged_receive_rejections = prove_forged_receive_rejects(
+    prove_forged_receive_rejects(
         &operator,
         &bus,
         &namespace,
@@ -207,7 +203,7 @@ async fn run_async() -> Result<(), String> {
         Arc::clone(&fact_authorizer),
     )
     .await?;
-    let pre_commit_drop_left_owner_unchanged = prove_pre_commit_drop_has_no_new_owner(
+    prove_pre_commit_drop_has_no_new_owner(
         &operator,
         &bus,
         &namespace,
@@ -221,20 +217,19 @@ async fn run_async() -> Result<(), String> {
         scenario: "volume-transfer-contract",
         visible_nodes_at_decision: result.visible_nodes.len(),
         lease_writes: store.lease_writes(),
-        snapshot_requests: participant_state.snapshot_count(),
-        receive_requests: participant_state.receive_count(),
+        snapshot_requests: success_snapshot_requests,
+        receive_requests: success_receive_requests,
         ownership_commit_writes: store.ownership_writes(),
         lease_write_ms: store.lease_write_duration().as_millis(),
         ownership_commit_write_ms: store.ownership_write_duration().as_millis(),
         superseded_ownership_candidate_count: recovered_read_model.superseded.len(),
         recovery_read_ms,
-        active_conflict_rejections,
-        stale_mutation_rejections,
-        stale_ownership_rejections,
-        expired_lease_rejections,
-        preflight_rejections,
-        forged_receive_rejections,
-        pre_commit_drop_left_owner_unchanged,
+        active_conflict_rejections: 1,
+        stale_mutation_rejections: 1,
+        stale_ownership_rejections: 1,
+        expired_lease_rejections: 1,
+        preflight_rejections: 1,
+        forged_receive_rejections: 1,
         recovered_owner: recovered.fact.owner.to_string(),
         source_cleanup: source_cleanup_label(result.source_cleanup),
         elapsed_ms: started.elapsed().as_millis(),
@@ -322,6 +317,18 @@ async fn register_participants(
     Ok(())
 }
 
+fn volume_transfer_executor(
+    operator: &BusSession,
+    bus: &BusActorHandle,
+) -> VolumeTransferExecutor<BusVolumeParticipantClient> {
+    VolumeTransferExecutor::new(
+        operator.clone(),
+        BusVolumeParticipantClient::new(bus.clone()),
+        VisibleNodes::new([NodeId::new("node-a"), NodeId::new("node-b")]),
+        VolumeTransferTimeouts::new(std::time::Duration::from_secs(2)),
+    )
+}
+
 async fn prove_active_conflict_rejects_before_rpc(
     operator: &BusSession,
     bus: &BusActorHandle,
@@ -329,7 +336,7 @@ async fn prove_active_conflict_rejects_before_rpc(
     volume: &VolumeId,
     participant_state: &ParticipantState,
     fact_authorizer: Arc<dyn FactAuthorizer>,
-) -> Result<usize, String> {
+) -> Result<(), String> {
     let before = participant_state.snapshot_count();
     let author = Arc::new(PandaFactAuthor::new(operator.principal().clone()));
     let store = PandaVolumeFactStore::new(PandaFactStore::new(fact_authorizer), author);
@@ -337,12 +344,7 @@ async fn prove_active_conflict_rejects_before_rpc(
     store
         .write_lease_claim(operator, namespace, volume, "other", 1, (10, 100))
         .await?;
-    let executor = VolumeTransferExecutor::new(
-        operator.clone(),
-        BusVolumeParticipantClient::new(bus.clone()),
-        VisibleNodes::new([NodeId::new("node-a"), NodeId::new("node-b")]),
-        VolumeTransferTimeouts::new(std::time::Duration::from_secs(2)),
-    );
+    let executor = volume_transfer_executor(operator, bus);
     let mut store_for_command = store.clone();
     let result = executor
         .transfer(
@@ -358,7 +360,7 @@ async fn prove_active_conflict_rejects_before_rpc(
         participant_state.snapshot_count(),
         before,
     )?;
-    Ok(1)
+    Ok(())
 }
 
 async fn prove_stale_holder_rejects_before_commit(
@@ -368,18 +370,13 @@ async fn prove_stale_holder_rejects_before_commit(
     volume: &VolumeId,
     participant_state: &ParticipantState,
     fact_authorizer: Arc<dyn FactAuthorizer>,
-) -> Result<usize, String> {
+) -> Result<(), String> {
     let author = Arc::new(PandaFactAuthor::new(operator.principal().clone()));
     let store = PandaVolumeFactStore::new(PandaFactStore::new(fact_authorizer), author);
     seed_initial_owner(&store, operator, namespace, volume).await?;
     let stale_injecting =
         StaleLeaseInjectingStore::new(store.clone(), namespace.clone(), volume.clone());
-    let executor = VolumeTransferExecutor::new(
-        operator.clone(),
-        BusVolumeParticipantClient::new(bus.clone()),
-        VisibleNodes::new([NodeId::new("node-a"), NodeId::new("node-b")]),
-        VolumeTransferTimeouts::new(std::time::Duration::from_secs(2)),
-    );
+    let executor = volume_transfer_executor(operator, bus);
     let before_ownership_writes = store.ownership_writes();
     let before_snapshot = participant_state.snapshot_count();
     let mut store_for_command = stale_injecting;
@@ -400,7 +397,7 @@ async fn prove_stale_holder_rejects_before_commit(
     if participant_state.snapshot_count() <= before_snapshot {
         return Err("stale proof did not reach participant RPC before lease race".to_string());
     }
-    Ok(1)
+    Ok(())
 }
 
 async fn prove_stale_ownership_rejects_before_commit(
@@ -410,7 +407,7 @@ async fn prove_stale_ownership_rejects_before_commit(
     volume: &VolumeId,
     participant_state: &ParticipantState,
     fact_authorizer: Arc<dyn FactAuthorizer>,
-) -> Result<usize, String> {
+) -> Result<(), String> {
     let author = Arc::new(PandaFactAuthor::new(operator.principal().clone()));
     let store = PandaVolumeFactStore::new(PandaFactStore::new(fact_authorizer), author);
     seed_initial_owner(&store, operator, namespace, volume).await?;
@@ -434,12 +431,7 @@ async fn prove_stale_ownership_rejects_before_commit(
         visible_nodes: VisibleNodes::new([NodeId::new("node-a"), NodeId::new("node-c")]),
     };
     let stale_injecting = StaleOwnershipInjectingStore::new(store.clone(), raced);
-    let executor = VolumeTransferExecutor::new(
-        operator.clone(),
-        BusVolumeParticipantClient::new(bus.clone()),
-        VisibleNodes::new([NodeId::new("node-a"), NodeId::new("node-b")]),
-        VolumeTransferTimeouts::new(std::time::Duration::from_secs(2)),
-    );
+    let executor = volume_transfer_executor(operator, bus);
     let before_snapshot = participant_state.snapshot_count();
     let mut store_for_command = stale_injecting;
     let result = executor
@@ -465,7 +457,7 @@ async fn prove_stale_ownership_rejects_before_commit(
     if participant_state.snapshot_count() <= before_snapshot {
         return Err("stale ownership proof did not reach participant RPC".to_string());
     }
-    Ok(1)
+    Ok(())
 }
 
 async fn prove_expired_lease_rejects_before_commit(
@@ -475,16 +467,11 @@ async fn prove_expired_lease_rejects_before_commit(
     volume: &VolumeId,
     participant_state: &ParticipantState,
     fact_authorizer: Arc<dyn FactAuthorizer>,
-) -> Result<usize, String> {
+) -> Result<(), String> {
     let author = Arc::new(PandaFactAuthor::new(operator.principal().clone()));
     let store = PandaVolumeFactStore::new(PandaFactStore::new(fact_authorizer), author);
     seed_initial_owner(&store, operator, namespace, volume).await?;
-    let executor = VolumeTransferExecutor::new(
-        operator.clone(),
-        BusVolumeParticipantClient::new(bus.clone()),
-        VisibleNodes::new([NodeId::new("node-a"), NodeId::new("node-b")]),
-        VolumeTransferTimeouts::new(std::time::Duration::from_secs(2)),
-    );
+    let executor = volume_transfer_executor(operator, bus);
     let before_ownership_writes = store.ownership_writes();
     let before_snapshot = participant_state.snapshot_count();
     let mut store_for_command = store.clone();
@@ -513,7 +500,7 @@ async fn prove_expired_lease_rejects_before_commit(
     if participant_state.snapshot_count() <= before_snapshot {
         return Err("expired lease proof did not reach participant RPC".to_string());
     }
-    Ok(1)
+    Ok(())
 }
 
 async fn prove_ownership_preflight_rejects_before_side_effect(
@@ -521,7 +508,7 @@ async fn prove_ownership_preflight_rejects_before_side_effect(
     namespace: &VolumeNamespace,
     volume: &VolumeId,
     participant_state: &ParticipantState,
-) -> Result<usize, String> {
+) -> Result<(), String> {
     let (raw_bus, authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
     let island = IslandId::new("prod");
     let seeder = authority.grant_in(
@@ -546,12 +533,7 @@ async fn prove_ownership_preflight_rejects_before_side_effect(
     let author = Arc::new(PandaFactAuthor::new(seeder.principal().clone()));
     let store = PandaVolumeFactStore::new(PandaFactStore::new(Arc::new(raw_bus)), author);
     seed_initial_owner(&store, &seeder, namespace, volume).await?;
-    let executor = VolumeTransferExecutor::new(
-        limited.clone(),
-        BusVolumeParticipantClient::new(bus.clone()),
-        VisibleNodes::new([NodeId::new("node-a"), NodeId::new("node-b")]),
-        VolumeTransferTimeouts::new(std::time::Duration::from_secs(2)),
-    );
+    let executor = volume_transfer_executor(&limited, bus);
     let before_snapshot = participant_state.snapshot_count();
     let mut store_for_command = store.clone();
     let result = executor
@@ -571,7 +553,7 @@ async fn prove_ownership_preflight_rejects_before_side_effect(
         participant_state.snapshot_count(),
         before_snapshot,
     )?;
-    Ok(1)
+    Ok(())
 }
 
 async fn prove_forged_receive_rejects(
@@ -580,7 +562,7 @@ async fn prove_forged_receive_rejects(
     namespace: &VolumeNamespace,
     volume: &VolumeId,
     fact_authorizer: Arc<dyn FactAuthorizer>,
-) -> Result<usize, String> {
+) -> Result<(), String> {
     let author = Arc::new(PandaFactAuthor::new(operator.principal().clone()));
     let store = PandaVolumeFactStore::new(PandaFactStore::new(fact_authorizer), author);
     seed_initial_owner(&store, operator, namespace, volume).await?;
@@ -601,7 +583,7 @@ async fn prove_forged_receive_rejects(
         return Err(format!("expected forged receive rejection, got {result:?}"));
     }
     assert_eq_named("forged no ownership commit", store.ownership_writes(), 1)?;
-    Ok(1)
+    Ok(())
 }
 
 async fn prove_pre_commit_drop_has_no_new_owner(
@@ -611,18 +593,13 @@ async fn prove_pre_commit_drop_has_no_new_owner(
     volume: &VolumeId,
     participant_state: &ParticipantState,
     fact_authorizer: Arc<dyn FactAuthorizer>,
-) -> Result<bool, String> {
+) -> Result<(), String> {
     let author = Arc::new(PandaFactAuthor::new(operator.principal().clone()));
     let store = PandaVolumeFactStore::new(PandaFactStore::new(fact_authorizer), author);
     seed_initial_owner(&store, operator, namespace, volume).await?;
     let before_snapshot = participant_state.snapshot_count();
     let before_receive = participant_state.receive_count();
-    let executor = VolumeTransferExecutor::new(
-        operator.clone(),
-        BusVolumeParticipantClient::new(bus.clone()),
-        VisibleNodes::new([NodeId::new("node-a"), NodeId::new("node-b")]),
-        VolumeTransferTimeouts::new(std::time::Duration::from_secs(2)),
-    );
+    let executor = volume_transfer_executor(operator, bus);
     let mut command_store = FailOwnershipWriteStore::new(store.clone());
     let result = executor
         .transfer(
@@ -648,7 +625,13 @@ async fn prove_pre_commit_drop_has_no_new_owner(
         .map_err(|error| format!("read pre-commit owner: {error}"))?
         .current
         .ok_or_else(|| "pre-commit owner missing".to_string())?;
-    Ok(current.fact.owner == NodeId::new("node-a"))
+    if current.fact.owner != NodeId::new("node-a") {
+        return Err(format!(
+            "pre-commit drop changed owner to {}",
+            current.fact.owner
+        ));
+    }
+    Ok(())
 }
 
 async fn import_panda_volume_facts(
