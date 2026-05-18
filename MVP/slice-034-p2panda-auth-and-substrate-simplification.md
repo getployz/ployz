@@ -19,10 +19,12 @@ not product-wired yet, but it proves the group-state semantics we need:
 
 - root-created island group;
 - manager-only add/remove/demote;
-- stable member key binding `(island, principal, epoch, key)` in the adapter
-  read model;
-- test-only signed membership-operation validation for signer/key mismatch,
-  wrong group, missing introduced bindings, and unsupported nested groups;
+- stable member binding `(island, principal, epoch, p2panda public key)` in the
+  adapter read model;
+- test-only signed membership-operation validation using a p2panda private key
+  verified against the bound public key, plus wrong-group, missing introduced
+  binding, unsupported nested group, and rejected-import state-preservation
+  checks;
 - replica importer as Pull/Read plus `ReplicaImporter` condition, not Write;
 - strong-removal concurrency cases for removed managers and mutual removals.
 
@@ -45,17 +47,21 @@ Next shape:
 ```text
 signed durable membership operations
   -> mvp-p2panda-authz IslandAuthz reduction
-  -> IslandAuthoritySnapshot
+  -> epoch/dependency-aware IslandAuthorityView
   -> PandaFactStore import/write checks
 ```
 
 `PandaFactStore` should stop owning membership truth. It should receive an
-authority view answering:
+authority view answering questions at the membership dependency point claimed by
+the fact operation, not just "latest state" questions:
 
-- is this principal an active writer for this island?
-- does this principal's current p2panda author key match the operation author?
-- is this principal an active replica importer?
-- is this author removed or demoted by the current membership graph?
+- was this principal a writer for this island at the referenced membership
+  operation/epoch?
+- does this principal's bound p2panda public key match the operation author?
+- was this principal an active replica importer at the referenced membership
+  operation/epoch?
+- is this author removed or demoted before, concurrent with, or after the fact
+  operation's referenced membership state?
 
 PloyzBus grants and command-specific fact-key grants remain separate. A member
 with p2panda-auth Write is not automatically allowed to write every Ployz fact
@@ -65,7 +71,7 @@ key.
 
 | Candidate | Decision | Gate |
 | --- | --- | --- |
-| `trusted_author_keys` in `PandaFactStore` | Replace next | Persist/reopen membership operations and use authz snapshot for local writes, import, sync scope, and process-role reopen. |
+| `trusted_author_keys` in `PandaFactStore` | Replace next | Persist/reopen membership operations and use an epoch/dependency-aware authz view for local writes, import, sync scope, and process-role reopen. |
 | `trusted_replica_peers` in `PandaFactStore` | Replace next | Model replica import as active Pull/Read member with `ReplicaImporter`, and prove replica cannot write. |
 | `PandaFactSyncScope::from_trusted_authors` | Replace after authz wiring | Sync scope should derive from active authz members instead of manually seeded key maps. |
 | `BusFactSource` | Keep as unit fixture | Stop expanding product proofs on it; product command scenarios should use domain p2panda writers or `SharedPandaFactStore`. |
@@ -80,7 +86,7 @@ key.
 
 New code:
 
-- `mvp-p2panda-authz`: 19 compile-backed tests and a narrow adapter over
+- `mvp-p2panda-authz`: 21 compile-backed tests and a narrow adapter over
   p2panda-auth group state.
 
 Reviewer caveat addressed: the spike no longer uses the p2panda-auth operation
@@ -103,8 +109,9 @@ follow-up slice can remove code without changing product semantics.
 ## Verification
 
 ```text
-cargo fmt --all --check
-cargo test -p mvp-p2panda-authz --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-MVP_E2E_ALL_TIMEOUT=120s cargo run -p mvp-e2e -- all
+cargo fmt --manifest-path MVP/Cargo.toml -p mvp-p2panda-authz
+cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-authz --all-targets
+cargo clippy --manifest-path MVP/Cargo.toml -p mvp-p2panda-authz --all-targets -- -D warnings
+cargo check --manifest-path MVP/Cargo.toml --workspace --all-targets
+cargo info p2panda-blobs --verbose
 ```

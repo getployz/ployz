@@ -2972,6 +2972,7 @@ dependencies = [
  "blake3",
  "mvp-bus",
  "p2panda-auth",
+ "p2panda-core",
  "serde",
  "thiserror 2.0.18",
 ]
@@ -3483,6 +3484,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69f9d1950cb8c605a0b476162d2b5abf6ea83a7145f572f601c1012a72688cb2"
 dependencies = [
  "petgraph",
+ "rand 0.9.4",
  "serde",
  "thiserror 2.0.18",
 ]

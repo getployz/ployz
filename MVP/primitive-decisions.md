@@ -19,11 +19,19 @@ the decision concrete.
   membership spike. The result is a conditional adoption decision: p2panda-auth
   fits island membership and strong-removal semantics, but it must not replace
   `PandaFactStore` trust maps until Ployz-owned signed membership operations
-  can rebuild durable `(island, principal, epoch, key)` bindings.
+  can rebuild durable `(island, principal, epoch, p2panda public key)` bindings.
 - Slice 034 does not yet wire p2panda-auth into `PandaFactStore`. The next
   adoption gate is durable membership operation persistence and replay, then
   replacing `trusted_author_keys`, `trusted_replica_peers`, and manual
-  sync-scope author maps with an authz-derived authority snapshot.
+  sync-scope author maps with an epoch/dependency-aware authority view.
+- Slice 034 keeps unsigned local membership mutators test-only. Production
+  callers should not be able to mutate membership by passing a manager id; the
+  adoption path must require signed membership operations verified against the
+  durable public-key binding.
+- Slice 034 explicitly does not prove latest-state-only fact authorization.
+  Fact writes/imports need to reference the membership operation/epoch they
+  depend on so reducers can classify pre-remove, concurrent-remove, and
+  post-remove facts deterministically.
 - Slice 034 keeps membership operation ids as hash-shaped values in the spike,
   but they are not a production wire contract. The adoption slice should derive
   ids from the durable signed p2panda operation hash.
