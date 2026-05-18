@@ -4,6 +4,7 @@ use std::fmt::Display;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
 use futures::{StreamExt, channel::mpsc};
 use mvp_bus::{
@@ -15,17 +16,16 @@ use mvp_projection::{
     CandidateStatus, FactCandidate, FactSource, FactSourceError, FactSourceResult,
     classify_fact_key,
 };
-use p2panda_core::cbor::decode_cbor;
+use p2panda_core::cbor::{decode_cbor, encode_cbor};
 use p2panda_core::{
-    Body, Hash, Header, Operation, PrivateKey, PublicKey, RawOperation, validate_operation,
+    Body, Hash, Header, Operation, RawOperation, SigningKey, VerifyingKey, validate_operation,
 };
-use p2panda_store::sqlite::store::{
-    SqliteStore, connection_pool, create_database, run_pending_migrations,
-};
-use p2panda_store::{LogStore, MemoryStore, OperationStore};
-use p2panda_stream::operation::{IngestError, IngestResult, ingest_operation};
+use p2panda_store::logs::LogStore;
+use p2panda_store::topics::TopicStore;
+use p2panda_store::{SqliteStore, SqliteStoreBuilder};
+use p2panda_stream::ingest::{IngestError, ingest_operation};
 use p2panda_sync::protocols::{
-    LogSync, LogSyncError, LogSyncEvent, LogSyncMessage, LogSyncMetrics, LogSyncStatus, Logs,
+    LogSync, LogSyncError, LogSyncEvent, LogSyncMessage, LogSyncMetrics, Logs,
 };
 use p2panda_sync::traits::Protocol;
 use serde::{Deserialize, Serialize};
@@ -83,12 +83,6 @@ pub enum PandaFactError {
         principal: PrincipalId,
         key: FactKey,
         missing_operations: u64,
-    },
-    #[error("p2panda operation for fact {key} by {principal} in island {island} is outdated")]
-    OutdatedOperation {
-        island: IslandId,
-        principal: PrincipalId,
-        key: FactKey,
     },
     #[error("author principal {author} does not match session principal {session}")]
     PrincipalMismatch {
@@ -154,8 +148,6 @@ pub enum PandaFactSyncError {
         #[source]
         source: LogSyncError,
     },
-    #[error("sync {side} event stream closed before completion")]
-    EventStreamClosed { side: PandaFactSyncSide },
     #[error("sync {side} event receiver lagged by {skipped} messages")]
     EventReceiverLagged {
         side: PandaFactSyncSide,
@@ -173,7 +165,7 @@ pub enum PandaFactSyncError {
 
 pub type SyncResult<T> = std::result::Result<T, PandaFactSyncError>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 struct IslandLog(String);
 
 impl From<&IslandId> for IslandLog {
@@ -209,7 +201,7 @@ impl PandaFactExtensions {
 
 pub struct PandaFactAuthor {
     principal: PrincipalId,
-    key: PrivateKey,
+    key: SigningKey,
 }
 
 impl PandaFactAuthor {
@@ -217,7 +209,7 @@ impl PandaFactAuthor {
     pub fn new(principal: PrincipalId) -> Self {
         Self {
             principal,
-            key: PrivateKey::new(),
+            key: SigningKey::generate(),
         }
     }
 
@@ -225,7 +217,7 @@ impl PandaFactAuthor {
     pub fn from_seed(principal: PrincipalId, seed: [u8; 32]) -> Self {
         Self {
             principal,
-            key: PrivateKey::from_bytes(&seed),
+            key: SigningKey::from_bytes(&seed),
         }
     }
 
@@ -233,7 +225,7 @@ impl PandaFactAuthor {
     pub fn from_private_key_bytes(principal: PrincipalId, bytes: [u8; 32]) -> Self {
         Self {
             principal,
-            key: PrivateKey::from_bytes(&bytes),
+            key: SigningKey::from_bytes(&bytes),
         }
     }
 
@@ -253,8 +245,8 @@ impl PandaFactAuthor {
     }
 
     #[must_use]
-    fn public_key(&self) -> p2panda_core::PublicKey {
-        self.key.public_key()
+    fn public_key(&self) -> VerifyingKey {
+        self.key.verifying_key()
     }
 
     #[must_use]
@@ -264,12 +256,12 @@ impl PandaFactAuthor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PandaFactAuthorKey(PublicKey);
+pub struct PandaFactAuthorKey(VerifyingKey);
 
 impl PandaFactAuthorKey {
     pub fn parse_hex(value: &str) -> Result<Self> {
         value
-            .parse::<PublicKey>()
+            .parse::<VerifyingKey>()
             .map(Self)
             .map_err(|error| PandaFactError::InvalidAuthorKey {
                 message: error.to_string(),
@@ -282,7 +274,7 @@ impl PandaFactAuthorKey {
     }
 
     #[must_use]
-    fn public_key(self) -> PublicKey {
+    fn public_key(self) -> VerifyingKey {
         self.0
     }
 }
@@ -582,7 +574,7 @@ pub struct PandaFactStore {
     facts_by_key_hash: BTreeMap<StoredFactKeyHash, usize>,
     payloads: BTreeMap<FactContentHash, FactPayload>,
     authority_snapshots: BTreeMap<IslandId, IslandAuthoritySnapshot>,
-    trusted_author_keys: BTreeMap<(IslandId, PrincipalId), PublicKey>,
+    trusted_author_keys: BTreeMap<(IslandId, PrincipalId), VerifyingKey>,
     trusted_replica_peers: BTreeSet<(IslandId, PrincipalId)>,
 }
 
@@ -590,7 +582,7 @@ enum FactAuthority<'a> {
     Snapshot(&'a IslandAuthoritySnapshot),
     Manual {
         island: &'a IslandId,
-        trusted_author_keys: &'a BTreeMap<(IslandId, PrincipalId), PublicKey>,
+        trusted_author_keys: &'a BTreeMap<(IslandId, PrincipalId), VerifyingKey>,
         trusted_replica_peers: &'a BTreeSet<(IslandId, PrincipalId)>,
     },
 }
@@ -623,14 +615,18 @@ impl FactAuthority<'_> {
         }
     }
 
-    fn require_active_writer(&self, principal: &PrincipalId, public_key: PublicKey) -> Result<()> {
+    fn require_active_writer(
+        &self,
+        principal: &PrincipalId,
+        public_key: VerifyingKey,
+    ) -> Result<()> {
         self.active_writer_epoch(principal, public_key).map(|_| ())
     }
 
     fn active_writer_epoch(
         &self,
         principal: &PrincipalId,
-        public_key: PublicKey,
+        public_key: VerifyingKey,
     ) -> Result<Option<IslandMemberEpoch>> {
         match self {
             Self::Snapshot(authority) => {
@@ -661,10 +657,10 @@ impl FactAuthority<'_> {
 }
 
 fn require_manual_author_key(
-    trusted_author_keys: &BTreeMap<(IslandId, PrincipalId), PublicKey>,
+    trusted_author_keys: &BTreeMap<(IslandId, PrincipalId), VerifyingKey>,
     island: &IslandId,
     principal: &PrincipalId,
-    public_key: PublicKey,
+    public_key: VerifyingKey,
 ) -> Result<()> {
     match trusted_author_keys.get(&(island.clone(), principal.clone())) {
         Some(existing) if *existing == public_key => Ok(()),
@@ -740,78 +736,333 @@ impl PandaFactWireEnvelope {
 
 #[derive(Clone)]
 enum PandaFactBackend {
-    Memory(MemoryStore<IslandLog, PandaFactExtensions>),
-    Sqlite(SqliteStore<IslandLog, PandaFactExtensions>),
+    Memory(PandaMemoryStore),
+    Sqlite(SqliteStore),
 }
+
+#[derive(Clone, Default)]
+struct PandaMemoryStore {
+    inner: Arc<StdMutex<PandaMemoryInner>>,
+}
+
+#[derive(Default)]
+struct PandaMemoryInner {
+    operations: BTreeMap<Hash, Operation<PandaFactExtensions>>,
+    logs: BTreeMap<(VerifyingKey, IslandLog), Vec<Hash>>,
+}
+
+impl PandaMemoryStore {
+    async fn ingest_operation(
+        &self,
+        operation: Operation<PandaFactExtensions>,
+        log_id: &IslandLog,
+    ) -> Result<PandaBackendIngest> {
+        validate_operation(&operation).map_err(|_| PandaFactError::InvalidOperation)?;
+        let mut inner = self.inner.lock().expect("memory panda store");
+        if inner.operations.contains_key(&operation.hash) {
+            return Ok(PandaBackendIngest::AlreadyPresent(operation));
+        }
+        let log_key = (operation.header.verifying_key, log_id.clone());
+        let latest_hash = inner.logs.get(&log_key).and_then(|hashes| hashes.last());
+        match (operation.header.backlink, latest_hash) {
+            (Some(backlink), Some(latest_hash)) if backlink == *latest_hash => {}
+            (None, None) if operation.header.seq_num == 0 => {}
+            _ => {
+                return Err(PandaFactError::OutOfOrderOperation {
+                    island: IslandId::new(operation.header.extensions.island.clone()),
+                    principal: PrincipalId::new(operation.header.extensions.author.clone()),
+                    key: FactKey::parse(operation.header.extensions.key.clone()).map_err(
+                        |error| PandaFactError::InvalidExtensions {
+                            message: error.to_string(),
+                        },
+                    )?,
+                    missing_operations: 1,
+                });
+            }
+        }
+        inner.logs.entry(log_key).or_default().push(operation.hash);
+        inner.operations.insert(operation.hash, operation.clone());
+        Ok(PandaBackendIngest::Inserted(operation))
+    }
+
+    async fn latest_operation(
+        &self,
+        public_key: &VerifyingKey,
+        log_id: &IslandLog,
+    ) -> Result<Option<Operation<PandaFactExtensions>>> {
+        let inner = self.inner.lock().expect("memory panda store");
+        Ok(inner
+            .logs
+            .get(&(*public_key, log_id.clone()))
+            .and_then(|hashes| hashes.last())
+            .and_then(|hash| inner.operations.get(hash))
+            .cloned())
+    }
+
+    async fn get_log_heights_for_log(
+        &self,
+        log_id: &IslandLog,
+    ) -> Result<Vec<(VerifyingKey, u64)>> {
+        let inner = self.inner.lock().expect("memory panda store");
+        Ok(inner
+            .logs
+            .iter()
+            .filter_map(|((author, current_log), hashes)| {
+                (current_log == log_id).then_some((*author, hashes.len().saturating_sub(1) as u64))
+            })
+            .collect())
+    }
+
+    async fn raw_log(
+        &self,
+        public_key: &VerifyingKey,
+        log_id: &IslandLog,
+    ) -> Result<Option<Vec<RawOperation>>> {
+        let inner = self.inner.lock().expect("memory panda store");
+        let Some(hashes) = inner.logs.get(&(*public_key, log_id.clone())) else {
+            return Ok(None);
+        };
+        let mut raw = Vec::new();
+        for hash in hashes {
+            let Some(operation) = inner.operations.get(hash) else {
+                continue;
+            };
+            raw.push((
+                encode_cbor(operation.header()).map_err(|error| {
+                    PandaFactError::InvalidExtensions {
+                        message: error.to_string(),
+                    }
+                })?,
+                operation.body().map(Body::to_bytes),
+            ));
+        }
+        Ok(Some(raw))
+    }
+}
+
+impl LogStore<Operation<PandaFactExtensions>, VerifyingKey, IslandLog, u64, Hash>
+    for PandaMemoryStore
+{
+    type Error = PandaMemoryStoreError;
+
+    async fn get_latest_entry(
+        &self,
+        author: &VerifyingKey,
+        log_id: &IslandLog,
+    ) -> std::result::Result<Option<Operation<PandaFactExtensions>>, Self::Error> {
+        Ok(self
+            .latest_operation(author, log_id)
+            .await
+            .expect("memory latest"))
+    }
+
+    async fn get_latest_entry_tx(
+        &self,
+        author: &VerifyingKey,
+        log_id: &IslandLog,
+    ) -> std::result::Result<Option<Operation<PandaFactExtensions>>, Self::Error> {
+        self.get_latest_entry(author, log_id).await
+    }
+
+    async fn get_log_heights(
+        &self,
+        author: &VerifyingKey,
+        logs: &[IslandLog],
+    ) -> std::result::Result<Option<BTreeMap<IslandLog, u64>>, Self::Error> {
+        let inner = self.inner.lock().expect("memory panda store");
+        let mut heights = BTreeMap::new();
+        for log_id in logs {
+            if let Some(hashes) = inner.logs.get(&(*author, log_id.clone())) {
+                heights.insert(log_id.clone(), hashes.len().saturating_sub(1) as u64);
+            }
+        }
+        Ok((!heights.is_empty()).then_some(heights))
+    }
+
+    async fn get_log_size(
+        &self,
+        author: &VerifyingKey,
+        log_id: &IslandLog,
+        after: Option<u64>,
+        until: Option<u64>,
+    ) -> std::result::Result<Option<(u64, u64)>, Self::Error> {
+        let inner = self.inner.lock().expect("memory panda store");
+        let Some(hashes) = inner.logs.get(&(*author, log_id.clone())) else {
+            return Ok(None);
+        };
+        let mut operations = 0_u64;
+        let mut bytes = 0_u64;
+        for hash in hashes {
+            let Some(operation) = inner.operations.get(hash) else {
+                continue;
+            };
+            if after.is_some_and(|after| operation.header.seq_num <= after)
+                || until.is_some_and(|until| operation.header.seq_num > until)
+            {
+                continue;
+            }
+            let header = encode_cbor(operation.header()).map_err(|_| PandaMemoryStoreError)?;
+            operations += 1;
+            bytes += header.len() as u64 + operation.header.payload_size;
+        }
+        Ok(Some((operations, bytes)))
+    }
+
+    async fn get_log_entries(
+        &self,
+        author: &VerifyingKey,
+        log_id: &IslandLog,
+        after: Option<u64>,
+        until: Option<u64>,
+    ) -> std::result::Result<Option<Vec<(Operation<PandaFactExtensions>, Vec<u8>)>>, Self::Error>
+    {
+        let inner = self.inner.lock().expect("memory panda store");
+        let Some(hashes) = inner.logs.get(&(*author, log_id.clone())) else {
+            return Ok(None);
+        };
+        let mut entries = Vec::new();
+        for hash in hashes {
+            let Some(operation) = inner.operations.get(hash) else {
+                continue;
+            };
+            if after.is_some_and(|after| operation.header.seq_num <= after) {
+                continue;
+            }
+            if until.is_some_and(|until| operation.header.seq_num > until) {
+                continue;
+            }
+            let header = encode_cbor(operation.header()).map_err(|_| PandaMemoryStoreError)?;
+            entries.push((operation.clone(), header));
+        }
+        Ok(Some(entries))
+    }
+
+    async fn prune_entries(
+        &self,
+        _author: &VerifyingKey,
+        _log_id: &IslandLog,
+        _until: &u64,
+    ) -> std::result::Result<u64, Self::Error> {
+        Ok(0)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("memory p2panda store failed")]
+struct PandaMemoryStoreError;
 
 impl PandaFactBackend {
     async fn ingest_operation(
         &mut self,
         header: Header<PandaFactExtensions>,
         body: Option<Body>,
-        header_bytes: Vec<u8>,
         log_id: &IslandLog,
-    ) -> Result<IngestResult<PandaFactExtensions>> {
+    ) -> Result<PandaBackendIngest> {
+        let operation = Operation {
+            hash: header.hash(),
+            header,
+            body,
+        };
         match self {
-            Self::Memory(store) => {
-                ingest_operation(store, header, body, header_bytes, log_id, false)
-                    .await
-                    .map_err(PandaFactError::Ingest)
-            }
+            Self::Memory(store) => store.ingest_operation(operation, log_id).await,
             Self::Sqlite(store) => {
-                ingest_operation(store, header, body, header_bytes, log_id, false)
+                let inserted = ingest_operation(store, &operation, log_id, log_id, false)
                     .await
-                    .map_err(PandaFactError::Ingest)
+                    .map_err(PandaFactError::Ingest)?;
+                Ok(if inserted {
+                    PandaBackendIngest::Inserted(operation)
+                } else {
+                    PandaBackendIngest::AlreadyPresent(operation)
+                })
             }
         }
     }
 
     async fn latest_operation(
         &self,
-        public_key: &PublicKey,
+        public_key: &VerifyingKey,
         log_id: &IslandLog,
-    ) -> Result<Option<(Header<PandaFactExtensions>, Option<Body>)>> {
+    ) -> Result<Option<Operation<PandaFactExtensions>>> {
         match self {
-            Self::Memory(store) => store
-                .latest_operation(public_key, log_id)
-                .await
-                .map_err(store_error),
+            Self::Memory(store) => store.latest_operation(public_key, log_id).await,
             Self::Sqlite(store) => store
-                .latest_operation(public_key, log_id)
+                .get_latest_entry(public_key, log_id)
                 .await
                 .map_err(store_error),
         }
     }
 
-    async fn get_log_heights(&self, log_id: &IslandLog) -> Result<Vec<(PublicKey, u64)>> {
+    async fn get_log_heights(&self, log_id: &IslandLog) -> Result<Vec<(VerifyingKey, u64)>> {
         match self {
-            Self::Memory(store) => store.get_log_heights(log_id).await.map_err(store_error),
-            Self::Sqlite(store) => store.get_log_heights(log_id).await.map_err(store_error),
+            Self::Memory(store) => store.get_log_heights_for_log(log_id).await,
+            Self::Sqlite(store) => {
+                let associations =
+                    <SqliteStore as TopicStore<IslandLog, VerifyingKey, IslandLog>>::resolve(
+                        store, log_id,
+                    )
+                    .await
+                    .map_err(store_error)?;
+                let mut heights = Vec::new();
+                for (author, logs) in associations {
+                    let Some(log_heights) =
+                        <SqliteStore as LogStore<
+                            Operation<PandaFactExtensions>,
+                            VerifyingKey,
+                            IslandLog,
+                            u64,
+                            Hash,
+                        >>::get_log_heights(store, &author, &logs)
+                        .await
+                        .map_err(store_error)?
+                    else {
+                        continue;
+                    };
+                    if let Some(height) = log_heights.get(log_id) {
+                        heights.push((author, *height));
+                    }
+                }
+                Ok(heights)
+            }
         }
     }
 
     async fn get_raw_log(
         &self,
-        public_key: &PublicKey,
+        public_key: &VerifyingKey,
         log_id: &IslandLog,
     ) -> Result<Option<Vec<RawOperation>>> {
         match self {
-            Self::Memory(store) => store
-                .get_raw_log(public_key, log_id, None)
-                .await
-                .map_err(store_error),
-            Self::Sqlite(store) => store
-                .get_raw_log(public_key, log_id, None)
-                .await
-                .map_err(store_error),
+            Self::Memory(store) => store.raw_log(public_key, log_id).await,
+            Self::Sqlite(store) => {
+                let entries: Option<Vec<(Operation<PandaFactExtensions>, Vec<u8>)>> = store
+                    .get_log_entries(public_key, log_id, None, None)
+                    .await
+                    .map_err(store_error)?;
+                let Some(entries) = entries else {
+                    return Ok(None);
+                };
+                let mut raw = Vec::new();
+                for (operation, header_bytes) in entries {
+                    raw.push((header_bytes, operation.body().map(Body::to_bytes)));
+                }
+                Ok(Some(raw))
+            }
         }
     }
+}
+
+enum PandaBackendIngest {
+    Inserted(Operation<PandaFactExtensions>),
+    AlreadyPresent(Operation<PandaFactExtensions>),
 }
 
 impl PandaFactStore {
     #[must_use]
     pub fn new(authorizer: Arc<dyn FactAuthorizer>) -> Self {
-        Self::from_backend(authorizer, PandaFactBackend::Memory(MemoryStore::new()))
+        Self::from_backend(
+            authorizer,
+            PandaFactBackend::Memory(PandaMemoryStore::default()),
+        )
     }
 
     pub async fn open_sqlite(
@@ -820,13 +1071,13 @@ impl PandaFactStore {
     ) -> Result<Self> {
         prepare_sqlite_parent(&config.path)?;
         let url = sqlite_url(&config.path);
-        create_database(&url).await.map_err(store_error)?;
-        let pool = connection_pool(&url, config.max_connections)
+        let sqlite = SqliteStoreBuilder::new()
+            .database_url(&url)
+            .max_connections(config.max_connections)
+            .build()
             .await
             .map_err(store_error)?;
-        run_pending_migrations(&pool).await.map_err(store_error)?;
-        let mut store =
-            Self::from_backend(authorizer, PandaFactBackend::Sqlite(SqliteStore::new(pool)));
+        let mut store = Self::from_backend(authorizer, PandaFactBackend::Sqlite(sqlite));
         for trusted in config.trusted_author_keys {
             store.bind_author_key(&trusted.island, &trusted.principal, trusted.author_key.0)?;
         }
@@ -933,14 +1184,13 @@ impl PandaFactStore {
 
         let mut header = Header {
             version: 1,
-            public_key: author.public_key(),
+            verifying_key: author.public_key(),
             signature: None,
             payload_size: body.size(),
             payload_hash: Some(body.hash()),
-            timestamp: 0,
+            timestamp: p2panda_core::Timestamp::now(),
             seq_num: log_position.seq_num,
             backlink: log_position.backlink,
-            previous: Vec::new(),
             extensions: PandaFactExtensions::new(
                 session.island(),
                 &key,
@@ -949,20 +1199,19 @@ impl PandaFactStore {
             ),
         };
         header.sign(&author.key);
-        let header_bytes = header.to_bytes();
+        let header_bytes =
+            encode_cbor(&header).map_err(|error| PandaFactError::InvalidExtensions {
+                message: error.to_string(),
+            })?;
         let raw_operation = PandaFactOperation::new(header_bytes.clone(), raw_body);
         let result = self
             .backend
-            .ingest_operation(
-                header,
-                Some(body),
-                header_bytes,
-                &IslandLog::from(session.island()),
-            )
+            .ingest_operation(header, Some(body), &IslandLog::from(session.island()))
             .await?;
 
-        let IngestResult::Complete(operation) = result else {
-            return Err(PandaFactError::InvalidOperation);
+        let operation = match result {
+            PandaBackendIngest::Inserted(operation)
+            | PandaBackendIngest::AlreadyPresent(operation) => operation,
         };
         validate_operation(&operation).map_err(|_| PandaFactError::InvalidOperation)?;
         let metadata = metadata_from_operation(&operation, content_hash)?;
@@ -1016,7 +1265,7 @@ impl PandaFactStore {
         let content_hash = FactContentHash::for_payload(&payload);
         let metadata = metadata_from_header(&header, content_hash)?;
         let operation_hash = header.hash();
-        let public_key = header.public_key;
+        let public_key = header.verifying_key;
         self.authorize_import(session, &metadata, public_key)?;
         let candidate = Operation {
             hash: operation_hash,
@@ -1029,29 +1278,12 @@ impl PandaFactStore {
         }
         let result = self
             .backend
-            .ingest_operation(
-                header,
-                Some(body),
-                header_bytes.clone(),
-                &IslandLog::from(&metadata.island),
-            )
+            .ingest_operation(header, Some(body), &IslandLog::from(&metadata.island))
             .await?;
         let imported = match result {
-            IngestResult::Complete(imported) => imported,
-            IngestResult::Retry(_, _, _, missing_operations) => {
-                return Err(PandaFactError::OutOfOrderOperation {
-                    island: metadata.island,
-                    principal: metadata.author,
-                    key: metadata.key,
-                    missing_operations,
-                });
-            }
-            IngestResult::Outdated(_) => {
-                return Err(PandaFactError::OutdatedOperation {
-                    island: metadata.island,
-                    principal: metadata.author,
-                    key: metadata.key,
-                });
+            PandaBackendIngest::Inserted(imported) => imported,
+            PandaBackendIngest::AlreadyPresent(_) => {
+                return Ok(PandaFactWriteOutcome::AlreadyPresent(metadata));
             }
         };
         validate_operation(&imported).map_err(|_| PandaFactError::InvalidOperation)?;
@@ -1068,7 +1300,7 @@ impl PandaFactStore {
         &self,
         session: &BusSession,
         metadata: &PandaFactMetadata,
-        public_key: PublicKey,
+        public_key: VerifyingKey,
     ) -> Result<()> {
         if session.island() != &metadata.island {
             return Err(PandaFactError::ImportIslandMismatch {
@@ -1118,7 +1350,7 @@ impl PandaFactStore {
         &mut self,
         island: &IslandId,
         principal: &PrincipalId,
-        public_key: PublicKey,
+        public_key: VerifyingKey,
     ) -> Result<()> {
         match self
             .trusted_author_keys
@@ -1140,7 +1372,7 @@ impl PandaFactStore {
     fn require_author_key(
         &self,
         metadata: &PandaFactMetadata,
-        public_key: PublicKey,
+        public_key: VerifyingKey,
     ) -> Result<()> {
         self.fact_authority_for(&metadata.island)
             .require_active_writer(&metadata.author, public_key)
@@ -1202,7 +1434,6 @@ impl PandaFactStore {
                     | PandaFactError::ImportIslandMismatch { .. }
                     | PandaFactError::UnauthorizedReplicaImport { .. }
                     | PandaFactError::OutOfOrderOperation { .. }
-                    | PandaFactError::OutdatedOperation { .. }
                     | PandaFactError::PrincipalMismatch { .. }
                     | PandaFactError::UnauthorizedWrite { .. }) => {
                         PandaFactSyncError::Import { side, source }
@@ -1217,7 +1448,7 @@ impl PandaFactStore {
         &self,
         island: &IslandId,
         principal: &PrincipalId,
-        public_key: PublicKey,
+        public_key: VerifyingKey,
     ) -> Result<()> {
         self.fact_authority_for(island)
             .require_active_writer(principal, public_key)
@@ -1233,9 +1464,9 @@ impl PandaFactStore {
             .latest_operation(&author.public_key(), &IslandLog::from(island))
             .await?;
         Ok(match latest {
-            Some((header, _)) => LogPosition {
-                seq_num: header.seq_num + 1,
-                backlink: Some(header.hash()),
+            Some(operation) => LogPosition {
+                seq_num: operation.header.seq_num + 1,
+                backlink: Some(operation.hash),
             },
             None => LogPosition {
                 seq_num: 0,
@@ -1291,7 +1522,7 @@ impl PandaFactStore {
         let payload = FactPayload::from(body_bytes.clone());
         let content_hash = FactContentHash::for_payload(&payload);
         let metadata = metadata_from_header(&header, content_hash)?;
-        self.require_author_key(&metadata, header.public_key)?;
+        self.require_author_key(&metadata, header.verifying_key)?;
         let operation = Operation {
             hash: header.hash(),
             header,
@@ -1430,12 +1661,12 @@ async fn run_log_sync_pair<LeftStore, RightStore>(
     right_replica: (&mut PandaFactStore, &BusSession),
 ) -> SyncResult<PandaFactSyncReport>
 where
-    LeftStore: LogStore<IslandLog, PandaFactExtensions>
-        + OperationStore<IslandLog, PandaFactExtensions>
+    LeftStore: LogStore<Operation<PandaFactExtensions>, VerifyingKey, IslandLog, u64, Hash>
+        + Clone
         + Send
         + 'static,
-    RightStore: LogStore<IslandLog, PandaFactExtensions>
-        + OperationStore<IslandLog, PandaFactExtensions>
+    RightStore: LogStore<Operation<PandaFactExtensions>, VerifyingKey, IslandLog, u64, Hash>
+        + Clone
         + Send
         + 'static,
 {
@@ -1496,14 +1727,11 @@ async fn collect_and_import_sync_events(
     let mut report = PandaFactSyncPeerReport::default();
     loop {
         match events.recv().await {
-            Ok(LogSyncEvent::Data(operation)) => {
+            Ok(LogSyncEvent::OperationReceived { operation, .. }) => {
                 import_synced_operation(side, store, session, *operation, &mut report).await?;
             }
-            Ok(LogSyncEvent::Status(LogSyncStatus::Completed { .. })) => return Ok(report),
-            Ok(LogSyncEvent::Status(_)) => {}
-            Err(broadcast::error::RecvError::Closed) => {
-                return Err(PandaFactSyncError::EventStreamClosed { side });
-            }
+            Ok(LogSyncEvent::MetricsExchanged { .. }) => {}
+            Err(broadcast::error::RecvError::Closed) => return Ok(report),
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                 return Err(PandaFactSyncError::EventReceiverLagged { side, skipped });
             }
@@ -1518,14 +1746,18 @@ async fn import_synced_operation(
     operation: Operation<PandaFactExtensions>,
     report: &mut PandaFactSyncPeerReport,
 ) -> SyncResult<()> {
-    let body = operation
-        .body
-        .ok_or(PandaFactSyncError::MissingOperationBody { side })?;
+    let Operation { header, body, .. } = operation;
+    let body = body.ok_or(PandaFactSyncError::MissingOperationBody { side })?;
     report.received += 1;
-    let header_bytes = operation.header.to_bytes();
+    let header_bytes = encode_cbor(&header).map_err(|error| PandaFactSyncError::Import {
+        side,
+        source: PandaFactError::InvalidExtensions {
+            message: error.to_string(),
+        },
+    })?;
     let body_bytes = body.to_bytes();
     match store
-        .import_decoded_operation(session, operation.header, body, header_bytes, body_bytes)
+        .import_decoded_operation(session, header, body, header_bytes, body_bytes)
         .await
     {
         Ok(PandaFactWriteOutcome::Inserted(_)) => report.imported += 1,
@@ -1539,8 +1771,8 @@ async fn import_synced_operation(
 }
 
 fn apply_metrics(report: &mut PandaFactSyncPeerReport, metrics: &LogSyncMetrics) {
-    report.bytes_received = metrics.total_bytes_received;
-    report.bytes_sent = metrics.total_bytes_sent;
+    report.bytes_received = metrics.received_bytes;
+    report.bytes_sent = metrics.sent_bytes;
 }
 
 impl FactSource for PandaFactStore {
@@ -2072,7 +2304,7 @@ mod tests {
         log: IslandAuthzMemoryLog,
         authz: IslandAuthz,
         root: IslandMemberKeyBinding,
-        root_private_key: PrivateKey,
+        root_private_key: SigningKey,
     }
 
     impl AuthorityFixture {
@@ -2086,12 +2318,12 @@ mod tests {
         writer: &PandaFactAuthor,
         replica: &PandaFactAuthor,
     ) -> AuthorityFixture {
-        let root_private_key = PrivateKey::from_bytes(&[9; 32]);
+        let root_private_key = SigningKey::from_bytes(&[9; 32]);
         let root = IslandMemberKeyBinding::new(
             island.clone(),
             PrincipalId::new("root"),
             IslandMemberEpoch::new(NonZeroU64::new(1).expect("test epoch is non-zero")),
-            IslandMemberAuthorKey::from_public_key(root_private_key.public_key()),
+            IslandMemberAuthorKey::from_public_key(root_private_key.verifying_key()),
         );
         let mut log = IslandAuthzMemoryLog::new(island.clone());
         let mut authz = log
