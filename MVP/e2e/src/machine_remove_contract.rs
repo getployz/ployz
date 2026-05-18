@@ -492,7 +492,8 @@ async fn run_async() -> Result<(), String> {
 
     let stop_attempts_after_cleanup = events.stop_attempts.load(Ordering::SeqCst);
     let completed_operations = rebuilt_facts.export_operations().await;
-    let completed_replay = PandaMachineFactStore::new(PandaFactStore::new(Arc::new(raw_bus.clone())));
+    let completed_replay =
+        PandaMachineFactStore::new(PandaFactStore::new(Arc::new(raw_bus.clone())));
     completed_replay
         .trust_replica_peer(&island, replica_session.principal().clone())
         .await;

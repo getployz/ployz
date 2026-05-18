@@ -314,8 +314,6 @@ fn require_expected_tombstone_fact(
     }
     if candidates.is_empty() {
         Err(MachineRemoveError::CommandFactMissing { key: key.clone() })
-    } else if readable_candidates.is_empty() {
-        Err(MachineRemoveError::CommandFactMismatch { key: key.clone() })
     } else {
         Err(MachineRemoveError::CommandFactMismatch { key: key.clone() })
     }
@@ -645,6 +643,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn removal_started_validation_requires_verified_matching_fact() {
+        let decision = decision_fact();
+        let removal_key =
+            removal_started_fact_key(&decision.target_node_id, decision.removal_epoch)
+                .expect("key");
+        let source = TestFactSource::new().with_payload(
+            removal_key.clone(),
+            removal_started_payload(&decision),
+            CandidateStatus::Verified,
+        );
+
+        let recovered_key = validate_machine_remove_removal_started(
+            &source,
+            &IslandId::new("prod"),
+            &session(),
+            &decision,
+        )
+        .expect("valid removal started");
+
+        assert_eq!(recovered_key, removal_key);
+    }
+
+    #[tokio::test]
+    async fn removal_started_validation_rejects_conflicted_fact() {
+        let decision = decision_fact();
+        let removal_key =
+            removal_started_fact_key(&decision.target_node_id, decision.removal_epoch)
+                .expect("key");
+        let source = TestFactSource::new().with_payload(
+            removal_key.clone(),
+            removal_started_payload(&decision),
+            CandidateStatus::Conflict,
+        );
+
+        let error = validate_machine_remove_removal_started(
+            &source,
+            &IslandId::new("prod"),
+            &session(),
+            &decision,
+        )
+        .expect_err("conflicted removal started");
+
+        assert!(
+            matches!(error, MachineRemoveError::CommandFactMismatch { key } if key == removal_key)
+        );
+    }
+
+    #[tokio::test]
     async fn cleanup_validation_rejects_conflicted_tombstone_fact() {
         let decision = decision_fact();
         let tombstone_key =
@@ -777,6 +823,17 @@ mod tests {
 
     fn decision_payload(decision: &MachineRemoveDecisionFact) -> FactPayload {
         machine_remove_decision_fact_payload(decision).expect("payload")
+    }
+
+    fn removal_started_payload(decision: &MachineRemoveDecisionFact) -> FactPayload {
+        ProjectionFactPayload::NodeRemovalStarted(NodeRemovalStartedFact {
+            node_id: decision.target_node_id.clone(),
+            epoch: decision.removal_epoch,
+            reason: decision.reason.clone(),
+        })
+        .to_fact_bytes()
+        .expect("serialize removal-started")
+        .into()
     }
 
     fn decision_fact() -> MachineRemoveDecisionFact {

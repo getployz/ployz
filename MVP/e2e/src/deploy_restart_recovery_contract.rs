@@ -391,7 +391,7 @@ where
 {
     fn write_serving_commit<'a>(
         &'a self,
-    commit: &'a ServingCommitPlan,
+        commit: &'a ServingCommitPlan,
     ) -> Pin<Box<dyn Future<Output = RoutingResult<WrittenServingFact>> + Send + 'a>> {
         Box::pin(async move {
             let started = Instant::now();
