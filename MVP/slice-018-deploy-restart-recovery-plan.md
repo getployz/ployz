@@ -1,6 +1,6 @@
 ---
 title: Slice 018 Deploy Restart Recovery Plan
-status: planned
+status: superseded
 created: 2026-05-18
 origin:
   - VISION.md
@@ -14,6 +14,11 @@ origin:
 ---
 
 # Slice 018 Deploy Restart Recovery Plan
+
+> Status note: this plan produced the deploy decision, serving commit, cleanup
+> recovery, and focused recovery tests now present in `MVP/deploy`. After Slice
+> 018b introduced `mvp-p2panda-facts`, the remaining E2E proof has moved to
+> `MVP/slice-018c-p2panda-deploy-restart-recovery-plan.md`.
 
 ## Problem Frame
 
