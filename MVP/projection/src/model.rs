@@ -12,6 +12,7 @@ use mvp_identity::NodeId;
 pub struct ProjectionState {
     pub island: IslandId,
     pub nodes: BTreeMap<NodeId, NodeProjection>,
+    pub removing_nodes: BTreeMap<NodeId, RemovingNodeProjection>,
     pub tombstoned_nodes: BTreeMap<NodeId, u64>,
     pub services: BTreeMap<(ServiceName, NodeId), ServiceProjection>,
     pub gateway: Option<GatewayProjection>,
@@ -26,6 +27,7 @@ impl ProjectionState {
         Self {
             island,
             nodes: BTreeMap::new(),
+            removing_nodes: BTreeMap::new(),
             tombstoned_nodes: BTreeMap::new(),
             services: BTreeMap::new(),
             gateway: None,
@@ -34,6 +36,13 @@ impl ProjectionState {
             statuses: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovingNodeProjection {
+    pub node_id: NodeId,
+    pub epoch: u64,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

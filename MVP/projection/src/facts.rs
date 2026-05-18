@@ -35,6 +35,7 @@ impl RouteId {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProjectionFactPayload {
     NodeJoined(NodeJoinedFact),
+    NodeRemovalStarted(NodeRemovalStartedFact),
     NodeTombstoned(NodeTombstonedFact),
     ServiceRegistered(ServiceRegistrationFact),
     ServingCommit(ServingCommitFact),
@@ -65,6 +66,13 @@ pub struct NodeJoinedFact {
     pub overlay_ip: String,
     pub iroh_endpoint_id: String,
     pub wg_public_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeRemovalStartedFact {
+    pub node_id: NodeId,
+    pub epoch: u64,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

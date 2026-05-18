@@ -16,13 +16,13 @@ pub use bus_source::BusFactSource;
 pub use error::{ProjectionError, ProjectionResult};
 pub use facts::{
     BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeJoinedFact,
-    NodeTombstonedFact, ProjectionFactPayload, RouteCommitFact, RouteId, ServiceName,
-    ServiceRegistrationFact, ServingCommitFact,
+    NodeRemovalStartedFact, NodeTombstonedFact, ProjectionFactPayload, RouteCommitFact, RouteId,
+    ServiceName, ServiceRegistrationFact, ServingCommitFact,
 };
 pub use model::{
     AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsProjection, DnsRecordProjection,
     GatewayProjection, GatewayRouteProjection, NodeProjection, ProjectionIgnoreReason,
-    ProjectionState, ProjectionStatus, ServiceProjection,
+    ProjectionState, ProjectionStatus, RemovingNodeProjection, ServiceProjection,
 };
 pub use reducer::reduce_facts;
 pub use snapshot::{

@@ -3,7 +3,9 @@ use std::fmt::{self, Display, Formatter};
 
 use mvp_bus::{FactKey, FactPayload, IslandId};
 use mvp_identity::{NodeId, VisibleNodes};
-use mvp_projection::{NodeJoinedFact, NodeTombstonedFact, ProjectionFactPayload};
+use mvp_projection::{
+    NodeJoinedFact, NodeRemovalStartedFact, NodeTombstonedFact, ProjectionFactPayload,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -141,6 +143,32 @@ pub fn joined_fact_key(node_id: &NodeId, epoch: u64) -> MeshResult<FactKey> {
     })
 }
 
+pub fn removal_started_fact_key(node_id: &NodeId, epoch: u64) -> MeshResult<FactKey> {
+    FactKey::parse(format!(
+        "/facts/node/{}/removal_started/{epoch}",
+        node_id.as_str()
+    ))
+    .map_err(|error| MeshError::Backend {
+        operation: "build removal started fact key",
+        message: error.to_string(),
+    })
+}
+
+pub fn removal_started_fact_payload(
+    node_id: &NodeId,
+    epoch: u64,
+    reason: impl Into<String>,
+) -> MeshResult<FactPayload> {
+    serialize_fact_payload(
+        ProjectionFactPayload::NodeRemovalStarted(NodeRemovalStartedFact {
+            node_id: node_id.clone(),
+            epoch,
+            reason: reason.into(),
+        }),
+        "serialize removal started fact",
+    )
+}
+
 pub fn tombstone_fact_key(node_id: &NodeId, epoch: u64) -> MeshResult<FactKey> {
     FactKey::parse(format!(
         "/facts/node/{}/tombstoned/{epoch}",
@@ -175,7 +203,8 @@ mod tests {
 
     use crate::{
         InviteId, InviteSecret, IrohEndpointId, JoinCommand, JoinRequest, MachineInvite,
-        TombstoneCommand, WireGuardPublicKey,
+        TombstoneCommand, WireGuardPublicKey, removal_started_fact_key,
+        removal_started_fact_payload,
     };
 
     #[test]
@@ -260,6 +289,24 @@ mod tests {
             panic!("expected tombstone payload");
         };
         assert_eq!(tombstone.reason, "force-remove");
+    }
+
+    #[test]
+    fn removal_started_helpers_build_projection_fact() {
+        let node_id = NodeId::new("node-1");
+        let key = removal_started_fact_key(&node_id, 4).expect("removal key");
+        let payload =
+            removal_started_fact_payload(&node_id, 4, "graceful-remove").expect("removal payload");
+
+        assert_eq!(key.as_str(), "/facts/node/node-1/removal_started/4");
+        let payload =
+            ProjectionFactPayload::from_fact_bytes(payload.as_bytes()).expect("payload decodes");
+        let ProjectionFactPayload::NodeRemovalStarted(removal) = payload else {
+            panic!("expected removal started payload");
+        };
+        assert_eq!(removal.node_id, node_id);
+        assert_eq!(removal.epoch, 4);
+        assert_eq!(removal.reason, "graceful-remove");
     }
 
     fn invite(expires_at_ms: u64) -> MachineInvite {
