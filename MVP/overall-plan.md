@@ -525,6 +525,15 @@ canonical deletion ledger. The next implementation slice should align the MVP
 p2panda/iroh line and prove live canonical transport before deleting `PFO1` or
 `PandaNetQuarantineLog`.
 
+Slice 038 is planned as that implementation slice:
+[MVP/slice-038-p2panda-06-canonical-transport-plan.md](slice-038-p2panda-06-canonical-transport-plan.md).
+The operator explicitly confirmed that avoiding iroh `1.0.0-rc` is sufficient;
+we do not need to keep the old iroh `0.96` proof alive if it blocks the
+maintained p2panda-net `0.6` path. The slice target is one signed p2panda fact
+operation on the live transport path, with `PFO1`, `PandaFactWireEnvelope`, and
+`PandaNetQuarantineLog` deleted or pushed out of product success paths only
+after branchable import outcomes and process-serving E2Es still pass.
+
 ## Crate Scout Protocol
 
 Before each implementation slice, do a short dependency scout and record it in

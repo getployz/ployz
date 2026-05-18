@@ -1396,6 +1396,14 @@ Revisit if:
 - Process-role serving replication needs long-lived supervisor/status surfaces.
 - p2panda-auth becomes ready to own island membership or replication grants.
 
+Changed since last slice:
+- Slice 038 is planned to take the non-RC iroh `0.98` path instead of waiting
+  for or adopting iroh `1.0.0-rc`. If the old direct-iroh proof is the only
+  blocker, park it rather than hardening two replication substrates.
+- The migration target is stricter than the Slice 037 spike: active
+  p2panda-net delivery must carry canonical fact operations, not a `PFO1`
+  wrapper body, before any deletion claim is counted.
+
 ## Environment Branch/Promote/Rollback Commands
 
 Why this:
