@@ -267,6 +267,30 @@ the decision concrete.
   deterministic harness/debug plumbing. Product proofs after Slice 020 should
   use `sync_panda_fact_stores` or a future iroh transport carrying the same
   p2panda-sync messages, not a new feature-specific operation-copy loop.
+- Slice 021 moves the ACME HTTP-01 canary onto p2panda signed operations and
+  the Slice 020 sync boundary. Lease claim/release, challenge present/clear,
+  stale synced candidates, and DNS seed facts are all written as p2panda-backed
+  projection facts; node B projects only after `sync_panda_fact_stores`.
+- Slice 021 keeps ACME and lease business semantics out of `mvp-p2panda-facts`.
+  The ACME p2panda writer is E2E-local because `mvp-projection` already owns
+  payload decoding and depends on `mvp-acme`/`mvp-lease`; extracting it now
+  would create an upward dependency or premature command framework.
+- Slice 021 proves scoped challenge grants and trusted replica sessions for the
+  ACME path. A projection-reader principal cannot run replica sync, an issuer
+  cannot publish a different challenge outside its grant, and repeated sync is
+  a no-op.
+- Slice 021 hardens the p2panda-sync proof itself while supporting ACME:
+  imported sync events are applied as the protocol streams them instead of
+  buffering every operation, mixed memory/SQLite sync backends are covered, and
+  cross-island reads with the wrong session return no candidates/payloads.
+- Slice 021 keeps the no-quorum command boundary intact. ACME command results
+  include the two visible nodes observed by the harness, but no pin-fact,
+  witness-ack, strict-lease, or hidden active-partition behavior was added.
+- Direction after Slice 021: the next p2panda substitution slice should look at
+  replacing the remaining stable-crates.io/manual edges with git p2panda APIs
+  and p2panda-net transport where that reduces maintained Ployz code. It is
+  acceptable not to use rc iroh directly if p2panda-net supplies the cleaner
+  substrate.
 
 ## Documented Design Gaps
 
