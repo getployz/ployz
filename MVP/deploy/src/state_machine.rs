@@ -72,6 +72,11 @@ impl DeployStateMachine {
         self.visible_nodes = visible_nodes;
     }
 
+    #[must_use]
+    pub fn visible_nodes(&self) -> &VisibleNodes {
+        &self.visible_nodes
+    }
+
     pub fn mark_preparing(&mut self, phase: PhaseId) -> DeployResult<()> {
         self.transition_phase(phase, PhaseState::Preparing)
     }

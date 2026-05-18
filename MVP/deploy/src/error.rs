@@ -7,7 +7,8 @@ use mvp_routing::RoutingError;
 use thiserror::Error;
 
 use crate::{
-    CapacityRejectionReason, DeployId, InstanceId, InstanceNotReadyReason, PhaseId, ServingCommitId,
+    CapacityRejectionReason, DeployId, InstanceId, InstanceNotReadyReason, PhaseId,
+    PreCommitCleanupReport, ServingCommitId,
 };
 
 pub type DeployResult<T> = Result<T, DeployError>;
@@ -28,6 +29,12 @@ pub enum DeployError {
     ProjectionCatchUpMismatch { serving_commit_id: ServingCommitId },
     #[error("deploy is blocked after an irreversible phase")]
     BlockedAfterIrreversiblePhase,
+    #[error("deploy failed before serving commit: {source}")]
+    PreCommitFailed {
+        #[source]
+        source: Box<DeployError>,
+        cleanup: PreCommitCleanupReport,
+    },
     #[error("deploy is still running")]
     DeployStillRunning,
     #[error("serving commit phase must be present and final")]

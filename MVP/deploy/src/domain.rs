@@ -266,6 +266,121 @@ pub enum CleanupFailureKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CandidateCleanupState {
+    Planned,
+    PrepareAttempted,
+    Prepared,
+    Started,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateCleanupTarget {
+    pub instance_id: InstanceId,
+    pub service: ServiceName,
+    pub revision: RevisionId,
+    pub state: CandidateCleanupState,
+}
+
+impl CandidateCleanupTarget {
+    #[must_use]
+    pub fn new(
+        instance_id: InstanceId,
+        service: ServiceName,
+        revision: RevisionId,
+        state: CandidateCleanupState,
+    ) -> Self {
+        Self {
+            instance_id,
+            service,
+            revision,
+            state,
+        }
+    }
+
+    #[must_use]
+    pub fn from_instance(instance: &InstancePlan, state: CandidateCleanupState) -> Self {
+        Self::new(
+            instance.instance_id.clone(),
+            instance.service.clone(),
+            instance.revision.clone(),
+            state,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeCandidateCleanup {
+    pub node_id: NodeId,
+    pub candidates: Vec<CandidateCleanupTarget>,
+}
+
+impl NodeCandidateCleanup {
+    #[must_use]
+    pub fn new(node_id: NodeId, candidates: Vec<CandidateCleanupTarget>) -> Self {
+        Self {
+            node_id,
+            candidates,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateCleanupFailure {
+    pub node_id: NodeId,
+    pub candidates: Vec<CandidateCleanupTarget>,
+    pub cause: CleanupFailureKind,
+}
+
+impl CandidateCleanupFailure {
+    #[must_use]
+    pub fn new(
+        node_id: NodeId,
+        candidates: Vec<CandidateCleanupTarget>,
+        cause: CleanupFailureKind,
+    ) -> Self {
+        Self {
+            node_id,
+            candidates,
+            cause,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CandidateCleanupStatus {
+    NotNeeded,
+    Done,
+    Pending {
+        failures: Vec<CandidateCleanupFailure>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreCommitCleanupReport {
+    pub deploy_id: DeployId,
+    pub visible_nodes: VisibleNodes,
+    pub attempted: Vec<NodeCandidateCleanup>,
+    pub status: CandidateCleanupStatus,
+}
+
+impl PreCommitCleanupReport {
+    #[must_use]
+    pub fn new(
+        deploy_id: DeployId,
+        visible_nodes: VisibleNodes,
+        attempted: Vec<NodeCandidateCleanup>,
+        status: CandidateCleanupStatus,
+    ) -> Self {
+        Self {
+            deploy_id,
+            visible_nodes,
+            attempted,
+            status,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeployOutcome {
     DeployDone,
     FailedBeforeCommit,
