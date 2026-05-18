@@ -35,6 +35,8 @@ pub enum PandaFactError {
     InvalidStorePath { path: PathBuf, message: String },
     #[error("p2panda persistent operation for fact {key} is missing payload bytes")]
     MissingPayload { key: FactKey },
+    #[error("p2panda author key is invalid: {message}")]
+    InvalidAuthorKey { message: String },
     #[error("p2panda operation extensions were invalid: {message}")]
     InvalidExtensions { message: String },
     #[error("cannot import {operation} operation through {session} island session")]
@@ -142,6 +144,22 @@ impl PandaFactAuthor {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PandaFactAuthorKey(PublicKey);
+
+impl PandaFactAuthorKey {
+    pub fn parse_hex(value: &str) -> Result<Self> {
+        value
+            .parse::<PublicKey>()
+            .map(Self)
+            .map_err(|error| PandaFactError::InvalidAuthorKey {
+                message: error.to_string(),
+            })
+    }
+
+    #[must_use]
+    pub fn as_hex(self) -> String {
+        self.0.to_hex()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PandaTrustedAuthorKey {
