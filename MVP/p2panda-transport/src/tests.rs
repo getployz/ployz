@@ -4,9 +4,10 @@ use mvp_p2panda_facts::{
 };
 
 use crate::{
-    PandaNetFactImportFailure, PandaNetFactImportOutcome, PandaNetFactImportRejection,
-    PandaNetFactNode, PandaNetFactNodeConfig, PandaNetNetworkId, PandaNetNode, PandaNetNodeConfig,
-    PandaNetNodeSeed, PandaNetTopic, import_fact_body_into_shared_store,
+    PandaNetConfigError, PandaNetFactImportFailure, PandaNetFactImportOutcome,
+    PandaNetFactImportRejection, PandaNetFactNode, PandaNetFactNodeConfig, PandaNetNetworkId,
+    PandaNetNode, PandaNetNodeConfig, PandaNetNodeSeed, PandaNetNodeTicket, PandaNetTopic,
+    import_fact_body_into_shared_store,
 };
 
 #[tokio::test]
@@ -47,6 +48,65 @@ async fn owned_nodes_sync_one_opaque_body_with_explicit_bootstrap() {
         .await
         .expect("receiver gets body");
     assert_eq!(body, b"transport-body");
+}
+
+#[tokio::test]
+async fn node_ticket_round_trips_and_bootstraps_fact_node() {
+    let fixture = FactNodeFixture::new("fact-node-ticket");
+    let mut receiver = fixture
+        .node([45; 32], Vec::new(), ReplicaTrust::Trusted)
+        .await
+        .expect("spawn receiver fact node");
+    let ticket = receiver
+        .node_info()
+        .to_ticket()
+        .expect("encode receiver node ticket");
+    let encoded = ticket.as_str().to_string();
+    let decoded = PandaNetNodeTicket::parse(&encoded).expect("decode receiver node ticket");
+    let mut sender = fixture
+        .node(
+            [46; 32],
+            vec![decoded.into_node_info().expect("ticket has node info")],
+            ReplicaTrust::Trusted,
+        )
+        .await
+        .expect("spawn sender from ticket bootstrap");
+
+    sender
+        .publish_fact_payload(
+            &fixture.writer,
+            &fixture.author,
+            key("/facts/node/ticket-node/joined/1"),
+            "ticket-node".to_string().into(),
+        )
+        .await
+        .expect("publish fact through ticket bootstrap");
+
+    let report = receiver
+        .import_until_attempted(1)
+        .await
+        .expect("receiver imports ticket-bootstrapped fact");
+    assert_eq!(report.imported, 1);
+}
+
+#[test]
+fn hex_config_helpers_round_trip_and_reject_invalid_values() {
+    let hex = "11".repeat(32);
+    let network = PandaNetNetworkId::parse_hex(&hex).expect("parse network id");
+    let seed = PandaNetNodeSeed::parse_hex(&hex).expect("parse node seed");
+    let topic = PandaNetTopic::parse_hex(&hex).expect("parse topic");
+
+    assert_eq!(network.as_hex(), hex);
+    assert_eq!(seed.as_hex(), hex);
+    assert_eq!(topic.as_hex(), hex);
+    assert!(matches!(
+        PandaNetNetworkId::parse_hex("123"),
+        Err(PandaNetConfigError::InvalidHexLength { .. })
+    ));
+    assert!(matches!(
+        PandaNetTopic::parse_hex(&"GG".repeat(32)),
+        Err(PandaNetConfigError::InvalidHex { .. })
+    ));
 }
 
 #[tokio::test]

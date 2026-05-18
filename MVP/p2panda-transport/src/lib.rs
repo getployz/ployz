@@ -14,8 +14,8 @@ pub use fact_driver::{
 };
 pub use fact_node::{PandaNetFactNode, PandaNetFactNodeConfig};
 pub use node::{
-    PandaNetBindConfig, PandaNetNetworkId, PandaNetNode, PandaNetNodeConfig, PandaNetNodeInfo,
-    PandaNetNodeSeed, PandaNetStream, PandaNetTopic,
+    PandaNetBindConfig, PandaNetConfigError, PandaNetNetworkId, PandaNetNode, PandaNetNodeConfig,
+    PandaNetNodeInfo, PandaNetNodeSeed, PandaNetNodeTicket, PandaNetStream, PandaNetTopic,
 };
 pub use quarantine_log::{PandaNetLogId, PandaNetQuarantineLog};
 

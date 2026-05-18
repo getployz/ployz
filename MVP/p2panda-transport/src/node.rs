@@ -3,6 +3,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use p2panda_core_git::cbor::{decode_cbor, encode_cbor};
 use p2panda_core_git::{Operation, SigningKey, Topic};
 use p2panda_net::addrs::NodeInfo;
 use p2panda_net::iroh_endpoint::{EndpointAddr, IrohConfig, from_verifying_key};
@@ -10,12 +11,25 @@ use p2panda_net::{AddressBook, Discovery, Endpoint, Gossip, LogSync, NetworkId};
 use p2panda_store_git::SqliteStore;
 use p2panda_sync_git::FromSync;
 use p2panda_sync_git::protocols::TopicLogSyncEvent;
+use thiserror::Error;
 use tokio::time::timeout;
 
 use crate::{PandaNetLogId, PandaNetQuarantineLog, PandaNetStartupStep, PandaNetTransportError};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum PandaNetConfigError {
+    #[error("{kind} must be 64 lowercase hex characters, got {got}")]
+    InvalidHexLength { kind: &'static str, got: usize },
+    #[error("{kind} contains invalid hex")]
+    InvalidHex { kind: &'static str },
+    #[error("encode p2panda node ticket: {message}")]
+    TicketEncode { message: String },
+    #[error("decode p2panda node ticket: {message}")]
+    TicketDecode { message: String },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PandaNetNetworkId([u8; 32]);
@@ -24,6 +38,15 @@ impl PandaNetNetworkId {
     #[must_use]
     pub const fn new(bytes: [u8; 32]) -> Self {
         Self(bytes)
+    }
+
+    pub fn parse_hex(value: &str) -> Result<Self, PandaNetConfigError> {
+        parse_hex_32("network id", value).map(Self)
+    }
+
+    #[must_use]
+    pub fn as_hex(self) -> String {
+        encode_hex(&self.0)
     }
 
     fn into_inner(self) -> NetworkId {
@@ -46,6 +69,15 @@ impl PandaNetNodeSeed {
         Self(bytes)
     }
 
+    pub fn parse_hex(value: &str) -> Result<Self, PandaNetConfigError> {
+        parse_hex_32("node seed", value).map(Self)
+    }
+
+    #[must_use]
+    pub fn as_hex(self) -> String {
+        encode_hex(&self.0)
+    }
+
     fn signing_key(self) -> SigningKey {
         SigningKey::from_bytes(&self.0)
     }
@@ -64,6 +96,15 @@ impl PandaNetTopic {
     #[must_use]
     pub const fn new(bytes: [u8; 32]) -> Self {
         Self(bytes)
+    }
+
+    pub fn parse_hex(value: &str) -> Result<Self, PandaNetConfigError> {
+        parse_hex_32("topic", value).map(Self)
+    }
+
+    #[must_use]
+    pub fn as_hex(self) -> String {
+        encode_hex(&self.0)
     }
 
     fn into_inner(self) -> Topic {
@@ -119,6 +160,54 @@ impl PandaNetNodeInfo {
     pub(crate) fn into_inner(self) -> NodeInfo {
         self.0
     }
+
+    pub fn to_ticket(&self) -> Result<PandaNetNodeTicket, PandaNetConfigError> {
+        PandaNetNodeTicket::new(self.clone())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PandaNetNodeTicket {
+    encoded: String,
+}
+
+impl PandaNetNodeTicket {
+    pub fn new(node_info: PandaNetNodeInfo) -> Result<Self, PandaNetConfigError> {
+        let bytes =
+            encode_cbor(&node_info.0).map_err(|error| PandaNetConfigError::TicketEncode {
+                message: error.to_string(),
+            })?;
+        Ok(Self {
+            encoded: encode_hex(&bytes),
+        })
+    }
+
+    pub fn parse(value: &str) -> Result<Self, PandaNetConfigError> {
+        let ticket = Self {
+            encoded: value.trim().to_string(),
+        };
+        let _node_info = ticket.node_info()?;
+        Ok(ticket)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.encoded
+    }
+
+    pub fn into_node_info(self) -> Result<PandaNetNodeInfo, PandaNetConfigError> {
+        self.node_info()
+    }
+
+    fn node_info(&self) -> Result<PandaNetNodeInfo, PandaNetConfigError> {
+        let bytes = decode_hex(self.encoded.as_str(), "node ticket")?;
+        let node_info = decode_cbor::<NodeInfo, _>(&bytes[..]).map_err(|error| {
+            PandaNetConfigError::TicketDecode {
+                message: error.to_string(),
+            }
+        })?;
+        Ok(PandaNetNodeInfo(node_info))
+    }
 }
 
 #[derive(Clone)]
@@ -127,6 +216,52 @@ pub struct PandaNetNodeConfig {
     signing_key: SigningKey,
     bind: PandaNetBindConfig,
     bootstrap_nodes: Vec<PandaNetNodeInfo>,
+}
+
+fn parse_hex_32(kind: &'static str, value: &str) -> Result<[u8; 32], PandaNetConfigError> {
+    let bytes = decode_hex(value, kind)?;
+    let Ok(bytes) = <[u8; 32]>::try_from(bytes.as_slice()) else {
+        return Err(PandaNetConfigError::InvalidHexLength {
+            kind,
+            got: value.trim().len(),
+        });
+    };
+    Ok(bytes)
+}
+
+fn decode_hex(value: &str, kind: &'static str) -> Result<Vec<u8>, PandaNetConfigError> {
+    let trimmed = value.trim();
+    if !trimmed.len().is_multiple_of(2) {
+        return Err(PandaNetConfigError::InvalidHexLength {
+            kind,
+            got: trimmed.len(),
+        });
+    }
+    let mut bytes = Vec::with_capacity(trimmed.len() / 2);
+    for chunk in trimmed.as_bytes().chunks_exact(2) {
+        let high = decode_hex_nibble(chunk[0]).ok_or(PandaNetConfigError::InvalidHex { kind })?;
+        let low = decode_hex_nibble(chunk[1]).ok_or(PandaNetConfigError::InvalidHex { kind })?;
+        bytes.push((high << 4) | low);
+    }
+    Ok(bytes)
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+fn decode_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
 }
 
 impl PandaNetNodeConfig {
