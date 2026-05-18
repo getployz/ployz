@@ -7,12 +7,13 @@ use mvp_p2panda_facts::{
 };
 
 use crate::{
-    PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetFactImportReport, PandaNetNode,
-    PandaNetNodeConfig, PandaNetNodeInfo, PandaNetStream, PandaNetTopic, PandaNetTransportError,
-    import_fact_body_into_shared_store,
+    PandaNetFactImportFailure, PandaNetFactImportOutcome, PandaNetFactImportRejection,
+    PandaNetFactImportReport, PandaNetNode, PandaNetNodeConfig, PandaNetNodeInfo, PandaNetStream,
+    PandaNetTopic, PandaNetTransportError, import_fact_body_into_shared_store,
 };
 
 const DEFAULT_MAX_FACT_ENVELOPE_BYTES: usize = 8 * 1024 * 1024;
+const DEFAULT_MAX_PENDING_IMPORTS: usize = 1024;
 
 pub struct PandaNetFactNode {
     node: PandaNetNode,
@@ -22,6 +23,7 @@ pub struct PandaNetFactNode {
     replica_session: BusSession,
     pending_imports: VecDeque<Vec<u8>>,
     max_fact_envelope_bytes: usize,
+    max_pending_imports: usize,
 }
 
 impl PandaNetFactNode {
@@ -36,6 +38,7 @@ impl PandaNetFactNode {
             replica_session: config.replica_session,
             pending_imports: VecDeque::new(),
             max_fact_envelope_bytes: config.max_fact_envelope_bytes,
+            max_pending_imports: config.max_pending_imports,
         })
     }
 
@@ -64,34 +67,44 @@ impl PandaNetFactNode {
                 message: error.to_string(),
             })?;
         if let Some(operation) = write.operation() {
-            self.publish_operation(operation).await?;
+            self.append_operation(operation).await?;
         } else if !matches!(write.outcome(), PandaFactWriteOutcome::AlreadyPresent(_)) {
             return Err(PandaNetTransportError::MissingLocalOperation);
         }
         Ok(write.into_outcome())
     }
 
+    #[cfg(any(test, feature = "harness"))]
     pub async fn publish_operation(
         &mut self,
         operation: &PandaFactOperation,
     ) -> Result<(), PandaNetTransportError> {
-        self.publish_body(PandaFactWireEnvelope::encode(operation))
-            .await
+        self.append_operation(operation).await
     }
 
+    #[cfg(any(test, feature = "harness"))]
     pub async fn publish_body(&mut self, body: Vec<u8>) -> Result<(), PandaNetTransportError> {
-        self.node.append_to_topic(self.topic, &body).await
+        self.append_body(body).await
     }
 
     pub async fn import_next_fact(
         &mut self,
     ) -> Result<PandaNetFactImportOutcome, PandaNetTransportError> {
+        let mut outcomes = self.import_next_fact_batch().await?;
+        Ok(outcomes.remove(0))
+    }
+
+    pub async fn import_next_fact_batch(
+        &mut self,
+    ) -> Result<Vec<PandaNetFactImportOutcome>, PandaNetTransportError> {
         let body = self.stream.next_body().await?;
         let outcome = self.import_body(body).await;
-        if import_can_unblock_pending(&outcome) {
-            self.retry_pending_imports().await;
+        let can_unblock_pending = import_can_unblock_pending(&outcome);
+        let mut outcomes = vec![outcome];
+        if can_unblock_pending {
+            outcomes.extend(self.retry_pending_imports().await);
         }
-        Ok(outcome)
+        Ok(outcomes)
     }
 
     pub async fn import_until_attempted(
@@ -100,10 +113,23 @@ impl PandaNetFactNode {
     ) -> Result<PandaNetFactImportReport, PandaNetTransportError> {
         let mut report = PandaNetFactImportReport::new(attempted);
         for _ in 0..attempted {
-            let outcome = self.import_next_fact().await?;
-            report.record(outcome);
+            for outcome in self.import_next_fact_batch().await? {
+                report.record(outcome);
+            }
         }
         Ok(report)
+    }
+
+    async fn append_operation(
+        &mut self,
+        operation: &PandaFactOperation,
+    ) -> Result<(), PandaNetTransportError> {
+        self.append_body(PandaFactWireEnvelope::encode(operation))
+            .await
+    }
+
+    async fn append_body(&mut self, body: Vec<u8>) -> Result<(), PandaNetTransportError> {
+        self.node.append_to_topic(self.topic, &body).await
     }
 
     async fn import_body(&mut self, body: Vec<u8>) -> PandaNetFactImportOutcome {
@@ -118,21 +144,44 @@ impl PandaNetFactNode {
         let outcome =
             import_fact_body_into_shared_store(&body, &self.store, &self.replica_session).await;
         if matches!(outcome, PandaNetFactImportOutcome::Deferred(_)) {
+            if self.pending_imports.iter().any(|pending| pending == &body) {
+                return outcome;
+            }
+            if self.pending_imports.len() >= self.max_pending_imports {
+                return PandaNetFactImportOutcome::Failed(
+                    PandaNetFactImportFailure::PendingQueueFull {
+                        max: self.max_pending_imports,
+                    },
+                );
+            }
             self.pending_imports.push_back(body);
         }
         outcome
     }
 
-    async fn retry_pending_imports(&mut self) {
-        let pending_count = self.pending_imports.len();
-        for _ in 0..pending_count {
-            let Some(body) = self.pending_imports.pop_front() else {
-                return;
-            };
-            let outcome =
-                import_fact_body_into_shared_store(&body, &self.store, &self.replica_session).await;
-            if matches!(outcome, PandaNetFactImportOutcome::Deferred(_)) {
-                self.pending_imports.push_back(body);
+    async fn retry_pending_imports(&mut self) -> Vec<PandaNetFactImportOutcome> {
+        let mut outcomes = Vec::new();
+        loop {
+            let pending_count = self.pending_imports.len();
+            let mut made_progress = false;
+            for _ in 0..pending_count {
+                let Some(body) = self.pending_imports.pop_front() else {
+                    return outcomes;
+                };
+                let outcome =
+                    import_fact_body_into_shared_store(&body, &self.store, &self.replica_session)
+                        .await;
+                if matches!(outcome, PandaNetFactImportOutcome::Deferred(_)) {
+                    self.pending_imports.push_back(body);
+                    continue;
+                }
+                if import_can_unblock_pending(&outcome) {
+                    made_progress = true;
+                }
+                outcomes.push(outcome);
+            }
+            if !made_progress || self.pending_imports.is_empty() {
+                return outcomes;
             }
         }
     }
@@ -153,6 +202,7 @@ pub struct PandaNetFactNodeConfig {
     store: SharedPandaFactStore,
     replica_session: BusSession,
     max_fact_envelope_bytes: usize,
+    max_pending_imports: usize,
 }
 
 impl PandaNetFactNodeConfig {
@@ -169,12 +219,19 @@ impl PandaNetFactNodeConfig {
             store,
             replica_session,
             max_fact_envelope_bytes: DEFAULT_MAX_FACT_ENVELOPE_BYTES,
+            max_pending_imports: DEFAULT_MAX_PENDING_IMPORTS,
         }
     }
 
     #[must_use]
     pub fn with_max_fact_envelope_bytes(mut self, max_fact_envelope_bytes: usize) -> Self {
         self.max_fact_envelope_bytes = max_fact_envelope_bytes;
+        self
+    }
+
+    #[must_use]
+    pub fn with_max_pending_imports(mut self, max_pending_imports: usize) -> Self {
+        self.max_pending_imports = max_pending_imports;
         self
     }
 }

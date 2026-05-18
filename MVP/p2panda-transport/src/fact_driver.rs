@@ -81,6 +81,7 @@ pub enum PandaNetFactImportFailure {
     LocalStore { message: String },
     InvalidStorePath { message: String },
     MissingPayload { key: FactKey },
+    PendingQueueFull { max: usize },
 }
 
 #[derive(Debug, PartialEq, Eq)]

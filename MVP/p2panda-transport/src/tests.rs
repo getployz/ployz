@@ -229,8 +229,83 @@ async fn fact_node_retries_deferred_import_after_predecessor_arrives() {
         .expect("receiver imports out-of-order stream");
 
     assert_eq!(report.deferred.len(), 1);
-    assert_eq!(report.imported, 1);
+    assert_eq!(report.imported, 2);
     assert_eq!(receiver.store().export_operations().await.len(), 2);
+}
+
+#[tokio::test]
+async fn fact_node_retries_transitive_deferred_imports_until_no_progress() {
+    let fixture = FactNodeFixture::new("fact-node-transitive");
+    let mut receiver = fixture
+        .node([37; 32], Vec::new(), ReplicaTrust::Trusted)
+        .await
+        .expect("spawn receiver fact node");
+    let receiver_info = receiver.node_info();
+    let mut sender = fixture
+        .node([38; 32], vec![receiver_info], ReplicaTrust::Trusted)
+        .await
+        .expect("spawn sender fact node");
+    let operations = fixture
+        .linked_operations(3)
+        .await
+        .expect("create linked operations");
+
+    sender
+        .publish_operation(&operations[2])
+        .await
+        .expect("publish grandchild operation first");
+    sender
+        .publish_operation(&operations[1])
+        .await
+        .expect("publish child operation second");
+    sender
+        .publish_operation(&operations[0])
+        .await
+        .expect("publish parent operation third");
+
+    let report = receiver
+        .import_until_attempted(3)
+        .await
+        .expect("receiver imports transitive out-of-order stream");
+
+    assert_eq!(report.deferred.len(), 2);
+    assert_eq!(report.imported, 3);
+    assert_eq!(receiver.store().export_operations().await.len(), 3);
+}
+
+#[tokio::test]
+async fn fact_node_republishes_already_present_fact_operations() {
+    let fixture = FactNodeFixture::new("fact-node-republish");
+    let mut receiver = fixture
+        .node([39; 32], Vec::new(), ReplicaTrust::Trusted)
+        .await
+        .expect("spawn receiver fact node");
+    let receiver_info = receiver.node_info();
+    let mut sender = fixture
+        .node([40; 32], vec![receiver_info], ReplicaTrust::Trusted)
+        .await
+        .expect("spawn sender fact node");
+
+    for _ in 0..2 {
+        sender
+            .publish_fact_payload(
+                &fixture.writer,
+                &fixture.author,
+                key("/facts/node/node-1/joined/1"),
+                "node-one".to_string().into(),
+            )
+            .await
+            .expect("publish idempotent fact");
+    }
+
+    let report = receiver
+        .import_until_attempted(2)
+        .await
+        .expect("receiver imports original and republished operation");
+
+    assert_eq!(report.imported, 1);
+    assert_eq!(report.duplicate, 1);
+    assert_eq!(receiver.store().export_operations().await.len(), 1);
 }
 
 #[tokio::test]
@@ -354,23 +429,24 @@ impl FactNodeFixture {
     async fn two_linked_operations(
         &self,
     ) -> mvp_p2panda_facts::Result<Vec<mvp_p2panda_facts::PandaFactOperation>> {
+        self.linked_operations(2).await
+    }
+
+    async fn linked_operations(
+        &self,
+        count: usize,
+    ) -> mvp_p2panda_facts::Result<Vec<mvp_p2panda_facts::PandaFactOperation>> {
         let mut store = self.raw_store();
-        store
-            .write_fact_payload(
-                &self.writer,
-                &self.author,
-                key("/facts/node/first/joined/1"),
-                "first".to_string().into(),
-            )
-            .await?;
-        store
-            .write_fact_payload(
-                &self.writer,
-                &self.author,
-                key("/facts/node/second/joined/1"),
-                "second".to_string().into(),
-            )
-            .await?;
+        for index in 0..count {
+            store
+                .write_fact_payload(
+                    &self.writer,
+                    &self.author,
+                    key(&format!("/facts/node/linked-{index}/joined/1")),
+                    format!("linked-{index}").into(),
+                )
+                .await?;
+        }
         Ok(store.export_operations().cloned().collect())
     }
 }

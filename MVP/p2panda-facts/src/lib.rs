@@ -1395,7 +1395,9 @@ impl SharedPandaFactStore {
             PandaFactWriteOutcome::Inserted(_) | PandaFactWriteOutcome::Conflict(_) => {
                 store.operations.get(operation_index).cloned()
             }
-            PandaFactWriteOutcome::AlreadyPresent(_) => None,
+            PandaFactWriteOutcome::AlreadyPresent(ref metadata) => {
+                store.operation_for_metadata(metadata)?
+            }
         };
         Ok(PandaFactWrite::new(outcome, operation))
     }
@@ -1510,6 +1512,26 @@ fn candidate_payload_is_readable(status: CandidateStatus) -> bool {
 }
 
 impl PandaFactStore {
+    fn operation_for_metadata(
+        &self,
+        metadata: &PandaFactMetadata,
+    ) -> Result<Option<PandaFactOperation>> {
+        for operation in self.operations.iter().rev() {
+            let header: Header<PandaFactExtensions> =
+                decode_cbor(operation.header()).map_err(|error| {
+                    PandaFactError::InvalidExtensions {
+                        message: error.to_string(),
+                    }
+                })?;
+            let content_hash =
+                FactContentHash::for_payload(&FactPayload::from(operation.body().to_vec()));
+            if metadata_from_header(&header, content_hash)? == *metadata {
+                return Ok(Some(operation.clone()));
+            }
+        }
+        Ok(None)
+    }
+
     fn exact_candidates(
         &self,
         island: &IslandId,
