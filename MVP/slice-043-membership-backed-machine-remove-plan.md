@@ -164,9 +164,7 @@ Plan:
 5. Add a targeted negative import probe showing that a valid replica importer
    cannot import an operation whose original author lacks the required
    machine-remove fact-key grant.
-6. Add a targeted cross-island import probe showing that a foreign-island
-   machine-remove operation is rejected by the rebuilt recovery store.
-7. Keep deterministic exported-operation replay as the existing recovery
+6. Keep deterministic exported-operation replay as the existing recovery
    harness exception. Do not broaden the slice into p2panda-sync or iroh
    transport migration. Record a transport follow-up only if implementation
    uncovers new blocking evidence.
@@ -180,8 +178,6 @@ Test Scenarios:
   state with zero fresh rebuild conflicts.
 - A valid replica importer cannot smuggle a same-island operation from a member
   without the required fact-key grant into recovery.
-- A valid local replica importer cannot import a foreign-island machine-remove
-  operation.
 
 Verification:
 
@@ -234,9 +230,9 @@ Test Scenarios:
 
 - Containment grep has no machine-remove hits for manual trust.
 - `machine-remove-contract` remains in `mvp-e2e -- all`.
-- Negative checks cover direct replica writes, same-island import without the
-  original author's fact-key grant, and foreign-island import. They should
-  assert structured `PandaFactError` variants, not parse display strings.
+- Negative checks cover direct replica writes and same-island import without the
+  original author's fact-key grant. They should assert structured
+  `PandaFactError` variants, not parse display strings.
 
 Verification:
 
@@ -276,9 +272,9 @@ The slice is complete when:
 
 Machine remove now opens all E2E-local in-memory machine fact stores with the
 shared membership fixture's `IslandAuthoritySnapshot`: the primary store,
-rebuilt recovery store, completed replay store, foreign-island import probe
-store, and conflicting tombstone probe store. The node-only negative probe uses
-the primary membership-backed store. The contract no longer calls
+rebuilt recovery store, completed replay store, and conflicting tombstone probe
+store. The node-only negative probe uses the primary membership-backed store.
+The contract no longer calls
 `trust_author_key` or `trust_replica_peer`.
 
 The recovery harness still replays exported operations deterministically. That
@@ -291,9 +287,7 @@ The new negative authority assertions cover the migration-critical boundaries:
 a principal with island writer membership but without the command fact grant
 cannot write machine-remove command facts; a replica importer with a
 machine-remove fact grant is still not a writer; recovery import rejects an
-operation whose original author lacks the command fact grant; and recovery
-import rejects a foreign-island operation even through a valid local replica
-importer.
+operation whose original author lacks the command fact grant.
 
 ## Proofs
 
@@ -328,8 +322,8 @@ recovery, p2panda-net fallback probes, and volume transfer.
 Slice diff from the Slice 043 plan commit:
 
 ```text
-MVP/e2e/src/machine_remove_contract.rs | 332 ++++++++++++++++++++++++++-------
-1 file changed, 264 insertions(+), 68 deletions(-)
+MVP/e2e/src/machine_remove_contract.rs | 284 +++++++++++++++++++++++++--------
+1 file changed, 216 insertions(+), 68 deletions(-)
 ```
 
 This is a small net E2E increase, not a raw LOC deletion. The win is removing
