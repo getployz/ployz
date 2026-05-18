@@ -31,11 +31,18 @@ them for the main success path.
 - Valid same-island operations import into the receiver's store.
 - Replayed operation bodies are duplicate no-ops.
 - Same-key/different-payload operations remain conflict candidates.
-- Untrusted author, cross-island, unauthorized replica, and malformed envelope
-  cases are surfaced as structured import outcomes.
+- Untrusted author, cross-island, unauthorized replica, malformed envelope,
+  oversized envelope, and pending-queue-full cases are surfaced as structured
+  import outcomes.
+- Out-of-order operation bodies are deferred, retried when predecessors arrive,
+  and retried through transitive chains until no progress remains.
 - Cross-island operations do not leak into the prod projection.
 - Deleting/rebuilding projection output from the receiver's synced store
   produces the same projected node state.
+- The fact node enforces its configured body-size limit at the p2panda stream
+  event boundary before converting the operation body into local bytes. This is
+  still after p2panda-net receives the operation; production ingress limits
+  remain a transport-topology concern.
 
 Latest local `p2panda-net-fact-node-contract` metrics:
 
@@ -47,14 +54,19 @@ Latest local `p2panda-net-fact-node-contract` metrics:
   "conflict_operations": 1,
   "rejected_operations": 3,
   "conflict_candidates": 2,
+  "unauthorized_replica_rejected": true,
+  "untrusted_author_rejected": true,
+  "cross_island_rejected": true,
+  "malformed_rejected": true,
+  "no_cross_island_leakage": true,
   "projected_nodes": 1,
   "projected_services": 1,
   "projected_gateway_routes": 1,
   "projected_dns_records": 1,
-  "startup_ms": 28,
-  "sync_import_ms": 36,
-  "projection_rebuild_ms": 7,
-  "restart_projection_rebuild_ms": 7
+  "startup_ms": 29,
+  "sync_import_ms": 28,
+  "projection_rebuild_ms": 3,
+  "restart_projection_rebuild_ms": 5
 }
 ```
 
