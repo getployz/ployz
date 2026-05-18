@@ -14,6 +14,8 @@ use crate::{
 pub enum EnvironmentFactPayload {
     Head(EnvironmentHeadFact),
     Branch(EnvironmentBranchFact),
+    PromoteDecision(EnvironmentPromoteDecisionFact),
+    RollbackDecision(EnvironmentRollbackDecisionFact),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +64,28 @@ pub struct EnvironmentBranchFact {
     pub visible_nodes: VisibleNodes,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentPromoteDecisionFact {
+    pub environment: EnvironmentId,
+    pub command_id: EnvironmentCommandId,
+    pub previous_head: EnvironmentHeadReference,
+    pub branch_head: EnvironmentHeadReference,
+    pub target_serving_commit_id: ServingCommitId,
+    pub target_volume_refs: Vec<EnvironmentVolumeRef>,
+    pub visible_nodes: VisibleNodes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentRollbackDecisionFact {
+    pub environment: EnvironmentId,
+    pub command_id: EnvironmentCommandId,
+    pub current_head: EnvironmentHeadReference,
+    pub rollback_target: EnvironmentHeadReference,
+    pub target_serving_commit_id: ServingCommitId,
+    pub target_volume_refs: Vec<EnvironmentVolumeRef>,
+    pub visible_nodes: VisibleNodes,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvironmentHeadCandidate {
     pub fact: EnvironmentHeadFact,
@@ -97,7 +121,7 @@ impl EnvironmentHeadReadModel {
 }
 
 pub fn current_environment_head(
-    source: &impl FactSource,
+    source: &(impl FactSource + ?Sized),
     session: &BusSession,
     environment: &EnvironmentId,
 ) -> EnvironmentResult<Option<EnvironmentHeadCandidate>> {
@@ -105,7 +129,7 @@ pub fn current_environment_head(
 }
 
 pub fn read_environment_heads(
-    source: &impl FactSource,
+    source: &(impl FactSource + ?Sized),
     session: &BusSession,
     environment: &EnvironmentId,
 ) -> EnvironmentResult<EnvironmentHeadReadModel> {
@@ -140,7 +164,7 @@ pub fn read_environment_heads(
 }
 
 pub fn require_expected_environment_epoch(
-    source: &impl FactSource,
+    source: &(impl FactSource + ?Sized),
     session: &BusSession,
     environment: &EnvironmentId,
     expected: EnvironmentEpoch,
@@ -181,6 +205,30 @@ pub fn environment_branch_fact_key(
     .map_err(EnvironmentError::from)
 }
 
+pub fn environment_promote_decision_fact_key(
+    environment: &EnvironmentId,
+    command_id: &EnvironmentCommandId,
+) -> EnvironmentResult<FactKey> {
+    FactKey::parse(format!(
+        "/facts/environment/{}/promote/{}",
+        environment.as_str(),
+        command_id.as_str()
+    ))
+    .map_err(EnvironmentError::from)
+}
+
+pub fn environment_rollback_decision_fact_key(
+    environment: &EnvironmentId,
+    command_id: &EnvironmentCommandId,
+) -> EnvironmentResult<FactKey> {
+    FactKey::parse(format!(
+        "/facts/environment/{}/rollback/{}",
+        environment.as_str(),
+        command_id.as_str()
+    ))
+    .map_err(EnvironmentError::from)
+}
+
 pub fn environment_head_fact_payload(fact: &EnvironmentHeadFact) -> EnvironmentResult<FactPayload> {
     encode_environment_fact(EnvironmentFactPayload::Head(fact.clone()))
 }
@@ -189,6 +237,18 @@ pub fn environment_branch_fact_payload(
     fact: &EnvironmentBranchFact,
 ) -> EnvironmentResult<FactPayload> {
     encode_environment_fact(EnvironmentFactPayload::Branch(fact.clone()))
+}
+
+pub fn environment_promote_decision_fact_payload(
+    fact: &EnvironmentPromoteDecisionFact,
+) -> EnvironmentResult<FactPayload> {
+    encode_environment_fact(EnvironmentFactPayload::PromoteDecision(fact.clone()))
+}
+
+pub fn environment_rollback_decision_fact_payload(
+    fact: &EnvironmentRollbackDecisionFact,
+) -> EnvironmentResult<FactPayload> {
+    encode_environment_fact(EnvironmentFactPayload::RollbackDecision(fact.clone()))
 }
 
 pub fn decode_environment_head_fact(
@@ -200,7 +260,9 @@ pub fn decode_environment_head_fact(
             validate_head_matches_key(key, &fact)?;
             Ok(fact)
         }
-        EnvironmentFactPayload::Branch(_) => {
+        EnvironmentFactPayload::Branch(_)
+        | EnvironmentFactPayload::PromoteDecision(_)
+        | EnvironmentFactPayload::RollbackDecision(_) => {
             Err(EnvironmentError::WrongFactKeyShape { key: key.clone() })
         }
     }
@@ -215,7 +277,9 @@ pub fn decode_environment_branch_fact(
             validate_branch_matches_key(key, &fact)?;
             Ok(fact)
         }
-        EnvironmentFactPayload::Head(_) => {
+        EnvironmentFactPayload::Head(_)
+        | EnvironmentFactPayload::PromoteDecision(_)
+        | EnvironmentFactPayload::RollbackDecision(_) => {
             Err(EnvironmentError::WrongFactKeyShape { key: key.clone() })
         }
     }
