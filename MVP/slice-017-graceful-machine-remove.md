@@ -49,11 +49,14 @@ docs-backed facts.
 Verified commands:
 
 ```text
+just test
 cargo test -p mvp-machine --lib
+cargo test -p mvp-e2e
 cargo run -p mvp-e2e -- machine-remove-contract
 cargo run -p mvp-e2e -- membership-wireguard-contract
 cargo run -p mvp-e2e -- deploy-commit-drain-contract
 cargo clippy -p mvp-e2e -p mvp-machine --all-targets -- -D warnings
+MVP_E2E_ALL_TIMEOUT=120s cargo run -p mvp-e2e -- all
 ```
 
 `machine-remove-contract` asserts:
