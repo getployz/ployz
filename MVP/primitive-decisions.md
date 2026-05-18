@@ -15,6 +15,17 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
+- Slice 036 introduces `mvp-commands` as a tiny opt-in command substrate.
+  `run_phased` persists explicit phase values, resumes from the latest phase,
+  compensates committed phases in reverse on failure, and returns structured
+  phase-conflict errors. It deliberately does not implement workflow replay,
+  timers, queues, request helpers, leases, pinning, or phase-data APIs.
+- Slice 036 migrates environment promote and rollback onto `run_phased`.
+  Branch remains a plain command. Product phases live in `mvp-environment`;
+  `mvp-commands` owns only reusable phase bookkeeping.
+- Slice 036 simplified the planned command shape: no `PhaseName` type, no
+  `Hash` bound on phases, no `async-trait`, and no unused `CommandContext`
+  methods. Future command migrations must earn each new helper by needing it.
 - Slice 035 wires `mvp-p2panda-authz::IslandAuthoritySnapshot` into
   `PandaFactStore`. The product path now installs an authority snapshot before
   fact-store rebuild/import/write checks; manual trusted-author and
@@ -829,6 +840,56 @@ Revisit if:
   known-alive members before mutation. That should enrich command preconditions
   and visible-node reporting, not become a hidden peer-ack commit requirement.
 
+## Phased Commands
+
+Why this:
+- Deploy, machine remove, environment promote/rollback, and volume transfer all
+  repeated the same bookkeeping shape: read current phase/intent, perform one
+  side-effect step, write a durable phase fact, and resume from that fact after
+  coordinator restart.
+- A full durable workflow engine would import hidden replay semantics and a
+  server/runtime model Ployz does not want.
+
+Decision:
+- `mvp-commands` is application orchestration, not bus, transport, or fact
+  replication.
+- `run_phased` writes a command intent fact, reads the latest phase, calls one
+  explicit `step`, writes the next phase after `Continue`, returns after
+  `Done`, and calls `compensate` for already-committed phases in reverse if a
+  later step fails.
+- A failing phase is not compensated by the runner because that phase was not
+  committed. Cleanup for side effects inside a failing step remains the command
+  author's responsibility.
+- Product-specific phase enums stay with their product crate. The command
+  primitive does not define deploy, machine, environment, or volume states.
+- The first `CommandContext` exposes only phase read/write and intent write.
+  Request/reply, request-many, leases, pinning, and phase-data helpers are
+  deferred until a migrated command uses them.
+
+What it replaces:
+- Per-command resume loops that hand-roll "what phase am I in?" reads and
+  writes.
+- The temptation to adopt Temporal/Cadence/Restate/DBOS-style hidden activity
+  replay.
+
+Costs:
+- The first lift adds a new crate and does not reduce environment command LOC
+  yet. Phase enums and product matches are now more explicit, not shorter.
+- The in-memory command phase store is a semantic proof. A p2panda-backed phase
+  store is still needed before command phases replicate like other durable
+  facts.
+- Compensation is best effort and deliberately explicit; it is not automatic
+  rollback.
+
+Revisit if:
+- Machine remove or volume transfer migrates and repeats enough local phase
+  boilerplate to justify helper extraction inside `mvp-commands`.
+- Command phase facts need p2panda-backed replication, projection status, or
+  operator-facing phase history.
+- Any caller wants to add generic timers, retries, queues, or registries to
+  `mvp-commands`; those should be separate primitives unless a product command
+  proves they belong here.
+
 ## Conflict Candidates And Supersession
 
 Why this:
@@ -1321,8 +1382,11 @@ Decision:
   after projection catch-up.
 - Rollback is a new forward head using the previous head's serving/volume refs,
   not deletion or mutation of promote facts.
-- `mvp-commands` remains deferred. This slice added explicit begin/finalize
-  code, but the phase/resume trigger has not crossed the documented threshold.
+- Slice 036 migrates promote and rollback to `mvp-commands`. Their public
+  behavior is still decision-before-serving, serving-before-head, and pending
+  projection catch-up, but phase bookkeeping now lives in `run_phased`.
+- Branch remains a plain command because it has no durable multi-phase resume
+  boundary yet.
 
 Costs:
 - The E2E uses projection rebuilds for p2panda-sqlite visibility between
@@ -1333,8 +1397,8 @@ Costs:
 Revisit if:
 - Volume branch/fork and environment branch repeat enough fact-store or
   participant glue to justify a shared volume adapter.
-- A third command grows a persisted phase enum plus resume logic, triggering the
-  `mvp-commands` slice.
+- Promote or rollback gain command-specific compensation that should be made
+  more visible than the current no-op compensation arms.
 
 ## p2panda-auth Island Membership Boundary
 

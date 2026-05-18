@@ -492,15 +492,17 @@ only as fallback/fixture seams for islands without a snapshot. Removed and
 demoted writer facts fail closed on import and rebuild until a fact-log frontier
 proof can distinguish pre-removal history from stale partition forgeries.
 
-Slice 036 is planned as the first command-semantic-leverage proof:
+Slice 036 shipped the first command-semantic-leverage proof:
 [MVP/slice-036-phased-command-primitive-plan.md](slice-036-phased-command-primitive-plan.md).
 The trigger from
 [MVP/design-notes/phased-command.md](design-notes/phased-command.md) is now
 met in deploy, machine remove, environment promote/rollback, and volume
 transfer: product code is repeating durable phase/resume/commit bookkeeping.
-The slice should keep the lift narrow: add `mvp-commands`, migrate one product
-command path, prove resume and compensation, and avoid workflow-engine replay
-semantics or transport dependency changes.
+The slice kept the lift narrow: `mvp-commands` owns explicit phase/resume and
+best-effort compensation bookkeeping, environment promote/rollback use it, and
+no workflow-engine replay semantics or transport dependency changes were added.
+The report is
+[MVP/slice-036-phased-command-primitive.md](slice-036-phased-command-primitive.md).
 
 ## Crate Scout Protocol
 
@@ -646,6 +648,13 @@ Recent semantic-leverage proof:
   036 later reopens this decision because deploy, machine remove, environment
   promote/rollback, and volume transfer now repeat enough command bookkeeping
   to justify planning a tiny opt-in `mvp-commands` primitive.
+- Slice 036 adds that tiny opt-in command primitive and migrates environment
+  promote/rollback onto it. The first lift is not a raw LOC win:
+  `mvp-commands` adds 659 lines and environment command code grows while phase
+  enums become explicit. The leverage proof is semantic: resume, intent, and
+  compensation bookkeeping now have one reusable runner, and the process-role
+  environment E2E stays flat while proving both promote and rollback resume
+  without duplicate decision/serving writes.
 - Slice 026 extracts deploy p2panda fact-writing/recovery glue from the
   restart-recovery E2E into `mvp-deploy-p2panda`. The deploy coordinator stays
   core-only, while the p2panda adapter becomes reusable business plumbing for
