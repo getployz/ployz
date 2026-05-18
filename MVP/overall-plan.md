@@ -319,6 +319,12 @@ The question is whether maintained p2panda crates can replace enough custom
 fact/auth/sync/blob substrate to reduce the long-term maintenance burden before
 the deploy restart recovery proof hardens those boundaries.
 
+That investigation is complete. The next implementation slice should be a
+p2panda-backed fact substrate slice using `p2panda-core`, `p2panda-store`, and
+`p2panda-stream` behind the existing projection-facing `FactSource` boundary.
+See
+[MVP/design-notes/p2panda-substitution.md](design-notes/p2panda-substitution.md).
+
 The next product-feature slices remain:
 
 1. ACME on the new primitives.

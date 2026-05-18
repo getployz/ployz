@@ -1,7 +1,8 @@
 ---
 title: Slice 018a p2panda Substrate Substitution Investigation Plan
-status: planned
+status: completed
 created: 2026-05-18
+completed: 2026-05-18
 origin:
   - VISION.md
   - MVP/overall-plan.md
@@ -411,3 +412,10 @@ At the end of this slice, maintainers should be able to read
 
 That is the bar for "deep investigation." Anything less is just a dependency
 scout.
+
+## Completion
+
+Completed in
+`MVP/slice-018a-p2panda-substitution-investigation.md`, with the durable
+decision note in `MVP/design-notes/p2panda-substitution.md` and the compile
+spike in `MVP/p2panda-spike`.
