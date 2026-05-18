@@ -595,6 +595,13 @@ Current proof status:
   repeated reliability harness that records startup, stream-ended refresh,
   idle refresh, replay-skip, and zero-import retry metrics before more product
   commands depend on this transport path.
+- Slice 046 adds that repeated reliability harness. The first
+  `p2panda-net-fact-node-reliability-contract` run completed 12 canonical
+  fact-node roundtrips with 48 attempted imports and zero zero-import
+  iterations. The direct fact-node and process-serving contracts now report
+  p2panda-net import-loop counters so stream idle refreshes, refresh failures,
+  replay skips, attempted import batches, and sync lifecycle events are visible
+  proof data instead of hidden retry behavior.
 
 ### E2E-8: Scale And Reliability Harness
 
@@ -754,6 +761,9 @@ Current proof status:
   `p2panda-net-sync-contract`, `p2panda-net-owned-node-contract`, and
   standalone `p2panda-net-acme-http01-contract` were legacy opaque-body proofs
   and are no longer part of `mvp-e2e -- all`.
+- Slice 046 adds `p2panda-net-fact-node-reliability-contract` to `all`. It is a
+  bounded repeated proof for the same canonical `PandaNetFactNode` path and
+  fails on any zero-attempt iteration after publish.
 
 ## Required Test Artifacts
 

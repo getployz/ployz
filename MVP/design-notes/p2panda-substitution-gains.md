@@ -16,15 +16,9 @@ Bias toward p2panda, but substitute where it deletes Ployz-local plumbing
 without erasing Ployz product semantics.
 
 The active MVP workspace already uses p2panda `0.6.0` for facts, sync,
-transport, and authz. The next highest-leverage product substitution is volume
-transfer membership-backed p2panda facts. The next highest-leverage substrate
-hardening is p2panda-net fact-node reliability around stream ending, idle
-refresh, and zero-import false failures.
-
-Slice 045 verification hit a focused `p2panda-net-fact-node-contract` failure
-where the receiver observed zero attempted imports, followed by a clean rerun.
-That makes reliability the next slice before volume. Volume remains the next
-product substitution after the transport proof is trustworthy.
+transport, and authz. Slice 046 added the missing reliability gate for the
+p2panda-net fact-node path. The next highest-leverage product substitution is
+now volume transfer membership-backed p2panda facts.
 
 ## What p2panda Should Own
 
@@ -58,28 +52,25 @@ product substitution after the transport proof is trustworthy.
 
 ### 1. p2panda-net Fact-node Reliability
 
-Why:
+Status:
 
-- Slice 045 verification produced a focused zero-import failure in
-  `p2panda-net-fact-node-contract`, while the same scenario passed immediately
-  on rerun.
-- Earlier Slice 044/045 verification also saw transient p2panda sync/load
-  behavior that passed when isolated and rerun.
-- `PandaNetFactNode` currently wraps p2panda-net stream behavior with local idle
-  refresh, replay cache, bounded pending imports, startup timeouts, and
-  process-role import loops.
-- Upstream p2panda-net already owns address book, discovery, log sync, and
-  optional supervision. Ployz should investigate whether some of the local
-  refresh/retry logic can become thinner and less flaky.
+- Completed in Slice 046.
+- `p2panda-net-fact-node-reliability-contract` runs 12 canonical fact-node
+  roundtrips and fails if any iteration reaches its deadline with zero
+  attempted imports after publish.
+- `PandaNetFactNodeStats` and process-role `P2pandaNetRoleStatus` now surface
+  idle timeouts, stream refreshes, stream errors, replay skips, attempted
+  import batches, and sync lifecycle counters.
+- The current fix keeps p2panda-net as the product-shaped fact transport. It
+  adds explicit address-book peer insertion for direct two-node tests and
+  better no-progress diagnostics instead of replacing the transport.
 
-Expected follow-up slice:
+Remaining follow-up:
 
-- Add a reliability-focused proof that repeatedly runs `p2panda-net-fact-node`
-  and `p2panda-net-process-serving` contracts, captures stream-ended/idle
-  refresh counts, and proves no zero-import false failure.
-- Investigate using p2panda-net supervision/address-book status as observation,
-  not command truth.
-- Keep Ployz-owned import outcomes and last-good serving status.
+- Keep p2panda-net address book/discovery as transport observation, not command
+  membership truth.
+- Revisit p2panda-net supervisor integration only if process-role status shows
+  recurring stream failures that Ployz should not handle manually.
 
 ### 2. Volume Transfer Membership-backed Facts
 
