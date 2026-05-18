@@ -4,32 +4,43 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use mvp_bus::{BusActorHandle, BusError, BusSession, Grant, HandlerFailure, IslandId, PrincipalId};
+use mvp_bus::{
+    BusActorHandle, BusError, BusSession, FactKey, FactPayload, Grant, HandlerFailure, IslandId,
+    PrincipalId,
+};
 use mvp_deploy::{
     CapacityReply, CleanupFailureKind, CleanupPendingReason, CleanupStatus, DeployCleanupDoneFact,
-    DeployCoordinator, DeployFactWriter, DeployId, DeployManifest, DeployOutcome, DeployRecovery,
-    DeployResult, DeployTimeouts, DnsCommitId, DrainInstanceRequest, DrainStatus, GatewayCommitId,
-    InstanceCapacityRequirement, InstanceCommandReply, InstanceCommandRequest, InstanceId,
-    InstancePlan, InstanceStartOutcome, PhaseId, PhasePlan, PhasePolicy, PhaseReversibility,
-    ProjectionCatchUp, RevisionId, RouteCommitId, ServingCommitId, ServingCommitPlan,
-    StopInstanceRequest, WrittenDeployFact,
+    DeployCoordinator, DeployDecisionFact, DeployFactWriter, DeployId, DeployManifest,
+    DeployOutcome, DeployRecovery, DeployResult, DeployTimeouts, DnsCommitId, DrainInstanceRequest,
+    DrainStatus, GatewayCommitId, InstanceCapacityRequirement, InstanceCommandReply,
+    InstanceCommandRequest, InstanceId, InstancePlan, InstanceStartOutcome, PhaseId, PhasePlan,
+    PhasePolicy, PhaseReversibility, ProjectionCatchUp, RevisionId, RouteCommitId, ServingCommitId,
+    ServingCommitPlan, StopInstanceRequest, WrittenDeployFact, deploy_decision_fact_key,
+    deploy_decision_fact_payload,
 };
 use mvp_deploy_p2panda::PandaDeployFactWriter;
-use mvp_identity::NodeId;
+use mvp_identity::{NodeId, VisibleNodes};
+use mvp_p2panda_authz::ReplicaImportAccess;
 use mvp_p2panda_facts::{
-    PandaFactAuthor, PandaFactOperation, PandaFactStore, SharedPandaFactStore,
+    PandaFactAuthor, PandaFactError, PandaFactOperation, PandaFactStore, SharedPandaFactStore,
 };
 use mvp_projection::{
     BackendEndpoint, DnsRecordFact, RouteId, ServiceName, load_dns_snapshot, load_gateway_snapshot,
 };
-use mvp_routing::{RoutingResult, ServingFactWriter, WrittenServingFact};
+use mvp_routing::{
+    RoutingResult, ServingFactWriter, WrittenServingFact, serving_commit_fact_key,
+    serving_commit_fact_payload,
+};
 use mvp_routing_p2panda::PandaServingFactWriter;
 use mvp_serving::{ServingActorHandle, ServingSnapshotPaths};
 use serde::Serialize;
 
 use crate::assertions::assert_eq_named;
-use crate::bus_syntax::pattern;
+use crate::bus_syntax::{fact_pattern, pattern};
 use crate::metrics::{reset_dir, scenario_dir, write_json};
+use crate::p2panda_projection_fixture::{
+    P2pandaMembershipFixture, create_p2panda_membership_fixture,
+};
 use crate::projection_harness::projection_actor;
 
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -88,9 +99,66 @@ async fn run_async() -> Result<(), String> {
         PrincipalId::new("restart-projection"),
         Grant::allow_all(),
     );
+    let recovery_replica = authority.grant_in(
+        prod.clone(),
+        PrincipalId::new("restart-recovery-replica"),
+        Grant::empty(),
+    );
+    let non_replica_importer = authority.grant_in(
+        prod.clone(),
+        PrincipalId::new("restart-non-replica-importer"),
+        deploy_and_serving_grant()?,
+    );
+    let replica_write_probe = authority.grant_in(
+        prod.clone(),
+        PrincipalId::new("restart-replica-write-probe"),
+        deploy_and_serving_grant()?,
+    );
+    let deploy_key_denied = authority.grant_in(
+        prod.clone(),
+        PrincipalId::new("restart-serving-only-writer"),
+        Grant::empty().with_fact_write(fact_pattern("/facts/serving/>")?),
+    );
+    let serving_key_denied = authority.grant_in(
+        prod.clone(),
+        PrincipalId::new("restart-deploy-only-writer"),
+        Grant::empty().with_fact_write(fact_pattern("/facts/deploy/>")?),
+    );
+    let writer_only_importer = authority.grant_in(
+        prod.clone(),
+        PrincipalId::new("restart-writer-only-importer"),
+        deploy_and_serving_grant()?,
+    );
 
-    let facts = SharedPandaFactStore::new(PandaFactStore::new(Arc::new(raw_bus.clone())));
     let operator_author = Arc::new(PandaFactAuthor::new(operator.principal().clone()));
+    let recovery_replica_author =
+        Arc::new(PandaFactAuthor::new(recovery_replica.principal().clone()));
+    let replica_write_author = Arc::new(PandaFactAuthor::new(
+        replica_write_probe.principal().clone(),
+    ));
+    let deploy_key_denied_author =
+        Arc::new(PandaFactAuthor::new(deploy_key_denied.principal().clone()));
+    let serving_key_denied_author =
+        Arc::new(PandaFactAuthor::new(serving_key_denied.principal().clone()));
+    let writer_only_importer_author = Arc::new(PandaFactAuthor::new(
+        writer_only_importer.principal().clone(),
+    ));
+    let membership = create_p2panda_membership_fixture(
+        &root.join("p2panda-membership"),
+        &prod,
+        &[
+            operator_author.as_ref(),
+            deploy_key_denied_author.as_ref(),
+            serving_key_denied_author.as_ref(),
+            writer_only_importer_author.as_ref(),
+        ],
+        &[
+            (recovery_replica_author.as_ref(), ReplicaImportAccess::Read),
+            (replica_write_author.as_ref(), ReplicaImportAccess::Read),
+        ],
+    )
+    .await?;
+    let facts = open_membership_deploy_store(Arc::new(raw_bus.clone()), &membership, &prod).await?;
     let timings = Arc::new(FactWriteTimings::default());
     let participant_state = Arc::new(ParticipantState::default());
     register_capacity(&bus, &node, &participant_state, "node-db", true).await?;
@@ -159,8 +227,8 @@ async fn run_async() -> Result<(), String> {
     let recovered_facts = import_panda_deploy_facts(
         raw_bus.clone(),
         &prod,
-        &operator,
-        operator_author.as_ref(),
+        &membership,
+        &recovery_replica,
         &exported_recovery_operations,
     )
     .await?;
@@ -238,8 +306,8 @@ async fn run_async() -> Result<(), String> {
 
     register_stop_participant(&bus, &node, &participant_state).await?;
     let final_coordinator = coordinator_with_panda_facts(
-        bus,
-        operator,
+        bus.clone(),
+        operator.clone(),
         recovered_facts.clone(),
         Arc::clone(&operator_author),
         Arc::clone(&timings),
@@ -287,6 +355,58 @@ async fn run_async() -> Result<(), String> {
     if !cleanup_done_recovered {
         return Err("cleanup-done fact did not make recovery idempotent".to_string());
     }
+    assert_replica_importer_cannot_write_recovery_facts(
+        &facts,
+        &replica_write_probe,
+        replica_write_author.as_ref(),
+        &manifest,
+    )
+    .await?;
+    assert_non_replica_cannot_import(
+        raw_bus.clone(),
+        &prod,
+        &membership,
+        NonReplicaImportProbe::GrantedNonMember(&non_replica_importer),
+        &exported_recovery_operations,
+    )
+    .await?;
+    assert_non_replica_cannot_import(
+        raw_bus.clone(),
+        &prod,
+        &membership,
+        NonReplicaImportProbe::WriterOnlyMember(&writer_only_importer),
+        &exported_recovery_operations,
+    )
+    .await?;
+    assert_recovery_import_rejects_author_without_fact_grant(
+        raw_bus.clone(),
+        &prod,
+        &membership,
+        &recovery_replica,
+        deploy_key_denied_author.as_ref(),
+        SourceFactKind::DeployDecision,
+        &manifest,
+    )
+    .await?;
+    assert_recovery_import_rejects_author_without_fact_grant(
+        raw_bus.clone(),
+        &prod,
+        &membership,
+        &recovery_replica,
+        serving_key_denied_author.as_ref(),
+        SourceFactKind::ServingCommit,
+        &manifest,
+    )
+    .await?;
+    assert_recovery_import_rejects_foreign_island_operation(
+        &root,
+        raw_bus.clone(),
+        &prod,
+        &membership,
+        &recovery_replica,
+        &manifest,
+    )
+    .await?;
 
     let report = DeployRestartRecoveryReport {
         scenario: "deploy-restart-recovery-contract",
@@ -322,22 +442,262 @@ async fn run_async() -> Result<(), String> {
 async fn import_panda_deploy_facts(
     authorizer: mvp_bus::harness::InMemoryBus,
     island: &IslandId,
-    session: &BusSession,
-    author: &PandaFactAuthor,
+    membership: &P2pandaMembershipFixture,
+    replica_session: &BusSession,
     operations: &[PandaFactOperation],
 ) -> Result<SharedPandaFactStore, String> {
-    let imported = SharedPandaFactStore::new(PandaFactStore::new(Arc::new(authorizer)));
-    imported
-        .trust_author_key(island, author.principal().clone(), author.author_key())
+    let imported = open_membership_deploy_store(Arc::new(authorizer), membership, island).await?;
+    import_recovery_operations(&imported, replica_session, operations)
         .await
-        .map_err(|error| format!("trust p2panda author key for restart recovery: {error}"))?;
-    for operation in operations {
-        imported
-            .import_operation(session, operation)
-            .await
-            .map_err(|error| format!("import p2panda restart recovery operation: {error}"))?;
-    }
+        .map_err(|error| format!("import p2panda restart recovery operation: {error}"))?;
     Ok(imported)
+}
+
+async fn import_recovery_operations(
+    facts: &SharedPandaFactStore,
+    replica_session: &BusSession,
+    operations: &[PandaFactOperation],
+) -> Result<(), PandaFactError> {
+    for operation in operations {
+        facts
+            .import_replica_operation(replica_session, operation)
+            .await?;
+    }
+    Ok(())
+}
+
+fn deploy_and_serving_grant() -> Result<Grant, String> {
+    Ok(Grant::empty()
+        .with_fact_write(fact_pattern("/facts/deploy/>")?)
+        .with_fact_write(fact_pattern("/facts/serving/>")?))
+}
+
+async fn open_membership_deploy_store(
+    bus: Arc<mvp_bus::harness::InMemoryBus>,
+    membership: &P2pandaMembershipFixture,
+    island: &IslandId,
+) -> Result<SharedPandaFactStore, String> {
+    let facts = SharedPandaFactStore::new(PandaFactStore::new(bus));
+    facts
+        .install_authority_snapshot(membership.authority_snapshot(island).await?)
+        .await;
+    Ok(facts)
+}
+
+async fn assert_replica_importer_cannot_write_recovery_facts(
+    facts: &SharedPandaFactStore,
+    replica_session: &BusSession,
+    replica_author: &PandaFactAuthor,
+    manifest: &DeployManifest,
+) -> Result<(), String> {
+    for kind in [
+        SourceFactKind::DeployDecision,
+        SourceFactKind::ServingCommit,
+    ] {
+        let (key, payload) = kind.key_and_payload(manifest)?;
+        let result = facts
+            .write_fact_payload(replica_session, replica_author, key, payload)
+            .await;
+        match result {
+            Err(PandaFactError::UntrustedAuthorKey { .. }) => {}
+            other => {
+                return Err(format!(
+                    "expected replica importer {} write to fail membership writer check, got {other:?}",
+                    kind.label(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn assert_non_replica_cannot_import(
+    authorizer: mvp_bus::harness::InMemoryBus,
+    island: &IslandId,
+    membership: &P2pandaMembershipFixture,
+    probe: NonReplicaImportProbe<'_>,
+    operations: &[PandaFactOperation],
+) -> Result<(), String> {
+    let [operation, ..] = operations else {
+        return Err("deploy recovery exported no operation for non-replica probe".to_string());
+    };
+    let target = open_membership_deploy_store(Arc::new(authorizer), membership, island).await?;
+    let result =
+        import_recovery_operations(&target, probe.session(), std::slice::from_ref(operation)).await;
+    match result {
+        Err(PandaFactError::UnauthorizedReplicaImport { .. }) => Ok(()),
+        other => Err(format!(
+            "expected {} import to fail replica membership check, got {other:?}",
+            probe.label()
+        )),
+    }
+}
+
+async fn assert_recovery_import_rejects_author_without_fact_grant(
+    authorizer: mvp_bus::harness::InMemoryBus,
+    island: &IslandId,
+    membership: &P2pandaMembershipFixture,
+    replica_session: &BusSession,
+    author: &PandaFactAuthor,
+    kind: SourceFactKind,
+    manifest: &DeployManifest,
+) -> Result<(), String> {
+    let operation = write_source_operation(island, membership, author, kind, manifest).await?;
+    let target = open_membership_deploy_store(Arc::new(authorizer), membership, island).await?;
+    let result = target
+        .import_replica_operation(replica_session, &operation)
+        .await;
+    let (expected_key, _) = kind.key_and_payload(manifest)?;
+    match result {
+        Err(PandaFactError::UnauthorizedWrite {
+            island: denied_island,
+            principal,
+            key,
+        }) if denied_island == *island
+            && principal == *author.principal()
+            && key == expected_key =>
+        {
+            Ok(())
+        }
+        other => Err(format!(
+            "expected {} fact-key denial during recovery import, got {other:?}",
+            kind.label(),
+        )),
+    }
+}
+
+async fn assert_recovery_import_rejects_foreign_island_operation(
+    root: &std::path::Path,
+    authorizer: mvp_bus::harness::InMemoryBus,
+    local_island: &IslandId,
+    local_membership: &P2pandaMembershipFixture,
+    replica_session: &BusSession,
+    manifest: &DeployManifest,
+) -> Result<(), String> {
+    let foreign_island = IslandId::new("foreign");
+    let foreign_author = PandaFactAuthor::new(PrincipalId::new("foreign-restart-writer"));
+    let foreign_membership = create_p2panda_membership_fixture(
+        &root.join("foreign-deploy-membership"),
+        &foreign_island,
+        &[&foreign_author],
+        &[],
+    )
+    .await?;
+    let operation = write_source_operation(
+        &foreign_island,
+        &foreign_membership,
+        &foreign_author,
+        SourceFactKind::DeployDecision,
+        manifest,
+    )
+    .await?;
+    let target =
+        open_membership_deploy_store(Arc::new(authorizer), local_membership, local_island).await?;
+    let result = target
+        .import_replica_operation(replica_session, &operation)
+        .await;
+    match result {
+        Err(PandaFactError::ImportIslandMismatch { session, operation })
+            if session == *local_island && operation == foreign_island =>
+        {
+            Ok(())
+        }
+        other => Err(format!(
+            "expected foreign-island recovery import rejection, got {other:?}"
+        )),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SourceFactKind {
+    DeployDecision,
+    ServingCommit,
+}
+
+enum NonReplicaImportProbe<'a> {
+    GrantedNonMember(&'a BusSession),
+    WriterOnlyMember(&'a BusSession),
+}
+
+impl NonReplicaImportProbe<'_> {
+    fn session(&self) -> &BusSession {
+        match self {
+            Self::GrantedNonMember(session) | Self::WriterOnlyMember(session) => session,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Self::GrantedNonMember(_) => "granted non-member",
+            Self::WriterOnlyMember(_) => "writer-only member",
+        }
+    }
+}
+
+impl SourceFactKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::DeployDecision => "deploy",
+            Self::ServingCommit => "serving",
+        }
+    }
+
+    fn source_grant(self) -> Result<Grant, String> {
+        let pattern = match self {
+            Self::DeployDecision => "/facts/deploy/>",
+            Self::ServingCommit => "/facts/serving/>",
+        };
+        Ok(Grant::empty().with_fact_write(fact_pattern(pattern)?))
+    }
+
+    fn key_and_payload(self, manifest: &DeployManifest) -> Result<(FactKey, FactPayload), String> {
+        match self {
+            Self::DeployDecision => {
+                let fact = DeployDecisionFact::new(
+                    manifest.clone(),
+                    VisibleNodes::new([NodeId::new("node-db"), NodeId::new("node-web")]),
+                );
+                Ok((
+                    deploy_decision_fact_key(&fact.deploy_id)
+                        .map_err(|error| format!("build source deploy decision key: {error}"))?,
+                    deploy_decision_fact_payload(&fact).map_err(|error| {
+                        format!("build source deploy decision payload: {error}")
+                    })?,
+                ))
+            }
+            Self::ServingCommit => Ok((
+                serving_commit_fact_key(&manifest.serving_commit.serving_commit_id)
+                    .map_err(|error| format!("build source serving key: {error}"))?,
+                serving_commit_fact_payload(&manifest.serving_commit)
+                    .map_err(|error| format!("build source serving payload: {error}"))?,
+            )),
+        }
+    }
+}
+
+async fn write_source_operation(
+    island: &IslandId,
+    membership: &P2pandaMembershipFixture,
+    author: &PandaFactAuthor,
+    kind: SourceFactKind,
+    manifest: &DeployManifest,
+) -> Result<PandaFactOperation, String> {
+    let (bus, authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
+    let session = authority.grant_in(
+        island.clone(),
+        author.principal().clone(),
+        kind.source_grant()?,
+    );
+    let source = open_membership_deploy_store(Arc::new(bus), membership, island).await?;
+    let (key, payload) = kind.key_and_payload(manifest)?;
+    let write = source
+        .write_fact_payload_with_operation(&session, author, key, payload)
+        .await
+        .map_err(|error| format!("write source deploy recovery operation: {error}"))?;
+    write
+        .operation()
+        .cloned()
+        .ok_or_else(|| "source deploy recovery operation was already present".to_string())
 }
 
 #[derive(Default)]

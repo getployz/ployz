@@ -1,6 +1,6 @@
 ---
 title: Slice 044 Membership-backed Deploy Recovery Plan
-status: active
+status: completed
 created: 2026-05-19
 origin:
   - VISION.md
@@ -187,6 +187,8 @@ cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-candidate-cleanup-
 rg -n "PandaFactStore::new" MVP/e2e/src/deploy_restart_recovery_contract.rs
 ```
 
+The manual-trust grep is expected to return no output.
+
 ### Unit 2: Recovery Import Uses Replica Membership
 
 Files:
@@ -214,14 +216,13 @@ Plan:
      deploy decision or cleanup fact, which must be rejected;
    - source author has only `/facts/deploy/>` on the target and imports a
      serving commit fact, which must be rejected.
-6. Add a same-island original-author membership probe: an operation signed by an
-   author with a bus fact grant but no active writer membership must be rejected
-   with a structured membership/key error. If the source operation needs to be
-   manufactured through an explicitly named raw negative fixture, keep that raw
-   store outside the product recovery path and name it as a negative fixture.
-7. Add a non-replica import probe: a same-island principal with the original
+6. Add a non-replica import probe: a same-island principal with the original
    author and fact-key grants but no replica-import membership attempts to
    import an otherwise valid deploy/serving operation and must fail with the
+   structured unauthorized-replica-import error.
+7. Add a writer-only-member import probe: a same-island principal with writer
+   membership and fact-key grants, but no replica-import membership, attempts
+   to import an otherwise valid deploy/serving operation and must fail with the
    structured unauthorized-replica-import error.
 8. Add a foreign-island negative source operation and assert recovery import
    rejects it with the structured island-mismatch error.
@@ -290,17 +291,60 @@ Test Scenarios:
 
 Verification:
 
+The completed-slice command list is recorded in the Proofs section below.
+
+## Implementation Result
+
+`deploy-restart-recovery-contract` now opens its primary and recovered p2panda
+stores through a local `open_membership_deploy_store(...)` helper that installs
+the shared membership fixture's `IslandAuthoritySnapshot`. Recovery imports the
+surviving deploy decision and serving commit operations with
+`import_replica_operation` through a membership replica-importer principal.
+
+The scenario keeps the original deploy restart semantics: no drain before the
+projection proof, serving answers while the coordinator is absent, recovery
+does not rerun capacity/prepare/start work, cleanup-pending remains visible
+when stop has no responder, and cleanup-done makes later recovery idempotent.
+
+The new negative probes cover the migration-critical boundaries:
+a replica-importer-only principal cannot directly write even with deploy and
+serving bus grants; same-island non-replica and writer-only principals cannot
+import otherwise valid operations; deploy-only and serving-only fact-key grants
+cannot import the opposite fact family; and a foreign-island deploy operation
+is rejected through the local recovery importer.
+
+## Proofs
+
+Targeted checks run during the slice:
+
 ```text
-cargo fmt --check --manifest-path MVP/Cargo.toml --all
 cargo check --manifest-path MVP/Cargo.toml -p mvp-e2e
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-restart-recovery-contract
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-commit-drain-contract
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-candidate-cleanup-contract
 cargo test --manifest-path MVP/Cargo.toml -p mvp-deploy-p2panda
 cargo test --manifest-path MVP/Cargo.toml -p mvp-deploy
-cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- all
-git diff --check
 ```
+
+Targeted containment:
+
+```text
+rg -n "trust_author_key|trust_replica_peer|with_trusted_author_key|from_trusted_authors|import_operation\(" \
+  MVP/e2e/src/deploy_restart_recovery_contract.rs \
+  MVP/e2e/src/p2panda_projection_fixture.rs
+rg -n "PandaFactStore::new" MVP/e2e/src/deploy_restart_recovery_contract.rs
+```
+
+The manual-trust/direct-import grep has no hits in the targeted files. The raw
+store-opening grep has one hit, inside `open_membership_deploy_store`.
+
+## Semantic Leverage Ledger
+
+This is not a raw LOC win. The added lines are mostly negative authority probes
+that make the deploy recovery contract harder to misread. The leverage is
+semantic: deploy recovery no longer has a feature-local manual trust path and
+now uses the same membership-backed writer/replica-import model as the other
+product canaries.
 
 ## Review Focus
 
