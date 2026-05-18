@@ -2598,4 +2598,95 @@ mod tests {
         assert_eq!(bootstrap_stream.topic(), topic);
         assert_eq!(peer_stream.topic(), topic);
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn p2panda_git_store_api_persists_operation_logs_and_topics() {
+        use p2panda_core_git::{Hash, Operation, SigningKey, Topic, VerifyingKey};
+        use p2panda_store_git::logs::LogStore;
+        use p2panda_store_git::operations::OperationStore;
+        use p2panda_store_git::topics::TopicStore;
+        use p2panda_store_git::{SqliteStore, SqliteStoreBuilder, Transaction};
+
+        let root = tempfile::tempdir().expect("create p2panda git store tempdir");
+        let database_path = root.path().join("current-api.sqlite");
+        let database_url = sqlite_url(&database_path);
+        let store = SqliteStoreBuilder::new()
+            .database_url(&database_url)
+            .max_connections(1)
+            .build()
+            .await
+            .expect("open git p2panda sqlite store");
+
+        let signing_key = SigningKey::generate();
+        let log_id = 7_u64;
+        let (header, _header_bytes, body) =
+            p2panda_net::test_utils::create_operation(&signing_key, b"current api", 0, 0, None);
+        let operation = Operation {
+            hash: header.hash(),
+            header,
+            body: Some(body),
+        };
+        let stable_header_decode = decode_cbor::<Header<()>, _>(&operation.header.to_bytes()[..]);
+        assert!(
+            stable_header_decode.is_err(),
+            "current git p2panda headers should not be silently accepted by the stable production import path"
+        );
+        let topic: Topic = [99; 32].into();
+
+        let permit = store.begin().await.expect("begin git p2panda tx");
+        assert!(
+            OperationStore::<Operation, Hash, u64>::insert_operation(
+                &store,
+                &operation.hash,
+                &operation,
+                &log_id,
+            )
+            .await
+            .expect("insert git p2panda operation")
+        );
+        assert!(
+            TopicStore::<Topic, VerifyingKey, u64>::associate(
+                &store,
+                &topic,
+                &signing_key.verifying_key(),
+                &log_id,
+            )
+            .await
+            .expect("associate git p2panda topic")
+        );
+        store.commit(permit).await.expect("commit git p2panda tx");
+        drop(store);
+
+        let reopened = SqliteStoreBuilder::new()
+            .database_url(&database_url)
+            .max_connections(1)
+            .build()
+            .await
+            .expect("reopen git p2panda sqlite store");
+        let stored =
+            OperationStore::<Operation, Hash, u64>::get_operation(&reopened, &operation.hash)
+                .await
+                .expect("read git p2panda operation")
+                .expect("git p2panda operation persisted");
+        assert_eq!(stored.hash, operation.hash);
+
+        let latest =
+            <SqliteStore as LogStore<Operation, VerifyingKey, u64, u64, Hash>>::get_latest_entry(
+                &reopened,
+                &signing_key.verifying_key(),
+                &log_id,
+            )
+            .await
+            .expect("read latest git p2panda log entry")
+            .expect("git p2panda log entry persisted");
+        assert_eq!(latest.hash, operation.hash);
+
+        let resolved = TopicStore::<Topic, VerifyingKey, u64>::resolve(&reopened, &topic)
+            .await
+            .expect("resolve git p2panda topic");
+        assert_eq!(
+            resolved.get(&signing_key.verifying_key()),
+            Some(&vec![log_id])
+        );
+    }
 }
