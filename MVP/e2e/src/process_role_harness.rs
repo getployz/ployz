@@ -1497,7 +1497,8 @@ async fn open_p2panda_net_shared_store(
                 .with_fact_read(pattern.clone()),
         );
     }
-    let mut open_config = PandaSqliteOpenConfig::new(config.store_path.clone(), vec![island.clone()]);
+    let mut open_config =
+        PandaSqliteOpenConfig::new(config.store_path.clone(), vec![island.clone()]);
     for trusted_author in &config.trusted_authors {
         open_config = open_config.with_trusted_author_key(PandaTrustedAuthorKey::new(
             island.clone(),
@@ -2817,8 +2818,8 @@ async fn open_serving_fact_source(
                 ));
             }
             let store = PandaFactStore::open_sqlite(Arc::new(bus), open_config)
-            .await
-            .map_err(|error| format!("open p2panda serving fact source: {error}"))?;
+                .await
+                .map_err(|error| format!("open p2panda serving fact source: {error}"))?;
             Ok(Arc::new(store))
         }
     }
