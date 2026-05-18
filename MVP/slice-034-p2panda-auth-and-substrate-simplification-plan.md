@@ -81,6 +81,9 @@ Checked on 2026-05-18:
 - `p2panda-auth 0.5.2` owns eventually consistent group membership, Pull/Read/
   Write/Manage access levels, strict manager-only group modification, and a
   strong-removal concurrency resolver.
+- `p2panda-auth` does not authenticate Ployz membership operations by itself.
+  Ployz still needs a signed, island-scoped membership-operation envelope before
+  group operations can affect author-key or replica-import authority.
 - `p2panda-blobs 0.5.2` has implementation files in the crate source, but the
   published crate root currently exports no usable API and documents 0%.
   Treat it as not adoptable in this slice.
@@ -123,8 +126,7 @@ In scope:
   after the adoption slice.
 - Do not delete or downgrade existing fixture/proof paths in this slice. This
   slice nominates deletion candidates and names their proof gates; deletion
-  happens in the next implementation slice unless Unit 5 finds a tiny
-  behavior-preserving encoding simplification.
+  happens in a follow-up implementation slice.
 - Update decision/proof docs with an honest substitution scorecard.
 
 Out of scope:
@@ -133,8 +135,7 @@ Out of scope:
 - No migration outside `MVP/`.
 - No replacement of PloyzBus subject/request/queue/bridge grants.
 - No replacement of deterministic projection reducers.
-- No p2panda-blobs adoption unless the published crate root exposes a usable
-  API during implementation.
+- No p2panda-blobs adoption.
 - No generic workflow/`mvp-commands` primitive.
 - No quorum, consensus, or active-partition membership semantics.
 
@@ -168,18 +169,24 @@ Today `PandaFactStore` has an in-memory
 through `trust_author_key`. That is acceptable for the early MVP, but it is
 exactly the kind of custom substrate that will accrete.
 
-The spike should test whether p2panda-auth group operations can be the durable
-source of:
+The spike should test whether signed Ployz membership-operation envelopes plus
+p2panda-auth group reduction can be the durable source of:
 
 - principal membership,
 - principal p2panda public key,
 - member access level,
 - removal/demotion domination under concurrency,
-- re-add with a new key/epoch.
+- new-principal reinvite with a new key/epoch.
 
-If p2panda-auth does not carry public-key binding directly, use a small Ployz
-membership fact payload associated with the group operation. Do not hide this
-in an in-memory map.
+Durable key binding is a fit/no-fit criterion. The spike must prove that replay
+or reopen can reconstruct `(island, member, principal, epoch, public key)` from
+durable membership material and reject stale or substituted keys. If it cannot,
+mark p2panda-auth adoption for fact import as not ready.
+
+Do not treat same-`NodeId` re-add as a success case. Current Ployz tombstone
+semantics dominate normal joins. Re-add is only allowed for a new Ployz
+principal/member identity until a future explicit reinvite/clear primitive
+exists.
 
 ### 3. Replica Import Is A Non-Writer Membership Role
 
@@ -206,22 +213,45 @@ The last line remains Ployz-owned. p2panda-auth tells us who is an island
 member and with what broad data access; Ployz grants still decide whether that
 member may write `/facts/deploy/>` or `/facts/node/>`.
 
-### 4. Strong Removal Must Be Proven Against Machine Remove
+### 4. Membership Operations Need Their Own Trust Boundary
+
+Before any p2panda-auth state can replace `trusted_author_keys` or
+`trusted_replica_peers`, the spike must prove a Ployz-owned membership
+operation envelope:
+
+- group creation is anchored to Ployz island root/admin authority,
+- every add/remove/promote/demote operation is signed by the operation author,
+- the operation author is authenticated against the current member key binding,
+- wrong-island and wrong-group-id operations are rejected before group
+  reduction,
+- unsupported p2panda-auth shapes, including nested `GroupMember::Group`, are
+  rejected unless Ployz defines semantics for them.
+
+This is a security gate. If the spike cannot model it cleanly, the next slice
+must not wire p2panda-auth into `PandaFactStore`.
+
+### 5. Strong Removal Must Be Proven Against Machine Remove
 
 p2panda-auth's default resolver uses strong removal. The spike must exercise
 the exact cases that matter for Ployz:
 
 - manager removes a node while the removed node concurrently writes a fact;
 - two managers concurrently remove/demote each other;
-- a removed node is re-added with a new epoch/key;
+- a removed node/principal cannot clear an existing Ployz `NodeTombstoned` fact
+  by being re-added through generic group membership;
 - transitive operations from a removed member are rejected or projected as
   unauthorized after membership reduction.
+
+Fact writes/imports must carry or reference the membership epoch or membership
+operation they depend on. Replay after removal must classify pre-remove,
+concurrent-remove, post-remove, and transitive facts deterministically. A design
+that only checks latest active-member state is not acceptable.
 
 If this maps cleanly, the next product slice should use it to simplify machine
 membership/import authority. If it does not, keep p2panda-auth out and record
 the mismatch precisely.
 
-### 5. Do Not Delete Fixtures Until A Product Proof Replaces Them
+### 6. Do Not Delete Fixtures Until A Product Proof Replaces Them
 
 `BusFactSource`, `ProcessFactSource`, and `IrohDocsFactSource` are not all the
 same kind of debt.
@@ -269,9 +299,10 @@ Plan:
    API-shaping choices in test helpers.
 5. Model the only p2panda-auth condition in this spike as
    `IslandMemberCondition::ReplicaImporter`. Public-key binding is represented
-   by a Ployz-owned `IslandMemberKeyBinding` read model in this crate, not by a
-   durable Ployz fact schema yet. The slice report must say whether that binding
-   should become a fact in the adoption slice.
+   by durable signed membership-operation test data which rebuilds into a
+   Ployz-owned `IslandMemberKeyBinding` read model. If the spike cannot replay
+   this binding from durable data, p2panda-auth fact-import adoption is not
+   ready.
 6. Build a minimal adapter that can:
    - create a group with a root/admin manager,
    - add a node/member with Write access,
@@ -280,8 +311,18 @@ Plan:
    - remove/demote a member,
    - reduce concurrent operations using p2panda-auth's default resolver,
    - answer `can_write_member`, `can_import_replica`, and `is_active_member`.
-7. Keep p2panda-auth generic types inside this crate. Product/domain crates
+7. Add a signed membership-operation boundary in the spike:
+   - operations are island/group scoped,
+   - operations authenticate their author against current key binding,
+   - wrong-island, wrong-group-id, unknown-author, stale-key, and substituted-key
+     operations fail before group reduction,
+   - nested group members are rejected.
+8. Keep p2panda-auth generic types inside this crate. Product/domain crates
    should see Ployz-owned membership read models only.
+9. The crate is a spike. The final report must choose exactly one disposition:
+   graduate it into the next adoption slice, fold the proven types into
+   `mvp-p2panda-facts`, or delete it if p2panda-auth is rejected. It must not
+   remain as a drifting example crate.
 
 Test scenarios:
 
@@ -291,8 +332,12 @@ Test scenarios:
 - removed writer no longer satisfies `can_write_member`,
 - removed replica no longer satisfies `can_import_replica`,
 - replica importer never satisfies `can_write_member`,
-- re-add with new epoch/key is active while old-key operations are not,
+- new-principal reinvite with new epoch/key is active while old-key operations
+  are not,
+- same-`NodeId` re-add does not clear a tombstone,
 - concurrent remove versus write resolves in favor of strong removal,
+- fact writes/imports referencing pre-remove, concurrent-remove, post-remove,
+  and transitive membership state are classified deterministically,
 - concurrent manager removal/demotion behaves as documented by p2panda-auth and
   is recorded in the report even if it is not the final Ployz policy.
 
@@ -312,8 +357,9 @@ Files:
 
 Plan:
 
-1. Do not rewrite `PandaFactStore` in this unit unless Unit 1 proves the API is
-   straightforward and the change remains small.
+1. Do not rewrite `PandaFactStore` in this unit. Unit 2 is design-only unless
+   Unit 1 already wires the spike into a current consumer in the same diff,
+   which is not expected for this investigation slice.
 2. Produce a concrete adapter design for replacing:
    - `trusted_author_keys`,
    - `trusted_replica_peers`,
@@ -323,9 +369,9 @@ Plan:
    - likely `PandaFactStore` receives an `IslandMembershipView` trait,
    - p2panda-auth-backed implementation supplies active member/key/access,
    - existing tests keep an in-memory fixture implementation.
-4. If implementation is small enough, add the trait and a no-op/in-memory
-   adapter without changing behavior. Otherwise keep this unit as a design
-   report and avoid speculative abstractions.
+4. Do not add an `IslandMembershipView` trait, no-op adapter, or in-memory
+   adapter in this slice unless it is immediately consumed by `PandaFactStore`.
+   Avoid speculative interfaces.
 
 Test scenarios if code changes:
 
@@ -369,8 +415,7 @@ Plan:
      serving contracts,
    - old docs-backed ACME/iroh-docs product canaries now superseded by
      p2panda ACME and p2panda-net process serving.
-4. Do not delete the fixtures in this investigation slice unless the
-   replacement proof already exists and the diff is obviously small.
+4. Do not delete the fixtures in this investigation slice.
 
 Deliverable:
 
@@ -380,10 +425,10 @@ Deliverable:
 Verification:
 
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-e2e --all-targets`
-- No full E2E required for a docs-only classification, but any deletion must
-  run `MVP_E2E_ALL_TIMEOUT=120s cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- all`.
+- No full E2E required for a docs-only classification because this unit does
+  not delete fixtures.
 
-### Unit 4: Blob Substitution Decision
+### Unit 4: Blob Substitution Note
 
 Files:
 
@@ -393,17 +438,16 @@ Files:
 
 Plan:
 
-1. Re-check `p2panda-blobs 0.5.2` during implementation.
-2. If the crate root still exports no usable API, record "defer" explicitly.
-3. If a newer compatible release exists, compile a tiny throwaway spike before
-   proposing adoption.
-4. Do not add blob migration to this slice. The only outcome is a go/no-go note
-   and a candidate future slice if the API is real.
+1. Record the current `p2panda-blobs 0.5.2` state as "defer": implementation
+   files exist in the published crate source, but the crate root exposes no
+   usable public API.
+2. Do not run a compile spike and do not add blob migration to this slice.
+3. Name a future re-check trigger: revisit only when a newer release exposes a
+   documented crate-root API.
 
 Verification:
 
 - `cargo info p2panda-blobs --verbose`
-- `cargo check` for any retained compile spike, if one is added.
 
 ### Unit 5: Wire Envelope And Quarantine-Log Simplification Scout
 
@@ -423,11 +467,11 @@ Plan:
 2. Inspect `p2panda-net::LogSync` and `SyncHandle::publish` usage to determine
    whether `PandaNetQuarantineLog` can stop manually constructing signed
    wrapper operations.
-3. If either replacement is tiny and obviously behavior-preserving, implement
-   it as a simplification commit.
-4. If replacement would disturb the fact-node E2E contracts, record exact
-   blockers and leave the wrapper alone until the p2panda-auth/membership
-   answer is known.
+3. Do not rewrite the quarantine-log/store-flow path in this slice. Record the
+   exact follow-up if p2panda-net can own more of it.
+4. A single tiny encoding-only simplification is allowed only if it does not
+   touch transport lifecycle, replay suppression, or import status semantics.
+   Otherwise leave the wrapper alone and record exact blockers.
 
 Test scenarios if code changes:
 
@@ -461,7 +505,7 @@ Write the final report with a clear scorecard:
 | --- | --- | --- | --- | --- |
 | p2panda-auth for island membership | TBD | TBD | TBD | Must be backed by Unit 1 tests. |
 | p2panda-auth for bus grants | No | Maybe never | Likely reject | Ployz needs NATS-shaped subject/queue/reply/bridge semantics. |
-| p2panda-blobs | TBD | TBD | TBD | Depends on crate-root API. |
+| p2panda-blobs | No | Later release only | Defer | Current crate root exposes no usable public API. |
 | p2panda raw operation encoding for fact wire | TBD | TBD | TBD | Depends on Unit 5 API scout. |
 | p2panda-net/store path for quarantine log | TBD | TBD | TBD | Depends on Unit 5 API scout. |
 | Delete ProcessFactSource | TBD | TBD | TBD | Depends on current E2E caller map. |
@@ -475,6 +519,9 @@ The report must name the next implementation slice. Good possible outcomes:
   but deletion coverage is.
 - `Slice 035: product command proof`, if no generic substrate substitution is
   currently worth doing.
+
+The report must also state the disposition of `mvp-p2panda-authz`: graduate,
+fold into a production crate, or delete.
 
 Verification:
 
@@ -502,5 +549,6 @@ This slice is complete when:
   strong removal;
 - the remaining custom substrate has a ranked replacement/deletion map;
 - p2panda-blobs has a current adopt/defer decision;
+- `mvp-p2panda-authz` has an explicit graduate/fold/delete disposition;
 - docs record the decision and exact next slice;
 - all affected tests and clippy checks pass.
