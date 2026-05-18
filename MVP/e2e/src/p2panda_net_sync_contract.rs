@@ -422,7 +422,11 @@ async fn transport_wire_operations(wire_operations: Vec<Vec<u8>>) -> Result<Vec<
         net_result("receiver subscription", receiver_handle.subscribe()).await?;
 
     for wire in &wire_operations {
-        net_timeout("operation creation", sender.client.create_operation(wire, 0)).await?;
+        net_timeout(
+            "operation creation",
+            sender.client.create_operation(wire, 0),
+        )
+        .await?;
     }
     net_timeout(
         "topic association",
@@ -437,10 +441,7 @@ async fn transport_wire_operations(wire_operations: Vec<Vec<u8>>) -> Result<Vec<
     collect_transported_operations(&mut receiver_events, wire_operations.len()).await
 }
 
-async fn net_timeout<T>(
-    label: &'static str,
-    future: impl Future<Output = T>,
-) -> Result<T, String> {
+async fn net_timeout<T>(label: &'static str, future: impl Future<Output = T>) -> Result<T, String> {
     timeout(NET_SETUP_TIMEOUT, future)
         .await
         .map_err(|_| format!("timed out waiting for p2panda-net {label}"))

@@ -291,6 +291,27 @@ the decision concrete.
   and p2panda-net transport where that reduces maintained Ployz code. It is
   acceptable not to use rc iroh directly if p2panda-net supplies the cleaner
   substrate.
+- Slice 022 proves p2panda-net as the maintained network carrier for Ployz fact
+  operations without making the p2panda-net store canonical truth. The git
+  p2panda operation/store API line is still incompatible with the stable
+  production `PandaFactStore` import path, so current p2panda-net operations
+  are quarantine transport records whose bodies contain stable opaque
+  `PandaFactOperation` envelopes. Received envelopes are decoded and imported
+  through `PandaFactStore::import_replica_operation`, which adds trusted
+  same-island replica gating before the same Ployz checks as local sync: island
+  match, trusted author key, writer grant, duplicate no-op, and
+  conflict-as-candidate indexing.
+- Slice 022 keeps `sync_panda_fact_stores` as deterministic same-process
+  harness/debug plumbing. The product direction is now clearer: p2panda-net
+  should replace the carrier, not the authority boundary. Manual
+  `export_operations`/`import_operation` use outside tests should be treated as
+  a migration smell unless it is feeding an explicitly trusted replica import
+  path.
+- Slice 022 observed one transient `p2panda-net::test_utils::TestNode` startup
+  panic during focused E2E rerun and a clean pass immediately after. The
+  current scenario is bounded by per-event deadlines and passes in the all-run;
+  a production transport slice still needs real node lifecycle/error surfaces
+  instead of relying on `test_utils` startup behavior.
 
 ## Documented Design Gaps
 

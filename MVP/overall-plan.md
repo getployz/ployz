@@ -362,17 +362,24 @@ adapter, projects on a second local store, serves last-good HTTP-01 state while
 the issuer/coordinator adapter is absent, rejects stale/scoped writes, and
 rebuilds SQLite from synced p2panda operations.
 
+Slice 022 then made the concrete p2panda-net decision. Current git
+p2panda-net is useful now as the maintained iroh/gossip/log-sync carrier, and
+it is acceptable to avoid direct rc iroh usage for this MVP path. It did not
+replace the stable production `PandaFactStore` API line: current git p2panda
+operation/store types are kept in a transport/quarantine role, with stable
+Ployz fact-operation envelopes carried as payloads and imported through the
+canonical authority path on receipt.
+
 The next implementation/proof slices currently remain:
 
-1. A p2panda-net / current p2panda API substitution slice. The goal is to find
-   the largest safe deletion of Ployz-owned substrate code now that ACME and
-   deploy both run over p2panda facts. It is fine to avoid direct rc iroh usage
-   if p2panda-net gives us the maintained transport/sync shape.
-   Active plan:
-   [MVP/slice-022-p2panda-net-current-api-substitution-plan.md](slice-022-p2panda-net-current-api-substitution-plan.md).
-2. The next product or process-role proof that closes remaining E2E-7 gaps:
+1. The next product or process-role proof that closes remaining E2E-7 gaps:
    pre-serving candidate adoption/cleanup ABI, p2panda-auth membership, or
    production transport for sync/bus traffic.
+2. A production p2panda-net integration slice that replaces the
+   `p2panda-net::test_utils` E2E harness with owned node lifecycle, discovery,
+   shutdown, and error surfaces while preserving the canonical import path
+   proven by
+   [MVP/slice-022-p2panda-net-current-api-substitution-plan.md](slice-022-p2panda-net-current-api-substitution-plan.md).
 
 ACME is the canary because it forces the advisory lease primitive to be honest:
 TTL, renewal, epoch fencing, RAII release-on-drop for local holders, and
@@ -558,10 +565,11 @@ Future slice plans should resolve these only when they become blocking:
 - Whether the first implementation should integrate into existing `ployzd` or
   run as a parallel MVP daemon path until the proof harness passes. Current
   direction: keep it under `MVP/` until explicitly changed.
-- Which current p2panda-store/p2panda-sync APIs are stable enough for the MVP
-  fact substrate, and which iroh APIs should carry eventual transport. This is
-  no longer a question to defer indefinitely; the next slice that touches
-  facts/transport must make a concrete version/toolchain decision.
+- Which current p2panda-store APIs are stable enough for the canonical MVP fact
+  store. Slice 022 answered the transport side: p2panda-net can carry fact
+  envelopes now, but the current git store/operation API line should not replace
+  the stable production `PandaFactStore` path until the authority/import seam is
+  narrower.
 - Whether Kameo remote actors should be avoided entirely at first, keeping all
   remote semantics in PloyzBus.
 - Whether `ployz-store-api` should evolve into a projection-facing interface or
