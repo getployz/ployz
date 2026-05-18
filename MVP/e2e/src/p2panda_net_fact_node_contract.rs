@@ -281,7 +281,7 @@ async fn run_async() -> Result<(), String> {
         )
         .await
         .map_err(|error| format!("publish fact-node cross-island fact: {error}"))?;
-    let unauthorized_store = trusted_store(
+    let unauthorized_store = manual_fallback_store(
         &bus,
         &prod,
         &[
@@ -797,11 +797,12 @@ async fn fact_node(
     bus: &Arc<InMemoryBus>,
     island: &IslandId,
     replica_session: &BusSession,
-    trusted_authors: &[(&BusSession, &PandaFactAuthor)],
+    manual_fallback_authors: &[(&BusSession, &PandaFactAuthor)],
     seed: [u8; 32],
     bootstrap: Vec<mvp_p2panda_transport::PandaNetNodeInfo>,
 ) -> Result<PandaNetFactNode, String> {
-    let store = trusted_store(bus, island, trusted_authors, Some(replica_session)).await?;
+    let store =
+        manual_fallback_store(bus, island, manual_fallback_authors, Some(replica_session)).await?;
     PandaNetFactNode::spawn(PandaNetFactNodeConfig::new(
         PandaNetNodeConfig::localhost_ephemeral(
             PandaNetNetworkId::new([83; 32]),
@@ -816,14 +817,19 @@ async fn fact_node(
     .map_err(|error| format!("spawn p2panda-net fact node: {error}"))
 }
 
-async fn trusted_store(
+/// Low-level p2panda-net regression fixture.
+///
+/// This intentionally uses the manual fallback authority API so the scenario
+/// can manufacture rejected operations and unauthorised replica probes. Product
+/// process-serving paths use durable membership-backed authority instead.
+async fn manual_fallback_store(
     bus: &Arc<InMemoryBus>,
     island: &IslandId,
-    trusted_authors: &[(&BusSession, &PandaFactAuthor)],
+    manual_fallback_authors: &[(&BusSession, &PandaFactAuthor)],
     replica_session: Option<&BusSession>,
 ) -> Result<SharedPandaFactStore, String> {
     let store = SharedPandaFactStore::new(PandaFactStore::new(bus.clone()));
-    for &(session, author) in trusted_authors {
+    for &(session, author) in manual_fallback_authors {
         store
             .trust_author_key(island, session.principal().clone(), author.author_key())
             .await
