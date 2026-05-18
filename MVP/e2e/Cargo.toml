@@ -23,6 +23,7 @@ mvp-lease = { path = "../lease", features = ["harness"] }
 mvp-machine = { path = "../machine" }
 mvp-machine-p2panda = { path = "../machine-p2panda" }
 mvp-mesh = { path = "../mesh" }
+mvp-p2panda-authz = { path = "../p2panda-authz" }
 mvp-p2panda-facts = { path = "../p2panda-facts" }
 mvp-p2panda-transport = { path = "../p2panda-transport", features = ["harness"] }
 mvp-projection = { path = "../projection" }
@@ -30,6 +31,7 @@ mvp-routing = { path = "../routing" }
 mvp-routing-p2panda = { path = "../routing-p2panda" }
 mvp-serving = { path = "../serving" }
 mvp-volume = { path = "../volume" }
+p2panda-core = "0.5.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }

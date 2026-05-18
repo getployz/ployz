@@ -15,6 +15,23 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
+- Slice 035 wires `mvp-p2panda-authz::IslandAuthoritySnapshot` into
+  `PandaFactStore`. The product path now installs an authority snapshot before
+  fact-store rebuild/import/write checks; manual trusted-author and
+  trusted-replica maps are fallback/fixture paths only when no snapshot exists
+  for the island.
+- Slice 035 records the authority epoch used by local p2panda fact writes.
+  The epoch is not accepted as historical proof: reopening, replica import,
+  and new local writes all require active writer authority until a fact-log
+  frontier proof exists.
+- Slice 035 deliberately rejects removed or demoted writer operations on the
+  authority-backed path until that frontier proof exists. Accepting epoch-only
+  historical operations would let a partitioned removed writer forge fresh
+  operations with the old epoch. Sync scopes therefore derive from active
+  writers only.
+- Slice 035 tightens durable membership mutation input validation: authz state,
+  manager binding, and added member binding must all match the log island before
+  persistence.
 - Slice 034 adds `mvp-p2panda-authz` as a compile-backed `p2panda-auth`
   membership spike. The result is a conditional adoption decision: p2panda-auth
   fits island membership and strong-removal semantics, but it must not replace
@@ -1322,16 +1339,18 @@ Revisit if:
 ## p2panda-auth Island Membership Boundary
 
 Decision:
-- Adopt `p2panda-auth` for island membership graph semantics once membership
-  operations are durably stored and replayed. Ployz still owns the signed
-  operation envelope, root/admin anchoring, principal/key binding, subject
-  grants, fact-key grants, and command preconditions.
+- Adopt `mvp-p2panda-authz::IslandAuthoritySnapshot` as the fact-store authority
+  seam. `p2panda-auth` owns island membership graph semantics; Ployz still owns
+  the signed operation envelope, root/admin anchoring, principal/key binding,
+  subject grants, fact-key grants, and command preconditions.
 
 What it replaces:
 - Manual `(IslandId, PrincipalId) -> p2panda public key` trust maps in
-  `PandaFactStore`.
-- Manual trusted replica importer sets.
-- Hand-built sync scopes seeded from caller-owned key maps.
+  `PandaFactStore` on the product path. The maps remain as fixture/legacy
+  fallback only for islands without an installed snapshot.
+- Manual trusted replica importer sets on the product path.
+- Hand-built sync scopes seeded from caller-owned key maps when a snapshot is
+  available.
 - Future custom strong-removal or concurrent manager-removal logic.
 
 What it does not replace:
@@ -1352,12 +1371,20 @@ Required boundary:
 - Create/remove operations must not carry an introduced binding.
 - Nested `GroupMember::Group` is rejected until Ployz defines nested group
   semantics.
+- Authority-backed local rebuild and replica import require the operation author
+  to be an active writer in the receiver's current snapshot.
+- Pre-removal operation import from another replica needs a future fact-log
+  frontier/cutoff proof. Until then, removed/demoted writer imports are denied
+  rather than trusting an epoch value that stale partitions can keep using.
 
 Revisit if:
-- membership operations are stored as durable p2panda operations and can rebuild
-  the exact same authority snapshot after reopen;
-- `PandaFactStore` import/write/sync-scope checks consume that snapshot instead
-  of local trust maps;
+- manual trusted-author and trusted-replica fallback APIs have no product
+  callers and can move behind harness-only features or be deleted;
+- fact operations carry enough membership frontier evidence to safely import
+  pre-removal facts from another replica without accepting fresh stale-writer
+  forgeries;
+- membership operations replicate over the same process-serving/p2panda-net path
+  as fact operations;
 - replica import is proven as Pull/Read plus `ReplicaImporter` and cannot
   satisfy writer checks;
 - machine tombstone semantics are reconciled with membership removal semantics

@@ -590,21 +590,17 @@ pub struct IslandAuthoritySnapshot {
     island: IslandId,
     active_writers: BTreeMap<PrincipalId, IslandAuthorityMember>,
     active_replica_importers: BTreeMap<PrincipalId, IslandAuthorityMember>,
-    historical_writers: BTreeMap<(PrincipalId, IslandMemberEpoch), IslandAuthorityMember>,
 }
 
 impl IslandAuthoritySnapshot {
     fn from_authz(authz: &IslandAuthz) -> Self {
         let mut active_writers = BTreeMap::new();
         let mut active_replica_importers = BTreeMap::new();
-        let mut historical_writers = authz.historical_writers.clone();
 
         for binding in authz.bindings.values() {
             let member = IslandAuthorityMember::from_binding(binding);
             if authz.can_write_member(binding.member_id()) {
                 insert_newest_authority_member(&mut active_writers, member.clone());
-                historical_writers
-                    .insert((member.principal().clone(), member.epoch()), member.clone());
             }
             if authz.can_import_replica(binding.member_id()) {
                 insert_newest_authority_member(&mut active_replica_importers, member);
@@ -615,7 +611,6 @@ impl IslandAuthoritySnapshot {
             island: authz.island.clone(),
             active_writers,
             active_replica_importers,
-            historical_writers,
         }
     }
 
@@ -635,15 +630,6 @@ impl IslandAuthoritySnapshot {
         principal: &PrincipalId,
     ) -> Option<&IslandAuthorityMember> {
         self.active_replica_importers.get(principal)
-    }
-
-    #[must_use]
-    pub fn historical_writer(
-        &self,
-        principal: &PrincipalId,
-        epoch: IslandMemberEpoch,
-    ) -> Option<&IslandAuthorityMember> {
-        self.historical_writers.get(&(principal.clone(), epoch))
     }
 
     pub fn active_writers(&self) -> impl Iterator<Item = &IslandAuthorityMember> {
@@ -781,8 +767,8 @@ impl IslandAuthzMemoryLog {
         manager_private_key: &PrivateKey,
         member: IslandMemberId,
     ) -> Result<IslandAuthChange, IslandAuthzError> {
+        self.validate_membership_mutation(authz, manager, manager_private_key)?;
         let mut candidate = authz.clone();
-        candidate.remember_current_writers();
         let operation = candidate.remove_member_operation(manager.member_id(), member)?;
         let change = IslandAuthChange {
             operation_id: operation.id(),
@@ -803,8 +789,8 @@ impl IslandAuthzMemoryLog {
         member: IslandMemberId,
         access: ReplicaImportAccess,
     ) -> Result<IslandAuthChange, IslandAuthzError> {
+        self.validate_membership_mutation(authz, manager, manager_private_key)?;
         let mut candidate = authz.clone();
-        candidate.remember_current_writers();
         let operation = candidate.demote_member_operation(
             manager.member_id(),
             member,
@@ -829,6 +815,13 @@ impl IslandAuthzMemoryLog {
         member: IslandMemberKeyBinding,
         role: IslandMemberRole,
     ) -> Result<IslandAuthChange, IslandAuthzError> {
+        self.validate_membership_mutation(authz, manager, manager_private_key)?;
+        if member.island() != &self.island {
+            return Err(IslandAuthzError::WrongIsland {
+                expected: self.island.clone(),
+                actual: member.island().clone(),
+            });
+        }
         let mut candidate = authz.clone();
         let member_id = member.member_id();
         let operation = candidate.add_member_operation(manager.member_id(), member_id, role)?;
@@ -846,9 +839,32 @@ impl IslandAuthzMemoryLog {
         if let Some(binding) = signed.introduced_binding.clone() {
             candidate.bindings.insert(member_id, binding);
         }
-        candidate.remember_current_writers();
         *authz = candidate;
         Ok(change)
+    }
+
+    fn validate_membership_mutation(
+        &self,
+        authz: &IslandAuthz,
+        manager: &IslandMemberKeyBinding,
+        manager_private_key: &PrivateKey,
+    ) -> Result<(), IslandAuthzError> {
+        if authz.island() != &self.island {
+            return Err(IslandAuthzError::WrongIsland {
+                expected: self.island.clone(),
+                actual: authz.island().clone(),
+            });
+        }
+        if manager.island() != &self.island {
+            return Err(IslandAuthzError::WrongIsland {
+                expected: self.island.clone(),
+                actual: manager.island().clone(),
+            });
+        }
+        if manager.author_key().public_key() != manager_private_key.public_key() {
+            return Err(IslandAuthzError::MemberKeyMismatch(manager.member_id()));
+        }
+        Ok(())
     }
 
     pub async fn replay(
@@ -1080,7 +1096,6 @@ pub struct IslandAuthz {
     group_id: IslandGroupId,
     state: Option<AuthState>,
     bindings: BTreeMap<IslandMemberId, IslandMemberKeyBinding>,
-    historical_writers: BTreeMap<(PrincipalId, IslandMemberEpoch), IslandAuthorityMember>,
 }
 
 impl IslandAuthz {
@@ -1112,18 +1127,11 @@ impl IslandAuthz {
         }
         let group_id = IslandGroupId::from_island(&island);
         let actor = root.member_id();
-        let mut historical_writers = BTreeMap::new();
-        let root_member = IslandAuthorityMember::from_binding(&root);
-        historical_writers.insert(
-            (root_member.principal().clone(), root_member.epoch()),
-            root_member,
-        );
         Ok(Self {
             island,
             group_id,
             state: Some(AuthCrdt::init(IslandOrdererState::new(actor.auth_id()))),
             bindings: BTreeMap::from([(actor, root)]),
-            historical_writers,
         })
     }
 
@@ -1192,7 +1200,6 @@ impl IslandAuthz {
         if let Some(binding) = introduced_binding {
             self.bindings.insert(binding.member_id(), binding);
         }
-        self.remember_current_writers();
         Ok(change)
     }
 
@@ -1320,7 +1327,6 @@ impl IslandAuthz {
             actor: manager,
         };
         self.bindings.insert(member_id, member);
-        self.remember_current_writers();
         Ok(change)
     }
 
@@ -1413,17 +1419,6 @@ impl IslandAuthz {
             .orderer_y
             .set_heads(state.inner.heads().into_iter().collect());
         Ok(())
-    }
-
-    fn remember_current_writers(&mut self) {
-        for binding in self.bindings.values() {
-            if !self.can_write_member(binding.member_id()) {
-                continue;
-            }
-            let member = IslandAuthorityMember::from_binding(binding);
-            self.historical_writers
-                .insert((member.principal().clone(), member.epoch()), member);
-        }
     }
 
     fn access(&self, member: IslandMemberId) -> Option<Access<IslandMemberCondition>> {
@@ -1720,6 +1715,8 @@ pub enum IslandAuthzError {
     UnanchoredRootCreate(IslandMemberId),
     #[error("root authority does not match signer/member {0}")]
     RootAuthorityMismatch(IslandMemberId),
+    #[error("member private key does not match durable binding for {0}")]
+    MemberKeyMismatch(IslandMemberId),
 }
 
 impl From<AuthGroupsError> for IslandAuthzError {
@@ -2093,6 +2090,59 @@ mod tests {
 
         assert!(matches!(error, IslandAuthzError::InvalidSignature(_)));
         assert!(!authz.can_write_member(writer_id));
+    }
+
+    #[tokio::test]
+    async fn durable_membership_log_rejects_wrong_island_added_binding_before_persisting() {
+        let island = island();
+        let (root, root_key) = member_with_private_key("root", &island, 1);
+        let mut log = IslandAuthzMemoryLog::new(island.clone());
+        let mut authz = log
+            .create_root(root.clone(), &root_key)
+            .await
+            .expect("root create should be stored");
+        let wrong_island_writer = member("writer", &IslandId::new("wrong"), 1);
+        let wrong_writer_id = wrong_island_writer.member_id();
+
+        let error = log
+            .add_writer(&mut authz, &root, &root_key, wrong_island_writer)
+            .await
+            .expect_err("wrong-island binding should fail before persistence");
+
+        assert!(matches!(error, IslandAuthzError::WrongIsland { .. }));
+        assert!(!authz.can_write_member(wrong_writer_id));
+        let reopened = IslandAuthzMemoryLog::from_store(island, log.store())
+            .replay(&IslandRootAuthority::new(root.clone()))
+            .await
+            .expect("root-only log should still replay");
+        assert!(!reopened.can_write_member(wrong_writer_id));
+    }
+
+    #[tokio::test]
+    async fn durable_membership_log_rejects_wrong_manager_private_key_before_persisting() {
+        let island = island();
+        let (root, root_key) = member_with_private_key("root", &island, 1);
+        let mut log = IslandAuthzMemoryLog::new(island.clone());
+        let mut authz = log
+            .create_root(root.clone(), &root_key)
+            .await
+            .expect("root create should be stored");
+
+        let writer = member("writer", &island, 1);
+        let writer_id = writer.member_id();
+        let wrong_private_key = member_private_key("wrong-root-key", 1);
+        let error = log
+            .add_writer(&mut authz, &root, &wrong_private_key, writer)
+            .await
+            .expect_err("manager private key must match durable manager binding");
+
+        assert!(matches!(error, IslandAuthzError::MemberKeyMismatch(id) if id == root.member_id()));
+        assert!(!authz.can_write_member(writer_id));
+        let reopened = IslandAuthzMemoryLog::from_store(island, log.store())
+            .replay(&IslandRootAuthority::new(root))
+            .await
+            .expect("root-only log should still replay");
+        assert!(!reopened.can_write_member(writer_id));
     }
 
     #[test]

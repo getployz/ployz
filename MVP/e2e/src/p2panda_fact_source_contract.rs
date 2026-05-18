@@ -1,17 +1,22 @@
 use std::fs;
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::NodeId;
+use mvp_p2panda_authz::{
+    IslandAuthoritySnapshot, IslandAuthzMemoryLog, IslandMemberAuthorKey, IslandMemberEpoch,
+    IslandMemberKeyBinding, ReplicaImportAccess,
+};
 use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactStore, PandaFactWriteOutcome, PandaSqliteOpenConfig,
-    PandaTrustedAuthorKey,
 };
 use mvp_projection::{
     NodeJoinedFact, ProjectionFactPayload, ProjectionIgnoreReason, SqliteProjectionStore,
     load_dns_snapshot, load_gateway_snapshot,
 };
+use p2panda_core::PrivateKey;
 use serde::Serialize;
 
 use crate::assertions::assert_eq_named;
@@ -35,6 +40,7 @@ struct P2pandaFactSourceReport {
     conflict_status_count: usize,
     persistent_reopen: bool,
     persistent_import_reopen: bool,
+    authority_snapshot_import: bool,
     sqlite_rebuild_after_delete: bool,
     gateway_snapshot_bytes: usize,
     dns_snapshot_bytes: usize,
@@ -56,12 +62,22 @@ async fn run_async() -> Result<(), String> {
     let root = scenario_dir("p2panda-fact-source-contract");
     reset_dir(&root)?;
 
-    let (bus, projection_session) = p2panda_bus_with_projection_session();
+    let (bus, projection_session, replica_session) = p2panda_bus_with_projection_sessions();
     let author = PandaFactAuthor::new(projection_session.principal().clone());
+    let authority_snapshot = p2panda_authority_snapshot(
+        projection_session.island(),
+        &author,
+        replica_session.principal(),
+    )
+    .await?;
     let store_path = root.join("p2panda-facts.sqlite");
     let mut store = PandaFactStore::open_sqlite(
         Arc::new(bus.clone()),
-        trusted_sqlite_config(&store_path, &projection_session, &author),
+        authority_sqlite_config(
+            &store_path,
+            projection_session.island(),
+            authority_snapshot.clone(),
+        ),
     )
     .await
     .map_err(|error| format!("open persistent p2panda fact store: {error}"))?;
@@ -72,7 +88,11 @@ async fn run_async() -> Result<(), String> {
 
     let reopened = PandaFactStore::open_sqlite(
         Arc::new(bus.clone()),
-        trusted_sqlite_config(&store_path, &projection_session, &author),
+        authority_sqlite_config(
+            &store_path,
+            projection_session.island(),
+            authority_snapshot.clone(),
+        ),
     )
     .await
     .map_err(|error| format!("reopen persistent p2panda fact store: {error}"))?;
@@ -84,20 +104,17 @@ async fn run_async() -> Result<(), String> {
     let import_path = root.join("imported-p2panda-facts.sqlite");
     let mut imported_store = PandaFactStore::open_sqlite(
         Arc::new(bus.clone()),
-        trusted_sqlite_config(&import_path, &projection_session, &author),
+        authority_sqlite_config(
+            &import_path,
+            projection_session.island(),
+            authority_snapshot.clone(),
+        ),
     )
     .await
     .map_err(|error| format!("open persistent p2panda import store: {error}"))?;
-    imported_store
-        .trust_author_key(
-            projection_session.island(),
-            author.principal().clone(),
-            author.author_key(),
-        )
-        .map_err(|error| format!("trust p2panda author key for projection import: {error}"))?;
     for operation in &exported {
         imported_store
-            .import_operation(&projection_session, operation)
+            .import_replica_operation(&replica_session, operation)
             .await
             .map_err(|error| format!("import p2panda operation for projection: {error}"))?;
     }
@@ -105,7 +122,11 @@ async fn run_async() -> Result<(), String> {
 
     let reopened_import = PandaFactStore::open_sqlite(
         Arc::new(bus),
-        trusted_sqlite_config(&import_path, &projection_session, &author),
+        authority_sqlite_config(
+            &import_path,
+            projection_session.island(),
+            authority_snapshot,
+        ),
     )
     .await
     .map_err(|error| format!("reopen persistent imported p2panda fact store: {error}"))?;
@@ -194,6 +215,7 @@ async fn run_async() -> Result<(), String> {
         ),
         persistent_reopen: true,
         persistent_import_reopen: true,
+        authority_snapshot_import: true,
         sqlite_rebuild_after_delete: true,
         gateway_snapshot_bytes: gateway_bytes.len(),
         dns_snapshot_bytes: dns_bytes.len(),
@@ -215,30 +237,95 @@ async fn run_async() -> Result<(), String> {
     Ok(())
 }
 
-fn p2panda_bus_with_projection_session() -> (InMemoryBus, BusSession) {
+fn p2panda_bus_with_projection_sessions() -> (InMemoryBus, BusSession, BusSession) {
     let (bus, authority) = InMemoryBus::new_with_authority();
-    let session = authority.grant_in(
+    let projection_session = authority.grant_in(
         IslandId::new("prod"),
         PrincipalId::new("projection"),
         Grant::empty()
             .with_fact_write(fact_pattern("/facts/>").expect("fact pattern parses"))
             .with_fact_read(fact_pattern("/facts/>").expect("fact pattern parses")),
     );
-    (bus, session)
+    let replica_session = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("projection-replica"),
+        Grant::empty(),
+    );
+    (bus, projection_session, replica_session)
 }
 
-fn trusted_sqlite_config(
-    path: &std::path::Path,
-    session: &BusSession,
-    author: &PandaFactAuthor,
-) -> PandaSqliteOpenConfig {
-    PandaSqliteOpenConfig::new(path, vec![session.island().clone()]).with_trusted_author_key(
-        PandaTrustedAuthorKey::new(
-            session.island().clone(),
-            author.principal().clone(),
-            author.author_key(),
-        ),
+async fn p2panda_authority_snapshot(
+    island: &IslandId,
+    writer: &PandaFactAuthor,
+    replica: &PrincipalId,
+) -> Result<IslandAuthoritySnapshot, String> {
+    let root_private_key = PrivateKey::from_bytes(&[9; 32]);
+    let replica_private_key = PrivateKey::from_bytes(&[8; 32]);
+    let root = authority_binding(
+        island,
+        &PrincipalId::new("root"),
+        1,
+        IslandMemberAuthorKey::from_public_key(root_private_key.public_key()),
+    )?;
+    let writer = IslandMemberKeyBinding::new(
+        island.clone(),
+        writer.principal().clone(),
+        island_epoch(1)?,
+        writer.author_key().into(),
+    );
+    let replica = authority_binding(
+        island,
+        replica,
+        1,
+        IslandMemberAuthorKey::from_public_key(replica_private_key.public_key()),
+    )?;
+
+    let mut log = IslandAuthzMemoryLog::new(island.clone());
+    let mut authz = log
+        .create_root(root.clone(), &root_private_key)
+        .await
+        .map_err(|error| format!("create p2panda authority root: {error}"))?;
+    log.add_writer(&mut authz, &root, &root_private_key, writer)
+        .await
+        .map_err(|error| format!("authorize p2panda projection writer: {error}"))?;
+    log.add_replica_importer(
+        &mut authz,
+        &root,
+        &root_private_key,
+        replica,
+        ReplicaImportAccess::Read,
     )
+    .await
+    .map_err(|error| format!("authorize p2panda projection replica importer: {error}"))?;
+    Ok(authz.authority_snapshot())
+}
+
+fn authority_binding(
+    island: &IslandId,
+    principal: &PrincipalId,
+    epoch: u64,
+    author_key: IslandMemberAuthorKey,
+) -> Result<IslandMemberKeyBinding, String> {
+    Ok(IslandMemberKeyBinding::new(
+        island.clone(),
+        principal.clone(),
+        island_epoch(epoch)?,
+        author_key,
+    ))
+}
+
+fn island_epoch(epoch: u64) -> Result<IslandMemberEpoch, String> {
+    NonZeroU64::new(epoch)
+        .map(IslandMemberEpoch::new)
+        .ok_or_else(|| "authority member epoch must be non-zero".to_string())
+}
+
+fn authority_sqlite_config(
+    path: &std::path::Path,
+    island: &IslandId,
+    authority: IslandAuthoritySnapshot,
+) -> PandaSqliteOpenConfig {
+    PandaSqliteOpenConfig::new(path, vec![island.clone()]).with_authority_snapshot(authority)
 }
 
 async fn seed_conflict_facts(

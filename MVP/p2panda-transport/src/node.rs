@@ -469,7 +469,7 @@ impl PandaNetReplayCache {
         }
     }
 
-    pub(crate) fn contains(&self, hash: Hash) -> bool {
+    fn contains(&self, hash: Hash) -> bool {
         self.set.contains(&hash)
     }
 
@@ -486,13 +486,37 @@ impl PandaNetReplayCache {
         }
     }
 
-    pub(crate) fn record_replay(&mut self) {
+    fn record_replay(&mut self) {
         self.skipped = self.skipped.saturating_add(1);
+    }
+
+    fn remember(&mut self, hash: Hash, policy: PandaNetReplayPolicy) -> PandaNetReplayStatus {
+        if self.contains(hash) {
+            self.record_replay();
+            return PandaNetReplayStatus::Replayed;
+        }
+        match policy {
+            PandaNetReplayPolicy::CheckOnly => {}
+            #[cfg(feature = "harness")]
+            PandaNetReplayPolicy::InsertFresh => self.insert(hash),
+        }
+        PandaNetReplayStatus::Fresh
     }
 
     pub(crate) fn skipped(&self) -> u64 {
         self.skipped
     }
+}
+
+enum PandaNetReplayPolicy {
+    CheckOnly,
+    #[cfg(feature = "harness")]
+    InsertFresh,
+}
+
+enum PandaNetReplayStatus {
+    Fresh,
+    Replayed,
 }
 
 pub(crate) enum PandaNetStreamBody {
@@ -525,6 +549,24 @@ impl PandaNetStream {
         }
     }
 
+    #[cfg(feature = "harness")]
+    pub(crate) async fn next_unique_body_limited(
+        &mut self,
+        max_body_bytes: usize,
+        replay_cache: &mut PandaNetReplayCache,
+    ) -> Result<PandaNetStreamBody, PandaNetTransportError> {
+        loop {
+            let stream_body = self.next_body_limited(max_body_bytes).await?;
+            match replay_cache.remember(
+                stream_body.operation_hash(),
+                PandaNetReplayPolicy::InsertFresh,
+            ) {
+                PandaNetReplayStatus::Fresh => return Ok(stream_body),
+                PandaNetReplayStatus::Replayed => {}
+            }
+        }
+    }
+
     pub(crate) async fn next_unseen_body_limited(
         &mut self,
         max_body_bytes: usize,
@@ -532,12 +574,13 @@ impl PandaNetStream {
     ) -> Result<PandaNetStreamBody, PandaNetTransportError> {
         loop {
             let stream_body = self.next_body_limited(max_body_bytes).await?;
-            let operation_hash = stream_body.operation_hash();
-            if replay_cache.contains(operation_hash) {
-                replay_cache.record_replay();
-                continue;
+            match replay_cache.remember(
+                stream_body.operation_hash(),
+                PandaNetReplayPolicy::CheckOnly,
+            ) {
+                PandaNetReplayStatus::Fresh => return Ok(stream_body),
+                PandaNetReplayStatus::Replayed => {}
             }
-            return Ok(stream_body);
         }
     }
 
