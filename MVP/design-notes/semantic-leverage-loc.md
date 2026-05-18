@@ -69,6 +69,16 @@ physical Rust lines. That is acceptable only if future ACME work now composes
 the existing lease/fact/sync/projection primitives instead of adding another
 authority or coordination substrate.
 
+Slice 043 continues the same substitution pattern for machine remove. It changes
+the machine-remove E2E from manual trusted-author and trusted-replica setup to
+the shared p2panda-auth membership snapshot. The slice diff is again a small
+E2E increase (`238` added, `67` deleted from the plan commit), but it removes
+feature-local authority setup from a multi-stage product command that exercises
+serving cutover, recovery replay, tombstone, projection rebuild, and WireGuard
+peer removal. That is the leverage target for the next product canaries:
+business contracts should reuse the membership/fact/projection substrate
+instead of creating their own trust model.
+
 ## Snapshot Counts
 
 ```text

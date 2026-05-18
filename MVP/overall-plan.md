@@ -799,10 +799,11 @@ Future slice plans should resolve these only when they become blocking:
 
 ## First Next Step
 
-Slice 043 is planned as the next targeted manual-trust migration:
+Slice 043 completed the next targeted manual-trust migration:
 [MVP/slice-043-membership-backed-machine-remove-plan.md](slice-043-membership-backed-machine-remove-plan.md).
-Move `machine-remove-contract` to the shared membership-backed authority shape
-because it exercises command recovery, serving cutover, tombstone, projection
-rebuild, WireGuard behavior, and replica import in one product canary. Keep the
-slice narrow: no new product primitive, no quorum, and no broad cleanup outside
-the machine-remove proof.
+`machine-remove-contract` now uses the shared membership-backed authority shape
+for its primary, recovery, replay, and negative-probe stores while preserving
+serving cutover, tombstone, projection rebuild, WireGuard behavior, and replica
+import semantics. The next slice should continue the targeted manual-trust
+inventory rather than broad cleanup; good candidates are deploy restart
+recovery, volume transfer, or p2panda-net fallback probe containment.

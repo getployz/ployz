@@ -1,6 +1,6 @@
 ---
 title: Slice 043 Membership-backed Machine Remove Plan
-status: active
+status: completed
 created: 2026-05-19
 origin:
   - VISION.md
@@ -271,3 +271,64 @@ The slice is complete when:
 - semantic-leverage/LOC evidence is updated for the machine-remove migration;
 - changes are reviewed, simplified, committed, and pushed on
   `feat/iroh-bus-mvp-foundation-clean`.
+
+## Implementation Result
+
+Machine remove now opens all E2E-local in-memory machine fact stores with the
+shared membership fixture's `IslandAuthoritySnapshot`: the primary store,
+rebuilt recovery store, completed replay store, node-only negative probe store,
+and conflicting tombstone probe store. The contract no longer calls
+`trust_author_key` or `trust_replica_peer`.
+
+The recovery harness still replays exported operations deterministically. That
+is an explicit existing harness exception for command restart proof, not a new
+transport pattern. A later transport slice can replace this with
+`sync_panda_fact_stores` or p2panda-net/iroh transport when the product proof
+requires it.
+
+The new negative authority assertions cover the migration-critical boundaries:
+a principal with island writer membership but without the command fact grant
+cannot write machine-remove command facts; a replica importer with a
+machine-remove fact grant is still not a writer; recovery import rejects an
+operation whose original author lacks the command fact grant; and recovery
+import rejects a foreign-island operation even through a valid local replica
+importer.
+
+## Proofs
+
+Targeted checks run during the slice:
+
+```text
+cargo check --manifest-path MVP/Cargo.toml -p mvp-e2e
+cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- machine-remove-contract
+cargo test --manifest-path MVP/Cargo.toml -p mvp-machine-p2panda
+```
+
+Targeted manual-trust containment:
+
+```text
+rg -n "trust_author_key|trust_replica_peer|with_trusted_author_key|from_trusted_authors" \
+  MVP/e2e/src/machine_remove_contract.rs
+rg -n "PandaFactStore::new" MVP/e2e/src/machine_remove_contract.rs
+```
+
+The manual-trust grep has no hits in `machine_remove_contract.rs`. The raw
+store-opening grep has one hit, inside `open_membership_machine_store`.
+
+Broader remaining manual-trust hits are outside this slice: low-level
+`p2panda-facts` fallback APIs/tests, `p2panda-transport` tests, deploy restart
+recovery, p2panda-net fallback probes, and volume transfer.
+
+## Semantic Leverage Ledger
+
+Slice diff from the Slice 043 plan commit:
+
+```text
+MVP/e2e/src/machine_remove_contract.rs | 305 +++++++++++++++++++++++++--------
+1 file changed, 238 insertions(+), 67 deletions(-)
+```
+
+This is a small net E2E increase, not a raw LOC deletion. The win is removing
+another product canary's feature-local authority setup: machine remove now uses
+the same p2panda-auth membership snapshot shape as ACME and sync, while keeping
+fact-key grants as the command-specific authorization layer.
