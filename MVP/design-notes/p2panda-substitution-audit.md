@@ -94,7 +94,7 @@ The honest near-term gain is not "delete thousands of lines immediately." It is
 to stop writing new feature code against these old paths and to make the next
 substrate slice unlock deletion safely.
 
-## Next Slice
+## Completed Slice 020
 
 Slice 019b completed the persistent p2panda fact-store proof:
 
@@ -103,13 +103,13 @@ Slice 019b completed the persistent p2panda fact-store proof:
 - The p2panda process-role serving proof projects gateway/DNS snapshots from a
   persistent p2panda source while serving preserves last-good state.
 
-Plan and implement next:
+Slice 020 then completed the lower-level sync proof:
 
 ```text
 Slice 020: p2panda-sync fact replication between persistent stores
 ```
 
-Minimum proof:
+Proof now covered:
 
 - two persistent stores exchange missing p2panda log operations using
   `p2panda-sync`, not manual operation copying;
@@ -117,8 +117,10 @@ Minimum proof:
 - same-key conflicts remain reducer-visible candidates after sync;
 - untrusted or unauthorized received operations do not become verified truth;
 - projection rebuilds SQLite and gateway/DNS snapshots from the synced store;
-- the large-load proof records sync/rebuild timings at 200, 1,000, and 10,000
-  synthetic fact counts.
+- the large-load proof records sync/import timings at 200, 1,000, and 10,000
+  synthetic fact counts. The large-load portion intentionally uses in-memory
+  stores because the persistent-store behavior is already proven by the same
+  scenario and the stress target is the sync/import boundary.
 
 Target commands:
 
@@ -130,7 +132,7 @@ cd MVP && cargo run -p mvp-e2e -- p2panda-sync-fact-source-contract
 cd MVP && MVP_E2E_ALL_TIMEOUT=120s cargo run -p mvp-e2e -- all
 ```
 
-After that, unpark ACME as:
+Next, unpark ACME as:
 
 ```text
 Slice 021: p2panda-backed ACME HTTP-01 with advisory lease facts

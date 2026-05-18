@@ -347,13 +347,19 @@ Ployz indexes rebuild from the operation log, and a process-role serving proof
 can project from the persistent p2panda store while preserving last-good
 serving state.
 
+Slice 020 then replaced manual operation copying as the main replication proof.
+`mvp-p2panda-facts` now exposes a narrow `p2panda-sync` adapter: sync scopes
+are checked against store-owned trusted author bindings, same-island replica
+authority is explicit, received operations still pass through Ployz import
+validation, and E2E proves persistent-store sync, projection rebuild,
+conflicts, no-op repeat sync, payload-read grants, and 10,000-operation sync
+stress.
+
 The next implementation/proof slices currently remain:
 
-1. p2panda-sync fact replication between persistent stores, replacing manual
-   operation copying as the main replication proof.
-2. ACME moved onto the p2panda fact boundary, p2panda-sync replication, and
+1. ACME moved onto the p2panda fact boundary, p2panda-sync replication, and
    advisory lease semantics.
-3. The next product or process-role proof that closes remaining E2E-7 gaps:
+2. The next product or process-role proof that closes remaining E2E-7 gaps:
    pre-serving candidate adoption/cleanup ABI, p2panda-auth membership, or
    iroh transport for sync/bus traffic.
 
@@ -364,11 +370,11 @@ cluster locks. They are foreground coordination hints and fencing tokens;
 resource-level enforcement, such as the ACME directory or storage backend, is
 where real exclusivity lives.
 
-The p2panda-sync slice is not another open-ended substrate detour. It closes
-the specific false boundary left after persistence: manual export/import is
-good deterministic harness plumbing, but ACME should not harden that shape into
-the product canary. After the sync proof, the next slice should pay it off with
-ACME rather than adding another generic substrate layer.
+The p2panda-sync slice closed the specific false boundary left after
+persistence: manual export/import is good deterministic harness plumbing, but
+ACME should not harden that shape into the product canary. The next slice
+should now pay off the sync boundary with ACME rather than adding another
+generic substrate layer.
 
 The shipped deploy restart slice did not port old `deploy.rs`. It expressed the
 smallest durable state machine from `MVP/architecture.md`: request-many
