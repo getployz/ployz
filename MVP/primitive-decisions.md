@@ -309,9 +309,9 @@ the decision concrete.
   path.
 - Slice 022 observed one transient `p2panda-net::test_utils::TestNode` startup
   panic during focused E2E rerun and a clean pass immediately after. The
-  current scenario is bounded by per-event deadlines and passes in the all-run;
-  a production transport slice still needs real node lifecycle/error surfaces
-  instead of relying on `test_utils` startup behavior.
+  current scenario is bounded by setup and per-event deadlines and passes in
+  the all-run; a production transport slice still needs real node
+  lifecycle/error surfaces instead of relying on `test_utils` startup behavior.
 
 ## Documented Design Gaps
 
