@@ -332,7 +332,8 @@ and
 The next product-feature slices remain:
 
 1. Deploy restart recovery and commit-before-drain rebuilt on the p2panda fact
-   boundary.
+   boundary. The active plan is
+   [MVP/slice-018c-p2panda-deploy-restart-recovery-plan.md](slice-018c-p2panda-deploy-restart-recovery-plan.md).
 2. ACME moved onto the p2panda fact boundary and advisory lease semantics.
 
 ACME is the canary because it forces the advisory lease primitive to be honest:
