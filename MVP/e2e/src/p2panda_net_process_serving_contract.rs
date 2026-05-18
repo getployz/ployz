@@ -55,11 +55,17 @@ async fn run_async() -> Result<(), String> {
     let baseline_publisher_seed = repeated_hex("34");
     let remote_publisher_seed = repeated_hex("35");
     let author_seed = repeated_hex("41");
+    let remote_author_seed = repeated_hex("42");
     let author = PandaFactAuthor::from_private_key_hex(
         PrincipalId::new("p2panda-net-scripted-scheduler"),
         &author_seed,
     )
     .map_err(|error| format!("create p2panda-net author from seed: {error}"))?;
+    let remote_author = PandaFactAuthor::from_private_key_hex(
+        PrincipalId::new("p2panda-net-remote-scheduler"),
+        &remote_author_seed,
+    )
+    .map_err(|error| format!("create remote p2panda-net author from seed: {error}"))?;
 
     let serving_socket = root.join("serving.sock");
     let store_path = root.join("p2panda-net-serving.sqlite");
@@ -68,12 +74,18 @@ async fn run_async() -> Result<(), String> {
         author.principal().as_str(),
         author.author_key().as_hex()
     );
+    let remote_trusted_author = format!(
+        "{}:{}",
+        remote_author.principal().as_str(),
+        remote_author.author_key().as_hex()
+    );
+    let trusted_authors = vec![trusted_author.clone(), remote_trusted_author.clone()];
     let receiver_args = p2panda_net_receiver_args(
         &store_path,
         &network,
         &topic,
         &receiver_seed,
-        &trusted_author,
+        &trusted_authors,
     );
     let receiver_arg_refs = receiver_args.iter().map(String::as_str).collect::<Vec<_>>();
     let mut serving = spawn_process_role(
@@ -99,8 +111,8 @@ async fn run_async() -> Result<(), String> {
             topic: &topic,
             seed: &baseline_publisher_seed,
             bootstrap: &receiver_ticket,
-            author: author.principal().as_str(),
-            author_seed: &author_seed,
+            author: remote_author.principal().as_str(),
+            author_seed: &remote_author_seed,
             first: ServingCommitInput::new("serving-1", "fd00::1:8080", "fd00::1", 1),
             second: None,
             second_delay_ms: 0,
@@ -214,7 +226,7 @@ async fn run_async() -> Result<(), String> {
         &network,
         &topic,
         &receiver_seed,
-        &trusted_author,
+        &trusted_authors,
     );
     let receiver_arg_refs = receiver_args.iter().map(String::as_str).collect::<Vec<_>>();
     let mut restarted = spawn_process_role(
@@ -310,9 +322,9 @@ fn p2panda_net_receiver_args(
     network: &str,
     topic: &str,
     receiver_seed: &str,
-    trusted_author: &str,
+    trusted_authors: &[String],
 ) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "--p2panda-path".to_string(),
         store_path.display().to_string(),
         "--p2panda-network".to_string(),
@@ -323,7 +335,10 @@ fn p2panda_net_receiver_args(
         receiver_seed.to_string(),
         "--p2panda-replica".to_string(),
         "p2panda-net-serving-replica".to_string(),
-        "--p2panda-trusted-author".to_string(),
-        trusted_author.to_string(),
-    ]
+    ];
+    for trusted_author in trusted_authors {
+        args.push("--p2panda-trusted-author".to_string());
+        args.push(trusted_author.clone());
+    }
+    args
 }
