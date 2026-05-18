@@ -52,7 +52,8 @@ async fn run_async() -> Result<(), String> {
     let network = repeated_hex("31");
     let topic = repeated_hex("32");
     let receiver_seed = repeated_hex("33");
-    let publisher_seed = repeated_hex("34");
+    let baseline_publisher_seed = repeated_hex("34");
+    let remote_publisher_seed = repeated_hex("35");
     let author_seed = repeated_hex("41");
     let author = PandaFactAuthor::from_private_key_hex(
         PrincipalId::new("p2panda-net-scripted-scheduler"),
@@ -83,26 +84,28 @@ async fn run_async() -> Result<(), String> {
         &receiver_arg_refs,
     )?;
     wait_for_serving_role(&serving_socket).await?;
-    let receiver_ticket =
-        wait_for_p2panda_net_status(&serving_socket, |status| status.p2panda_net.is_some())
-            .await?
-            .p2panda_net
-            .ok_or_else(|| "p2panda-net status missing after readiness".to_string())?
-            .node_ticket;
+    let receiver_ticket = wait_for_p2panda_net_status(&serving_socket, |status| {
+        status.p2panda_net().is_some()
+    })
+    .await?
+    .p2panda_net()
+    .ok_or_else(|| "p2panda-net status missing after readiness".to_string())?
+    .node_ticket
+    .clone();
 
-    let mut publisher =
+    let mut baseline_publisher =
         spawn_p2panda_net_scripted_publisher_process(P2pandaNetScriptedPublisherProcess {
             root: &root,
             network: &network,
             topic: &topic,
-            seed: &publisher_seed,
+            seed: &baseline_publisher_seed,
             bootstrap: &receiver_ticket,
             author: author.principal().as_str(),
             author_seed: &author_seed,
             first: ServingCommitInput::new("serving-1", "fd00::1:8080", "fd00::1", 1),
-            second: ServingCommitInput::new("serving-2", "fd00::2:8080", "fd00::2", 2),
-            second_delay_ms: 3_000,
-            publish_malformed: true,
+            second: None,
+            second_delay_ms: 0,
+            publish_malformed: false,
         })?;
 
     let baseline_status = wait_for_p2panda_net_status(&serving_socket, |status| {
@@ -118,6 +121,7 @@ async fn run_async() -> Result<(), String> {
     )
     .await?;
     let baseline_gateway_revision = serving_role_gateway_revision(&baseline_serving)?;
+    baseline_publisher.kill_and_wait().await?;
 
     let local_mutation_failure = assert_local_mutation_unavailable(
         &root.join("missing-coordinator.sock"),
@@ -125,7 +129,21 @@ async fn run_async() -> Result<(), String> {
     )
     .await?;
 
-    let serving_process_alive_after_update = serving.is_running()?;
+    let mut remote_publisher =
+        spawn_p2panda_net_scripted_publisher_process(P2pandaNetScriptedPublisherProcess {
+            root: &root,
+            network: &network,
+            topic: &topic,
+            seed: &remote_publisher_seed,
+            bootstrap: &receiver_ticket,
+            author: author.principal().as_str(),
+            author_seed: &author_seed,
+            first: ServingCommitInput::new("serving-2", "fd00::2:8080", "fd00::2", 2),
+            second: None,
+            second_delay_ms: 0,
+            publish_malformed: true,
+        })?;
+
     let updated_status = wait_for_p2panda_net_status(&serving_socket, |status| {
         p2panda_reloaded_revision(status, "serving-2")
     })
@@ -139,11 +157,11 @@ async fn run_async() -> Result<(), String> {
     )
     .await?;
     let updated_gateway_revision = serving_role_gateway_revision(&updated_serving)?;
+    let serving_process_alive_after_update = serving.is_running()?;
 
     let malformed_status = wait_for_p2panda_net_status(&serving_socket, |status| {
         status
-            .p2panda_net
-            .as_ref()
+            .p2panda_net()
             .is_some_and(|p2panda| p2panda.rejected >= 1)
     })
     .await?;
@@ -155,10 +173,10 @@ async fn run_async() -> Result<(), String> {
     )
     .await?;
 
-    if publisher.is_running()? {
-        publisher.kill_and_wait().await?;
+    if remote_publisher.is_running()? {
+        remote_publisher.kill_and_wait().await?;
     } else {
-        let publisher_status = publisher.wait_for_exit().await?;
+        let publisher_status = remote_publisher.wait_for_exit().await?;
         if !publisher_status.success() {
             return Err(format!(
                 "p2panda-net scripted publisher exited with {publisher_status}"
@@ -238,6 +256,8 @@ async fn run_async() -> Result<(), String> {
         elapsed_ms: started.elapsed().as_millis(),
     };
     assert_eq_named("baseline imported count", baseline_p2panda.imported, 1)?;
+    assert_eq_named("updated imported count", updated_p2panda.imported, 2)?;
+    assert_eq_named("malformed rejected count", malformed_p2panda.rejected, 1)?;
     assert_eq_named(
         "p2panda-net serving alive after update",
         report.serving_process_alive_after_update,
@@ -270,15 +290,13 @@ async fn wait_for_p2panda_net_status(
 
 fn p2panda_status(status: &RoleStatus) -> Result<&P2pandaNetRoleStatus, String> {
     status
-        .p2panda_net
-        .as_ref()
+        .p2panda_net()
         .ok_or_else(|| "status missing p2panda-net details".to_string())
 }
 
 fn p2panda_reloaded_revision(status: &RoleStatus, revision: &str) -> bool {
     status
-        .p2panda_net
-        .as_ref()
+        .p2panda_net()
         .and_then(|p2panda| p2panda.last_reload.as_ref())
         .and_then(|serving| serving_role_gateway_revision(serving).ok())
         .is_some_and(|gateway_revision| gateway_revision.contains(revision))
