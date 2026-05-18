@@ -13,7 +13,12 @@ use mvp_deploy::{DnsCommitId, GatewayCommitId, RouteCommitId, ServingCommitId, S
 use mvp_identity::NodeId;
 use mvp_mesh::{WireGuardAppliedSnapshot, WireGuardSnapshotPaths, load_applied_snapshot};
 use mvp_p2panda_facts::{
-    PandaFactAuthorKey, PandaFactStore, PandaSqliteOpenConfig, PandaTrustedAuthorKey,
+    PandaFactAuthor, PandaFactAuthorKey, PandaFactStore, PandaSqliteOpenConfig,
+    PandaTrustedAuthorKey, SharedPandaFactStore,
+};
+use mvp_p2panda_transport::{
+    PandaNetFactImportOutcome, PandaNetFactNode, PandaNetFactNodeConfig, PandaNetNetworkId,
+    PandaNetNodeConfig, PandaNetNodeSeed, PandaNetNodeTicket, PandaNetTopic,
 };
 use mvp_projection::{
     BackendEndpoint, DnsRecordFact, DnsRecordProjection, FactSource, GatewayRouteProjection,
@@ -47,6 +52,8 @@ const ROLE_MAX_REQUEST_BYTES: usize = 64 * 1024;
 const READY_TIMEOUT: Duration = Duration::from_secs(3);
 const CHILD_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
 const ROLE_REQUEST_PAUSE: Duration = Duration::from_millis(10);
+const P2PANDA_NET_IMPORT_IDLE: Duration = Duration::from_secs(2);
+const P2PANDA_NET_PUBLISHER_HOLD: Duration = Duration::from_secs(6);
 const MESH_ECHO_TASK_LIMIT: usize = 64;
 
 pub(crate) fn run_role(args: Vec<String>) -> Result<(), String> {
@@ -72,6 +79,14 @@ pub(crate) fn run_role(args: Vec<String>) -> Result<(), String> {
                 .map_err(|error| format!("serialize injector response: {error}"))?;
             println!("{json}");
             Ok(())
+        }
+        "p2panda-net-serving-projection" => {
+            let config = P2pandaNetServingProjectionRoleConfig::parse(rest)?;
+            runtime()?.block_on(run_p2panda_net_serving_projection_role(config))
+        }
+        "p2panda-net-serving-scripted-publisher" => {
+            let config = P2pandaNetServingScriptedPublisherConfig::parse(rest)?;
+            runtime()?.block_on(run_p2panda_net_serving_scripted_publisher(config))
         }
         "http-gateway" => {
             let config = WireRoleConfig::parse(rest, "http-gateway")?;
@@ -219,7 +234,7 @@ pub(crate) async fn request_status(socket: &Path) -> Result<RoleStatus, String> 
         .await
         .map_err(|error| format!("request serving role status: {error:?}"))?
     {
-        RoleSuccess::Status(status) => Ok(status),
+        RoleSuccess::Status(status) => Ok(*status),
         other => Err(format!("unexpected status response: {other:?}")),
     }
 }
@@ -361,6 +376,89 @@ pub(crate) async fn run_remote_injector(
             Err(format!("remote injector failed with {kind:?}: {message}"))
         }
     }
+}
+
+pub(crate) struct P2pandaNetScriptedPublisherProcess<'a> {
+    pub(crate) root: &'a Path,
+    pub(crate) network: &'a str,
+    pub(crate) topic: &'a str,
+    pub(crate) seed: &'a str,
+    pub(crate) bootstrap: &'a str,
+    pub(crate) author: &'a str,
+    pub(crate) author_seed: &'a str,
+    pub(crate) first_commit_id: &'a str,
+    pub(crate) first_backend: &'a str,
+    pub(crate) first_dns: &'a str,
+    pub(crate) first_epoch: u64,
+    pub(crate) second_commit_id: &'a str,
+    pub(crate) second_backend: &'a str,
+    pub(crate) second_dns: &'a str,
+    pub(crate) second_epoch: u64,
+    pub(crate) second_delay_ms: u64,
+    pub(crate) publish_malformed: bool,
+}
+
+pub(crate) fn spawn_p2panda_net_scripted_publisher_process(
+    config: P2pandaNetScriptedPublisherProcess<'_>,
+) -> Result<RunningChild, String> {
+    let mut command = TokioCommand::new(current_exe()?);
+    command
+        .arg("role")
+        .arg("p2panda-net-serving-scripted-publisher")
+        .arg("--root")
+        .arg(config.root)
+        .arg("--p2panda-network")
+        .arg(config.network)
+        .arg("--p2panda-topic")
+        .arg(config.topic)
+        .arg("--p2panda-seed")
+        .arg(config.seed)
+        .arg("--p2panda-bootstrap")
+        .arg(config.bootstrap)
+        .arg("--author")
+        .arg(config.author)
+        .arg("--author-seed")
+        .arg(config.author_seed)
+        .arg("--first-commit-id")
+        .arg(config.first_commit_id)
+        .arg("--first-backend")
+        .arg(config.first_backend)
+        .arg("--first-dns")
+        .arg(config.first_dns)
+        .arg("--first-epoch")
+        .arg(config.first_epoch.to_string())
+        .arg("--second-commit-id")
+        .arg(config.second_commit_id)
+        .arg("--second-backend")
+        .arg(config.second_backend)
+        .arg("--second-dns")
+        .arg(config.second_dns)
+        .arg("--second-epoch")
+        .arg(config.second_epoch.to_string())
+        .arg("--second-delay-ms")
+        .arg(config.second_delay_ms.to_string())
+        .arg("--publish-malformed")
+        .arg(if config.publish_malformed {
+            "true"
+        } else {
+            "false"
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let child = command
+        .spawn()
+        .map_err(|error| format!("spawn p2panda-net scripted publisher: {error}"))?;
+    let pid_file = register_child_pid(
+        config.root,
+        "p2panda-net-serving-scripted-publisher",
+        &child,
+    )?;
+    Ok(RunningChild {
+        name: "p2panda-net-serving-scripted-publisher",
+        child,
+        pid_file: Some(pid_file),
+    })
 }
 
 pub(crate) fn spawn_process_role(
@@ -659,6 +757,47 @@ struct TrustedP2pandaAuthor {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct P2pandaNetServingProjectionRoleConfig {
+    root: PathBuf,
+    socket: PathBuf,
+    store_path: PathBuf,
+    network_id: PandaNetNetworkId,
+    topic: PandaNetTopic,
+    seed: PandaNetNodeSeed,
+    replica_principal: PrincipalId,
+    trusted_author: TrustedP2pandaAuthor,
+    bootstrap: Vec<PandaNetNodeTicket>,
+}
+
+impl P2pandaNetServingProjectionRoleConfig {
+    fn parse(args: &[String]) -> Result<Self, String> {
+        parse_p2panda_net_serving_projection_flags(args)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct P2pandaNetServingScriptedPublisherConfig {
+    root: PathBuf,
+    island: IslandId,
+    network_id: PandaNetNetworkId,
+    topic: PandaNetTopic,
+    seed: PandaNetNodeSeed,
+    bootstrap: Vec<PandaNetNodeTicket>,
+    author: PrincipalId,
+    author_seed: String,
+    first: ServingCommitInput,
+    second: ServingCommitInput,
+    second_delay: Duration,
+    publish_malformed: bool,
+}
+
+impl P2pandaNetServingScriptedPublisherConfig {
+    fn parse(args: &[String]) -> Result<Self, String> {
+        parse_p2panda_net_serving_scripted_publisher_flags(args)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LocalCoordinatorRoleConfig {
     root: PathBuf,
     socket: PathBuf,
@@ -742,6 +881,211 @@ fn parse_serving_projection_flags(args: &[String]) -> Result<ServingProjectionRo
         root: root.ok_or_else(|| format!("{role} requires --root"))?,
         socket: socket.ok_or_else(|| format!("{role} requires --socket"))?,
         fact_source,
+    })
+}
+
+fn parse_p2panda_net_serving_projection_flags(
+    args: &[String],
+) -> Result<P2pandaNetServingProjectionRoleConfig, String> {
+    let role = "p2panda-net-serving-projection";
+    let mut root = None;
+    let mut socket = None;
+    let mut store_path = None;
+    let mut network_id = None;
+    let mut topic = None;
+    let mut seed = None;
+    let mut replica_principal = None;
+    let mut trusted_author = None;
+    let mut bootstrap = Vec::new();
+    let mut remaining = args;
+    while let [flag, value, tail @ ..] = remaining {
+        match flag.as_str() {
+            "--root" => root = Some(PathBuf::from(value)),
+            "--socket" => socket = Some(PathBuf::from(value)),
+            "--p2panda-path" => store_path = Some(PathBuf::from(value)),
+            "--p2panda-network" => {
+                network_id = Some(parse_network_id_flag(role, "--p2panda-network", value)?)
+            }
+            "--p2panda-topic" => topic = Some(parse_topic_flag(role, "--p2panda-topic", value)?),
+            "--p2panda-seed" => seed = Some(parse_seed_flag(role, "--p2panda-seed", value)?),
+            "--p2panda-replica" => replica_principal = Some(PrincipalId::new(value.clone())),
+            "--p2panda-trusted-author" => {
+                if trusted_author.is_some() {
+                    return Err(format!(
+                        "{role} accepts exactly one --p2panda-trusted-author"
+                    ));
+                }
+                trusted_author = Some(parse_trusted_author_flag(role, value)?);
+            }
+            "--p2panda-bootstrap" => bootstrap.push(parse_ticket_flag(role, value)?),
+            other => return Err(format!("unknown {role} flag '{other}'")),
+        }
+        remaining = tail;
+    }
+    if !remaining.is_empty() {
+        return Err(format!(
+            "{role} arguments must be flag/value pairs, got {remaining:?}"
+        ));
+    }
+    Ok(P2pandaNetServingProjectionRoleConfig {
+        root: root.ok_or_else(|| format!("{role} requires --root"))?,
+        socket: socket.ok_or_else(|| format!("{role} requires --socket"))?,
+        store_path: store_path.ok_or_else(|| format!("{role} requires --p2panda-path"))?,
+        network_id: network_id.ok_or_else(|| format!("{role} requires --p2panda-network"))?,
+        topic: topic.ok_or_else(|| format!("{role} requires --p2panda-topic"))?,
+        seed: seed.ok_or_else(|| format!("{role} requires --p2panda-seed"))?,
+        replica_principal: replica_principal
+            .ok_or_else(|| format!("{role} requires --p2panda-replica"))?,
+        trusted_author: trusted_author
+            .ok_or_else(|| format!("{role} requires --p2panda-trusted-author"))?,
+        bootstrap,
+    })
+}
+
+fn parse_p2panda_net_serving_scripted_publisher_flags(
+    args: &[String],
+) -> Result<P2pandaNetServingScriptedPublisherConfig, String> {
+    let role = "p2panda-net-serving-scripted-publisher";
+    let mut root = None;
+    let mut island = IslandId::new("prod");
+    let mut network_id = None;
+    let mut topic = None;
+    let mut seed = None;
+    let mut bootstrap = Vec::new();
+    let mut author = None;
+    let mut author_seed = None;
+    let mut first_commit_id = None;
+    let mut first_backend = None;
+    let mut first_dns = None;
+    let mut first_epoch = None;
+    let mut second_commit_id = None;
+    let mut second_backend = None;
+    let mut second_dns = None;
+    let mut second_epoch = None;
+    let mut second_delay = Duration::from_secs(5);
+    let mut publish_malformed = false;
+    let mut remaining = args;
+    while let [flag, value, tail @ ..] = remaining {
+        match flag.as_str() {
+            "--root" => root = Some(PathBuf::from(value)),
+            "--island" => island = IslandId::new(value.clone()),
+            "--p2panda-network" => {
+                network_id = Some(parse_network_id_flag(role, "--p2panda-network", value)?)
+            }
+            "--p2panda-topic" => topic = Some(parse_topic_flag(role, "--p2panda-topic", value)?),
+            "--p2panda-seed" => seed = Some(parse_seed_flag(role, "--p2panda-seed", value)?),
+            "--p2panda-bootstrap" => bootstrap.push(parse_ticket_flag(role, value)?),
+            "--author" => author = Some(PrincipalId::new(value.clone())),
+            "--author-seed" => author_seed = Some(value.clone()),
+            "--first-commit-id" => first_commit_id = Some(value.clone()),
+            "--first-backend" => first_backend = Some(value.clone()),
+            "--first-dns" => first_dns = Some(value.clone()),
+            "--first-epoch" => first_epoch = Some(parse_u64_flag(role, "--first-epoch", value)?),
+            "--second-commit-id" => second_commit_id = Some(value.clone()),
+            "--second-backend" => second_backend = Some(value.clone()),
+            "--second-dns" => second_dns = Some(value.clone()),
+            "--second-epoch" => {
+                second_epoch = Some(parse_u64_flag(role, "--second-epoch", value)?);
+            }
+            "--second-delay-ms" => {
+                second_delay =
+                    Duration::from_millis(parse_u64_flag(role, "--second-delay-ms", value)?);
+            }
+            "--publish-malformed" => {
+                publish_malformed = parse_bool_flag(role, "--publish-malformed", value)?;
+            }
+            other => return Err(format!("unknown {role} flag '{other}'")),
+        }
+        remaining = tail;
+    }
+    if !remaining.is_empty() {
+        return Err(format!(
+            "{role} arguments must be flag/value pairs, got {remaining:?}"
+        ));
+    }
+    Ok(P2pandaNetServingScriptedPublisherConfig {
+        root: root.ok_or_else(|| format!("{role} requires --root"))?,
+        island,
+        network_id: network_id.ok_or_else(|| format!("{role} requires --p2panda-network"))?,
+        topic: topic.ok_or_else(|| format!("{role} requires --p2panda-topic"))?,
+        seed: seed.ok_or_else(|| format!("{role} requires --p2panda-seed"))?,
+        bootstrap,
+        author: author.ok_or_else(|| format!("{role} requires --author"))?,
+        author_seed: author_seed.ok_or_else(|| format!("{role} requires --author-seed"))?,
+        first: ServingCommitInput::new(
+            first_commit_id.ok_or_else(|| format!("{role} requires --first-commit-id"))?,
+            first_backend.ok_or_else(|| format!("{role} requires --first-backend"))?,
+            first_dns.ok_or_else(|| format!("{role} requires --first-dns"))?,
+            first_epoch.ok_or_else(|| format!("{role} requires --first-epoch"))?,
+        ),
+        second: ServingCommitInput::new(
+            second_commit_id.ok_or_else(|| format!("{role} requires --second-commit-id"))?,
+            second_backend.ok_or_else(|| format!("{role} requires --second-backend"))?,
+            second_dns.ok_or_else(|| format!("{role} requires --second-dns"))?,
+            second_epoch.ok_or_else(|| format!("{role} requires --second-epoch"))?,
+        ),
+        second_delay,
+        publish_malformed,
+    })
+}
+
+fn parse_u64_flag(role: &'static str, flag: &'static str, value: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .map_err(|error| format!("{role} {flag} must be u64: {error}"))
+}
+
+fn parse_bool_flag(role: &'static str, flag: &'static str, value: &str) -> Result<bool, String> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(format!(
+            "{role} {flag} must be true or false, got '{other}'"
+        )),
+    }
+}
+
+fn parse_network_id_flag(
+    role: &'static str,
+    flag: &'static str,
+    value: &str,
+) -> Result<PandaNetNetworkId, String> {
+    PandaNetNetworkId::parse_hex(value).map_err(|error| format!("{role} {flag}: {error}"))
+}
+
+fn parse_topic_flag(
+    role: &'static str,
+    flag: &'static str,
+    value: &str,
+) -> Result<PandaNetTopic, String> {
+    PandaNetTopic::parse_hex(value).map_err(|error| format!("{role} {flag}: {error}"))
+}
+
+fn parse_seed_flag(
+    role: &'static str,
+    flag: &'static str,
+    value: &str,
+) -> Result<PandaNetNodeSeed, String> {
+    PandaNetNodeSeed::parse_hex(value).map_err(|error| format!("{role} {flag}: {error}"))
+}
+
+fn parse_ticket_flag(role: &'static str, value: &str) -> Result<PandaNetNodeTicket, String> {
+    PandaNetNodeTicket::parse(value).map_err(|error| format!("{role} --p2panda-bootstrap: {error}"))
+}
+
+fn parse_trusted_author_flag(
+    role: &'static str,
+    value: &str,
+) -> Result<TrustedP2pandaAuthor, String> {
+    let Some((principal, author_key)) = value.split_once(':') else {
+        return Err(format!(
+            "{role} --p2panda-trusted-author must be principal:author_key"
+        ));
+    };
+    Ok(TrustedP2pandaAuthor {
+        principal: PrincipalId::new(principal.to_string()),
+        author_key: PandaFactAuthorKey::parse_hex(author_key)
+            .map_err(|error| format!("{role} --p2panda-trusted-author: {error}"))?,
     })
 }
 
@@ -999,6 +1343,319 @@ pub(crate) async fn run_serving_projection_role(
             break;
         }
     }
+    Ok(())
+}
+
+pub(crate) async fn run_p2panda_net_serving_projection_role(
+    config: P2pandaNetServingProjectionRoleConfig,
+) -> Result<(), String> {
+    remove_stale_socket(&config.socket)?;
+    if let Some(parent) = config.socket.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create socket dir '{}': {error}", parent.display()))?;
+    }
+    let listener = UnixListener::bind(&config.socket)
+        .map_err(|error| format!("bind p2panda-net serving-projection socket: {error}"))?;
+
+    let expected_island = IslandId::new("prod");
+    let projection_principal = PrincipalId::new("projection");
+    let pattern = fact_pattern("/facts/>")?;
+    let (store, projection_session, replica_session) =
+        open_p2panda_net_shared_store(&config, &expected_island, &projection_principal, &pattern)
+            .await?;
+    let snapshot_paths = ServingSnapshotPaths::new(
+        config.root.join("gateway.snapshot"),
+        config.root.join("dns.snapshot"),
+    );
+    let projection = spawn_projection(
+        Arc::new(store.clone()),
+        expected_island.clone(),
+        projection_session.clone(),
+        pattern.clone(),
+        config.root.as_path(),
+        &snapshot_paths,
+    );
+
+    let bootstrap = config
+        .bootstrap
+        .into_iter()
+        .map(|ticket| {
+            ticket
+                .into_node_info()
+                .map_err(|error| format!("decode p2panda-net bootstrap ticket: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let fact_node = PandaNetFactNode::spawn(PandaNetFactNodeConfig::new(
+        PandaNetNodeConfig::localhost_ephemeral(config.network_id, config.seed, bootstrap),
+        config.topic,
+        store,
+        replica_session,
+    ))
+    .await
+    .map_err(|error| format!("spawn p2panda-net serving fact node: {error}"))?;
+    let node_ticket = fact_node
+        .node_info()
+        .to_ticket()
+        .map_err(|error| format!("encode p2panda-net serving node ticket: {error}"))?;
+    let fact_node = Arc::new(Mutex::new(fact_node));
+    let import_status = Arc::new(Mutex::new(P2pandaNetImportStatus::default()));
+
+    let state = Arc::new(Mutex::new(ServingProjectionState {
+        expected_island,
+        projection_session,
+        source_config: ServingProjectionFactSourceConfig::P2pandaSqlite(Box::new(
+            P2pandaSqliteFactSourceConfig {
+                path: config.store_path.clone(),
+                trusted_author: config.trusted_author.clone(),
+            },
+        )),
+        root: config.root,
+        snapshot_paths,
+        pattern,
+        projection,
+        serving: None,
+        rebuild: None,
+        next_rebuild_token: 1,
+        p2panda_net: None,
+    }));
+    let task = tokio::spawn(run_p2panda_net_import_apply_loop(
+        Arc::clone(&state),
+        Arc::clone(&fact_node),
+        Arc::clone(&import_status),
+    ));
+    {
+        let mut state = state.lock().await;
+        state.p2panda_net = Some(P2pandaNetServingRuntime {
+            node_ticket,
+            import_status,
+            task,
+        });
+    }
+    if let Ok(RoleSuccess::Reloaded(status)) = reload_serving(Arc::clone(&state)).await {
+        let import_status = {
+            let state = state.lock().await;
+            state
+                .p2panda_net
+                .as_ref()
+                .map(|runtime| Arc::clone(&runtime.import_status))
+        };
+        if let Some(import_status) = import_status {
+            import_status.lock().await.last_reload = Some(status);
+        }
+    }
+
+    loop {
+        let (stream, _addr) = listener.accept().await.map_err(|error| {
+            format!("accept p2panda-net serving-projection connection: {error}")
+        })?;
+        if handle_serving_projection_connection(stream, Arc::clone(&state)).await? {
+            break;
+        }
+    }
+    if let Some(runtime) = state.lock().await.p2panda_net.take() {
+        runtime.task.abort();
+    }
+    Ok(())
+}
+
+async fn open_p2panda_net_shared_store(
+    config: &P2pandaNetServingProjectionRoleConfig,
+    island: &IslandId,
+    projection_principal: &PrincipalId,
+    pattern: &FactKeyPattern,
+) -> Result<(SharedPandaFactStore, BusSession, BusSession), String> {
+    let (bus, authority) = InMemoryBus::new_with_authority();
+    let projection_session = authority.grant_in(
+        island.clone(),
+        projection_principal.clone(),
+        Grant::empty().with_fact_read(pattern.clone()),
+    );
+    let replica_session = authority.grant_in(
+        island.clone(),
+        config.replica_principal.clone(),
+        Grant::empty(),
+    );
+    authority.grant_in(
+        island.clone(),
+        config.trusted_author.principal.clone(),
+        Grant::empty()
+            .with_fact_write(pattern.clone())
+            .with_fact_read(pattern.clone()),
+    );
+    let open_config = PandaSqliteOpenConfig::new(config.store_path.clone(), vec![island.clone()])
+        .with_trusted_author_key(PandaTrustedAuthorKey::new(
+            island.clone(),
+            config.trusted_author.principal.clone(),
+            config.trusted_author.author_key,
+        ));
+    let store = PandaFactStore::open_sqlite(Arc::new(bus), open_config)
+        .await
+        .map_err(|error| format!("open p2panda-net serving store: {error}"))?;
+    let store = SharedPandaFactStore::new(store);
+    store
+        .trust_replica_peer(island, replica_session.principal().clone())
+        .await;
+    Ok((store, projection_session, replica_session))
+}
+
+async fn run_p2panda_net_import_apply_loop(
+    state: Arc<Mutex<ServingProjectionState>>,
+    fact_node: Arc<Mutex<PandaNetFactNode>>,
+    import_status: Arc<Mutex<P2pandaNetImportStatus>>,
+) {
+    loop {
+        let batch = {
+            let mut fact_node = fact_node.lock().await;
+            timeout(P2PANDA_NET_IMPORT_IDLE, fact_node.import_next_fact_batch()).await
+        };
+        let batch = match batch {
+            Ok(Ok(batch)) => batch,
+            Ok(Err(error)) => {
+                let refresh = {
+                    let mut fact_node = fact_node.lock().await;
+                    fact_node.refresh_stream().await
+                };
+                let message = match refresh {
+                    Ok(()) => format!("{error}; stream refreshed"),
+                    Err(refresh_error) => {
+                        format!("{error}; stream refresh failed: {refresh_error}")
+                    }
+                };
+                import_status.lock().await.last_failure = Some(message);
+                sleep(ROLE_REQUEST_PAUSE).await;
+                continue;
+            }
+            Err(_) => {
+                let refresh = {
+                    let mut fact_node = fact_node.lock().await;
+                    fact_node.refresh_stream().await
+                };
+                let mut status = import_status.lock().await;
+                if let Err(error) = refresh {
+                    status.last_failure =
+                        Some(format!("stream refresh after idle failed: {error}"));
+                }
+                sleep(ROLE_REQUEST_PAUSE).await;
+                continue;
+            }
+        };
+        let should_apply = batch.iter().any(import_outcome_should_apply);
+        {
+            let mut status = import_status.lock().await;
+            for outcome in batch {
+                status.record(outcome);
+            }
+        }
+        if should_apply {
+            let projection_result = project_once(Arc::clone(&state)).await;
+            match projection_result {
+                Ok(RoleSuccess::Projected(summary)) => {
+                    let _ = summary;
+                }
+                Ok(other) => {
+                    import_status.lock().await.last_failure =
+                        Some(format!("unexpected projection result: {other:?}"));
+                    continue;
+                }
+                Err(error) => {
+                    import_status.lock().await.last_failure =
+                        Some(format!("projection: {}", error.message));
+                    continue;
+                }
+            }
+            match reload_serving(Arc::clone(&state)).await {
+                Ok(RoleSuccess::Reloaded(status)) => {
+                    import_status.lock().await.last_reload = Some(status);
+                }
+                Ok(other) => {
+                    import_status.lock().await.last_failure =
+                        Some(format!("unexpected reload result: {other:?}"));
+                }
+                Err(error) => {
+                    import_status.lock().await.last_failure =
+                        Some(format!("reload: {}", error.message));
+                }
+            }
+        }
+    }
+}
+
+fn import_outcome_should_apply(outcome: &PandaNetFactImportOutcome) -> bool {
+    matches!(
+        outcome,
+        PandaNetFactImportOutcome::Imported | PandaNetFactImportOutcome::Conflict
+    )
+}
+
+pub(crate) async fn run_p2panda_net_serving_scripted_publisher(
+    config: P2pandaNetServingScriptedPublisherConfig,
+) -> Result<(), String> {
+    fs::create_dir_all(&config.root).map_err(|error| {
+        format!(
+            "create p2panda-net scripted publisher root '{}': {error}",
+            config.root.display()
+        )
+    })?;
+    let (bus, authority) = InMemoryBus::new_with_authority();
+    let session = authority.grant_in(
+        config.island.clone(),
+        config.author.clone(),
+        Grant::empty()
+            .with_fact_write(fact_pattern("/facts/>")?)
+            .with_fact_read(fact_pattern("/facts/>")?),
+    );
+    let replica = authority.grant_in(
+        config.island.clone(),
+        PrincipalId::new("p2panda-net-scripted-publisher-replica"),
+        Grant::empty(),
+    );
+    let store = SharedPandaFactStore::new(PandaFactStore::new(Arc::new(bus)));
+    let author = PandaFactAuthor::from_private_key_hex(config.author.clone(), &config.author_seed)
+        .map_err(|error| format!("create scripted p2panda-net author: {error}"))?;
+    let bootstrap = config
+        .bootstrap
+        .into_iter()
+        .map(|ticket| {
+            ticket.into_node_info().map_err(|error| {
+                format!("decode p2panda-net scripted publisher bootstrap ticket: {error}")
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut node = PandaNetFactNode::spawn(PandaNetFactNodeConfig::new(
+        PandaNetNodeConfig::localhost_ephemeral(config.network_id, config.seed, bootstrap),
+        config.topic,
+        store,
+        replica,
+    ))
+    .await
+    .map_err(|error| format!("spawn p2panda-net scripted publisher: {error}"))?;
+
+    publish_serving_input(&mut node, &session, &author, config.first).await?;
+    sleep(config.second_delay).await;
+    publish_serving_input(&mut node, &session, &author, config.second).await?;
+    if config.publish_malformed {
+        sleep(ROLE_REQUEST_PAUSE).await;
+        node.publish_body(b"bad-envelope".to_vec())
+            .await
+            .map_err(|error| format!("publish scripted malformed p2panda-net body: {error}"))?;
+    }
+    sleep(P2PANDA_NET_PUBLISHER_HOLD).await;
+    Ok(())
+}
+
+async fn publish_serving_input(
+    node: &mut PandaNetFactNode,
+    session: &BusSession,
+    author: &PandaFactAuthor,
+    input: ServingCommitInput,
+) -> Result<(), String> {
+    let plan = serving_commit_plan(&input).map_err(|error| error.to_string())?;
+    let payload = serving_commit_payload(&plan).map_err(|error| error.to_string())?;
+    let key = mvp_bus::FactKey::parse(format!("/facts/serving/{}", plan.serving_commit_id))
+        .map_err(|error| format!("parse scripted p2panda-net serving key: {error}"))?;
+    node.publish_fact_payload(session, author, key, payload.into())
+        .await
+        .map_err(|error| format!("publish scripted p2panda-net serving fact: {error}"))?;
     Ok(())
 }
 
@@ -1349,7 +2006,7 @@ async fn handle_serving_projection_connection(
         },
         Err(message) => RoleResponse::Failure(RoleFailure::invalid_request(message)),
     };
-    let should_shutdown = matches!(response, RoleResponse::Success(RoleSuccess::Shutdown));
+    let should_shutdown = matches!(&response, RoleResponse::Success(RoleSuccess::Shutdown));
     let response = serde_json::to_vec(&response)
         .map_err(|error| format!("serialize role response: {error}"))?;
     if write_response(&mut stream, &response, "role response")
@@ -1525,6 +2182,7 @@ async fn handle_role_request(
         RoleRequest::Status => status(state).await,
         RoleRequest::Shutdown => {
             cancel_rebuild(&state).await;
+            cancel_p2panda_net_import(&state).await;
             Ok(RoleSuccess::Shutdown)
         }
     }
@@ -1810,6 +2468,16 @@ async fn cancel_rebuild(state: &Arc<Mutex<ServingProjectionState>>) {
     }
 }
 
+async fn cancel_p2panda_net_import(state: &Arc<Mutex<ServingProjectionState>>) {
+    let runtime = {
+        let mut state = state.lock().await;
+        state.p2panda_net.take()
+    };
+    if let Some(runtime) = runtime {
+        runtime.task.abort();
+    }
+}
+
 async fn query_gateway(
     state: Arc<Mutex<ServingProjectionState>>,
     host: String,
@@ -1836,12 +2504,18 @@ async fn query_dns(
 }
 
 async fn status(state: Arc<Mutex<ServingProjectionState>>) -> Result<RoleSuccess, RoleFailure> {
-    let (serving, projection, rebuild) = {
+    let (serving, projection, rebuild, p2panda_net) = {
         let state = state.lock().await;
         (
             state.serving.clone(),
             state.projection.clone(),
             state.rebuild.as_ref().map(RebuildState::token),
+            state.p2panda_net.as_ref().map(|runtime| {
+                (
+                    runtime.node_ticket.as_str().to_string(),
+                    Arc::clone(&runtime.import_status),
+                )
+            }),
         )
     };
     let serving = match serving {
@@ -1860,12 +2534,27 @@ async fn status(state: Arc<Mutex<ServingProjectionState>>) -> Result<RoleSuccess
         .status()
         .await
         .map_err(|error| RoleFailure::projection(error.to_string()))?;
-    Ok(RoleSuccess::Status(RoleStatus {
+    Ok(RoleSuccess::Status(Box::new(RoleStatus {
         serving,
         projection: role_projection_status(projection),
         rebuild_in_progress: rebuild,
         mutation: RoleMutationStatus::UnavailableInThisRole,
-    }))
+        p2panda_net: p2panda_net_status(p2panda_net).await,
+    })))
+}
+
+async fn p2panda_net_status(
+    status: Option<(String, Arc<Mutex<P2pandaNetImportStatus>>)>,
+) -> Option<P2pandaNetRoleStatus> {
+    let (node_ticket, status) = status?;
+    let status = status.lock().await;
+    Some(P2pandaNetRoleStatus {
+        node_ticket,
+        imported: status.imported,
+        rejected: status.rejected,
+        last_failure: status.last_failure.clone(),
+        last_reload: status.last_reload.clone(),
+    })
 }
 
 async fn serving_handle(
@@ -1890,6 +2579,39 @@ struct ServingProjectionState {
     serving: Option<ServingActorHandle>,
     rebuild: Option<RebuildState>,
     next_rebuild_token: u64,
+    p2panda_net: Option<P2pandaNetServingRuntime>,
+}
+
+struct P2pandaNetServingRuntime {
+    node_ticket: PandaNetNodeTicket,
+    import_status: Arc<Mutex<P2pandaNetImportStatus>>,
+    task: JoinHandle<()>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct P2pandaNetImportStatus {
+    imported: usize,
+    rejected: usize,
+    last_failure: Option<String>,
+    last_reload: Option<RoleServingStatus>,
+}
+
+impl P2pandaNetImportStatus {
+    fn record(&mut self, outcome: PandaNetFactImportOutcome) {
+        match outcome {
+            PandaNetFactImportOutcome::Imported => self.imported += 1,
+            PandaNetFactImportOutcome::Duplicate
+            | PandaNetFactImportOutcome::Conflict
+            | PandaNetFactImportOutcome::Deferred(_) => {}
+            PandaNetFactImportOutcome::Rejected(rejection) => {
+                self.rejected += 1;
+                self.last_failure = Some(format!("{rejection:?}"));
+            }
+            PandaNetFactImportOutcome::Failed(failure) => {
+                self.last_failure = Some(format!("{failure:?}"));
+            }
+        }
+    }
 }
 
 struct HttpGatewayRoleState {
@@ -1951,6 +2673,7 @@ impl ServingProjectionState {
             serving: None,
             rebuild: None,
             next_rebuild_token: 1,
+            p2panda_net: None,
         })
     }
 }
@@ -2625,7 +3348,7 @@ pub(crate) enum RoleSuccess {
     DnsRecords {
         records: Vec<DnsRecordProjection>,
     },
-    Status(RoleStatus),
+    Status(Box<RoleStatus>),
     Shutdown,
 }
 
@@ -2642,6 +3365,16 @@ pub(crate) struct RoleStatus {
     pub(crate) projection: RoleProjectionStatus,
     pub(crate) rebuild_in_progress: Option<u64>,
     pub(crate) mutation: RoleMutationStatus,
+    pub(crate) p2panda_net: Option<P2pandaNetRoleStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct P2pandaNetRoleStatus {
+    pub(crate) node_ticket: String,
+    pub(crate) imported: usize,
+    pub(crate) rejected: usize,
+    pub(crate) last_failure: Option<String>,
+    pub(crate) last_reload: Option<RoleServingStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

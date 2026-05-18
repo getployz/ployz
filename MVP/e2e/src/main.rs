@@ -39,6 +39,18 @@ mod p2panda_acme_http01_contract;
 mod p2panda_fact_source_contract;
 mod p2panda_net_fact_node_contract;
 mod p2panda_net_owned_node_contract;
+#[cfg(unix)]
+mod p2panda_net_process_serving_contract;
+#[cfg(not(unix))]
+mod p2panda_net_process_serving_contract {
+    pub(crate) fn run() -> Result<(), String> {
+        Err("p2panda-net-process-serving-contract uses Unix sockets in the MVP harness".to_string())
+    }
+
+    pub(crate) fn cleanup_orphaned_children() -> Result<(), String> {
+        Ok(())
+    }
+}
 mod p2panda_net_sync_contract;
 #[cfg(unix)]
 mod p2panda_process_role_serving_contract;
@@ -188,6 +200,11 @@ const SCENARIOS: &[Scenario] = &[
         "p2panda-process-role-serving-contract",
         p2panda_process_role_serving_contract::run,
         p2panda_process_role_serving_contract::cleanup_orphaned_children,
+    ),
+    Scenario::with_cleanup(
+        "p2panda-net-process-serving-contract",
+        p2panda_net_process_serving_contract::run,
+        p2panda_net_process_serving_contract::cleanup_orphaned_children,
     ),
     Scenario::with_cleanup(
         "wire-serving-contract",
@@ -346,11 +363,13 @@ mod tests {
         assert!(names.contains(&"steady-state-serving-contract"));
         assert!(names.contains(&"process-role-serving-contract"));
         assert!(names.contains(&"p2panda-process-role-serving-contract"));
+        assert!(names.contains(&"p2panda-net-process-serving-contract"));
         assert!(names.contains(&"wire-serving-contract"));
         assert!(names.contains(&"membership-wireguard-contract"));
         assert!(names.contains(&"machine-remove-contract"));
         assert!(scenario_help().contains("lease-acme-contract"));
         assert!(scenario_help().contains("p2panda-process-role-serving-contract"));
+        assert!(scenario_help().contains("p2panda-net-process-serving-contract"));
         assert!(scenario_help().contains("membership-wireguard-contract"));
         assert!(scenario_help().contains("machine-remove-contract"));
     }
