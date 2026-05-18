@@ -503,33 +503,11 @@ impl From<&IslandId> for IslandAuthzLogId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-enum IslandMembershipOperationKind {
-    CreateRoot,
-    Add,
-    Remove,
-    Promote,
-    Demote,
-}
-
-impl IslandMembershipOperationKind {
-    fn from_action(action: &GroupAction<AuthId, IslandMemberCondition>) -> Self {
-        match action {
-            GroupAction::Create { .. } => Self::CreateRoot,
-            GroupAction::Add { .. } => Self::Add,
-            GroupAction::Remove { .. } => Self::Remove,
-            GroupAction::Promote { .. } => Self::Promote,
-            GroupAction::Demote { .. } => Self::Demote,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct IslandMembershipExtensions {
     island: String,
     group: AuthId,
     actor: AuthId,
-    kind: IslandMembershipOperationKind,
 }
 
 impl IslandMembershipExtensions {
@@ -539,8 +517,34 @@ impl IslandMembershipExtensions {
             island: island.as_str().to_owned(),
             group: payload.group_id(),
             actor: signed.signer.auth_id(),
-            kind: IslandMembershipOperationKind::from_action(&payload.action),
         }
+    }
+
+    fn validate(
+        &self,
+        expected_island: &IslandId,
+        signed: &IslandSignedOperation,
+    ) -> Result<(), IslandAuthzError> {
+        if self.island != expected_island.as_str() {
+            return Err(IslandAuthzError::WrongIsland {
+                expected: expected_island.clone(),
+                actual: IslandId::new(self.island.clone()),
+            });
+        }
+        let payload = signed.operation.payload();
+        if self.group != payload.group_id() {
+            return Err(IslandAuthzError::WrongGroup {
+                expected: IslandGroupId(payload.group_id()),
+                actual: IslandGroupId(self.group),
+            });
+        }
+        if self.actor != signed.signer.auth_id() {
+            return Err(IslandAuthzError::SignerMismatch {
+                signer: signed.signer,
+                author: IslandMemberId(self.actor),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -603,7 +607,6 @@ impl IslandAuthzMemoryLog {
         let operation = authz.create_group_operation(root.member_id())?;
         let signed = IslandSignedOperation::sign(operation, root.member_id(), root_key, None);
         self.insert_signed(&signed, root_key).await?;
-        authz.remember_signed(signed)?;
         Ok(authz)
     }
 
@@ -633,27 +636,20 @@ impl IslandAuthzMemoryLog {
         }
         let mut signed_operations = self.signed_operations().await?;
         signed_operations.sort_by_key(|(header, _)| (header.seq_num, header.hash()));
+        let Some((_, root_signed)) = signed_operations.first() else {
+            return Err(IslandAuthzError::EmptyMembershipLog {
+                island: self.island.clone(),
+            });
+        };
+        Self::validate_root_anchor(&self.island, root_authority.binding(), root_signed)?;
+        let mut authz =
+            IslandAuthz::empty_with_root(self.island.clone(), root_authority.binding().clone())?;
+        authz.apply_signed(root_signed.clone())?;
 
-        let mut authz: Option<IslandAuthz> = None;
-        for (_, signed) in signed_operations {
-            match authz.as_mut() {
-                Some(existing) => {
-                    existing.apply_signed(signed)?;
-                }
-                None => {
-                    Self::validate_root_signed(&self.island, root_authority.binding(), &signed)?;
-                    let mut created = IslandAuthz::empty_with_root(
-                        self.island.clone(),
-                        root_authority.binding().clone(),
-                    )?;
-                    created.apply_validated_root_signed(signed)?;
-                    authz = Some(created);
-                }
-            }
+        for (_, signed) in signed_operations.into_iter().skip(1) {
+            authz.apply_signed(signed)?;
         }
-        authz.ok_or(IslandAuthzError::EmptyMembershipLog {
-            island: self.island.clone(),
-        })
+        Ok(authz)
     }
 
     async fn signed_operations(
@@ -701,6 +697,7 @@ impl IslandAuthzMemoryLog {
                 })?;
                 let signed: IslandSignedOperation =
                     decode_cbor(&body.to_bytes()[..]).map_err(decode_error)?;
+                header.extensions.validate(&self.island, &signed)?;
                 operations.push((header, signed));
             }
         }
@@ -762,7 +759,7 @@ impl IslandAuthzMemoryLog {
         Ok(())
     }
 
-    fn validate_root_signed(
+    fn validate_root_anchor(
         island: &IslandId,
         root: &IslandMemberKeyBinding,
         signed: &IslandSignedOperation,
@@ -778,20 +775,8 @@ impl IslandAuthzMemoryLog {
         {
             return Err(IslandAuthzError::UnanchoredRootCreate(root.member_id()));
         }
-        let payload = signed.operation.payload();
-        if payload.group_id() != IslandGroupId::from_island(island).auth_id() {
-            return Err(IslandAuthzError::WrongGroup {
-                expected: IslandGroupId::from_island(island),
-                actual: IslandGroupId(payload.group_id()),
-            });
-        }
-        if !matches!(payload.action, GroupAction::Create { .. }) {
+        if !matches!(signed.operation.payload().action, GroupAction::Create { .. }) {
             return Err(IslandAuthzError::UnanchoredRootCreate(root.member_id()));
-        }
-        if signed.introduced_binding.is_some() {
-            return Err(IslandAuthzError::UnexpectedIntroducedBinding(
-                signed.operation_id(),
-            ));
         }
         let signature_payload =
             membership_operation_payload(&signed.operation, signed.signer, None);
@@ -865,7 +850,6 @@ pub struct IslandAuthz {
     group_id: IslandGroupId,
     state: Option<AuthState>,
     bindings: BTreeMap<IslandMemberId, IslandMemberKeyBinding>,
-    operations: BTreeMap<IslandOperationId, IslandSignedOperation>,
 }
 
 impl IslandAuthz {
@@ -902,7 +886,6 @@ impl IslandAuthz {
             group_id,
             state: Some(AuthCrdt::init(IslandOrdererState::new(actor.auth_id()))),
             bindings: BTreeMap::from([(actor, root)]),
-            operations: BTreeMap::new(),
         })
     }
 
@@ -966,23 +949,7 @@ impl IslandAuthz {
         if let Some(binding) = introduced_binding {
             self.bindings.insert(binding.member_id(), binding);
         }
-        self.remember_signed(signed)?;
         Ok(change)
-    }
-
-    fn apply_validated_root_signed(
-        &mut self,
-        signed: IslandSignedOperation,
-    ) -> Result<IslandAuthChange, IslandAuthzError> {
-        let change = self.process_imported(signed.operation.clone())?;
-        self.remember_signed(signed)?;
-        Ok(change)
-    }
-
-    fn remember_signed(&mut self, signed: IslandSignedOperation) -> Result<(), IslandAuthzError> {
-        let operation_id = signed.operation_id();
-        self.operations.insert(operation_id, signed);
-        Ok(())
     }
 
     #[cfg(test)]
@@ -1132,15 +1099,11 @@ impl IslandAuthz {
         };
         let actor = IslandMemberId(operation.author());
         let operation_id = operation.id();
-        #[cfg(test)]
         let original_state = state.clone();
         let state = match AuthCrdt::process(state, &operation) {
             Ok(state) => state,
             Err(error) => {
-                #[cfg(test)]
-                {
-                    self.state = Some(original_state);
-                }
+                self.state = Some(original_state);
                 return Err(IslandAuthzError::from_crdt(error));
             }
         };
