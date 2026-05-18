@@ -31,8 +31,8 @@ use mvp_projection::{
     ProjectionState, RouteId,
 };
 use mvp_routing::{
-    DnsCommitId, GatewayCommitId, ProjectionCatchUp, RouteCommitId, ServingCommitId,
-    ServingCommitPlan, write_serving_commit,
+    BusServingFactWriter, DnsCommitId, GatewayCommitId, ProjectionCatchUp, RouteCommitId,
+    ServingCommitId, ServingCommitPlan, write_serving_commit,
 };
 use serde::Serialize;
 
@@ -368,10 +368,12 @@ async fn run_async() -> Result<(), String> {
         raw_bus.clone(),
         Arc::clone(&events),
     );
-    let coordinator = MachineRemoveCoordinator::new(
+    let serving_writer = BusServingFactWriter::new(bus.clone(), operator.clone());
+    let coordinator = MachineRemoveCoordinator::with_fact_writers(
         bus.clone(),
         operator.clone(),
         writer,
+        serving_writer,
         MachineRemoveTimeouts {
             participant: Duration::from_secs(2),
         },

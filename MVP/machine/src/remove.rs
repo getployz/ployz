@@ -8,7 +8,9 @@ use mvp_mesh::{removal_started_fact_key, removal_started_fact_payload, tombstone
 use mvp_projection::{
     NodeRemovalStartedFact, NodeTombstonedFact, ProjectionFactPayload, ProjectionState,
 };
-use mvp_routing::{ProjectionCatchUp, ServingCommitId, ServingCommitPlan, write_serving_commit};
+use mvp_routing::{
+    BusServingFactWriter, ProjectionCatchUp, ServingCommitId, ServingCommitPlan, ServingFactWriter,
+};
 
 use crate::wire::{
     PrepareRemoveIntent, PrepareRemoveOutcome, PrepareRemoveReply, PrepareRemoveRequest,
@@ -109,28 +111,47 @@ async fn write_machine_fact(
     }
 }
 
-pub struct MachineRemoveCoordinator<W> {
+pub struct MachineRemoveCoordinator<W = BusMachineFactWriter, S = BusServingFactWriter> {
     bus: BusActorHandle,
     session: BusSession,
     fact_writer: W,
+    serving_writer: S,
     timeouts: MachineRemoveTimeouts,
 }
 
-impl<W> MachineRemoveCoordinator<W>
+impl MachineRemoveCoordinator<BusMachineFactWriter, BusServingFactWriter> {
+    #[must_use]
+    pub fn new(bus: BusActorHandle, session: BusSession, timeouts: MachineRemoveTimeouts) -> Self {
+        let fact_writer = BusMachineFactWriter::new(bus.clone(), session.clone());
+        let serving_writer = BusServingFactWriter::new(bus.clone(), session.clone());
+        Self {
+            bus,
+            session,
+            fact_writer,
+            serving_writer,
+            timeouts,
+        }
+    }
+}
+
+impl<W, S> MachineRemoveCoordinator<W, S>
 where
     W: MachineFactWriter,
+    S: ServingFactWriter,
 {
     #[must_use]
-    pub fn new(
+    pub fn with_fact_writers(
         bus: BusActorHandle,
         session: BusSession,
         fact_writer: W,
+        serving_writer: S,
         timeouts: MachineRemoveTimeouts,
     ) -> Self {
         Self {
             bus,
             session,
             fact_writer,
+            serving_writer,
             timeouts,
         }
     }
@@ -150,7 +171,9 @@ where
             })
             .await?;
         self.prepare_remove(&request).await?;
-        write_serving_commit(&self.bus, &self.session, &request.serving_commit).await?;
+        self.serving_writer
+            .write_serving_commit(&request.serving_commit)
+            .await?;
         Ok(PendingMachineRemove {
             target_node_id: request.target_node_id,
             reason: request.reason,
@@ -497,14 +520,18 @@ mod tests {
     use std::time::Duration;
 
     use mvp_bus::{
-        BusActorHandle, BusSession, FactKey, Grant, IslandId, PrincipalId, SubjectPattern,
+        BusActorHandle, BusSession, FactContentHash, Grant, IslandId, PrincipalId, SubjectPattern,
     };
     use mvp_identity::NodeId;
     use mvp_projection::{
         BackendEndpoint, DnsRecordFact, GatewayProjection, GatewayRouteProjection, NodeProjection,
         ProjectionReport, RemovingNodeProjection, RouteId, SnapshotWriteReport,
     };
-    use mvp_routing::{DnsCommitId, GatewayCommitId, RouteCommitId};
+    use mvp_routing::{
+        DnsCommitId, GatewayCommitId, RouteCommitId, RoutingError, RoutingResult,
+        ServingFactWriter, WrittenServingFact, serving_commit_fact_key,
+        serving_commit_fact_payload,
+    };
 
     use super::*;
 
@@ -514,7 +541,14 @@ mod tests {
         Tombstone(NodeId),
         Probe,
         PrepareDrain,
+        ServingCommit(ServingCommitId),
         Stop,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum RecordingServingOutcome {
+        Succeed,
+        Conflict,
     }
 
     #[derive(Clone, Default)]
@@ -558,6 +592,57 @@ mod tests {
                 Ok(WrittenMachineFact {
                     key: tombstone_fact_key(&fact.node_id, fact.epoch)?,
                 })
+            })
+        }
+    }
+
+    #[derive(Clone)]
+    struct RecordingServingFactWriter {
+        events: Arc<Mutex<Vec<RecordedEvent>>>,
+        outcome: RecordingServingOutcome,
+    }
+
+    impl RecordingServingFactWriter {
+        fn succeeds(events: Arc<Mutex<Vec<RecordedEvent>>>) -> Self {
+            Self {
+                events,
+                outcome: RecordingServingOutcome::Succeed,
+            }
+        }
+
+        fn conflicts(events: Arc<Mutex<Vec<RecordedEvent>>>) -> Self {
+            Self {
+                events,
+                outcome: RecordingServingOutcome::Conflict,
+            }
+        }
+    }
+
+    impl ServingFactWriter for RecordingServingFactWriter {
+        fn write_serving_commit<'a>(
+            &'a self,
+            commit: &'a ServingCommitPlan,
+        ) -> Pin<Box<dyn Future<Output = RoutingResult<WrittenServingFact>> + Send + 'a>> {
+            Box::pin(async move {
+                let key = serving_commit_fact_key(&commit.serving_commit_id)?;
+                match self.outcome {
+                    RecordingServingOutcome::Succeed => {
+                        self.events
+                            .lock()
+                            .expect("event log")
+                            .push(RecordedEvent::ServingCommit(
+                                commit.serving_commit_id.clone(),
+                            ));
+                        let payload = serving_commit_fact_payload(commit)?;
+                        Ok(WrittenServingFact::inserted(
+                            key,
+                            FactContentHash::for_payload(&payload),
+                        ))
+                    }
+                    RecordingServingOutcome::Conflict => {
+                        Err(RoutingError::ServingFactConflict { key })
+                    }
+                }
             })
         }
     }
@@ -742,8 +827,8 @@ mod tests {
         )
         .await;
         let request = remove_request();
-        let _ = write_serving_commit(&bus, &session, &conflicting_commit()).await;
-        let coordinator = coordinator(bus, session, writer.clone());
+        let serving_writer = RecordingServingFactWriter::conflicts(writer.events.clone());
+        let coordinator = coordinator_with_serving(bus, session, writer.clone(), serving_writer);
 
         let error = coordinator
             .execute_until_serving_commit(request)
@@ -800,7 +885,8 @@ mod tests {
             vec![
                 RecordedEvent::Probe,
                 RecordedEvent::RemovalStarted(NodeId::new("node-old")),
-                RecordedEvent::PrepareDrain
+                RecordedEvent::PrepareDrain,
+                RecordedEvent::ServingCommit(ServingCommitId::new("serving-remove-1")),
             ]
         );
     }
@@ -900,6 +986,7 @@ mod tests {
                 RecordedEvent::Probe,
                 RecordedEvent::RemovalStarted(NodeId::new("node-old")),
                 RecordedEvent::PrepareDrain,
+                RecordedEvent::ServingCommit(ServingCommitId::new("serving-remove-1")),
                 RecordedEvent::Stop,
             ]
         );
@@ -908,8 +995,6 @@ mod tests {
     #[tokio::test]
     async fn successful_remove_writes_intent_serving_stop_tombstone_in_order() {
         let (bus, session) = test_bus();
-        let bus_for_assert = bus.clone();
-        let session_for_assert = session.clone();
         let writer = RecordingFactWriter::default();
         register_prepare(
             &bus,
@@ -931,14 +1016,6 @@ mod tests {
             .execute_until_serving_commit(request)
             .await
             .expect("pending remove");
-        let serving_fact = bus_for_assert
-            .read_fact(
-                &session_for_assert,
-                FactKey::parse("/facts/serving/serving-remove-1").expect("serving fact key"),
-            )
-            .await
-            .expect("read serving fact");
-        assert!(serving_fact.is_some());
         let result = coordinator
             .finish_cleanup(pending, catch_up)
             .await
@@ -956,6 +1033,7 @@ mod tests {
                 RecordedEvent::Probe,
                 RecordedEvent::RemovalStarted(NodeId::new("node-old")),
                 RecordedEvent::PrepareDrain,
+                RecordedEvent::ServingCommit(ServingCommitId::new("serving-remove-1")),
                 RecordedEvent::Stop,
                 RecordedEvent::Tombstone(NodeId::new("node-old")),
             ]
@@ -966,11 +1044,22 @@ mod tests {
         bus: BusActorHandle,
         session: BusSession,
         writer: RecordingFactWriter,
-    ) -> MachineRemoveCoordinator<RecordingFactWriter> {
-        MachineRemoveCoordinator::new(
+    ) -> MachineRemoveCoordinator<RecordingFactWriter, RecordingServingFactWriter> {
+        let serving_writer = RecordingServingFactWriter::succeeds(writer.events.clone());
+        coordinator_with_serving(bus, session, writer, serving_writer)
+    }
+
+    fn coordinator_with_serving(
+        bus: BusActorHandle,
+        session: BusSession,
+        writer: RecordingFactWriter,
+        serving_writer: RecordingServingFactWriter,
+    ) -> MachineRemoveCoordinator<RecordingFactWriter, RecordingServingFactWriter> {
+        MachineRemoveCoordinator::with_fact_writers(
             bus,
             session,
             writer,
+            serving_writer,
             MachineRemoveTimeouts {
                 participant: Duration::from_secs(1),
             },
@@ -1129,15 +1218,6 @@ mod tests {
             }],
             epoch: 1,
         }
-    }
-
-    fn conflicting_commit() -> ServingCommitPlan {
-        let mut commit = serving_commit();
-        commit.active_backends = vec![BackendEndpoint {
-            node_id: NodeId::new("node-other"),
-            address: "fd00::3:8080".to_string(),
-        }];
-        commit
     }
 
     fn alternate_commit() -> ServingCommitPlan {
