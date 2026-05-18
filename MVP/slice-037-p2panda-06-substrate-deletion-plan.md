@@ -1,6 +1,6 @@
 ---
 title: Slice 037 p2panda 0.6 Substrate Deletion Plan
-status: active
+status: completed
 created: 2026-05-19
 origin:
   - VISION.md

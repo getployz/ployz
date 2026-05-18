@@ -1,3 +1,9 @@
+//! Compile-only p2panda 0.6 API probe.
+//!
+//! The local fact structs in this crate are scaffolding for type-checking
+//! p2panda extension/store/net/auth APIs. Slice 038 must map them to the
+//! canonical MVP identity and projection types before any production migration.
+
 use p2panda_auth::Access;
 use p2panda_auth::group::{GroupAction, GroupMember};
 use p2panda_auth::processor::GroupsArgs;
@@ -32,6 +38,15 @@ pub enum FactKind {
 pub struct PloyzLogId(String);
 
 impl PloyzLogId {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct AuthzStateId(String);
+
+impl AuthzStateId {
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
@@ -242,7 +257,7 @@ pub type AuthzGroupsProcessor = p2panda_auth::processor::GroupsProcessor<
 
 pub async fn process_authz_create_group(
     store: &SqliteStore,
-    state_id: &String,
+    state_id: &AuthzStateId,
     topic: &Topic,
     manager_log: &p2panda_core::test_utils::TestLog,
 ) -> Result<VerifyingKey, Box<dyn std::error::Error>> {
@@ -381,7 +396,7 @@ mod tests {
         let topic = Topic::random();
         let manager_log = p2panda_core::test_utils::TestLog::new();
 
-        let state_id = "island-default".to_string();
+        let state_id = AuthzStateId::new("island-default");
         let group_id = process_authz_create_group(&store, &state_id, &topic, &manager_log)
             .await
             .unwrap();
