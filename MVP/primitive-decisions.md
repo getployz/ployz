@@ -15,6 +15,18 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
+- Slice 042 moves the ACME HTTP-01 and main p2panda sync E2E proofs onto
+  membership-backed authority. Product-shaped stores now open from
+  `PandaFactAuthoritySource`, and sync scopes now derive from
+  `IslandAuthoritySnapshot` via `PandaFactSyncScope::from_authority`.
+- Slice 042 keeps replica import authority separate from writer authority.
+  Membership-backed writers can write only when Ployz fact-key grants also
+  allow the key, and replica importers can import without becoming writers.
+- Slice 042 classifies remaining manual trust in the targeted p2panda-net
+  fact-node regression as a `manual_fallback_store` fixture. ACME and the main
+  sync contract have no direct calls to `PandaTrustedAuthorKey`,
+  `with_trusted_author_key`, `trust_replica_peer`,
+  `PandaFactSyncScope::from_trusted_authors`, or `trust_author_key`.
 - Slice 041 persists signed p2panda-auth island membership operations in
   `IslandAuthzStore` and replays them through the Ployz-owned
   `GroupCrdt<AuthId, IslandOperationId, ...>` wrapper. The p2panda operation
