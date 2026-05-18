@@ -161,6 +161,13 @@ the decision concrete.
   come from the bus-backed routing primitive. This is a proof bridge, not a new
   production substrate; Slice 018 is planned to move deploy recovery proof to
   one docs-backed fact source/sink for command and serving facts.
+- Slice 018a changes the fact-substrate direction before deploy restart
+  recovery hardens it: prefer p2panda-backed signed operations, local operation
+  storage, and stream ingestion over more custom fact-envelope/local-view code.
+  `p2panda-core`, `p2panda-store`, and `p2panda-stream` are adopt-next
+  candidates behind `FactSource`; `p2panda-auth` should be spiked for island
+  membership; `p2panda-net`, `p2panda-discovery`, and `p2panda-blobs` are
+  deferred for now because of transport-version/API fit.
 
 ## Documented Design Gaps
 
