@@ -46,6 +46,7 @@ Latest targeted run:
 cargo test --manifest-path MVP/Cargo.toml -p mvp-volume
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- volume-transfer-contract
 cargo clippy --manifest-path MVP/Cargo.toml -p mvp-volume -p mvp-e2e --all-targets -- -D warnings
+MVP_E2E_ALL_TIMEOUT=120s cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- all
 ```
 
 ## Semantic-Leverage Ledger
