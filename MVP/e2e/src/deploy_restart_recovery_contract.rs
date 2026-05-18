@@ -14,9 +14,11 @@ use mvp_deploy::{
     ProjectionCatchUp, RevisionId, RouteCommitId, ServingCommitId, ServingCommitPlan,
     StopInstanceRequest, WrittenDeployFact,
 };
-use mvp_deploy_p2panda::{PandaDeployFactStore, PandaDeployFactWriter};
+use mvp_deploy_p2panda::PandaDeployFactWriter;
 use mvp_identity::NodeId;
-use mvp_p2panda_facts::{PandaFactAuthor, PandaFactOperation, PandaFactStore};
+use mvp_p2panda_facts::{
+    PandaFactAuthor, PandaFactOperation, PandaFactStore, SharedPandaFactStore,
+};
 use mvp_projection::{
     BackendEndpoint, DnsRecordFact, RouteId, ServiceName, load_dns_snapshot, load_gateway_snapshot,
 };
@@ -87,7 +89,7 @@ async fn run_async() -> Result<(), String> {
         Grant::allow_all(),
     );
 
-    let facts = PandaDeployFactStore::new(PandaFactStore::new(Arc::new(raw_bus.clone())));
+    let facts = SharedPandaFactStore::new(PandaFactStore::new(Arc::new(raw_bus.clone())));
     let operator_author = Arc::new(PandaFactAuthor::new(operator.principal().clone()));
     let timings = Arc::new(FactWriteTimings::default());
     let participant_state = Arc::new(ParticipantState::default());
@@ -323,10 +325,11 @@ async fn import_panda_deploy_facts(
     session: &BusSession,
     author: &PandaFactAuthor,
     operations: &[PandaFactOperation],
-) -> Result<PandaDeployFactStore, String> {
-    let mut imported = PandaFactStore::new(Arc::new(authorizer));
+) -> Result<SharedPandaFactStore, String> {
+    let imported = SharedPandaFactStore::new(PandaFactStore::new(Arc::new(authorizer)));
     imported
         .trust_author_key(island, author.principal().clone(), author.author_key())
+        .await
         .map_err(|error| format!("trust p2panda author key for restart recovery: {error}"))?;
     for operation in operations {
         imported
@@ -334,7 +337,7 @@ async fn import_panda_deploy_facts(
             .await
             .map_err(|error| format!("import p2panda restart recovery operation: {error}"))?;
     }
-    Ok(PandaDeployFactStore::new(imported))
+    Ok(imported)
 }
 
 #[derive(Default)]
@@ -388,7 +391,7 @@ where
 {
     fn write_serving_commit<'a>(
         &'a self,
-        commit: &'a ServingCommitPlan,
+    commit: &'a ServingCommitPlan,
     ) -> Pin<Box<dyn Future<Output = RoutingResult<WrittenServingFact>> + Send + 'a>> {
         Box::pin(async move {
             let started = Instant::now();
@@ -404,12 +407,12 @@ where
 fn coordinator_with_panda_facts(
     bus: BusActorHandle,
     session: BusSession,
-    facts: PandaDeployFactStore,
+    facts: SharedPandaFactStore,
     author: Arc<PandaFactAuthor>,
     timings: Arc<FactWriteTimings>,
 ) -> DeployCoordinator<
     TimedFactWriter<PandaDeployFactWriter>,
-    TimedFactWriter<PandaServingFactWriter<PandaDeployFactStore>>,
+    TimedFactWriter<PandaServingFactWriter>,
 > {
     DeployCoordinator::with_fact_writers(
         bus,

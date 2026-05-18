@@ -11,10 +11,9 @@ mvp-machine = { path = "../machine" }
 mvp-mesh = { path = "../mesh" }
 mvp-p2panda-facts = { path = "../p2panda-facts" }
 mvp-projection = { path = "../projection" }
-mvp-routing-p2panda = { path = "../routing-p2panda" }
-tokio = { version = "1", features = ["sync"] }
 
 [dev-dependencies]
 mvp-identity = { path = "../identity" }
 mvp-routing = { path = "../routing" }
+mvp-routing-p2panda = { path = "../routing-p2panda" }
 tokio = { version = "1", features = ["macros", "rt"] }

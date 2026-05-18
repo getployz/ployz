@@ -1,6 +1,6 @@
 ---
 title: Slice 029 Shared p2panda Fact Store Plan
-status: active
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md
