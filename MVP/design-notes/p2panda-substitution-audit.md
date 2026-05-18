@@ -55,10 +55,9 @@ Primary sources checked during this audit:
 - `p2panda-sync` 0.5.2 provides data-type-agnostic sync managers/protocols for
   append-only logs, with low documentation coverage and a lower-level API:
   <https://docs.rs/p2panda-sync/latest/p2panda_sync/>.
-- `p2panda-net` crates.io 0.5.2 is currently a bad direct dependency fit, but
-  git `main` compiles in an isolated probe when `p2panda-store/sqlite` is
-  enabled explicitly. That makes p2panda-net an adopt-early candidate for the
-  sync/transport proof instead of something to dismiss.
+- `p2panda-net` remains worth revisiting for endpoint/discovery/gossip wiring,
+  but it brings a broader network topology. Prove lower-level `p2panda-sync`
+  first so Ployz's fact authority boundary is clean before adopting it.
 
 ## Substitution Ledger
 
@@ -72,7 +71,7 @@ Primary sources checked during this audit:
 | Bus fact store | `MVP/bus/src/facts.rs`, `MVP/projection/src/bus_source.rs` | Shrink to fixture, then delete from product proofs | Useful harness for early bus/projection proofs; not the durable fact direction. | Projection, deploy, serving, scale, and machine scenarios use p2panda or an explicitly named test fixture. |
 | Iroh docs fact source | `MVP/iroh/src/facts.rs` | Park, then delete or shrink to transport bridge | It is the largest remaining custom fact local-view wrapper. p2panda now owns operation envelope/storage; iroh-docs should not be hardened in parallel. | Port `iroh-docs-contract` semantics to p2panda persistence/sync: conflict candidates, unauthorized/unverified status, missing payload, projection rebuild. |
 | p2panda spike crate | `MVP/p2panda-spike/src/lib.rs` | Delete after persistent adapter proof | It has served its purpose as compile evidence. Keeping it risks two examples diverging. | `mvp-p2panda-facts` covers every spike behavior plus persistence. |
-| Operation export/import | `MVP/p2panda-facts/src/lib.rs` | Keep narrow until net/sync proof | Manual exchange is acceptable for deterministic local E2E. It is not a production sync protocol. | Persistent two-store proof first; then p2panda-net `LogSync` if workable, otherwise lower-level p2panda-sync with the net blocker documented. |
+| Operation export/import | `MVP/p2panda-facts/src/lib.rs` | Keep narrow until sync proof | Manual exchange is acceptable for deterministic local E2E. It is not a production sync protocol. | Persistent two-store proof first; then lower-level p2panda-sync before broader p2panda-net adoption. |
 | Membership/revocation | `MVP/mesh`, `MVP/machine`, bus grants | Spike `p2panda-auth` for membership only | Strong removal and eventually consistent group state map to island membership. Subject permissions, queue permissions, response permissions, and bridge imports/exports remain Ployz bus semantics. | Root add/remove/demote, concurrent remove/re-add, tombstone domination, and WireGuard projection tests. |
 | Advisory leases | `MVP/lease/src/lib.rs` | Keep reducer semantics; store as p2panda facts | Lease behavior is Ployz product semantics: TTL, renewal, epoch fencing, supersession, visible-node context, RAII release. p2panda can store signed facts, not decide lease policy. | ACME p2panda HTTP-01 contract after persistence. |
 | PloyzBus | `MVP/bus/src/*.rs` | Keep | p2panda does local-first sync/eventing. It does not replace NATS-shaped request/reply, no responders, request-many, queue groups, service registry, drain, subject grants, or bridge semantics. | Existing bus contracts and future iroh transport proof. |
@@ -107,13 +106,13 @@ Slice 019b completed the persistent p2panda fact-store proof:
 Plan and implement next:
 
 ```text
-Slice 020: p2panda-net fact replication between persistent stores
+Slice 020: p2panda-sync fact replication between persistent stores
 ```
 
 Minimum proof:
 
 - two persistent stores exchange missing p2panda log operations using
-  `p2panda-net::LogSync` where workable, not manual operation copying;
+  `p2panda-sync`, not manual operation copying;
 - offline catch-up and repeated no-op sync are both idempotent;
 - same-key conflicts remain reducer-visible candidates after sync;
 - untrusted or unauthorized received operations do not become verified truth;
@@ -156,30 +155,19 @@ Ployz command entry checks. Reject it for PloyzBus subject permissions unless a
 future proof shows conditions can express wildcard subjects, queue permissions,
 temporary reply permissions, and bridge imports/exports cleanly.
 
-## p2panda-net / p2panda-sync Plan
+## p2panda-sync Plan
 
-Persistent stores now exist, so Slice 020 should evaluate git `p2panda-net`
-first with:
-
-- a pinned git revision, not a floating branch;
-- explicit `p2panda-store/sqlite` enabled in the MVP workspace;
-- two local iroh endpoints using address books, gossip, and `LogSync`;
-- one-shot catch-up plus, if `p2panda-net` gives it naturally, one live
-  post-convergence fact delivery;
-- Ployz import authorization and candidate status applied to every received
-  operation before it becomes verified truth.
-
-If `p2panda-net` blocks the adapter on API shape, fall back in the same slice
-to lower-level `p2panda-sync` with:
+Persistent stores now exist, so Slice 020 should evaluate direct
+`p2panda-sync` with:
 
 - two persistent stores over a test transport;
 - offline catch-up after one side misses operations;
 - duplicate and out-of-order idempotency;
 - latency/lag metrics at 200, 1,000, and 10,000 synthetic fact counts.
 
-Even if `p2panda-net` works, it does not replace PloyzBus request/reply,
-queue groups, no-responders, subject grants, or bridge imports/exports. It is
-for event delivery and local-first fact convergence.
+Prefer direct `p2panda-sync` before `p2panda-net`. `p2panda-net` brings a wider
+network topology and address-book model; do not adopt it until the lower-level
+fact sync/import contract is already proven.
 
 ## What Not To Substitute
 

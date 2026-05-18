@@ -233,12 +233,10 @@ the decision concrete.
 - Direction after Slice 019b: replace manual p2panda export/import with a
   p2panda-sync proof before ACME. Manual operation copying remains deterministic
   harness/debug plumbing, not the product replication contract.
-- Follow-up Slice 020 planning probes changed the net bias: crates.io
-  `p2panda-net@0.5.2` is not usable as a straight dependency today, but git
-  `main` compiles when `p2panda-store/sqlite` is enabled explicitly. Slice 020
-  should try git `p2panda-net` first for endpoint/gossip/log-sync and fall back
-  to lower-level `p2panda-sync` only if the API blocks Ployz authorization,
-  candidate-status reporting, or scale metrics.
+- Slice 020 planning sets the sync authority boundary before implementation:
+  sync scope is selection-only and must be checked against store-owned trusted
+  author bindings; same-island sync peers are trusted replicas for payload
+  egress, not ordinary projection readers.
 
 ## Documented Design Gaps
 
@@ -512,8 +510,8 @@ Costs:
   need truth must list candidates and handle conflicts explicitly.
 
 Revisit if:
-- Business logic starts choosing between in-memory facts and docs facts itself.
-  The in-memory store is a harness; `mvp-iroh` is the first real backend behind
+- Business logic starts choosing between fact backends itself. The in-memory
+  store is a harness; p2panda-backed facts are now the durable direction behind
   the same fact-source contract.
 
 ## Command Consistency Boundary

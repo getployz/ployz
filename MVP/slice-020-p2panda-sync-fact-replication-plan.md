@@ -1,5 +1,5 @@
 ---
-title: Slice 020 p2panda Net Sync Fact Replication Plan
+title: Slice 020 p2panda Sync Fact Replication Plan
 status: active
 created: 2026-05-18
 origin:
@@ -20,7 +20,7 @@ external:
   - https://docs.rs/p2panda-net/latest/p2panda_net/
 ---
 
-# Slice 020 p2panda Net Sync Fact Replication Plan
+# Slice 020 p2panda Sync Fact Replication Plan
 
 ## Problem Frame
 
@@ -30,23 +30,19 @@ proofs exchange p2panda operations by iterating `export_operations` and calling
 `import_operation` directly. That is acceptable deterministic harness plumbing,
 but it should not become the shape ACME or later product commands rely on.
 
-This slice should prove the generic fact-replication substrate before the next
-product canary:
+This slice proves the fact-replication boundary before the next product canary:
 
 ```text
 two persistent p2panda fact stores
-  -> run real p2panda-net endpoint/gossip/log-sync replication where workable
+  -> run p2panda append-log sync over an in-memory stream
   -> import received operations through Ployz authorization/trust checks
   -> rebuild projection SQLite and snapshots from the synced store
   -> preserve duplicate, conflict, and payload-read semantics
 ```
 
-This is allowed to be production-shaped transport. Initial crate probes show
-`p2panda-net` from crates.io is not usable today, but git `main` compiles when
-`p2panda-store/sqlite` is enabled explicitly. Bias toward using `p2panda-net`
-for iroh endpoint, gossip, address book, and log sync in this slice. Fall back
-to lower-level `p2panda-sync` only if `p2panda-net` prevents Ployz-owned
-authorization, candidate-status reporting, or scale metrics.
+This is still not production transport. The proof target is the sync protocol
+and Ployz's fact boundary, not iroh networking. A later iroh slice should be
+able to carry the same protocol messages over `/ployz/fact-sync/1` streams.
 
 ## Requirements Trace
 
@@ -63,9 +59,9 @@ authorization, candidate-status reporting, or scale metrics.
   beyond single local-store proofs.
 - `MVP/primitive-decisions.md`: manual p2panda export/import is intentionally
   narrow and not a production sync protocol.
-- `MVP/design-notes/p2panda-substitution-audit.md`: persistent stores now
-  exist, and follow-up probes changed the net decision from "defer" to "try
-  `p2panda-net` early, with a measured fallback to lower-level `p2panda-sync`."
+- `MVP/design-notes/p2panda-substitution-audit.md`: evaluate `p2panda-sync`
+  after persistent stores exist on both sides; do not adopt `p2panda-net`
+  before a lower-level sync proof.
 - `MVP/slice-019b-persistent-p2panda-fact-store-plan.md`: p2panda operation
   logs are durable truth; derived Ployz indexes and projection SQLite are
   disposable.
@@ -74,19 +70,15 @@ authorization, candidate-status reporting, or scale metrics.
 
 In scope:
 
-- Add git `p2panda-net` to the isolated `MVP/` workspace if it can be pinned
-  cleanly, plus explicit git `p2panda-store` with `sqlite` enabled.
-- Use `p2panda-net` `Endpoint`, `Gossip`, and `LogSync` for the first
-  production-shaped fact replication proof where its API fits the existing
-  Ployz fact store.
-- Add a narrow Ployz adapter inside `mvp-p2panda-facts` that maps p2panda net
-  sync events back through existing Ployz authorization/trust checks.
-- Sync between two persistent SQLite-backed `PandaFactStore` instances through
-  local iroh endpoints where practical. If the API blocks the existing store
-  adapter, run a lower-level `p2panda-sync` proof in the same slice and leave
-  the `p2panda-net` compile/API blocker documented with the seam that failed.
+- Add `p2panda-sync` to the isolated `MVP/` workspace.
+- Add a narrow p2panda-sync adapter inside `mvp-p2panda-facts`.
+- Sync between two persistent SQLite-backed `PandaFactStore` instances over an
+  in-memory typed stream.
 - Keep Ployz-owned trust, island, principal, grants, candidate status, and
   payload-read checks in `mvp-p2panda-facts`.
+- Treat same-island fact sync peers as trusted replicas for this slice: sync may
+  transfer payload bytes only to peers authorized to replicate the island, not
+  to arbitrary projection readers.
 - Keep `FactSource` synchronous and projection-facing.
 - Preserve current manual `export_operations` / `import_operation` as
   deterministic test/debug plumbing until enough scenarios no longer need it.
@@ -98,10 +90,9 @@ Out of scope:
 
 - ACME behavior. It is the next product canary after this slice.
 - `p2panda-auth` membership and strong-removal semantics.
-- p2panda blobs.
-- Replacing PloyzBus request/reply. p2panda gossip/sync can carry fact
-  replication and wakeups; it does not replace NATS-shaped request/reply,
-  queue groups, no-responders, service imports/exports, or subject grants.
+- `p2panda-net`, p2panda discovery, gossip, blobs, or address books.
+- iroh transport wiring. This slice should name the future ALPN boundary but
+  still run over in-memory streams.
 - Replacing PloyzBus.
 - Changing reducers to async.
 - Deleting `IrohDocsFactSource`, `BusFactSource`, `ProcessFactSource`, or
@@ -115,48 +106,37 @@ Checked for this plan:
 - `p2panda-sync` 0.5.2 is available and matches the p2panda crate line already
   used by `mvp-p2panda-facts`. Its public docs describe data-type agnostic
   sync over `Sink` / `Stream` pairs, plus concrete append-log sync protocols.
-- `p2panda_sync::protocols::LogSync` syncs append-only logs by exchanging
-  local log heights, calculating deltas, sending missing operations, and then
+- `p2panda_sync::protocols::LogSync` syncs append-only logs by exchanging local
+  log heights, calculating deltas, sending missing operations, and then
   repeating the exchange in the reverse direction. That matches Ployz's current
   signed fact operation model.
 - `p2panda-sync::protocols::TopicLogSync` adds topic mapping and optional
   live-mode. It is useful later, but `LogSync` is a smaller first proof because
   Ployz already has island/topic selection and can construct the exact log map
   from trusted author keys.
-- `p2panda-sync` emits received operations to the application layer; it does
-  not automatically apply Ployz authorization semantics. That is correct:
-  received operations must still flow through `PandaFactStore` import
-  validation and derived-index rebuild/update.
 - `LogSync` emits `LogSyncEvent::Data` through its event channel rather than
   returning received operations from the protocol run call. The Ployz adapter
   must own that event receiver and drain it while the protocol runs.
-- `p2panda-net` crates.io 0.5.2 is not usable as a straight dependency today:
-  default features fail in the old `ed25519-dalek` prerelease stack, and
-  `default-features = false, features = ["supervisor"]` still compiles modules
-  that reference disabled `iroh` and `p2panda-discovery` dependencies.
-- `p2panda-net` git `main` does compile in isolation when the consumer also
-  depends on git `p2panda-store` with `features = ["sqlite"]`. This is the
-  preferred workaround for the MVP because it lets us test their iroh/gossip/
-  log-sync stack before writing more of our own.
-- `p2panda-net` exposes `AddressBook`, `Endpoint`, `Gossip`, and `LogSync`.
-  Its sync tests show local iroh endpoints exchanging p2panda operations and
-  then switching into live mode. That is closer to the desired MVP substrate
-  than a bespoke in-memory sync stream.
+- `p2panda-sync` does not automatically apply Ployz authorization semantics.
+  That is correct: received operations must still flow through
+  `PandaFactStore` import validation and derived-index rebuild/update.
+- `p2panda-net` includes iroh endpoint/discovery/gossip/log-sync modules, but
+  it brings a broader network topology and address-book model. Defer it. The
+  current slice should prove the lower-level protocol before adopting a network
+  stack.
 - `p2panda-stream` remains the ingestion/validation layer for storing received
   operations. Do not bypass the current import path's signature, body-hash,
   author-key, and grant checks.
 
 Decision:
 
-- Adopt git `p2panda-net` first if a minimal two-node proof can preserve Ployz
-  import authorization and metrics.
-- Pin the git revision in `MVP/Cargo.toml`; do not track an unpinned branch.
-- Keep lower-level `p2panda-sync` as the fallback and escape hatch, not the
-  preferred path.
+- Adopt `p2panda-sync` now, behind `mvp-p2panda-facts`.
+- Start with `LogSync`, not `TopicLogSync` or `p2panda-net`.
 - Add only the API needed to run a bounded two-party sync session for known
-  islands and trusted authors.
-- Do not expose p2panda network types to deploy, ACME, machine, serving, or
-  projection reducers.
+  islands and trusted replica peers.
+- Keep transport abstract: the adapter should operate on a generic typed sink
+  and stream so a later iroh stream codec can wrap it without rewriting fact
+  semantics.
 
 ## Design Decisions
 
@@ -181,6 +161,18 @@ If the sync protocol transfers an operation that Ployz does not trust, the
 sync session should report an import failure with structured context. Do not
 silently add it as verified truth.
 
+### Sync Egress Is Replica Authorization
+
+Projection read grants answer "may this principal read this payload through a
+query surface?" Sync egress answers a different question: "may this peer
+receive raw operation bodies as a replica?" Import/read checks are not enough
+because payload bytes have already crossed the transport by then.
+
+For this slice, only same-island trusted replica peers are allowed to run fact
+sync and receive payload bytes. That is intentionally narrower than exposing
+sync to arbitrary principals. Later cross-island or partial-replica sync needs
+a separate export/read-filter design before payloads leave the sender.
+
 ### The Adapter Owns The Event Import Bridge
 
 `p2panda-sync` should not leak protocol event handling into business code or
@@ -204,8 +196,9 @@ not bypass the Ployz import checks.
 ### Trusted Author Logs Define The Sync Scope
 
 `p2panda-sync` needs the set of logs to compare. Ployz should derive that set
-from explicit trusted author-key bindings for the target island, not by
-discovering random authors inside the store.
+from store-owned trusted author-key bindings for the target island, not by
+discovering random authors inside the store or trusting caller-provided key
+mappings.
 
 For this slice:
 
@@ -216,21 +209,24 @@ PandaFactSyncScope {
 }
 ```
 
+`PandaFactSyncScope` is selection-only. Before running sync, every entry must
+match the store's canonical `(island, principal) -> author key` binding. Import
+validation must never consult the sync scope as its source of truth.
+
 Open question deferred to future membership work: how p2panda-auth or island
-membership facts populate this trusted-author set. This slice takes it from
-explicit config/test setup.
+membership facts populate the store-owned trusted-author set. This slice takes
+it from explicit config/test setup, then validates the requested scope against
+the store before syncing.
 
-### Live Mode Is Allowed If p2panda-net Gives It For Free
+### No Live Mode Yet
 
-The first proof must still be able to assert one-shot catch-up and no-op
-resync. If `p2panda-net::LogSync` naturally enters live mode after initial
-sync, keep it and prove one live fact delivery as an extra assertion. Do not
-write our own live-loop machinery in this slice.
+The first proof should be one-shot catch-up. Live mode is attractive but would
+mix protocol proof, session lifecycle, cancellation, and event forwarding.
 
-Defer custom live-mode policy until:
+Defer live mode until:
 
 - one-shot sync is proven with persistent stores,
-- p2panda-net proves the basic endpoint/gossip/log-sync path,
+- p2panda-sync messages have an iroh stream transport,
 - process roles need long-lived sync sessions,
 - operator-visible sync status exists.
 
@@ -249,33 +245,7 @@ boundary, not over manual operation copying.
 
 ## Implementation Units
 
-### Unit 0: p2panda-net Workaround Probe
-
-Files:
-
-- `MVP/Cargo.toml`
-- `MVP/p2panda-facts/Cargo.toml`
-- `MVP/p2panda-facts/src/lib.rs`
-
-Work:
-
-- Add git dependencies for `p2panda-net`, `p2panda-store` with `sqlite`,
-  `p2panda-sync`, and matching p2panda crates from one pinned git revision.
-- Prove the dependency graph inside the MVP workspace with a minimal compile
-  test before writing adapter code.
-- Instantiate two local p2panda net nodes with address books, iroh endpoints,
-  gossip, and `LogSync`.
-- Verify the proof can subscribe to sync events and observe received
-  operations, sync completion, and live operation delivery.
-- If this fails because of API shape rather than dependency resolution, capture
-  the exact blocker in this plan/report and use Unit 1 fallback. If it works,
-  Unit 1 should be p2panda-net-backed.
-
-Verification:
-
-- `cd MVP && cargo check -p mvp-p2panda-facts`
-
-### Unit 1: p2panda Net Fact Adapter Surface
+### Unit 1: p2panda-sync Adapter Surface
 
 Files:
 
@@ -284,21 +254,24 @@ Files:
 
 Work:
 
+- Add `p2panda-sync = "0.5.2"`.
 - Introduce small public sync types:
   - `PandaFactSyncScope`,
   - `PandaFactSyncReport`,
   - `PandaFactSyncError`,
-  - a net-backed sync runner or session helper.
-- Map island facts into a p2panda `Topic` and associated append logs.
+  - a one-shot sync runner or session helper.
+- Build the `LogSync` log map from a requested scope only after checking the
+  scope against store-owned trusted-author bindings.
+- Bind each sync session to a same-island trusted replica principal. Do not let
+  ordinary projection readers or arbitrary peers receive raw operation bodies.
 - Create and subscribe to the `LogSync` event channel before starting the
   protocol so received operations are not dropped and the protocol does not
   fail on missing receivers.
-- Run two peer sessions through `p2panda-net::LogSync` where possible.
+- Run two peer sessions over generic typed sinks/streams, or expose a lower
+  helper that an E2E harness can wire with paired in-memory channels.
 - Concurrently drain `LogSyncEvent::Data`, convert received p2panda operations
   into `PandaFactOperation`, and import them through the existing validation
   path.
-- Import every received operation through the existing `PandaFactStore`
-  validation path.
 - Make sync idempotency observable in the report: received, imported,
   duplicate, conflict, and failed counts.
 - Keep received-operation import errors structured; do not collapse them into
@@ -319,6 +292,9 @@ Tests:
   author logs.
 - A received operation from a trusted author without a Ployz fact-write grant
   fails import with `UnauthorizedWrite`.
+- Malicious sync scope key substitution is rejected before sync starts.
+- A principal with projection read permission but without replica-sync authority
+  cannot start sync or receive operation payload bytes.
 
 Verification:
 
@@ -339,9 +315,9 @@ Work:
 
 - Add `p2panda-sync-fact-source-contract`.
 - Create two persistent SQLite-backed `PandaFactStore` instances with explicit
-  trusted author keys and separate projection sessions.
+  trusted author keys, replica-sync authority, and separate projection sessions.
 - Write node/service/serving/DNS facts to store A while store B is empty.
-- Run the p2panda net sync adapter from A to B.
+- Run the p2panda sync adapter from A to B.
 - Project from store B, write gateway/DNS snapshots, and verify the projection
   matches store A's source facts.
 - Delete B's projection SQLite and rebuild from synced p2panda operations.
@@ -360,9 +336,7 @@ Required assertions:
 - deleted projection SQLite rebuilds from synced store B,
 - payload reads still require exact candidate identity and projection read
   grants,
-- sync reports received/imported/duplicate/conflict counts,
-- if live mode is enabled, one post-convergence fact written on A arrives at B
-  without a manual export/import loop.
+- sync reports received/imported/duplicate/conflict counts.
 
 Metrics:
 
@@ -414,8 +388,7 @@ Files:
 - `MVP/e2e-proof-plan.md`
 - `MVP/overall-plan.md`
 - `MVP/design-notes/p2panda-substitution-audit.md`
-- `MVP/slice-021-p2panda-acme-http01-plan.md` or the parked ACME plan if it is
-  renamed in this slice
+- `MVP/slice-021-p2panda-acme-http01-plan.md`
 
 Work:
 
@@ -423,11 +396,11 @@ Work:
   persistent p2panda SQLite storage, rebuildable indexes, p2panda-fed
   process-role serving proof, and `BeginRebuild` as the explicit source refresh
   boundary.
-- Add a Slice 020 entry explaining the p2panda-net workaround/adoption and why
-  manual export/import remains harness plumbing.
+- Add a Slice 020 entry explaining the p2panda-sync adoption and why manual
+  export/import remains harness plumbing.
 - Update `MVP/e2e-proof-plan.md` with the new sync scenario and metrics.
 - Update `MVP/overall-plan.md` so the next product proof after this slice is
-  clearly ACME on p2panda net/sync, not another substrate detour.
+  clearly ACME on p2panda sync, not another substrate detour.
 - If the parked ACME plan remains accurate, rename or retitle it as Slice 021
   and adjust its preconditions to depend on this sync slice.
 - Record semantic-leverage expectations: this slice is substrate leverage; the
@@ -466,15 +439,15 @@ Focus areas:
 
 - correctness: missing-log calculation, bidirectional catch-up, duplicate
   idempotency, conflict-candidate preservation, and exact payload identity,
-- authorization/security: trusted author-key scope, fact-write grants on
-  import, island isolation, and no promotion of unknown authors,
+- authorization/security: trusted author-key scope, replica-sync authority,
+  fact-write grants on import, island isolation, and no promotion of unknown
+  authors,
 - reliability: interrupted or failed sync preserves existing derived state and
   reports an operator-visible failure,
 - performance: no O(N) source reopen on hot projection paths, bounded large
   load, no hidden sleeps,
-- simplicity: sync/net plumbing is isolated in `mvp-p2panda-facts`; reducers,
-  ACME, deploy, machine, and serving do not learn p2panda-net or p2panda-sync
-  types.
+- simplicity: sync plumbing is isolated in `mvp-p2panda-facts`; reducers,
+  ACME, deploy, machine, and serving do not learn p2panda-sync types.
 
 Run the simplify workflow after the first green E2E proof and land that pass as
 a separate commit.
@@ -484,9 +457,9 @@ a separate commit.
 The slice is complete when:
 
 - `p2panda-sync-fact-source-contract` passes,
-- two persistent p2panda SQLite stores converge through `p2panda-net::LogSync`
-  if workable, otherwise through lower-level `p2panda-sync` with the net
-  blocker documented,
+- two persistent p2panda SQLite stores converge through `p2panda-sync`, not
+  manual operation copying,
+- sync egress is limited to same-island trusted replica peers,
 - repeated sync is idempotent and observable as no-op/duplicate work,
 - bidirectional same-key conflicts remain conflict candidates for reducers,
 - a synced store can rebuild deleted projection SQLite and gateway/DNS
