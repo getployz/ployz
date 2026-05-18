@@ -1,6 +1,6 @@
 ---
 title: Slice 021 P2panda-Backed ACME HTTP-01 Plan
-status: parked
+status: active
 created: 2026-05-18
 origin:
   - VISION.md
@@ -13,6 +13,8 @@ origin:
   - MVP/slice-009-advisory-lease-acme-plan.md
   - MVP/slice-015-docs-backed-acme-http01-plan.md
   - MVP/slice-018b-p2panda-fact-substrate-plan.md
+  - MVP/slice-018c-p2panda-deploy-restart-recovery-plan.md
+  - MVP/slice-020-p2panda-sync-fact-replication-plan.md
 ---
 
 # Slice 021 P2panda-Backed ACME HTTP-01 Plan
@@ -127,6 +129,16 @@ Checked before planning:
   <https://docs.rs/crate/p2panda-stream/latest>,
   <https://docs.rs/crate/p2panda-store/latest>, and
   <https://docs.rs/crate/p2panda-core/latest>.
+- `p2panda-sync` 0.5.2 documents the lower-level `Protocol` and `Manager`
+  interfaces for two-party sync over `Sink` / `Stream` pairs and says high-level
+  users usually enter through `p2panda-net`:
+  <https://docs.rs/p2panda-sync/latest/p2panda_sync/>.
+- `p2panda-net` 0.5.2 is data-type-agnostic p2p networking, discovery, gossip,
+  and local-first sync. Its docs describe iroh endpoints, gossip, address book,
+  discovery, and `LogSync` with live-mode after initial sync:
+  <https://docs.rs/p2panda-net/latest/p2panda_net/>. Slice 020 proved the git
+  `p2panda-net` line can compile and spawn local log-sync nodes in this MVP
+  workspace.
 
 Decision for this slice:
 
@@ -135,6 +147,11 @@ Decision for this slice:
 - Keep using the p2panda crates already introduced by `mvp-p2panda-facts`.
 - Use the Slice 020 p2panda-sync adapter for two-store replication in the
   harness. Do not add a second ACME-specific export/import path.
+- Treat the Slice 020 sync adapter as an existing boundary. Do not edit
+  `mvp-p2panda-facts` unless the ACME scenario exposes a concrete boundary bug.
+- Do not migrate production fact storage to git p2panda APIs inside this ACME
+  slice. That migration is the next network-substitution slice if ACME proves
+  the business semantics over the current p2panda sync boundary.
 
 ## Design Decisions
 
@@ -144,9 +161,13 @@ Decision for this slice:
 and lease-fenced challenge rules. It should not depend on p2panda.
 
 `mvp-p2panda-facts` stays a generic substrate crate. It must not import
-`mvp-acme`, know ACME fact keys, or encode challenge ownership semantics. The
-ACME-specific adapter should live in `mvp-acme` if it has more than one caller,
-or in the E2E harness if it remains canary-only:
+`mvp-acme`, know ACME fact keys, or encode challenge ownership semantics.
+`mvp-acme` and `mvp-lease` must also avoid depending upward on
+`mvp-projection` or `mvp-p2panda-facts`: `mvp-projection` already depends on
+them, and `mvp-p2panda-facts` depends on projection's `FactSource` contracts.
+For this canary, the ACME-specific p2panda writer/reader lives in the E2E
+harness unless a later slice extracts lower-level contracts to break that
+dependency cycle:
 
 ```text
 read local lease/challenge candidates
@@ -159,11 +180,13 @@ read local lease/challenge candidates
 If two call sites need the adapter, make it a small public type. If only the
 E2E needs it, keep it in the harness.
 
-The adapter also needs a public pure domain boundary. It must not rely on
+The harness adapter also needs a public pure domain boundary. It must not rely on
 `mvp-lease` harness-only importers or private `LeaseGuard` constructors to
-replay fact state. Add or reuse pure helpers that reduce lease facts from a
-`FactSource` into `LeaseState` and validate ACME present/clear facts against a
-holder, epoch, and claim hash before mutation.
+replay fact state. Add or reuse pure helpers that reduce already-decoded typed
+lease facts for one resource into `LeaseState` and validate ACME present/clear
+facts against a holder, epoch, and claim hash before mutation. `FactSource`
+traversal, p2panda candidate reads, payload decoding, and command result
+assembly stay in the E2E adapter for this slice.
 
 ### P2panda Sync Is The Replication Boundary
 
@@ -217,37 +240,27 @@ actual `mvp-commands` planning remains a separate future slice.
 
 ## Implementation Units
 
-### Unit 1: P2panda Sync Boundary Reuse
+### Unit 1: P2panda Sync Boundary Preflight
 
 Files:
 
-- `MVP/p2panda-facts/src/lib.rs`
-- `MVP/e2e/src/p2panda_fact_source_contract.rs`
-- `MVP/e2e/src/p2panda_sync_fact_source_contract.rs`
+- `MVP/slice-021-p2panda-acme-http01-plan.md`
 
 Work:
 
-- Reuse the Slice 020 p2panda-sync adapter and report types for the ACME E2E
-  proof.
-- Do not add a new exported operation type, ACME-specific merge helper, or
-  manual export/import surface.
-- Keep p2panda validation and author binding checks in the shared
-  `PandaFactStore::import_operation` path reached by sync events.
-- Preserve the existing `FactSource` behavior: unreadable, cross-island,
-  unverified, and unauthorized candidates remain visible as statuses but do
-  not provide payloads.
-- Extend the ACME E2E to prove a second store can sync operations and rebuild
-  projection from synced state.
+- Before implementing ACME, run the Slice 020 sync contract as a regression
+  gate and treat it as the reusable boundary.
+- Do not reopen `mvp-p2panda-facts`, `p2panda_fact_source_contract`, or
+  `p2panda_sync_fact_source_contract` unless Unit 4 exposes a real bug in the
+  existing boundary.
+- Do not add a new exported operation type, ACME-specific merge helper, manual
+  export/import surface, or ACME-specific sync adapter.
 
 Tests:
 
-- The ACME scenario consumes the existing p2panda-sync helper rather than
-  manual operation copying.
-- Duplicate synced operations are idempotent.
-- Same-key different-payload synced operations surface conflict candidates.
-- Synced operations whose public key is not bound to the claimed principal
-  remain unverified/unreadable through the shared import path.
-- Unauthorized readers cannot read synced payloads.
+- Existing Slice 020 tests continue to prove duplicate sync idempotency,
+  same-key conflict candidates, import rejection for untrusted author keys, and
+  payload read denial for unauthorized readers.
 
 Verification:
 
@@ -264,12 +277,17 @@ Files:
 
 Work:
 
-- Add a public pure lease reducer API that accepts typed lease facts for one
-  resource and returns `LeaseState` without constructing a `LeaseBook` or
-  `LeaseGuard`.
-- Add ACME helper APIs that decode/validate presented and cleared facts from
-  reconstructed facts and check holder, epoch, claim hash, hostname, token, and
-  key authorization.
+- Prefer existing public domain types and reducers. Add new public helper APIs
+  only when the E2E adapter would otherwise need harness-only importers or
+  private constructors.
+- If a new lease replay helper is needed, make it replace or share code with
+  an existing current consumer such as `LeaseBook::state` or projection's
+  read-only lease resolver so the surface has more than one use.
+- If new ACME helpers are needed, keep them pure over typed facts/payloads.
+  Presented facts validate hostname, token, holder, epoch, claim hash, and key
+  authorization. Clear facts validate hostname/token identity, holder, epoch,
+  claim hash, and cleared timestamp; do not add key authorization to clear
+  facts.
 - Keep local guard minting private. The replay API observes facts and validates
   command preconditions; it does not create lease ownership by itself.
 - Keep the existing in-memory `LeaseBook` behavior unchanged.
@@ -278,24 +296,25 @@ Tests:
 
 - Pure lease reduction matches `LeaseBook` state for claim, renew, release,
   expiry, and same-epoch conflict cases.
-- ACME present/clear validation rejects mismatched hostname, token, holder,
-  epoch, claim hash, and key authorization.
+- ACME present validation rejects mismatched hostname, token, holder, epoch,
+  claim hash, and key authorization.
+- ACME clear validation rejects mismatched hostname, token, holder, epoch,
+  claim hash, and cleared timestamp without requiring key authorization.
 - No test uses harness-only fact importers to prove the public replay API.
 
 Verification:
 
 - `cd MVP && cargo test -p mvp-lease -p mvp-acme`
 
-### Unit 3: Lease And ACME P2panda Fact Writer
+### Unit 3: E2E Lease And ACME P2panda Fact Writer
 
 Files:
 
-- `MVP/acme/src/lib.rs`
 - `MVP/e2e/src/p2panda_acme_http01_contract.rs`
 
 Work:
 
-- Add a narrow command adapter or harness helper that writes:
+- Add a narrow E2E command adapter or harness helper that writes:
   - `LeaseClaimed`
   - `LeaseRenewed`
   - `LeaseReleased`
@@ -304,12 +323,17 @@ Work:
 - Read relevant local candidates before each mutation and branch on structured
   lease/ACME errors instead of parsing display text.
 - Re-check holder, epoch, and claim hash immediately before present/clear.
-- Return visible nodes at decision time in command results.
+- Add explicit adapter result structs for claim, renew, release, present, and
+  clear. Every result carries the visible nodes observed at decision time.
 - Keep lease and challenge grants separate.
+- Use fact-key-scoped ACME grants in tests: a principal granted ACME write for
+  one hostname/token must be rejected before mutation when presenting or
+  clearing another hostname/token.
 - Preserve renewal and release/RAII behavior through p2panda facts without
   requiring `mvp-p2panda-facts` to know lease domain rules. If RAII drop cannot
-  perform async writes directly, use an explicit, test-visible release sink or
-  document the synchronous handoff boundary in the adapter.
+  perform async writes directly, use an explicit, test-visible release sink as
+  the synchronous handoff boundary; the sink must still record a p2panda
+  `LeaseReleased` fact.
 
 Tests:
 
@@ -323,6 +347,8 @@ Tests:
 - Stale holder cannot present or clear after a higher epoch wins.
 - An issuer with lease write but no ACME write grant cannot present.
 - An issuer with ACME write but no lease write grant cannot claim ownership.
+- An issuer with ACME write scoped to one `AcmeChallengeId` cannot present or
+  clear a different hostname/token.
 
 Verification:
 
@@ -340,23 +366,35 @@ Files:
 Work:
 
 - Add `p2panda-acme-http01-contract`.
+- Consume the existing Slice 020 p2panda-sync helper rather than manual
+  operation copying, and prove duplicate synced operations are idempotent.
 - Use two p2panda stores and two principals:
   - node A writes lease/challenge facts,
-  - Slice 020 p2panda sync moves signed operations to node B,
+  - distinct same-island trusted replica sessions run Slice 020 p2panda sync
+    and move signed operations to node B,
   - node B projects from the p2panda `FactSource`,
   - node B reloads serving from gateway snapshot and serves HTTP-01.
+- Keep replica-sync authority separate from projection read authority. Add a
+  smoke assertion that a projection-only or otherwise non-replica principal
+  cannot start sync or receive raw operation bodies.
 - Make the coordinator boundary explicit: node A's ACME command adapter is the
   killed/dropped coordinator role; node A's already-written fact store may
   remain available only as a sync source fixture; node B's sync import,
   projection, snapshot reload, and serving roles remain alive.
 - Drop the node A command adapter after projection and prove node B continues
-  serving the last-good challenge response. Then sync already-written later
-  facts into node B and prove node B can still project/reload them without a
-  live node A command adapter.
-- Write/sync a higher-epoch presentation, project/reload, and prove serving
-  switches to the new key authorization.
-- Write/sync a clear fact from the winning holder and prove serving returns
-  `404`.
+  serving the last-good challenge response. Before dropping node A, pre-write
+  a later clear fact that has not yet synced to node B; after the adapter is
+  gone, sync that already-written fact and prove node B can still project/reload
+  without a live node A command adapter.
+- Use a second live issuer adapter for higher-epoch takeover: write/sync a
+  higher-epoch presentation, project/reload, and prove serving switches to the
+  new key authorization.
+- After node B serves the higher-epoch presentation, sync a lower-epoch stale
+  present or clear fact that survived elsewhere, project/reload, and prove
+  serving remains on the winning key authorization while stale candidates are
+  ignored or superseded.
+- Use the second live issuer adapter to write/sync a clear fact from the winning
+  holder and prove serving returns `404`.
 - Align ACME presentation and clear reduction with the global conflict rule:
   `(epoch desc, content_hash asc)`. Do not keep payload-field tie-breakers such
   as key authorization or holder for same-epoch ACME races.
@@ -367,8 +405,11 @@ Required assertions:
   not `IrohFactDoc`,
 - visible nodes are included in command results,
 - no quorum or witness ack path is invoked,
+- sync uses trusted replica sessions, not projection-reader sessions,
 - one stale-present or stale-clear smoke check fails before mutation, with
   broader stale behavior covered by focused `mvp-acme` tests,
+- one stale present/clear arriving later through sync cannot roll serving back
+  from a higher-epoch winner,
 - one synced same-key race produces superseded projection status, with
   broader conflict ordering covered by focused reducer tests,
 - HTTP gateway serves the selected key authorization with no trailing newline,
@@ -469,8 +510,8 @@ The slice is complete when:
 - key authorization is served exactly as projected, with no trailing newline
   and no token-echo fallback,
 - lease and ACME challenge write grants stay separate,
-- renewal and release/RAII behavior write p2panda facts or have an explicit
-  documented release-sink boundary,
+- renewal and release/RAII behavior write p2panda facts, with any release sink
+  limited to the synchronous handoff into that p2panda write path,
 - stale publish/clear attempts fail before mutation with structured errors,
 - same-epoch races reduce deterministically and surface superseded losers,
 - command results include visible nodes at decision time,
