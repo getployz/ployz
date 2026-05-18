@@ -42,6 +42,8 @@ pub enum EnvironmentError {
     },
     #[error("environment fact already has a conflicting candidate: {key}")]
     FactConflict { key: FactKey },
+    #[error("environment fact write failed: {message}")]
+    FactWrite { message: String },
     #[error("environment head {key} has no rollback target")]
     RollbackTargetMissing { key: FactKey },
     #[error("environment decision does not match head fact {key}")]

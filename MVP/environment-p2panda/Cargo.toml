@@ -1,0 +1,21 @@
+[package]
+name = "mvp-environment-p2panda"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "mvp_environment_p2panda"
+path = "src/lib.rs"
+
+[dependencies]
+mvp-bus = { path = "../bus" }
+mvp-environment = { path = "../environment" }
+mvp-identity = { path = "../identity" }
+mvp-p2panda-facts = { path = "../p2panda-facts" }
+mvp-routing = { path = "../routing" }
+
+[dev-dependencies]
+mvp-projection = { path = "../projection" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
