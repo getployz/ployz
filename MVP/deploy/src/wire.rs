@@ -2,7 +2,7 @@ use mvp_bus::Payload;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use mvp_projection::ServiceName;
+use mvp_projection::{BackendEndpoint, ServiceName};
 
 use crate::{CapacityReply, DeployError, DeployId, DeployResult, InstanceId, RevisionId};
 
@@ -39,11 +39,13 @@ pub enum InstanceNotReadyReason {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DrainInstanceRequest {
     pub deploy_id: DeployId,
+    pub cleanup_target: BackendEndpoint,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StopInstanceRequest {
     pub deploy_id: DeployId,
+    pub cleanup_target: BackendEndpoint,
 }
 
 pub fn encode<T: Serialize>(value: &T, context: &'static str) -> DeployResult<Vec<u8>> {

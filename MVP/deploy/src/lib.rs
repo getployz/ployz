@@ -25,7 +25,10 @@ pub use mvp_routing::{
     DnsCommitId, GatewayCommitId, ProjectionCatchUp, RouteCommitId, RoutingError,
     ServingCommitFacts, ServingCommitId, ServingCommitPlan,
 };
-pub use serving_commit::write_serving_commit;
+pub use serving_commit::{
+    BusServingFactWriter, ServingFactWriteStatus, ServingFactWriter, WrittenServingFact,
+    write_serving_commit,
+};
 pub use state_machine::{DeployStateMachine, PhaseState};
 pub use wire::{
     CapacityRequest, DrainInstanceRequest, InstanceCommandReply, InstanceCommandRequest,

@@ -5,7 +5,8 @@ use futures_util::{StreamExt, TryStreamExt, stream};
 use mvp_bus::{BusActorHandle, BusError, BusSession, RequestManyPolicy, RequestTarget, Subject};
 use mvp_identity::{NodeId, VisibleNodes};
 
-use crate::serving_commit::write_serving_commit;
+use crate::facts::{BusDeployFactWriter, DeployDecisionFact, DeployFactWriter};
+use crate::serving_commit::{BusServingFactWriter, ServingFactWriter};
 use crate::wire::{
     CapacityRequest, DrainInstanceRequest, InstanceCommandReply, InstanceCommandRequest,
     InstanceStartOutcome, StopInstanceRequest, decode, decode_capacity_reply, encode,
@@ -24,9 +25,11 @@ pub struct DeployTimeouts {
     pub participant: Duration,
 }
 
-pub struct DeployCoordinator {
+pub struct DeployCoordinator<W = BusDeployFactWriter, S = BusServingFactWriter> {
     bus: BusActorHandle,
     session: BusSession,
+    fact_writer: W,
+    serving_writer: S,
     timeouts: DeployTimeouts,
 }
 
@@ -55,12 +58,39 @@ impl PendingCleanup {
     }
 }
 
-impl DeployCoordinator {
+impl DeployCoordinator<BusDeployFactWriter, BusServingFactWriter> {
     #[must_use]
     pub fn new(bus: BusActorHandle, session: BusSession, timeouts: DeployTimeouts) -> Self {
+        let fact_writer = BusDeployFactWriter::new(bus.clone(), session.clone());
+        let serving_writer = BusServingFactWriter::new(bus.clone(), session.clone());
         Self {
             bus,
             session,
+            fact_writer,
+            serving_writer,
+            timeouts,
+        }
+    }
+}
+
+impl<W, S> DeployCoordinator<W, S>
+where
+    W: DeployFactWriter,
+    S: ServingFactWriter,
+{
+    #[must_use]
+    pub fn with_fact_writers(
+        bus: BusActorHandle,
+        session: BusSession,
+        fact_writer: W,
+        serving_writer: S,
+        timeouts: DeployTimeouts,
+    ) -> Self {
+        Self {
+            bus,
+            session,
+            fact_writer,
+            serving_writer,
             timeouts,
         }
     }
@@ -77,6 +107,12 @@ impl DeployCoordinator {
         let capacities = self.inspect_capacity(&manifest).await?;
         validate_planned_capacity(&manifest, &capacities)?;
         let visible_nodes = VisibleNodes::new(capacities.keys().cloned());
+        self.fact_writer
+            .write_decision(DeployDecisionFact::new(
+                manifest.clone(),
+                visible_nodes.clone(),
+            ))
+            .await?;
         state.record_visible_nodes(visible_nodes);
 
         for phase in &manifest.phases {
@@ -94,7 +130,8 @@ impl DeployCoordinator {
             state.mark_ready(phase.phase_id)?;
             state.commit_phase(phase.phase_id, phase.policy)?;
             if phase.policy.commits_serving() {
-                write_serving_commit(&self.bus, &self.session, &manifest.serving_commit)
+                self.serving_writer
+                    .write_serving_commit(&manifest.serving_commit)
                     .await
                     .map_err(|error| classify_pre_commit_error(&mut state, error))?;
                 state.commit_serving(manifest.serving_commit.serving_commit_id.clone())?;
@@ -150,6 +187,7 @@ impl DeployCoordinator {
                 CleanupParticipantOp::Drain => match encode(
                     &DrainInstanceRequest {
                         deploy_id: manifest.deploy_id.clone(),
+                        cleanup_target: backend.clone(),
                     },
                     "drain instance request",
                 ) {
@@ -165,6 +203,7 @@ impl DeployCoordinator {
                 CleanupParticipantOp::Stop => match encode(
                     &StopInstanceRequest {
                         deploy_id: manifest.deploy_id.clone(),
+                        cleanup_target: backend.clone(),
                     },
                     "stop instance request",
                 ) {
