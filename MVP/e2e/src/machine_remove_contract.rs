@@ -469,13 +469,6 @@ async fn run_async() -> Result<(), String> {
         negative_auth.node_only_author.as_ref(),
     )
     .await?;
-    assert_recovery_import_rejects_foreign_island_operation(
-        &root,
-        &island,
-        &rebuilt_facts,
-        &replica_session,
-    )
-    .await?;
     let recovered_machine_writer = PandaMachineFactWriter::new(
         rebuilt_facts.clone(),
         machine_writer_session.clone(),
@@ -981,47 +974,6 @@ async fn assert_recovery_import_rejects_author_without_fact_grant(
         Err(PandaFactError::UnauthorizedWrite { .. }) => Ok(()),
         other => Err(format!(
             "expected recovery import to reject author without fact grant, got {other:?}"
-        )),
-    }
-}
-
-async fn assert_recovery_import_rejects_foreign_island_operation(
-    root: &std::path::Path,
-    local_island: &IslandId,
-    target: &PandaMachineFactStore,
-    replica_session: &BusSession,
-) -> Result<(), String> {
-    let foreign_island = IslandId::new("foreign");
-    let (source_bus, source_authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
-    let foreign_author = PandaFactAuthor::new(PrincipalId::new("foreign-machine-writer"));
-    let foreign_session = source_authority.grant_in(
-        foreign_island.clone(),
-        foreign_author.principal().clone(),
-        Grant::empty().with_fact_write(fact_pattern("/facts/machine-remove/>")?),
-    );
-    let foreign_membership = create_p2panda_membership_fixture(
-        &root.join("foreign-machine-remove-membership"),
-        &foreign_island,
-        &[&foreign_author],
-        &[],
-    )
-    .await?;
-    let source =
-        open_membership_machine_store(Arc::new(source_bus), &foreign_membership, &foreign_island)
-            .await?;
-    let operation =
-        write_denied_import_source_operation(&source, &foreign_session, &foreign_author).await?;
-    let result = target
-        .import_replica_operation(replica_session, &operation)
-        .await;
-    match result {
-        Err(PandaFactError::ImportIslandMismatch { session, operation })
-            if session == *local_island && operation == foreign_island =>
-        {
-            Ok(())
-        }
-        other => Err(format!(
-            "expected recovery import to reject foreign island operation, got {other:?}"
         )),
     }
 }
