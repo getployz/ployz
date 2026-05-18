@@ -1,7 +1,8 @@
 ---
 title: Slice 019a p2panda Substitution Audit Plan
-status: planned
+status: completed
 created: 2026-05-18
+completed: 2026-05-18
 origin:
   - VISION.md
   - MVP/overall-plan.md
@@ -338,4 +339,3 @@ The slice is complete when:
 - `MVP/overall-plan.md` names the next implementation slice and why;
 - stale ACME-next assumptions are updated if the audit changes the order;
 - verification commands relevant to changed files are recorded in the report.
-
