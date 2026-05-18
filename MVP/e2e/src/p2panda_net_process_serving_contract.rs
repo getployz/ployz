@@ -2,12 +2,16 @@ use std::time::{Duration, Instant};
 use std::{fs, path::Path};
 
 use mvp_bus::PrincipalId;
+use mvp_p2panda_authz::ReplicaImportAccess;
 use mvp_p2panda_facts::PandaFactAuthor;
 use serde::Serialize;
 use tokio::time::sleep;
 
 use crate::assertions::assert_eq_named;
 use crate::metrics::{reset_dir, scenario_dir, write_json};
+use crate::p2panda_projection_fixture::{
+    P2pandaMembershipFixture, create_p2panda_membership_fixture,
+};
 use crate::process_role_harness::{
     P2pandaNetRoleStatus, P2pandaNetScriptedPublisherProcess, RoleRequest, RoleStatus,
     ServingCommitInput, assert_local_mutation_unavailable, assert_serving_role_answer,
@@ -71,23 +75,24 @@ async fn run_async() -> Result<(), String> {
 
     let serving_socket = root.join("serving.sock");
     let store_path = root.join("p2panda-net-serving.sqlite");
-    let trusted_author = format!(
-        "{}:{}",
-        author.principal().as_str(),
-        author.author_key().as_hex()
-    );
-    let remote_trusted_author = format!(
-        "{}:{}",
-        remote_author.principal().as_str(),
-        remote_author.author_key().as_hex()
-    );
-    let trusted_authors = vec![trusted_author.clone(), remote_trusted_author.clone()];
+    let replica_principal = PrincipalId::new("p2panda-net-serving-replica");
+    let replica_author =
+        PandaFactAuthor::from_private_key_bytes(replica_principal.clone(), [43; 32]);
+    let membership = create_p2panda_membership_fixture(
+        &root.join("p2panda-net-membership.sqlite"),
+        &mvp_bus::IslandId::new("prod"),
+        &[&author, &remote_author],
+        &[(&replica_author, ReplicaImportAccess::Pull)],
+    )
+    .await?;
     let receiver_args = p2panda_net_receiver_args(
         &store_path,
         &network,
         &topic,
         &receiver_seed,
-        &trusted_authors,
+        &membership,
+        &replica_principal,
+        &[author.principal(), remote_author.principal()],
     );
     let receiver_arg_refs = receiver_args.iter().map(String::as_str).collect::<Vec<_>>();
     let mut serving = spawn_process_role(
@@ -217,7 +222,9 @@ async fn run_async() -> Result<(), String> {
         &network,
         &topic,
         &receiver_seed,
-        &trusted_authors,
+        &membership,
+        &replica_principal,
+        &[author.principal(), remote_author.principal()],
     );
     let receiver_arg_refs = receiver_args.iter().map(String::as_str).collect::<Vec<_>>();
     let mut restarted = spawn_process_role(
@@ -335,7 +342,9 @@ fn p2panda_net_receiver_args(
     network: &str,
     topic: &str,
     receiver_seed: &str,
-    trusted_authors: &[String],
+    membership: &P2pandaMembershipFixture,
+    replica_principal: &PrincipalId,
+    fact_writers: &[&PrincipalId],
 ) -> Vec<String> {
     let mut args = vec![
         "--p2panda-path".to_string(),
@@ -347,11 +356,17 @@ fn p2panda_net_receiver_args(
         "--p2panda-seed".to_string(),
         receiver_seed.to_string(),
         "--p2panda-replica".to_string(),
-        "p2panda-net-serving-replica".to_string(),
+        replica_principal.as_str().to_string(),
+        "--p2panda-membership-path".to_string(),
+        membership.path().display().to_string(),
+        "--p2panda-root-principal".to_string(),
+        membership.root_principal().as_str().to_string(),
+        "--p2panda-root-author-key".to_string(),
+        membership.root_author_key_hex().to_string(),
     ];
-    for trusted_author in trusted_authors {
-        args.push("--p2panda-trusted-author".to_string());
-        args.push(trusted_author.clone());
+    for writer in fact_writers {
+        args.push("--p2panda-fact-writer".to_string());
+        args.push(writer.as_str().to_string());
     }
     args
 }

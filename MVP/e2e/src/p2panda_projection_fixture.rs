@@ -1,13 +1,123 @@
-use mvp_bus::BusSession;
+use std::num::NonZeroU64;
+use std::path::{Path, PathBuf};
+
+use mvp_bus::{BusSession, IslandId, PrincipalId};
 use mvp_identity::NodeId;
-use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, PandaFactWriteOutcome};
+use mvp_p2panda_authz::{
+    IslandAuthzStore, IslandMemberAuthorKey, IslandMemberEpoch, IslandMemberKeyBinding,
+    IslandRootAuthority, ReplicaImportAccess,
+};
+use mvp_p2panda_facts::{
+    PandaFactAuthor, PandaFactAuthoritySource, PandaFactStore, PandaFactWriteOutcome,
+};
 use mvp_projection::{
     BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeJoinedFact,
     ProjectionFactPayload, ProjectionIgnoreReason, RouteCommitFact, RouteId, ServiceName,
     ServiceRegistrationFact,
 };
+use p2panda_core::SigningKey;
 
 use crate::bus_syntax::fact_key;
+
+pub(crate) struct P2pandaMembershipFixture {
+    path: PathBuf,
+    root: IslandMemberKeyBinding,
+    root_author_key_hex: String,
+}
+
+impl P2pandaMembershipFixture {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn root_principal(&self) -> &PrincipalId {
+        self.root.principal()
+    }
+
+    pub(crate) fn root_author_key_hex(&self) -> &str {
+        &self.root_author_key_hex
+    }
+
+    pub(crate) async fn authority_source(
+        &self,
+        island: &IslandId,
+    ) -> Result<PandaFactAuthoritySource, String> {
+        let authority_store = IslandAuthzStore::open(
+            &self.path,
+            island.clone(),
+            IslandRootAuthority::new(self.root.clone()),
+        )
+        .await
+        .map_err(|error| format!("open p2panda membership authority: {error}"))?;
+        PandaFactAuthoritySource::from_membership_store(&authority_store)
+            .await
+            .map_err(|error| format!("load p2panda membership authority: {error}"))
+    }
+}
+
+pub(crate) async fn create_p2panda_membership_fixture(
+    path: &Path,
+    island: &IslandId,
+    writers: &[&PandaFactAuthor],
+    replica_importers: &[(&PandaFactAuthor, ReplicaImportAccess)],
+) -> Result<P2pandaMembershipFixture, String> {
+    let root_author = PandaFactAuthor::from_private_key_bytes(
+        PrincipalId::new("p2panda-membership-root"),
+        [9; 32],
+    );
+    let root_private_key = SigningKey::from_bytes(&[9; 32]);
+    let root = IslandMemberKeyBinding::new(
+        island.clone(),
+        root_author.principal().clone(),
+        IslandMemberEpoch::new(NonZeroU64::MIN),
+        IslandMemberAuthorKey::from(root_author.author_key()),
+    );
+    let store =
+        IslandAuthzStore::open(path, island.clone(), IslandRootAuthority::new(root.clone()))
+            .await
+            .map_err(|error| format!("open p2panda membership store: {error}"))?;
+    let mut authz = store
+        .create_root(root.clone(), &root_private_key)
+        .await
+        .map_err(|error| format!("create p2panda membership root: {error}"))?;
+    for writer in writers {
+        store
+            .add_writer(
+                &mut authz,
+                &root,
+                &root_private_key,
+                member_binding(island, writer),
+            )
+            .await
+            .map_err(|error| format!("add p2panda writer membership: {error}"))?;
+    }
+    for (replica, access) in replica_importers {
+        store
+            .add_replica_importer(
+                &mut authz,
+                &root,
+                &root_private_key,
+                member_binding(island, replica),
+                *access,
+            )
+            .await
+            .map_err(|error| format!("add p2panda replica membership: {error}"))?;
+    }
+    Ok(P2pandaMembershipFixture {
+        path: path.to_path_buf(),
+        root,
+        root_author_key_hex: root_author.author_key().as_hex(),
+    })
+}
+
+fn member_binding(island: &IslandId, author: &PandaFactAuthor) -> IslandMemberKeyBinding {
+    IslandMemberKeyBinding::new(
+        island.clone(),
+        author.principal().clone(),
+        IslandMemberEpoch::new(NonZeroU64::MIN),
+        IslandMemberAuthorKey::from(author.author_key()),
+    )
+}
 
 pub(crate) async fn seed_projection_facts(
     store: &mut PandaFactStore,

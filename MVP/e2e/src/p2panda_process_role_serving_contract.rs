@@ -4,14 +4,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use mvp_bus::{BusSession, FactKey, Grant, IslandId, PrincipalId, harness::InMemoryBus};
-use mvp_p2panda_facts::{
-    PandaFactAuthor, PandaFactStore, PandaSqliteOpenConfig, PandaTrustedAuthorKey,
-};
+use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, PandaSqliteOpenConfig};
 use serde::Serialize;
 
 use crate::assertions::assert_eq_named;
 use crate::bus_syntax::fact_pattern;
 use crate::metrics::{reset_dir, scenario_dir, write_json};
+use crate::p2panda_projection_fixture::{
+    P2pandaMembershipFixture, create_p2panda_membership_fixture,
+};
 use crate::process_role_harness::{
     RoleRequest, ServingCommitInput, assert_serving_role_answer,
     cleanup_orphaned_children as cleanup_process_role_children, request_await_rebuild,
@@ -52,11 +53,19 @@ async fn run_async() -> Result<(), String> {
     let island = IslandId::new("prod");
     let writer = PandaFactAuthor::new(PrincipalId::new("local-coordinator"));
     let store_path = root.join("p2panda-facts.sqlite");
+    let membership = create_p2panda_membership_fixture(
+        &root.join("p2panda-membership.sqlite"),
+        &island,
+        &[&writer],
+        &[],
+    )
+    .await?;
 
     write_serving_commit(
         &store_path,
         &island,
         &writer,
+        &membership,
         "serving-1",
         "fd00::1:8080",
         "fd00::1",
@@ -65,17 +74,19 @@ async fn run_async() -> Result<(), String> {
     .await?;
 
     let serving_socket = root.join("serving.sock");
-    let p2panda_path = store_path.display().to_string();
-    let author_key = writer.author_key().as_hex();
     let args = [
         "--fact-source".to_string(),
         "p2panda-sqlite".to_string(),
         "--p2panda-path".to_string(),
-        p2panda_path,
-        "--p2panda-author".to_string(),
+        store_path.display().to_string(),
+        "--p2panda-membership-path".to_string(),
+        membership.path().display().to_string(),
+        "--p2panda-root-principal".to_string(),
+        membership.root_principal().as_str().to_string(),
+        "--p2panda-root-author-key".to_string(),
+        membership.root_author_key_hex().to_string(),
+        "--p2panda-fact-writer".to_string(),
         writer.principal().as_str().to_string(),
-        "--p2panda-author-key".to_string(),
-        author_key,
     ];
     let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
     let mut serving = spawn_process_role(
@@ -102,6 +113,7 @@ async fn run_async() -> Result<(), String> {
         &store_path,
         &island,
         &writer,
+        &membership,
         "serving-2",
         "fd00::2:8080",
         "fd00::2",
@@ -163,21 +175,18 @@ async fn write_serving_commit(
     store_path: &Path,
     island: &IslandId,
     author: &PandaFactAuthor,
+    membership: &P2pandaMembershipFixture,
     commit_id: &str,
     backend: &str,
     dns: &str,
     epoch: u64,
 ) -> Result<(), String> {
     let (bus, session) = p2panda_writer_bus(island, author.principal());
+    let authority_source = membership.authority_source(island).await?;
     let mut store = PandaFactStore::open_sqlite(
         Arc::new(bus),
-        PandaSqliteOpenConfig::new(store_path, vec![island.clone()]).with_trusted_author_key(
-            PandaTrustedAuthorKey::new(
-                island.clone(),
-                author.principal().clone(),
-                author.author_key(),
-            ),
-        ),
+        PandaSqliteOpenConfig::new(store_path, vec![island.clone()])
+            .with_authority_source(authority_source),
     )
     .await
     .map_err(|error| format!("open p2panda serving writer store: {error}"))?;
