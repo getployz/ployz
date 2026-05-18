@@ -17,7 +17,7 @@ pub use remove::{
     MachineRemoveCoordinator, MachineRemoveOutcome, MachineRemoveRecovery, MachineRemoveRequest,
     MachineRemoveTimeouts, MachineRemoveValidationError, PendingMachineRemove,
     RemoveCleanupPendingReason, RemoveCleanupStatus, WrittenMachineFact, prepare_remove_subject,
-    stop_removed_workloads_subject,
+    recover_pending_machine_remove_cleanup, stop_removed_workloads_subject,
 };
 pub use wire::{
     PrepareRemoveIntent, PrepareRemoveOutcome, PrepareRemoveReply, PrepareRemoveRequest,

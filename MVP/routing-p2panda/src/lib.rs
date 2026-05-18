@@ -19,12 +19,12 @@ pub struct PandaServingFactWriter {
 impl PandaServingFactWriter {
     #[must_use]
     pub fn new(
-        facts: impl Into<SharedPandaFactStore>,
+        facts: SharedPandaFactStore,
         session: BusSession,
         author: Arc<PandaFactAuthor>,
     ) -> Self {
         Self {
-            facts: facts.into(),
+            facts,
             session,
             author,
         }
