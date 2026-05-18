@@ -497,8 +497,11 @@ async fn phased_promote_resumes_after_serving_commit_without_rewriting_decision(
     );
     assert_eq!(serving.writes(), vec![plan.serving_commit_id.clone()]);
 
+    let mut changed_request = request;
+    changed_request.serving_commit =
+        serving_plan("serving-promote-wrong", "node-wrong", "fd00::99:8080", 99);
     let complete = command
-        .execute_phased(&cx, request, Some(catch_up(&fixture, &plan)))
+        .execute_phased(&cx, changed_request, Some(catch_up(&fixture, &plan)))
         .await
         .expect("phased promote resumes");
 
@@ -678,8 +681,11 @@ async fn phased_rollback_resumes_after_serving_commit_without_rewriting_decision
     );
     assert_eq!(serving.writes(), vec![plan.serving_commit_id.clone()]);
 
+    let mut changed_request = request;
+    changed_request.serving_commit =
+        serving_plan("serving-rollback-wrong", "node-wrong", "fd00::99:8080", 99);
     let complete = command
-        .execute_phased(&cx, request, Some(catch_up(&fixture, &plan)))
+        .execute_phased(&cx, changed_request, Some(catch_up(&fixture, &plan)))
         .await
         .expect("phased rollback resumes");
 

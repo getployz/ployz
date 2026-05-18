@@ -175,9 +175,7 @@ impl CommandContext {
     }
 
     pub fn read_phase<P: Phase>(&self, command: &impl Command) -> CommandResult<Option<P>> {
-        let name = command.name();
-        let intent = command.intent_id();
-        let Some(stored) = self.store.read_latest_phase(&name, &intent)? else {
+        let Some(stored) = self.read_stored_phase(command)? else {
             return Ok(None);
         };
         serde_json::from_slice(stored.payload.as_ref())
@@ -186,6 +184,14 @@ impl CommandContext {
                 key: stored.key,
                 message: error.to_string(),
             })
+    }
+
+    pub fn read_stored_phase(
+        &self,
+        command: &impl Command,
+    ) -> CommandResult<Option<StoredCommandPhase>> {
+        self.store
+            .read_latest_phase(&command.name(), &command.intent_id())
     }
 
     pub fn write_phase<P: Phase>(
@@ -221,15 +227,31 @@ where
     C: PhasedCommand,
 {
     cx.write_intent(CommandFact::new(command.name(), command.intent_id()))?;
-    let mut current = cx
-        .read_phase::<C::Phase>(command)?
-        .unwrap_or_else(|| command.initial_phase());
-    let mut committed = Vec::new();
+    let stored = cx.read_stored_phase(command)?;
+    let mut current = match &stored {
+        Some(stored) => serde_json::from_slice(stored.payload.as_ref()).map_err(|error| {
+            CommandError::DeserializePhase {
+                key: stored.key.clone(),
+                message: error.to_string(),
+            }
+        })?,
+        None => command.initial_phase(),
+    };
+    let mut committed = match stored {
+        Some(_) => vec![current.clone()],
+        None => Vec::new(),
+    };
 
     loop {
         match command.step(cx, current.clone()).await {
             Ok(PhaseTransition::Continue(next)) => {
-                cx.write_phase(command, &next)?;
+                if let Err(error) = cx.write_phase(command, &next) {
+                    let _ = command.compensate(cx, next).await;
+                    for phase in committed.into_iter().rev() {
+                        let _ = command.compensate(cx, phase).await;
+                    }
+                    return Err(error.into());
+                }
                 committed.push(next.clone());
                 current = next;
             }
@@ -355,6 +377,9 @@ impl CommandPhaseStore for InMemoryCommandPhaseStore {
         if candidates.iter().any(|phase| phase.payload == payload) {
             return Ok(key);
         }
+        if !candidates.is_empty() {
+            return Err(CommandError::PhaseConflict { key });
+        }
         candidates.push(StoredCommandPhase {
             key: key.clone(),
             index,
@@ -405,12 +430,13 @@ mod tests {
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
 
-    use mvp_bus::FactPayload;
+    use mvp_bus::{FactKey, FactPayload};
     use serde::{Deserialize, Serialize};
 
     use crate::{
-        Command, CommandContext, CommandError, CommandName, InMemoryCommandPhaseStore, IntentId,
-        PhaseTransition, PhasedCommand, run_phased,
+        Command, CommandContext, CommandError, CommandFact, CommandName, CommandPhaseStore,
+        InMemoryCommandPhaseStore, IntentId, PhaseTransition, PhasedCommand, StoredCommandPhase,
+        run_phased,
     };
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -572,6 +598,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resumed_failure_compensates_persisted_phase() {
+        let store = Arc::new(InMemoryCommandPhaseStore::empty());
+        let cx = CommandContext::new(store);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let compensated = Arc::new(Mutex::new(Vec::new()));
+        let command = TestCommand::new(
+            Some(TestPhase::Prepared),
+            Arc::clone(&seen),
+            Arc::clone(&compensated),
+        );
+        cx.write_phase(&command, &TestPhase::Prepared)
+            .expect("seed persisted phase");
+
+        let error = run_phased(&cx, &command).await.expect_err("prepared fails");
+
+        assert!(matches!(error, TestError::Failed));
+        assert_eq!(
+            seen.lock().expect("seen lock").as_slice(),
+            &[TestPhase::Prepared]
+        );
+        assert_eq!(
+            compensated.lock().expect("compensated lock").as_slice(),
+            &[TestPhase::Prepared]
+        );
+    }
+
+    #[tokio::test]
     async fn compensation_walks_committed_phases_in_reverse_without_failing_phase() {
         let store = Arc::new(InMemoryCommandPhaseStore::empty());
         let cx = CommandContext::new(store);
@@ -646,6 +699,57 @@ mod tests {
     }
 
     #[test]
+    fn same_index_phase_write_conflict_is_immediate() {
+        let store = Arc::new(InMemoryCommandPhaseStore::empty());
+        let cx = CommandContext::new(store);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let compensated = Arc::new(Mutex::new(Vec::new()));
+        let command = TestCommand::new(None, seen, compensated);
+        cx.write_phase(&command, &TestPhase::Prepared)
+            .expect("write first phase");
+        let name = command.name();
+        let intent = command.intent_id();
+        let key = crate::command_phase_fact_key(&name, &intent, 1).expect("phase key");
+
+        let error = cx
+            .store
+            .write_phase(
+                &name,
+                &intent,
+                1,
+                FactPayload::from(br#""Committed""#.to_vec()),
+            )
+            .expect_err("same index conflict");
+
+        assert!(
+            matches!(error, CommandError::PhaseConflict { key: error_key } if error_key == key)
+        );
+    }
+
+    #[tokio::test]
+    async fn phase_write_failure_compensates_next_and_prior_phases() {
+        let store = Arc::new(FailingPhaseWriteStore);
+        let cx = CommandContext::new(store);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let compensated = Arc::new(Mutex::new(Vec::new()));
+        let command = TestCommand::new(None, Arc::clone(&seen), Arc::clone(&compensated));
+
+        let error = run_phased(&cx, &command)
+            .await
+            .expect_err("phase write fails");
+
+        assert!(matches!(error, TestError::Command));
+        assert_eq!(
+            seen.lock().expect("seen lock").as_slice(),
+            &[TestPhase::Start]
+        );
+        assert_eq!(
+            compensated.lock().expect("compensated lock").as_slice(),
+            &[TestPhase::Prepared]
+        );
+    }
+
+    #[test]
     fn invalid_command_identifiers_are_rejected() {
         assert!(matches!(
             CommandName::parse("deploy.submit"),
@@ -655,5 +759,33 @@ mod tests {
             IntentId::parse("bad/intent"),
             Err(CommandError::InvalidIdentifier { .. })
         ));
+    }
+
+    struct FailingPhaseWriteStore;
+
+    impl CommandPhaseStore for FailingPhaseWriteStore {
+        fn read_latest_phase(
+            &self,
+            _command: &CommandName,
+            _intent: &IntentId,
+        ) -> crate::CommandResult<Option<StoredCommandPhase>> {
+            Ok(None)
+        }
+
+        fn write_intent(&self, fact: CommandFact) -> crate::CommandResult<FactKey> {
+            crate::command_intent_fact_key(&fact.command, &fact.intent)
+        }
+
+        fn write_phase(
+            &self,
+            command: &CommandName,
+            intent: &IntentId,
+            _index: u64,
+            _payload: FactPayload,
+        ) -> crate::CommandResult<FactKey> {
+            Err(CommandError::PhaseConflict {
+                key: crate::command_phase_fact_key(command, intent, 1)?,
+            })
+        }
     }
 }

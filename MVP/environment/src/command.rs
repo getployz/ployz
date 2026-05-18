@@ -375,10 +375,11 @@ where
 enum PromoteEnvironmentPhase {
     Start,
     DecisionWritten {
-        decision: EnvironmentPromoteDecisionFact,
+        decision: Box<EnvironmentPromoteDecisionFact>,
+        serving_commit: Box<ServingCommitPlan>,
     },
     ServingCommitWritten {
-        decision: EnvironmentPromoteDecisionFact,
+        decision: Box<EnvironmentPromoteDecisionFact>,
     },
     HeadWritten {
         head: Box<EnvironmentHeadFact>,
@@ -433,13 +434,19 @@ where
                         .write_promote_decision(decision.clone())
                         .await?;
                     Ok(PhaseTransition::Continue(
-                        PromoteEnvironmentPhase::DecisionWritten { decision },
+                        PromoteEnvironmentPhase::DecisionWritten {
+                            decision: Box::new(decision),
+                            serving_commit: Box::new(self.request.serving_commit.clone()),
+                        },
                     ))
                 }
-                PromoteEnvironmentPhase::DecisionWritten { decision } => {
+                PromoteEnvironmentPhase::DecisionWritten {
+                    decision,
+                    serving_commit,
+                } => {
                     self.owner
                         .serving_writer
-                        .write_serving_commit(&self.request.serving_commit)
+                        .write_serving_commit(&serving_commit)
                         .await
                         .map_err(map_serving_error)?;
                     Ok(PhaseTransition::Continue(
@@ -449,7 +456,7 @@ where
                 PromoteEnvironmentPhase::ServingCommitWritten { decision } => {
                     match self
                         .owner
-                        .finalize_promote_decision(decision, self.catch_up.clone())
+                        .finalize_promote_decision(*decision, self.catch_up.clone())
                         .await?
                     {
                         EnvironmentCommandResult::Pending { reason } => {
@@ -608,24 +615,33 @@ where
         pending: PendingEnvironmentRollback,
         catch_up: Option<ProjectionCatchUp>,
     ) -> EnvironmentResult<EnvironmentCommandResult> {
+        self.finalize_rollback_decision(pending.decision, catch_up)
+            .await
+    }
+
+    async fn finalize_rollback_decision(
+        &self,
+        decision: EnvironmentRollbackDecisionFact,
+        catch_up: Option<ProjectionCatchUp>,
+    ) -> EnvironmentResult<EnvironmentCommandResult> {
         let Some(catch_up) = catch_up else {
             return Ok(EnvironmentCommandResult::Pending {
                 reason: EnvironmentServingPendingReason::ProjectionCatchUpMissing,
             });
         };
-        if catch_up.serving_commit_id() != &pending.decision.target_serving_commit_id {
+        if catch_up.serving_commit_id() != &decision.target_serving_commit_id {
             return Ok(EnvironmentCommandResult::Pending {
                 reason: EnvironmentServingPendingReason::ProjectionCatchUpMismatch,
             });
         }
         let head = EnvironmentHeadFact {
-            environment: pending.decision.environment,
-            epoch: pending.decision.current_head.epoch.next()?,
-            head_id: environment_head_id_for_command(&pending.decision.command_id),
-            source_command_id: pending.decision.command_id,
-            serving_commit_id: pending.decision.target_serving_commit_id,
-            previous_head: Some(pending.decision.rollback_target),
-            volume_refs: pending.decision.target_volume_refs,
+            environment: decision.environment,
+            epoch: decision.current_head.epoch.next()?,
+            head_id: environment_head_id_for_command(&decision.command_id),
+            source_command_id: decision.command_id,
+            serving_commit_id: decision.target_serving_commit_id,
+            previous_head: Some(decision.rollback_target),
+            volume_refs: decision.target_volume_refs,
             source_branch_id: None,
         };
         self.fact_writer.write_head(head.clone()).await?;
@@ -639,10 +655,11 @@ where
 enum RollbackEnvironmentPhase {
     Start,
     DecisionWritten {
-        decision: EnvironmentRollbackDecisionFact,
+        decision: Box<EnvironmentRollbackDecisionFact>,
+        serving_commit: Box<ServingCommitPlan>,
     },
     ServingCommitWritten {
-        decision: EnvironmentRollbackDecisionFact,
+        decision: Box<EnvironmentRollbackDecisionFact>,
     },
     HeadWritten {
         head: Box<EnvironmentHeadFact>,
@@ -687,17 +704,7 @@ where
         &'b self,
         _cx: &'b CommandContext,
         phase: Self::Phase,
-    ) -> Pin<
-        Box<
-            dyn Future<
-                    Output = Result<
-                        PhaseTransition<Self::Phase, Self::Output>,
-                        <Self as Command>::Error,
-                    >,
-                > + Send
-                + 'b,
-        >,
-    > {
+    ) -> CommandStepFuture<'b, Self::Phase, Self::Output, <Self as Command>::Error> {
         Box::pin(async move {
             match phase {
                 RollbackEnvironmentPhase::Start => {
@@ -707,13 +714,19 @@ where
                         .write_rollback_decision(decision.clone())
                         .await?;
                     Ok(PhaseTransition::Continue(
-                        RollbackEnvironmentPhase::DecisionWritten { decision },
+                        RollbackEnvironmentPhase::DecisionWritten {
+                            decision: Box::new(decision),
+                            serving_commit: Box::new(self.request.serving_commit.clone()),
+                        },
                     ))
                 }
-                RollbackEnvironmentPhase::DecisionWritten { decision } => {
+                RollbackEnvironmentPhase::DecisionWritten {
+                    decision,
+                    serving_commit,
+                } => {
                     self.owner
                         .serving_writer
-                        .write_serving_commit(&self.request.serving_commit)
+                        .write_serving_commit(&serving_commit)
                         .await
                         .map_err(map_serving_error)?;
                     Ok(PhaseTransition::Continue(
@@ -721,32 +734,22 @@ where
                     ))
                 }
                 RollbackEnvironmentPhase::ServingCommitWritten { decision } => {
-                    let Some(catch_up) = &self.catch_up else {
-                        return Ok(PhaseTransition::Done(EnvironmentCommandResult::Pending {
-                            reason: EnvironmentServingPendingReason::ProjectionCatchUpMissing,
-                        }));
-                    };
-                    if catch_up.serving_commit_id() != &decision.target_serving_commit_id {
-                        return Ok(PhaseTransition::Done(EnvironmentCommandResult::Pending {
-                            reason: EnvironmentServingPendingReason::ProjectionCatchUpMismatch,
-                        }));
+                    match self
+                        .owner
+                        .finalize_rollback_decision(*decision, self.catch_up.clone())
+                        .await?
+                    {
+                        EnvironmentCommandResult::Pending { reason } => {
+                            Ok(PhaseTransition::Done(EnvironmentCommandResult::Pending {
+                                reason,
+                            }))
+                        }
+                        EnvironmentCommandResult::Complete { head } => {
+                            Ok(PhaseTransition::Continue(
+                                RollbackEnvironmentPhase::HeadWritten { head },
+                            ))
+                        }
                     }
-                    let head = EnvironmentHeadFact {
-                        environment: decision.environment,
-                        epoch: decision.current_head.epoch.next()?,
-                        head_id: environment_head_id_for_command(&decision.command_id),
-                        source_command_id: decision.command_id,
-                        serving_commit_id: decision.target_serving_commit_id,
-                        previous_head: Some(decision.rollback_target),
-                        volume_refs: decision.target_volume_refs,
-                        source_branch_id: None,
-                    };
-                    self.owner.fact_writer.write_head(head.clone()).await?;
-                    Ok(PhaseTransition::Continue(
-                        RollbackEnvironmentPhase::HeadWritten {
-                            head: Box::new(head),
-                        },
-                    ))
                 }
                 RollbackEnvironmentPhase::HeadWritten { head } => {
                     Ok(PhaseTransition::Done(EnvironmentCommandResult::Complete {
@@ -761,7 +764,7 @@ where
         &'b self,
         _cx: &'b CommandContext,
         _phase: Self::Phase,
-    ) -> Pin<Box<dyn Future<Output = Result<(), <Self as Command>::Error>> + Send + 'b>> {
+    ) -> CommandCompensationFuture<'b, <Self as Command>::Error> {
         Box::pin(async { Ok(()) })
     }
 }

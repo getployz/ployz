@@ -6,7 +6,10 @@ use mvp_bus::{
     BusSession, FactAuthorizer, FactKey, FactKeyPattern, FactPayload, Grant, IslandId, PrincipalId,
     harness::InMemoryBus,
 };
-use mvp_commands::{CommandContext, InMemoryCommandPhaseStore};
+use mvp_commands::{
+    CommandContext, CommandError, CommandFact, CommandName, CommandPhaseStore, CommandResult,
+    IntentId, StoredCommandPhase, command_intent_fact_key, command_phase_fact_key,
+};
 use mvp_environment::{
     BranchEnvironmentCommand, BranchEnvironmentRequest, EnvironmentBranchId, EnvironmentCommandId,
     EnvironmentCommandResult, EnvironmentEpoch, EnvironmentFactPayload, EnvironmentFactWriter,
@@ -25,8 +28,9 @@ use mvp_p2panda_facts::{
     SharedPandaFactStore,
 };
 use mvp_projection::{
-    BackendEndpoint, DnsProjection, DnsRecordFact, FactSource, GatewayProjection,
-    GatewayRouteProjection, ProjectionReport, ProjectionState, RouteId, SnapshotWriteReport,
+    BackendEndpoint, CandidateStatus, DnsProjection, DnsRecordFact, FactCandidate, FactSource,
+    GatewayProjection, GatewayRouteProjection, ProjectionReport, ProjectionState, RouteId,
+    SnapshotWriteReport,
 };
 use mvp_routing::{
     DnsCommitId, GatewayCommitId, ProjectionCatchUp, RouteCommitId, ServingCommitId,
@@ -216,7 +220,11 @@ async fn run_async() -> Result<(), String> {
     let promote_plan = serving_plan("serving-promote-1", "fd00::2:8080", "fd00::2", 2);
     let promote_command =
         PromoteEnvironmentCommand::new(&store, &session, &environment_writer, &serving_writer);
-    let promote_cx = CommandContext::new(Arc::new(InMemoryCommandPhaseStore::empty()));
+    let promote_cx = CommandContext::new(Arc::new(PandaCommandPhaseStore::new(
+        store.clone(),
+        session.clone(),
+        Arc::clone(&author),
+    )));
     let promote_request = PromoteEnvironmentRequest {
         command_id: command_id("promote-1")?,
         environment: prod.clone(),
@@ -243,6 +251,14 @@ async fn run_async() -> Result<(), String> {
         promote_decision.target_volume_refs.clone(),
         vec![volume("db-pr-123")?],
     )?;
+    let promote_resume_cx = reopened_command_phase_context(
+        &fact_authorizer,
+        &store_path,
+        &island,
+        &session,
+        Arc::clone(&author),
+    )
+    .await?;
     rebuild_projection(&serving_socket).await?;
     let promoted_status = request_reload(&serving_socket).await?;
     assert_serving_role_answer(
@@ -254,7 +270,7 @@ async fn run_async() -> Result<(), String> {
     .await?;
     promote_command
         .execute_phased(
-            &promote_cx,
+            &promote_resume_cx,
             promote_request,
             Some(catch_up(&island, &promote_plan)),
         )
@@ -277,7 +293,11 @@ async fn run_async() -> Result<(), String> {
     let rollback_plan = serving_plan("serving-rollback-1", "fd00::1:8080", "fd00::1", 3);
     let rollback_command =
         RollbackEnvironmentCommand::new(&store, &session, &environment_writer, &serving_writer);
-    let rollback_cx = CommandContext::new(Arc::new(InMemoryCommandPhaseStore::empty()));
+    let rollback_cx = CommandContext::new(Arc::new(PandaCommandPhaseStore::new(
+        store.clone(),
+        session.clone(),
+        Arc::clone(&author),
+    )));
     let rollback_request = RollbackEnvironmentRequest {
         command_id: command_id("rollback-1")?,
         environment: prod.clone(),
@@ -302,6 +322,14 @@ async fn run_async() -> Result<(), String> {
         rollback_decision.target_volume_refs.clone(),
         baseline_head.volume_refs.clone(),
     )?;
+    let rollback_resume_cx = reopened_command_phase_context(
+        &fact_authorizer,
+        &store_path,
+        &island,
+        &session,
+        Arc::clone(&author),
+    )
+    .await?;
     rebuild_projection(&serving_socket).await?;
     let rollback_status = request_reload(&serving_socket).await?;
     assert_serving_role_answer(
@@ -313,7 +341,7 @@ async fn run_async() -> Result<(), String> {
     .await?;
     rollback_command
         .execute_phased(
-            &rollback_cx,
+            &rollback_resume_cx,
             rollback_request,
             Some(catch_up(&island, &rollback_plan)),
         )
@@ -519,6 +547,7 @@ fn p2panda_writer_bus(island: &IslandId, principal: &PrincipalId) -> (InMemoryBu
         Grant::empty()
             .with_fact_write(fact_pattern("/facts/environment/>").expect("environment pattern"))
             .with_fact_write(fact_pattern("/facts/serving/>").expect("serving pattern"))
+            .with_fact_write(fact_pattern("/facts/command/>").expect("command pattern"))
             .with_fact_read(fact_pattern("/facts/>").expect("operator read pattern")),
     );
     authority.grant_in(
@@ -527,6 +556,181 @@ fn p2panda_writer_bus(island: &IslandId, principal: &PrincipalId) -> (InMemoryBu
         Grant::empty().with_fact_read(fact_pattern("/facts/>").expect("read pattern")),
     );
     (bus, session)
+}
+
+struct PandaCommandPhaseStore {
+    store: SharedPandaFactStore,
+    session: BusSession,
+    author: Arc<PandaFactAuthor>,
+}
+
+impl PandaCommandPhaseStore {
+    fn new(store: SharedPandaFactStore, session: BusSession, author: Arc<PandaFactAuthor>) -> Self {
+        Self {
+            store,
+            session,
+            author,
+        }
+    }
+}
+
+impl CommandPhaseStore for PandaCommandPhaseStore {
+    fn read_latest_phase(
+        &self,
+        command: &CommandName,
+        intent: &IntentId,
+    ) -> CommandResult<Option<StoredCommandPhase>> {
+        let pattern = FactKeyPattern::parse(format!(
+            "/facts/command/{}/{}/phase/>",
+            command.as_str(),
+            intent.as_str()
+        ))?;
+        let candidates = self
+            .store
+            .list_candidates(self.session.island(), &pattern, &self.session)
+            .map_err(|error| CommandError::Store {
+                message: error.to_string(),
+            })?;
+        latest_command_phase(&self.store, &self.session, command, intent, candidates)
+    }
+
+    fn write_intent(&self, fact: CommandFact) -> CommandResult<FactKey> {
+        let key = command_intent_fact_key(&fact.command, &fact.intent)?;
+        let payload = serde_json::to_vec(&fact)
+            .map(FactPayload::from)
+            .map_err(|error| CommandError::Store {
+                message: error.to_string(),
+            })?;
+        write_command_fact_payload(&self.store, &self.session, &self.author, key, payload)
+    }
+
+    fn write_phase(
+        &self,
+        _command: &CommandName,
+        _intent: &IntentId,
+        _index: u64,
+        payload: FactPayload,
+    ) -> CommandResult<FactKey> {
+        let key = command_phase_fact_key(_command, _intent, _index)?;
+        write_command_fact_payload(&self.store, &self.session, &self.author, key, payload)
+    }
+}
+
+async fn reopened_command_phase_context(
+    fact_authorizer: &Arc<dyn FactAuthorizer>,
+    store_path: &std::path::Path,
+    island: &IslandId,
+    session: &BusSession,
+    author: Arc<PandaFactAuthor>,
+) -> Result<CommandContext, String> {
+    let reopened = SharedPandaFactStore::new(
+        PandaFactStore::open_sqlite(
+            Arc::clone(fact_authorizer),
+            PandaSqliteOpenConfig::new(store_path, vec![island.clone()]).with_trusted_author_key(
+                PandaTrustedAuthorKey::new(
+                    island.clone(),
+                    author.principal().clone(),
+                    author.author_key(),
+                ),
+            ),
+        )
+        .await
+        .map_err(|error| format!("reopen command phase p2panda store: {error}"))?,
+    );
+    Ok(CommandContext::new(Arc::new(PandaCommandPhaseStore::new(
+        reopened,
+        session.clone(),
+        author,
+    ))))
+}
+
+fn write_command_fact_payload(
+    store: &SharedPandaFactStore,
+    session: &BusSession,
+    author: &Arc<PandaFactAuthor>,
+    key: FactKey,
+    payload: FactPayload,
+) -> CommandResult<FactKey> {
+    let outcome = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(store.write_fact_payload(
+            session,
+            author,
+            key.clone(),
+            payload,
+        ))
+    })
+    .map_err(|error| CommandError::Store {
+        message: error.to_string(),
+    })?;
+    match outcome {
+        mvp_p2panda_facts::PandaFactWriteOutcome::Inserted(_)
+        | mvp_p2panda_facts::PandaFactWriteOutcome::AlreadyPresent(_) => Ok(key),
+        mvp_p2panda_facts::PandaFactWriteOutcome::Conflict(_) => {
+            Err(CommandError::PhaseConflict { key })
+        }
+    }
+}
+
+fn latest_command_phase(
+    store: &SharedPandaFactStore,
+    session: &BusSession,
+    command: &CommandName,
+    intent: &IntentId,
+    candidates: Vec<FactCandidate>,
+) -> CommandResult<Option<StoredCommandPhase>> {
+    let Some(index) = candidates
+        .iter()
+        .filter_map(|candidate| command_phase_index(candidate.key(), command, intent))
+        .max()
+    else {
+        return Ok(None);
+    };
+    let key = command_phase_fact_key(command, intent, index)?;
+    let candidates = candidates
+        .into_iter()
+        .filter(|candidate| candidate.key() == &key)
+        .collect::<Vec<_>>();
+    let [candidate] = candidates.as_slice() else {
+        return Err(CommandError::PhaseConflict { key });
+    };
+    if candidate.status() == CandidateStatus::Conflict {
+        return Err(CommandError::PhaseConflict { key });
+    }
+    let payloads = store
+        .read_payloads(session.island(), &candidates, session)
+        .map_err(|error| CommandError::Store {
+            message: error.to_string(),
+        })?;
+    let payload = payloads
+        .get(candidate.content_hash())
+        .cloned()
+        .ok_or_else(|| CommandError::Store {
+            message: format!("command phase payload missing for {key}"),
+        })?;
+    Ok(Some(StoredCommandPhase {
+        key,
+        index,
+        payload,
+    }))
+}
+
+fn command_phase_index(key: &FactKey, command: &CommandName, intent: &IntentId) -> Option<u64> {
+    let segments = key.segments().collect::<Vec<_>>();
+    let [
+        "facts",
+        "command",
+        command_segment,
+        intent_segment,
+        "phase",
+        index,
+    ] = segments.as_slice()
+    else {
+        return None;
+    };
+    if *command_segment != command.as_str() || *intent_segment != intent.as_str() {
+        return None;
+    }
+    index.parse().ok()
 }
 
 async fn rebuild_projection(socket: &std::path::Path) -> Result<(), String> {
