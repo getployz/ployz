@@ -239,6 +239,7 @@ fn classify_fact_error(error: PandaFactError) -> PandaNetFactImportOutcome {
             missing_operations,
         }),
         PandaFactError::InvalidAuthorKey { .. }
+        | PandaFactError::InvalidAuthorPrivateKey { .. }
         | PandaFactError::OutdatedOperation { .. }
         | PandaFactError::PrincipalMismatch { .. }
         | PandaFactError::UnauthorizedWrite { .. } => {
