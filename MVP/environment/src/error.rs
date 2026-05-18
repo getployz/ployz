@@ -48,6 +48,8 @@ pub enum EnvironmentError {
     DecisionHeadMismatch { key: FactKey },
     #[error("environment fact serialization failed: {message}")]
     Serialization { message: String },
+    #[error("environment serving write failed: {message}")]
+    ServingWrite { message: String },
     #[error(transparent)]
     Bus(#[from] BusError),
     #[error(transparent)]
