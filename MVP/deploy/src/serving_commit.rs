@@ -14,7 +14,8 @@ pub struct WrittenServingFact {
 }
 
 impl WrittenServingFact {
-    pub(crate) fn inserted(key: FactKey, content_hash: FactContentHash) -> Self {
+    #[must_use]
+    pub fn inserted(key: FactKey, content_hash: FactContentHash) -> Self {
         Self {
             key,
             content_hash,
@@ -22,7 +23,8 @@ impl WrittenServingFact {
         }
     }
 
-    pub(crate) fn already_present(key: FactKey, content_hash: FactContentHash) -> Self {
+    #[must_use]
+    pub fn already_present(key: FactKey, content_hash: FactContentHash) -> Self {
         Self {
             key,
             content_hash,

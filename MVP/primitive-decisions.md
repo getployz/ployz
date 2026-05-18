@@ -184,6 +184,22 @@ the decision concrete.
   `ProcessFactSource`, and `MVP/p2panda-spike` in place as migration fixtures
   or comparison evidence. They are no longer the preferred direction for new
   fact-substrate work.
+- Slice 018c adds narrow p2panda operation export/import. Import validates the
+  p2panda operation, requires same-island ingestion, checks the original fact
+  author's write grant, and leaves reader authorization to `FactSource`
+  candidate status and payload reads. Export returns opaque operation handles
+  through an iterator so callers do not depend on p2panda wire framing. It is
+  not a production sync protocol.
+- Slice 018c moves the deploy restart-recovery proof onto one p2panda-backed
+  fact boundary for deploy decision, serving commit, and cleanup-done facts.
+  The coordinator can die after serving commit, a fresh coordinator recovers
+  pending cleanup from facts, and no capacity/prepare/start work is replayed.
+- Slice 018c keeps the p2panda writer adapters E2E-local. Deploy and routing
+  still own business payloads and conflict semantics; p2panda owns only signed
+  operation envelopes, validation, ingestion, and local operation storage.
+- Slice 018c proves coordinator fate separation, not fact-store process death.
+  The p2panda fact role survives in the harness. Persistent p2panda storage,
+  network sync, and process restart remain future substrate work.
 
 ## Documented Design Gaps
 
@@ -215,6 +231,14 @@ the metric or product proof that makes the extra primitive worthwhile.
   publishing would be worse than a late reply. If a hard wall-clock cap becomes
   required, the publish path needs cooperative cancellation instead of detached
   worker timeouts.
+- Fact writer adapters are starting to repeat across deploy, serving, routing,
+  machine, and E2E. The next slice that adds another durable command writer
+  should consider a shared typed fact-key/payload writer helper before the
+  duplication becomes another mini-framework by accident.
+- Projection still centralizes reducers in one crate-level reducer path. That
+  has kept early composition simple, but the maintenance-burden review flagged
+  it as a likely split point once another product domain moves onto p2panda
+  facts.
 
 ## Placeholder Versus Production Code
 

@@ -52,8 +52,16 @@ async fn run_async() -> Result<(), String> {
     let (mut store, projection_session) = p2panda_store_with_projection_session();
     seed_projection_facts(&mut store, &projection_session).await?;
     let conflict_write_recorded = seed_conflict_facts(&mut store, &projection_session).await?;
+    let exported = store.export_operations().cloned().collect::<Vec<_>>();
+    let (mut imported_store, imported_session) = p2panda_store_with_projection_session();
+    for operation in &exported {
+        imported_store
+            .import_operation(&imported_session, operation)
+            .await
+            .map_err(|error| format!("import p2panda operation for projection: {error}"))?;
+    }
 
-    let actor = projection_actor(Arc::new(store), projection_session, &root)?;
+    let actor = projection_actor(Arc::new(imported_store), imported_session, &root)?;
     let first = actor
         .project_once(PROJECT_TIMEOUT)
         .await
