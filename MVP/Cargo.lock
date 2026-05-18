@@ -2966,6 +2966,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mvp-p2panda-authz"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "mvp-bus",
+ "p2panda-auth",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "mvp-p2panda-facts"
 version = "0.1.0"
 dependencies = [
@@ -3466,6 +3477,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "p2panda-auth"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69f9d1950cb8c605a0b476162d2b5abf6ea83a7145f572f601c1012a72688cb2"
+dependencies = [
+ "petgraph",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "p2panda-core"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3650,6 +3672,19 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "petgraph"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8701b58ea97060d5e5b155d383a69952a60943f0e6dfe30b04c287beb0b27455"
+dependencies = [
+ "fixedbitset",
+ "hashbrown 0.15.5",
+ "indexmap",
+ "serde",
+ "serde_derive",
+]
 
 [[package]]
 name = "pharos"

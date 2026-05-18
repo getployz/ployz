@@ -168,13 +168,15 @@ rules. Those remain Ployz-specific.
 
 ### Sync And Network Fit
 
-`p2panda-sync` should be evaluated after a real p2panda-backed fact adapter
-exists. `p2panda-net` is premature because its iroh dependency line is behind
-the MVP's current iroh 1.0-rc family, so adopting it now would introduce a
-second iroh stack.
+This has moved from "evaluate later" to "adopted behind a wrapper." The MVP now
+uses crates.io `p2panda-sync 0.5.2` for store-to-store fact sync and
+`p2panda-net 0.5.2` as the maintained iroh/gossip/log-sync carrier inside
+`mvp-p2panda-transport`.
 
-This does not mean "never." It means "not before the fact substrate seam is
-converted."
+The compatibility cost is accepted: `mvp-iroh` is aligned to the non-RC iroh
+`0.96` family used by p2panda-net. Domain crates still do not depend on
+p2panda-net or raw iroh transport types; they consume stable Ployz fact,
+projection, and transport wrapper contracts.
 
 ### Blob Fit
 

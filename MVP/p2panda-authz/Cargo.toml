@@ -1,0 +1,17 @@
+[package]
+name = "mvp-p2panda-authz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "mvp_p2panda_authz"
+path = "src/lib.rs"
+
+[dependencies]
+blake3 = "1"
+mvp-bus = { path = "../bus" }
+p2panda-auth = { version = "0.5.2", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"

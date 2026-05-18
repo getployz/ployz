@@ -15,6 +15,21 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
+- Slice 034 adds `mvp-p2panda-authz` as a compile-backed `p2panda-auth`
+  membership spike. The result is a conditional adoption decision: p2panda-auth
+  fits island membership and strong-removal semantics, but it must not replace
+  `PandaFactStore` trust maps until Ployz-owned signed membership operations
+  can rebuild durable `(island, principal, epoch, key)` bindings.
+- Slice 034 does not yet wire p2panda-auth into `PandaFactStore`. The next
+  adoption gate is durable membership operation persistence and replay, then
+  replacing `trusted_author_keys`, `trusted_replica_peers`, and manual
+  sync-scope author maps with an authz-derived authority snapshot.
+- Slice 034 keeps membership operation ids as hash-shaped values in the spike,
+  but they are not a production wire contract. The adoption slice should derive
+  ids from the durable signed p2panda operation hash.
+- Slice 034 keeps `PandaFactWireEnvelope`, `PandaNetQuarantineLog`, historical
+  iroh-docs facts, and process JSON fact source paths in place. They are named
+  deletion candidates with gates, not deleted during the investigation slice.
 - Slice 032 replaces the remaining git-pinned p2panda transport line with
   crates.io `p2panda-net 0.5.2`, `p2panda-core 0.5.2`, `p2panda-store 0.5.2`,
   and `p2panda-sync 0.5.2`. `mvp-iroh` now aligns to the compatible iroh
@@ -1295,3 +1310,47 @@ Revisit if:
   participant glue to justify a shared volume adapter.
 - A third command grows a persisted phase enum plus resume logic, triggering the
   `mvp-commands` slice.
+
+## p2panda-auth Island Membership Boundary
+
+Decision:
+- Adopt `p2panda-auth` for island membership graph semantics once membership
+  operations are durably stored and replayed. Ployz still owns the signed
+  operation envelope, root/admin anchoring, principal/key binding, subject
+  grants, fact-key grants, and command preconditions.
+
+What it replaces:
+- Manual `(IslandId, PrincipalId) -> p2panda public key` trust maps in
+  `PandaFactStore`.
+- Manual trusted replica importer sets.
+- Hand-built sync scopes seeded from caller-owned key maps.
+- Future custom strong-removal or concurrent manager-removal logic.
+
+What it does not replace:
+- PloyzBus wildcard subjects, queue groups, reply permissions, and
+  import/export rules.
+- Command-level conflict checks before mutation.
+- Fact-key authorization such as "this member may write deploy facts but not
+  machine tombstones."
+- Projection reducers and deterministic winner selection.
+
+Required boundary:
+- Membership operation group id must match the island group id.
+- Signer must match operation author.
+- Signer key must match the current durable key binding.
+- Signature must cover operation id, author, dependencies, group action, and
+  any introduced member binding.
+- Add/promote/demote operations must carry a binding for the introduced member.
+- Create/remove operations must not carry an introduced binding.
+- Nested `GroupMember::Group` is rejected until Ployz defines nested group
+  semantics.
+
+Revisit if:
+- membership operations are stored as durable p2panda operations and can rebuild
+  the exact same authority snapshot after reopen;
+- `PandaFactStore` import/write/sync-scope checks consume that snapshot instead
+  of local trust maps;
+- replica import is proven as Pull/Read plus `ReplicaImporter` and cannot
+  satisfy writer checks;
+- machine tombstone semantics are reconciled with membership removal semantics
+  without allowing same-node-id reinvite by accident.
