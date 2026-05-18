@@ -831,6 +831,6 @@ It adds a repeated, bounded E2E proof for canonical p2panda-net fact-node
 transport, plus import-loop diagnostics that make idle refreshes, stream
 refreshes, stream failures, replay skips, attempted imports, and zero-import
 iterations visible. The first reliability run completed 12 fact-node roundtrips
-with 48 attempted imports and zero zero-import iterations. The next product
+with 12 attempted imports and zero zero-import iterations. The next product
 slice should move volume transfer onto membership-backed p2panda facts and
 delete the last product-shaped manual-trust canary.

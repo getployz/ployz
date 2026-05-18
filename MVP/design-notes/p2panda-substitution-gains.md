@@ -63,7 +63,8 @@ Status:
   import batches, and sync lifecycle counters.
 - The current fix keeps p2panda-net as the product-shaped fact transport. It
   adds explicit address-book peer insertion for direct two-node tests and
-  better no-progress diagnostics instead of replacing the transport.
+  delayed publish-stream refresh for process-serving tests, plus better
+  no-progress diagnostics instead of replacing the transport.
 
 Remaining follow-up:
 

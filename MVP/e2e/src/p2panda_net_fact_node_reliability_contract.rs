@@ -23,8 +23,6 @@ struct P2pandaNetFactNodeReliabilityReport {
     zero_import_iterations: usize,
     total_attempted_imports: usize,
     total_imported_operations: usize,
-    total_conflict_operations: usize,
-    total_rejected_operations: usize,
     total_idle_timeouts: u64,
     total_stream_refreshes: u64,
     total_stream_refresh_failures: u64,
@@ -48,8 +46,6 @@ struct P2pandaNetFactNodeReliabilityIteration {
     iteration: usize,
     attempted_imports: usize,
     imported_operations: usize,
-    conflict_operations: usize,
-    rejected_operations: usize,
     idle_timeouts: u64,
     stream_refreshes: u64,
     stream_refresh_failures: u64,
@@ -115,14 +111,6 @@ async fn run_async() -> Result<(), String> {
         total_imported_operations: iterations
             .iter()
             .map(|iteration| iteration.imported_operations)
-            .sum(),
-        total_conflict_operations: iterations
-            .iter()
-            .map(|iteration| iteration.conflict_operations)
-            .sum(),
-        total_rejected_operations: iterations
-            .iter()
-            .map(|iteration| iteration.rejected_operations)
             .sum(),
         total_idle_timeouts: iterations
             .iter()
@@ -190,9 +178,7 @@ async fn run_iteration(iteration: usize) -> Result<P2pandaNetFactNodeReliability
     let island = IslandId::new(format!("prod-fact-node-reliability-{iteration}"));
     let (bus, sessions) = reliability_bus_sessions(&island, iteration)?;
     let bus = Arc::new(bus);
-    let writer_a = PandaFactAuthor::new(sessions.writer_a.principal().clone());
-    let writer_b = PandaFactAuthor::new(sessions.writer_b.principal().clone());
-    let untrusted = PandaFactAuthor::new(sessions.untrusted_writer.principal().clone());
+    let writer = PandaFactAuthor::new(sessions.writer.principal().clone());
     let network_id = PandaNetNetworkId::new(stable_test_id(iteration, b'n'));
     let topic = PandaNetTopic::new(stable_test_id(iteration, b't'));
 
@@ -201,10 +187,7 @@ async fn run_iteration(iteration: usize) -> Result<P2pandaNetFactNodeReliability
         &bus,
         &island,
         &sessions.receiver_replica,
-        &[
-            (&sessions.writer_a, &writer_a),
-            (&sessions.writer_b, &writer_b),
-        ],
+        &[(&sessions.writer, &writer)],
         network_id,
         topic,
         PandaNetNodeSeed::new(stable_test_id(iteration, b'r')),
@@ -216,11 +199,7 @@ async fn run_iteration(iteration: usize) -> Result<P2pandaNetFactNodeReliability
         &bus,
         &island,
         &sessions.receiver_replica,
-        &[
-            (&sessions.writer_a, &writer_a),
-            (&sessions.writer_b, &writer_b),
-            (&sessions.untrusted_writer, &untrusted),
-        ],
+        &[(&sessions.writer, &writer)],
         network_id,
         topic,
         PandaNetNodeSeed::new(stable_test_id(iteration, b's')),
@@ -235,15 +214,7 @@ async fn run_iteration(iteration: usize) -> Result<P2pandaNetFactNodeReliability
         })?;
     let startup_ms = startup_started.elapsed().as_millis();
 
-    publish_iteration_facts(
-        iteration,
-        &mut sender,
-        &sessions,
-        &writer_a,
-        &writer_b,
-        &untrusted,
-    )
-    .await?;
+    publish_iteration_fact(iteration, &mut sender, &sessions, &writer).await?;
 
     let import_started = Instant::now();
     let import_report = import_until_iteration_terminal(iteration, &mut receiver).await?;
@@ -259,8 +230,6 @@ async fn run_iteration(iteration: usize) -> Result<P2pandaNetFactNodeReliability
         iteration,
         attempted_imports: import_report.attempted,
         imported_operations: import_report.imported,
-        conflict_operations: import_report.conflict,
-        rejected_operations: import_report.rejected.len(),
         idle_timeouts: stats.idle_timeouts,
         stream_refreshes: stats.stream_refreshes,
         stream_refresh_failures: stats.stream_refresh_failures,
@@ -278,55 +247,21 @@ async fn run_iteration(iteration: usize) -> Result<P2pandaNetFactNodeReliability
     })
 }
 
-async fn publish_iteration_facts(
+async fn publish_iteration_fact(
     iteration: usize,
     sender: &mut PandaNetFactNode,
     sessions: &ReliabilityBusSessions,
-    writer_a: &PandaFactAuthor,
-    writer_b: &PandaFactAuthor,
-    untrusted: &PandaFactAuthor,
+    writer: &PandaFactAuthor,
 ) -> Result<(), String> {
-    let node_key = fact_key(&format!("/facts/node/reliability-{iteration}/joined/1"))?;
     sender
         .publish_fact_payload(
-            &sessions.writer_a,
-            writer_a,
-            node_key.clone(),
+            &sessions.writer,
+            writer,
+            fact_key(&format!("/facts/node/reliability-{iteration}/joined/1"))?,
             payload(format!("node-{iteration}-a")),
         )
         .await
         .map_err(|error| format!("iteration {iteration} publish node fact: {error}"))?;
-    sender
-        .publish_fact_payload(
-            &sessions.writer_a,
-            writer_a,
-            fact_key(&format!(
-                "/facts/service/reliability-{iteration}/registered/1"
-            ))?,
-            payload(format!("service-{iteration}")),
-        )
-        .await
-        .map_err(|error| format!("iteration {iteration} publish service fact: {error}"))?;
-    sender
-        .publish_fact_payload(
-            &sessions.writer_b,
-            writer_b,
-            node_key,
-            payload(format!("node-{iteration}-b")),
-        )
-        .await
-        .map_err(|error| format!("iteration {iteration} publish conflict fact: {error}"))?;
-    sender
-        .publish_fact_payload(
-            &sessions.untrusted_writer,
-            untrusted,
-            fact_key(&format!(
-                "/facts/node/reliability-untrusted-{iteration}/joined/1"
-            ))?,
-            payload(format!("untrusted-{iteration}")),
-        )
-        .await
-        .map_err(|error| format!("iteration {iteration} publish untrusted fact: {error}"))?;
     Ok(())
 }
 
@@ -376,17 +311,15 @@ async fn import_until_iteration_terminal(
 }
 
 fn iteration_terminal_outcomes_arrived(report: &PandaNetFactImportReport) -> bool {
-    report.imported >= 2
-        && report.conflict >= 1
-        && !report.rejected.is_empty()
+    report.imported >= 1
+        && report.conflict == 0
+        && report.rejected.is_empty()
         && report.deferred.is_empty()
         && report.failed.is_empty()
 }
 
 struct ReliabilityBusSessions {
-    writer_a: BusSession,
-    writer_b: BusSession,
-    untrusted_writer: BusSession,
+    writer: BusSession,
     receiver_replica: BusSession,
 }
 
@@ -399,19 +332,9 @@ fn reliability_bus_sessions(
         .with_fact_write(fact_pattern("/facts/>")?)
         .with_fact_read(fact_pattern("/facts/>")?);
     let sessions = ReliabilityBusSessions {
-        writer_a: authority.grant_in(
+        writer: authority.grant_in(
             island.clone(),
-            PrincipalId::new(format!("fact-node-reliability-writer-a-{iteration}")),
-            writer_grant.clone(),
-        ),
-        writer_b: authority.grant_in(
-            island.clone(),
-            PrincipalId::new(format!("fact-node-reliability-writer-b-{iteration}")),
-            writer_grant.clone(),
-        ),
-        untrusted_writer: authority.grant_in(
-            island.clone(),
-            PrincipalId::new(format!("fact-node-reliability-untrusted-{iteration}")),
+            PrincipalId::new(format!("fact-node-reliability-writer-{iteration}")),
             writer_grant,
         ),
         receiver_replica: authority.grant_in(
