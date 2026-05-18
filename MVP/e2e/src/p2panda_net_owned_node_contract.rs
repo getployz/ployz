@@ -7,7 +7,7 @@ use mvp_identity::NodeId;
 use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, PandaFactWireEnvelope};
 use mvp_p2panda_transport::{
     PandaNetBindConfig, PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetNode,
-    PandaNetNodeConfig, PandaNetNodeInfo, import_next_fact,
+    PandaNetNodeConfig, PandaNetNodeInfo, import_fact_body, import_next_fact,
 };
 use mvp_projection::{CandidateStatus, FactSource, NodeJoinedFact, ProjectionFactPayload};
 use p2panda_core_git::{SigningKey, Topic};
@@ -108,7 +108,6 @@ async fn run_async() -> Result<(), String> {
         },
     )
     .await?;
-    let projected_duplicate_wire = projected_wire.clone();
     let conflict_wire = write_node_wire(
         &mut source_b,
         &sessions.writer_b,
@@ -149,27 +148,8 @@ async fn run_async() -> Result<(), String> {
     )
     .await?;
 
-    let wire_operations = vec![
-        first_wire.clone(),
-        first_wire,
-        projected_wire,
-        conflict_wire,
-        projected_duplicate_wire,
-        untrusted_wire,
-        laptop_wire,
-        b"bad-envelope".to_vec(),
-    ];
-    let network_started = Instant::now();
-    let mut net = OwnedNetHarness::spawn(wire_operations).await?;
-    let network_sync_ms = network_started.elapsed().as_millis();
-
-    let unauthorized = import_next_fact(
-        net.stream_mut(),
-        &mut canonical,
-        &sessions.untrusted_replica,
-    )
-    .await
-    .map_err(|error| format!("import unauthorized owned-net replica body: {error}"))?;
+    let unauthorized =
+        import_fact_body(&first_wire, &mut canonical, &sessions.untrusted_replica).await;
     let unauthorized_replica_rejected = matches!(
         unauthorized,
         PandaNetFactImportOutcome::Rejected(
@@ -181,6 +161,19 @@ async fn run_async() -> Result<(), String> {
             "owned p2panda-net unauthorized replica produced {unauthorized:?}"
         ));
     }
+
+    let wire_operations = vec![
+        first_wire.clone(),
+        first_wire,
+        projected_wire,
+        conflict_wire,
+        untrusted_wire,
+        laptop_wire,
+        b"bad-envelope".to_vec(),
+    ];
+    let network_started = Instant::now();
+    let mut net = OwnedNetHarness::spawn(wire_operations).await?;
+    let network_sync_ms = network_started.elapsed().as_millis();
 
     let mut imported_operations = 0;
     let mut duplicate_operations = 0;
@@ -293,7 +286,7 @@ async fn run_async() -> Result<(), String> {
 
     let report = P2pandaNetOwnedNodeReport {
         scenario: "p2panda-net-owned-node-contract",
-        transported_operations: 8,
+        transported_operations: 7,
         imported_operations,
         duplicate_operations,
         conflict_candidates: conflict_candidates.len(),
