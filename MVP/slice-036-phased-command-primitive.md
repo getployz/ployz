@@ -10,9 +10,9 @@ plan: MVP/slice-036-phased-command-primitive-plan.md
 ## What Shipped
 
 - Added `mvp-commands` as the first opt-in command orchestration primitive.
-- Implemented `run_phased` with explicit phase steps, command phase-store
-  records, resume from latest phase, best-effort reverse compensation, and structured
-  phase-conflict errors.
+- Implemented `run_phased` with explicit phase steps, ordered command
+  phase-store records, resume from latest phase, conditional phase append,
+  best-effort reverse compensation, and structured phase-conflict errors.
 - Migrated environment promote and rollback onto the primitive while keeping
   branch as a plain command.
 - Updated `environment-branch-promote-rollback-contract` so promote and rollback
@@ -57,23 +57,25 @@ projection_rebuilds: 3
 serving_alive_without_command_adapter: true
 ```
 
-After review fixes, the final focused E2E reported `elapsed_ms: 299` with the
+After review fixes, the final focused E2E reported `elapsed_ms: 359` with the
 same projection rebuild and serving-alive evidence. The runner tests also cover
-resumed failure compensation, compensation after phase-write failure, immediate
-same-index phase conflict errors, and compensation-error suppression.
+full-history resumed failure compensation, compensation after phase-write
+failure, stale concurrent phase append rejection, p2panda phase conflict
+rejection, and compensation-error suppression preserving the original caller
+error.
 
 ## Semantic Leverage
 
 LOC is not the only target, but it is a useful warning light:
 
-- `mvp-commands` is 791 lines after the first lift.
-- `MVP/environment/src/command.rs` grew from 608 lines before the slice to 873
+- `mvp-commands` is 1,065 lines after the first lift and hardening pass.
+- `MVP/environment/src/command.rs` grew from 608 lines before the slice to 871
   lines because it now carries explicit promote and rollback phase enums.
 - The environment unit tests grew from 1,117 to 1,299 lines to cover phased
   resume for both commands.
-- The process-role E2E grew from 632 lines to 841 lines because it now includes
+- The process-role E2E grew from 632 lines to 976 lines because it now includes
   a p2panda-backed command phase store and reopens that store before resuming
-  promote and rollback.
+  promote and rollback with poisoned requests.
 
 The sidecar LOC investigation found a real deploy-shaped win but not yet a
 total MVP LOC win:
