@@ -55,9 +55,10 @@ Primary sources checked during this audit:
 - `p2panda-sync` 0.5.2 provides data-type-agnostic sync managers/protocols for
   append-only logs, with low documentation coverage and a lower-level API:
   <https://docs.rs/p2panda-sync/latest/p2panda_sync/>.
-- `p2panda-net` remains deferred because it would introduce a broader local-
-  first networking stack and currently sits on a different iroh line than this
-  MVP's transport direction.
+- `p2panda-net` crates.io 0.5.2 is currently a bad direct dependency fit, but
+  git `main` compiles in an isolated probe when `p2panda-store/sqlite` is
+  enabled explicitly. That makes p2panda-net an adopt-early candidate for the
+  sync/transport proof instead of something to dismiss.
 
 ## Substitution Ledger
 
@@ -71,7 +72,7 @@ Primary sources checked during this audit:
 | Bus fact store | `MVP/bus/src/facts.rs`, `MVP/projection/src/bus_source.rs` | Shrink to fixture, then delete from product proofs | Useful harness for early bus/projection proofs; not the durable fact direction. | Projection, deploy, serving, scale, and machine scenarios use p2panda or an explicitly named test fixture. |
 | Iroh docs fact source | `MVP/iroh/src/facts.rs` | Park, then delete or shrink to transport bridge | It is the largest remaining custom fact local-view wrapper. p2panda now owns operation envelope/storage; iroh-docs should not be hardened in parallel. | Port `iroh-docs-contract` semantics to p2panda persistence/sync: conflict candidates, unauthorized/unverified status, missing payload, projection rebuild. |
 | p2panda spike crate | `MVP/p2panda-spike/src/lib.rs` | Delete after persistent adapter proof | It has served its purpose as compile evidence. Keeping it risks two examples diverging. | `mvp-p2panda-facts` covers every spike behavior plus persistence. |
-| Operation export/import | `MVP/p2panda-facts/src/lib.rs` | Keep narrow until sync proof | Manual exchange is acceptable for deterministic local E2E. It is not a production sync protocol. | Persistent two-store proof first; then p2panda-sync two-party proof with offline catch-up. |
+| Operation export/import | `MVP/p2panda-facts/src/lib.rs` | Keep narrow until net/sync proof | Manual exchange is acceptable for deterministic local E2E. It is not a production sync protocol. | Persistent two-store proof first; then p2panda-net `LogSync` if workable, otherwise lower-level p2panda-sync with the net blocker documented. |
 | Membership/revocation | `MVP/mesh`, `MVP/machine`, bus grants | Spike `p2panda-auth` for membership only | Strong removal and eventually consistent group state map to island membership. Subject permissions, queue permissions, response permissions, and bridge imports/exports remain Ployz bus semantics. | Root add/remove/demote, concurrent remove/re-add, tombstone domination, and WireGuard projection tests. |
 | Advisory leases | `MVP/lease/src/lib.rs` | Keep reducer semantics; store as p2panda facts | Lease behavior is Ployz product semantics: TTL, renewal, epoch fencing, supersession, visible-node context, RAII release. p2panda can store signed facts, not decide lease policy. | ACME p2panda HTTP-01 contract after persistence. |
 | PloyzBus | `MVP/bus/src/*.rs` | Keep | p2panda does local-first sync/eventing. It does not replace NATS-shaped request/reply, no responders, request-many, queue groups, service registry, drain, subject grants, or bridge semantics. | Existing bus contracts and future iroh transport proof. |
@@ -96,40 +97,44 @@ substrate slice unlock deletion safely.
 
 ## Next Slice
 
-Plan and implement:
+Slice 019b completed the persistent p2panda fact-store proof:
+
+- `PandaFactStore` can open a persistent p2panda SQLite store.
+- Ployz derived indexes rebuild from stored p2panda operations.
+- The p2panda process-role serving proof projects gateway/DNS snapshots from a
+  persistent p2panda source while serving preserves last-good state.
+
+Plan and implement next:
 
 ```text
-Slice 019b: persistent p2panda fact store and restartable fact role
+Slice 020: p2panda-net fact replication between persistent stores
 ```
 
 Minimum proof:
 
-- `PandaFactStore` can use a persistent p2panda SQLite-backed store.
-- On open, it rebuilds all Ployz derived indexes from p2panda operations.
-- Duplicate, conflict, out-of-order, untrusted-key, revoked-author, missing
-  payload, and cross-island cases still produce structured outcomes.
-- A process-role E2E can kill/restart the fact role without losing fact truth.
-- Projection rebuilds SQLite and gateway/DNS snapshots from the reopened
-  p2panda operation log.
-- Serving keeps last-good state while the coordinator is down and while the
-  fact role is restarted.
-- The old `ProcessFactSource` is either deleted from at least one E2E path or
-  explicitly marked as a legacy fixture with no new users.
+- two persistent stores exchange missing p2panda log operations using
+  `p2panda-net::LogSync` where workable, not manual operation copying;
+- offline catch-up and repeated no-op sync are both idempotent;
+- same-key conflicts remain reducer-visible candidates after sync;
+- untrusted or unauthorized received operations do not become verified truth;
+- projection rebuilds SQLite and gateway/DNS snapshots from the synced store;
+- the large-load proof records sync/rebuild timings at 200, 1,000, and 10,000
+  synthetic fact counts.
 
 Target commands:
 
 ```text
 cd MVP && cargo test -p mvp-p2panda-facts --lib
 cd MVP && cargo run -p mvp-e2e -- p2panda-fact-source-contract
-cd MVP && cargo run -p mvp-e2e -- deploy-restart-recovery-contract
-cd MVP && cargo run -p mvp-e2e -- process-role-serving-contract
+cd MVP && cargo run -p mvp-e2e -- p2panda-process-role-serving-contract
+cd MVP && cargo run -p mvp-e2e -- p2panda-sync-fact-source-contract
 cd MVP && MVP_E2E_ALL_TIMEOUT=120s cargo run -p mvp-e2e -- all
 ```
 
 After that, unpark ACME as:
 
 ```text
-Slice 020: p2panda-backed ACME HTTP-01 with advisory lease facts
+Slice 021: p2panda-backed ACME HTTP-01 with advisory lease facts
 ```
 
 ## p2panda-auth Plan
@@ -151,21 +156,30 @@ Ployz command entry checks. Reject it for PloyzBus subject permissions unless a
 future proof shows conditions can express wildcard subjects, queue permissions,
 temporary reply permissions, and bridge imports/exports cleanly.
 
-## p2panda-sync Plan
+## p2panda-net / p2panda-sync Plan
 
-Do not adopt `p2panda-sync` before persistent stores exist. Sync without
-persistent reopen/index rebuild would prove less than the current manual
-export/import path.
+Persistent stores now exist, so Slice 020 should evaluate git `p2panda-net`
+first with:
 
-Evaluate it after Slice 019b with:
+- a pinned git revision, not a floating branch;
+- explicit `p2panda-store/sqlite` enabled in the MVP workspace;
+- two local iroh endpoints using address books, gossip, and `LogSync`;
+- one-shot catch-up plus, if `p2panda-net` gives it naturally, one live
+  post-convergence fact delivery;
+- Ployz import authorization and candidate status applied to every received
+  operation before it becomes verified truth.
+
+If `p2panda-net` blocks the adapter on API shape, fall back in the same slice
+to lower-level `p2panda-sync` with:
 
 - two persistent stores over a test transport;
 - offline catch-up after one side misses operations;
 - duplicate and out-of-order idempotency;
 - latency/lag metrics at 200, 1,000, and 10,000 synthetic fact counts.
 
-Prefer direct `p2panda-sync` before `p2panda-net`. `p2panda-net` brings a wider
-networking runtime and still does not express PloyzBus request/reply semantics.
+Even if `p2panda-net` works, it does not replace PloyzBus request/reply,
+queue groups, no-responders, subject grants, or bridge imports/exports. It is
+for event delivery and local-first fact convergence.
 
 ## What Not To Substitute
 
@@ -193,7 +207,7 @@ not part of this audit commit.
 Run before shipping this report:
 
 ```text
-git diff --check -- MVP/design-notes/p2panda-substitution-audit.md MVP/overall-plan.md MVP/primitive-decisions.md MVP/slice-019a-p2panda-substitution-audit-plan.md MVP/slice-019-p2panda-acme-http01-plan.md
+git diff --check -- MVP/design-notes/p2panda-substitution-audit.md MVP/overall-plan.md MVP/primitive-decisions.md MVP/slice-019a-p2panda-substitution-audit-plan.md MVP/slice-020-p2panda-sync-fact-replication-plan.md MVP/slice-021-p2panda-acme-http01-plan.md
 ```
 
 No cargo tests are required for the docs-only audit commit. The next
