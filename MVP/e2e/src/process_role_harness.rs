@@ -1728,10 +1728,16 @@ pub(crate) async fn run_p2panda_net_serving_scripted_publisher(
     publish_serving_input(&mut node, &session, &author, config.first).await?;
     if let Some(second) = config.second {
         sleep(config.second_delay).await;
+        node.refresh_publish_stream().await.map_err(|error| {
+            format!("refresh scripted publisher before second publish: {error}")
+        })?;
         publish_serving_input(&mut node, &session, &author, second).await?;
     }
     if config.publish_rejected {
         sleep(ROLE_REQUEST_PAUSE).await;
+        node.refresh_publish_stream().await.map_err(|error| {
+            format!("refresh scripted publisher before rejected publish: {error}")
+        })?;
         let rejected_author = PandaFactAuthor::new(rejected_principal);
         publish_serving_input(
             &mut node,
