@@ -149,10 +149,10 @@ Plan:
 
 Test scenarios:
 
-- `cargo --manifest-path MVP/Cargo.toml check -p mvp-p2panda-facts --all-targets`
-- `cargo --manifest-path MVP/Cargo.toml check -p mvp-p2panda-transport --all-targets`
-- `cargo --manifest-path MVP/Cargo.toml check -p mvp-p2panda-authz --all-targets`
-- `cargo --manifest-path MVP/Cargo.toml check --workspace`
+- `cargo check --manifest-path MVP/Cargo.toml -p mvp-p2panda-facts --all-targets`
+- `cargo check --manifest-path MVP/Cargo.toml -p mvp-p2panda-transport --all-targets`
+- `cargo check --manifest-path MVP/Cargo.toml -p mvp-p2panda-authz --all-targets`
+- `cargo check --manifest-path MVP/Cargo.toml --workspace`
 
 ### Unit 2: Promote Canonical Fact Operations
 
@@ -264,17 +264,17 @@ Plan:
 
 Test scenarios:
 
-- `cargo --manifest-path MVP/Cargo.toml run -p mvp-e2e -- p2panda-net-fact-node-contract`
-- `cargo --manifest-path MVP/Cargo.toml run -p mvp-e2e -- p2panda-net-sync-contract`
-- `cargo --manifest-path MVP/Cargo.toml run -p mvp-e2e -- p2panda-net-owned-node-contract`
-- `cargo --manifest-path MVP/Cargo.toml run -p mvp-e2e -- p2panda-net-process-serving-contract`
-- `cargo --manifest-path MVP/Cargo.toml run -p mvp-e2e -- p2panda-acme-http01-contract`
-- `cargo --manifest-path MVP/Cargo.toml run -p mvp-e2e -- deploy-commit-before-drain-contract`
-- `cargo --manifest-path MVP/Cargo.toml run -p mvp-e2e -- environment-branch-promote-rollback-contract`
-- `cargo --manifest-path MVP/Cargo.toml run -p mvp-e2e -- machine-remove-contract`
-- `cargo --manifest-path MVP/Cargo.toml run -p mvp-e2e -- volume-transfer-contract`
-- `cargo --manifest-path MVP/Cargo.toml run -p mvp-e2e -- scale-contract`
-- `cargo --manifest-path MVP/Cargo.toml run -p mvp-e2e -- all`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-net-fact-node-contract`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-net-sync-contract`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-net-owned-node-contract`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-net-process-serving-contract`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-acme-http01-contract`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-commit-before-drain-contract`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- environment-branch-promote-rollback-contract`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- machine-remove-contract`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- volume-transfer-contract`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- scale-contract`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- all`
 
 ## Success Criteria
 
