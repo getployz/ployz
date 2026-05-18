@@ -1,5 +1,6 @@
 use mvp_bus::{BusError, FactKey, FactKeyParseError, SubjectParseError};
 use mvp_identity::NodeId;
+use mvp_routing::RoutingError;
 use thiserror::Error;
 
 use crate::{
@@ -60,4 +61,19 @@ pub enum DeployError {
     SubjectParse(#[from] SubjectParseError),
     #[error(transparent)]
     FactKeyParse(#[from] FactKeyParseError),
+}
+
+impl From<RoutingError> for DeployError {
+    fn from(error: RoutingError) -> Self {
+        match error {
+            RoutingError::ProjectionCatchUpMissing => Self::ProjectionCatchUpMissing,
+            RoutingError::ProjectionCatchUpMismatch { serving_commit_id } => {
+                Self::ProjectionCatchUpMismatch { serving_commit_id }
+            }
+            RoutingError::ServingFactConflict { key } => Self::ServingFactConflict { key },
+            RoutingError::WirePayload { context, source } => Self::WirePayload { context, source },
+            RoutingError::Bus(error) => Self::Bus(error),
+            RoutingError::FactKeyParse(error) => Self::FactKeyParse(error),
+        }
+    }
 }

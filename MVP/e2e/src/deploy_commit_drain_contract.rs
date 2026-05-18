@@ -176,7 +176,7 @@ async fn run_async() -> Result<(), String> {
     mismatched_projection_commit.active_backends.clear();
     if !matches!(
         ProjectionCatchUp::from_report(&mismatched_projection_commit, &projected),
-        Err(mvp_deploy::DeployError::ProjectionCatchUpMismatch { .. })
+        Err(mvp_deploy::RoutingError::ProjectionCatchUpMismatch { .. })
     ) {
         return Err("projection proof accepted mismatched active backend content".to_string());
     }
