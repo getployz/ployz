@@ -15,8 +15,9 @@ use mvp_identity::{NodeId, VisibleNodes};
 use mvp_lease::{LeaseClaimed, LeaseFact, LeaseHolder, LeaseTimestamp};
 use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactOperation, PandaFactStore, PandaFactWriteOutcome,
+    SharedPandaFactStore,
 };
-use mvp_projection::{FactCandidate, FactSource, FactSourceError, FactSourceResult};
+use mvp_projection::{FactCandidate, FactSource, FactSourceResult};
 use mvp_volume::{
     BusVolumeParticipantClient, VolumeError, VolumeFactWriteOutcome, VolumeFactWriter, VolumeId,
     VolumeNamespace, VolumeOwnershipEvidence, VolumeOwnershipFact, VolumeOwnershipLeaseEvidence,
@@ -26,7 +27,6 @@ use mvp_volume::{
     decode_payload, encode_payload, volume_ownership_fact_key,
 };
 use serde::Serialize;
-use tokio::sync::Mutex;
 
 use crate::assertions::assert_eq_named;
 use crate::bus_syntax::pattern;
@@ -637,13 +637,14 @@ async fn prove_pre_commit_drop_has_no_new_owner(
 async fn import_panda_volume_facts(
     island: &IslandId,
     session: &BusSession,
-    author: &PandaFactAuthor,
+    author: Arc<PandaFactAuthor>,
     operations: &[PandaFactOperation],
     fact_authorizer: Arc<dyn FactAuthorizer>,
 ) -> Result<PandaVolumeFactStore, String> {
-    let mut imported = PandaFactStore::new(fact_authorizer);
+    let imported = SharedPandaFactStore::new(PandaFactStore::new(fact_authorizer));
     imported
         .trust_author_key(island, author.principal().clone(), author.author_key())
+        .await
         .map_err(|error| format!("trust p2panda volume author: {error}"))?;
     for operation in operations {
         imported
@@ -651,15 +652,12 @@ async fn import_panda_volume_facts(
             .await
             .map_err(|error| format!("import volume p2panda operation: {error}"))?;
     }
-    Ok(PandaVolumeFactStore::new(
-        imported,
-        Arc::new(PandaFactAuthor::new(session.principal().clone())),
-    ))
+    Ok(PandaVolumeFactStore::from_shared(imported, author))
 }
 
 #[derive(Clone)]
 struct PandaVolumeFactStore {
-    inner: Arc<Mutex<PandaFactStore>>,
+    inner: SharedPandaFactStore,
     author: Arc<PandaFactAuthor>,
     lease_writes: Arc<AtomicUsize>,
     ownership_writes: Arc<AtomicUsize>,
@@ -669,8 +667,12 @@ struct PandaVolumeFactStore {
 
 impl PandaVolumeFactStore {
     fn new(store: PandaFactStore, author: Arc<PandaFactAuthor>) -> Self {
+        Self::from_shared(SharedPandaFactStore::new(store), author)
+    }
+
+    fn from_shared(inner: SharedPandaFactStore, author: Arc<PandaFactAuthor>) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(store)),
+            inner,
             author,
             lease_writes: Arc::new(AtomicUsize::new(0)),
             ownership_writes: Arc::new(AtomicUsize::new(0)),
@@ -679,8 +681,8 @@ impl PandaVolumeFactStore {
         }
     }
 
-    fn author(&self) -> &PandaFactAuthor {
-        self.author.as_ref()
+    fn author(&self) -> Arc<PandaFactAuthor> {
+        Arc::clone(&self.author)
     }
 
     fn lease_writes(&self) -> usize {
@@ -700,12 +702,7 @@ impl PandaVolumeFactStore {
     }
 
     async fn export_operations(&self) -> Vec<PandaFactOperation> {
-        self.inner
-            .lock()
-            .await
-            .export_operations()
-            .cloned()
-            .collect()
+        self.inner.export_operations().await
     }
 
     async fn write_volume_ownership(
@@ -757,8 +754,6 @@ impl PandaVolumeFactStore {
         let started = Instant::now();
         let outcome = self
             .inner
-            .lock()
-            .await
             .write_fact_payload(session, self.author.as_ref(), key, payload)
             .await
             .map_err(|error| VolumeError::FactWrite {
@@ -781,12 +776,6 @@ impl PandaVolumeFactStore {
         }
         Ok(write_outcome)
     }
-
-    fn unavailable() -> FactSourceError {
-        FactSourceError::Unavailable {
-            name: "p2panda volume fact store is locked by a writer".to_string(),
-        }
-    }
 }
 
 impl FactSource for PandaVolumeFactStore {
@@ -796,10 +785,7 @@ impl FactSource for PandaVolumeFactStore {
         pattern: &FactKeyPattern,
         session: &BusSession,
     ) -> FactSourceResult<Vec<FactCandidate>> {
-        self.inner
-            .try_lock()
-            .map_err(|_| Self::unavailable())?
-            .list_candidates(island, pattern, session)
+        self.inner.list_candidates(island, pattern, session)
     }
 
     fn read_payloads(
@@ -808,10 +794,7 @@ impl FactSource for PandaVolumeFactStore {
         candidates: &[FactCandidate],
         session: &BusSession,
     ) -> FactSourceResult<BTreeMap<FactContentHash, FactPayload>> {
-        self.inner
-            .try_lock()
-            .map_err(|_| Self::unavailable())?
-            .read_payloads(island, candidates, session)
+        self.inner.read_payloads(island, candidates, session)
     }
 }
 
@@ -819,9 +802,8 @@ impl VolumeFactWriter for PandaVolumeFactStore {
     fn preflight(&self, session: &BusSession, key: &FactKey) -> VolumeResult<()> {
         if self
             .inner
-            .try_lock()
-            .map_err(|_| PandaVolumeFactStore::unavailable())?
-            .can_write_fact(session, key)
+            .try_can_write_fact(session, key)
+            .map_err(VolumeError::FactSource)?
         {
             return Ok(());
         }

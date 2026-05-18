@@ -1,32 +1,36 @@
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use mvp_bus::{BusSession, FactContentHash, FactKey, FactKeyPattern, FactPayload, IslandId};
-use mvp_machine::{MachineFactWriter, MachineRemoveError, MachineRemoveResult, WrittenMachineFact};
+use mvp_bus::{BusSession, FactKey, FactPayload};
+use mvp_machine::{
+    MachineFactWriter, MachineRemoveCleanupDoneFact, MachineRemoveDecisionFact, MachineRemoveError,
+    MachineRemoveId, MachineRemoveResult, WrittenMachineFact, machine_remove_cleanup_done_fact_key,
+    machine_remove_cleanup_done_fact_payload, machine_remove_decision_fact_key,
+    machine_remove_decision_fact_payload,
+};
 use mvp_mesh::{removal_started_fact_key, removal_started_fact_payload, tombstone_fact_key};
 use mvp_p2panda_facts::{
-    PandaFactAuthor, PandaFactAuthorKey, PandaFactOperation, PandaFactStore, PandaFactWriteOutcome,
+    PandaFactAuthor, PandaFactError, PandaFactWriteOutcome, SharedPandaFactStore,
 };
-use mvp_projection::{
-    FactCandidate, FactSource, FactSourceError, FactSourceResult, NodeRemovalStartedFact,
-    NodeTombstonedFact, ProjectionFactPayload,
-};
-use mvp_routing_p2panda::PandaServingFactSink;
-use tokio::sync::Mutex;
+use mvp_projection::{NodeRemovalStartedFact, NodeTombstonedFact, ProjectionFactPayload};
 
 #[derive(Clone)]
 pub struct PandaMachineFactStore {
-    store: Arc<Mutex<PandaFactStore>>,
+    inner: SharedPandaFactStore,
 }
 
 impl PandaMachineFactStore {
     #[must_use]
-    pub fn new(store: PandaFactStore) -> Self {
+    pub fn new(store: mvp_p2panda_facts::PandaFactStore) -> Self {
         Self {
-            store: Arc::new(Mutex::new(store)),
+            inner: SharedPandaFactStore::new(store),
         }
+    }
+
+    #[must_use]
+    pub fn shared(&self) -> SharedPandaFactStore {
+        self.inner.clone()
     }
 
     pub async fn write_fact_payload(
@@ -36,96 +40,70 @@ impl PandaMachineFactStore {
         key: FactKey,
         payload: FactPayload,
     ) -> mvp_p2panda_facts::Result<PandaFactWriteOutcome> {
-        self.store
-            .lock()
-            .await
+        self.inner
             .write_fact_payload(session, author, key, payload)
             .await
     }
 
     pub async fn trust_author_key(
         &self,
-        island: &IslandId,
+        island: &mvp_bus::IslandId,
         principal: mvp_bus::PrincipalId,
-        author_key: PandaFactAuthorKey,
+        author_key: mvp_p2panda_facts::PandaFactAuthorKey,
     ) -> mvp_p2panda_facts::Result<()> {
-        self.store
-            .lock()
-            .await
+        self.inner
             .trust_author_key(island, principal, author_key)
+            .await
     }
 
-    pub async fn trust_replica_peer(&self, island: &IslandId, principal: mvp_bus::PrincipalId) {
-        self.store
-            .lock()
-            .await
-            .trust_replica_peer(island, principal);
+    pub async fn trust_replica_peer(
+        &self,
+        island: &mvp_bus::IslandId,
+        principal: mvp_bus::PrincipalId,
+    ) {
+        self.inner.trust_replica_peer(island, principal).await;
     }
 
     pub async fn import_replica_operation(
         &self,
         session: &BusSession,
-        operation: &PandaFactOperation,
+        operation: &mvp_p2panda_facts::PandaFactOperation,
     ) -> mvp_p2panda_facts::Result<PandaFactWriteOutcome> {
-        self.store
-            .lock()
-            .await
+        self.inner
             .import_replica_operation(session, operation)
             .await
     }
 
-    pub async fn export_operations(&self) -> Vec<PandaFactOperation> {
-        self.store
-            .lock()
-            .await
-            .export_operations()
-            .cloned()
-            .collect()
-    }
-
-    fn unavailable() -> FactSourceError {
-        FactSourceError::Unavailable {
-            name: "p2panda machine fact store is locked by a writer".to_string(),
-        }
+    pub async fn export_operations(&self) -> Vec<mvp_p2panda_facts::PandaFactOperation> {
+        self.inner.export_operations().await
     }
 }
 
-impl PandaServingFactSink for PandaMachineFactStore {
-    fn write_fact_payload<'a>(
-        &'a self,
-        session: &'a BusSession,
-        author: &'a PandaFactAuthor,
-        key: FactKey,
-        payload: FactPayload,
-    ) -> Pin<Box<dyn Future<Output = mvp_p2panda_facts::Result<PandaFactWriteOutcome>> + Send + 'a>>
-    {
-        Box::pin(async move { self.write_fact_payload(session, author, key, payload).await })
+impl From<PandaMachineFactStore> for SharedPandaFactStore {
+    fn from(value: PandaMachineFactStore) -> Self {
+        value.inner
     }
 }
 
-impl FactSource for PandaMachineFactStore {
+impl mvp_projection::FactSource for PandaMachineFactStore {
     fn list_candidates(
         &self,
-        island: &IslandId,
-        pattern: &FactKeyPattern,
+        island: &mvp_bus::IslandId,
+        pattern: &mvp_bus::FactKeyPattern,
         session: &BusSession,
-    ) -> FactSourceResult<Vec<FactCandidate>> {
-        self.store
-            .try_lock()
-            .map_err(|_| Self::unavailable())?
-            .list_candidates(island, pattern, session)
+    ) -> mvp_projection::FactSourceResult<Vec<mvp_projection::FactCandidate>> {
+        self.inner.list_candidates(island, pattern, session)
     }
 
     fn read_payloads(
         &self,
-        island: &IslandId,
-        candidates: &[FactCandidate],
+        island: &mvp_bus::IslandId,
+        candidates: &[mvp_projection::FactCandidate],
         session: &BusSession,
-    ) -> FactSourceResult<BTreeMap<FactContentHash, FactPayload>> {
-        self.store
-            .try_lock()
-            .map_err(|_| Self::unavailable())?
-            .read_payloads(island, candidates, session)
+    ) -> mvp_projection::FactSourceResult<
+        std::collections::BTreeMap<mvp_bus::FactContentHash, FactPayload>,
+    > {
+        self.inner.read_payloads(island, candidates, session)
     }
 }
 
@@ -158,6 +136,7 @@ impl PandaMachineFactWriter {
     ) -> MachineRemoveResult<WrittenMachineFact> {
         let outcome = self
             .facts
+            .shared()
             .write_fact_payload(&self.session, self.author.as_ref(), key, payload)
             .await
             .map_err(|error| machine_fact_store_error(operation, error))?;
@@ -166,6 +145,18 @@ impl PandaMachineFactWriter {
 }
 
 impl MachineFactWriter for PandaMachineFactWriter {
+    fn write_remove_decision<'a>(
+        &'a self,
+        fact: MachineRemoveDecisionFact,
+    ) -> Pin<Box<dyn Future<Output = MachineRemoveResult<WrittenMachineFact>> + Send + 'a>> {
+        Box::pin(async move {
+            let key = machine_remove_decision_fact_key(&fact.remove_id())?;
+            let payload = machine_remove_decision_fact_payload(&fact)?;
+            self.write_machine_fact(key, payload, "write machine-remove decision fact")
+                .await
+        })
+    }
+
     fn write_removal_started<'a>(
         &'a self,
         fact: NodeRemovalStartedFact,
@@ -195,14 +186,26 @@ impl MachineFactWriter for PandaMachineFactWriter {
                 .await
         })
     }
+
+    fn write_cleanup_done<'a>(
+        &'a self,
+        fact: MachineRemoveCleanupDoneFact,
+    ) -> Pin<Box<dyn Future<Output = MachineRemoveResult<WrittenMachineFact>> + Send + 'a>> {
+        Box::pin(async move {
+            let key = machine_remove_cleanup_done_fact_key(&MachineRemoveId::new(
+                fact.target_node_id.clone(),
+                fact.removal_epoch,
+            ))?;
+            let payload = machine_remove_cleanup_done_fact_payload(&fact)?;
+            self.write_machine_fact(key, payload, "write machine-remove cleanup-done fact")
+                .await
+        })
+    }
 }
 
-fn machine_fact_store_error(
-    operation: &'static str,
-    error: mvp_p2panda_facts::PandaFactError,
-) -> MachineRemoveError {
+fn machine_fact_store_error(operation: &'static str, error: PandaFactError) -> MachineRemoveError {
     match error {
-        mvp_p2panda_facts::PandaFactError::UnauthorizedWrite {
+        PandaFactError::UnauthorizedWrite {
             island,
             principal,
             key,
@@ -211,13 +214,13 @@ fn machine_fact_store_error(
             principal,
             key,
         },
-        mvp_p2panda_facts::PandaFactError::PrincipalMismatch { session, author } => {
+        PandaFactError::PrincipalMismatch { session, author } => {
             MachineRemoveError::PrincipalMismatch { session, author }
         }
-        mvp_p2panda_facts::PandaFactError::UntrustedAuthorKey { island, principal } => {
+        PandaFactError::UntrustedAuthorKey { island, principal } => {
             MachineRemoveError::UntrustedAuthorKey { island, principal }
         }
-        mvp_p2panda_facts::PandaFactError::AuthorKeyMismatch { island, principal } => {
+        PandaFactError::AuthorKeyMismatch { island, principal } => {
             MachineRemoveError::AuthorKeyMismatch { island, principal }
         }
         error => MachineRemoveError::FactStore {
@@ -248,8 +251,11 @@ mod tests {
     use mvp_bus::{
         FactKey, FactKeyPattern, FactPayload, Grant, IslandId, PrincipalId, harness::InMemoryBus,
     };
-    use mvp_identity::NodeId;
-    use mvp_machine::{MachineFactWriter, MachineRemoveError};
+    use mvp_identity::{NodeId, VisibleNodes};
+    use mvp_machine::{
+        MachineFactWriter, MachineRemoveCleanupDoneFact, MachineRemoveDecisionFact,
+        MachineRemoveError, machine_remove_decision_fact_key, read_machine_remove_decision,
+    };
     use mvp_mesh::{removal_started_fact_key, tombstone_fact_key};
     use mvp_p2panda_facts::{PandaFactAuthor, PandaFactError, PandaFactStore};
     use mvp_projection::{
@@ -282,6 +288,7 @@ mod tests {
         let (raw_bus, authority) = InMemoryBus::new_with_authority();
         let island = IslandId::new("prod");
         let machine_grant = Grant::empty()
+            .with_fact_write(pattern("/facts/machine-remove/>"))
             .with_fact_write(pattern("/facts/node/*/removal_started/>"))
             .with_fact_write(pattern("/facts/node/*/tombstoned/>"));
         let join_grant = Grant::empty().with_fact_write(pattern("/facts/node/*/joined/>"));
@@ -376,6 +383,24 @@ mod tests {
         }
     }
 
+    fn decision_fact() -> MachineRemoveDecisionFact {
+        MachineRemoveDecisionFact::new(
+            NodeId::new("node-old"),
+            2,
+            3,
+            "remove".to_string(),
+            VisibleNodes::new([NodeId::new("node-old"), NodeId::new("node-new")]),
+            serving_commit(),
+        )
+    }
+
+    fn cleanup_done_fact() -> MachineRemoveCleanupDoneFact {
+        let decision = decision_fact();
+        let tombstone_key = tombstone_fact_key(&decision.target_node_id, decision.tombstone_epoch)
+            .expect("tombstone key");
+        MachineRemoveCleanupDoneFact::new(&decision, tombstone_key).expect("cleanup done")
+    }
+
     fn joined_payload(node_id: &NodeId) -> FactPayload {
         ProjectionFactPayload::NodeJoined(NodeJoinedFact {
             node_id: node_id.clone(),
@@ -394,6 +419,10 @@ mod tests {
         let fixture = fixture();
         let writer = machine_writer(&fixture);
 
+        let decision = writer
+            .write_remove_decision(decision_fact())
+            .await
+            .expect("write decision");
         let removal = writer
             .write_removal_started(removal_started("remove"))
             .await
@@ -402,12 +431,24 @@ mod tests {
             .write_tombstone(tombstone("remove"))
             .await
             .expect("write tombstone");
+        let cleanup_done = writer
+            .write_cleanup_done(cleanup_done_fact())
+            .await
+            .expect("write cleanup done");
 
+        assert_eq!(
+            decision.key.as_str(),
+            "/facts/machine-remove/node-old/2/decision"
+        );
         assert_eq!(
             removal.key.as_str(),
             "/facts/node/node-old/removal_started/2"
         );
         assert_eq!(tombstone.key.as_str(), "/facts/node/node-old/tombstoned/3");
+        assert_eq!(
+            cleanup_done.key.as_str(),
+            "/facts/machine-remove/node-old/2/cleanup/done"
+        );
     }
 
     #[tokio::test]
@@ -464,6 +505,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn conflicting_command_fact_is_foreground_failure() {
+        let fixture = fixture();
+        let writer_a = machine_writer(&fixture);
+        let writer_b = PandaMachineFactWriter::new(
+            fixture.facts.clone(),
+            fixture.machine_b.clone(),
+            Arc::clone(&fixture.machine_author_b),
+        );
+        let mut conflicting = decision_fact();
+        conflicting.reason = "other-remove".to_string();
+
+        writer_a
+            .write_remove_decision(decision_fact())
+            .await
+            .expect("first write");
+        let error = writer_b
+            .write_remove_decision(conflicting)
+            .await
+            .expect_err("conflicting decision");
+
+        assert!(matches!(
+            error,
+            MachineRemoveError::FactConflict { key }
+                if key == machine_remove_decision_fact_key(&decision_fact().remove_id())
+                    .expect("decision key")
+        ));
+    }
+
+    #[tokio::test]
     async fn unauthorized_machine_fact_write_is_foreground_failure() {
         let fixture = fixture();
         let writer = PandaMachineFactWriter::new(
@@ -481,6 +551,32 @@ mod tests {
             error,
             MachineRemoveError::UnauthorizedFactWrite { key, .. }
                 if key == tombstone_fact_key(&NodeId::new("node-old"), 3).expect("tombstone key")
+        ));
+    }
+
+    #[tokio::test]
+    async fn node_fact_only_writer_cannot_write_command_facts() {
+        let (raw_bus, authority) = InMemoryBus::new_with_authority();
+        let island = IslandId::new("prod");
+        let session = authority.grant_in(
+            island,
+            PrincipalId::new("node-only"),
+            Grant::empty().with_fact_write(pattern("/facts/node/*/tombstoned/>")),
+        );
+        let facts = PandaMachineFactStore::new(PandaFactStore::new(Arc::new(raw_bus)));
+        let author = Arc::new(PandaFactAuthor::new(session.principal().clone()));
+        let writer = PandaMachineFactWriter::new(facts, session, author);
+
+        let error = writer
+            .write_remove_decision(decision_fact())
+            .await
+            .expect_err("node-only writer cannot write decision");
+
+        assert!(matches!(
+            error,
+            MachineRemoveError::UnauthorizedFactWrite { key, .. }
+                if key == machine_remove_decision_fact_key(&decision_fact().remove_id())
+                    .expect("decision key")
         ));
     }
 
@@ -580,10 +676,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn imported_command_fact_is_readable_for_recovery() {
+        let fixture = fixture();
+        machine_writer(&fixture)
+            .write_remove_decision(decision_fact())
+            .await
+            .expect("write decision");
+        let operations = fixture.facts.export_operations().await;
+        let [operation] = operations.as_slice() else {
+            panic!("expected one exported operation");
+        };
+        let fresh = fixture_store_with_existing_authority(&fixture);
+        fresh
+            .trust_author_key(
+                fixture.replica.island(),
+                fixture.machine_a.principal().clone(),
+                fixture.machine_author_a.author_key(),
+            )
+            .await
+            .expect("trust machine author");
+        fresh
+            .trust_replica_peer(
+                fixture.replica.island(),
+                fixture.replica.principal().clone(),
+            )
+            .await;
+
+        fresh
+            .import_replica_operation(&fixture.replica, operation)
+            .await
+            .expect("trusted replica import");
+        let recovered = read_machine_remove_decision(
+            &fresh,
+            fixture.reader.island(),
+            &fixture.reader,
+            &decision_fact().remove_id(),
+        )
+        .expect("read imported decision");
+
+        assert_eq!(recovered.fact, decision_fact());
+    }
+
+    #[tokio::test]
     async fn routing_serving_writer_can_use_same_store() {
         let fixture = fixture();
         let writer = PandaServingFactWriter::new(
-            fixture.facts,
+            fixture.facts.shared(),
             fixture.routing_writer,
             fixture.routing_author,
         );
@@ -600,12 +738,18 @@ mod tests {
         let (raw_bus, authority) = InMemoryBus::new_with_authority();
         let island = fixture.reader.island().clone();
         let machine_grant = Grant::empty()
+            .with_fact_write(pattern("/facts/machine-remove/>"))
             .with_fact_write(pattern("/facts/node/*/removal_started/>"))
             .with_fact_write(pattern("/facts/node/*/tombstoned/>"));
         authority.grant_in(
             island.clone(),
             fixture.machine_a.principal().clone(),
             machine_grant,
+        );
+        authority.grant_in(
+            island.clone(),
+            fixture.reader.principal().clone(),
+            Grant::empty().with_fact_read(pattern("/facts/>")),
         );
         authority.grant_in(island, fixture.replica.principal().clone(), Grant::empty());
         PandaMachineFactStore::new(PandaFactStore::new(Arc::new(raw_bus)))
@@ -635,7 +779,7 @@ mod tests {
             .await
             .expect("write tombstone");
         let serving_writer = PandaServingFactWriter::new(
-            fixture.facts.clone(),
+            fixture.facts.shared(),
             fixture.routing_writer.clone(),
             Arc::clone(&fixture.routing_author),
         );

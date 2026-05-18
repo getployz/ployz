@@ -2,45 +2,36 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use mvp_bus::{BusSession, FactKey, FactPayload};
-use mvp_p2panda_facts::{PandaFactAuthor, PandaFactWriteOutcome};
+use mvp_bus::BusSession;
+use mvp_p2panda_facts::{PandaFactAuthor, PandaFactWriteOutcome, SharedPandaFactStore};
 use mvp_routing::{
     RoutingError, RoutingResult, ServingCommitPlan, ServingFactWriter, WrittenServingFact,
     serving_commit_fact_key, serving_commit_fact_payload,
 };
 
-pub trait PandaServingFactSink: Send + Sync {
-    fn write_fact_payload<'a>(
-        &'a self,
-        session: &'a BusSession,
-        author: &'a PandaFactAuthor,
-        key: FactKey,
-        payload: FactPayload,
-    ) -> Pin<Box<dyn Future<Output = mvp_p2panda_facts::Result<PandaFactWriteOutcome>> + Send + 'a>>;
-}
-
 #[derive(Clone)]
-pub struct PandaServingFactWriter<S> {
-    sink: S,
+pub struct PandaServingFactWriter {
+    facts: SharedPandaFactStore,
     session: BusSession,
     author: Arc<PandaFactAuthor>,
 }
 
-impl<S> PandaServingFactWriter<S> {
+impl PandaServingFactWriter {
     #[must_use]
-    pub fn new(sink: S, session: BusSession, author: Arc<PandaFactAuthor>) -> Self {
+    pub fn new(
+        facts: impl Into<SharedPandaFactStore>,
+        session: BusSession,
+        author: Arc<PandaFactAuthor>,
+    ) -> Self {
         Self {
-            sink,
+            facts: facts.into(),
             session,
             author,
         }
     }
 }
 
-impl<S> ServingFactWriter for PandaServingFactWriter<S>
-where
-    S: PandaServingFactSink,
-{
+impl ServingFactWriter for PandaServingFactWriter {
     fn write_serving_commit<'a>(
         &'a self,
         commit: &'a ServingCommitPlan,
@@ -49,7 +40,7 @@ where
             let key = serving_commit_fact_key(&commit.serving_commit_id)?;
             let payload = serving_commit_fact_payload(commit)?;
             let outcome = self
-                .sink
+                .facts
                 .write_fact_payload(&self.session, self.author.as_ref(), key, payload)
                 .await
                 .map_err(|error| RoutingError::FactSource(error.into()))?;
@@ -76,57 +67,21 @@ fn serving_fact_outcome(outcome: PandaFactWriteOutcome) -> RoutingResult<Written
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
-    use std::pin::Pin;
     use std::sync::Arc;
 
     use mvp_bus::{FactKeyPattern, Grant, IslandId, PrincipalId};
     use mvp_identity::NodeId;
-    use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, PandaFactWriteOutcome};
+    use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, SharedPandaFactStore};
     use mvp_projection::{BackendEndpoint, DnsRecordFact, RouteId};
     use mvp_routing::{
         DnsCommitId, GatewayCommitId, RouteCommitId, RoutingError, ServingCommitId,
         ServingCommitPlan, ServingFactWriteStatus, ServingFactWriter,
     };
-    use tokio::sync::Mutex;
 
-    use crate::{PandaServingFactSink, PandaServingFactWriter};
-
-    #[derive(Clone)]
-    struct SharedStore {
-        store: Arc<Mutex<PandaFactStore>>,
-    }
-
-    impl SharedStore {
-        fn new(store: PandaFactStore) -> Self {
-            Self {
-                store: Arc::new(Mutex::new(store)),
-            }
-        }
-    }
-
-    impl PandaServingFactSink for SharedStore {
-        fn write_fact_payload<'a>(
-            &'a self,
-            session: &'a mvp_bus::BusSession,
-            author: &'a PandaFactAuthor,
-            key: mvp_bus::FactKey,
-            payload: mvp_bus::FactPayload,
-        ) -> Pin<
-            Box<dyn Future<Output = mvp_p2panda_facts::Result<PandaFactWriteOutcome>> + Send + 'a>,
-        > {
-            Box::pin(async move {
-                self.store
-                    .lock()
-                    .await
-                    .write_fact_payload(session, author, key, payload)
-                    .await
-            })
-        }
-    }
+    use crate::PandaServingFactWriter;
 
     fn fixture() -> (
-        SharedStore,
+        SharedPandaFactStore,
         mvp_bus::BusSession,
         mvp_bus::BusSession,
         Arc<PandaFactAuthor>,
@@ -148,7 +103,7 @@ mod tests {
         let author_a = Arc::new(PandaFactAuthor::new(session_a.principal().clone()));
         let author_b = Arc::new(PandaFactAuthor::new(session_b.principal().clone()));
         (
-            SharedStore::new(PandaFactStore::new(Arc::new(raw_bus))),
+            SharedPandaFactStore::new(PandaFactStore::new(Arc::new(raw_bus))),
             session_a,
             session_b,
             author_a,

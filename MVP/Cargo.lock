@@ -2762,7 +2762,6 @@ dependencies = [
  "mvp-p2panda-facts",
  "mvp-projection",
  "mvp-routing",
- "mvp-routing-p2panda",
  "tokio",
 ]
 

@@ -28,7 +28,7 @@ use p2panda_sync::protocols::{
 use p2panda_sync::traits::Protocol;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::broadcast;
+use tokio::sync::{Mutex, broadcast};
 
 const LOG_SYNC_MESSAGE_CAPACITY: usize = 128;
 const LOG_SYNC_EVENT_CAPACITY: usize = 1_024;
@@ -1317,6 +1317,130 @@ impl FactSource for PandaFactStore {
     }
 }
 
+#[derive(Clone)]
+pub struct SharedPandaFactStore {
+    store: Arc<Mutex<PandaFactStore>>,
+}
+
+impl SharedPandaFactStore {
+    #[must_use]
+    pub fn new(store: PandaFactStore) -> Self {
+        Self {
+            store: Arc::new(Mutex::new(store)),
+        }
+    }
+
+    pub async fn write_fact_payload(
+        &self,
+        session: &BusSession,
+        author: &PandaFactAuthor,
+        key: FactKey,
+        payload: FactPayload,
+    ) -> Result<PandaFactWriteOutcome> {
+        self.store
+            .lock()
+            .await
+            .write_fact_payload(session, author, key, payload)
+            .await
+    }
+
+    pub async fn trust_author_key(
+        &self,
+        island: &IslandId,
+        principal: PrincipalId,
+        author_key: PandaFactAuthorKey,
+    ) -> Result<()> {
+        self.store
+            .lock()
+            .await
+            .trust_author_key(island, principal, author_key)
+    }
+
+    pub async fn trust_replica_peer(&self, island: &IslandId, principal: PrincipalId) {
+        self.store
+            .lock()
+            .await
+            .trust_replica_peer(island, principal);
+    }
+
+    pub async fn import_operation(
+        &self,
+        session: &BusSession,
+        operation: &PandaFactOperation,
+    ) -> Result<PandaFactWriteOutcome> {
+        self.store
+            .lock()
+            .await
+            .import_operation(session, operation)
+            .await
+    }
+
+    pub async fn import_replica_operation(
+        &self,
+        session: &BusSession,
+        operation: &PandaFactOperation,
+    ) -> Result<PandaFactWriteOutcome> {
+        self.store
+            .lock()
+            .await
+            .import_replica_operation(session, operation)
+            .await
+    }
+
+    pub async fn export_operations(&self) -> Vec<PandaFactOperation> {
+        self.store
+            .lock()
+            .await
+            .export_operations()
+            .cloned()
+            .collect()
+    }
+
+    pub fn try_can_write_fact(
+        &self,
+        session: &BusSession,
+        key: &FactKey,
+    ) -> FactSourceResult<bool> {
+        Ok(self
+            .store
+            .try_lock()
+            .map_err(|_| self.unavailable())?
+            .can_write_fact(session, key))
+    }
+
+    fn unavailable(&self) -> FactSourceError {
+        FactSourceError::Unavailable {
+            name: "p2panda fact store".to_string(),
+        }
+    }
+}
+
+impl FactSource for SharedPandaFactStore {
+    fn list_candidates(
+        &self,
+        island: &IslandId,
+        pattern: &FactKeyPattern,
+        session: &BusSession,
+    ) -> FactSourceResult<Vec<FactCandidate>> {
+        self.store
+            .try_lock()
+            .map_err(|_| self.unavailable())?
+            .list_candidates(island, pattern, session)
+    }
+
+    fn read_payloads(
+        &self,
+        island: &IslandId,
+        candidates: &[FactCandidate],
+        session: &BusSession,
+    ) -> FactSourceResult<BTreeMap<FactContentHash, FactPayload>> {
+        self.store
+            .try_lock()
+            .map_err(|_| self.unavailable())?
+            .read_payloads(island, candidates, session)
+    }
+}
+
 fn exact_pattern(candidate: &FactCandidate) -> FactKeyPattern {
     FactKeyPattern::parse(candidate.key().as_str())
         .expect("stored fact candidate key is always a valid exact fact pattern")
@@ -1991,6 +2115,190 @@ mod tests {
             .await
             .expect("write conflict after reopen");
         assert!(matches!(conflict, PandaFactWriteOutcome::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn shared_store_writes_reads_and_checks_preflight() {
+        let (store, authority) = store_with_authority();
+        let shared = SharedPandaFactStore::new(store);
+        let session = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty()
+                .with_fact_write(pattern("/facts/>"))
+                .with_fact_read(pattern("/facts/>")),
+        );
+        let readonly = grant_prod(
+            &authority,
+            "reader",
+            Grant::empty().with_fact_read(pattern("/facts/>")),
+        );
+        let author = PandaFactAuthor::new(principal("writer"));
+        let fact_key = key("/facts/node/node-1/joined/1");
+
+        assert!(
+            shared
+                .try_can_write_fact(&session, &fact_key)
+                .expect("preflight")
+        );
+        assert!(
+            !shared
+                .try_can_write_fact(&readonly, &fact_key)
+                .expect("readonly preflight")
+        );
+
+        let inserted = shared
+            .write_fact_payload(
+                &session,
+                &author,
+                fact_key.clone(),
+                FactPayload::from_static(b"joined"),
+            )
+            .await
+            .expect("write shared fact");
+        let repeated = shared
+            .write_fact_payload(
+                &session,
+                &author,
+                fact_key,
+                FactPayload::from_static(b"joined"),
+            )
+            .await
+            .expect("repeat shared fact");
+        assert!(matches!(inserted, PandaFactWriteOutcome::Inserted(_)));
+        assert!(matches!(
+            repeated,
+            PandaFactWriteOutcome::AlreadyPresent(_)
+        ));
+
+        let candidates = shared
+            .list_candidates(session.island(), &pattern("/facts/node/>"), &session)
+            .expect("list candidates");
+        assert_eq!(candidates.len(), 1);
+        let payloads = shared
+            .read_payloads(session.island(), &candidates, &session)
+            .expect("read payloads");
+        assert_eq!(payloads.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn shared_store_preserves_author_and_replica_import_modes() {
+        let (source_store, authority) = store_with_authority();
+        let source = SharedPandaFactStore::new(source_store);
+        let writer = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty()
+                .with_fact_write(pattern("/facts/>"))
+                .with_fact_read(pattern("/facts/>")),
+        );
+        let author = PandaFactAuthor::new(principal("writer"));
+        source
+            .write_fact_payload(
+                &writer,
+                &author,
+                key("/facts/node/node-1/joined/1"),
+                FactPayload::from_static(b"joined"),
+            )
+            .await
+            .expect("write source fact");
+        let operations = source.export_operations().await;
+
+        let (author_import_bus, author_import_authority) = InMemoryBus::new_with_authority();
+        let author_import_writer = grant_prod(
+            &author_import_authority,
+            "writer",
+            Grant::empty()
+                .with_fact_write(pattern("/facts/>"))
+                .with_fact_read(pattern("/facts/>")),
+        );
+        let author_import = SharedPandaFactStore::new(store_from_bus(author_import_bus));
+        author_import
+            .trust_author_key(
+                author_import_writer.island(),
+                author_import_writer.principal().clone(),
+                author.author_key(),
+            )
+            .await
+            .expect("trust author");
+        let imported = author_import
+            .import_operation(&author_import_writer, &operations[0])
+            .await
+            .expect("direct author import");
+        assert!(matches!(imported, PandaFactWriteOutcome::Inserted(_)));
+
+        let (replica_import_bus, replica_import_authority) = InMemoryBus::new_with_authority();
+        let replica_import_writer = grant_prod(
+            &replica_import_authority,
+            "writer",
+            Grant::empty()
+                .with_fact_write(pattern("/facts/>"))
+                .with_fact_read(pattern("/facts/>")),
+        );
+        let replica_importer = grant_prod(
+            &replica_import_authority,
+            "replica",
+            Grant::empty().with_fact_read(pattern("/facts/>")),
+        );
+        let replica_import = SharedPandaFactStore::new(store_from_bus(replica_import_bus));
+        replica_import
+            .trust_author_key(
+                replica_import_writer.island(),
+                replica_import_writer.principal().clone(),
+                author.author_key(),
+            )
+            .await
+            .expect("trust replica author");
+        replica_import
+            .trust_replica_peer(replica_importer.island(), replica_importer.principal().clone())
+            .await;
+        let imported = replica_import
+            .import_replica_operation(&replica_importer, &operations[0])
+            .await
+            .expect("trusted replica import");
+        assert!(matches!(imported, PandaFactWriteOutcome::Inserted(_)));
+    }
+
+    #[tokio::test]
+    async fn shared_store_keeps_original_p2panda_write_errors() {
+        let (store, authority) = store_with_authority();
+        let shared = SharedPandaFactStore::new(store);
+        let session = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty().with_fact_read(pattern("/facts/>")),
+        );
+        let author = PandaFactAuthor::new(principal("writer"));
+        let error = shared
+            .write_fact_payload(
+                &session,
+                &author,
+                key("/facts/node/node-1/joined/1"),
+                FactPayload::from_static(b"joined"),
+            )
+            .await
+            .expect_err("unauthorized write");
+        assert!(matches!(error, PandaFactError::UnauthorizedWrite { .. }));
+    }
+
+    #[tokio::test]
+    async fn shared_store_fact_source_reports_unavailable_while_write_locked() {
+        let (store, authority) = store_with_authority();
+        let shared = SharedPandaFactStore::new(store);
+        let session = grant_prod(
+            &authority,
+            "reader",
+            Grant::empty().with_fact_read(pattern("/facts/>")),
+        );
+        let _guard = shared.store.lock().await;
+
+        let error = shared
+            .list_candidates(session.island(), &pattern("/facts/>"), &session)
+            .expect_err("locked store");
+        assert!(matches!(
+            error,
+            FactSourceError::Unavailable { name } if name == "p2panda fact store"
+        ));
     }
 
     #[tokio::test]

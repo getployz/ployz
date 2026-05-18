@@ -9,11 +9,9 @@ publish = false
 mvp-bus = { path = "../bus" }
 mvp-deploy = { path = "../deploy" }
 mvp-p2panda-facts = { path = "../p2panda-facts" }
-mvp-projection = { path = "../projection" }
-mvp-routing = { path = "../routing" }
-mvp-routing-p2panda = { path = "../routing-p2panda" }
-tokio = { version = "1", features = ["sync"] }
 
 [dev-dependencies]
 mvp-identity = { path = "../identity" }
+mvp-projection = { path = "../projection" }
+mvp-routing = { path = "../routing" }
 tokio = { version = "1", features = ["macros", "rt"] }

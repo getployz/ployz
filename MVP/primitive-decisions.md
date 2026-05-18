@@ -44,10 +44,22 @@ the decision concrete.
   `PandaFactStore::read_payloads`: if a caller lists one candidate and the
   candidate's current status changes before payload read, the store withholds
   the stale payload instead of making each adapter revalidate exact keys.
-- `PandaServingFactSink` is deliberately narrow and adapter-local. There is
-  only one production implementor today, so do not promote it into
-  `mvp-p2panda-facts` or a broader store facade until a second command repeats
-  the same storage boundary.
+- Slice 029 centralizes cloneable p2panda store mechanics in
+  `mvp_p2panda_facts::SharedPandaFactStore`. Deploy, machine, routing, and the
+  volume E2E fixture now share the same async write/import/export wrapper and
+  non-blocking `FactSource` delegation instead of each owning
+  `Arc<Mutex<PandaFactStore>>`.
+- Slice 029 deletes the routing-owned `PandaServingFactSink` abstraction instead
+  of promoting it. `PandaServingFactWriter` depends directly on
+  `SharedPandaFactStore`; a generic payload sink should only return if there
+  are multiple real non-test implementations.
+- Slice 029 keeps domain writers domain-specific. `SharedPandaFactStore`
+  returns p2panda outcomes and `PandaFactError`; deploy, machine, routing, and
+  volume code still own conversion into command errors, metrics, and
+  command-specific write outcomes.
+- Slice 029 preserves two replay modes: direct author-key import for recovery
+  paths that validate the original author, and trusted-replica import for
+  replica rebuild paths. Do not hide these behind one generic sync helper.
 - Slice 027 adds `mvp-volume` as the first volume movement canary. Volume
   ownership authority is an immutable fact
   `/facts/volume/<namespace>/<volume>/ownership/<epoch>` with embedded transfer
