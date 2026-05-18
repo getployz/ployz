@@ -1547,6 +1547,14 @@ async fn run_p2panda_net_import_apply_loop(
     import_status: Arc<Mutex<P2pandaNetImportStatus>>,
 ) {
     loop {
+        if let Err(error) =
+            refresh_p2panda_net_membership_authority(Arc::clone(&state), Arc::clone(&fact_node))
+                .await
+        {
+            import_status.lock().await.last_failure = Some(error);
+            sleep(ROLE_REQUEST_PAUSE).await;
+            continue;
+        }
         let batch = {
             let mut fact_node = fact_node.lock().await;
             fact_node
@@ -1631,6 +1639,29 @@ async fn run_p2panda_net_import_apply_loop(
             }
         }
     }
+}
+
+async fn refresh_p2panda_net_membership_authority(
+    state: Arc<Mutex<ServingProjectionState>>,
+    fact_node: Arc<Mutex<PandaNetFactNode>>,
+) -> Result<(), String> {
+    let (source_config, island) = {
+        let state = state.lock().await;
+        (state.source_config.clone(), state.expected_island.clone())
+    };
+    let ServingProjectionFactSourceConfig::P2pandaSqlite(config) = source_config else {
+        return Ok(());
+    };
+    let membership = membership_authority_for(&config.authority, &island).await?;
+    for writer in &config.authority.fact_writers {
+        require_membership_writer(&membership.snapshot, writer)?;
+    }
+    let store = {
+        let fact_node = fact_node.lock().await;
+        fact_node.store()
+    };
+    store.install_authority_snapshot(membership.snapshot).await;
+    Ok(())
 }
 
 fn import_outcome_should_apply(outcome: &PandaNetFactImportOutcome) -> bool {
@@ -2894,6 +2925,9 @@ async fn open_membership_backed_p2panda_store(
         authority.grant_in(config.island.clone(), principal.clone(), Grant::empty())
     });
     let membership = membership_authority_for(config.authority, config.island).await?;
+    if let Some(principal) = config.replica_principal {
+        require_membership_replica_importer(&membership.snapshot, principal)?;
+    }
     for writer in &config.authority.fact_writers {
         require_membership_writer(&membership.snapshot, writer)?;
         let grant = match config.writer_read_access {
@@ -2953,6 +2987,20 @@ fn require_membership_writer(
     }
     Err(format!(
         "p2panda fact writer {} is not an active membership writer for island {}",
+        principal.as_str(),
+        snapshot.island().as_str()
+    ))
+}
+
+fn require_membership_replica_importer(
+    snapshot: &IslandAuthoritySnapshot,
+    principal: &PrincipalId,
+) -> Result<(), String> {
+    if snapshot.active_replica_importer(principal).is_some() {
+        return Ok(());
+    }
+    Err(format!(
+        "p2panda replica {} is not an active membership replica importer for island {}",
         principal.as_str(),
         snapshot.island().as_str()
     ))

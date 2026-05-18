@@ -2101,6 +2101,13 @@ impl SharedPandaFactStore {
             .trust_replica_peer(island, principal);
     }
 
+    pub async fn install_authority_snapshot(&self, authority: IslandAuthoritySnapshot) {
+        self.store
+            .lock()
+            .await
+            .install_authority_snapshot(authority);
+    }
+
     pub async fn import_operation(
         &self,
         session: &BusSession,
