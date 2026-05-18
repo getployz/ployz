@@ -25,6 +25,7 @@ struct P2pandaNetProcessServingReport {
     remote_updates_imported: usize,
     malformed_messages_rejected: usize,
     stream_idle_refreshes_after_malformed: usize,
+    replayed_operations_skipped_after_malformed: u64,
     local_mutation_failure: String,
     serving_process_alive_after_update: bool,
     baseline_gateway_revision: String,
@@ -178,9 +179,12 @@ async fn run_async() -> Result<(), String> {
     })
     .await?;
     let malformed_refreshes = p2panda_status(&malformed_status)?.stream_idle_refreshes;
+    let malformed_replays = p2panda_status(&malformed_status)?.replayed_operations_skipped;
     let malformed_after_refresh_status = wait_for_p2panda_net_status(&serving_socket, |status| {
         status.p2panda_net().is_some_and(|p2panda| {
-            p2panda.stream_idle_refreshes > malformed_refreshes && p2panda.rejected == 1
+            p2panda.stream_idle_refreshes > malformed_refreshes
+                && p2panda.rejected == 1
+                && p2panda.replayed_operations_skipped > malformed_replays
         })
     })
     .await?;
@@ -268,6 +272,7 @@ async fn run_async() -> Result<(), String> {
         remote_updates_imported: updated_p2panda.imported,
         malformed_messages_rejected: malformed_p2panda.rejected,
         stream_idle_refreshes_after_malformed: malformed_p2panda.stream_idle_refreshes,
+        replayed_operations_skipped_after_malformed: malformed_p2panda.replayed_operations_skipped,
         local_mutation_failure,
         serving_process_alive_after_update,
         baseline_gateway_revision,
@@ -278,6 +283,11 @@ async fn run_async() -> Result<(), String> {
     assert_eq_named("baseline imported count", baseline_p2panda.imported, 1)?;
     assert_eq_named("updated imported count", updated_p2panda.imported, 2)?;
     assert_eq_named("malformed rejected count", malformed_p2panda.rejected, 1)?;
+    if malformed_p2panda.replayed_operations_skipped == 0 {
+        return Err(
+            "malformed replay skipped count: expected at least one skipped replay".to_string(),
+        );
+    }
     assert_eq_named(
         "p2panda-net serving alive after update",
         report.serving_process_alive_after_update,

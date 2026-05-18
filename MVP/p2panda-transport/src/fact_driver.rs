@@ -4,8 +4,6 @@ use mvp_p2panda_facts::{
     PandaFactWireEnvelopeError, PandaFactWriteOutcome, SharedPandaFactStore,
 };
 
-use crate::{PandaNetStream, PandaNetTransportError};
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum PandaNetFactImportOutcome {
     Imported,
@@ -109,15 +107,6 @@ pub enum PandaNetFactImportRejection {
     },
     InvalidOperation,
     InvalidExtensions,
-}
-
-pub async fn import_next_fact(
-    stream: &mut PandaNetStream,
-    store: &mut PandaFactStore,
-    replica_session: &BusSession,
-) -> Result<PandaNetFactImportOutcome, PandaNetTransportError> {
-    let body = stream.next_body().await?;
-    Ok(import_fact_body(&body, store, replica_session).await)
 }
 
 pub async fn import_fact_body(

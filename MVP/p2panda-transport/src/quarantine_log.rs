@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 
 use crate::PandaNetTransportError;
 
-pub type PandaNetLogId = u64;
+pub(crate) type PandaNetLogId = u64;
 pub(crate) type PandaNetStore = MemoryStore<PandaNetLogId, ()>;
 
 #[derive(Clone)]
@@ -42,14 +42,14 @@ impl TopicMap<TopicId, Logs<PandaNetLogId>> for PandaNetTopicMap {
 }
 
 #[derive(Clone)]
-pub struct PandaNetQuarantineLog {
+pub(crate) struct PandaNetQuarantineLog {
     store: PandaNetStore,
     topic_map: PandaNetTopicMap,
     private_key: PrivateKey,
 }
 
 impl PandaNetQuarantineLog {
-    pub fn new(private_key: PrivateKey) -> Self {
+    pub(crate) fn new(private_key: PrivateKey) -> Self {
         Self {
             store: MemoryStore::new(),
             topic_map: PandaNetTopicMap::new(),
@@ -65,7 +65,7 @@ impl PandaNetQuarantineLog {
         self.topic_map.clone()
     }
 
-    pub async fn append_to_topic(
+    pub(crate) async fn append_to_topic(
         &mut self,
         topic: TopicId,
         body: &[u8],
@@ -85,6 +85,29 @@ impl PandaNetQuarantineLog {
             header,
             body: Some(body),
         })
+    }
+
+    pub(crate) async fn store_received_operation(
+        &mut self,
+        topic: TopicId,
+        operation: &Operation<()>,
+        log_id: PandaNetLogId,
+    ) -> Result<(), PandaNetTransportError> {
+        let header_bytes = operation.header.to_bytes();
+        self.store
+            .insert_operation(
+                operation.hash,
+                &operation.header,
+                operation.body.as_ref(),
+                &header_bytes,
+                &log_id,
+            )
+            .await
+            .map_err(quarantine_store_error)?;
+        self.topic_map
+            .associate(topic, operation.header.public_key, log_id)
+            .await;
+        Ok(())
     }
 
     async fn create_operation(
