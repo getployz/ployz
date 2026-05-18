@@ -80,7 +80,7 @@ key.
 
 New code:
 
-- `mvp-p2panda-authz`: 18 compile-backed tests and a narrow adapter over
+- `mvp-p2panda-authz`: 19 compile-backed tests and a narrow adapter over
   p2panda-auth group state.
 
 Reviewer caveat addressed: the spike no longer uses the p2panda-auth operation
