@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::Path;
 use std::time::Instant;
 
 use serde::Serialize;
@@ -7,12 +6,12 @@ use serde::Serialize;
 use crate::assertions::assert_eq_named;
 use crate::metrics::{reset_dir, scenario_dir, write_json};
 use crate::process_role_harness::{
-    RoleMutationStatus, RoleRequest, RoleServingStatus, RoleStatus, RoleSuccess,
-    ServingCommitInput, assert_local_mutation_unavailable,
+    RoleMutationStatus, RoleRequest, RoleServingStatus, RoleStatus, ServingCommitInput,
+    assert_local_mutation_unavailable, assert_serving_role_answer,
     cleanup_orphaned_children as cleanup_process_role_children, commit_serving,
     request_await_rebuild, request_begin_rebuild, request_project_once, request_reload,
-    request_role, request_status, run_remote_injector, spawn_process_role, wait_for_coordinator,
-    wait_for_serving_role,
+    request_role, request_status, run_remote_injector, serving_role_gateway_revision,
+    spawn_process_role, wait_for_coordinator, wait_for_serving_role,
 };
 
 const OUTAGE_PROBES: usize = 3;
@@ -89,16 +88,17 @@ async fn run_async() -> Result<(), String> {
     )?;
     request_project_once(&serving_socket).await?;
     let baseline_status = request_reload(&serving_socket).await?;
-    assert_role_answer(&serving_socket, "fd00::1:8080", "fd00::1").await?;
+    assert_serving_role_answer(&serving_socket, "fd00::1:8080", "fd00::1", "process role").await?;
     let commit_to_reload_us = commit_started.elapsed().as_micros();
-    let baseline_gateway_revision = gateway_revision(&baseline_status)?;
+    let baseline_gateway_revision = serving_role_gateway_revision(&baseline_status)?;
 
     let coordinator_killed = coordinator.kill_and_wait().await?;
     let serving_process_alive_after_kill = serving.is_running()?;
 
     let mut coordinator_outage_query_probes = 0;
     for _ in 0..OUTAGE_PROBES {
-        assert_role_answer(&serving_socket, "fd00::1:8080", "fd00::1").await?;
+        assert_serving_role_answer(&serving_socket, "fd00::1:8080", "fd00::1", "process role")
+            .await?;
         coordinator_outage_query_probes += 1;
     }
     let role_status_after_kill = request_status(&serving_socket).await?;
@@ -131,9 +131,9 @@ async fn run_async() -> Result<(), String> {
     )?;
     request_project_once(&serving_socket).await?;
     let updated_status = request_reload(&serving_socket).await?;
-    assert_role_answer(&serving_socket, "fd00::2:8080", "fd00::2").await?;
+    assert_serving_role_answer(&serving_socket, "fd00::2:8080", "fd00::2", "process role").await?;
     let remote_commit_to_reload_us = remote_started.elapsed().as_micros();
-    let updated_gateway_revision = gateway_revision(&updated_status)?;
+    let updated_gateway_revision = serving_role_gateway_revision(&updated_status)?;
 
     fs::remove_file(root.join("projections.sqlite")).map_err(|error| {
         format!("delete projection sqlite during process-role serving: {error}")
@@ -146,11 +146,11 @@ async fn run_async() -> Result<(), String> {
         rebuilding_status.rebuild_in_progress,
         Some(token),
     )?;
-    assert_role_answer(&serving_socket, "fd00::2:8080", "fd00::2").await?;
+    assert_serving_role_answer(&serving_socket, "fd00::2:8080", "fd00::2", "process role").await?;
     let rebuild_query_probes = 1;
     request_await_rebuild(&serving_socket, token).await?;
     request_reload(&serving_socket).await?;
-    assert_role_answer(&serving_socket, "fd00::2:8080", "fd00::2").await?;
+    assert_serving_role_answer(&serving_socket, "fd00::2:8080", "fd00::2", "process role").await?;
     let projection_rebuild_us = rebuild_started.elapsed().as_micros();
 
     request_role(&serving_socket, &RoleRequest::Shutdown)
@@ -169,7 +169,8 @@ async fn run_async() -> Result<(), String> {
     )?;
     wait_for_serving_role(&restarted_socket).await?;
     request_reload(&restarted_socket).await?;
-    assert_role_answer(&restarted_socket, "fd00::2:8080", "fd00::2").await?;
+    assert_serving_role_answer(&restarted_socket, "fd00::2:8080", "fd00::2", "process role")
+        .await?;
     let serving_restart_us = restart_started.elapsed().as_micros();
     let final_status = request_status(&restarted_socket).await?;
     let stale_snapshot_age_us = snapshot_age_us(&final_status)?;
@@ -215,59 +216,6 @@ async fn run_async() -> Result<(), String> {
     println!("{json}");
     eprintln!("PASS process-role-serving-contract");
     Ok(())
-}
-
-async fn assert_role_answer(socket: &Path, backend: &str, dns: &str) -> Result<(), String> {
-    let route = match request_role(
-        socket,
-        &RoleRequest::QueryGateway {
-            host: "WEB.EXAMPLE.TEST".to_string(),
-        },
-    )
-    .await
-    .map_err(|error| format!("query gateway through serving role: {error:?}"))?
-    {
-        RoleSuccess::GatewayRoute { route: Some(route) } => route,
-        other => return Err(format!("unexpected gateway response: {other:?}")),
-    };
-    let [actual_backend] = route.backends.as_slice() else {
-        return Err(format!(
-            "expected exactly one gateway backend, got {:?}",
-            route.backends
-        ));
-    };
-    assert_eq_named(
-        "process role gateway backend",
-        actual_backend.address.as_str(),
-        backend,
-    )?;
-
-    let records = match request_role(
-        socket,
-        &RoleRequest::QueryDns {
-            name: "web.example.test".to_string(),
-            record_type: "aaaa".to_string(),
-        },
-    )
-    .await
-    .map_err(|error| format!("query dns through serving role: {error:?}"))?
-    {
-        RoleSuccess::DnsRecords { records } => records,
-        other => return Err(format!("unexpected dns response: {other:?}")),
-    };
-    let [record] = records.as_slice() else {
-        return Err(format!("expected exactly one dns record, got {records:?}"));
-    };
-    assert_eq_named("process role dns value", record.value.as_str(), dns)
-}
-
-fn gateway_revision(status: &RoleServingStatus) -> Result<String, String> {
-    match status {
-        RoleServingStatus::Available {
-            gateway_revision, ..
-        } => Ok(gateway_revision.clone()),
-        other => Err(format!("serving role was not available: {other:?}")),
-    }
 }
 
 fn snapshot_age_us(status: &RoleStatus) -> Result<u64, String> {

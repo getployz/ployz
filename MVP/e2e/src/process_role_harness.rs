@@ -12,6 +12,9 @@ use mvp_bus::{BusSession, FactKeyPattern, Grant, IslandId, PrincipalId, harness:
 use mvp_deploy::{DnsCommitId, GatewayCommitId, RouteCommitId, ServingCommitId, ServingCommitPlan};
 use mvp_identity::NodeId;
 use mvp_mesh::{WireGuardAppliedSnapshot, WireGuardSnapshotPaths, load_applied_snapshot};
+use mvp_p2panda_facts::{
+    PandaFactAuthorKey, PandaFactStore, PandaSqliteOpenConfig, PandaTrustedAuthorKey,
+};
 use mvp_projection::{
     BackendEndpoint, DnsRecordFact, DnsRecordProjection, FactSource, GatewayRouteProjection,
     ProjectionActorHandle, ProjectionActorStatus, ProjectionFactPayload, ProjectionReport, RouteId,
@@ -39,6 +42,7 @@ const ROLE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const ROLE_REQUEST_READ_TIMEOUT: Duration = Duration::from_millis(250);
 const ROLE_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const ROLE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+const FACT_SOURCE_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
 const ROLE_MAX_REQUEST_BYTES: usize = 64 * 1024;
 const READY_TIMEOUT: Duration = Duration::from_secs(3);
 const CHILD_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -217,6 +221,73 @@ pub(crate) async fn request_status(socket: &Path) -> Result<RoleStatus, String> 
     {
         RoleSuccess::Status(status) => Ok(status),
         other => Err(format!("unexpected status response: {other:?}")),
+    }
+}
+
+pub(crate) async fn assert_serving_role_answer(
+    socket: &Path,
+    backend: &str,
+    dns: &str,
+    context: &str,
+) -> Result<(), String> {
+    let route = match request_role(
+        socket,
+        &RoleRequest::QueryGateway {
+            host: "WEB.EXAMPLE.TEST".to_string(),
+        },
+    )
+    .await
+    .map_err(|error| format!("query {context} gateway through serving role: {error:?}"))?
+    {
+        RoleSuccess::GatewayRoute { route: Some(route) } => route,
+        other => return Err(format!("unexpected {context} gateway response: {other:?}")),
+    };
+    let [actual_backend] = route.backends.as_slice() else {
+        return Err(format!(
+            "expected exactly one {context} gateway backend, got {:?}",
+            route.backends
+        ));
+    };
+    if actual_backend.address.as_str() != backend {
+        return Err(format!(
+            "{context} gateway backend mismatch: expected {backend}, got {}",
+            actual_backend.address.as_str()
+        ));
+    }
+
+    let records = match request_role(
+        socket,
+        &RoleRequest::QueryDns {
+            name: "web.example.test".to_string(),
+            record_type: "aaaa".to_string(),
+        },
+    )
+    .await
+    .map_err(|error| format!("query {context} dns through serving role: {error:?}"))?
+    {
+        RoleSuccess::DnsRecords { records } => records,
+        other => return Err(format!("unexpected {context} dns response: {other:?}")),
+    };
+    let [record] = records.as_slice() else {
+        return Err(format!(
+            "expected exactly one {context} dns record, got {records:?}"
+        ));
+    };
+    if record.value.as_str() != dns {
+        return Err(format!(
+            "{context} dns value mismatch: expected {dns}, got {}",
+            record.value.as_str()
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn serving_role_gateway_revision(status: &RoleServingStatus) -> Result<String, String> {
+    match status {
+        RoleServingStatus::Available {
+            gateway_revision, ..
+        } => Ok(gateway_revision.clone()),
+        other => Err(format!("serving role was not available: {other:?}")),
     }
 }
 
@@ -551,6 +622,7 @@ impl Drop for RunningChild {
 pub(crate) struct ServingProjectionRoleConfig {
     root: PathBuf,
     socket: PathBuf,
+    fact_source: ServingProjectionFactSourceConfig,
 }
 
 impl ServingProjectionRoleConfig {
@@ -559,13 +631,28 @@ impl ServingProjectionRoleConfig {
         Self {
             root: root.into(),
             socket: socket.into(),
+            fact_source: ServingProjectionFactSourceConfig::ProcessFiles,
         }
     }
 
     fn parse(args: &[String]) -> Result<Self, String> {
-        let (root, socket) = parse_root_socket_flags(args, "serving-projection")?;
-        Ok(Self { root, socket })
+        parse_serving_projection_flags(args)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ServingProjectionFactSourceConfig {
+    ProcessFiles,
+    P2pandaSqlite {
+        path: PathBuf,
+        trusted_author: Box<TrustedP2pandaAuthor>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrustedP2pandaAuthor {
+    principal: PrincipalId,
+    author_key: PandaFactAuthorKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -587,6 +674,76 @@ impl LocalCoordinatorRoleConfig {
         let (root, socket) = parse_root_socket_flags(args, "local-coordinator")?;
         Ok(Self { root, socket })
     }
+}
+
+fn parse_serving_projection_flags(args: &[String]) -> Result<ServingProjectionRoleConfig, String> {
+    let role = "serving-projection";
+    let mut root = None;
+    let mut socket = None;
+    let mut fact_source = ServingProjectionFactSourceKind::ProcessFiles;
+    let mut p2panda_path = None;
+    let mut p2panda_author = None;
+    let mut p2panda_author_key = None;
+    let mut remaining = args;
+    while let [flag, value, tail @ ..] = remaining {
+        match flag.as_str() {
+            "--root" => root = Some(PathBuf::from(value)),
+            "--socket" => socket = Some(PathBuf::from(value)),
+            "--fact-source" => {
+                fact_source = match value.as_str() {
+                    "process" => ServingProjectionFactSourceKind::ProcessFiles,
+                    "p2panda-sqlite" => ServingProjectionFactSourceKind::P2pandaSqlite,
+                    other => {
+                        return Err(format!(
+                            "{role} --fact-source must be process or p2panda-sqlite, got '{other}'"
+                        ));
+                    }
+                };
+            }
+            "--p2panda-path" => p2panda_path = Some(PathBuf::from(value)),
+            "--p2panda-author" => p2panda_author = Some(PrincipalId::new(value.clone())),
+            "--p2panda-author-key" => {
+                p2panda_author_key =
+                    Some(PandaFactAuthorKey::parse_hex(value).map_err(|error| {
+                        format!("{role} --p2panda-author-key failed validation: {error}")
+                    })?)
+            }
+            other => return Err(format!("unknown {role} flag '{other}'")),
+        }
+        remaining = tail;
+    }
+    if !remaining.is_empty() {
+        return Err(format!(
+            "{role} arguments must be flag/value pairs, got {remaining:?}"
+        ));
+    }
+    let fact_source = match fact_source {
+        ServingProjectionFactSourceKind::ProcessFiles => {
+            ServingProjectionFactSourceConfig::ProcessFiles
+        }
+        ServingProjectionFactSourceKind::P2pandaSqlite => {
+            ServingProjectionFactSourceConfig::P2pandaSqlite {
+                path: p2panda_path.ok_or_else(|| format!("{role} requires --p2panda-path"))?,
+                trusted_author: Box::new(TrustedP2pandaAuthor {
+                    principal: p2panda_author
+                        .ok_or_else(|| format!("{role} requires --p2panda-author"))?,
+                    author_key: p2panda_author_key
+                        .ok_or_else(|| format!("{role} requires --p2panda-author-key"))?,
+                }),
+            }
+        }
+    };
+    Ok(ServingProjectionRoleConfig {
+        root: root.ok_or_else(|| format!("{role} requires --root"))?,
+        socket: socket.ok_or_else(|| format!("{role} requires --socket"))?,
+        fact_source,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServingProjectionFactSourceKind {
+    ProcessFiles,
+    P2pandaSqlite,
 }
 
 fn parse_root_socket_flags(
@@ -756,6 +913,13 @@ impl ServingCommitInput {
     }
 }
 
+pub(crate) fn serving_commit_payload_for_input(
+    input: &ServingCommitInput,
+) -> Result<Vec<u8>, String> {
+    let plan = serving_commit_plan(input).map_err(|error| error.to_string())?;
+    serving_commit_payload(&plan).map_err(|error| error.to_string())
+}
+
 fn parse_remote_replication_injector_flags(
     args: &[String],
 ) -> Result<RemoteReplicationInjectorConfig, String> {
@@ -818,7 +982,9 @@ pub(crate) async fn run_serving_projection_role(
     }
     let listener = UnixListener::bind(&config.socket)
         .map_err(|error| format!("bind serving-projection socket: {error}"))?;
-    let state = Arc::new(Mutex::new(ServingProjectionState::new(config.clone())?));
+    let state = Arc::new(Mutex::new(
+        ServingProjectionState::new(config.clone()).await?,
+    ));
     loop {
         let (stream, _addr) = listener
             .accept()
@@ -1475,13 +1641,7 @@ async fn wire_role_status(
 async fn project_once(
     state: Arc<Mutex<ServingProjectionState>>,
 ) -> Result<RoleSuccess, RoleFailure> {
-    let projection = {
-        let state = state.lock().await;
-        if state.rebuild.is_some() {
-            return Err(RoleFailure::busy("rebuild already in progress"));
-        }
-        state.projection.clone()
-    };
+    let projection = refresh_projection(Arc::clone(&state)).await?;
     let report = projection
         .project_once(PROJECT_TIMEOUT)
         .await
@@ -1523,15 +1683,35 @@ async fn reload_serving(
 async fn begin_rebuild(
     state: Arc<Mutex<ServingProjectionState>>,
 ) -> Result<RoleSuccess, RoleFailure> {
-    let token = {
+    let (token, projection) = {
         let mut state = state.lock().await;
         if state.rebuild.is_some() {
             return Err(RoleFailure::busy("rebuild already in progress"));
         }
         let token = state.next_rebuild_token;
         state.next_rebuild_token += 1;
+        let source_config = state.source_config.clone();
+        let root = state.root.clone();
+        let expected_island = state.expected_island.clone();
+        let projection_session = state.projection_session.clone();
+        let pattern = state.pattern.clone();
+        let snapshot_paths = state.snapshot_paths.clone();
+        drop(state);
+        let projection = spawn_fresh_projection(
+            &source_config,
+            root.as_path(),
+            &expected_island,
+            &projection_session,
+            &pattern,
+            &snapshot_paths,
+        )
+        .await
+        .map_err(RoleFailure::projection)?;
+        (token, projection)
+    };
+    let token = {
+        let mut state = state.lock().await;
         let (release_tx, release_rx) = oneshot::channel();
-        let projection = state.fresh_projection();
         state.projection = projection.clone();
         let handle = tokio::spawn(async move {
             if release_rx.await.is_err() {
@@ -1691,7 +1871,7 @@ async fn serving_handle(
 struct ServingProjectionState {
     expected_island: IslandId,
     projection_session: BusSession,
-    source: Arc<ProcessFactSource>,
+    source_config: ServingProjectionFactSourceConfig,
     root: PathBuf,
     snapshot_paths: ServingSnapshotPaths,
     pattern: FactKeyPattern,
@@ -1723,26 +1903,26 @@ fn spawn_wire_serving_state(config: &WireRoleConfig) -> Result<WireServingState,
 }
 
 impl ServingProjectionState {
-    fn new(config: ServingProjectionRoleConfig) -> Result<Self, String> {
+    async fn new(config: ServingProjectionRoleConfig) -> Result<Self, String> {
         let expected_island = IslandId::new("prod");
         let projection_principal = PrincipalId::new("projection");
         let pattern = fact_pattern("/facts/>")?;
-        let source = Arc::new(ProcessFactSource::new(
-            config.root.join("facts"),
-            ProcessFactReadPolicy::allow(
-                expected_island.clone(),
-                projection_principal.clone(),
-                vec![pattern.clone()],
-            ),
-        )?);
         let projection_session =
             identity_session(expected_island.clone(), projection_principal.clone());
         let snapshot_paths = ServingSnapshotPaths::new(
             config.root.join("gateway.snapshot"),
             config.root.join("dns.snapshot"),
         );
+        let source = open_serving_fact_source(
+            &config.fact_source,
+            config.root.as_path(),
+            &expected_island,
+            &projection_principal,
+            &pattern,
+        )
+        .await?;
         let projection = spawn_projection(
-            Arc::clone(&source),
+            source,
             expected_island.clone(),
             projection_session.clone(),
             pattern.clone(),
@@ -1752,7 +1932,7 @@ impl ServingProjectionState {
         Ok(Self {
             expected_island,
             projection_session,
-            source,
+            source_config: config.fact_source,
             root: config.root,
             snapshot_paths,
             pattern,
@@ -1761,17 +1941,6 @@ impl ServingProjectionState {
             rebuild: None,
             next_rebuild_token: 1,
         })
-    }
-
-    fn fresh_projection(&self) -> ProjectionActorHandle {
-        spawn_projection(
-            Arc::clone(&self.source),
-            self.expected_island.clone(),
-            self.projection_session.clone(),
-            self.pattern.clone(),
-            self.root.as_path(),
-            &self.snapshot_paths,
-        )
     }
 }
 
@@ -1794,20 +1963,129 @@ impl RebuildState {
     }
 }
 
+async fn refresh_projection(
+    state: Arc<Mutex<ServingProjectionState>>,
+) -> Result<ProjectionActorHandle, RoleFailure> {
+    let (source_config, root, expected_island, projection_session, pattern, snapshot_paths) = {
+        let state = state.lock().await;
+        if state.rebuild.is_some() {
+            return Err(RoleFailure::busy("rebuild already in progress"));
+        }
+        (
+            state.source_config.clone(),
+            state.root.clone(),
+            state.expected_island.clone(),
+            state.projection_session.clone(),
+            state.pattern.clone(),
+            state.snapshot_paths.clone(),
+        )
+    };
+    let projection = spawn_fresh_projection(
+        &source_config,
+        root.as_path(),
+        &expected_island,
+        &projection_session,
+        &pattern,
+        &snapshot_paths,
+    )
+    .await
+    .map_err(RoleFailure::projection)?;
+    {
+        let mut state = state.lock().await;
+        state.projection = projection.clone();
+    }
+    Ok(projection)
+}
+
 fn identity_session(island: IslandId, principal: PrincipalId) -> BusSession {
     let (_bus, authority) = InMemoryBus::new_with_authority();
     authority.grant_in(island, principal, Grant::empty())
 }
 
+async fn spawn_fresh_projection(
+    source_config: &ServingProjectionFactSourceConfig,
+    root: &Path,
+    island: &IslandId,
+    session: &BusSession,
+    pattern: &FactKeyPattern,
+    snapshot_paths: &ServingSnapshotPaths,
+) -> Result<ProjectionActorHandle, String> {
+    let source = timeout(
+        FACT_SOURCE_REFRESH_TIMEOUT,
+        open_serving_fact_source(source_config, root, island, session.principal(), pattern),
+    )
+    .await
+    .map_err(|_| {
+        format!("refresh serving fact source exceeded {FACT_SOURCE_REFRESH_TIMEOUT:?}")
+    })??;
+    Ok(spawn_projection(
+        source,
+        island.clone(),
+        session.clone(),
+        pattern.clone(),
+        root,
+        snapshot_paths,
+    ))
+}
+
+async fn open_serving_fact_source(
+    config: &ServingProjectionFactSourceConfig,
+    root: &Path,
+    island: &IslandId,
+    projection_principal: &PrincipalId,
+    pattern: &FactKeyPattern,
+) -> Result<Arc<dyn FactSource>, String> {
+    match config {
+        ServingProjectionFactSourceConfig::ProcessFiles => {
+            let source = ProcessFactSource::new(
+                root.join("facts"),
+                ProcessFactReadPolicy::allow(
+                    island.clone(),
+                    projection_principal.clone(),
+                    vec![pattern.clone()],
+                ),
+            )?;
+            Ok(Arc::new(source))
+        }
+        ServingProjectionFactSourceConfig::P2pandaSqlite {
+            path,
+            trusted_author,
+        } => {
+            let (bus, authority) = InMemoryBus::new_with_authority();
+            authority.grant_in(
+                island.clone(),
+                projection_principal.clone(),
+                Grant::empty().with_fact_read(pattern.clone()),
+            );
+            authority.grant_in(
+                island.clone(),
+                trusted_author.principal.clone(),
+                Grant::empty().with_fact_write(pattern.clone()),
+            );
+            let store = PandaFactStore::open_sqlite(
+                Arc::new(bus),
+                PandaSqliteOpenConfig::new(path.clone(), vec![island.clone()])
+                    .with_trusted_author_key(PandaTrustedAuthorKey::new(
+                        island.clone(),
+                        trusted_author.principal.clone(),
+                        trusted_author.author_key,
+                    )),
+            )
+            .await
+            .map_err(|error| format!("open p2panda serving fact source: {error}"))?;
+            Ok(Arc::new(store))
+        }
+    }
+}
+
 fn spawn_projection(
-    source: Arc<ProcessFactSource>,
+    source: Arc<dyn FactSource>,
     island: IslandId,
     session: BusSession,
     pattern: FactKeyPattern,
     root: &Path,
     snapshot_paths: &ServingSnapshotPaths,
 ) -> ProjectionActorHandle {
-    let source: Arc<dyn FactSource> = source;
     ProjectionActorHandle::spawn(
         source,
         island,
