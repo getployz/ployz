@@ -808,66 +808,6 @@ fn command_phase_index(key: &FactKey, command: &CommandName, intent: &IntentId) 
     index.parse().ok()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn p2panda_command_phase_conflict_blocks_history_read() {
-        let root = scenario_dir("environment-command-phase-conflict-test");
-        reset_dir(&root).expect("reset test dir");
-        let island = IslandId::new("prod");
-        let author = Arc::new(PandaFactAuthor::new(PrincipalId::new(
-            "environment-operator",
-        )));
-        let (raw_bus, session) = p2panda_writer_bus(&island, author.principal());
-        let fact_authorizer: Arc<dyn FactAuthorizer> = Arc::new(raw_bus);
-        let store = SharedPandaFactStore::new(
-            PandaFactStore::open_sqlite(
-                Arc::clone(&fact_authorizer),
-                PandaSqliteOpenConfig::new(root.join("facts.sqlite"), vec![island.clone()])
-                    .with_trusted_author_key(PandaTrustedAuthorKey::new(
-                        island,
-                        author.principal().clone(),
-                        author.author_key(),
-                    )),
-            )
-            .await
-            .expect("open p2panda store"),
-        );
-        let command = CommandName::parse("environment.promote").expect("command name");
-        let intent = IntentId::parse("promote-conflict").expect("intent id");
-        let key = command_phase_fact_key(&command, &intent, 1).expect("phase key");
-        store
-            .write_fact_payload(
-                &session,
-                &author,
-                key.clone(),
-                FactPayload::from(br#""DecisionWritten""#.to_vec()),
-            )
-            .await
-            .expect("write first phase candidate");
-        store
-            .write_fact_payload(
-                &session,
-                &author,
-                key.clone(),
-                FactPayload::from(br#""ServingCommitWritten""#.to_vec()),
-            )
-            .await
-            .expect("write conflicting phase candidate");
-        let phase_store = PandaCommandPhaseStore::new(store, session, author);
-
-        let error = phase_store
-            .read_phase_history(&command, &intent)
-            .expect_err("conflict blocks phase resume");
-
-        assert!(
-            matches!(error, CommandError::PhaseConflict { key: error_key } if error_key == key)
-        );
-    }
-}
-
 async fn rebuild_projection(socket: &std::path::Path) -> Result<(), String> {
     let token = request_begin_rebuild(socket).await?;
     request_await_rebuild(socket, token).await?;
@@ -973,4 +913,64 @@ fn catch_up(island: &IslandId, plan: &ServingCommitPlan) -> ProjectionCatchUp {
         },
     )
     .expect("projection catch-up")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn p2panda_command_phase_conflict_blocks_history_read() {
+        let root = scenario_dir("environment-command-phase-conflict-test");
+        reset_dir(&root).expect("reset test dir");
+        let island = IslandId::new("prod");
+        let author = Arc::new(PandaFactAuthor::new(PrincipalId::new(
+            "environment-operator",
+        )));
+        let (raw_bus, session) = p2panda_writer_bus(&island, author.principal());
+        let fact_authorizer: Arc<dyn FactAuthorizer> = Arc::new(raw_bus);
+        let store = SharedPandaFactStore::new(
+            PandaFactStore::open_sqlite(
+                Arc::clone(&fact_authorizer),
+                PandaSqliteOpenConfig::new(root.join("facts.sqlite"), vec![island.clone()])
+                    .with_trusted_author_key(PandaTrustedAuthorKey::new(
+                        island,
+                        author.principal().clone(),
+                        author.author_key(),
+                    )),
+            )
+            .await
+            .expect("open p2panda store"),
+        );
+        let command = CommandName::parse("environment.promote").expect("command name");
+        let intent = IntentId::parse("promote-conflict").expect("intent id");
+        let key = command_phase_fact_key(&command, &intent, 1).expect("phase key");
+        store
+            .write_fact_payload(
+                &session,
+                &author,
+                key.clone(),
+                FactPayload::from(br#""DecisionWritten""#.to_vec()),
+            )
+            .await
+            .expect("write first phase candidate");
+        store
+            .write_fact_payload(
+                &session,
+                &author,
+                key.clone(),
+                FactPayload::from(br#""ServingCommitWritten""#.to_vec()),
+            )
+            .await
+            .expect("write conflicting phase candidate");
+        let phase_store = PandaCommandPhaseStore::new(store, session, author);
+
+        let error = phase_store
+            .read_phase_history(&command, &intent)
+            .expect_err("conflict blocks phase resume");
+
+        assert!(
+            matches!(error, CommandError::PhaseConflict { key: error_key } if error_key == key)
+        );
+    }
 }
