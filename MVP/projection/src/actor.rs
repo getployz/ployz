@@ -516,7 +516,7 @@ mod tests {
     use crate::actor::ProjectionActorHandle;
     use crate::bus_source::BusFactSource;
     use crate::facts::{
-        BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeId, NodeJoinedFact,
+        BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeJoinedFact,
         ProjectionFactPayload, RouteCommitFact, RouteId,
     };
     use crate::source::{
@@ -527,6 +527,7 @@ mod tests {
         BusSession, FactContentHash, FactKey, FactKeyPattern, FactPayload, Grant, IslandId,
         PrincipalId, harness::InMemoryBus,
     };
+    use mvp_identity::NodeId;
 
     fn island(value: &str) -> IslandId {
         IslandId::new(value)

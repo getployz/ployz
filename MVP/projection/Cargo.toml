@@ -13,6 +13,7 @@ path = "src/lib.rs"
 kameo = "0.20"
 mvp-acme = { path = "../acme" }
 mvp-bus = { path = "../bus" }
+mvp-identity = { path = "../identity" }
 mvp-lease = { path = "../lease" }
 rusqlite = "0.39"
 serde = { version = "1", features = ["derive"] }

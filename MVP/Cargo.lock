@@ -2357,6 +2357,7 @@ dependencies = [
 name = "mvp-acme"
 version = "0.1.0"
 dependencies = [
+ "mvp-identity",
  "mvp-lease",
  "serde",
  "serde_json",
@@ -2380,6 +2381,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "mvp-bus",
+ "mvp-identity",
  "mvp-projection",
  "serde",
  "serde_json",
@@ -2397,6 +2399,7 @@ dependencies = [
  "mvp-acme",
  "mvp-bus",
  "mvp-deploy",
+ "mvp-identity",
  "mvp-iroh",
  "mvp-lease",
  "mvp-mesh",
@@ -2408,6 +2411,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mvp-identity"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mvp-iroh"
 version = "0.1.0"
 dependencies = [
@@ -2416,6 +2427,7 @@ dependencies = [
  "iroh-docs",
  "iroh-gossip",
  "mvp-bus",
+ "mvp-identity",
  "mvp-projection",
  "n0-future",
  "thiserror",
@@ -2427,6 +2439,7 @@ name = "mvp-lease"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "mvp-identity",
  "serde",
  "thiserror",
 ]
@@ -2439,6 +2452,7 @@ dependencies = [
  "blake3",
  "kameo",
  "mvp-bus",
+ "mvp-identity",
  "mvp-projection",
  "serde",
  "serde_json",
@@ -2454,6 +2468,7 @@ dependencies = [
  "kameo",
  "mvp-acme",
  "mvp-bus",
+ "mvp-identity",
  "mvp-lease",
  "rusqlite",
  "serde",
@@ -2475,6 +2490,7 @@ dependencies = [
  "kameo",
  "mvp-acme",
  "mvp-bus",
+ "mvp-identity",
  "mvp-lease",
  "mvp-projection",
  "serde",

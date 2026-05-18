@@ -4,15 +4,16 @@ use std::time::{Duration, Instant};
 
 use mvp_bus::{BusActorHandle, BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_deploy::{
-    CapacityReply, CleanupStatus, DeployCoordinator, DeployId, DeployManifest, DeployNodeId,
-    DeployOutcome, DeployTimeouts, DnsCommitId, DrainStatus, GatewayCommitId,
-    InstanceCapacityRequirement, InstanceCommandReply, InstanceCommandRequest, InstanceId,
-    InstancePlan, InstanceStartOutcome, PhaseId, PhasePlan, PhasePolicy, PhaseReversibility,
-    ProjectionCatchUp, RevisionId, RouteCommitId, ServingCommitId, ServingCommitPlan,
+    CapacityReply, CleanupStatus, DeployCoordinator, DeployId, DeployManifest, DeployOutcome,
+    DeployTimeouts, DnsCommitId, DrainStatus, GatewayCommitId, InstanceCapacityRequirement,
+    InstanceCommandReply, InstanceCommandRequest, InstanceId, InstancePlan, InstanceStartOutcome,
+    PhaseId, PhasePlan, PhasePolicy, PhaseReversibility, ProjectionCatchUp, RevisionId,
+    RouteCommitId, ServingCommitId, ServingCommitPlan,
 };
+use mvp_identity::NodeId;
 use mvp_projection::{
-    BackendEndpoint, BusFactSource, DnsRecordFact, NodeId, ProjectionIgnoreReason, RouteId,
-    ServiceName, load_dns_snapshot, load_gateway_snapshot,
+    BackendEndpoint, BusFactSource, DnsRecordFact, ProjectionIgnoreReason, RouteId, ServiceName,
+    load_dns_snapshot, load_gateway_snapshot,
 };
 use serde::Serialize;
 
@@ -206,9 +207,9 @@ async fn run_async() -> Result<(), String> {
     assert_visible_nodes(
         &result,
         &[
-            DeployNodeId::new("node-db"),
-            DeployNodeId::new("node-queue"),
-            DeployNodeId::new("node-web"),
+            NodeId::new("node-db"),
+            NodeId::new("node-queue"),
+            NodeId::new("node-web"),
         ],
     )?;
     assert_eq_named(
@@ -290,13 +291,9 @@ async fn prove_scheduler_queue(
 
 fn assert_visible_nodes(
     result: &mvp_deploy::DeployCommandResult,
-    expected: &[DeployNodeId],
+    expected: &[NodeId],
 ) -> Result<(), String> {
-    let actual = result
-        .visible_nodes
-        .iter()
-        .map(|node| node.node_id().clone())
-        .collect::<Vec<_>>();
+    let actual = result.visible_nodes.iter().cloned().collect::<Vec<_>>();
     assert_eq_named("visible node ids", actual, expected.to_vec())
 }
 
@@ -333,7 +330,7 @@ async fn register_capacity(
         move |ctx| {
             state_for_capacity.record(DeployEvent::Capacity(node_id))?;
             let reply = CapacityReply {
-                node_id: DeployNodeId::new(node_id),
+                node_id: NodeId::new(node_id),
                 memory_free_bytes: 1024 * 1024 * 1024,
                 can_run_database,
             };
@@ -359,7 +356,7 @@ async fn register_forged_capacity(
     bus.subscribe(session, pattern("node.node-db.capacity")?, move |ctx| {
         state_for_capacity.record(DeployEvent::Capacity("node-db"))?;
         let reply = CapacityReply {
-            node_id: DeployNodeId::new("node-web"),
+            node_id: NodeId::new("node-web"),
             memory_free_bytes: 1024 * 1024 * 1024,
             can_run_database: true,
         };
@@ -563,7 +560,7 @@ fn deploy_manifest(
                 PhaseId::new(1),
                 vec![InstancePlan::new(
                     InstanceId::new("db-1"),
-                    DeployNodeId::new("node-db"),
+                    NodeId::new("node-db"),
                     ServiceName::new("db"),
                     RevisionId::new("rev-db"),
                     InstanceCapacityRequirement::Database,
@@ -575,14 +572,14 @@ fn deploy_manifest(
                 vec![
                     InstancePlan::new(
                         InstanceId::new("web-1"),
-                        DeployNodeId::new("node-web"),
+                        NodeId::new("node-web"),
                         ServiceName::new("web"),
                         RevisionId::new("rev-web"),
                         InstanceCapacityRequirement::General,
                     ),
                     InstancePlan::new(
                         InstanceId::new("queue-1"),
-                        DeployNodeId::new("node-queue"),
+                        NodeId::new("node-queue"),
                         ServiceName::new("queue"),
                         RevisionId::new("rev-queue"),
                         InstanceCapacityRequirement::General,
@@ -694,7 +691,7 @@ async fn cleanup_pending_variant() -> Result<usize, String> {
         result.cleanup_status,
         CleanupStatus::Pending {
             reason: mvp_deploy::CleanupPendingReason::StopUnavailable {
-                node_id: DeployNodeId::new("node-old"),
+                node_id: NodeId::new("node-old"),
                 cause: mvp_deploy::CleanupFailureKind::NoResponders,
             },
         },

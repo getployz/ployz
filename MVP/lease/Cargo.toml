@@ -14,5 +14,6 @@ harness = []
 
 [dependencies]
 blake3 = "1"
+mvp-identity = { path = "../identity" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

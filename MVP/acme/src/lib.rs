@@ -1,9 +1,9 @@
-use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
 
+use mvp_identity::VisibleNodes;
 use mvp_lease::{
     LeaseAcquirePolicy, LeaseBook, LeaseCommandContext, LeaseContentHash, LeaseEpoch, LeaseError,
-    LeaseGuard, LeaseHolder, LeaseRelease, LeaseResource, LeaseState, LeaseTimestamp, VisibleNode,
+    LeaseGuard, LeaseHolder, LeaseRelease, LeaseResource, LeaseState, LeaseTimestamp,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -233,14 +233,14 @@ impl AcmeChallengeId {
 pub struct AcmeChallengeLease {
     id: AcmeChallengeId,
     guard: LeaseGuard,
-    visible_nodes: BTreeSet<VisibleNode>,
+    visible_nodes: VisibleNodes,
 }
 
 impl AcmeChallengeLease {
     fn new(
         id: AcmeChallengeId,
         guard: LeaseGuard,
-        visible_nodes: BTreeSet<VisibleNode>,
+        visible_nodes: VisibleNodes,
     ) -> Result<Self, AcmeCoordinationError> {
         let expected = id.lease_resource().clone();
         if guard.resource() != &expected {
@@ -262,7 +262,7 @@ impl AcmeChallengeLease {
     }
 
     #[must_use]
-    pub fn visible_nodes(&self) -> &BTreeSet<VisibleNode> {
+    pub fn visible_nodes(&self) -> &VisibleNodes {
         &self.visible_nodes
     }
 

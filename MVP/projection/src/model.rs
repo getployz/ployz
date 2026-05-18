@@ -5,7 +5,8 @@ use mvp_bus::IslandId;
 use mvp_lease::{LeaseContentHash, LeaseEpoch, LeaseHolder, LeaseTimestamp};
 use serde::{Deserialize, Serialize};
 
-use crate::facts::{BackendEndpoint, DnsRecordFact, NodeId, RouteId, ServiceName};
+use crate::facts::{BackendEndpoint, DnsRecordFact, RouteId, ServiceName};
+use mvp_identity::NodeId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionState {

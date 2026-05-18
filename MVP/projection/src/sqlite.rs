@@ -8,12 +8,13 @@ use rusqlite::{Connection, OptionalExtension, params, types::Type};
 use tempfile::NamedTempFile;
 
 use crate::error::{ProjectionError, ProjectionResult};
-use crate::facts::{BackendEndpoint, DnsRecordFact, NodeId, RouteId, ServiceName};
+use crate::facts::{BackendEndpoint, DnsRecordFact, RouteId, ServiceName};
 use crate::model::{
     AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsProjection, DnsRecordProjection,
     GatewayProjection, GatewayRouteProjection, NodeProjection, ProjectionIgnoreReason,
     ProjectionState, ProjectionStatus, ServiceProjection,
 };
+use mvp_identity::NodeId;
 
 #[derive(Debug, Clone)]
 pub struct SqliteProjectionStore {
@@ -634,13 +635,14 @@ fn read_u64(value: i64, column: usize) -> rusqlite::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::SqliteProjectionStore;
-    use crate::facts::{BackendEndpoint, DnsRecordFact, NodeId, RouteId, ServiceName};
+    use crate::facts::{BackendEndpoint, DnsRecordFact, RouteId, ServiceName};
     use crate::model::{
         DnsProjection, DnsRecordProjection, GatewayProjection, GatewayRouteProjection,
         NodeProjection, ProjectionIgnoreReason, ProjectionState, ProjectionStatus,
         ServiceProjection,
     };
     use mvp_bus::IslandId;
+    use mvp_identity::NodeId;
 
     fn sample_state() -> ProjectionState {
         let mut state = ProjectionState::for_island(IslandId::new("prod"));

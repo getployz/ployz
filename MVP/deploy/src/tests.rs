@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use mvp_identity::NodeId;
 use mvp_projection::{
     BackendEndpoint, DnsProjection, DnsRecordFact, DnsRecordProjection, GatewayProjection,
-    GatewayRouteProjection, NodeId, ProjectionReport, ProjectionState, RouteId,
-    SnapshotWriteReport,
+    GatewayRouteProjection, ProjectionReport, ProjectionState, RouteId, SnapshotWriteReport,
 };
 
 use crate::{
@@ -74,7 +74,7 @@ fn cleanup_pending_preserves_serving_commit_success() {
     let result = state
         .cleanup_pending(CleanupStatus::Pending {
             reason: crate::CleanupPendingReason::StopUnavailable {
-                node_id: crate::DeployNodeId::new("node-old"),
+                node_id: NodeId::new("node-old"),
                 cause: CleanupFailureKind::NoResponders,
             },
         })

@@ -2,9 +2,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mvp_bus::{FactKey, FactKeyPattern, Grant, IslandId, PrincipalId, harness::InMemoryBus};
+use mvp_identity::NodeId;
 use mvp_iroh::{IrohDocsFactSource, IrohFactDoc, IrohFactNode};
 use mvp_projection::{
-    CandidateStatus, FactCandidate, FactSource, NodeId, NodeJoinedFact, ProjectionFactPayload,
+    CandidateStatus, FactCandidate, FactSource, NodeJoinedFact, ProjectionFactPayload,
 };
 use serde::Serialize;
 use tokio::time::sleep;

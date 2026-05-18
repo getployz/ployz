@@ -1,8 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+
+use mvp_identity::VisibleNodes;
 
 use crate::{
     CleanupStatus, DeployCommandResult, DeployError, DeployId, DeployOutcome, DeployResult,
-    DrainStatus, PhaseId, PhasePolicy, ServingCommitId, VisibleNode,
+    DrainStatus, PhaseId, PhasePolicy, ServingCommitId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +31,7 @@ enum DeployLifecycle {
 pub struct DeployStateMachine {
     deploy_id: DeployId,
     phases: BTreeMap<PhaseId, PhaseState>,
-    visible_nodes: BTreeSet<VisibleNode>,
+    visible_nodes: VisibleNodes,
     serving_commit_id: Option<ServingCommitId>,
     commit_boundary: CommitBoundary,
     drain_status: DrainStatus,
@@ -45,7 +47,7 @@ impl DeployStateMachine {
                 .into_iter()
                 .map(|phase| (phase, PhaseState::Planned))
                 .collect(),
-            visible_nodes: BTreeSet::new(),
+            visible_nodes: VisibleNodes::new(Vec::new()),
             serving_commit_id: None,
             commit_boundary: CommitBoundary::BeforeIrreversible,
             drain_status: DrainStatus::NotStarted,
@@ -54,7 +56,7 @@ impl DeployStateMachine {
         }
     }
 
-    pub fn record_visible_nodes(&mut self, visible_nodes: BTreeSet<VisibleNode>) {
+    pub fn record_visible_nodes(&mut self, visible_nodes: VisibleNodes) {
         self.visible_nodes = visible_nodes;
     }
 

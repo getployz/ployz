@@ -1,6 +1,6 @@
-use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
 
+use mvp_identity::{NodeId, VisibleNodes};
 use mvp_projection::{
     BackendEndpoint, DnsRecordFact, DnsRecordProjection, GatewayRouteProjection, ProjectionReport,
     RouteId, ServiceName,
@@ -156,46 +156,9 @@ impl Display for DnsCommitId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct DeployNodeId(String);
-
-impl DeployNodeId {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Display for DeployNodeId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct VisibleNode {
-    node_id: DeployNodeId,
-}
-
-impl VisibleNode {
-    #[must_use]
-    pub fn new(node_id: DeployNodeId) -> Self {
-        Self { node_id }
-    }
-
-    #[must_use]
-    pub fn node_id(&self) -> &DeployNodeId {
-        &self.node_id
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapacityReply {
-    pub node_id: DeployNodeId,
+    pub node_id: NodeId,
     pub memory_free_bytes: u64,
     pub can_run_database: bool,
 }
@@ -215,7 +178,7 @@ pub enum CapacityRejectionReason {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstancePlan {
     pub instance_id: InstanceId,
-    pub node_id: DeployNodeId,
+    pub node_id: NodeId,
     pub service: ServiceName,
     pub revision: RevisionId,
     pub capacity_requirement: InstanceCapacityRequirement,
@@ -225,7 +188,7 @@ impl InstancePlan {
     #[must_use]
     pub fn new(
         instance_id: InstanceId,
-        node_id: DeployNodeId,
+        node_id: NodeId,
         service: ServiceName,
         revision: RevisionId,
         capacity_requirement: InstanceCapacityRequirement,
@@ -381,11 +344,11 @@ pub enum CleanupStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CleanupPendingReason {
     DrainUnavailable {
-        node_id: DeployNodeId,
+        node_id: NodeId,
         cause: CleanupFailureKind,
     },
     StopUnavailable {
-        node_id: DeployNodeId,
+        node_id: NodeId,
         cause: CleanupFailureKind,
     },
 }
@@ -410,7 +373,7 @@ pub enum DeployOutcome {
 pub struct DeployCommandResult {
     pub deploy_id: DeployId,
     pub outcome: DeployOutcome,
-    pub visible_nodes: BTreeSet<VisibleNode>,
+    pub visible_nodes: VisibleNodes,
     pub serving_commit_id: Option<ServingCommitId>,
     pub drain_status: DrainStatus,
     pub cleanup_status: CleanupStatus,

@@ -10,11 +10,12 @@ use std::time::{Duration, Instant};
 
 use mvp_bus::{BusSession, FactKeyPattern, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_deploy::{DnsCommitId, GatewayCommitId, RouteCommitId, ServingCommitId, ServingCommitPlan};
+use mvp_identity::NodeId;
 use mvp_mesh::{WireGuardAppliedSnapshot, WireGuardSnapshotPaths, load_applied_snapshot};
 use mvp_projection::{
     BackendEndpoint, DnsRecordFact, DnsRecordProjection, FactSource, GatewayRouteProjection,
-    NodeId, ProjectionActorHandle, ProjectionActorStatus, ProjectionFactPayload, ProjectionReport,
-    RouteId, ServingCommitFact, SqliteProjectionStore,
+    ProjectionActorHandle, ProjectionActorStatus, ProjectionFactPayload, ProjectionReport, RouteId,
+    ServingCommitFact, SqliteProjectionStore,
 };
 use mvp_serving::{
     DnsServerHandle, HttpGatewayHandle, ServingActorHandle, ServingError, ServingFreshness,
@@ -1107,11 +1108,11 @@ impl MeshDataPlaneState {
         else {
             return Err(MeshRoleFailure::peer_not_applied(node_id));
         };
-        peer.endpoint.parse().map_err(|error| {
+        peer.endpoint.as_str().parse().map_err(|error| {
             MeshRoleFailure::snapshot(format!(
                 "peer {} endpoint '{}' is not a socket address: {error}",
                 node_id.as_str(),
-                peer.endpoint
+                peer.endpoint.as_str()
             ))
         })
     }

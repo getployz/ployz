@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use futures_util::{StreamExt, TryStreamExt, stream};
 use mvp_bus::{BusActorHandle, BusError, BusSession, RequestManyPolicy, RequestTarget, Subject};
+use mvp_identity::{NodeId, VisibleNodes};
 
 use crate::serving_commit::write_serving_commit;
 use crate::wire::{
@@ -11,8 +12,8 @@ use crate::wire::{
 };
 use crate::{
     CapacityRejectionReason, CapacityReply, CleanupFailureKind, CleanupPendingReason,
-    CleanupStatus, DeployCommandResult, DeployError, DeployManifest, DeployNodeId, DeployResult,
-    DeployStateMachine, InstanceCapacityRequirement, InstancePlan, ProjectionCatchUp, VisibleNode,
+    CleanupStatus, DeployCommandResult, DeployError, DeployManifest, DeployResult,
+    DeployStateMachine, InstanceCapacityRequirement, InstancePlan, ProjectionCatchUp,
 };
 
 const CAPACITY_PROBE_CONCURRENCY: usize = 32;
@@ -75,11 +76,7 @@ impl DeployCoordinator {
         );
         let capacities = self.inspect_capacity(&manifest).await?;
         validate_planned_capacity(&manifest, &capacities)?;
-        let visible_nodes = capacities
-            .keys()
-            .cloned()
-            .map(VisibleNode::new)
-            .collect::<BTreeSet<_>>();
+        let visible_nodes = VisibleNodes::new(capacities.keys().cloned());
         state.record_visible_nodes(visible_nodes);
 
         for phase in &manifest.phases {
@@ -144,7 +141,7 @@ impl DeployCoordinator {
                 Err(error) => {
                     return state
                         .cleanup_pending(CleanupStatus::Pending {
-                            reason: op.cleanup_pending_reason(backend.node_id.as_str(), &error),
+                            reason: op.cleanup_pending_reason(&backend.node_id, &error),
                         })
                         .map(Some);
                 }
@@ -160,7 +157,7 @@ impl DeployCoordinator {
                     Err(error) => {
                         return state
                             .cleanup_pending(CleanupStatus::Pending {
-                                reason: op.cleanup_pending_reason(backend.node_id.as_str(), &error),
+                                reason: op.cleanup_pending_reason(&backend.node_id, &error),
                             })
                             .map(Some);
                     }
@@ -175,7 +172,7 @@ impl DeployCoordinator {
                     Err(error) => {
                         return state
                             .cleanup_pending(CleanupStatus::Pending {
-                                reason: op.cleanup_pending_reason(backend.node_id.as_str(), &error),
+                                reason: op.cleanup_pending_reason(&backend.node_id, &error),
                             })
                             .map(Some);
                     }
@@ -190,7 +187,7 @@ impl DeployCoordinator {
                 Err(error) => {
                     return state
                         .cleanup_pending(CleanupStatus::Pending {
-                            reason: op.cleanup_pending_reason(backend.node_id.as_str(), &error),
+                            reason: op.cleanup_pending_reason(&backend.node_id, &error),
                         })
                         .map(Some);
                 }
@@ -202,7 +199,7 @@ impl DeployCoordinator {
     async fn inspect_capacity(
         &self,
         manifest: &DeployManifest,
-    ) -> DeployResult<BTreeMap<DeployNodeId, CapacityReply>> {
+    ) -> DeployResult<BTreeMap<NodeId, CapacityReply>> {
         let request = CapacityRequest {
             deploy_id: manifest.deploy_id.clone(),
         };
@@ -222,7 +219,7 @@ impl DeployCoordinator {
 
     async fn probe_node_capacity(
         &self,
-        node_id: DeployNodeId,
+        node_id: NodeId,
         payload: Vec<u8>,
     ) -> DeployResult<Option<CapacityReply>> {
         let subject = Subject::parse(format!("node.{}.capacity", node_id.as_str()))?;
@@ -330,15 +327,15 @@ impl CleanupParticipantOp {
         }
     }
 
-    fn cleanup_pending_reason(self, node_id: &str, error: &DeployError) -> CleanupPendingReason {
+    fn cleanup_pending_reason(self, node_id: &NodeId, error: &DeployError) -> CleanupPendingReason {
         let cause = cleanup_failure_kind(error);
         match self {
             Self::Drain => CleanupPendingReason::DrainUnavailable {
-                node_id: DeployNodeId::new(node_id),
+                node_id: node_id.clone(),
                 cause,
             },
             Self::Stop => CleanupPendingReason::StopUnavailable {
-                node_id: DeployNodeId::new(node_id),
+                node_id: node_id.clone(),
                 cause,
             },
         }
@@ -391,7 +388,7 @@ fn validate_manifest(manifest: &DeployManifest) -> DeployResult<()> {
 
 fn validate_planned_capacity(
     manifest: &DeployManifest,
-    capacities: &BTreeMap<DeployNodeId, CapacityReply>,
+    capacities: &BTreeMap<NodeId, CapacityReply>,
 ) -> DeployResult<()> {
     for phase in &manifest.phases {
         for instance in &phase.instances {
@@ -427,7 +424,7 @@ fn validate_instance_capacity(
     Ok(())
 }
 
-fn planned_node_ids(manifest: &DeployManifest) -> BTreeSet<DeployNodeId> {
+fn planned_node_ids(manifest: &DeployManifest) -> BTreeSet<NodeId> {
     manifest
         .phases
         .iter()

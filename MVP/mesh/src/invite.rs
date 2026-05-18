@@ -2,12 +2,12 @@ use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
 
 use mvp_bus::{FactKey, FactPayload, IslandId};
-use mvp_projection::{NodeId, NodeJoinedFact, NodeTombstonedFact, ProjectionFactPayload};
+use mvp_identity::{NodeId, VisibleNodes};
+use mvp_projection::{NodeJoinedFact, NodeTombstonedFact, ProjectionFactPayload};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    IrohEndpointId, MachineInvite, MeshError, MeshResult, VisibleNodes, WireGuardPublicKey,
-    derive_overlay_ip,
+    IrohEndpointId, MachineInvite, MeshError, MeshResult, WireGuardPublicKey, derive_overlay_ip,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -170,11 +170,12 @@ mod tests {
     use std::collections::BTreeSet;
 
     use mvp_bus::IslandId;
-    use mvp_projection::{NodeId, ProjectionFactPayload};
+    use mvp_identity::{NodeId, VisibleNodes};
+    use mvp_projection::ProjectionFactPayload;
 
     use crate::{
         InviteId, InviteSecret, IrohEndpointId, JoinCommand, JoinRequest, MachineInvite,
-        TombstoneCommand, VisibleNodes, WireGuardPublicKey,
+        TombstoneCommand, WireGuardPublicKey,
     };
 
     #[test]

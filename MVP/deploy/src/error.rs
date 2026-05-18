@@ -1,9 +1,9 @@
 use mvp_bus::{BusError, FactKey, FactKeyParseError, SubjectParseError};
+use mvp_identity::NodeId;
 use thiserror::Error;
 
 use crate::{
-    CapacityRejectionReason, DeployId, DeployNodeId, InstanceId, InstanceNotReadyReason, PhaseId,
-    ServingCommitId,
+    CapacityRejectionReason, DeployId, InstanceId, InstanceNotReadyReason, PhaseId, ServingCommitId,
 };
 
 pub type DeployResult<T> = Result<T, DeployError>;
@@ -31,21 +31,21 @@ pub enum DeployError {
     #[error("serving fact already has a conflicting candidate: {key}")]
     ServingFactConflict { key: FactKey },
     #[error("planned node was not visible at decision time: {node_id}")]
-    PlannedNodeNotVisible { node_id: DeployNodeId },
+    PlannedNodeNotVisible { node_id: NodeId },
     #[error("planned node {node_id} did not satisfy capacity requirement: {reason:?}")]
     InsufficientCapacity {
-        node_id: DeployNodeId,
+        node_id: NodeId,
         reason: CapacityRejectionReason,
     },
     #[error("capacity reply for {subject_node_id} claimed {payload_node_id}")]
     CapacityReplyNodeMismatch {
-        subject_node_id: DeployNodeId,
-        payload_node_id: DeployNodeId,
+        subject_node_id: NodeId,
+        payload_node_id: NodeId,
     },
     #[error("instance {instance_id} on {node_id} was not ready: {reason:?}")]
     InstanceNotReady {
         instance_id: InstanceId,
-        node_id: DeployNodeId,
+        node_id: NodeId,
         reason: InstanceNotReadyReason,
     },
     #[error("invalid wire payload: {context}: {source}")]

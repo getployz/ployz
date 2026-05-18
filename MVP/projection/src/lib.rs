@@ -15,7 +15,7 @@ pub use actor::{
 pub use bus_source::BusFactSource;
 pub use error::{ProjectionError, ProjectionResult};
 pub use facts::{
-    BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeId, NodeJoinedFact,
+    BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeJoinedFact,
     NodeTombstonedFact, ProjectionFactPayload, RouteCommitFact, RouteId, ServiceName,
     ServiceRegistrationFact, ServingCommitFact,
 };
