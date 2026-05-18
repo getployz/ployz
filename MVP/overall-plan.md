@@ -573,12 +573,13 @@ boundaries intact: root anchoring, principal/key/epoch binding, fact-key grants,
 subject permissions, command preconditions, visible-node evidence, and tombstone
 semantics remain outside p2panda-auth.
 
-Slice 042 is active:
-[MVP/slice-042-membership-backed-acme-sync-plan.md](slice-042-membership-backed-acme-sync-plan.md).
-The target is to move ACME and the p2panda sync proof off manual trusted-author
-and trusted-replica setup, using durable membership snapshots for product-shaped
-authority while containing any remaining manual trust APIs as explicit
-fixtures.
+Slice 042 moved ACME and the p2panda sync proof onto membership-backed
+authority:
+[MVP/slice-042-membership-backed-acme-sync.md](slice-042-membership-backed-acme-sync.md).
+The product-shaped ACME and sync E2Es now use durable membership snapshots for
+writers, replica importers, and sync scopes. Remaining manual trust in the
+targeted p2panda-net fact-node proof is named as fallback fixture code for
+negative regression probes, not as a product authority path.
 
 ## Crate Scout Protocol
 
@@ -793,8 +794,8 @@ Future slice plans should resolve these only when they become blocking:
 
 ## First Next Step
 
-The next action is Slice 042. Start with the ACME contract because it is the
-product canary for advisory leases, fact sync, projection rebuild, and
-last-good HTTP-01 serving. Then move the core sync contract onto the same
-membership-backed authority shape and record which manual trust APIs remain as
-fixtures only.
+Plan the next slice against the remaining manual-trust inventory instead of
+starting a broad cleanup. Pick one product canary still using manual p2panda
+authority setup, move it to the shared membership fixture, and record the exact
+semantic-leverage result. Good candidates are deploy restart recovery, machine
+remove, volume transfer, or environment branch/promote/rollback.

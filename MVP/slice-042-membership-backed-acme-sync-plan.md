@@ -1,6 +1,6 @@
 ---
 title: Slice 042 Membership-backed ACME and Sync Plan
-status: active
+status: completed
 created: 2026-05-19
 origin:
   - VISION.md

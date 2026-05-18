@@ -50,6 +50,25 @@ p2panda-net path. The canonical path now delegates network log mechanics to
 p2panda-net and keeps Ployz code focused on fact authority, projection, and
 business semantics.
 
+Slice 041 is a substitution win rather than a raw deletion win. It adds the
+durable membership store and E2E proof, but removes trusted-author CLI/input
+shape from product-serving roles and gives future product slices one authority
+source to reuse: root membership operation -> active writer/replica snapshot ->
+fact-store authorization. The semantic leverage target for Slice 042 is that
+ACME and sync stop carrying their own trusted-author/replica setup.
+
+Slice 042 hits that substitution target without claiming a raw size win. The
+slice changes ACME and the main p2panda sync proof from manual trusted-author
+maps, trusted-replica setup, and hand-built sync scopes to shared
+membership-backed authority. The slice diff is only a small net E2E increase
+(`176` added, `130` deleted from the plan commit), but it removes a second
+authority idiom from product-shaped proofs. ACME remains larger than the old
+cert path: old cert coordination/backend files are roughly 1,180 physical Rust
+lines, while `MVP/acme`, `MVP/acme-command`, and `MVP/lease` are roughly 4,151
+physical Rust lines. That is acceptable only if future ACME work now composes
+the existing lease/fact/sync/projection primitives instead of adding another
+authority or coordination substrate.
+
 ## Snapshot Counts
 
 ```text
