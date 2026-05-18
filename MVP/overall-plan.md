@@ -492,18 +492,15 @@ only as fallback/fixture seams for islands without a snapshot. Removed and
 demoted writer facts fail closed on import and rebuild until a fact-log frontier
 proof can distinguish pre-removal history from stale partition forgeries.
 
-The next implementation/proof slice should keep paying down product semantic
-leverage rather than adding another generic substrate layer. Plan it against
-the current map and prefer a product rule that reuses bus, p2panda facts,
-projection, advisory leases, serving actors, or deploy adapters without
-growing those foundations again.
-
-Future multi-phase commands should watch for the pattern documented in
-[MVP/design-notes/phased-command.md](design-notes/phased-command.md). Do not
-add the primitive prematurely. When three or more commands have phase enums,
-resume-from-phase logic, and non-trivial compensation, plan a dedicated
-`mvp-commands` slice that lifts the bookkeeping while keeping step and
-compensation logic explicit.
+Slice 036 is planned as the first command-semantic-leverage proof:
+[MVP/slice-036-phased-command-primitive-plan.md](slice-036-phased-command-primitive-plan.md).
+The trigger from
+[MVP/design-notes/phased-command.md](design-notes/phased-command.md) is now
+met in deploy, machine remove, environment promote/rollback, and volume
+transfer: product code is repeating durable phase/resume/commit bookkeeping.
+The slice should keep the lift narrow: add `mvp-commands`, migrate one product
+command path, prove resume and compensation, and avoid workflow-engine replay
+semantics or transport dependency changes.
 
 ## Crate Scout Protocol
 
@@ -645,9 +642,10 @@ Recent semantic-leverage proof:
 - Slice 033 adds the environment branch/promote/rollback product proof. The
   command shape stayed on existing primitives: p2panda facts, routing-owned
   serving commits, projection catch-up, visible-node evidence, and explicit
-  begin/finalize boundaries. No generic workflow engine was introduced, so
-  `mvp-commands` remains deferred until a third persisted phase/resume command
-  actually repeats enough bookkeeping to justify it.
+  begin/finalize boundaries. No generic workflow engine was introduced. Slice
+  036 later reopens this decision because deploy, machine remove, environment
+  promote/rollback, and volume transfer now repeat enough command bookkeeping
+  to justify planning a tiny opt-in `mvp-commands` primitive.
 - Slice 026 extracts deploy p2panda fact-writing/recovery glue from the
   restart-recovery E2E into `mvp-deploy-p2panda`. The deploy coordinator stays
   core-only, while the p2panda adapter becomes reusable business plumbing for
