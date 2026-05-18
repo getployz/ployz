@@ -10,8 +10,8 @@ plan: MVP/slice-036-phased-command-primitive-plan.md
 ## What Shipped
 
 - Added `mvp-commands` as the first opt-in command orchestration primitive.
-- Implemented `run_phased` with explicit phase steps, persisted phase facts,
-  resume from latest phase, best-effort reverse compensation, and structured
+- Implemented `run_phased` with explicit phase steps, command phase-store
+  records, resume from latest phase, best-effort reverse compensation, and structured
   phase-conflict errors.
 - Migrated environment promote and rollback onto the primitive while keeping
   branch as a plain command.
@@ -57,7 +57,7 @@ projection_rebuilds: 3
 serving_alive_without_command_adapter: true
 ```
 
-After review fixes, the final focused E2E reported `elapsed_ms: 395` with the
+After review fixes, the final focused E2E reported `elapsed_ms: 299` with the
 same projection rebuild and serving-alive evidence. The runner tests also cover
 resumed failure compensation, compensation after phase-write failure, immediate
 same-index phase conflict errors, and compensation-error suppression.
@@ -67,9 +67,9 @@ same-index phase conflict errors, and compensation-error suppression.
 LOC is not the only target, but it is a useful warning light:
 
 - `mvp-commands` is 791 lines after the first lift.
-- `MVP/environment/src/command.rs` grew from 608 lines before the slice to 917
+- `MVP/environment/src/command.rs` grew from 608 lines before the slice to 873
   lines because it now carries explicit promote and rollback phase enums.
-- The environment unit tests grew from 1,117 to 1,283 lines to cover phased
+- The environment unit tests grew from 1,117 to 1,299 lines to cover phased
   resume for both commands.
 - The process-role E2E grew from 632 lines to 841 lines because it now includes
   a p2panda-backed command phase store and reopens that store before resuming

@@ -207,18 +207,6 @@ pub struct PromoteEnvironmentRequest {
     pub visible_nodes: VisibleNodes,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingEnvironmentPromote {
-    decision: EnvironmentPromoteDecisionFact,
-}
-
-impl PendingEnvironmentPromote {
-    #[must_use]
-    pub fn decision(&self) -> &EnvironmentPromoteDecisionFact {
-        &self.decision
-    }
-}
-
 pub struct PromoteEnvironmentCommand<'a, W, S> {
     source: &'a dyn FactSource,
     session: &'a BusSession,
@@ -244,21 +232,6 @@ where
             fact_writer,
             serving_writer,
         }
-    }
-
-    pub async fn begin(
-        &self,
-        request: PromoteEnvironmentRequest,
-    ) -> EnvironmentResult<PendingEnvironmentPromote> {
-        let decision = self.prepare_promote_decision(&request)?;
-        self.fact_writer
-            .write_promote_decision(decision.clone())
-            .await?;
-        self.serving_writer
-            .write_serving_commit(&request.serving_commit)
-            .await
-            .map_err(map_serving_error)?;
-        Ok(PendingEnvironmentPromote { decision })
     }
 
     fn prepare_promote_decision(
@@ -328,15 +301,6 @@ where
             },
         )
         .await
-    }
-
-    pub async fn finalize(
-        &self,
-        pending: PendingEnvironmentPromote,
-        catch_up: Option<ProjectionCatchUp>,
-    ) -> EnvironmentResult<EnvironmentCommandResult> {
-        self.finalize_promote_decision(pending.decision, catch_up)
-            .await
     }
 
     async fn finalize_promote_decision(
@@ -498,18 +462,6 @@ pub struct RollbackEnvironmentRequest {
     pub visible_nodes: VisibleNodes,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingEnvironmentRollback {
-    decision: EnvironmentRollbackDecisionFact,
-}
-
-impl PendingEnvironmentRollback {
-    #[must_use]
-    pub fn decision(&self) -> &EnvironmentRollbackDecisionFact {
-        &self.decision
-    }
-}
-
 pub struct RollbackEnvironmentCommand<'a, W, S> {
     source: &'a dyn FactSource,
     session: &'a BusSession,
@@ -535,21 +487,6 @@ where
             fact_writer,
             serving_writer,
         }
-    }
-
-    pub async fn begin(
-        &self,
-        request: RollbackEnvironmentRequest,
-    ) -> EnvironmentResult<PendingEnvironmentRollback> {
-        let decision = self.prepare_rollback_decision(&request)?;
-        self.fact_writer
-            .write_rollback_decision(decision.clone())
-            .await?;
-        self.serving_writer
-            .write_serving_commit(&request.serving_commit)
-            .await
-            .map_err(map_serving_error)?;
-        Ok(PendingEnvironmentRollback { decision })
     }
 
     fn prepare_rollback_decision(
@@ -608,15 +545,6 @@ where
             },
         )
         .await
-    }
-
-    pub async fn finalize(
-        &self,
-        pending: PendingEnvironmentRollback,
-        catch_up: Option<ProjectionCatchUp>,
-    ) -> EnvironmentResult<EnvironmentCommandResult> {
-        self.finalize_rollback_decision(pending.decision, catch_up)
-            .await
     }
 
     async fn finalize_rollback_decision(
@@ -828,9 +756,35 @@ fn same_head_candidate(left: &EnvironmentHeadCandidate, right: &EnvironmentHeadC
 
 fn map_serving_error(error: RoutingError) -> EnvironmentError {
     match error {
+        RoutingError::ProjectionCatchUpMissing => EnvironmentError::ServingWrite {
+            message: RoutingError::ProjectionCatchUpMissing.to_string(),
+        },
+        RoutingError::ProjectionCatchUpMismatch { serving_commit_id } => {
+            EnvironmentError::ServingWrite {
+                message: RoutingError::ProjectionCatchUpMismatch { serving_commit_id }.to_string(),
+            }
+        }
         RoutingError::ServingFactConflict { key } => EnvironmentError::ServingFactConflict { key },
-        other => EnvironmentError::ServingWrite {
-            message: other.to_string(),
+        RoutingError::ServingFactMissing { key } => EnvironmentError::ServingWrite {
+            message: RoutingError::ServingFactMissing { key }.to_string(),
+        },
+        RoutingError::ServingFactKindMismatch { key } => EnvironmentError::ServingWrite {
+            message: RoutingError::ServingFactKindMismatch { key }.to_string(),
+        },
+        RoutingError::ServingFactMismatch { serving_commit_id } => EnvironmentError::ServingWrite {
+            message: RoutingError::ServingFactMismatch { serving_commit_id }.to_string(),
+        },
+        RoutingError::WirePayload { context, source } => EnvironmentError::ServingWrite {
+            message: RoutingError::WirePayload { context, source }.to_string(),
+        },
+        RoutingError::Bus(source) => EnvironmentError::ServingWrite {
+            message: source.to_string(),
+        },
+        RoutingError::FactSource(source) => EnvironmentError::ServingWrite {
+            message: source.to_string(),
+        },
+        RoutingError::FactKeyParse(source) => EnvironmentError::ServingWrite {
+            message: source.to_string(),
         },
     }
 }

@@ -8,9 +8,8 @@ pub use command::{
     BusEnvironmentFactWriter, EnvironmentCommandResult, EnvironmentFactWriter,
     EnvironmentServingPendingReason, EnvironmentVolumeForkEvidence,
     EnvironmentVolumeForkParticipant, EnvironmentVolumeForkReply, EnvironmentVolumeForkRequest,
-    PendingEnvironmentPromote, PendingEnvironmentRollback, PromoteEnvironmentCommand,
-    PromoteEnvironmentRequest, RollbackEnvironmentCommand, RollbackEnvironmentRequest,
-    WrittenEnvironmentFact,
+    PromoteEnvironmentCommand, PromoteEnvironmentRequest, RollbackEnvironmentCommand,
+    RollbackEnvironmentRequest, WrittenEnvironmentFact,
 };
 pub use domain::{
     EnvironmentBranchId, EnvironmentCommandId, EnvironmentEpoch, EnvironmentHeadId, EnvironmentId,
