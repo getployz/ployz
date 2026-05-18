@@ -435,6 +435,7 @@ async fn run_async() -> Result<(), String> {
             .await
             .map_err(|error| format!("import p2panda operation for recovery: {error}"))?;
     }
+    let coordinator_outage_ms = outage_started.elapsed().as_millis();
     assert_recovery_import_rejects_author_without_fact_grant(
         &island,
         &membership,
@@ -450,7 +451,6 @@ async fn run_async() -> Result<(), String> {
         &replica_session,
     )
     .await?;
-    let coordinator_outage_ms = outage_started.elapsed().as_millis();
     let recovered_machine_writer = PandaMachineFactWriter::new(
         rebuilt_facts.clone(),
         machine_writer_session.clone(),

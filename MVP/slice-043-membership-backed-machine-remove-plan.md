@@ -276,8 +276,9 @@ The slice is complete when:
 
 Machine remove now opens all E2E-local in-memory machine fact stores with the
 shared membership fixture's `IslandAuthoritySnapshot`: the primary store,
-rebuilt recovery store, completed replay store, node-only negative probe store,
-and conflicting tombstone probe store. The contract no longer calls
+rebuilt recovery store, completed replay store, foreign-island import probe
+store, and conflicting tombstone probe store. The node-only negative probe uses
+the primary membership-backed store. The contract no longer calls
 `trust_author_key` or `trust_replica_peer`.
 
 The recovery harness still replays exported operations deterministically. That
@@ -302,6 +303,8 @@ Targeted checks run during the slice:
 cargo check --manifest-path MVP/Cargo.toml -p mvp-e2e
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- machine-remove-contract
 cargo test --manifest-path MVP/Cargo.toml -p mvp-machine-p2panda
+cargo test --manifest-path MVP/Cargo.toml -p mvp-e2e --all-targets
+cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- all
 ```
 
 Targeted manual-trust containment:
