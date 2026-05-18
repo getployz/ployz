@@ -1,5 +1,5 @@
 ---
-title: Slice 019 P2panda-Backed ACME HTTP-01 Plan
+title: Slice 020 P2panda-Backed ACME HTTP-01 Plan
 status: parked
 created: 2026-05-18
 origin:
@@ -15,7 +15,7 @@ origin:
   - MVP/slice-018b-p2panda-fact-substrate-plan.md
 ---
 
-# Slice 019 P2panda-Backed ACME HTTP-01 Plan
+# Slice 020 P2panda-Backed ACME HTTP-01 Plan
 
 > Parked behind
 > [MVP/design-notes/p2panda-substitution-audit.md](design-notes/p2panda-substitution-audit.md).

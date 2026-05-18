@@ -28,7 +28,8 @@ The end state is a Ployz foundation where:
 - NATS server topology is no longer the foundation.
 - iroh provides connectivity and protocol multiplexing.
 - Kameo actors own local subsystem state and supervision.
-- iroh-docs stores replicated durable facts.
+- p2panda signed operations and local stores are the preferred durable fact
+  substrate behind `FactSource`.
 - iroh-blobs carries content-addressed payloads.
 - SQLite is a disposable local projection/cache.
 - WireGuard remains the private data plane.
@@ -82,9 +83,9 @@ The source of truth remains [VISION.md](../VISION.md).
 
 This MVP is a proposed amendment to one part of the current vision: NATS stays
 as the semantic model for subjects, requests, queues, services, permissions,
-and authority boundaries, but iroh/iroh-docs become the candidate deployed
-substrate. That decision should be proven here before replacing the existing
-NATS path.
+and authority boundaries, iroh remains the candidate connectivity substrate,
+and p2panda is now the preferred durable fact substrate. That decision should
+be proven here before replacing the existing NATS path.
 
 Important constraints:
 
@@ -98,7 +99,7 @@ Important constraints:
 - Durable state records explicit operator intent and lifecycle facts.
 - Live observation is checked at decision time and does not become stored truth.
 - The operator's connected node is the consistency boundary for a command. A
-  command writes durably to that node's local docs store, returns, and lets
+  command writes durably to that node's local fact store, returns, and lets
   replication converge eventually.
 - Command results must include the visible nodes at decision time, so operators
   see the reachability context the command used instead of the system blocking
@@ -132,7 +133,7 @@ Grant           = NATS permissions plus fact/RPC permissions
 RequestReply    = NATS inbox semantics over iroh streams
 QueueGroup      = NATS queue group semantics
 Service         = NATS service endpoint semantics
-State           = signed iroh-docs facts
+State           = signed p2panda fact operations behind FactSource
 Projection      = SQLite plus snapshots
 Runtime         = Kameo actors
 Connectivity    = iroh first, WireGuard data plane
@@ -292,9 +293,8 @@ The slice plan should decide:
 - what maintainer-facing documentation should be updated so future contributors
   know why a primitive, crate, or pattern exists.
 - how the slice stays isolated under `MVP/`.
-- how the slice handles iroh/iroh-docs instead of deferring it again. If
-  `iroh-docs` is blocked by the MVP Rust toolchain, the slice plan must choose
-  between bumping the MVP toolchain or pinning an older compatible API.
+- how the slice handles p2panda persistence/sync and iroh connectivity instead
+  of deferring the real substrate again.
 
 The slice plan should not blindly follow a prewritten backlog. It should inspect
 the code and choose the next boundary.
@@ -346,7 +346,7 @@ persistent p2panda fact storage, derived-index rebuild, and a restartable
 fact-store role. ACME on the current in-memory p2panda fact role would prove the
 right product semantics on the wrong durability boundary.
 
-The next product-feature slices currently remain:
+The next implementation/proof slices currently remain:
 
 1. Persistent p2panda fact store and restartable fact role.
 2. ACME moved onto the p2panda fact boundary and advisory lease semantics.
@@ -537,9 +537,10 @@ Future slice plans should resolve these only when they become blocking:
 - Whether the first implementation should integrate into existing `ployzd` or
   run as a parallel MVP daemon path until the proof harness passes. Current
   direction: keep it under `MVP/` until explicitly changed.
-- Which current iroh-docs/iroh-sync APIs are stable enough for the MVP Rust
-  toolchain. This is no longer a question to defer indefinitely; the next slice
-  that touches facts/transport must make a concrete version/toolchain decision.
+- Which current p2panda-store/p2panda-sync APIs are stable enough for the MVP
+  fact substrate, and which iroh APIs should carry eventual transport. This is
+  no longer a question to defer indefinitely; the next slice that touches
+  facts/transport must make a concrete version/toolchain decision.
 - Whether Kameo remote actors should be avoided entirely at first, keeping all
   remote semantics in PloyzBus.
 - Whether `ployz-store-api` should evolve into a projection-facing interface or
