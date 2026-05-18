@@ -85,6 +85,12 @@ is not a raw LOC win, but it removes manual author-key trust from the central
 deploy crash-recovery proof and keeps deploy on the same membership-backed
 authority model as ACME, sync, machine remove, and process serving.
 
+Slice 045 is a decision-quality win rather than a LOC win. The investigation
+confirms volume transfer is the last product-shaped manual-trust canary, but it
+also records a focused `p2panda-net-fact-node-contract` zero-import flake that
+passed on immediate rerun. The next work should therefore harden the transport
+proof before counting more product LOC wins on top of it.
+
 ## Snapshot Counts
 
 ```text
@@ -125,6 +131,9 @@ shared foundation LOC per product primitive should fall.
 
 - `mvp-p2panda-facts` and `mvp-p2panda-transport` are valuable only if more
   commands use them without adding feature-local sync/storage wrappers.
+- `PandaNetFactNode` cannot be treated as invisible substrate until the
+  zero-import false failure is diagnosed and covered by a repeated reliability
+  proof.
 - The E2E harness is large enough that process-role and p2panda-net helpers
   should be reused aggressively instead of copied into each scenario.
 - Serving/projection is not a raw LOC win yet. Its value depends on becoming

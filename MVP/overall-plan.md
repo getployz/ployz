@@ -816,6 +816,11 @@ importers cannot write, non-replicas cannot import, deploy-vs-serving fact-key
 grants stay separated during import, and foreign-island recovery operations are
 rejected.
 
-The remaining manual-trust inventory should be planned separately, with volume
-transfer as the likely next product-shaped candidate and p2panda-net fallback
-probes treated as low-level regression fixtures unless a plan proves otherwise.
+Slice 045 completed the p2panda substitution gains investigation:
+[MVP/slice-045-p2panda-substitution-gains.md](slice-045-p2panda-substitution-gains.md).
+It confirms volume transfer is the last product-shaped manual-trust canary, but
+it also found a focused `p2panda-net-fact-node-contract` zero-import failure
+that passed on immediate rerun. The next slice should therefore harden and
+instrument p2panda-net fact-node reliability before adding more product surface
+on top of that transport. Volume transfer membership-backed facts should follow
+once the transport proof is stable.

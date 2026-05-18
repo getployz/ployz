@@ -1,6 +1,6 @@
 ---
 title: Slice 045 p2panda Substitution Gains Investigation Plan
-status: active
+status: completed
 created: 2026-05-19
 origin:
   - VISION.md

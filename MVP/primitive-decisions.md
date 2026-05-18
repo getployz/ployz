@@ -15,6 +15,13 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
+- Slice 045 investigates remaining p2panda substitution gains. It confirms the
+  active workspace already uses p2panda `0.6.0` for facts, sync, authz, and
+  transport, and that volume transfer is the last product-shaped manual-trust
+  canary.
+- Slice 045 also found a focused `p2panda-net-fact-node-contract` zero-import
+  failure that passed on immediate rerun. The next slice should harden
+  p2panda-net fact-node reliability before migrating volume transfer.
 - Slice 044 moves `deploy-restart-recovery-contract` onto membership-backed
   p2panda authority. The recovery store now installs an
   `IslandAuthoritySnapshot` and imports surviving deploy/serving operations
@@ -1463,6 +1470,10 @@ Revisit if:
 - p2panda-auth is ready to replace the remaining manual trusted author and
   replica fallback maps on product-shaped paths.
 - Process-role serving replication needs long-lived supervisor/status surfaces.
+- A focused or all-suite proof can observe zero attempted imports from
+  `PandaNetFactNode` while a rerun passes. That means the next reliability slice
+  must distinguish no delivery, early observation, stream-ended subscription,
+  and idle refresh behavior with explicit metrics.
 
 Changed since last slice:
 - Slice 038 is planned to take the non-RC iroh `0.98` path instead of waiting
