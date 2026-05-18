@@ -48,6 +48,7 @@ mod membership_wireguard_contract {
 }
 mod metrics;
 mod p2panda_acme_http01_contract;
+mod p2panda_auth_membership_contract;
 mod p2panda_fact_source_contract;
 mod p2panda_net_fact_node_contract;
 #[cfg(unix)]
@@ -165,6 +166,10 @@ const SCENARIOS: &[Scenario] = &[
     Scenario::new(
         "p2panda-acme-http01-contract",
         p2panda_acme_http01_contract::run,
+    ),
+    Scenario::new(
+        "p2panda-auth-membership-contract",
+        p2panda_auth_membership_contract::run,
     ),
     Scenario::new(
         "p2panda-net-fact-node-contract",

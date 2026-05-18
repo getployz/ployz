@@ -204,6 +204,17 @@ Current proof status:
   until membership operations are durably persisted/replayed, fact operations
   reference the membership operation/epoch they depend on, and authz-derived
   checks replace manual trust seeding.
+- Slice 041 adds `p2panda-auth-membership-contract`. Durable p2panda-auth
+  membership now drives `PandaFactStore` authority through
+  `PandaFactAuthoritySource`: root creates the island, writers write, replica
+  importers import, a no-grant active member is rejected by fact-key
+  authorization, a fact grant does not authorize a non-member, replica import
+  still checks the original author's write grant, a demoted writer loses write
+  authority but can import, removed writers cannot write/import, fresh stale
+  writer operations are rejected by current authority, reinvited principals
+  need the new epoch/key, old key bindings do not resurrect on restart/replay,
+  cross-island imports are rejected, and unauthorized imports accepted is
+  exactly zero.
 - Slice 022 added `p2panda-net-sync-contract`. Local p2panda-net nodes exchange
   opaque stable `PandaFactOperation` envelopes over the maintained
   iroh/gossip/log-sync stack; the receiver imports those envelopes through the

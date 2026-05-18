@@ -568,10 +568,15 @@ Slice 041 completed the durable membership substitution:
 [MVP/slice-041-p2panda-auth-membership-substitution-plan.md](slice-041-p2panda-auth-membership-substitution-plan.md).
 Durable p2panda-auth-backed island membership now feeds fact-store authority
 through `PandaFactAuthoritySource`, and product-shaped process-serving paths no
-longer take general trusted-author flags. The slice keeps Ployz-owned policy
-boundaries intact: root anchoring, principal/key/epoch binding, fact-key grants,
-subject permissions, command preconditions, visible-node evidence, and tombstone
-semantics remain outside p2panda-auth.
+longer take general trusted-author flags. The E2E suite now includes
+`p2panda-auth-membership-contract`, which proves root-created membership,
+writer/replica import authority, membership-vs-fact-key grant separation,
+demotion, removal, stale-writer rejection, reinvite with new epoch/key,
+cross-island rejection, restart/replay decisions, and exact zero unauthorized
+imports accepted. The slice keeps Ployz-owned policy boundaries intact: root
+anchoring, principal/key/epoch binding, fact-key grants, subject permissions,
+command preconditions, visible-node evidence, and tombstone semantics remain
+outside p2panda-auth.
 
 Slice 042 moved ACME and the p2panda sync proof onto membership-backed
 authority:
