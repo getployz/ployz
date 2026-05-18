@@ -52,9 +52,8 @@ before destructive cleanup.
   out of deploy ownership.
 - This plan assumes `mvp-routing` remains the owner of serving commit facts and
   projection catch-up proof.
-- This plan assumes the current branch's uncommitted Slice 017 projection work
-  is either completed or reverted before implementation begins. The deploy
-  recovery slice should start from a clean committed boundary.
+- The deploy recovery slice should start from a clean committed Slice 017
+  boundary.
 
 ## Requirements Trace
 
@@ -64,8 +63,9 @@ before destructive cleanup.
   local mutations but not serving, DNS, WireGuard, or existing workloads.
 - `MVP/architecture.md`: route cutover is a durable fact, and drain is a
   consequence of that fact.
-- `MVP/e2e-proof-plan.md` E2E-7: kill daemon after phase commit before drain,
-  restart, rebuild projection, and resume drain.
+- `MVP/e2e-proof-plan.md` E2E-7: kill the coordinator after the serving
+  phase's `ServingCommitFact` is durable and before drain, restart, rebuild
+  projection, and resume drain.
 - `MVP/primitive-decisions.md`: deploy participant cleanup before commit still
   needs a clearer ABI; this slice should document the post-commit drain/stop
   ABI it relies on.
@@ -78,12 +78,18 @@ before destructive cleanup.
 
 In scope:
 
-- Add deploy-owned durable facts under `/facts/deploy/...` for enough state to
-  reconstruct post-serving-commit cleanup after coordinator death.
-- Add a narrow deploy fact store boundary over the existing fact substrate.
+- Add deploy-owned durable facts under `/facts/deploy/...` for the deploy
+  decision and cleanup completion.
+- Use the existing serving commit fact as the durable cutover boundary. Recovery
+  must not require a second post-serving deploy fact, because the crash window
+  immediately after `ServingCommitFact` is the whole point of the slice.
+- Add a narrow deploy fact read/write boundary over the fact substrate only if
+  implementation has two current consumers, such as the bus-backed focused tests
+  and docs-backed E2E proof.
+- Keep deploy and serving facts on one fact substrate in the restart E2E. A
+  proof where deploy facts live in docs but serving facts live only in the
+  in-memory bus is not a restart-recovery proof.
 - Record visible nodes at decision time in durable deploy state.
-- Record the final phase commit and associated serving commit id before
-  returning a pending-cleanup handle.
 - Reconstruct pending cleanup from durable deploy facts plus the existing
   `ServingCommitFact`.
 - Require `ProjectionCatchUp` after restart before drain/stop.
@@ -98,9 +104,10 @@ In scope:
 
 Out of scope:
 
-- Full pre-commit crash adoption/cleanup for candidates that were prepared or
-  started before any irreversible commit. This remains a separate deploy
-  participant ABI slice.
+- Any crash state before the serving commit exists, including prepared/started
+  candidates and irreversible phase commits without a serving commit. This
+  returns structured `PreCommitIncomplete`/missing-commit recovery status and
+  remains a separate deploy participant ABI slice.
 - Automatic rollback after irreversible phase commit.
 - General `mvp-commands` / `PhasedCommand`.
 - Temporal/Cadence/Restate-style activity replay.
@@ -127,18 +134,27 @@ Checked before planning:
   store types or generic async methods first; add `async-trait` only if the
   implementation genuinely needs dyn async dispatch and the simpler shape is
   worse.
+- `iroh-docs` already exposes `Docs::persistent(path)` for redb-backed docs
+  storage, and `iroh-blobs` exposes `FsStore::load(path)` for file-backed blob
+  storage. The current `mvp-iroh` proof wrapper only exposes `memory()`, so a
+  process-death durability proof may need a small `IrohFactNode::persistent`
+  helper before the deploy E2E can honestly kill and recreate the local docs
+  node.
 
 Decision for this slice:
 
 - Add no workflow/runtime dependency.
 - Keep recovery as explicit deploy facts plus explicit resume code.
 - Copy the durable-phase lesson from workflow engines, not their replay model.
+- Prefer the existing iroh-docs fact source for the E2E recovery proof. Keep
+  bus-backed fact writes only as a focused unit-test adapter unless the same
+  facts are also written to the docs-backed source used for recovery.
 
 ## Design Decisions
 
 ### Deploy Facts Are Deploy-Owned
 
-Do not put deploy phase facts into `ProjectionFactPayload` unless serving or
+Do not put deploy recovery facts into `ProjectionFactPayload` unless serving or
 operator status projection actually needs them. `mvp-deploy` already depends on
 `mvp-projection`; making projection depend on deploy would invert the current
 crate boundary.
@@ -148,64 +164,94 @@ Preferred shape:
 ```text
 MVP/deploy/src/facts.rs
   DeployFactPayload
-  DeployPlanFact
-  DeployPhaseCommitFact
-  DeployCleanupStartedFact
+  DeployDecisionFact
   DeployCleanupDoneFact
-  DeployFactStore
-  BusDeployFactStore
+  DeployFactWriter/Reader only if two current adapters justify it
+  BusDeployFactStore for focused tests if still useful
 ```
 
-The recovery path can read deploy facts directly through a narrow fact store.
-Projection remains responsible for serving/gateway/DNS snapshots, not for
-owning deploy orchestration state.
+The recovery path can read deploy facts directly through a narrow fact store or
+through concrete helpers over `FactSource`. Projection remains responsible for
+serving/gateway/DNS snapshots, not for owning deploy orchestration state.
+
+`mvp-routing` still owns serving commit fact shape. This slice may need pure
+helpers such as `serving_commit_fact_key` and `serving_commit_fact_payload` so
+the same serving fact can be written to either the bus-backed harness or
+docs-backed E2E store without making deploy depend on raw projection payload
+construction.
 
 ### Fact Keys
 
 Use immutable command facts:
 
 ```text
-/facts/deploy/<deploy_id>/plan
-/facts/deploy/<deploy_id>/phase/<phase_id>/commit
-/facts/deploy/<deploy_id>/cleanup/started/<epoch>
-/facts/deploy/<deploy_id>/cleanup/done/<epoch>
+/facts/deploy/<deploy_id>/decision
+/facts/deploy/<deploy_id>/cleanup/done
+/facts/serving/<serving_commit_id>   # existing mvp-routing serving fact
 ```
 
-The plan fact carries the submitted manifest and the visible nodes accepted at
-decision time. A duplicate or conflicting plan for the same `deploy_id` is a
-command conflict, not something the operator should manually pick.
+The decision fact carries the submitted manifest, visible nodes accepted at
+decision time, and the expected serving commit id. It is written after capacity
+preflight succeeds and before the first participant mutation.
 
-The phase commit fact carries:
+A duplicate decision fact with an identical payload is idempotent/already
+present. A different payload for the same `deploy_id` is a structured command
+conflict, not something the operator should manually pick.
 
-- deploy id,
-- phase id,
-- phase policy,
-- visible nodes at decision time,
-- optional serving commit id,
-- irreversible marker.
+Do not add `cleanup/started`, attempt, or epoch facts in this slice. Recovery is
+derived from durable decision facts plus the serving commit fact plus the
+absence of cleanup done. Attempt history belongs to a later command primitive
+only if multiple commands prove that need.
 
 The serving commit payload itself remains the existing `ServingCommitFact`
-written by `mvp-routing`.
+owned by `mvp-routing`.
 
 ### Recovery State
 
-Recovery should only rebuild a cleanup continuation when all of these are true:
+Recovery has two explicit states:
 
-- plan fact exists,
-- final serving phase commit fact exists,
+```text
+RecoveredPendingCleanup
+  rebuilt from facts, not yet allowed to drain
+
+ProjectedPendingCleanup
+  RecoveredPendingCleanup + ProjectionCatchUp proof
+  the only valid input to drain/stop
+```
+
+Recovery can rebuild `RecoveredPendingCleanup` when all of these are true:
+
+- decision fact exists,
 - serving commit fact exists,
-- cleanup done fact does not exist,
-- projection catch-up proof matches the serving commit.
+- cleanup done fact does not exist.
 
-If the plan exists but no serving commit exists, this slice should return a
-structured `RecoveryState::PreCommitIncomplete` and stop. It should not pretend
-to clean up prepared candidates until the participant ABI for pre-commit
-cleanup is explicit.
+`ProjectedPendingCleanup` requires a fresh `ProjectionCatchUp` proof matching
+the serving commit and remains the only path to drain/stop.
+
+If the decision fact exists but no serving commit exists, this slice should
+return a structured `RecoveryState::PreCommitIncomplete` and stop. It should
+not pretend to clean up prepared candidates, even if an earlier irreversible
+phase happened, until the participant ABI for pre-serving-commit cleanup is
+explicit.
+
+If the serving commit fact exists but a separate post-serving deploy checkpoint
+does not, recovery must still work from the decision fact plus serving fact.
+That closes the crash window where `mvp-routing::write_serving_commit` succeeds
+and the coordinator dies before any later deploy-owned write can happen.
 
 ### Post-Commit Participant ABI
 
 Post-commit drain/stop requests must be idempotent for a `(deploy_id, backend)`
 pair.
+
+The current wire requests only carry `deploy_id`, while the request subject
+implies a node. This slice should remove that ambiguity by adding explicit
+backend identity to the cleanup requests:
+
+```text
+DrainInstanceRequest { deploy_id, backend }
+StopInstanceRequest  { deploy_id, backend }
+```
 
 After restart, the coordinator may send drain/stop again because the old process
 could have died after the participant performed the side effect but before the
@@ -231,34 +277,46 @@ an excuse to build the general primitive early.
 
 ## Implementation Units
 
-### Unit 1: Deploy Durable Fact Model
+### Unit 1: Deploy And Serving Fact Boundary
 
 Files:
 
+- `MVP/routing/src/lib.rs`
 - `MVP/deploy/src/facts.rs`
 - `MVP/deploy/src/domain.rs`
 - `MVP/deploy/src/error.rs`
 - `MVP/deploy/src/lib.rs`
+- `MVP/iroh/src/facts.rs` if a persistent docs helper is needed for the E2E
 - `MVP/deploy/src/tests.rs`
 
 Work:
 
-- Add deploy fact payload structs and fact key constructors.
-- Add a narrow fact store boundary for writing and reading deploy facts.
-- Add `BusDeployFactStore` over `BusActorHandle` fact APIs.
-- Add structured errors for duplicate plan, conflicting phase commit, missing
-  recovery facts, and malformed deploy fact payloads.
+- Add deploy decision and cleanup-done fact payload structs and fact key
+  constructors.
+- Expose pure serving commit key/payload helpers from `mvp-routing` so serving
+  commits can be written through the same fact substrate used by deploy facts
+  in the recovery E2E.
+- Add a narrow fact store boundary only if the implementation has two current
+  adapters, such as bus-backed focused tests plus docs-backed E2E recovery.
+- Add a persistent `mvp-iroh` fact node helper if the E2E needs to recreate the
+  docs node from disk instead of sharing an in-memory local view.
+- Add structured errors for conflicting decision facts, missing recovery facts,
+  malformed deploy fact payloads, and malformed serving commit payloads.
 - Keep serving commit fact writes in `mvp-routing`.
+- Do not add phase commit facts, cleanup-started facts, or attempt logs in this
+  slice.
 
 Tests:
 
-- Plan fact key is stable and deploy-id scoped.
-- Duplicate plan with the same payload is accepted as already-present.
-- Conflicting plan for the same deploy id returns structured conflict.
-- Phase commit fact can be read back and decoded.
+- Decision fact key is stable and deploy-id scoped.
+- Duplicate decision with the same payload is accepted as already-present.
+- Conflicting decision for the same deploy id returns structured conflict.
+- Cleanup-done fact uses one deterministic deploy-id-scoped key.
+- Serving commit key/payload helpers round-trip through the selected fact
+  source.
 - Malformed deploy fact payload returns structured recovery error.
 
-### Unit 2: Durable Execute Until Commit
+### Unit 2: Durable Execute Until Serving Commit
 
 Files:
 
@@ -273,19 +331,24 @@ Work:
   first participant mutation.
 - Preserve existing preflight behavior: capacity is checked before mutation,
   visible nodes are recorded, and missing planned nodes fail before mutation.
-- Write phase commit facts after each successful phase commit.
-- Write the final serving phase commit fact with the serving commit id after
-  `mvp-routing::write_serving_commit` succeeds.
+- Write only the durable checkpoint needed for this proof: the decision fact
+  before mutation and the serving commit fact at cutover.
+- Do not require a deploy-owned fact after serving commit for recovery. If the
+  implementation adds any post-serving status fact for observability, recovery
+  must still succeed without it.
 - Keep the existing non-durable canary path if it remains useful for focused
   tests, but avoid two divergent implementations of deploy ordering.
+- Extend cleanup request payloads to include the explicit backend identity so
+  drain/stop retries are idempotent per `(deploy_id, backend)`.
 
 Tests:
 
-- Capacity failure writes no deploy plan/phase/serving facts.
-- Prepare/start failure before commit writes plan evidence but no serving commit.
-- Serving commit success writes plan, phase commit, and serving commit facts in
-  order.
+- Capacity failure writes no deploy decision/serving facts.
+- Prepare/start failure before commit writes decision evidence but no serving
+  commit.
+- Serving commit success writes decision and serving commit facts in order.
 - Drain/stop requests still do not occur before projection catch-up.
+- Drain/stop requests include the backend being cleaned up.
 
 ### Unit 3: Resume Pending Cleanup
 
@@ -299,12 +362,16 @@ Files:
 Work:
 
 - Add a recovery entry point, such as `recover_pending_cleanup(deploy_id, ...)`.
-- Rebuild `PendingCleanup` from durable deploy facts and the current serving
-  commit plan.
+- Add a state-machine recovery constructor, such as
+  `DeployStateMachine::recover_pending_cleanup(...)`, instead of replaying
+  historical transitions from facts.
+- Rebuild `RecoveredPendingCleanup` from durable deploy decision facts and the
+  current serving commit fact.
 - Require `ProjectionCatchUp` before calling the existing cleanup path.
 - Treat cleanup-done fact as idempotent success/no-op.
 - Return structured cleanup-pending status when drain/stop responders are absent
   after restart.
+- Write cleanup-done only after drain/stop completes successfully.
 
 Tests:
 
@@ -313,6 +380,8 @@ Tests:
   projection proof.
 - Recovery with missing plan returns a structured missing-fact error.
 - Recovery with plan but no serving commit returns `PreCommitIncomplete`.
+- Recovery with serving commit but no deploy-owned post-serving checkpoint still
+  rebuilds pending cleanup from decision + serving facts.
 - Recovery with cleanup done returns already-complete result without new
   participant RPC.
 - Restarted cleanup failure returns `CleanupPending` with visible nodes and
@@ -335,6 +404,9 @@ Work:
 - Reuse the deploy participant fixture style from
   `MVP/e2e/src/deploy_commit_drain_contract.rs`.
 - Run deploy until the serving commit is durable.
+- Use one docs-backed fact source/sink for deploy decision, serving commit, and
+  cleanup-done facts. Do not make this proof depend on the in-memory bus fact
+  store for cutover truth.
 - Project the serving commit and prove old backend remains alive before drain.
 - Kill/drop the coordinator before cleanup starts.
 - Keep serving/mesh steady state alive through the outage using existing
@@ -354,10 +426,11 @@ Required assertions:
 - HTTP/DNS or serving actor keeps last-good answers while the coordinator is
   absent.
 - Existing `deploy-commit-drain-contract` remains green.
+- The recovery path does not require any post-serving deploy-owned phase fact.
 
 Metrics:
 
-- deploy fact write duration,
+- deploy decision fact write duration,
 - serving commit to simulated kill duration,
 - coordinator outage duration,
 - recovery read duration,
@@ -382,6 +455,9 @@ The slice is complete when:
   before drain.
 - Recovery derives its continuation from durable facts, not in-memory
   `PendingCleanup`.
+- The durable facts required for recovery are the deploy decision fact, existing
+  serving commit fact, and absence of cleanup-done; no cleanup-started attempt
+  log or post-serving deploy checkpoint is required.
 - Drain/stop remain gated by projection catch-up after restart.
 - Serving/HTTP/DNS last-good behavior continues while the coordinator is absent.
 - Recovery does not re-run pre-commit participant operations.
@@ -403,8 +479,8 @@ After implementation, inspect:
 - Whether durable recovery added a small deploy fact boundary or leaked fact
   choreography through all deploy business logic.
 - Whether the command ordering still reads as:
-  preflight -> plan fact -> phase side effects -> phase commit fact -> serving
-  commit -> projection proof -> drain -> stop -> cleanup done.
+  preflight -> decision fact -> phase side effects -> serving commit ->
+  projection proof -> drain -> stop -> cleanup done.
 - Whether the recovery path reads as:
   read facts -> verify serving commit/projection -> cleanup.
 - Whether tests assert product invariants instead of object lifetime details.
@@ -417,6 +493,8 @@ coordinator.
 
 - Accidentally rebuilding a manual event log. Deploy facts should be immutable
   checkpoints, not a global ordered stream.
+- Accidentally requiring a deploy-owned post-serving checkpoint for recovery.
+  Recovery must cover the crash immediately after the serving fact is durable.
 - Hiding pre-commit partial cleanup behind an underspecified participant
   contract. Keep that out of scope unless the ABI is explicitly written.
 - Re-running prepare/start on recovery after the serving commit exists.
@@ -431,7 +509,7 @@ coordinator.
 
 1. Plan document.
 2. Deploy durable fact model and focused tests.
-3. Durable execute-until-commit path.
+3. Durable execute-until-serving-commit path.
 4. Recovery path and focused tests.
 5. E2E deploy restart recovery contract.
 6. Documentation/report updates.
