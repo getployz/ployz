@@ -1,6 +1,9 @@
-use mvp_bus::{BusError, FactKey, FactKeyParseError, IslandId, PrincipalId, SubjectParseError};
+use mvp_bus::{
+    BusError, FactContentHash, FactKey, FactKeyParseError, IslandId, PrincipalId, SubjectParseError,
+};
 use mvp_identity::NodeId;
 use mvp_mesh::MeshError;
+use mvp_projection::FactSourceError;
 use mvp_routing::{RoutingError, ServingCommitId};
 use thiserror::Error;
 
@@ -39,6 +42,21 @@ pub enum MachineRemoveError {
     },
     #[error("machine fact already has a conflicting candidate: {key}")]
     FactConflict { key: FactKey },
+    #[error("machine remove command fact is missing: {key}")]
+    CommandFactMissing { key: FactKey },
+    #[error("machine remove command fact conflict at {key} from {principal} with {content_hash}")]
+    CommandFactConflict {
+        key: FactKey,
+        principal: PrincipalId,
+        content_hash: FactContentHash,
+    },
+    #[error("machine remove command fact payload was not a {expected_kind} fact: {key}")]
+    CommandFactKindMismatch {
+        key: FactKey,
+        expected_kind: &'static str,
+    },
+    #[error("machine remove command fact payload does not match its key or decision: {key}")]
+    CommandFactMismatch { key: FactKey },
     #[error("principal {principal} is not allowed to write machine fact {key} in island {island}")]
     UnauthorizedFactWrite {
         island: IslandId,
@@ -77,6 +95,8 @@ pub enum MachineRemoveError {
     Mesh(#[from] MeshError),
     #[error(transparent)]
     Routing(#[from] RoutingError),
+    #[error(transparent)]
+    FactSource(#[from] FactSourceError),
     #[error(transparent)]
     SubjectParse(#[from] SubjectParseError),
     #[error(transparent)]

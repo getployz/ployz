@@ -484,6 +484,10 @@ fn cleanup_failure_kind(error: &MachineRemoveError) -> CleanupFailureKind {
         | MachineRemoveError::PrepareRemoveRejected { .. }
         | MachineRemoveError::ParticipantNodeMismatch { .. }
         | MachineRemoveError::FactConflict { .. }
+        | MachineRemoveError::CommandFactMissing { .. }
+        | MachineRemoveError::CommandFactConflict { .. }
+        | MachineRemoveError::CommandFactKindMismatch { .. }
+        | MachineRemoveError::CommandFactMismatch { .. }
         | MachineRemoveError::UnauthorizedFactWrite { .. }
         | MachineRemoveError::PrincipalMismatch { .. }
         | MachineRemoveError::UntrustedAuthorKey { .. }
@@ -492,6 +496,7 @@ fn cleanup_failure_kind(error: &MachineRemoveError) -> CleanupFailureKind {
         | MachineRemoveError::WirePayload { .. }
         | MachineRemoveError::Mesh(_)
         | MachineRemoveError::Routing(_)
+        | MachineRemoveError::FactSource(_)
         | MachineRemoveError::SubjectParse(_)
         | MachineRemoveError::FactKeyParse(_)
         | MachineRemoveError::Bus(mvp_bus::BusError::SubjectParse(_))
