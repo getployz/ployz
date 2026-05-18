@@ -1,7 +1,13 @@
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use mvp_bus::{FactContentHash, FactKeyPattern, Grant, IslandId, PrincipalId};
+use mvp_bus::{
+    BusActorHandle, BusError, BusSession, FactContentHash, FactKeyPattern, Grant, HandlerFailure,
+    IslandId, PrincipalId, SubjectPattern,
+};
 use mvp_identity::{NodeId, VisibleNodes};
 use mvp_projection::{
     BackendEndpoint, BusFactSource, DnsProjection, DnsRecordFact, DnsRecordProjection,
@@ -9,14 +15,18 @@ use mvp_projection::{
     SnapshotWriteReport,
 };
 
+use crate::wire::{decode, encode};
 use crate::{
-    BusDeployFactWriter, CleanupFailureKind, CleanupStatus, DeployDecisionCandidate,
-    DeployDecisionFact, DeployError, DeployFactWriteStatus, DeployFactWriter, DeployId,
-    DeployManifest, DeployOutcome, DeployStateMachine, DnsCommitId, GatewayCommitId, PhaseId,
-    PhasePolicy, ProjectionCatchUp, RouteCommitId, ServingCommitId, ServingCommitPlan,
-    decode_deploy_decision_fact, deploy_cleanup_done_fact_key, deploy_decision_fact_key,
-    deploy_decision_fact_payload, read_deploy_decision, select_deploy_decision,
-    write_serving_commit,
+    BusDeployFactWriter, CapacityRequest, CleanupFailureKind, CleanupStatus,
+    DeployDecisionCandidate, DeployDecisionFact, DeployError, DeployFactWriteStatus,
+    DeployFactWriter, DeployId, DeployManifest, DeployOutcome, DeployStateMachine, DeployTimeouts,
+    DnsCommitId, DrainInstanceRequest, GatewayCommitId, InstanceCapacityRequirement,
+    InstanceCommandReply, InstanceCommandRequest, InstanceId, InstancePlan, InstanceStartOutcome,
+    PhaseId, PhasePolicy, PhaseReversibility, ProjectionCatchUp, RevisionId, RouteCommitId,
+    ServingCommitId, ServingCommitPlan, ServingFactWriter, StopInstanceRequest, WrittenDeployFact,
+    WrittenServingFact, decode_deploy_decision_fact, deploy_cleanup_done_fact_key,
+    deploy_decision_fact_key, deploy_decision_fact_payload, read_deploy_decision,
+    select_deploy_decision, write_serving_commit,
 };
 
 fn serving_commit() -> ServingCommitPlan {
@@ -57,6 +67,112 @@ fn visible_nodes() -> VisibleNodes {
 
 fn decision_fact(deploy_id: &str, serving_epoch: u64) -> DeployDecisionFact {
     DeployDecisionFact::new(manifest(deploy_id, serving_epoch), visible_nodes())
+}
+
+fn coordinator_manifest() -> DeployManifest {
+    DeployManifest::new(
+        DeployId::new("deploy-coordinator"),
+        vec![crate::PhasePlan::new(
+            PhaseId::new(1),
+            vec![InstancePlan::new(
+                InstanceId::new("web-1"),
+                NodeId::new("node-new"),
+                mvp_projection::ServiceName::new("web"),
+                RevisionId::new("rev-web"),
+                InstanceCapacityRequirement::General,
+            )],
+            PhasePolicy::serving(PhaseReversibility::Reversible),
+        )],
+        serving_commit(),
+    )
+}
+
+fn test_timeouts() -> DeployTimeouts {
+    DeployTimeouts {
+        capacity: Duration::from_millis(50),
+        participant: Duration::from_millis(50),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CoordinatorEvent {
+    Decision,
+    Prepare,
+    Start,
+    Serving,
+}
+
+#[derive(Clone, Default)]
+struct RecordingDeployFactWriter {
+    events: Arc<Mutex<Vec<CoordinatorEvent>>>,
+}
+
+impl DeployFactWriter for RecordingDeployFactWriter {
+    fn write_decision<'a>(
+        &'a self,
+        fact: DeployDecisionFact,
+    ) -> Pin<Box<dyn Future<Output = crate::DeployResult<WrittenDeployFact>> + Send + 'a>> {
+        Box::pin(async move {
+            self.events
+                .lock()
+                .expect("recording deploy events")
+                .push(CoordinatorEvent::Decision);
+            Ok(WrittenDeployFact::inserted(
+                deploy_decision_fact_key(&fact.deploy_id)?,
+                FactContentHash::new("b3:decision"),
+            ))
+        })
+    }
+
+    fn write_cleanup_done<'a>(
+        &'a self,
+        fact: crate::DeployCleanupDoneFact,
+    ) -> Pin<Box<dyn Future<Output = crate::DeployResult<WrittenDeployFact>> + Send + 'a>> {
+        Box::pin(async move {
+            Ok(WrittenDeployFact::inserted(
+                deploy_cleanup_done_fact_key(&fact.deploy_id)?,
+                FactContentHash::new("b3:cleanup"),
+            ))
+        })
+    }
+}
+
+#[derive(Clone, Default)]
+struct RecordingServingFactWriter {
+    events: Arc<Mutex<Vec<CoordinatorEvent>>>,
+}
+
+impl ServingFactWriter for RecordingServingFactWriter {
+    fn write_serving_commit<'a>(
+        &'a self,
+        commit: &'a ServingCommitPlan,
+    ) -> Pin<Box<dyn Future<Output = crate::DeployResult<WrittenServingFact>> + Send + 'a>> {
+        Box::pin(async move {
+            self.events
+                .lock()
+                .expect("recording serving events")
+                .push(CoordinatorEvent::Serving);
+            Ok(WrittenServingFact::inserted(
+                mvp_routing::serving_commit_fact_key(&commit.serving_commit_id)?,
+                FactContentHash::new("b3:serving"),
+            ))
+        })
+    }
+}
+
+fn recording_writers() -> (
+    Arc<Mutex<Vec<CoordinatorEvent>>>,
+    RecordingDeployFactWriter,
+    RecordingServingFactWriter,
+) {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    (
+        Arc::clone(&events),
+        RecordingDeployFactWriter {
+            events: Arc::clone(&events),
+        },
+        RecordingServingFactWriter { events },
+    )
 }
 
 #[test]
@@ -162,6 +278,171 @@ fn projection_catch_up_allows_unrelated_gateway_revision_suffix() {
     let proof = ProjectionCatchUp::from_report(&commit, &report).expect("catch-up proof");
 
     assert_eq!(proof.serving_commit_id(), &commit.serving_commit_id);
+}
+
+#[tokio::test]
+async fn capacity_failure_writes_no_deploy_decision() {
+    let (bus, authority, _raw_bus) = mvp_bus::harness::actor_with_authority();
+    let operator = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("operator"),
+        Grant::allow_all(),
+    );
+    let (events, deploy_writer, serving_writer) = recording_writers();
+    let coordinator = crate::DeployCoordinator::with_fact_writers(
+        bus,
+        operator,
+        deploy_writer,
+        serving_writer,
+        test_timeouts(),
+    );
+
+    let error = coordinator
+        .execute_until_serving_commit(coordinator_manifest())
+        .await
+        .expect_err("missing capacity should fail before decision");
+
+    assert!(matches!(error, DeployError::PlannedNodeNotVisible { .. }));
+    assert!(events.lock().expect("recording events").is_empty());
+}
+
+#[tokio::test]
+async fn prepare_failure_writes_decision_but_no_serving_commit() {
+    let (bus, authority, _raw_bus) = mvp_bus::harness::actor_with_authority();
+    let operator = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("operator"),
+        Grant::allow_all(),
+    );
+    let node = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("node"),
+        Grant::allow_all(),
+    );
+    register_capacity(&bus, &node).await;
+    let (events, deploy_writer, serving_writer) = recording_writers();
+    let coordinator = crate::DeployCoordinator::with_fact_writers(
+        bus,
+        operator,
+        deploy_writer,
+        serving_writer,
+        test_timeouts(),
+    );
+
+    let error = coordinator
+        .execute_until_serving_commit(coordinator_manifest())
+        .await
+        .expect_err("missing prepare responder should fail after decision");
+
+    assert!(matches!(
+        error,
+        DeployError::Bus(mvp_bus::BusError::NoResponders { .. })
+    ));
+    assert_eq!(
+        events.lock().expect("recording events").as_slice(),
+        [CoordinatorEvent::Decision]
+    );
+}
+
+#[tokio::test]
+async fn serving_commit_success_writes_decision_before_participant_mutation() {
+    let (bus, authority, _raw_bus) = mvp_bus::harness::actor_with_authority();
+    let operator = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("operator"),
+        Grant::allow_all(),
+    );
+    let node = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("node"),
+        Grant::allow_all(),
+    );
+    let (events, deploy_writer, serving_writer) = recording_writers();
+    register_capacity(&bus, &node).await;
+    register_instance_participants(&bus, &node, Arc::clone(&events)).await;
+    let coordinator = crate::DeployCoordinator::with_fact_writers(
+        bus,
+        operator,
+        deploy_writer,
+        serving_writer,
+        test_timeouts(),
+    );
+
+    coordinator
+        .execute_until_serving_commit(coordinator_manifest())
+        .await
+        .expect("deploy reaches serving commit");
+
+    assert_eq!(
+        events.lock().expect("recording events").as_slice(),
+        [
+            CoordinatorEvent::Decision,
+            CoordinatorEvent::Prepare,
+            CoordinatorEvent::Start,
+            CoordinatorEvent::Serving,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cleanup_requests_include_explicit_cleanup_target() {
+    let (bus, authority, _raw_bus) = mvp_bus::harness::actor_with_authority();
+    let operator = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("operator"),
+        Grant::allow_all(),
+    );
+    let node = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("node"),
+        Grant::allow_all(),
+    );
+    let (events, deploy_writer, serving_writer) = recording_writers();
+    let drained = Arc::new(Mutex::new(Vec::new()));
+    let stopped = Arc::new(Mutex::new(Vec::new()));
+    register_capacity(&bus, &node).await;
+    register_instance_participants(&bus, &node, Arc::clone(&events)).await;
+    register_cleanup_participants(&bus, &node, Arc::clone(&drained), Arc::clone(&stopped)).await;
+    let coordinator = crate::DeployCoordinator::with_fact_writers(
+        bus,
+        operator,
+        deploy_writer,
+        serving_writer,
+        test_timeouts(),
+    );
+    let manifest = coordinator_manifest();
+    let expected_target = manifest.serving_commit.old_backends_to_drain[0].clone();
+    let pending = coordinator
+        .execute_until_serving_commit(manifest.clone())
+        .await
+        .expect("deploy reaches serving commit");
+    let projected = pending
+        .after_projection(
+            ProjectionCatchUp::from_report(
+                &manifest.serving_commit,
+                &projection_report_for_commit(
+                    &manifest.serving_commit,
+                    "gateway:gateway-commit-1:route-commit-1",
+                    "dns:dns-commit-1",
+                ),
+            )
+            .expect("projection catch-up"),
+        )
+        .expect("pending accepts projection");
+
+    coordinator
+        .finish_cleanup(projected)
+        .await
+        .expect("cleanup finishes");
+
+    assert_eq!(
+        drained.lock().expect("drained targets").as_slice(),
+        std::slice::from_ref(&expected_target)
+    );
+    assert_eq!(
+        stopped.lock().expect("stopped targets").as_slice(),
+        std::slice::from_ref(&expected_target)
+    );
 }
 
 #[test]
@@ -335,6 +616,158 @@ fn deploy_decision_reader_selects_conflict_candidate_without_operator_choice() {
 
     assert_eq!(selection.winner.fact.serving_epoch, 2);
     assert_eq!(selection.superseded.len(), 1);
+}
+
+async fn register_capacity(bus: &BusActorHandle, session: &BusSession) {
+    bus.subscribe(
+        session,
+        SubjectPattern::parse("node.node-new.capacity").expect("capacity subject"),
+        move |ctx| {
+            let _request: CapacityRequest = decode(ctx.message.payload(), "capacity request")
+                .map_err(|_| BusError::HandlerFailed {
+                    subject: ctx.message.subject().to_string(),
+                    failure: HandlerFailure::Application,
+                })?;
+            ctx.reply(
+                encode(
+                    &crate::CapacityReply {
+                        node_id: NodeId::new("node-new"),
+                        memory_free_bytes: 1024,
+                        can_run_database: false,
+                    },
+                    "capacity reply",
+                )
+                .map_err(|_| BusError::HandlerFailed {
+                    subject: ctx.message.subject().to_string(),
+                    failure: HandlerFailure::Application,
+                })?,
+            )
+        },
+    )
+    .await
+    .expect("register capacity");
+}
+
+async fn register_instance_participants(
+    bus: &BusActorHandle,
+    session: &BusSession,
+    events: Arc<Mutex<Vec<CoordinatorEvent>>>,
+) {
+    let prepare_events = Arc::clone(&events);
+    bus.subscribe(
+        session,
+        SubjectPattern::parse("node.node-new.rpc.prepare_instance").expect("prepare subject"),
+        move |ctx| {
+            let _request: InstanceCommandRequest =
+                decode(ctx.message.payload(), "prepare instance request").map_err(|_| {
+                    BusError::HandlerFailed {
+                        subject: ctx.message.subject().to_string(),
+                        failure: HandlerFailure::Application,
+                    }
+                })?;
+            prepare_events
+                .lock()
+                .map_err(|_| BusError::HandlerFailed {
+                    subject: ctx.message.subject().to_string(),
+                    failure: HandlerFailure::Application,
+                })?
+                .push(CoordinatorEvent::Prepare);
+            ctx.reply(b"prepared".to_vec())
+        },
+    )
+    .await
+    .expect("register prepare");
+
+    bus.subscribe(
+        session,
+        SubjectPattern::parse("node.node-new.rpc.start_instance").expect("start subject"),
+        move |ctx| {
+            let request: InstanceCommandRequest =
+                decode(ctx.message.payload(), "start instance request").map_err(|_| {
+                    BusError::HandlerFailed {
+                        subject: ctx.message.subject().to_string(),
+                        failure: HandlerFailure::Application,
+                    }
+                })?;
+            events
+                .lock()
+                .map_err(|_| BusError::HandlerFailed {
+                    subject: ctx.message.subject().to_string(),
+                    failure: HandlerFailure::Application,
+                })?
+                .push(CoordinatorEvent::Start);
+            ctx.reply(
+                encode(
+                    &InstanceCommandReply {
+                        instance_id: request.instance_id,
+                        outcome: InstanceStartOutcome::Ready,
+                    },
+                    "start instance reply",
+                )
+                .map_err(|_| BusError::HandlerFailed {
+                    subject: ctx.message.subject().to_string(),
+                    failure: HandlerFailure::Application,
+                })?,
+            )
+        },
+    )
+    .await
+    .expect("register start");
+}
+
+async fn register_cleanup_participants(
+    bus: &BusActorHandle,
+    session: &BusSession,
+    drained: Arc<Mutex<Vec<BackendEndpoint>>>,
+    stopped: Arc<Mutex<Vec<BackendEndpoint>>>,
+) {
+    bus.subscribe(
+        session,
+        SubjectPattern::parse("node.node-old.rpc.drain_instance").expect("drain subject"),
+        move |ctx| {
+            let request: DrainInstanceRequest =
+                decode(ctx.message.payload(), "drain instance request").map_err(|_| {
+                    BusError::HandlerFailed {
+                        subject: ctx.message.subject().to_string(),
+                        failure: HandlerFailure::Application,
+                    }
+                })?;
+            drained
+                .lock()
+                .map_err(|_| BusError::HandlerFailed {
+                    subject: ctx.message.subject().to_string(),
+                    failure: HandlerFailure::Application,
+                })?
+                .push(request.cleanup_target);
+            ctx.reply(b"drained".to_vec())
+        },
+    )
+    .await
+    .expect("register drain");
+
+    bus.subscribe(
+        session,
+        SubjectPattern::parse("node.node-old.rpc.stop_instance").expect("stop subject"),
+        move |ctx| {
+            let request: StopInstanceRequest =
+                decode(ctx.message.payload(), "stop instance request").map_err(|_| {
+                    BusError::HandlerFailed {
+                        subject: ctx.message.subject().to_string(),
+                        failure: HandlerFailure::Application,
+                    }
+                })?;
+            stopped
+                .lock()
+                .map_err(|_| BusError::HandlerFailed {
+                    subject: ctx.message.subject().to_string(),
+                    failure: HandlerFailure::Application,
+                })?
+                .push(request.cleanup_target);
+            ctx.reply(b"stopped".to_vec())
+        },
+    )
+    .await
+    .expect("register stop");
 }
 
 fn projection_report_for_commit(
