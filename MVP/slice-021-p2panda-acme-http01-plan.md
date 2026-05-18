@@ -1,6 +1,6 @@
 ---
 title: Slice 021 P2panda-Backed ACME HTTP-01 Plan
-status: active
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md
