@@ -53,6 +53,11 @@ impl PandaNetFactNode {
         self.store.clone()
     }
 
+    pub async fn refresh_stream(&mut self) -> Result<(), PandaNetTransportError> {
+        self.stream = self.node.open_stream(self.topic, true).await?;
+        Ok(())
+    }
+
     pub async fn publish_fact_payload(
         &mut self,
         session: &BusSession,
