@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -10,16 +9,17 @@ use mvp_p2panda_facts::{
     PandaSqliteOpenConfig, PandaTrustedAuthorKey, sync_panda_fact_stores,
 };
 use mvp_projection::{
-    BackendEndpoint, CandidateStatus, DnsCommitFact, DnsRecordFact, FactSource, GatewayCommitFact,
-    NodeJoinedFact, ProjectionFactPayload, ProjectionIgnoreReason, RouteCommitFact, RouteId,
-    ServiceName, ServiceRegistrationFact, SqliteProjectionStore, load_dns_snapshot,
-    load_gateway_snapshot,
+    CandidateStatus, FactSource, NodeJoinedFact, ProjectionFactPayload, ProjectionIgnoreReason,
+    SqliteProjectionStore, load_dns_snapshot, load_gateway_snapshot,
 };
 use serde::Serialize;
 
 use crate::assertions::assert_eq_named;
 use crate::bus_syntax::{fact_key, fact_pattern};
 use crate::metrics::{MemorySnapshot, memory_snapshot, reset_dir, scenario_dir, write_json};
+use crate::p2panda_projection_fixture::{
+    seed_projection_facts, status_count, write_projection_fact,
+};
 use crate::projection_harness::projection_actor;
 
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -107,9 +107,13 @@ async fn run_async() -> Result<(), String> {
     seed_right_conflict(&mut right, &sessions.right_writer, &right_author).await?;
     seed_laptop_fact(&mut left, &sessions.laptop_writer, &left_author).await?;
 
-    let scope = PandaFactSyncScope::new(prod.clone())
-        .with_trusted_author(left_author.principal().clone(), left_author.author_key())
-        .with_trusted_author(right_author.principal().clone(), right_author.author_key());
+    let scope = PandaFactSyncScope::from_trusted_authors(
+        prod.clone(),
+        [
+            (left_author.principal().clone(), left_author.author_key()),
+            (right_author.principal().clone(), right_author.author_key()),
+        ],
+    );
 
     let first_sync_started = Instant::now();
     let first_sync = sync_panda_fact_stores(
@@ -156,7 +160,7 @@ async fn run_async() -> Result<(), String> {
         sync_received(&repeat_sync),
         0,
     )?;
-    let load_runs = run_large_load_sync_cases(&bus, &root, &prod, &sessions, &left_author).await?;
+    let load_runs = run_large_load_sync_cases(&bus, &prod, &sessions, &left_author).await?;
 
     let laptop = IslandId::new("laptop");
     let no_cross_island_leakage = right
@@ -330,22 +334,19 @@ fn sync_bus_sessions() -> (InMemoryBus, SyncBusSessions) {
 
 async fn run_large_load_sync_cases(
     bus: &InMemoryBus,
-    root: &Path,
     island: &IslandId,
     sessions: &SyncBusSessions,
     author: &PandaFactAuthor,
 ) -> Result<Vec<P2pandaSyncLoadRunReport>, String> {
     let mut reports = Vec::with_capacity(LOAD_FACT_COUNTS.len());
     for fact_count in LOAD_FACT_COUNTS {
-        reports
-            .push(run_large_load_sync_case(bus, root, island, sessions, author, fact_count).await?);
+        reports.push(run_large_load_sync_case(bus, island, sessions, author, fact_count).await?);
     }
     Ok(reports)
 }
 
 async fn run_large_load_sync_case(
     bus: &InMemoryBus,
-    _root: &Path,
     island: &IslandId,
     sessions: &SyncBusSessions,
     author: &PandaFactAuthor,
@@ -369,8 +370,10 @@ async fn run_large_load_sync_case(
         .map_err(|error| format!("write load fact {index} of {fact_count}: {error}"))?;
     }
 
-    let scope = PandaFactSyncScope::new(island.clone())
-        .with_trusted_author(author.principal().clone(), author.author_key());
+    let scope = PandaFactSyncScope::from_trusted_authors(
+        island.clone(),
+        [(author.principal().clone(), author.author_key())],
+    );
     let sync_started = Instant::now();
     let sync = sync_panda_fact_stores(
         &mut left,
@@ -479,91 +482,6 @@ async fn open_sync_store(
         .map_err(|error| format!("open p2panda sync store: {error}"))
 }
 
-async fn seed_projection_facts(
-    store: &mut PandaFactStore,
-    session: &BusSession,
-    author: &PandaFactAuthor,
-) -> Result<(), String> {
-    write_projection_fact(
-        store,
-        session,
-        author,
-        "/facts/node/node-1/joined/1",
-        ProjectionFactPayload::NodeJoined(NodeJoinedFact {
-            node_id: NodeId::new("node-1"),
-            epoch: 1,
-            overlay_ip: "fd00::1".to_string(),
-            iroh_endpoint_id: "iroh-test".to_string(),
-            wg_public_key: "wg-test".to_string(),
-        }),
-    )
-    .await?;
-    write_projection_fact(
-        store,
-        session,
-        author,
-        "/facts/service/web/node-1/registered/1",
-        ProjectionFactPayload::ServiceRegistered(ServiceRegistrationFact {
-            service: ServiceName::new("web"),
-            node_id: NodeId::new("node-1"),
-            version: "1.0.0".to_string(),
-            endpoint_subject: "service.web.changed".to_string(),
-            epoch: 1,
-        }),
-    )
-    .await?;
-    write_projection_fact(
-        store,
-        session,
-        author,
-        "/facts/routes/route-1",
-        ProjectionFactPayload::RouteCommit(RouteCommitFact {
-            route_commit_id: "route-1".to_string(),
-            route_id: RouteId::new("web-http"),
-            hostnames: vec!["web.example.com".to_string()],
-            backends: vec![BackendEndpoint {
-                node_id: NodeId::new("node-1"),
-                address: "10.0.0.1:8080".to_string(),
-            }],
-            old_backends_to_drain: vec![BackendEndpoint {
-                node_id: NodeId::new("node-old"),
-                address: "10.0.0.9:8080".to_string(),
-            }],
-        }),
-    )
-    .await?;
-    write_projection_fact(
-        store,
-        session,
-        author,
-        "/facts/gateway/gateway-1",
-        ProjectionFactPayload::GatewayCommit(GatewayCommitFact {
-            gateway_commit_id: "gateway-1".to_string(),
-            route_commit_id: "route-1".to_string(),
-            epoch: 1,
-        }),
-    )
-    .await?;
-    write_projection_fact(
-        store,
-        session,
-        author,
-        "/facts/dns/dns-1",
-        ProjectionFactPayload::DnsCommit(DnsCommitFact {
-            dns_commit_id: "dns-1".to_string(),
-            epoch: 1,
-            records: vec![DnsRecordFact {
-                name: "web.example.com".to_string(),
-                record_type: "AAAA".to_string(),
-                value: "fd00::1".to_string(),
-                ttl_seconds: 30,
-            }],
-        }),
-    )
-    .await
-    .map(|_| ())
-}
-
 async fn seed_left_conflict(
     store: &mut PandaFactStore,
     session: &BusSession,
@@ -630,23 +548,6 @@ async fn seed_laptop_fact(
     .map(|_| ())
 }
 
-async fn write_projection_fact(
-    store: &mut PandaFactStore,
-    session: &BusSession,
-    author: &PandaFactAuthor,
-    key: &str,
-    payload: ProjectionFactPayload,
-) -> Result<mvp_p2panda_facts::PandaFactWriteOutcome, String> {
-    let fact_key = fact_key(key)?;
-    let bytes = payload
-        .to_fact_bytes()
-        .map_err(|error| format!("serialize p2panda sync projection fact '{key}': {error}"))?;
-    store
-        .write_fact_payload(session, author, fact_key, bytes.into())
-        .await
-        .map_err(|error| format!("write p2panda sync projection fact '{key}': {error}"))
-}
-
 fn payload_read_grants_are_preserved(
     store: &PandaFactStore,
     sessions: &SyncBusSessions,
@@ -697,16 +598,6 @@ fn assert_projected_state(state: &mvp_projection::ProjectionState) -> Result<(),
         state.dns.as_ref().map_or(0, |dns| dns.records.len()),
         1,
     )
-}
-
-fn status_count(
-    statuses: &[mvp_projection::ProjectionStatus],
-    reason: ProjectionIgnoreReason,
-) -> usize {
-    statuses
-        .iter()
-        .find(|status| status.reason == reason)
-        .map_or(0, |status| status.count)
 }
 
 fn sync_received(report: &PandaFactSyncReport) -> u64 {
