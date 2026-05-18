@@ -318,9 +318,7 @@ where
                 {
                     Ok(stored_next) => stored_next,
                     Err(error) => {
-                        if let Err(compensation_error) = command.compensate(cx, next).await {
-                            return Err(compensation_error);
-                        }
+                        let _ = command.compensate(cx, next).await;
                         return Err(error.into());
                     }
                 };
@@ -331,9 +329,7 @@ where
             Ok(PhaseTransition::Done(output)) => return Ok(output),
             Err(error) => {
                 for phase in committed.into_iter().rev() {
-                    if let Err(compensation_error) = command.compensate(cx, phase).await {
-                        return Err(compensation_error);
-                    }
+                    let _ = command.compensate(cx, phase).await;
                 }
                 return Err(error);
             }
@@ -849,7 +845,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compensation_failure_is_returned_to_caller() {
+    async fn compensation_failure_preserves_original_error() {
         let store = Arc::new(InMemoryCommandPhaseStore::empty());
         let cx = CommandContext::new(store);
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -859,12 +855,12 @@ mod tests {
 
         let error = run_phased(&cx, &command)
             .await
-            .expect_err("compensation error returned");
+            .expect_err("original command error returned");
 
-        assert!(matches!(error, TestError::Compensation));
+        assert!(matches!(error, TestError::Failed));
         assert_eq!(
             compensated.lock().expect("compensated lock").as_slice(),
-            &[TestPhase::Committed]
+            &[TestPhase::Committed, TestPhase::Prepared]
         );
     }
 
