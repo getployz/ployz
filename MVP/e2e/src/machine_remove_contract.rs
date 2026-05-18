@@ -7,14 +7,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use mvp_bus::{BusError, BusSession, FactKey, Grant, HandlerFailure, IslandId, PrincipalId};
+use mvp_commands::CommandContext;
+use mvp_commands_p2panda::PandaCommandPhaseStore;
 use mvp_identity::{NodeId, VisibleNodes};
 use mvp_machine::{
-    MachineFactWriter, MachineRemoveCleanupDoneFact, MachineRemoveCoordinator, MachineRemoveId,
-    MachineRemoveOutcome, MachineRemoveRecovery, MachineRemoveRequest, MachineRemoveResult,
-    MachineRemoveTimeouts, PrepareRemoveIntent, PrepareRemoveOutcome, PrepareRemoveReply,
-    PrepareRemoveRequest, RemoveCleanupStatus, StopRemovedWorkloadsOutcome,
+    MachineFactWriter, MachineRemoveCleanupDoneFact, MachineRemoveCommandInput,
+    MachineRemoveCoordinator, MachineRemoveId, MachineRemoveOutcome, MachineRemoveRequest,
+    MachineRemoveResult, MachineRemoveTimeouts, PrepareRemoveIntent, PrepareRemoveOutcome,
+    PrepareRemoveReply, PrepareRemoveRequest, RemoveCleanupStatus, StopRemovedWorkloadsOutcome,
     StopRemovedWorkloadsReply, StopRemovedWorkloadsRequest, WrittenMachineFact,
-    prepare_remove_subject, recover_pending_machine_remove_cleanup, stop_removed_workloads_subject,
+    prepare_remove_subject, stop_removed_workloads_subject,
 };
 use mvp_machine_p2panda::{PandaMachineFactStore, PandaMachineFactWriter};
 use mvp_mesh::{
@@ -241,6 +243,8 @@ async fn run_async() -> Result<(), String> {
         island.clone(),
         PrincipalId::new("machine-remove-writer"),
         Grant::empty()
+            .with_fact_write(fact_pattern("/facts/command/>")?)
+            .with_fact_read(fact_pattern("/facts/command/>")?)
             .with_fact_write(fact_pattern("/facts/machine-remove/>")?)
             .with_fact_write(fact_pattern("/facts/node/*/removal_started/>")?)
             .with_fact_write(fact_pattern("/facts/node/*/tombstoned/>")?),
@@ -338,12 +342,27 @@ async fn run_async() -> Result<(), String> {
         current_projection: initial_projection.state.clone(),
         serving_commit: remove_commit.clone(),
     };
+    let remove_id = MachineRemoveId::new(NodeId::new("node-target"), 2);
+    let command_cx = CommandContext::new(Arc::new(PandaCommandPhaseStore::new(
+        facts.shared(),
+        machine_writer_session.clone(),
+        Arc::clone(&machine_author),
+    )));
 
     let remove_started = Instant::now();
     let pending = coordinator
-        .execute_until_serving_commit(request)
+        .execute_phased(
+            &command_cx,
+            MachineRemoveCommandInput::Start(Box::new(request)),
+            None,
+        )
         .await
         .map_err(|error| format!("execute graceful remove until serving commit: {error}"))?;
+    assert_eq_named(
+        "machine remove pre-projection outcome",
+        pending.outcome.clone(),
+        MachineRemoveOutcome::CleanupPending,
+    )?;
     drop(pending);
     drop(coordinator);
     let remove_duration_ms = remove_started.elapsed().as_millis();
@@ -408,23 +427,26 @@ async fn run_async() -> Result<(), String> {
             participant: Duration::from_secs(2),
         },
     );
+    let recovery_cx = CommandContext::new(Arc::new(PandaCommandPhaseStore::new(
+        rebuilt_facts.shared(),
+        machine_writer_session.clone(),
+        Arc::clone(&machine_author),
+    )));
     let recovery_read_started = Instant::now();
-    let recovered_pending = match recover_pending_machine_remove_cleanup(
-        &rebuilt_facts,
-        &island,
-        &projection_session,
-        &MachineRemoveId::new(NodeId::new("node-target"), 2),
-    )
-    .map_err(|error| format!("recover machine remove cleanup: {error}"))?
-    {
-        MachineRemoveRecovery::Pending(pending) => pending,
-        other => {
-            return Err(format!(
-                "expected pending machine remove recovery, got {other:?}"
-            ));
-        }
-    };
+    let recovered_pending = recovery_coordinator
+        .execute_phased(
+            &recovery_cx,
+            MachineRemoveCommandInput::Resume(remove_id.clone()),
+            None,
+        )
+        .await
+        .map_err(|error| format!("recover machine remove phase: {error}"))?;
     let recovery_read_ms = recovery_read_started.elapsed().as_millis();
+    assert_eq_named(
+        "recovered pending outcome",
+        recovered_pending.outcome.clone(),
+        MachineRemoveOutcome::CleanupPending,
+    )?;
     let events_after_recovery = events.events()?;
     let no_precommit_replay_after_recovery =
         event_count(&events_after_recovery, RemoveEvent::Probe) == 1
@@ -442,7 +464,11 @@ async fn run_async() -> Result<(), String> {
     )?;
 
     let cleanup_result = recovery_coordinator
-        .finish_cleanup(recovered_pending, catch_up)
+        .execute_phased(
+            &recovery_cx,
+            MachineRemoveCommandInput::Resume(remove_id.clone()),
+            Some(catch_up.clone()),
+        )
         .await
         .map_err(|error| format!("finish recovered graceful remove cleanup: {error}"))?;
     assert_eq_named(
@@ -513,14 +539,41 @@ async fn run_async() -> Result<(), String> {
             .await
             .map_err(|error| format!("import completed machine remove operation: {error}"))?;
     }
-    let recovered_complete = recover_pending_machine_remove_cleanup(
-        &completed_replay,
-        &island,
-        &projection_session,
-        &MachineRemoveId::new(NodeId::new("node-target"), 2),
-    )
-    .map_err(|error| format!("recover completed machine remove cleanup: {error}"))?;
-    let cleanup_done_recovered = matches!(recovered_complete, MachineRemoveRecovery::Complete(_));
+    let completed_machine_writer = PandaMachineFactWriter::new(
+        completed_replay.clone(),
+        machine_writer_session.clone(),
+        Arc::clone(&machine_author),
+    );
+    let completed_writer =
+        RecordingMachineFactWriter::new(completed_machine_writer, Arc::clone(&events));
+    let completed_serving_writer = PandaServingFactWriter::new(
+        completed_replay.shared(),
+        routing_writer_session.clone(),
+        Arc::clone(&routing_author),
+    );
+    let completed_coordinator = MachineRemoveCoordinator::with_fact_writers(
+        bus.clone(),
+        operator.clone(),
+        completed_writer,
+        completed_serving_writer,
+        MachineRemoveTimeouts {
+            participant: Duration::from_secs(2),
+        },
+    );
+    let completed_cx = CommandContext::new(Arc::new(PandaCommandPhaseStore::new(
+        completed_replay.shared(),
+        machine_writer_session.clone(),
+        Arc::clone(&machine_author),
+    )));
+    let recovered_complete = completed_coordinator
+        .execute_phased(
+            &completed_cx,
+            MachineRemoveCommandInput::Resume(remove_id.clone()),
+            Some(catch_up.clone()),
+        )
+        .await
+        .map_err(|error| format!("recover completed machine remove cleanup: {error}"))?;
+    let cleanup_done_recovered = recovered_complete.outcome == MachineRemoveOutcome::Removed;
     assert!(cleanup_done_recovered);
     assert_eq_named(
         "second recovery does not stop again",
