@@ -1,32 +1,43 @@
 use std::fs;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use mvp_bus::{
-    BusSession, FactKey, FactPayload, Grant, IslandId, PrincipalId, harness::InMemoryBus,
+use mvp_acme::{
+    AcmeChallengeId, AcmeChallengeToken, AcmeHostname, AcmeHttp01ClearedFact,
+    AcmeHttp01PresentedFact, AcmeKeyAuthorization,
 };
+use mvp_bus::{BusSession, FactPayload, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::NodeId;
-use mvp_p2panda_facts::{
-    PandaFactAuthor, PandaFactStore, PandaFactWireEnvelope, SharedPandaFactStore,
+use mvp_lease::{
+    LeaseClaimed, LeaseContentHash, LeaseEpoch, LeaseFact, LeaseHolder, LeaseResource,
+    LeaseTimestamp,
 };
+use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, SharedPandaFactStore};
 use mvp_p2panda_transport::{
     PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetFactImportReport,
     PandaNetFactNode, PandaNetFactNodeConfig, PandaNetNetworkId, PandaNetNodeConfig,
-    PandaNetNodeSeed, PandaNetTopic, PandaNetTransportError, import_fact_body_into_shared_store,
+    PandaNetNodeSeed, PandaNetTopic, PandaNetTransportError, harness::import_p2panda_operation,
 };
 use mvp_projection::{
     BackendEndpoint, CandidateStatus, DnsCommitFact, DnsRecordFact, FactSource, GatewayCommitFact,
     NodeJoinedFact, ProjectionFactPayload, RouteCommitFact, RouteId, ServiceName,
     ServiceRegistrationFact, SqliteProjectionStore, load_dns_snapshot, load_gateway_snapshot,
 };
+use mvp_serving::{ServingActorHandle, ServingSnapshotPaths, WireServingState, spawn_http_gateway};
 use serde::Serialize;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::time::timeout;
 
 use crate::assertions::assert_eq_named;
-use crate::bus_syntax::fact_pattern;
+use crate::bus_syntax::{fact_key, fact_pattern};
 use crate::metrics::{reset_dir, scenario_dir, write_json};
 use crate::projection_harness::projection_actor;
 
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(10);
+const TEST_TOPIC: PandaNetTopic = PandaNetTopic::new([84; 32]);
+const ACME_TOKEN: &str = "tokNet0123456789abcdef";
 
 #[derive(Debug, Serialize)]
 struct P2pandaNetFactNodeReport {
@@ -46,8 +57,14 @@ struct P2pandaNetFactNodeReport {
     projected_services: usize,
     projected_gateway_routes: usize,
     projected_dns_records: usize,
+    projected_acme_challenges_before_clear: usize,
+    projected_acme_challenges_after_clear: usize,
+    gateway_snapshot_acme_challenges_before_clear: usize,
+    http_served_before_clear: bool,
+    http_404_after_clear: bool,
     startup_ms: u128,
     sync_import_ms: u128,
+    acme_clear_import_ms: u128,
     projection_rebuild_ms: u128,
     restart_projection_rebuild_ms: u128,
     elapsed_ms: u128,
@@ -136,7 +153,9 @@ async fn run_async() -> Result<(), String> {
         .last()
         .cloned()
         .ok_or_else(|| "sender store did not export first fact-node operation".to_string())?;
-    let unauthorized_replica_probe_body = PandaFactWireEnvelope::encode(&duplicate_operation);
+    let unauthorized_replica_probe = duplicate_operation
+        .to_p2panda_operation()
+        .map_err(|error| format!("convert duplicate operation for direct import: {error}"))?;
     sender
         .publish_fact_payload(
             &sessions.writer_a,
@@ -187,6 +206,44 @@ async fn run_async() -> Result<(), String> {
         )
         .await
         .map_err(|error| format!("publish fact-node dns fact: {error}"))?;
+    let challenge = acme_challenge()?;
+    let lease_epoch = LeaseEpoch::first();
+    let lease_timeline = LeaseTimeline::fresh()?;
+    let lease_holder = LeaseHolder::new(sessions.writer_a.principal().as_str());
+    let claim = lease_claim(
+        &challenge,
+        lease_holder.clone(),
+        lease_epoch,
+        lease_timeline,
+    );
+    let claim_hash = LeaseFact::Claimed(claim.clone()).content_hash();
+    let presented = presented_fact(
+        challenge.clone(),
+        lease_holder.clone(),
+        lease_epoch,
+        claim_hash,
+        "thumbprintNet",
+        lease_timeline,
+    )?;
+    let expected_key_authorization = presented.key_authorization().as_str().to_string();
+    sender
+        .publish_fact_payload(
+            &sessions.writer_a,
+            &writer_a,
+            fact_key(&challenge.lease_claimed_fact_key(lease_epoch))?,
+            projection_payload(ProjectionFactPayload::LeaseClaimed(claim))?,
+        )
+        .await
+        .map_err(|error| format!("publish fact-node ACME lease fact: {error}"))?;
+    sender
+        .publish_fact_payload(
+            &sessions.writer_a,
+            &writer_a,
+            fact_key(&challenge.presented_fact_key(lease_epoch))?,
+            projection_payload(ProjectionFactPayload::AcmeHttp01Presented(presented))?,
+        )
+        .await
+        .map_err(|error| format!("publish fact-node ACME presented fact: {error}"))?;
     sender
         .publish_fact_payload(
             &sessions.writer_b,
@@ -234,10 +291,11 @@ async fn run_async() -> Result<(), String> {
         None,
     )
     .await?;
-    let unauthorized = import_fact_body_into_shared_store(
-        &unauthorized_replica_probe_body,
+    let unauthorized = import_p2panda_operation(
+        unauthorized_replica_probe,
         &unauthorized_store,
         &sessions.untrusted_replica,
+        TEST_TOPIC,
     )
     .await;
     let unauthorized_replica_rejected = matches!(
@@ -268,15 +326,17 @@ async fn run_async() -> Result<(), String> {
         )
         .await
         .map_err(|error| format!("write fact-node author-key mismatch source: {error}"))?;
-    let mismatch_body = mismatch_source
+    let mismatch_operation = mismatch_source
         .export_operations()
         .last()
-        .map(PandaFactWireEnvelope::encode)
-        .ok_or_else(|| "author-key mismatch source produced no operation".to_string())?;
-    let author_mismatch = import_fact_body_into_shared_store(
-        &mismatch_body,
+        .ok_or_else(|| "author-key mismatch source produced no operation".to_string())?
+        .to_p2panda_operation()
+        .map_err(|error| format!("convert author-key mismatch operation: {error}"))?;
+    let author_mismatch = import_p2panda_operation(
+        mismatch_operation,
         &receiver.store(),
         &sessions.receiver_replica,
+        TEST_TOPIC,
     )
     .await;
     let author_mismatch_rejected = matches!(
@@ -327,7 +387,7 @@ async fn run_async() -> Result<(), String> {
     assert_eq_named(
         "fact-node inserted operations",
         import_report.imported as u64,
-        6,
+        8,
     )?;
     assert_eq_named(
         "fact-node conflict operations",
@@ -385,11 +445,20 @@ async fn run_async() -> Result<(), String> {
     let projection_rebuild_ms = projection_started.elapsed().as_millis();
     assert_projected_state(&projection.state)?;
     assert_eq_named(
+        "fact-node projected ACME challenges before clear",
+        projection.state.acme_http01.len(),
+        1,
+    )?;
+    let gateway_snapshot_before_clear = load_gateway_snapshot(root.join("gateway.snapshot"), &prod)
+        .map_err(|error| format!("load fact-node gateway snapshot: {error}"))?;
+    assert_eq_named(
         "fact-node loaded gateway routes",
-        load_gateway_snapshot(root.join("gateway.snapshot"), &prod)
-            .map_err(|error| format!("load fact-node gateway snapshot: {error}"))?
-            .routes
-            .len(),
+        gateway_snapshot_before_clear.routes.len(),
+        1,
+    )?;
+    assert_eq_named(
+        "fact-node gateway snapshot ACME challenges before clear",
+        gateway_snapshot_before_clear.acme_http01.len(),
         1,
     )?;
     assert_eq_named(
@@ -400,11 +469,91 @@ async fn run_async() -> Result<(), String> {
             .len(),
         1,
     )?;
+    let serving = ServingActorHandle::spawn(
+        prod.clone(),
+        ServingSnapshotPaths::new(root.join("gateway.snapshot"), root.join("dns.snapshot")),
+        Duration::from_secs(60),
+    )
+    .map_err(|error| format!("spawn fact-node serving actor: {error}"))?;
+    let gateway = spawn_http_gateway(loopback_any(), WireServingState::new(serving.clone()))
+        .await
+        .map_err(|error| format!("spawn fact-node HTTP gateway: {error}"))?;
+    let before_response = http_get(
+        gateway.listen_addr(),
+        "example.test",
+        &format!("/.well-known/acme-challenge/{ACME_TOKEN}"),
+    )
+    .await?;
+    let http_served_before_clear = before_response.starts_with("HTTP/1.1 200 OK")
+        && before_response.ends_with(&expected_key_authorization);
+    if !http_served_before_clear {
+        return Err(format!(
+            "fact-node ACME HTTP-01 response before clear was not the projected challenge: {before_response}"
+        ));
+    }
+
+    let clear_started = Instant::now();
+    sender
+        .publish_fact_payload(
+            &sessions.writer_a,
+            &writer_a,
+            fact_key(&challenge.cleared_fact_key(lease_epoch, claim_hash))?,
+            projection_payload(ProjectionFactPayload::AcmeHttp01Cleared(
+                AcmeHttp01ClearedFact::from_parts(
+                    challenge.clone(),
+                    lease_holder,
+                    lease_epoch,
+                    claim_hash,
+                    lease_timeline.cleared_at,
+                ),
+            ))?,
+        )
+        .await
+        .map_err(|error| format!("publish fact-node ACME cleared fact: {error}"))?;
+    let clear_import_report = import_until_imports(&mut receiver, 1).await?;
+    assert_eq_named(
+        "fact-node ACME clear imported operations",
+        clear_import_report.imported as u64,
+        1,
+    )?;
+    let acme_clear_import_ms = clear_started.elapsed().as_millis();
+
+    let after_clear = actor
+        .project_once(PROJECT_TIMEOUT)
+        .await
+        .map_err(|error| format!("project p2panda-net fact-node cleared ACME fact: {error}"))?;
+    assert_projected_state(&after_clear.state)?;
+    assert_eq_named(
+        "fact-node projected ACME challenges after clear",
+        after_clear.state.acme_http01.len(),
+        0,
+    )?;
+    serving
+        .reload()
+        .await
+        .map_err(|error| format!("reload fact-node serving after ACME clear: {error}"))?;
+    let after_response = http_get(
+        gateway.listen_addr(),
+        "example.test",
+        &format!("/.well-known/acme-challenge/{ACME_TOKEN}"),
+    )
+    .await?;
+    let http_404_after_clear = after_response.starts_with("HTTP/1.1 404 Not Found");
+    if !http_404_after_clear {
+        return Err(format!(
+            "fact-node ACME HTTP-01 response after clear did not become 404: {after_response}"
+        ));
+    }
+    gateway
+        .shutdown()
+        .await
+        .map_err(|error| format!("shutdown fact-node HTTP gateway: {error}"))?;
+
     let sqlite = SqliteProjectionStore::new(root.join("projections.sqlite"));
     let loaded = sqlite
         .load()
         .map_err(|error| format!("load fact-node sqlite projection: {error}"))?;
-    if loaded != projection.state {
+    if loaded != after_clear.state {
         return Err("fact-node sqlite projection did not match actor state".to_string());
     }
 
@@ -420,7 +569,7 @@ async fn run_async() -> Result<(), String> {
         .await
         .map_err(|error| format!("rebuild p2panda-net fact-node facts: {error}"))?;
     let restart_projection_rebuild_ms = restart_projection_started.elapsed().as_millis();
-    if restarted.state != projection.state {
+    if restarted.state != after_clear.state {
         return Err("fact-node projection changed after sqlite rebuild".to_string());
     }
     let reloaded = sqlite
@@ -459,20 +608,28 @@ async fn run_async() -> Result<(), String> {
         cross_island_rejected,
         author_mismatch_rejected,
         no_cross_island_leakage,
-        projected_nodes: projection.state.nodes.len(),
-        projected_services: projection.state.services.len(),
-        projected_gateway_routes: projection
+        projected_nodes: after_clear.state.nodes.len(),
+        projected_services: after_clear.state.services.len(),
+        projected_gateway_routes: after_clear
             .state
             .gateway
             .as_ref()
             .map_or(0, |gateway| gateway.routes.len()),
-        projected_dns_records: projection
+        projected_dns_records: after_clear
             .state
             .dns
             .as_ref()
             .map_or(0, |dns| dns.records.len()),
+        projected_acme_challenges_before_clear: projection.state.acme_http01.len(),
+        projected_acme_challenges_after_clear: after_clear.state.acme_http01.len(),
+        gateway_snapshot_acme_challenges_before_clear: gateway_snapshot_before_clear
+            .acme_http01
+            .len(),
+        http_served_before_clear,
+        http_404_after_clear,
         startup_ms,
         sync_import_ms,
+        acme_clear_import_ms,
         projection_rebuild_ms,
         restart_projection_rebuild_ms,
         elapsed_ms: started.elapsed().as_millis(),
@@ -527,12 +684,53 @@ async fn import_until_contract_terminal_outcomes(
 }
 
 fn fact_node_contract_terminal_outcomes_arrived(report: &PandaNetFactImportReport) -> bool {
-    report.imported >= 6
+    report.imported >= 8
         && report.duplicate == 0
         && report.conflict >= 1
         && report.rejected.len() >= 2
         && report.deferred.is_empty()
         && report.failed.is_empty()
+}
+
+async fn import_until_imports(
+    receiver: &mut PandaNetFactNode,
+    imported: usize,
+) -> Result<PandaNetFactImportReport, String> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut report = PandaNetFactImportReport::new(0);
+    while Instant::now() < deadline {
+        let batch = match receiver
+            .import_next_fact_batch_with_idle_timeout(Duration::from_millis(250))
+            .await
+        {
+            Ok(batch) => batch,
+            Err(PandaNetTransportError::StreamEnded { .. }) => {
+                receiver
+                    .refresh_stream()
+                    .await
+                    .map_err(|error| format!("refresh p2panda-net fact-node stream: {error}"))?;
+                continue;
+            }
+            Err(error) => return Err(format!("import p2panda-net fact-node stream: {error}")),
+        };
+        let Some(batch) = batch else {
+            receiver
+                .refresh_stream()
+                .await
+                .map_err(|error| format!("refresh p2panda-net fact-node stream: {error}"))?;
+            continue;
+        };
+        report.attempted += 1;
+        for outcome in batch {
+            report.record(outcome);
+        }
+        if report.imported >= imported && report.deferred.is_empty() && report.failed.is_empty() {
+            return Ok(report);
+        }
+    }
+    Err(format!(
+        "p2panda-net fact-node imports did not arrive: {report:?}"
+    ))
 }
 
 struct FactNodeBusSessions {
@@ -610,7 +808,7 @@ async fn fact_node(
             PandaNetNodeSeed::new(seed),
             bootstrap,
         ),
-        PandaNetTopic::new([84; 32]),
+        TEST_TOPIC,
         store,
         replica_session.clone(),
     ))
@@ -700,15 +898,105 @@ fn dns_payload() -> Result<FactPayload, String> {
     }))
 }
 
+fn acme_challenge() -> Result<AcmeChallengeId, String> {
+    Ok(AcmeChallengeId::new(
+        AcmeHostname::parse("example.test").map_err(|error| error.to_string())?,
+        AcmeChallengeToken::parse(ACME_TOKEN).map_err(|error| error.to_string())?,
+    ))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LeaseTimeline {
+    acquired_at: LeaseTimestamp,
+    published_at: LeaseTimestamp,
+    cleared_at: LeaseTimestamp,
+    expires_at: LeaseTimestamp,
+}
+
+impl LeaseTimeline {
+    fn fresh() -> Result<Self, String> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| format!("system clock before unix epoch: {error}"))?
+            .as_secs();
+        Ok(Self {
+            acquired_at: LeaseTimestamp::from_secs(now.saturating_sub(5)),
+            published_at: LeaseTimestamp::from_secs(now),
+            cleared_at: LeaseTimestamp::from_secs(now + 1),
+            expires_at: LeaseTimestamp::from_secs(now + 600),
+        })
+    }
+}
+
+fn lease_claim(
+    id: &AcmeChallengeId,
+    holder: LeaseHolder,
+    epoch: LeaseEpoch,
+    timeline: LeaseTimeline,
+) -> LeaseClaimed {
+    LeaseClaimed::new(
+        LeaseResource::from_segments([
+            "acme",
+            "http01",
+            id.hostname().as_str(),
+            id.token().as_str(),
+        ]),
+        holder,
+        epoch,
+        timeline.acquired_at,
+        timeline.expires_at,
+    )
+}
+
+fn presented_fact(
+    id: AcmeChallengeId,
+    holder: LeaseHolder,
+    epoch: LeaseEpoch,
+    claim_hash: LeaseContentHash,
+    thumbprint: &str,
+    timeline: LeaseTimeline,
+) -> Result<AcmeHttp01PresentedFact, String> {
+    let key_authorization =
+        AcmeKeyAuthorization::parse_for_token(id.token(), format!("{}.{thumbprint}", id.token()))
+            .map_err(|error| error.to_string())?;
+    AcmeHttp01PresentedFact::from_parts(
+        id,
+        key_authorization,
+        holder,
+        epoch,
+        claim_hash,
+        timeline.published_at,
+    )
+    .map_err(|error| error.to_string())
+}
+
+async fn http_get(addr: SocketAddr, host: &str, path: &str) -> Result<String, String> {
+    let mut stream = TcpStream::connect(addr)
+        .await
+        .map_err(|error| format!("connect fact-node HTTP gateway: {error}"))?;
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|error| format!("write fact-node HTTP request: {error}"))?;
+    let mut response = Vec::new();
+    timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
+        .await
+        .map_err(|_| "read fact-node HTTP response timed out".to_string())?
+        .map_err(|error| format!("read fact-node HTTP response: {error}"))?;
+    String::from_utf8(response)
+        .map_err(|error| format!("fact-node HTTP response was not UTF-8: {error}"))
+}
+
+fn loopback_any() -> SocketAddr {
+    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+}
+
 fn projection_payload(payload: ProjectionFactPayload) -> Result<FactPayload, String> {
     payload
         .to_fact_bytes()
         .map(FactPayload::from)
         .map_err(|error| format!("serialize p2panda-net projection fact: {error}"))
-}
-
-fn fact_key(value: &str) -> Result<FactKey, String> {
-    FactKey::parse(value).map_err(|error| format!("parse p2panda-net fact key {value}: {error}"))
 }
 
 fn assert_projected_state(state: &mvp_projection::ProjectionState) -> Result<(), String> {

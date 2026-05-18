@@ -24,6 +24,7 @@ struct P2pandaNetProcessServingReport {
     scenario: &'static str,
     remote_updates_imported: usize,
     rejected_operations: usize,
+    rejected_operation_kind: String,
     stream_idle_refreshes_after_rejection: usize,
     replayed_operations_skipped_after_rejection: u64,
     local_mutation_failure: String,
@@ -245,10 +246,20 @@ async fn run_async() -> Result<(), String> {
     let baseline_p2panda = p2panda_status(&baseline_status)?;
     let updated_p2panda = p2panda_status(&updated_status)?;
     let after_rejection_p2panda = p2panda_status(&after_rejection_status)?;
+    let rejected_operation_kind = after_rejection_p2panda
+        .last_failure
+        .clone()
+        .ok_or_else(|| "p2panda-net rejected import did not record a failure kind".to_string())?;
+    if !rejected_operation_kind.contains("UntrustedAuthor") {
+        return Err(format!(
+            "p2panda-net rejected import recorded the wrong kind: {rejected_operation_kind}"
+        ));
+    }
     let report = P2pandaNetProcessServingReport {
         scenario: SCENARIO,
         remote_updates_imported: updated_p2panda.imported,
         rejected_operations: after_rejection_p2panda.rejected,
+        rejected_operation_kind,
         stream_idle_refreshes_after_rejection: after_rejection_p2panda.stream_idle_refreshes,
         replayed_operations_skipped_after_rejection: after_rejection_p2panda
             .replayed_operations_skipped,

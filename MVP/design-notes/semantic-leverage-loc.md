@@ -44,6 +44,12 @@ writers, projection catch-up, process serving, and typed visible-node evidence.
 The new `mvp-environment-p2panda` adapter is small and repeats the same backend
 shape as routing/deploy/machine rather than inventing another store path.
 
+Slice 040 is a direct substrate deletion win: roughly 2,193 active Rust lines
+were deleted and 486 added while removing the opaque `PFO1`/quarantine-log
+p2panda-net path. The canonical path now delegates network log mechanics to
+p2panda-net and keeps Ployz code focused on fact authority, projection, and
+business semantics.
+
 ## Snapshot Counts
 
 ```text

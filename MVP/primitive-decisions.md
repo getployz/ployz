@@ -33,6 +33,10 @@ the decision concrete.
   `PandaNetNode`, `PandaNetQuarantineLog`, `transport_wire_bodies`, and direct
   `import_fact_body` helpers after replacing the remaining E2E callers with
   canonical `PandaNetFactNode` or direct canonical-operation probes.
+- Slice 040 deletes that opaque p2panda-net transport path. The active
+  p2panda-net fact transport is now `PandaNetFactNode` carrying canonical
+  `Operation<PandaFactExtensions>` values, and the direct rejection probes use
+  canonical-operation import helpers instead of custom byte envelopes.
 - Slice 039 also picks durable p2panda-auth membership as the next substitution
   target after transport deletion. Manual trusted author/replica maps should
   become fallback fixtures only once signed, durable island membership
@@ -261,15 +265,14 @@ the decision concrete.
   the failed node's candidate set so operators do not have to infer manual
   cleanup from another field. Cleanup RPCs fan out with bounded concurrency so
   failure reporting does not grow linearly with node timeout.
-- Slice 023 adds owned p2panda-net transport surfaces around normal
-  `AddressBook`, `Endpoint`, `Gossip`, and `LogSync` APIs. p2panda-net remains
-  a carrier/quarantine log: received bytes must decode as stable Ployz fact
-  envelopes and pass `PandaFactStore::import_replica_operation` before any
-  projection can see them.
-- Slice 023 adds a p2panda-net ACME HTTP-01 product canary. Lease/challenge
-  facts now travel over owned p2panda-net nodes, import through the canonical
-  authority path, rebuild SQLite on the receiving side, and keep HTTP-01
-  serving last-good state while the issuer adapter is absent.
+- Slice 023 added owned p2panda-net transport surfaces around normal
+  `AddressBook`, `Endpoint`, `Gossip`, and `LogSync` APIs. That version was a
+  carrier/quarantine log for stable Ployz fact envelopes; Slice 040 retires it
+  in favor of canonical p2panda operation transport.
+- Slice 023 added a p2panda-net ACME HTTP-01 product canary over that opaque
+  transport. Slice 040 retires the net-specific ACME variant; ACME product
+  behavior stays covered by `p2panda-acme-http01-contract`, while p2panda-net
+  process serving proves canonical transport updates serving snapshots.
 - Slice 002 replaced per-dispatch worker creation with one bus-wide bounded
   delivery runtime. The current shape is intentional and carries runtime
   pressure metrics.
@@ -1370,12 +1373,12 @@ Why this:
   to align at once.
 
 Decision:
-- `mvp-p2panda-transport` owns the p2panda-net node wrapper and the crates.io
-  p2panda/iroh compatibility surface.
-- `PandaNetFactNode` combines a `PandaNetNode`, topic stream, replica session,
-  and `SharedPandaFactStore`.
+- `mvp-p2panda-transport` owns the Ployz-facing p2panda-net compatibility
+  surface.
+- `PandaNetFactNode` combines a p2panda-net endpoint/log-sync stack, topic
+  stream, replica session, and `SharedPandaFactStore`.
 - p2panda-net owns transport and live log delivery. Ployz still owns
-  authorization through `PandaFactStore::import_replica_operation`.
+  authorization through `SharedPandaFactStore::import_replica_p2panda_operation`.
 - Import outcomes remain structured: inserted, duplicate, conflict, deferred,
   rejected, and failed.
 - Out-of-order imports use a bounded pending queue. Deferred bodies are retried
@@ -1385,9 +1388,10 @@ Decision:
   before converting the operation body into bytes for Ployz import. This avoids
   local decode/import memory growth, but it does not claim to be a network
   ingress limit for the p2panda-net node itself.
-- The main product proof projects from the receiver's synced local store. The
-  older opaque-body helpers remain lower-level fixtures, not the architectural
-  proof shape.
+- The main product proof projects from the receiver's synced local store.
+- Direct harness probes may import canonical p2panda operations to exercise
+  rejection branches without starting another live network path. They must not
+  reintroduce custom byte transports.
 
 What it replaces:
 - E2E-local post-network manual import as the success-path proof.
@@ -1396,16 +1400,17 @@ What it replaces:
 Costs:
 - The fact node currently proves in-process local p2panda-net nodes, not
   process-role lifecycle or production relay/discovery topology.
-- Slice 037 proves crates.io `p2panda-net 0.6.0` is now available on the
-  non-RC iroh `0.98` family. The remaining cost is workspace alignment:
-  current `mvp-iroh` still pins `iroh 0.96`, and both iroh lines require
-  incompatible exact `ed25519-dalek` pre-releases. Migrating p2panda-net to
-  `0.6` therefore requires upgrading or parking the old direct-iroh proof.
-- p2panda-net live stream refresh can replay already-seen wrapper operations.
-  `PandaNetFactNode` suppresses a bounded cache of wrapper operation hashes.
+- Slice 038 resolved the iroh alignment cost by moving the MVP workspace to
+  p2panda-net `0.6.0` on non-RC iroh `0.98`.
+- p2panda-net live stream refresh can replay already-seen operations.
+  `PandaNetFactNode` suppresses a bounded cache of operation hashes.
   This is transport replay suppression, not Ployz fact deduplication; duplicate
   Ployz fact envelopes carried by distinct p2panda operations still reach the
   canonical store and are classified there.
+- Canonical imports still convert through `PandaFactOperation` before landing in
+  the store. That is acceptable for the deletion proof, but a later import
+  optimization should avoid clone/encode/decode work on the hot path once
+  p2panda-auth membership replacement is settled.
 - The node ingests and reports only. It must not become a reconciler or command
   coordinator.
 - Topic material is island-replica material in this MVP. p2panda-net transport
@@ -1414,12 +1419,9 @@ Costs:
   not with ad hoc fact-node filtering.
 
 Revisit if:
-- The MVP p2panda/iroh line is aligned to p2panda `0.6` and iroh `0.98`.
-  Then live transport should carry canonical `Operation<PloyzFactExtensions>`
-  values. Delete `PandaFactWireEnvelope`/`PFO1` plus
-  `PandaNetQuarantineLog` only after branchable import outcomes are preserved.
+- p2panda-auth is ready to replace the remaining manual trusted author and
+  replica fallback maps on product-shaped paths.
 - Process-role serving replication needs long-lived supervisor/status surfaces.
-- p2panda-auth becomes ready to own island membership or replication grants.
 
 Changed since last slice:
 - Slice 038 is planned to take the non-RC iroh `0.98` path instead of waiting
@@ -1428,6 +1430,11 @@ Changed since last slice:
 - The migration target is stricter than the Slice 037 spike: active
   p2panda-net delivery must carry canonical fact operations, not a `PFO1`
   wrapper body, before any deletion claim is counted.
+- Slice 040 deletes the old `PFO1`/`PandaFactWireEnvelope`,
+  `PandaNetQuarantineLog`, `PandaNetNode`, byte-body import, and opaque-body
+  harness path. `PandaNetFactNode` is now the sole product-shaped p2panda-net
+  fact transport, and direct tests import canonical p2panda operations instead
+  of custom byte envelopes.
 
 ## Environment Branch/Promote/Rollback Commands
 

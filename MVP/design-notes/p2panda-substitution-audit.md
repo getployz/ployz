@@ -261,11 +261,28 @@ p2panda discovery and address book are transport reachability tools. They
 should not become durable membership, active partition truth, or command
 consistency boundaries.
 
+## Slice 040 Transport Deletion Result
+
+Slice 040 executed the deletion target from this audit. Active Rust sources no
+longer contain the opaque `PFO1` transport path, `PandaNetQuarantineLog`, or
+the byte-body net harness. The remaining p2panda-net fact path is
+`PandaNetFactNode` carrying canonical `Operation<PandaFactExtensions>` values.
+
+The redundant opaque-body E2Es were removed because their product-relevant
+assertions are covered by `p2panda-net-fact-node-contract`,
+`p2panda-net-process-serving-contract`, and `p2panda-acme-http01-contract`.
+The fact-node contract now carries ACME lease/present/clear facts over live
+canonical p2panda-net transport, so ACME HTTP-01 serving is still tested on the
+network path without preserving the old byte-envelope harness.
+Future p2panda work should not add custom byte transports around p2panda-net.
+
+The next substitution target remains durable p2panda-auth membership replacing
+manual trusted author and replica maps.
+
 ## Verification
 
-This slice changed planning and decision documents only. The uncommitted
-p2panda implementation/test spike files in the working tree were intentionally
-not part of this audit commit.
+Slice 039 changed planning and decision documents only. Slice 040 is the
+implementation deletion described above.
 
 Run before shipping this report:
 

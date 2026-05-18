@@ -4,49 +4,9 @@ use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, SharedPandaFactStore};
 use crate::{
     PandaNetConfigError, PandaNetFactImportFailure, PandaNetFactImportOutcome,
     PandaNetFactImportRejection, PandaNetFactNode, PandaNetFactNodeConfig, PandaNetNetworkId,
-    PandaNetNode, PandaNetNodeConfig, PandaNetNodeSeed, PandaNetNodeTicket, PandaNetTopic,
-    import_fact_body_into_shared_store,
+    PandaNetNodeConfig, PandaNetNodeSeed, PandaNetNodeTicket, PandaNetTopic,
+    fact_driver::import_p2panda_operation_into_shared_store,
 };
-
-#[tokio::test]
-async fn owned_nodes_sync_one_opaque_body_with_explicit_bootstrap() {
-    let topic = PandaNetTopic::new([42; 32]);
-    let network_id = PandaNetNetworkId::new([7; 32]);
-    let receiver = PandaNetNode::spawn(PandaNetNodeConfig::localhost_ephemeral(
-        network_id,
-        PandaNetNodeSeed::new([1; 32]),
-        Vec::new(),
-    ))
-    .await
-    .expect("spawn receiver node");
-    let receiver_info = receiver.node_info();
-    let mut receiver_stream = receiver
-        .open_stream(topic, true)
-        .await
-        .expect("open receiver stream");
-
-    let mut sender = PandaNetNode::spawn(PandaNetNodeConfig::localhost_ephemeral(
-        network_id,
-        PandaNetNodeSeed::new([2; 32]),
-        vec![receiver_info],
-    ))
-    .await
-    .expect("spawn sender node");
-    sender
-        .append_to_topic(topic, b"transport-body")
-        .await
-        .expect("append sender body");
-    let _sender_stream = sender
-        .open_stream(topic, true)
-        .await
-        .expect("open sender stream");
-
-    let body = receiver_stream
-        .next_body()
-        .await
-        .expect("receiver gets body");
-    assert_eq!(body, b"transport-body");
-}
 
 #[tokio::test]
 async fn node_ticket_round_trips_and_bootstraps_fact_node() {
@@ -460,13 +420,20 @@ async fn import_reports_author_key_mismatch_as_authorization_rejection() {
         )
         .await
         .expect("write mismatched author operation");
-    let body = source
+    let operation = source
         .export_operations()
         .last()
-        .map(mvp_p2panda_facts::PandaFactWireEnvelope::encode)
-        .expect("source operation exists");
+        .expect("source operation exists")
+        .to_p2panda_operation()
+        .expect("source operation is canonical p2panda");
 
-    let outcome = import_fact_body_into_shared_store(&body, &trusted_store, &fixture.replica).await;
+    let outcome = import_p2panda_operation_into_shared_store(
+        operation,
+        &trusted_store,
+        &fixture.replica,
+        fixture.topic.into_inner(),
+    )
+    .await;
 
     assert!(matches!(
         outcome,
@@ -474,6 +441,119 @@ async fn import_reports_author_key_mismatch_as_authorization_rejection() {
             principal,
             ..
         }) if principal == *fixture.writer.principal()
+    ));
+}
+
+#[tokio::test]
+async fn direct_import_requires_trusted_replica_session() {
+    let fixture = FactNodeFixture::new("direct-replica-auth");
+    let trusted_store = fixture.trusted_store(ReplicaTrust::Untrusted).await;
+    let mut source = fixture.raw_store();
+    source
+        .write_fact_payload(
+            &fixture.writer,
+            &fixture.author,
+            key("/facts/node/direct-replica/joined/1"),
+            "direct-replica".to_string().into(),
+        )
+        .await
+        .expect("write source operation");
+    let operation = source
+        .export_operations()
+        .last()
+        .expect("source operation exists")
+        .to_p2panda_operation()
+        .expect("source operation is canonical p2panda");
+
+    let outcome = import_p2panda_operation_into_shared_store(
+        operation,
+        &trusted_store,
+        &fixture.replica,
+        fixture.topic.into_inner(),
+    )
+    .await;
+
+    assert!(matches!(
+        outcome,
+        PandaNetFactImportOutcome::Rejected(
+            PandaNetFactImportRejection::UnauthorizedReplica { .. }
+        )
+    ));
+}
+
+#[tokio::test]
+async fn direct_import_reports_duplicate_canonical_operation() {
+    let fixture = FactNodeFixture::new("direct-duplicate");
+    let trusted_store = fixture.trusted_store(ReplicaTrust::Trusted).await;
+    let mut source = fixture.raw_store();
+    source
+        .write_fact_payload(
+            &fixture.writer,
+            &fixture.author,
+            key("/facts/node/direct-duplicate/joined/1"),
+            "direct-duplicate".to_string().into(),
+        )
+        .await
+        .expect("write source operation");
+    let operation = source
+        .export_operations()
+        .last()
+        .expect("source operation exists")
+        .to_p2panda_operation()
+        .expect("source operation is canonical p2panda");
+
+    let first = import_p2panda_operation_into_shared_store(
+        operation.clone(),
+        &trusted_store,
+        &fixture.replica,
+        fixture.topic.into_inner(),
+    )
+    .await;
+    let second = import_p2panda_operation_into_shared_store(
+        operation,
+        &trusted_store,
+        &fixture.replica,
+        fixture.topic.into_inner(),
+    )
+    .await;
+
+    assert_eq!(first, PandaNetFactImportOutcome::Imported);
+    assert_eq!(second, PandaNetFactImportOutcome::Duplicate);
+}
+
+#[tokio::test]
+async fn direct_import_rejects_header_only_operation_as_malformed() {
+    let fixture = FactNodeFixture::new("direct-malformed");
+    let trusted_store = fixture.trusted_store(ReplicaTrust::Trusted).await;
+    let mut source = fixture.raw_store();
+    source
+        .write_fact_payload(
+            &fixture.writer,
+            &fixture.author,
+            key("/facts/node/direct-malformed/joined/1"),
+            "direct-malformed".to_string().into(),
+        )
+        .await
+        .expect("write source operation");
+    let mut operation = source
+        .export_operations()
+        .last()
+        .expect("source operation exists")
+        .to_p2panda_operation()
+        .expect("source operation is canonical p2panda");
+    operation.body = None;
+
+    let outcome = import_p2panda_operation_into_shared_store(
+        operation,
+        &trusted_store,
+        &fixture.replica,
+        fixture.topic.into_inner(),
+    )
+    .await;
+
+    assert!(matches!(
+        outcome,
+        PandaNetFactImportOutcome::Rejected(PandaNetFactImportRejection::MalformedOperation { .. })
     ));
 }
 
