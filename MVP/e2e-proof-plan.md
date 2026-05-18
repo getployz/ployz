@@ -206,10 +206,15 @@ Current proof status:
   cross-island rejection, trusted-replica import gating, zero cross-island
   leakage, a 9ms projection rebuild, and 80ms network sync in the latest full
   all-run.
-- Remaining E2E-4 work is replacing the `p2panda-net::test_utils` local-node
-  harness with production-owned node lifecycle/discovery/error surfaces and
-  adding propagation histograms once multiple process roles exchange p2panda-net
-  traffic continuously.
+- Slice 023 adds `p2panda-net-owned-node-contract`. The scenario uses owned
+  p2panda-net nodes rather than `test_utils`, imports through the shared
+  transport fact driver, proves trusted-replica gating with a known envelope
+  instead of depending on network delivery order, rejects untrusted author,
+  cross-island, and malformed envelopes, and projects only the valid
+  non-conflicting node fact.
+- Remaining E2E-4 work is continuous propagation histograms once multiple
+  process roles exchange p2panda-net traffic, plus production shutdown/status
+  hardening beyond drop-based local-node cleanup.
 
 ### E2E-5: Machine Add And Remove
 
@@ -314,8 +319,14 @@ Current proof status:
   rejection, and deterministic serving-head supersession.
 - The canary intentionally does not prove real runtime/Docker/ZFS operations,
   WireGuard, or real gateway/DNS process restart. Slice 018c adds the
-  coordinator restart proof after serving commit; pre-serving candidate
-  adoption/cleanup remains E2E-7 and later deploy participant ABI work.
+  coordinator restart proof after serving commit. Slice 023 adds the
+  pre-serving candidate cleanup ABI proof.
+- Slice 023 adds `deploy-candidate-cleanup-contract`. A reversible failure
+  after prepare/start returns `DeployError::PreCommitFailed` with visible nodes,
+  attempted candidate targets, and structured cleanup status; old-backend
+  drain/stop counts stay zero before serving commit; explicit recovery from
+  decision/no-serving-commit cleans planned candidates without rerunning
+  prepare/start.
 - Missing responders are only claimed for selected required participants. Open
   wildcard capacity fanout reports responders as visible-node evidence and does
   not fabricate an unknown missing set.
@@ -479,11 +490,16 @@ Current proof status:
   dropped, a later p2panda sync/rebuild clears the challenge explicitly, stale
   synced lower-epoch facts cannot roll serving back from the takeover winner,
   and deleting `projections.sqlite` rebuilds from the synced p2panda store.
-- Remaining E2E-7 work is pre-serving/pre-commit candidate adoption and
-  explicit participant cleanup ABI, p2panda-sync cross-node serving replication
-  beyond the local harness, production WireGuard adapter proof, and replacing
-  the HTTP/DNS fallback crates with Pingora/`hickory-server` if those become
-  the chosen production protocol primitives.
+- Slice 023 adds `p2panda-net-acme-http01-contract`. ACME lease/challenge facts
+  move over owned p2panda-net nodes, import through the canonical
+  trusted-replica path, project on the receiving node, serve HTTP-01 while the
+  issuer adapter is absent, clear to 404 after a transported clear fact, and
+  rebuild SQLite from transported p2panda operations.
+- Slice 023 adds the explicit pre-serving/pre-commit deploy cleanup ABI proof.
+  Remaining E2E-7 work is p2panda-net cross-process serving replication beyond
+  local owned nodes, production WireGuard adapter proof, and replacing the
+  HTTP/DNS fallback crates with Pingora/`hickory-server` if those become the
+  chosen production protocol primitives.
 
 ### E2E-8: Scale And Reliability Harness
 

@@ -370,17 +370,29 @@ operation/store types are kept in a transport/quarantine role, with stable
 Ployz fact-operation envelopes carried as payloads and imported through the
 canonical authority path on receipt.
 
-The next implementation/proof slices currently remain:
+Slice 023 closed both immediate proof gaps:
 
-1. A deploy candidate cleanup ABI slice that closes the remaining pre-serving
-   partial-failure gap without introducing the future `PhasedCommand` primitive
-   early. Active plan:
-   [MVP/slice-023-deploy-candidate-cleanup-abi-plan.md](slice-023-deploy-candidate-cleanup-abi-plan.md).
-2. A production p2panda-net integration slice that replaces the
-   `p2panda-net::test_utils` E2E harness with owned node lifecycle, discovery,
-   shutdown, and error surfaces while preserving the canonical import path
-   proven by
-   [MVP/slice-022-p2panda-net-current-api-substitution-plan.md](slice-022-p2panda-net-current-api-substitution-plan.md).
+1. Deploy pre-serving cleanup now has an explicit participant ABI. A reversible
+   failure after prepare/start sends bounded candidate cleanup RPCs, returns a
+   structured foreground cleanup report, never drains old backends before a
+   serving commit, and recovers from decision/no-serving-commit facts without
+   rerunning participant mutation.
+   See
+   [MVP/slice-023-deploy-candidate-cleanup-abi.md](slice-023-deploy-candidate-cleanup-abi.md).
+2. p2panda-net now has owned-node transport coverage and a product canary.
+   Stable Ployz fact envelopes travel over owned p2panda-net nodes, enter the
+   canonical trusted-replica import path, and ACME HTTP-01 can serve from
+   transported facts while the issuer adapter is absent.
+   See
+   [MVP/slice-023-owned-p2panda-net-transport.md](slice-023-owned-p2panda-net-transport.md).
+
+The next implementation/proof slice should be deletion-backed. The local LOC
+comparison shows deploy and ACME business logic are smaller on the MVP
+primitives, but total maintenance burden is still additive while the old paths
+coexist. The next honest proof is to choose one real vertical path, preferably
+ACME HTTP-01 first or deploy commit/drain second, wire the production-facing
+surface to the MVP primitive shape, and delete or retire the corresponding old
+coordination code instead of adding another parallel scaffold.
 
 ACME is the canary because it forces the advisory lease primitive to be honest:
 TTL, renewal, epoch fencing, RAII release-on-drop for local holders, and
