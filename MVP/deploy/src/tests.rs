@@ -11,9 +11,9 @@ use mvp_projection::{
 
 use crate::{
     BusDeployFactWriter, CleanupFailureKind, CleanupStatus, DeployDecisionCandidate,
-    DeployDecisionFact, DeployError, DeployFactPayload, DeployFactWriteStatus, DeployFactWriter,
-    DeployId, DeployManifest, DeployOutcome, DeployStateMachine, DnsCommitId, GatewayCommitId,
-    PhaseId, PhasePolicy, ProjectionCatchUp, RouteCommitId, ServingCommitId, ServingCommitPlan,
+    DeployDecisionFact, DeployError, DeployFactWriteStatus, DeployFactWriter, DeployId,
+    DeployManifest, DeployOutcome, DeployStateMachine, DnsCommitId, GatewayCommitId, PhaseId,
+    PhasePolicy, ProjectionCatchUp, RouteCommitId, ServingCommitId, ServingCommitPlan,
     decode_deploy_decision_fact, deploy_cleanup_done_fact_key, deploy_decision_fact_key,
     deploy_decision_fact_payload, read_deploy_decision, select_deploy_decision,
     write_serving_commit,
@@ -279,12 +279,12 @@ fn malformed_deploy_fact_payload_is_structured() {
 #[test]
 fn wrong_deploy_fact_kind_is_structured() {
     let key = deploy_decision_fact_key(&DeployId::new("deploy-1")).expect("key");
-    let cleanup =
-        DeployFactPayload::CleanupDone(crate::DeployCleanupDoneFact::new(&manifest("deploy-1", 1)))
-            .to_fact_bytes()
-            .expect("cleanup payload");
-    let error = decode_deploy_decision_fact(&key, &cleanup.into())
-        .expect_err("wrong fact kind should fail");
+    let cleanup = crate::deploy_cleanup_done_fact_payload(&crate::DeployCleanupDoneFact::new(
+        &manifest("deploy-1", 1),
+    ))
+    .expect("cleanup payload");
+    let error =
+        decode_deploy_decision_fact(&key, &cleanup).expect_err("wrong fact kind should fail");
 
     assert!(matches!(
         error,

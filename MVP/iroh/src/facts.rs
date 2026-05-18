@@ -236,6 +236,28 @@ impl IrohFactDoc {
         Ok(())
     }
 
+    fn authorize_and_bind_write(
+        &self,
+        author: &IrohFactAuthor,
+        key: &FactKey,
+        authorizer: &dyn FactAuthorizer,
+    ) -> IrohFactResult<()> {
+        if !authorizer.can_principal_access_fact(
+            &self.island,
+            author.principal(),
+            key,
+            FactAccess::Write,
+        ) {
+            return Err(IrohFactError::UnauthorizedWrite {
+                island: self.island.clone(),
+                principal: author.principal().clone(),
+                key: key.clone(),
+            });
+        }
+
+        self.bind_author(author)
+    }
+
     pub async fn write_fact_payload(
         &self,
         author: &IrohFactAuthor,
@@ -243,20 +265,7 @@ impl IrohFactDoc {
         payload: FactPayload,
         authorizer: &dyn FactAuthorizer,
     ) -> IrohFactResult<FactContentHash> {
-        if !authorizer.can_principal_access_fact(
-            &self.island,
-            author.principal(),
-            &key,
-            FactAccess::Write,
-        ) {
-            return Err(IrohFactError::UnauthorizedWrite {
-                island: self.island.clone(),
-                principal: author.principal().clone(),
-                key,
-            });
-        }
-
-        self.bind_author(author)?;
+        self.authorize_and_bind_write(author, &key, authorizer)?;
         let content_hash = self
             .doc
             .set_bytes(
@@ -287,20 +296,7 @@ impl IrohFactDoc {
         payload: FactPayload,
         authorizer: &dyn FactAuthorizer,
     ) -> IrohFactResult<IrohImmutableWriteOutcome> {
-        if !authorizer.can_principal_access_fact(
-            &self.island,
-            author.principal(),
-            &key,
-            FactAccess::Write,
-        ) {
-            return Err(IrohFactError::UnauthorizedWrite {
-                island: self.island.clone(),
-                principal: author.principal().clone(),
-                key,
-            });
-        }
-
-        self.bind_author(author)?;
+        self.authorize_and_bind_write(author, &key, authorizer)?;
         self.refresh_key(&key).await?;
         let content_hash = FactContentHash::for_payload(&payload);
         let authorized =
@@ -416,35 +412,10 @@ impl IrohFactDoc {
     }
 
     pub async fn wait_for_key(&self, key: &FactKey, timeout: Duration) -> IrohFactResult<()> {
-        let started = Instant::now();
-        while started.elapsed() < timeout {
-            let remaining = timeout.saturating_sub(started.elapsed());
-            if remaining.is_zero() {
-                break;
-            }
-            match tokio::time::timeout(remaining, self.refresh_key(key)).await {
-                Ok(result) => result?,
-                Err(_) => {
-                    return Err(IrohFactError::Timeout {
-                        operation: "wait for fact key",
-                        timeout,
-                    });
-                }
-            };
-            if self.local_view.contains_key(&self.island, key)? {
-                return Ok(());
-            }
-            let remaining = timeout.saturating_sub(started.elapsed());
-            if remaining.is_zero() {
-                break;
-            }
-            tokio::time::sleep(remaining.min(Duration::from_millis(25))).await;
-        }
-
-        Err(IrohFactError::Timeout {
-            operation: "wait for fact key",
-            timeout,
+        self.wait_for_refreshed_key(key, timeout, "wait for fact key", |view, island, key| {
+            view.contains_key(island, key)
         })
+        .await
     }
 
     pub async fn wait_for_content_hash(
@@ -452,6 +423,22 @@ impl IrohFactDoc {
         key: &FactKey,
         content_hash: &FactContentHash,
         timeout: Duration,
+    ) -> IrohFactResult<()> {
+        self.wait_for_refreshed_key(
+            key,
+            timeout,
+            "wait for fact content hash",
+            |view, island, key| view.contains_content_hash(island, key, content_hash),
+        )
+        .await
+    }
+
+    async fn wait_for_refreshed_key(
+        &self,
+        key: &FactKey,
+        timeout: Duration,
+        operation: &'static str,
+        found: impl Fn(&IrohFactLocalView, &IslandId, &FactKey) -> IrohFactResult<bool>,
     ) -> IrohFactResult<()> {
         let started = Instant::now();
         while started.elapsed() < timeout {
@@ -462,16 +449,10 @@ impl IrohFactDoc {
             match tokio::time::timeout(remaining, self.refresh_key(key)).await {
                 Ok(result) => result?,
                 Err(_) => {
-                    return Err(IrohFactError::Timeout {
-                        operation: "wait for fact content hash",
-                        timeout,
-                    });
+                    return Err(IrohFactError::Timeout { operation, timeout });
                 }
             };
-            if self
-                .local_view
-                .contains_content_hash(&self.island, key, content_hash)?
-            {
+            if found(&self.local_view, &self.island, key)? {
                 return Ok(());
             }
             let remaining = timeout.saturating_sub(started.elapsed());
@@ -481,10 +462,7 @@ impl IrohFactDoc {
             tokio::time::sleep(remaining.min(Duration::from_millis(25))).await;
         }
 
-        Err(IrohFactError::Timeout {
-            operation: "wait for fact content hash",
-            timeout,
-        })
+        Err(IrohFactError::Timeout { operation, timeout })
     }
 
     async fn entry_to_local(&self, entry: Entry) -> IrohFactResult<Option<LocalFactEntry>> {
@@ -571,10 +549,13 @@ impl IrohFactLocalView {
     }
 
     fn record_rejected(&self, rejected: IrohRejectedFactEntry) -> IrohFactResult<()> {
-        self.rejected_entries
+        let mut rejected_entries = self
+            .rejected_entries
             .write()
-            .map_err(|source| backend_error("lock rejected fact entries", source))?
-            .push(rejected);
+            .map_err(|source| backend_error("lock rejected fact entries", source))?;
+        if !rejected_entries.contains(&rejected) {
+            rejected_entries.push(rejected);
+        }
         Ok(())
     }
 
@@ -766,7 +747,6 @@ impl FactSource for IrohDocsFactSource {
             .iter()
             .filter(|candidate| {
                 candidate.island() == island
-                    && candidate.island() == session.island()
                     && self.authorizer.can_session_access_fact(
                         session,
                         candidate.key(),

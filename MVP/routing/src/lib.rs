@@ -218,11 +218,13 @@ pub fn serving_commit_fact_body(commit: &ServingCommitPlan) -> ServingCommitFact
 }
 
 pub fn serving_commit_fact_payload(commit: &ServingCommitPlan) -> RoutingResult<FactPayload> {
-    encode_projection_payload(
-        &ProjectionFactPayload::ServingCommit(serving_commit_fact_body(commit)),
-        "serving commit fact",
-    )
-    .map(Into::into)
+    ProjectionFactPayload::ServingCommit(serving_commit_fact_body(commit))
+        .to_fact_bytes()
+        .map(Into::into)
+        .map_err(|source| RoutingError::WirePayload {
+            context: "serving commit fact",
+            source,
+        })
 }
 
 pub fn decode_serving_commit_fact_payload(
@@ -260,6 +262,7 @@ pub fn read_exact_serving_commit(
     expected: &ServingCommitPlan,
 ) -> RoutingResult<ServingCommitFact> {
     let key = serving_commit_fact_key(&expected.serving_commit_id)?;
+    let expected_body = serving_commit_fact_body(expected);
     let pattern = FactKeyPattern::parse(key.as_str())?;
     let candidates = source
         .list_candidates(island, &pattern, session)?
@@ -278,7 +281,7 @@ pub fn read_exact_serving_commit(
             continue;
         };
         let fact = decode_serving_commit_fact_payload(&key, payload)?;
-        if validate_serving_commit_fact(expected, &fact).is_ok() {
+        if fact == expected_body {
             return Ok(fact);
         }
     }
@@ -304,13 +307,6 @@ async fn write_projection_fact(
         FactWriteOutcome::Inserted(_) | FactWriteOutcome::AlreadyPresent(_) => Ok(outcome),
         FactWriteOutcome::Conflict(_) => Err(RoutingError::ServingFactConflict { key }),
     }
-}
-
-fn encode_projection_payload(
-    value: &ProjectionFactPayload,
-    context: &'static str,
-) -> RoutingResult<Vec<u8>> {
-    serde_json::to_vec(value).map_err(|source| RoutingError::WirePayload { context, source })
 }
 
 fn expected_gateway_revision_prefix(commit: &ServingCommitPlan) -> String {
