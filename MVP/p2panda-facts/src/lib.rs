@@ -18,11 +18,12 @@ use mvp_projection::{
 };
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
 use p2panda_core::{
-    Body, Hash, Header, Operation, RawOperation, SigningKey, VerifyingKey, validate_operation,
+    Body, Hash, Header, Operation, OperationError, RawOperation, SigningKey, Topic, VerifyingKey,
+    validate_operation,
 };
 use p2panda_store::logs::LogStore;
 use p2panda_store::topics::TopicStore;
-use p2panda_store::{SqliteStore, SqliteStoreBuilder};
+use p2panda_store::{SqliteStore, SqliteStoreBuilder, Transaction};
 use p2panda_stream::ingest::{IngestError, ingest_operation};
 use p2panda_sync::protocols::{
     LogSync, LogSyncError, LogSyncEvent, LogSyncMessage, LogSyncMetrics, Logs,
@@ -166,16 +167,18 @@ pub enum PandaFactSyncError {
 pub type SyncResult<T> = std::result::Result<T, PandaFactSyncError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-struct IslandLog(String);
+pub struct PandaFactLogId(String);
 
-impl From<&IslandId> for IslandLog {
+type IslandLog = PandaFactLogId;
+
+impl From<&IslandId> for PandaFactLogId {
     fn from(value: &IslandId) -> Self {
         Self(value.as_str().to_owned())
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct PandaFactExtensions {
+pub struct PandaFactExtensions {
     island: String,
     key: String,
     author: String,
@@ -561,6 +564,42 @@ impl PandaFactOperation {
     fn header_bytes(&self) -> Vec<u8> {
         self.header.to_vec()
     }
+
+    pub fn to_p2panda_operation(&self) -> Result<Operation<PandaFactExtensions>> {
+        let header: Header<PandaFactExtensions> =
+            decode_cbor(self.header()).map_err(|error| PandaFactError::InvalidExtensions {
+                message: error.to_string(),
+            })?;
+        let body = Body::new(self.body());
+        let operation = Operation {
+            hash: header.hash(),
+            header,
+            body: Some(body),
+        };
+        validate_operation(&operation).map_err(|_| PandaFactError::InvalidOperation)?;
+        Ok(operation)
+    }
+
+    pub fn from_p2panda_operation(operation: Operation<PandaFactExtensions>) -> Result<Self> {
+        validate_operation(&operation).map_err(|_| PandaFactError::InvalidOperation)?;
+        let header =
+            encode_cbor(operation.header()).map_err(|error| PandaFactError::InvalidExtensions {
+                message: error.to_string(),
+            })?;
+        let key = FactKey::parse(operation.header.extensions.key.clone()).map_err(|error| {
+            PandaFactError::InvalidExtensions {
+                message: error.to_string(),
+            }
+        })?;
+        let body = operation
+            .body
+            .ok_or(PandaFactError::MissingPayload { key })?;
+        Ok(Self::new(header, body.to_bytes()))
+    }
+
+    pub fn encoded_size(&self) -> usize {
+        self.header.len() + self.body.len()
+    }
 }
 
 pub struct PandaFactStore {
@@ -749,6 +788,7 @@ struct PandaMemoryStore {
 struct PandaMemoryInner {
     operations: BTreeMap<Hash, Operation<PandaFactExtensions>>,
     logs: BTreeMap<(VerifyingKey, IslandLog), Vec<Hash>>,
+    topics: BTreeMap<Topic, BTreeMap<VerifyingKey, Vec<IslandLog>>>,
 }
 
 impl PandaMemoryStore {
@@ -763,9 +803,15 @@ impl PandaMemoryStore {
             return Ok(PandaBackendIngest::AlreadyPresent(operation));
         }
         let log_key = (operation.header.verifying_key, log_id.clone());
-        let latest_hash = inner.logs.get(&log_key).and_then(|hashes| hashes.last());
-        match (operation.header.backlink, latest_hash) {
-            (Some(backlink), Some(latest_hash)) if backlink == *latest_hash => {}
+        let latest_operation = inner
+            .logs
+            .get(&log_key)
+            .and_then(|hashes| hashes.last())
+            .and_then(|hash| inner.operations.get(hash));
+        match (operation.header.backlink, latest_operation) {
+            (Some(backlink), Some(latest_operation))
+                if backlink == latest_operation.hash
+                    && operation.header.seq_num == latest_operation.header.seq_num + 1 => {}
             (None, None) if operation.header.seq_num == 0 => {}
             _ => {
                 return Err(PandaFactError::OutOfOrderOperation {
@@ -837,6 +883,47 @@ impl PandaMemoryStore {
             ));
         }
         Ok(Some(raw))
+    }
+
+    async fn associate_topic(
+        &self,
+        topic: &Topic,
+        author: &VerifyingKey,
+        log_id: &IslandLog,
+    ) -> Result<bool> {
+        let mut inner = self.inner.lock().expect("memory panda store");
+        let logs = inner.topics.entry(*topic).or_default();
+        let log_ids = logs.entry(*author).or_default();
+        if log_ids.contains(log_id) {
+            return Ok(false);
+        }
+        log_ids.push(log_id.clone());
+        Ok(true)
+    }
+
+    async fn remove_topic(
+        &self,
+        topic: &Topic,
+        author: &VerifyingKey,
+        log_id: &IslandLog,
+    ) -> Result<bool> {
+        let mut inner = self.inner.lock().expect("memory panda store");
+        let Some(logs) = inner.topics.get_mut(topic) else {
+            return Ok(false);
+        };
+        let Some(log_ids) = logs.get_mut(author) else {
+            return Ok(false);
+        };
+        let Some(index) = log_ids.iter().position(|current| current == log_id) else {
+            return Ok(false);
+        };
+        log_ids.remove(index);
+        Ok(true)
+    }
+
+    async fn resolve_topic(&self, topic: &Topic) -> Result<BTreeMap<VerifyingKey, Vec<IslandLog>>> {
+        let inner = self.inner.lock().expect("memory panda store");
+        Ok(inner.topics.get(topic).cloned().unwrap_or_default())
     }
 }
 
@@ -949,7 +1036,21 @@ impl LogStore<Operation<PandaFactExtensions>, VerifyingKey, IslandLog, u64, Hash
 
 #[derive(Debug, thiserror::Error)]
 #[error("memory p2panda store failed")]
-struct PandaMemoryStoreError;
+pub struct PandaMemoryStoreError;
+
+#[derive(Debug, thiserror::Error)]
+#[error("p2panda fact store adapter failed: {message}")]
+pub struct PandaFactStoreAdapterError {
+    message: String,
+}
+
+impl PandaFactStoreAdapterError {
+    fn new(error: impl ToString) -> Self {
+        Self {
+            message: error.to_string(),
+        }
+    }
+}
 
 impl PandaFactBackend {
     async fn ingest_operation(
@@ -968,7 +1069,7 @@ impl PandaFactBackend {
             Self::Sqlite(store) => {
                 let inserted = ingest_operation(store, &operation, log_id, log_id, false)
                     .await
-                    .map_err(PandaFactError::Ingest)?;
+                    .map_err(|error| classify_p2panda_ingest_error(&operation, error))?;
                 Ok(if inserted {
                     PandaBackendIngest::Inserted(operation)
                 } else {
@@ -1048,6 +1149,122 @@ impl PandaFactBackend {
                 Ok(Some(raw))
             }
         }
+    }
+
+    async fn associate_topic(
+        &self,
+        topic: &Topic,
+        author: &VerifyingKey,
+        log_id: &IslandLog,
+    ) -> Result<bool> {
+        match self {
+            Self::Memory(store) => store.associate_topic(topic, author, log_id).await,
+            Self::Sqlite(store) => {
+                let permit = store
+                    .begin()
+                    .await
+                    .map_err(|error| store_error_with("begin topic association", error))?;
+                let result =
+                    <SqliteStore as TopicStore<Topic, VerifyingKey, IslandLog>>::associate(
+                        store, topic, author, log_id,
+                    )
+                    .await;
+                match result {
+                    Ok(associated) => {
+                        store
+                            .commit(permit)
+                            .await
+                            .map_err(|error| store_error_with("commit topic association", error))?;
+                        Ok(associated)
+                    }
+                    Err(error) => {
+                        let _ = store.rollback(permit).await;
+                        Err(store_error_with("associate topic", error))
+                    }
+                }
+            }
+        }
+    }
+
+    async fn remove_topic(
+        &self,
+        topic: &Topic,
+        author: &VerifyingKey,
+        log_id: &IslandLog,
+    ) -> Result<bool> {
+        match self {
+            Self::Memory(store) => store.remove_topic(topic, author, log_id).await,
+            Self::Sqlite(store) => {
+                let permit = store
+                    .begin()
+                    .await
+                    .map_err(|error| store_error_with("begin topic removal", error))?;
+                let result = <SqliteStore as TopicStore<Topic, VerifyingKey, IslandLog>>::remove(
+                    store, topic, author, log_id,
+                )
+                .await;
+                match result {
+                    Ok(removed) => {
+                        store
+                            .commit(permit)
+                            .await
+                            .map_err(|error| store_error_with("commit topic removal", error))?;
+                        Ok(removed)
+                    }
+                    Err(error) => {
+                        let _ = store.rollback(permit).await;
+                        Err(store_error_with("remove topic", error))
+                    }
+                }
+            }
+        }
+    }
+
+    async fn resolve_topic(&self, topic: &Topic) -> Result<BTreeMap<VerifyingKey, Vec<IslandLog>>> {
+        match self {
+            Self::Memory(store) => store.resolve_topic(topic).await,
+            Self::Sqlite(store) => {
+                <SqliteStore as TopicStore<Topic, VerifyingKey, IslandLog>>::resolve(store, topic)
+                    .await
+                    .map_err(store_error)
+            }
+        }
+    }
+}
+
+fn classify_p2panda_ingest_error(
+    operation: &Operation<PandaFactExtensions>,
+    error: IngestError,
+) -> PandaFactError {
+    match error {
+        IngestError::InvalidOperation(
+            OperationError::BacklinkMissing
+            | OperationError::BacklinkMismatch
+            | OperationError::SeqNumNonIncremental(_, _),
+        ) => operation_out_of_order_error(operation),
+        other => PandaFactError::Ingest(other),
+    }
+}
+
+fn operation_out_of_order_error(operation: &Operation<PandaFactExtensions>) -> PandaFactError {
+    PandaFactError::OutOfOrderOperation {
+        island: IslandId::new(operation.header.extensions.island.clone()),
+        principal: PrincipalId::new(operation.header.extensions.author.clone()),
+        key: FactKey::parse(operation.header.extensions.key.clone()).unwrap_or_else(|_| {
+            FactKey::parse("/facts/invalid/out-of-order").expect("fallback fact key parses")
+        }),
+        missing_operations: 1,
+    }
+}
+
+impl PandaFactStore {
+    async fn ensure_transport_topic_association(
+        &mut self,
+        topic: &Topic,
+        author: &VerifyingKey,
+        log_id: &IslandLog,
+    ) -> Result<bool> {
+        self.backend.associate_topic(topic, author, log_id).await
     }
 }
 
@@ -1937,6 +2154,39 @@ impl SharedPandaFactStore {
             .collect()
     }
 
+    pub async fn associate_transport_topic(
+        &self,
+        topic: Topic,
+        operation: &PandaFactOperation,
+    ) -> Result<bool> {
+        let operation = operation.to_p2panda_operation()?;
+        let log_id = IslandLog::from(&IslandId::new(operation.header.extensions.island.clone()));
+        self.store
+            .lock()
+            .await
+            .ensure_transport_topic_association(&topic, &operation.header.verifying_key, &log_id)
+            .await
+    }
+
+    pub async fn import_replica_p2panda_operation(
+        &self,
+        session: &BusSession,
+        topic: Topic,
+        operation: Operation<PandaFactExtensions>,
+    ) -> Result<PandaFactWriteOutcome> {
+        let fact_operation = PandaFactOperation::from_p2panda_operation(operation.clone())?;
+        let outcome = self
+            .import_replica_operation(session, &fact_operation)
+            .await?;
+        let log_id = IslandLog::from(&IslandId::new(operation.header.extensions.island.clone()));
+        self.store
+            .lock()
+            .await
+            .ensure_transport_topic_association(&topic, &operation.header.verifying_key, &log_id)
+            .await?;
+        Ok(outcome)
+    }
+
     pub fn try_can_write_fact(
         &self,
         session: &BusSession,
@@ -1953,6 +2203,155 @@ impl SharedPandaFactStore {
         FactSourceError::Unavailable {
             name: "p2panda fact store".to_string(),
         }
+    }
+}
+
+impl LogStore<Operation<PandaFactExtensions>, VerifyingKey, PandaFactLogId, u64, Hash>
+    for SharedPandaFactStore
+{
+    type Error = PandaFactStoreAdapterError;
+
+    async fn get_latest_entry(
+        &self,
+        author: &VerifyingKey,
+        log_id: &PandaFactLogId,
+    ) -> std::result::Result<Option<Operation<PandaFactExtensions>>, Self::Error> {
+        self.store
+            .lock()
+            .await
+            .backend
+            .latest_operation(author, log_id)
+            .await
+            .map_err(PandaFactStoreAdapterError::new)
+    }
+
+    async fn get_latest_entry_tx(
+        &self,
+        author: &VerifyingKey,
+        log_id: &PandaFactLogId,
+    ) -> std::result::Result<Option<Operation<PandaFactExtensions>>, Self::Error> {
+        self.get_latest_entry(author, log_id).await
+    }
+
+    async fn get_log_heights(
+        &self,
+        author: &VerifyingKey,
+        logs: &[PandaFactLogId],
+    ) -> std::result::Result<Option<BTreeMap<PandaFactLogId, u64>>, Self::Error> {
+        let store = self.store.lock().await;
+        let mut heights = BTreeMap::new();
+        for log_id in logs {
+            let Some(operation) = store
+                .backend
+                .latest_operation(author, log_id)
+                .await
+                .map_err(PandaFactStoreAdapterError::new)?
+            else {
+                continue;
+            };
+            heights.insert(log_id.clone(), operation.header.seq_num);
+        }
+        Ok((!heights.is_empty()).then_some(heights))
+    }
+
+    async fn get_log_size(
+        &self,
+        author: &VerifyingKey,
+        log_id: &PandaFactLogId,
+        after: Option<u64>,
+        until: Option<u64>,
+    ) -> std::result::Result<Option<(u64, u64)>, Self::Error> {
+        let entries = self.get_log_entries(author, log_id, after, until).await?;
+        Ok(entries.map(|entries| {
+            let bytes = entries
+                .iter()
+                .map(|(operation, header)| header.len() as u64 + operation.header.payload_size)
+                .sum();
+            (entries.len() as u64, bytes)
+        }))
+    }
+
+    async fn get_log_entries(
+        &self,
+        author: &VerifyingKey,
+        log_id: &PandaFactLogId,
+        after: Option<u64>,
+        until: Option<u64>,
+    ) -> std::result::Result<Option<Vec<(Operation<PandaFactExtensions>, Vec<u8>)>>, Self::Error>
+    {
+        let store = self.store.lock().await;
+        match &store.backend {
+            PandaFactBackend::Memory(memory) => memory
+                .get_log_entries(author, log_id, after, until)
+                .await
+                .map_err(PandaFactStoreAdapterError::new),
+            PandaFactBackend::Sqlite(sqlite) => {
+                <SqliteStore as LogStore<
+                    Operation<PandaFactExtensions>,
+                    VerifyingKey,
+                    IslandLog,
+                    u64,
+                    Hash,
+                >>::get_log_entries(sqlite, author, log_id, after, until)
+                .await
+                .map_err(PandaFactStoreAdapterError::new)
+            }
+        }
+    }
+
+    async fn prune_entries(
+        &self,
+        _author: &VerifyingKey,
+        _log_id: &PandaFactLogId,
+        _until: &u64,
+    ) -> std::result::Result<u64, Self::Error> {
+        Ok(0)
+    }
+}
+
+impl TopicStore<Topic, VerifyingKey, PandaFactLogId> for SharedPandaFactStore {
+    type Error = PandaFactStoreAdapterError;
+
+    async fn associate(
+        &self,
+        topic: &Topic,
+        author: &VerifyingKey,
+        data_id: &PandaFactLogId,
+    ) -> std::result::Result<bool, Self::Error> {
+        self.store
+            .lock()
+            .await
+            .ensure_transport_topic_association(topic, author, data_id)
+            .await
+            .map_err(PandaFactStoreAdapterError::new)
+    }
+
+    async fn remove(
+        &self,
+        topic: &Topic,
+        author: &VerifyingKey,
+        data_id: &PandaFactLogId,
+    ) -> std::result::Result<bool, Self::Error> {
+        self.store
+            .lock()
+            .await
+            .backend
+            .remove_topic(topic, author, data_id)
+            .await
+            .map_err(PandaFactStoreAdapterError::new)
+    }
+
+    async fn resolve(
+        &self,
+        topic: &Topic,
+    ) -> std::result::Result<BTreeMap<VerifyingKey, Vec<PandaFactLogId>>, Self::Error> {
+        self.store
+            .lock()
+            .await
+            .backend
+            .resolve_topic(topic)
+            .await
+            .map_err(PandaFactStoreAdapterError::new)
     }
 }
 
@@ -2196,6 +2595,12 @@ fn metadata_from_header(
 fn store_error(error: impl Display) -> PandaFactError {
     PandaFactError::Store {
         message: error.to_string(),
+    }
+}
+
+fn store_error_with(context: &str, error: impl Display) -> PandaFactError {
+    PandaFactError::Store {
+        message: format!("{context}: {error}"),
     }
 }
 
@@ -3640,6 +4045,118 @@ mod tests {
                 .expect("retry second operation after predecessor"),
             PandaFactWriteOutcome::Inserted(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn sqlite_import_reports_out_of_order_operations_as_deferred() {
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let mut source = store_from_bus(bus.clone());
+        let writer = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty()
+                .with_fact_write(pattern("/facts/>"))
+                .with_fact_read(pattern("/facts/>")),
+        );
+        let author = PandaFactAuthor::new(principal("writer"));
+        source
+            .write_fact_payload(
+                &writer,
+                &author,
+                key("/facts/node/sqlite-1/joined/1"),
+                FactPayload::from_static(b"one"),
+            )
+            .await
+            .expect("write first operation");
+        source
+            .write_fact_payload(
+                &writer,
+                &author,
+                key("/facts/node/sqlite-2/joined/1"),
+                FactPayload::from_static(b"two"),
+            )
+            .await
+            .expect("write second operation");
+        let exported = source.export_operations().cloned().collect::<Vec<_>>();
+        let [_first, second] = exported.as_slice() else {
+            panic!("expected two exported operations");
+        };
+
+        let directory = tempdir().expect("create tempdir");
+        let mut imported = PandaFactStore::open_sqlite(
+            Arc::new(bus),
+            PandaSqliteOpenConfig::new(directory.path().join("facts.sqlite"), vec![island("prod")]),
+        )
+        .await
+        .expect("open sqlite fact store");
+        trust_author(&mut imported, &writer, &author);
+
+        let retry = imported
+            .import_operation(&writer, second)
+            .await
+            .expect_err("second operation is out of order");
+        assert!(matches!(
+            retry,
+            PandaFactError::OutOfOrderOperation {
+                missing_operations: 1,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn memory_import_rejects_non_incremental_sequence_numbers() {
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let mut source = store_from_bus(bus.clone());
+        let writer = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty()
+                .with_fact_write(pattern("/facts/>"))
+                .with_fact_read(pattern("/facts/>")),
+        );
+        let author = PandaFactAuthor::new(principal("writer"));
+        source
+            .write_fact_payload(
+                &writer,
+                &author,
+                key("/facts/node/seq-1/joined/1"),
+                FactPayload::from_static(b"one"),
+            )
+            .await
+            .expect("write first operation");
+        source
+            .write_fact_payload(
+                &writer,
+                &author,
+                key("/facts/node/seq-2/joined/1"),
+                FactPayload::from_static(b"two"),
+            )
+            .await
+            .expect("write second operation");
+        let exported = source.export_operations().cloned().collect::<Vec<_>>();
+        let [first, second] = exported.as_slice() else {
+            panic!("expected two exported operations");
+        };
+        let mut non_incremental = second.to_p2panda_operation().expect("operation decodes");
+        non_incremental.header.seq_num = 99;
+        non_incremental.header.signature = None;
+        non_incremental.header.sign(&author.key);
+        non_incremental.hash = non_incremental.header.hash();
+        let non_incremental = PandaFactOperation::from_p2panda_operation(non_incremental)
+            .expect("operation re-encodes");
+
+        let mut imported = store_from_bus(bus);
+        trust_author(&mut imported, &writer, &author);
+        imported
+            .import_operation(&writer, first)
+            .await
+            .expect("import first operation");
+        let error = imported
+            .import_operation(&writer, &non_incremental)
+            .await
+            .expect_err("non-incremental sequence fails");
+        assert!(matches!(error, PandaFactError::OutOfOrderOperation { .. }));
     }
 
     #[tokio::test]

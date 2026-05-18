@@ -23,9 +23,9 @@ const SCENARIO: &str = "p2panda-net-process-serving-contract";
 struct P2pandaNetProcessServingReport {
     scenario: &'static str,
     remote_updates_imported: usize,
-    malformed_messages_rejected: usize,
-    stream_idle_refreshes_after_malformed: usize,
-    replayed_operations_skipped_after_malformed: u64,
+    rejected_operations: usize,
+    stream_idle_refreshes_after_rejection: usize,
+    replayed_operations_skipped_after_rejection: u64,
     local_mutation_failure: String,
     serving_process_alive_after_update: bool,
     baseline_gateway_revision: String,
@@ -55,7 +55,6 @@ async fn run_async() -> Result<(), String> {
     let topic = repeated_hex("32");
     let receiver_seed = repeated_hex("33");
     let baseline_publisher_seed = repeated_hex("34");
-    let remote_publisher_seed = repeated_hex("35");
     let author_seed = repeated_hex("41");
     let remote_author_seed = repeated_hex("42");
     let author = PandaFactAuthor::from_private_key_hex(
@@ -116,9 +115,14 @@ async fn run_async() -> Result<(), String> {
             author: remote_author.principal().as_str(),
             author_seed: &remote_author_seed,
             first: ServingCommitInput::new("serving-1", "fd00::1:8080", "fd00::1", 1),
-            second: None,
-            second_delay_ms: 0,
-            publish_malformed: false,
+            second: Some(ServingCommitInput::new(
+                "serving-2",
+                "fd00::2:8080",
+                "fd00::2",
+                2,
+            )),
+            second_delay_ms: 4_000,
+            publish_rejected: true,
         })?;
 
     let baseline_status = wait_for_p2panda_net_status(&serving_socket, |status| {
@@ -134,28 +138,11 @@ async fn run_async() -> Result<(), String> {
     )
     .await?;
     let baseline_gateway_revision = serving_role_gateway_revision(&baseline_serving)?;
-    baseline_publisher.kill_and_wait().await?;
-
     let local_mutation_failure = assert_local_mutation_unavailable(
         &root.join("missing-coordinator.sock"),
         ServingCommitInput::new("serving-local", "fd00::9:8080", "fd00::9", 9),
     )
     .await?;
-
-    let mut remote_publisher =
-        spawn_p2panda_net_scripted_publisher_process(P2pandaNetScriptedPublisherProcess {
-            root: &root,
-            network: &network,
-            topic: &topic,
-            seed: &remote_publisher_seed,
-            bootstrap: &receiver_ticket,
-            author: author.principal().as_str(),
-            author_seed: &author_seed,
-            first: ServingCommitInput::new("serving-2", "fd00::2:8080", "fd00::2", 2),
-            second: None,
-            second_delay_ms: 0,
-            publish_malformed: true,
-        })?;
 
     let updated_status = wait_for_p2panda_net_status(&serving_socket, |status| {
         p2panda_reloaded_revision(status, "serving-2")
@@ -173,7 +160,7 @@ async fn run_async() -> Result<(), String> {
     let serving_process_alive_after_update = serving.is_running()?;
 
     let updated_refreshes = p2panda_status(&updated_status)?.stream_idle_refreshes;
-    let malformed_after_refresh_status = wait_for_p2panda_net_status(&serving_socket, |status| {
+    let after_rejection_status = wait_for_p2panda_net_status(&serving_socket, |status| {
         status.p2panda_net().is_some_and(|p2panda| {
             p2panda.stream_idle_refreshes > updated_refreshes && p2panda.rejected == 1
         })
@@ -183,17 +170,17 @@ async fn run_async() -> Result<(), String> {
         &serving_socket,
         "fd00::2:8080",
         "fd00::2",
-        "p2panda-net process role after malformed import",
+        "p2panda-net process role after rejected import",
     )
     .await?;
 
-    if remote_publisher.is_running()? {
-        remote_publisher.kill_and_wait().await?;
+    if baseline_publisher.is_running()? {
+        baseline_publisher.kill_and_wait().await?;
     } else {
-        let publisher_status = remote_publisher.wait_for_exit().await?;
+        let publisher_status = baseline_publisher.wait_for_exit().await?;
         if !publisher_status.success() {
             return Err(format!(
-                "p2panda-net scripted publisher exited with {publisher_status}"
+                "baseline p2panda-net scripted publisher exited with {publisher_status}"
             ));
         }
     }
@@ -257,13 +244,14 @@ async fn run_async() -> Result<(), String> {
 
     let baseline_p2panda = p2panda_status(&baseline_status)?;
     let updated_p2panda = p2panda_status(&updated_status)?;
-    let malformed_p2panda = p2panda_status(&malformed_after_refresh_status)?;
+    let after_rejection_p2panda = p2panda_status(&after_rejection_status)?;
     let report = P2pandaNetProcessServingReport {
         scenario: SCENARIO,
         remote_updates_imported: updated_p2panda.imported,
-        malformed_messages_rejected: malformed_p2panda.rejected,
-        stream_idle_refreshes_after_malformed: malformed_p2panda.stream_idle_refreshes,
-        replayed_operations_skipped_after_malformed: malformed_p2panda.replayed_operations_skipped,
+        rejected_operations: after_rejection_p2panda.rejected,
+        stream_idle_refreshes_after_rejection: after_rejection_p2panda.stream_idle_refreshes,
+        replayed_operations_skipped_after_rejection: after_rejection_p2panda
+            .replayed_operations_skipped,
         local_mutation_failure,
         serving_process_alive_after_update,
         baseline_gateway_revision,
@@ -273,10 +261,14 @@ async fn run_async() -> Result<(), String> {
     };
     assert_eq_named("baseline imported count", baseline_p2panda.imported, 1)?;
     assert_eq_named("updated imported count", updated_p2panda.imported, 2)?;
-    assert_eq_named("malformed rejected count", malformed_p2panda.rejected, 1)?;
     assert_eq_named(
-        "malformed replay skipped count",
-        malformed_p2panda.replayed_operations_skipped,
+        "rejected operation count",
+        after_rejection_p2panda.rejected,
+        1,
+    )?;
+    assert_eq_named(
+        "rejected replay skipped count",
+        after_rejection_p2panda.replayed_operations_skipped,
         0,
     )?;
     assert_eq_named(
