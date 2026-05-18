@@ -145,10 +145,17 @@ pub enum PandaFactSyncError {
         #[source]
         source: LogSyncError,
     },
-    #[error("sync {side} event stream failed: {message}")]
-    Event {
+    #[error("sync {side} event task failed: {message}")]
+    EventTaskFailed {
         side: PandaFactSyncSide,
         message: String,
+    },
+    #[error("sync {side} event stream closed before completion")]
+    EventStreamClosed { side: PandaFactSyncSide },
+    #[error("sync {side} event receiver lagged by {skipped} messages")]
+    EventReceiverLagged {
+        side: PandaFactSyncSide,
+        skipped: u64,
     },
     #[error("sync {side} received an operation without payload bytes")]
     MissingOperationBody { side: PandaFactSyncSide },
@@ -285,7 +292,6 @@ pub struct PandaFactSyncPeerReport {
     pub imported: u64,
     pub duplicate: u64,
     pub conflict: u64,
-    pub failed: u64,
     pub bytes_received: u64,
     pub bytes_sent: u64,
 }
@@ -296,7 +302,6 @@ impl PandaFactSyncPeerReport {
         self.imported += other.imported;
         self.duplicate += other.duplicate;
         self.conflict += other.conflict;
-        self.failed += other.failed;
         self.bytes_received += other.bytes_received;
         self.bytes_sent += other.bytes_sent;
     }
@@ -601,7 +606,7 @@ impl PandaFactStore {
         self.bind_author_key(session.island(), author.principal(), author.public_key())?;
 
         let body = Body::new(payload.as_bytes());
-        let content_hash = content_hash_from_body(&body);
+        let content_hash = FactContentHash::for_payload(&payload);
         let metadata = PandaFactMetadata::new(
             session.island().clone(),
             key.clone(),
@@ -664,7 +669,8 @@ impl PandaFactStore {
                 message: error.to_string(),
             })?;
         let body = Body::new(operation.body());
-        let content_hash = content_hash_from_body(&body);
+        let payload = FactPayload::from(operation.body().to_vec());
+        let content_hash = FactContentHash::for_payload(&payload);
         let metadata = metadata_from_header(&header, content_hash)?;
         let operation_hash = header.hash();
         let public_key = header.public_key;
@@ -703,11 +709,7 @@ impl PandaFactStore {
 
         let pre_ingest = self.pre_ingest_status(&metadata);
         self.record_operation(operation_hash, operation.clone());
-        Ok(self.record_fact_operation(
-            metadata,
-            FactPayload::from(operation.body().to_vec()),
-            pre_ingest,
-        ))
+        Ok(self.record_fact_operation(metadata, payload, pre_ingest))
     }
 
     fn authorize_import(
@@ -807,25 +809,26 @@ impl PandaFactStore {
             });
         }
         for (principal, author_key) in &scope.trusted_authors {
-            match self
-                .trusted_author_keys
-                .get(&(scope.island().clone(), principal.clone()))
+            if let Err(error) =
+                self.require_author_key(scope.island(), principal, author_key.public_key())
             {
-                Some(existing) if *existing == author_key.public_key() => {}
-                Some(_) => {
-                    return Err(PandaFactSyncError::ScopeAuthorKeyMismatch {
-                        side,
-                        island: scope.island().clone(),
-                        principal: principal.clone(),
-                    });
-                }
-                None => {
-                    return Err(PandaFactSyncError::ScopeAuthorKeyMissing {
-                        side,
-                        island: scope.island().clone(),
-                        principal: principal.clone(),
-                    });
-                }
+                return Err(match error {
+                    PandaFactError::AuthorKeyMismatch { .. } => {
+                        PandaFactSyncError::ScopeAuthorKeyMismatch {
+                            side,
+                            island: scope.island().clone(),
+                            principal: principal.clone(),
+                        }
+                    }
+                    PandaFactError::UntrustedAuthorKey { .. } => {
+                        PandaFactSyncError::ScopeAuthorKeyMissing {
+                            side,
+                            island: scope.island().clone(),
+                            principal: principal.clone(),
+                        }
+                    }
+                    source => PandaFactSyncError::Import { side, source },
+                });
             }
         }
         Ok(())
@@ -868,7 +871,6 @@ impl PandaFactStore {
         }
         Ok(())
     }
-
     fn clear_derived_indexes(&mut self) {
         self.fact_index.clear();
         self.operations.clear();
@@ -896,7 +898,8 @@ impl PandaFactStore {
             key: missing_payload_key,
         })?;
         let body = Body::new(&body_bytes);
-        let content_hash = content_hash_from_body(&body);
+        let payload = FactPayload::from(body_bytes.clone());
+        let content_hash = FactContentHash::for_payload(&payload);
         let metadata = metadata_from_header(&header, content_hash)?;
         self.require_author_key(&metadata.island, &metadata.author, header.public_key)?;
         let operation = Operation {
@@ -910,7 +913,7 @@ impl PandaFactStore {
             operation.hash,
             PandaFactOperation::new(header_bytes, body_bytes.clone()),
         );
-        self.record_fact_operation(metadata, FactPayload::from(body_bytes), pre_ingest);
+        self.record_fact_operation(metadata, payload, pre_ingest);
         Ok(())
     }
 
@@ -1083,18 +1086,20 @@ where
         side: PandaFactSyncSide::Right,
         source,
     })?;
-    let left_received = left_events
-        .await
-        .map_err(|error| PandaFactSyncError::Event {
-            side: PandaFactSyncSide::Left,
-            message: error.to_string(),
-        })??;
-    let right_received = right_events
-        .await
-        .map_err(|error| PandaFactSyncError::Event {
-            side: PandaFactSyncSide::Right,
-            message: error.to_string(),
-        })??;
+    let left_received =
+        left_events
+            .await
+            .map_err(|error| PandaFactSyncError::EventTaskFailed {
+                side: PandaFactSyncSide::Left,
+                message: error.to_string(),
+            })??;
+    let right_received =
+        right_events
+            .await
+            .map_err(|error| PandaFactSyncError::EventTaskFailed {
+                side: PandaFactSyncSide::Right,
+                message: error.to_string(),
+            })??;
 
     Ok(PandaFactSyncEvents {
         left_received,
@@ -1117,16 +1122,10 @@ async fn collect_sync_events(
             Ok(LogSyncEvent::Status(LogSyncStatus::Completed { .. })) => return Ok(operations),
             Ok(LogSyncEvent::Status(_)) => {}
             Err(broadcast::error::RecvError::Closed) => {
-                return Err(PandaFactSyncError::Event {
-                    side,
-                    message: "p2panda sync event stream closed before completion".to_string(),
-                });
+                return Err(PandaFactSyncError::EventStreamClosed { side });
             }
-            Err(broadcast::error::RecvError::Lagged(_)) => {
-                return Err(PandaFactSyncError::Event {
-                    side,
-                    message: "p2panda sync event receiver lagged".to_string(),
-                });
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                return Err(PandaFactSyncError::EventReceiverLagged { side, skipped });
             }
         }
     }
@@ -1159,7 +1158,6 @@ async fn import_synced_operations(
             Ok(PandaFactWriteOutcome::AlreadyPresent(_)) => report.duplicate += 1,
             Ok(PandaFactWriteOutcome::Conflict(_)) => report.conflict += 1,
             Err(source) => {
-                report.failed += 1;
                 return Err(PandaFactSyncError::Import { side, source });
             }
         }
@@ -1349,10 +1347,6 @@ fn metadata_from_header(
         PrincipalId::new(header.extensions.author.clone()),
         content_hash,
     ))
-}
-
-fn content_hash_from_body(body: &Body) -> FactContentHash {
-    FactContentHash::new(format!("b3:{}", body.hash().to_hex()))
 }
 
 fn store_error(error: impl Display) -> PandaFactError {
