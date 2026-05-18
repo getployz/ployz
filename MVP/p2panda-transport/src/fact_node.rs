@@ -11,9 +11,8 @@ use crate::{
     PandaNetFactImportFailure, PandaNetFactImportOutcome, PandaNetFactImportRejection,
     PandaNetFactImportReport, PandaNetNode, PandaNetNodeConfig, PandaNetNodeInfo, PandaNetStream,
     PandaNetTopic, PandaNetTransportError, import_fact_body_into_shared_store,
-    node::PandaNetStreamBody,
+    node::{DEFAULT_REPLAY_CACHE_CAPACITY, PandaNetReplayCache, PandaNetStreamBody},
 };
-use tokio::time::timeout;
 
 const DEFAULT_MAX_FACT_ENVELOPE_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_MAX_PENDING_IMPORTS: usize = 1024;
@@ -25,6 +24,7 @@ pub struct PandaNetFactNode {
     store: SharedPandaFactStore,
     replica_session: BusSession,
     pending_imports: VecDeque<Vec<u8>>,
+    replay_cache: PandaNetReplayCache,
     max_fact_envelope_bytes: usize,
     max_pending_imports: usize,
 }
@@ -40,6 +40,7 @@ impl PandaNetFactNode {
             store: config.store,
             replica_session: config.replica_session,
             pending_imports: VecDeque::new(),
+            replay_cache: PandaNetReplayCache::new(DEFAULT_REPLAY_CACHE_CAPACITY),
             max_fact_envelope_bytes: config.max_fact_envelope_bytes,
             max_pending_imports: config.max_pending_imports,
         })
@@ -105,10 +106,7 @@ impl PandaNetFactNode {
     pub async fn import_next_fact_batch(
         &mut self,
     ) -> Result<Vec<PandaNetFactImportOutcome>, PandaNetTransportError> {
-        let stream_body = self
-            .stream
-            .next_body_limited(self.max_fact_envelope_bytes)
-            .await?;
+        let stream_body = self.next_unique_stream_body().await?;
         Ok(self.import_stream_body(stream_body).await)
     }
 
@@ -116,29 +114,49 @@ impl PandaNetFactNode {
         &mut self,
         idle_timeout: Duration,
     ) -> Result<Option<Vec<PandaNetFactImportOutcome>>, PandaNetTransportError> {
-        let stream_body = match timeout(
-            idle_timeout,
-            self.stream.next_body_limited(self.max_fact_envelope_bytes),
-        )
-        .await
-        {
-            Ok(stream_body) => stream_body?,
-            Err(_) => return Ok(None),
+        let Some(stream_body) = self
+            .next_unique_stream_body_with_idle_timeout(idle_timeout)
+            .await?
+        else {
+            return Ok(None);
         };
         Ok(Some(self.import_stream_body(stream_body).await))
+    }
+
+    async fn next_unique_stream_body(
+        &mut self,
+    ) -> Result<PandaNetStreamBody, PandaNetTransportError> {
+        self.stream
+            .next_unique_body_limited(self.max_fact_envelope_bytes, &mut self.replay_cache)
+            .await
+    }
+
+    async fn next_unique_stream_body_with_idle_timeout(
+        &mut self,
+        idle_timeout: Duration,
+    ) -> Result<Option<PandaNetStreamBody>, PandaNetTransportError> {
+        self.stream
+            .next_unique_body_limited_with_idle_timeout(
+                self.max_fact_envelope_bytes,
+                &mut self.replay_cache,
+                idle_timeout,
+            )
+            .await
     }
 
     async fn import_stream_body(
         &mut self,
         stream_body: PandaNetStreamBody,
     ) -> Vec<PandaNetFactImportOutcome> {
-        let outcome =
-            match stream_body {
-                PandaNetStreamBody::Body(body) => self.import_body(body).await,
-                PandaNetStreamBody::TooLarge { size, max } => PandaNetFactImportOutcome::Rejected(
-                    PandaNetFactImportRejection::EnvelopeTooLarge { size, max },
-                ),
-            };
+        let outcome = match stream_body {
+            PandaNetStreamBody::Body { body, .. } => self.import_body(body).await,
+            PandaNetStreamBody::TooLarge { size, max, .. } => {
+                PandaNetFactImportOutcome::Rejected(PandaNetFactImportRejection::EnvelopeTooLarge {
+                    size,
+                    max,
+                })
+            }
+        };
         let can_unblock_pending = import_can_unblock_pending(&outcome);
         let mut outcomes = vec![outcome];
         if can_unblock_pending {

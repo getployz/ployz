@@ -4,6 +4,7 @@ use mvp_p2panda_facts::PandaFactStore;
 use crate::{
     PandaNetFactImportReport, PandaNetNetworkId, PandaNetNode, PandaNetNodeConfig,
     PandaNetNodeSeed, PandaNetStream, PandaNetTopic, PandaNetTransportError, import_fact_body,
+    node::{DEFAULT_REPLAY_CACHE_CAPACITY, PandaNetReplayCache, PandaNetStreamBody},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,8 +51,16 @@ pub async fn transport_wire_bodies(
     let expected = bodies.len();
     let mut harness = PandaNetWireHarness::spawn(config, bodies).await?;
     let mut received = Vec::with_capacity(expected);
-    for _ in 0..expected {
-        received.push(harness.receiver_stream.next_body().await?);
+    let mut replay_cache = PandaNetReplayCache::new(DEFAULT_REPLAY_CACHE_CAPACITY);
+    while received.len() < expected {
+        match harness
+            .receiver_stream
+            .next_unique_body_limited(usize::MAX, &mut replay_cache)
+            .await?
+        {
+            PandaNetStreamBody::Body { body, .. } => received.push(body),
+            PandaNetStreamBody::TooLarge { .. } => unreachable!("usize::MAX accepts every body"),
+        }
     }
     Ok(received)
 }

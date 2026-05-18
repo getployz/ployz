@@ -657,6 +657,7 @@ async fn open_sync_store(
     island: &IslandId,
     authors: &[&PandaFactAuthor],
 ) -> Result<PandaFactStore, String> {
+    remove_stale_sqlite_store_files(&path)?;
     let islands = trusted_sync_islands(island);
     let config = authors.iter().fold(
         PandaSqliteOpenConfig::new(path, islands.clone()),
@@ -673,6 +674,32 @@ async fn open_sync_store(
     PandaFactStore::open_sqlite(bus, config)
         .await
         .map_err(|error| format!("open p2panda sync store: {error}"))
+}
+
+fn remove_stale_sqlite_store_files(path: &Path) -> Result<(), String> {
+    for candidate in [
+        path.to_path_buf(),
+        sqlite_sidecar_path(path, "-wal"),
+        sqlite_sidecar_path(path, "-shm"),
+    ] {
+        match fs::remove_file(&candidate) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "remove stale p2panda sync store '{}': {error}",
+                    candidate.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn sqlite_sidecar_path(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut value = path.as_os_str().to_owned();
+    value.push(suffix);
+    std::path::PathBuf::from(value)
 }
 
 fn trusted_sync_islands(island: &IslandId) -> Vec<IslandId> {

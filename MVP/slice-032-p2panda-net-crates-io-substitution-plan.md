@@ -1,6 +1,6 @@
 ---
 title: Slice 032 p2panda-net crates.io Substitution Plan
-status: planned
+status: implemented
 created: 2026-05-18
 origin:
   - VISION.md
@@ -22,6 +22,10 @@ external:
 ---
 
 # Slice 032 p2panda-net crates.io Substitution Plan
+
+Implementation note: this historical plan was implemented by
+[MVP/slice-032-p2panda-net-crates-io-substitution.md](slice-032-p2panda-net-crates-io-substitution.md).
+Future-tense wording below is preserved as planning context.
 
 ## Problem Frame
 
