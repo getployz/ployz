@@ -1,0 +1,18 @@
+[package]
+name = "mvp-p2panda-facts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+mvp-bus = { path = "../bus" }
+mvp-projection = { path = "../projection" }
+p2panda-core = "0.5.2"
+p2panda-store = "0.5.2"
+p2panda-stream = "0.5.2"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -2534,6 +2534,7 @@ dependencies = [
  "mvp-lease",
  "mvp-machine",
  "mvp-mesh",
+ "mvp-p2panda-facts",
  "mvp-projection",
  "mvp-routing",
  "mvp-serving",
@@ -2604,6 +2605,20 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "mvp-p2panda-facts"
+version = "0.1.0"
+dependencies = [
+ "mvp-bus",
+ "mvp-projection",
+ "p2panda-core",
+ "p2panda-store",
+ "p2panda-stream",
+ "serde",
  "thiserror",
  "tokio",
 ]

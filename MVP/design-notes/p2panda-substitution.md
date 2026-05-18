@@ -221,6 +221,22 @@ Success criteria:
 The deploy restart recovery slice should then build on this substrate instead
 of hardening the current custom iroh-docs wrapper further.
 
+## Slice 018b Outcome
+
+Slice 018b added `MVP/p2panda-facts` as the production-shaped adapter:
+
+- local writes create p2panda operations with Ployz island/key/principal
+  metadata in header extensions;
+- `p2panda-stream` ingests and validates the append-log operation;
+- `FactAuthorizer` still gates writes and reads;
+- projection consumes `FactCandidate` values through the existing `FactSource`
+  trait;
+- `p2panda-fact-source-contract` proves existing reducers rebuild SQLite and
+  gateway/DNS snapshots from p2panda-backed candidates.
+
+The spike crate remains temporarily as comparison evidence. New fact-substrate
+work should target `mvp-p2panda-facts`.
+
 ## Open Questions
 
 - Should Ployz principal identity become the p2panda public key, or remain a

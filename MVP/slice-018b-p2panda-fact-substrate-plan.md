@@ -1,6 +1,6 @@
 ---
 title: Slice 018b p2panda Fact Substrate Plan
-status: planned
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md
@@ -356,10 +356,14 @@ Approach:
 Test scenarios:
 
 - Verified operation becomes `CandidateStatus::Verified`.
-- Same-key conflicting operations become visible as conflict candidates where
-  the reducer expects conflict candidates.
+- Same-key conflicting local operations become visible as conflict candidates
+  where the reducer expects conflict candidates.
 - Unauthorized read becomes `CandidateStatus::Unauthorized` and payload is not
   returned.
+- A session cannot write as a caller-constructed author for another principal.
+
+Follow-up scenarios once p2panda sync/import exists:
+
 - Unknown author binding becomes `CandidateStatus::Unverified`.
 - Cross-island metadata becomes `CandidateStatus::CrossIsland`.
 - Missing payload becomes `CandidateStatus::Unverified`.

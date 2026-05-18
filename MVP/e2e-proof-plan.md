@@ -167,9 +167,13 @@ Current proof status:
   in-memory fact harness.
 - Slice 007 proves one local two-node iroh-docs fact path behind `FactSource`,
   including conflict and unauthorized candidate status.
+- Slice 018b adds `p2panda-fact-source-contract`, proving existing reducers can
+  consume p2panda-backed fact candidates, rebuild deleted SQLite, write
+  gateway/DNS snapshots, and surface conflict candidates without changing
+  reducer business logic.
 - Remaining E2E-4 work is remote service registry projection, route/DNS commit
-  projection from docs-backed facts, and propagation histograms beyond the
-  single local sync scenario.
+  projection through the final synced fact substrate, and propagation histograms
+  beyond the single local sync scenario.
 
 ### E2E-5: Machine Add And Remove
 
