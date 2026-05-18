@@ -197,6 +197,12 @@ Current proof status:
   through the HTTP-01 wire proof. Scoped ACME grants, trusted replica sessions,
   stale synced candidates, no-op repeat sync, and deleted-SQLite rebuild are
   all part of the scenario.
+- Slice 034 adds a unit-level p2panda-auth membership proof, not an E2E yet.
+  The spike proves manager-only mutation, non-write replica import membership,
+  signed membership-operation boundary checks, re-add with new epoch/key, and
+  strong-removal concurrency. E2E fact-import authority should not depend on it
+  until membership operations are durably persisted/replayed and replace manual
+  trust seeding.
 - Slice 022 adds `p2panda-net-sync-contract`. Local p2panda-net nodes exchange
   opaque stable `PandaFactOperation` envelopes over the maintained
   iroh/gossip/log-sync stack; the receiver imports those envelopes through the

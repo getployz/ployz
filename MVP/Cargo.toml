@@ -14,6 +14,7 @@ members = [
     "machine",
     "machine-p2panda",
     "mesh",
+    "p2panda-authz",
     "p2panda-facts",
     "p2panda-transport",
     "projection",

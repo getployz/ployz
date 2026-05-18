@@ -141,10 +141,18 @@ Next, unpark ACME as:
 Slice 021: p2panda-backed ACME HTTP-01 with advisory lease facts
 ```
 
-## p2panda-auth Plan
+## p2panda-auth Result
 
-Do not fold `p2panda-auth` into Slice 019b. Persistence is the blocker for
-deleting custom fact-store paths; auth is the next membership blocker.
+Slice 034 added `mvp-p2panda-authz` as a compile-backed membership spike.
+p2panda-auth fits island membership and strong-removal group reduction, but it
+does not authenticate Ployz membership operations by itself.
+
+The spike includes a test-only signed membership-operation envelope: group
+operations are signed by the member key, scoped to one island/group, and checked
+before p2panda-auth reduction. The next adoption gate is making that envelope
+durable and replayable into `(island, principal, epoch, public key)` bindings.
+Without durable replay, p2panda-auth would only move the current in-memory trust
+problem into another adapter.
 
 The auth spike should map:
 
@@ -159,6 +167,11 @@ Adopt it if it reduces custom membership and revocation rules while preserving
 Ployz command entry checks. Reject it for PloyzBus subject permissions unless a
 future proof shows conditions can express wildcard subjects, queue permissions,
 temporary reply permissions, and bridge imports/exports cleanly.
+
+After Slice 034, the recommended adoption slice is p2panda-auth-backed island
+membership for fact import: add the signed membership envelope, build an
+`IslandMembershipView`, then replace `trusted_author_keys` and
+`trusted_replica_peers` behind `PandaFactStore`.
 
 ## p2panda-sync/net Result
 
