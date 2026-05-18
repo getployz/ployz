@@ -191,6 +191,12 @@ Current proof status:
   sessions; and payload reads still require read grants. The same scenario
   records exact 200/1,000/10,000 sync/import convergence using in-memory stores
   for the load probe.
+- Slice 021 adds `p2panda-acme-http01-contract`. ACME lease/challenge facts are
+  written as p2panda operations on one local node, replicated through
+  `sync_panda_fact_stores`, projected on a second local node, and served
+  through the HTTP-01 wire proof. Scoped ACME grants, trusted replica sessions,
+  stale synced candidates, no-op repeat sync, and deleted-SQLite rebuild are
+  all part of the scenario.
 - Remaining E2E-4 work is binding this sync path to real iroh transport and
   adding propagation histograms once multiple process roles exchange p2panda
   sync messages instead of paired in-memory channels.
@@ -340,8 +346,14 @@ Current proof status:
   structured active-holder conflict, expiry takeover, stale publish/delete
   rejection with state preservation, deterministic supersession, same-epoch
   loser fencing, local-only command success, and best-effort drop release.
-- Remaining work is p2panda-backed lease facts over the Slice 020 sync boundary
-  and gateway HTTP challenge serving.
+- Slice 021 adds the p2panda-backed ACME canary over the Slice 020 sync
+  boundary. It proves advisory lease conflict-at-entry, scoped challenge
+  grants, release facts, visible nodes in every command result, deterministic
+  superseded loser reporting, and gateway HTTP-01 serving from the synced
+  projection.
+- Remaining work for E2E-6a is applying the same lease-fenced command shape to
+  the next real singleton resource, such as volume ownership or machine
+  mutation.
 
 Metrics:
 
@@ -452,6 +464,11 @@ Current proof status:
   cleanup-pending after restart carries visible nodes plus serving commit id,
   and deploy decision, serving commit, and cleanup-done facts live in one fact
   substrate for the proof.
+- Slice 021 adds coordinator/issuer absence to the ACME serving path. HTTP-01
+  continues serving the last-good challenge after the command adapter is
+  dropped, a later p2panda sync/rebuild clears the challenge explicitly, stale
+  synced lower-epoch facts cannot roll serving back from the takeover winner,
+  and deleting `projections.sqlite` rebuilds from the synced p2panda store.
 - Remaining E2E-7 work is pre-serving/pre-commit candidate adoption and
   explicit participant cleanup ABI, p2panda-sync cross-node serving replication
   beyond the local harness, production WireGuard adapter proof, and replacing
@@ -516,6 +533,14 @@ Current proof status:
   E2E fixtures now use one shared `NodeId`/`VisibleNodes` type, and WireGuard
   peer snapshots use typed routing fields instead of raw strings. The proof is
   existing behavior staying green with fewer representations to choose from.
+- Slice 021 keeps ACME business logic small enough to inspect directly:
+  acquire advisory lease, present challenge, project/serve, clear, takeover,
+  and reject stale/conflicting writes. The new p2panda work reused the generic
+  sync/import/projection boundaries instead of adding ACME-specific replication
+  code. The old-code baseline remains `crates/ployz-cert-backends` plus
+  `crates/ployzd/src/daemon/cert_coordination.rs`; the MVP comparison should
+  count the E2E-local adapter and focused domain tests, not placeholder Hyper
+  serving polish.
 
 ## Required Test Artifacts
 
