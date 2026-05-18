@@ -38,6 +38,12 @@ p2panda/fact substrate are carrying proof and foundation cost. That is
 acceptable only if future product slices add less bespoke glue because the
 shared primitives are doing real work.
 
+Slice 033 is a positive composition signal: environment branch/promote/rollback
+adds a new product primitive mostly by reusing p2panda facts, routing serving
+writers, projection catch-up, process serving, and typed visible-node evidence.
+The new `mvp-environment-p2panda` adapter is small and repeats the same backend
+shape as routing/deploy/machine rather than inventing another store path.
+
 ## Snapshot Counts
 
 ```text
@@ -50,6 +56,7 @@ Old single deploy handler:                        ~4,300 LOC
 Old broad deploy-path files:                     ~25,100 LOC
 
 MVP machine + machine-p2panda:                    ~3,500 LOC
+MVP environment + environment-p2panda:             ~2,000 LOC
 MVP acme + acme-command + lease:                  ~3,700 LOC
 MVP serving + routing + routing-p2panda
   + projection:                                   ~8,600 LOC

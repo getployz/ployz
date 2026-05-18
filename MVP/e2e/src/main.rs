@@ -8,6 +8,18 @@ mod deploy_candidate_cleanup_contract;
 mod deploy_commit_drain_contract;
 mod deploy_restart_recovery_contract;
 mod docs_backed_acme_http01_contract;
+#[cfg(unix)]
+mod environment_branch_promote_rollback_contract;
+#[cfg(not(unix))]
+mod environment_branch_promote_rollback_contract {
+    pub(crate) fn run() -> Result<(), String> {
+        Err("environment-branch-promote-rollback-contract uses process roles".to_string())
+    }
+
+    pub(crate) fn cleanup_orphaned_children() -> Result<(), String> {
+        Ok(())
+    }
+}
 mod iroh_docs_contract;
 mod lease_acme_contract;
 #[cfg(unix)]
@@ -187,6 +199,11 @@ const SCENARIOS: &[Scenario] = &[
         "deploy-restart-recovery-contract",
         deploy_restart_recovery_contract::run,
     ),
+    Scenario::with_cleanup(
+        "environment-branch-promote-rollback-contract",
+        environment_branch_promote_rollback_contract::run,
+        environment_branch_promote_rollback_contract::cleanup_orphaned_children,
+    ),
     Scenario::new(
         "steady-state-serving-contract",
         steady_state_serving_contract::run,
@@ -360,6 +377,7 @@ mod tests {
         assert!(names.contains(&"iroh-docs-contract"));
         assert!(names.contains(&"lease-acme-contract"));
         assert!(names.contains(&"deploy-commit-drain-contract"));
+        assert!(names.contains(&"environment-branch-promote-rollback-contract"));
         assert!(names.contains(&"steady-state-serving-contract"));
         assert!(names.contains(&"process-role-serving-contract"));
         assert!(names.contains(&"p2panda-process-role-serving-contract"));
@@ -368,6 +386,7 @@ mod tests {
         assert!(names.contains(&"membership-wireguard-contract"));
         assert!(names.contains(&"machine-remove-contract"));
         assert!(scenario_help().contains("lease-acme-contract"));
+        assert!(scenario_help().contains("environment-branch-promote-rollback-contract"));
         assert!(scenario_help().contains("p2panda-process-role-serving-contract"));
         assert!(scenario_help().contains("p2panda-net-process-serving-contract"));
         assert!(scenario_help().contains("membership-wireguard-contract"));

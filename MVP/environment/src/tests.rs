@@ -267,6 +267,47 @@ async fn branch_writes_branch_and_head_after_exact_fork_evidence() {
 }
 
 #[tokio::test]
+async fn branch_rejects_source_head_change_after_fork_before_writing_facts() {
+    let fixture = Fixture::new();
+    let env = environment("prod");
+    let branch_env = environment("pr-123");
+    let branch_id = branch_id("pr-123");
+    let original = head(
+        &env,
+        1,
+        "head-prod-1",
+        "serving-prod-1",
+        vec!["db-prod"],
+        None,
+    );
+    let mut changed = original.clone();
+    changed.serving_commit_id = ServingCommitId::new("serving-prod-conflict");
+    let source = SequencedFactSource::new([
+        source_with_head(&fixture, original),
+        source_with_head(&fixture, changed),
+    ]);
+    let writer = RecordingEnvironmentWriter::default();
+    let fork = RecordingForkParticipant::default();
+
+    let error = BranchEnvironmentCommand::new(&source, &fixture.session, &writer, &fork)
+        .execute(BranchEnvironmentRequest {
+            command_id: command("branch-1"),
+            source_environment: env,
+            expected_source_epoch: epoch(1),
+            branch_id: branch_id.clone(),
+            branch_environment: branch_env.clone(),
+            branch_head: branch_head(&branch_env, &branch_id, vec!["db-pr-123"]),
+            route_refs: Vec::new(),
+            visible_nodes: visible_nodes(),
+        })
+        .await
+        .expect_err("changed source head rejected");
+
+    assert!(matches!(error, EnvironmentError::StaleExpectedEpoch { .. }));
+    assert!(writer.events().is_empty());
+}
+
+#[tokio::test]
 async fn branch_rejects_forged_fork_evidence_before_writing_facts() {
     let fixture = Fixture::new();
     let env = environment("prod");
@@ -376,6 +417,7 @@ async fn promote_writes_decision_before_serving_and_requires_projection_catchup(
         writer.events()[0],
         RecordedEnvironmentEvent::PromoteDecision
     );
+    assert_eq!(writer.events().len(), 1);
     assert_eq!(serving.writes(), vec![plan.serving_commit_id.clone()]);
 
     let complete = command
@@ -386,6 +428,56 @@ async fn promote_writes_decision_before_serving_and_requires_projection_catchup(
     assert!(
         matches!(complete, EnvironmentCommandResult::Complete { head } if head.volume_refs == vec![volume("db-pr-123")])
     );
+}
+
+#[tokio::test]
+async fn promote_rejects_second_read_head_change_before_any_mutation() {
+    let fixture = Fixture::new();
+    let env = environment("prod");
+    let branch_env = environment("pr-123");
+    let production = head(
+        &env,
+        1,
+        "head-prod-1",
+        "serving-prod-1",
+        vec!["db-prod"],
+        None,
+    );
+    let mut changed_production = production.clone();
+    changed_production.serving_commit_id = ServingCommitId::new("serving-prod-conflict");
+    let branch = head(
+        &branch_env,
+        1,
+        "head-pr-1",
+        "serving-pr-1",
+        vec!["db-pr-123"],
+        None,
+    );
+    let source = SequencedFactSource::new([
+        source_with_head(&fixture, production),
+        source_with_head(&fixture, branch.clone()),
+        source_with_head(&fixture, changed_production),
+        source_with_head(&fixture, branch),
+    ]);
+    let writer = RecordingEnvironmentWriter::default();
+    let serving = RecordingServingWriter::default();
+
+    let error = PromoteEnvironmentCommand::new(&source, &fixture.session, &writer, &serving)
+        .begin(PromoteEnvironmentRequest {
+            command_id: command_id("promote-1"),
+            environment: env,
+            expected_environment_epoch: epoch(1),
+            branch_environment: branch_env,
+            expected_branch_epoch: epoch(1),
+            serving_commit: serving_plan("serving-promote-1", "node-branch", "fd00::2:8080", 2),
+            visible_nodes: visible_nodes(),
+        })
+        .await
+        .expect_err("stale second read rejected");
+
+    assert!(matches!(error, EnvironmentError::StaleExpectedEpoch { .. }));
+    assert!(writer.events().is_empty());
+    assert!(serving.writes().is_empty());
 }
 
 #[tokio::test]
@@ -445,6 +537,83 @@ async fn rollback_writes_forward_head_using_previous_volume_refs() {
 }
 
 #[tokio::test]
+async fn rollback_rejects_missing_target_and_second_read_change_before_any_mutation() {
+    let fixture = Fixture::new();
+    let env = environment("prod");
+    let source = source_with_head(
+        &fixture,
+        head(
+            &env,
+            1,
+            "head-prod-1",
+            "serving-prod-1",
+            vec!["db-prod"],
+            None,
+        ),
+    );
+    let writer = RecordingEnvironmentWriter::default();
+    let serving = RecordingServingWriter::default();
+
+    let missing_error =
+        RollbackEnvironmentCommand::new(&source, &fixture.session, &writer, &serving)
+            .begin(RollbackEnvironmentRequest {
+                command_id: command_id("rollback-1"),
+                environment: env.clone(),
+                expected_environment_epoch: epoch(1),
+                serving_commit: serving_plan("serving-rollback-1", "node-prod", "fd00::1:8080", 2),
+                visible_nodes: visible_nodes(),
+            })
+            .await
+            .expect_err("missing rollback target rejected");
+    assert!(matches!(
+        missing_error,
+        EnvironmentError::RollbackTargetMissing { .. }
+    ));
+    assert!(writer.events().is_empty());
+    assert!(serving.writes().is_empty());
+
+    let previous = head(
+        &env,
+        1,
+        "head-prod-1",
+        "serving-prod-1",
+        vec!["db-prod"],
+        None,
+    );
+    let current = head(
+        &env,
+        2,
+        "head-prod-2",
+        "serving-promote-1",
+        vec!["db-pr-123"],
+        Some(&previous),
+    );
+    let mut changed_current = current.clone();
+    changed_current.serving_commit_id = ServingCommitId::new("serving-promote-conflict");
+    let source = SequencedFactSource::new([
+        source_with_head(&fixture, current),
+        source_with_head(&fixture, changed_current),
+    ]);
+
+    let stale_error = RollbackEnvironmentCommand::new(&source, &fixture.session, &writer, &serving)
+        .begin(RollbackEnvironmentRequest {
+            command_id: command_id("rollback-2"),
+            environment: env,
+            expected_environment_epoch: epoch(2),
+            serving_commit: serving_plan("serving-rollback-2", "node-prod", "fd00::1:8080", 3),
+            visible_nodes: visible_nodes(),
+        })
+        .await
+        .expect_err("stale second read rejected");
+    assert!(matches!(
+        stale_error,
+        EnvironmentError::StaleExpectedEpoch { .. }
+    ));
+    assert!(writer.events().is_empty());
+    assert!(serving.writes().is_empty());
+}
+
+#[tokio::test]
 async fn command_entry_conflict_rejects_before_participant_calls() {
     let fixture = Fixture::new();
     let env = environment("prod");
@@ -486,7 +655,7 @@ async fn command_entry_conflict_rejects_before_participant_calls() {
     assert!(writer.events().is_empty());
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct MemoryFactSource {
     candidates: Vec<FactCandidate>,
     payloads: BTreeMap<FactContentHash, FactPayload>,
@@ -559,6 +728,67 @@ impl FactSource for MemoryFactSource {
             })
             .collect())
     }
+}
+
+struct SequencedFactSource {
+    sources: Mutex<Vec<MemoryFactSource>>,
+    active_payloads: Mutex<BTreeMap<FactContentHash, FactPayload>>,
+}
+
+impl SequencedFactSource {
+    fn new(sources: impl IntoIterator<Item = MemoryFactSource>) -> Self {
+        let mut sources = sources.into_iter().collect::<Vec<_>>();
+        sources.reverse();
+        Self {
+            sources: Mutex::new(sources),
+            active_payloads: Mutex::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl FactSource for SequencedFactSource {
+    fn list_candidates(
+        &self,
+        island: &IslandId,
+        pattern: &FactKeyPattern,
+        session: &BusSession,
+    ) -> FactSourceResult<Vec<FactCandidate>> {
+        let mut sources = self.sources.lock().expect("sequenced sources lock");
+        let source = sources
+            .pop()
+            .or_else(|| sources.last().cloned())
+            .unwrap_or_default();
+        *self.active_payloads.lock().expect("active payloads lock") = source.payloads.clone();
+        source.list_candidates(island, pattern, session)
+    }
+
+    fn read_payloads(
+        &self,
+        island: &IslandId,
+        candidates: &[FactCandidate],
+        session: &BusSession,
+    ) -> FactSourceResult<BTreeMap<FactContentHash, FactPayload>> {
+        let source = MemoryFactSource {
+            candidates: candidates.to_vec(),
+            payloads: self
+                .active_payloads
+                .lock()
+                .expect("active payloads lock")
+                .clone(),
+        };
+        source.read_payloads(island, candidates, session)
+    }
+}
+
+fn source_with_head(fixture: &Fixture, head: EnvironmentHeadFact) -> MemoryFactSource {
+    let mut source = MemoryFactSource::default();
+    source.insert_head(
+        fixture,
+        PrincipalId::new("sequenced-writer"),
+        CandidateStatus::Verified,
+        head,
+    );
+    source
 }
 
 struct Fixture {

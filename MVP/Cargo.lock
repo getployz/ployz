@@ -2835,6 +2835,8 @@ dependencies = [
  "mvp-bus",
  "mvp-deploy",
  "mvp-deploy-p2panda",
+ "mvp-environment",
+ "mvp-environment-p2panda",
  "mvp-identity",
  "mvp-iroh",
  "mvp-lease",
