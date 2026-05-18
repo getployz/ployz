@@ -19,4 +19,6 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 
 [dev-dependencies]
+p2panda-core = { version = "0.6.0", features = ["test_utils"] }
+p2panda-store = { version = "0.6.0", features = ["sqlite", "test_utils"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

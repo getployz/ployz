@@ -2679,6 +2679,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "mock_instant"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dce6dd36094cac388f119d2e9dc82dc730ef91c32a6222170d630e5414b956e6"
+
+[[package]]
 name = "moka"
 version = "0.12.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3532,6 +3538,7 @@ dependencies = [
  "ciborium",
  "ed25519-dalek 2.2.0",
  "hex",
+ "mock_instant",
  "rand 0.8.6",
  "serde",
  "serde_bytes",
@@ -3589,6 +3596,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6604f04771a6f996ce3daf646901ed612fe0cfd0cce248a50a39cdfbd3088a53"
 dependencies = [
  "p2panda-core",
+ "rand 0.10.1",
+ "rand_chacha 0.10.0",
  "serde",
  "sqlx",
  "thiserror 2.0.18",

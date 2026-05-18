@@ -1,6 +1,6 @@
 ---
 title: Slice 041 p2panda-auth Membership Substitution Plan
-status: planned
+status: active
 created: 2026-05-19
 origin:
   - VISION.md
