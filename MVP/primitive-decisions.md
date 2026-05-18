@@ -15,6 +15,26 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
+- Slice 023 closes the deploy pre-serving cleanup gap with an explicit
+  participant ABI. Candidate cleanup is foreground RPC plus a structured command
+  result, not a background reconciler and not a reuse of the post-serving
+  `/cleanup/done` fact. Recovery from a decision fact with no serving commit
+  conservatively cleans planned candidates from the manifest without rerunning
+  capacity, prepare, start, or route publication.
+- Slice 023 keeps candidate cleanup failure audiences direct: the command
+  report carries attempted per-node targets, and each pending failure also names
+  the failed node's candidate set so operators do not have to infer manual
+  cleanup from another field. Cleanup RPCs fan out with bounded concurrency so
+  failure reporting does not grow linearly with node timeout.
+- Slice 023 adds owned p2panda-net transport surfaces around normal
+  `AddressBook`, `Endpoint`, `Gossip`, and `LogSync` APIs. p2panda-net remains
+  a carrier/quarantine log: received bytes must decode as stable Ployz fact
+  envelopes and pass `PandaFactStore::import_replica_operation` before any
+  projection can see them.
+- Slice 023 adds a p2panda-net ACME HTTP-01 product canary. Lease/challenge
+  facts now travel over owned p2panda-net nodes, import through the canonical
+  authority path, rebuild SQLite on the receiving side, and keep HTTP-01
+  serving last-good state while the issuer adapter is absent.
 - Slice 002 replaced per-dispatch worker creation with one bus-wide bounded
   delivery runtime. The current shape is intentional and carries runtime
   pressure metrics.
@@ -318,13 +338,12 @@ the decision concrete.
 These are known gaps, not hidden behavior. Do not solve them until a slice has
 the metric or product proof that makes the extra primitive worthwhile.
 
-- Deploy pre-commit participant cleanup still needs an explicit ABI. If
-  `prepare_instance` succeeds for one participant and a later
-  `start_instance` fails before any durable serving commit, the coordinator
-  currently relies on participant idempotency and later explicit cleanup rather
-  than substrate-driven compensation. The next deploy slice that expands
-  participants must name the contract for prepare-without-start and
-  start-without-commit cleanup.
+- Deploy pre-commit recovery conservatively sends candidate cleanup to every
+  planned node in the manifest when a decision fact exists but no serving commit
+  exists. That is intentionally idempotent and avoids a new durable cleanup
+  intent fact. If future commands need exact attempted-target recovery, persist
+  phase data as command facts rather than teaching a background loop to infer
+  cleanup work.
 - Lease reduction walks accumulated facts repeatedly per resource. That is fine
   for the current proof but will become expensive once docs-backed leases carry
   months of renewal/release facts. Add compaction only after real iroh-docs
