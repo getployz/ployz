@@ -1,8 +1,9 @@
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
+use mvp_bus::{BusSession, FactPayload, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::NodeId;
 use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactStore, PandaFactSyncReport, PandaFactSyncScope,
@@ -18,10 +19,11 @@ use serde::Serialize;
 
 use crate::assertions::assert_eq_named;
 use crate::bus_syntax::{fact_key, fact_pattern};
-use crate::metrics::{reset_dir, scenario_dir, write_json};
+use crate::metrics::{MemorySnapshot, memory_snapshot, reset_dir, scenario_dir, write_json};
 use crate::projection_harness::projection_actor;
 
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(10);
+const LOAD_FACT_COUNTS: [usize; 3] = [200, 1_000, 10_000];
 
 #[derive(Debug, Serialize)]
 struct P2pandaSyncFactSourceReport {
@@ -36,6 +38,7 @@ struct P2pandaSyncFactSourceReport {
     first_sync_bytes_received: u64,
     first_sync_bytes_sent: u64,
     repeat_sync_received: u64,
+    load_runs: Vec<P2pandaSyncLoadRunReport>,
     conflict_status_count: usize,
     no_cross_island_leakage: bool,
     deleted_projection_rebuilt: bool,
@@ -46,6 +49,20 @@ struct P2pandaSyncFactSourceReport {
     repeat_sync_ms: u128,
     projection_rebuild_ms: u128,
     elapsed_ms: u128,
+}
+
+#[derive(Debug, Serialize)]
+struct P2pandaSyncLoadRunReport {
+    store_backend: &'static str,
+    fact_count: usize,
+    first_sync_received: u64,
+    first_sync_imported: u64,
+    repeat_sync_received: u64,
+    projected_candidates: usize,
+    sync_ms: u128,
+    repeat_sync_ms: u128,
+    memory_before: MemorySnapshot,
+    memory_after: MemorySnapshot,
 }
 
 pub(crate) fn run() -> Result<(), String> {
@@ -139,6 +156,7 @@ async fn run_async() -> Result<(), String> {
         sync_received(&repeat_sync),
         0,
     )?;
+    let load_runs = run_large_load_sync_cases(&bus, &root, &prod, &sessions, &left_author).await?;
 
     let laptop = IslandId::new("laptop");
     let no_cross_island_leakage = right
@@ -224,6 +242,7 @@ async fn run_async() -> Result<(), String> {
         first_sync_bytes_received: first_sync.left.bytes_received + first_sync.right.bytes_received,
         first_sync_bytes_sent: first_sync.left.bytes_sent + first_sync.right.bytes_sent,
         repeat_sync_received: sync_received(&repeat_sync),
+        load_runs,
         conflict_status_count: status_count(
             &rebuilt.state.statuses,
             ProjectionIgnoreReason::Conflict,
@@ -307,6 +326,136 @@ fn sync_bus_sessions() -> (InMemoryBus, SyncBusSessions) {
         ),
     };
     (bus, sessions)
+}
+
+async fn run_large_load_sync_cases(
+    bus: &InMemoryBus,
+    root: &Path,
+    island: &IslandId,
+    sessions: &SyncBusSessions,
+    author: &PandaFactAuthor,
+) -> Result<Vec<P2pandaSyncLoadRunReport>, String> {
+    let mut reports = Vec::with_capacity(LOAD_FACT_COUNTS.len());
+    for fact_count in LOAD_FACT_COUNTS {
+        reports
+            .push(run_large_load_sync_case(bus, root, island, sessions, author, fact_count).await?);
+    }
+    Ok(reports)
+}
+
+async fn run_large_load_sync_case(
+    bus: &InMemoryBus,
+    _root: &Path,
+    island: &IslandId,
+    sessions: &SyncBusSessions,
+    author: &PandaFactAuthor,
+    fact_count: usize,
+) -> Result<P2pandaSyncLoadRunReport, String> {
+    let memory_before = memory_snapshot();
+    let mut left = load_memory_store(bus, island, author)?;
+    let mut right = load_memory_store(bus, island, author)?;
+    left.trust_replica_peer(island, sessions.left_replica.principal().clone());
+    right.trust_replica_peer(island, sessions.right_replica.principal().clone());
+
+    for index in 0..fact_count {
+        let key = fact_key(&format!("/facts/load/{fact_count}/{index}"))?;
+        left.write_fact_payload(
+            &sessions.left_writer,
+            author,
+            key,
+            FactPayload::from(format!("payload-{fact_count}-{index}").into_bytes()),
+        )
+        .await
+        .map_err(|error| format!("write load fact {index} of {fact_count}: {error}"))?;
+    }
+
+    let scope = PandaFactSyncScope::new(island.clone())
+        .with_trusted_author(author.principal().clone(), author.author_key());
+    let sync_started = Instant::now();
+    let sync = sync_panda_fact_stores(
+        &mut left,
+        &sessions.left_replica,
+        &mut right,
+        &sessions.right_replica,
+        &scope,
+    )
+    .await
+    .map_err(|error| format!("run load sync for {fact_count} facts: {error}"))?;
+    let sync_ms = sync_started.elapsed().as_millis();
+    assert_eq_named(
+        "load sync received operations",
+        sync.right.received,
+        fact_count as u64,
+    )?;
+    assert_eq_named(
+        "load sync imported operations",
+        sync.right.imported,
+        fact_count as u64,
+    )?;
+
+    let candidates = right
+        .list_candidates(
+            island,
+            &fact_pattern(&format!("/facts/load/{fact_count}/>"))?,
+            &sessions.left_writer,
+        )
+        .map_err(|error| format!("list load sync candidates for {fact_count}: {error}"))?;
+    assert_eq_named(
+        "load sync projected candidates",
+        candidates.len(),
+        fact_count,
+    )?;
+    if candidates
+        .iter()
+        .any(|candidate| candidate.status() != CandidateStatus::Verified)
+    {
+        return Err(format!(
+            "load sync for {fact_count} facts produced non-verified candidates"
+        ));
+    }
+
+    let repeat_started = Instant::now();
+    let repeat = sync_panda_fact_stores(
+        &mut left,
+        &sessions.left_replica,
+        &mut right,
+        &sessions.right_replica,
+        &scope,
+    )
+    .await
+    .map_err(|error| format!("run repeat load sync for {fact_count} facts: {error}"))?;
+    let repeat_sync_ms = repeat_started.elapsed().as_millis();
+    assert_eq_named(
+        "repeat load sync received operations",
+        sync_received(&repeat),
+        0,
+    )?;
+    let memory_after = memory_snapshot();
+
+    Ok(P2pandaSyncLoadRunReport {
+        store_backend: "memory",
+        fact_count,
+        first_sync_received: sync_received(&sync),
+        first_sync_imported: sync.left.imported + sync.right.imported,
+        repeat_sync_received: sync_received(&repeat),
+        projected_candidates: candidates.len(),
+        sync_ms,
+        repeat_sync_ms,
+        memory_before,
+        memory_after,
+    })
+}
+
+fn load_memory_store(
+    bus: &InMemoryBus,
+    island: &IslandId,
+    author: &PandaFactAuthor,
+) -> Result<PandaFactStore, String> {
+    let mut store = PandaFactStore::new(Arc::new(bus.clone()));
+    store
+        .trust_author_key(island, author.principal().clone(), author.author_key())
+        .map_err(|error| format!("trust load p2panda author key: {error}"))?;
+    Ok(store)
 }
 
 async fn open_sync_store(
