@@ -26,11 +26,22 @@ const SCENARIO: &str = "p2panda-net-process-serving-contract";
 #[derive(Debug, Serialize)]
 struct P2pandaNetProcessServingReport {
     scenario: &'static str,
+    attempted_import_batches_after_rejection: usize,
     remote_updates_imported: usize,
     rejected_operations: usize,
     rejected_operation_kind: String,
     stream_idle_refreshes_after_rejection: usize,
+    stream_refreshes_after_rejection: u64,
+    stream_refresh_failures_after_rejection: u64,
+    stream_ended_after_rejection: u64,
+    stream_lagged_after_rejection: u64,
+    stream_failed_after_rejection: u64,
     replayed_operations_skipped_after_rejection: u64,
+    session_started_after_rejection: u64,
+    sync_started_after_rejection: u64,
+    sync_finished_after_rejection: u64,
+    live_mode_started_after_rejection: u64,
+    session_finished_after_rejection: u64,
     local_mutation_failure: String,
     serving_process_alive_after_update: bool,
     baseline_gateway_revision: String,
@@ -264,12 +275,23 @@ async fn run_async() -> Result<(), String> {
     }
     let report = P2pandaNetProcessServingReport {
         scenario: SCENARIO,
+        attempted_import_batches_after_rejection: after_rejection_p2panda.attempted_import_batches,
         remote_updates_imported: updated_p2panda.imported,
         rejected_operations: after_rejection_p2panda.rejected,
         rejected_operation_kind,
         stream_idle_refreshes_after_rejection: after_rejection_p2panda.stream_idle_refreshes,
+        stream_refreshes_after_rejection: after_rejection_p2panda.stream_refreshes,
+        stream_refresh_failures_after_rejection: after_rejection_p2panda.stream_refresh_failures,
+        stream_ended_after_rejection: after_rejection_p2panda.stream_ended,
+        stream_lagged_after_rejection: after_rejection_p2panda.stream_lagged,
+        stream_failed_after_rejection: after_rejection_p2panda.stream_failed,
         replayed_operations_skipped_after_rejection: after_rejection_p2panda
             .replayed_operations_skipped,
+        session_started_after_rejection: after_rejection_p2panda.session_started,
+        sync_started_after_rejection: after_rejection_p2panda.sync_started,
+        sync_finished_after_rejection: after_rejection_p2panda.sync_finished,
+        live_mode_started_after_rejection: after_rejection_p2panda.live_mode_started,
+        session_finished_after_rejection: after_rejection_p2panda.session_finished,
         local_mutation_failure,
         serving_process_alive_after_update,
         baseline_gateway_revision,
@@ -283,6 +305,11 @@ async fn run_async() -> Result<(), String> {
         "rejected operation count",
         after_rejection_p2panda.rejected,
         1,
+    )?;
+    assert_eq_named(
+        "p2panda-net serving attempted import batches",
+        after_rejection_p2panda.attempted_import_batches > 0,
+        true,
     )?;
     assert_eq_named(
         "rejected replay skipped count",
