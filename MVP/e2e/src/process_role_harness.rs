@@ -643,10 +643,13 @@ impl ServingProjectionRoleConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ServingProjectionFactSourceConfig {
     ProcessFiles,
-    P2pandaSqlite {
-        path: PathBuf,
-        trusted_author: Box<TrustedP2pandaAuthor>,
-    },
+    P2pandaSqlite(Box<P2pandaSqliteFactSourceConfig>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct P2pandaSqliteFactSourceConfig {
+    path: PathBuf,
+    trusted_author: TrustedP2pandaAuthor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -722,15 +725,17 @@ fn parse_serving_projection_flags(args: &[String]) -> Result<ServingProjectionRo
             ServingProjectionFactSourceConfig::ProcessFiles
         }
         ServingProjectionFactSourceKind::P2pandaSqlite => {
-            ServingProjectionFactSourceConfig::P2pandaSqlite {
-                path: p2panda_path.ok_or_else(|| format!("{role} requires --p2panda-path"))?,
-                trusted_author: Box::new(TrustedP2pandaAuthor {
-                    principal: p2panda_author
-                        .ok_or_else(|| format!("{role} requires --p2panda-author"))?,
-                    author_key: p2panda_author_key
-                        .ok_or_else(|| format!("{role} requires --p2panda-author-key"))?,
-                }),
-            }
+            ServingProjectionFactSourceConfig::P2pandaSqlite(Box::new(
+                P2pandaSqliteFactSourceConfig {
+                    path: p2panda_path.ok_or_else(|| format!("{role} requires --p2panda-path"))?,
+                    trusted_author: TrustedP2pandaAuthor {
+                        principal: p2panda_author
+                            .ok_or_else(|| format!("{role} requires --p2panda-author"))?,
+                        author_key: p2panda_author_key
+                            .ok_or_else(|| format!("{role} requires --p2panda-author-key"))?,
+                    },
+                },
+            ))
         }
     };
     Ok(ServingProjectionRoleConfig {
@@ -1641,7 +1646,13 @@ async fn wire_role_status(
 async fn project_once(
     state: Arc<Mutex<ServingProjectionState>>,
 ) -> Result<RoleSuccess, RoleFailure> {
-    let projection = refresh_projection(Arc::clone(&state)).await?;
+    let projection = {
+        let state = state.lock().await;
+        if state.rebuild.is_some() {
+            return Err(RoleFailure::busy("rebuild already in progress"));
+        }
+        state.projection.clone()
+    };
     let report = projection
         .project_once(PROJECT_TIMEOUT)
         .await
@@ -1963,40 +1974,6 @@ impl RebuildState {
     }
 }
 
-async fn refresh_projection(
-    state: Arc<Mutex<ServingProjectionState>>,
-) -> Result<ProjectionActorHandle, RoleFailure> {
-    let (source_config, root, expected_island, projection_session, pattern, snapshot_paths) = {
-        let state = state.lock().await;
-        if state.rebuild.is_some() {
-            return Err(RoleFailure::busy("rebuild already in progress"));
-        }
-        (
-            state.source_config.clone(),
-            state.root.clone(),
-            state.expected_island.clone(),
-            state.projection_session.clone(),
-            state.pattern.clone(),
-            state.snapshot_paths.clone(),
-        )
-    };
-    let projection = spawn_fresh_projection(
-        &source_config,
-        root.as_path(),
-        &expected_island,
-        &projection_session,
-        &pattern,
-        &snapshot_paths,
-    )
-    .await
-    .map_err(RoleFailure::projection)?;
-    {
-        let mut state = state.lock().await;
-        state.projection = projection.clone();
-    }
-    Ok(projection)
-}
-
 fn identity_session(island: IslandId, principal: PrincipalId) -> BusSession {
     let (_bus, authority) = InMemoryBus::new_with_authority();
     authority.grant_in(island, principal, Grant::empty())
@@ -2047,10 +2024,7 @@ async fn open_serving_fact_source(
             )?;
             Ok(Arc::new(source))
         }
-        ServingProjectionFactSourceConfig::P2pandaSqlite {
-            path,
-            trusted_author,
-        } => {
+        ServingProjectionFactSourceConfig::P2pandaSqlite(config) => {
             let (bus, authority) = InMemoryBus::new_with_authority();
             authority.grant_in(
                 island.clone(),
@@ -2059,16 +2033,16 @@ async fn open_serving_fact_source(
             );
             authority.grant_in(
                 island.clone(),
-                trusted_author.principal.clone(),
+                config.trusted_author.principal.clone(),
                 Grant::empty().with_fact_write(pattern.clone()),
             );
             let store = PandaFactStore::open_sqlite(
                 Arc::new(bus),
-                PandaSqliteOpenConfig::new(path.clone(), vec![island.clone()])
+                PandaSqliteOpenConfig::new(config.path.clone(), vec![island.clone()])
                     .with_trusted_author_key(PandaTrustedAuthorKey::new(
                         island.clone(),
-                        trusted_author.principal.clone(),
-                        trusted_author.author_key,
+                        config.trusted_author.principal.clone(),
+                        config.trusted_author.author_key,
                     )),
             )
             .await
