@@ -16,18 +16,19 @@ the decision concrete.
 ## Changed Since Last Slice
 
 - Slice 046 adds a repeated `p2panda-net-fact-node-reliability-contract`.
-  The first run completed 12 canonical fact-node roundtrips with 48 attempted
-  imports, 24 inserted operations, 12 conflicts, 12 structured rejections, and
-  zero zero-import iterations.
+  The final shape completes 12 canonical fact-node roundtrips with 12 attempted
+  imports, 12 inserted operations, and zero zero-import iterations. Conflict
+  and rejection classes stay covered by `p2panda-net-fact-node-contract`.
 - Slice 046 makes p2panda-net import-loop progress visible through
   `PandaNetFactNodeStats` and process-role `P2pandaNetRoleStatus`: idle
   timeouts, stream refreshes, stream errors, replay skips, attempted import
   batches, and sync lifecycle counters are status evidence now.
 - Slice 046 keeps p2panda-net as the product-shaped fact transport. The
-  reliability fix is explicit peer address-book insertion plus better
-  no-progress reporting, not a custom iroh sync loop or direct `p2panda-sync`
-  fallback. Volume transfer membership-backed facts should now be the next
-  product slice.
+  reliability fix is explicit peer address-book insertion, delayed-publisher
+  publish-stream refresh, one publish retry after publish-stream failure, and
+  better no-progress reporting. It is not a custom iroh sync loop or direct
+  `p2panda-sync` fallback. Volume transfer membership-backed facts should now
+  be the next product slice.
 - Slice 045 investigates remaining p2panda substitution gains. It confirms the
   active workspace already uses p2panda `0.6.0` for facts, sync, authz, and
   transport, and that volume transfer is the last product-shaped manual-trust

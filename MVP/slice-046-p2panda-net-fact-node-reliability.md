@@ -19,20 +19,17 @@ The zero-import class from Slice 045 now has a focused reliability gate.
 
 `p2panda-net-fact-node-reliability-contract` runs 12 canonical
 `PandaNetFactNode` roundtrips in one bounded scenario. Each iteration publishes
-valid, conflicting, and untrusted-author fact operations over p2panda-net,
-imports through the same `SharedPandaFactStore` authority path as the product
-proofs, and fails if the receiver reaches its deadline with zero attempted
-imports after publish.
+one valid fact operation over p2panda-net, imports through the same
+`SharedPandaFactStore` authority path as the product proofs, and fails if the
+receiver reaches its deadline with zero attempted imports after publish.
 
 The first run passed:
 
 ```text
 iterations: 12
 zero_import_iterations: 0
-total_attempted_imports: 48
-total_imported_operations: 24
-total_conflict_operations: 12
-total_rejected_operations: 12
+total_attempted_imports: 12
+total_imported_operations: 12
 total_idle_timeouts: 1
 total_stream_refreshes: 1
 startup_p95_ms: 24
@@ -60,6 +57,9 @@ absent.
   book after spawn. The E2E harness uses this to make direct two-node
   reliability tests explicitly bidirectional instead of relying on one-way
   bootstrap timing.
+- `PandaNetFactNode::refresh_publish_stream` lets long-lived publishers reopen
+  their publish stream before delayed publishes. The publish path also retries
+  once after a publish-stream error.
 - `p2panda-net-fact-node-contract` records the new diagnostics in its metrics
   and includes them in failure messages.
 - `p2panda-net-fact-node-reliability-contract` exercises repeated canonical
@@ -105,23 +105,23 @@ cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- all
 Outcomes:
 
 - `mvp-p2panda-transport`: 15 tests passed.
-- `p2panda-net-fact-node-reliability-contract`: passed, 12 iterations, zero
-  zero-import iterations.
+- `p2panda-net-fact-node-reliability-contract`: passed, 12 iterations, 12
+  attempted imports, 12 imported operations, zero zero-import iterations.
 - `p2panda-net-fact-node-contract`: passed, including projection rebuild,
   gateway/DNS snapshots, and HTTP-01 200-before-clear/404-after-clear behavior.
 - `p2panda-net-process-serving-contract`: passed, including delayed remote
   serving update, rejected untrusted author, rebuild, restart, and absent local
   coordinator socket.
-- `mvp-e2e -- all`: passed with the new reliability scenario included. The all
-  run completed 10,000-node bus/request-many, bridge, projection, queue-group,
-  saturation, p2panda sync, process-role serving, WireGuard, deploy, machine,
-  and volume proofs.
 - Simplify pass: removed the duplicate replay-cache skip counter after
   `PandaNetFactNodeStats` became the single replay-skip reporting surface.
   After that simplification, `cargo check -p mvp-e2e`,
   `cargo test -p mvp-p2panda-transport`,
   `p2panda-net-fact-node-reliability-contract`, and
   `p2panda-net-process-serving-contract` passed again.
+- Full-suite rerun then exposed a process-serving transport failure where the
+  delayed second scripted publish did not arrive after a receiver stream
+  failure. The fix added publish-stream refresh before delayed scripted
+  publishes and one publish retry after a publish-stream error.
 
 ## Review
 

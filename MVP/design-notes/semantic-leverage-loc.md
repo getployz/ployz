@@ -95,7 +95,7 @@ Slice 046 is another proof-quality win rather than a raw LOC win. It adds
 `PandaNetFactNodeStats`, a post-spawn address-book peer insertion hook, a
 repeated p2panda-net fact-node reliability E2E, and process-role import
 progress status. The added LOC is acceptable because it turns an intermittent
-transport failure into a bounded proof: 12 canonical fact-node roundtrips, 48
+transport failure into a bounded proof: 12 canonical fact-node roundtrips, 12
 attempted imports, and zero zero-import iterations. The semantic leverage test
 now moves back to product code: volume transfer should be able to reuse this
 transport/fact/status boundary instead of adding another feature-local sync
