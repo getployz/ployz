@@ -117,24 +117,8 @@ async fn run_async() -> Result<(), String> {
         vec![receiver_info.clone()],
     )
     .await?;
-    sender
-        .store()
-        .trust_author_key(
-            &prod,
-            sessions.untrusted_writer.principal().clone(),
-            untrusted.author_key(),
-        )
-        .await
-        .map_err(|error| format!("trust p2panda-net untrusted sender author: {error}"))?;
-    sender
-        .store()
-        .trust_author_key(
-            &laptop,
-            sessions.laptop_writer.principal().clone(),
-            laptop_author.author_key(),
-        )
-        .await
-        .map_err(|error| format!("trust p2panda-net laptop sender author: {error}"))?;
+    trust_manual_fallback_author(&sender, &prod, &sessions.untrusted_writer, &untrusted).await?;
+    trust_manual_fallback_author(&sender, &laptop, &sessions.laptop_writer, &laptop_author).await?;
     let startup_ms = startup_started.elapsed().as_millis();
 
     sender
@@ -830,10 +814,7 @@ async fn manual_fallback_store(
 ) -> Result<SharedPandaFactStore, String> {
     let store = SharedPandaFactStore::new(PandaFactStore::new(bus.clone()));
     for &(session, author) in manual_fallback_authors {
-        store
-            .trust_author_key(island, session.principal().clone(), author.author_key())
-            .await
-            .map_err(|error| format!("trust p2panda-net fact-node author: {error}"))?;
+        trust_manual_fallback_store_author(&store, island, session, author).await?;
     }
     if let Some(replica_session) = replica_session {
         store
@@ -841,6 +822,28 @@ async fn manual_fallback_store(
             .await;
     }
     Ok(store)
+}
+
+async fn trust_manual_fallback_author(
+    node: &PandaNetFactNode,
+    island: &IslandId,
+    session: &BusSession,
+    author: &PandaFactAuthor,
+) -> Result<(), String> {
+    let store = node.store();
+    trust_manual_fallback_store_author(&store, island, session, author).await
+}
+
+async fn trust_manual_fallback_store_author(
+    store: &SharedPandaFactStore,
+    island: &IslandId,
+    session: &BusSession,
+    author: &PandaFactAuthor,
+) -> Result<(), String> {
+    store
+        .trust_author_key(island, session.principal().clone(), author.author_key())
+        .await
+        .map_err(|error| format!("trust p2panda-net manual fallback author: {error}"))
 }
 
 fn node_joined_payload(

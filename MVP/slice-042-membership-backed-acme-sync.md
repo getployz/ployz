@@ -64,14 +64,14 @@ fixture, where manual trust is deliberately used to exercise rejection branches.
 Slice diff from the Slice 042 plan commit:
 
 ```text
-MVP/e2e/src/p2panda_acme_http01_contract.rs      |  78 +++++----
-MVP/e2e/src/p2panda_net_fact_node_contract.rs    |  18 ++-
-MVP/e2e/src/p2panda_projection_fixture.rs        |  16 +-
-MVP/e2e/src/p2panda_sync_fact_source_contract.rs | 194 +++++++++++++----------
-4 files changed, 176 insertions(+), 130 deletions(-)
+MVP/e2e/src/p2panda_acme_http01_contract.rs      |  72 ++++-----
+MVP/e2e/src/p2panda_net_fact_node_contract.rs    |  65 ++++----
+MVP/e2e/src/p2panda_projection_fixture.rs        |  45 +++++-
+MVP/e2e/src/p2panda_sync_fact_source_contract.rs | 188 +++++++++++++----------
+4 files changed, 218 insertions(+), 152 deletions(-)
 ```
 
-This is not a raw LOC reduction. The slice adds about 46 net lines in E2E and
+This is not a raw LOC reduction. The slice adds about 66 net lines in E2E and
 fixture code while replacing a second authority idiom with the shared membership
 authority shape. That is still the right kind of leverage: future product proofs
 should ask the fixture for membership-backed authority instead of hand-building
