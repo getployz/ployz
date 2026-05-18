@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::net::UdpSocket;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
@@ -6,7 +7,7 @@ use futures_util::StreamExt;
 use p2panda_core_git::{Operation, SigningKey, Topic};
 use p2panda_net::addrs::NodeInfo;
 use p2panda_net::iroh_endpoint::{EndpointAddr, IrohConfig, from_verifying_key};
-use p2panda_net::{AddressBook, Discovery, Endpoint, Gossip, LogSync, NetworkId, NodeId};
+use p2panda_net::{AddressBook, Discovery, Endpoint, Gossip, LogSync, NetworkId};
 use p2panda_store_git::SqliteStore;
 use p2panda_sync_git::FromSync;
 use p2panda_sync_git::protocols::TopicLogSyncEvent;
@@ -16,6 +17,26 @@ use crate::{PandaNetLogId, PandaNetQuarantineLog, PandaNetStartupStep, PandaNetT
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const STREAM_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PandaNetTopic([u8; 32]);
+
+impl PandaNetTopic {
+    #[must_use]
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    fn into_inner(self) -> Topic {
+        self.0.into()
+    }
+}
+
+impl From<[u8; 32]> for PandaNetTopic {
+    fn from(bytes: [u8; 32]) -> Self {
+        Self::new(bytes)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PandaNetBindConfig {
@@ -55,17 +76,47 @@ pub struct PandaNetNodeInfo(NodeInfo);
 
 impl PandaNetNodeInfo {
     #[must_use]
-    pub fn into_inner(self) -> NodeInfo {
+    pub(crate) fn into_inner(self) -> NodeInfo {
         self.0
     }
 }
 
 #[derive(Clone)]
 pub struct PandaNetNodeConfig {
-    pub network_id: NetworkId,
-    pub signing_key: SigningKey,
-    pub bind: PandaNetBindConfig,
-    pub bootstrap_nodes: Vec<PandaNetNodeInfo>,
+    network_id: NetworkId,
+    signing_key: SigningKey,
+    bind: PandaNetBindConfig,
+    bootstrap_nodes: Vec<PandaNetNodeInfo>,
+}
+
+impl PandaNetNodeConfig {
+    #[must_use]
+    pub fn localhost(
+        network_id: [u8; 32],
+        signing_key_seed: [u8; 32],
+        bind: PandaNetBindConfig,
+        bootstrap_nodes: Vec<PandaNetNodeInfo>,
+    ) -> Self {
+        Self {
+            network_id,
+            signing_key: SigningKey::from_bytes(&signing_key_seed),
+            bind,
+            bootstrap_nodes,
+        }
+    }
+
+    pub fn localhost_ephemeral(
+        network_id: [u8; 32],
+        signing_key_seed: [u8; 32],
+        bootstrap_nodes: Vec<PandaNetNodeInfo>,
+    ) -> Result<Self, PandaNetTransportError> {
+        Ok(Self::localhost(
+            network_id,
+            signing_key_seed,
+            PandaNetBindConfig::localhost(free_localhost_port()?, free_localhost_port()?),
+            bootstrap_nodes,
+        ))
+    }
 }
 
 pub struct PandaNetNode {
@@ -137,20 +188,16 @@ impl PandaNetNode {
     }
 
     #[must_use]
-    pub fn node_id(&self) -> NodeId {
-        self.endpoint.node_id()
-    }
-
-    #[must_use]
     pub fn node_info(&self) -> PandaNetNodeInfo {
         self.node_info.clone()
     }
 
     pub async fn open_stream(
         &self,
-        topic: Topic,
+        topic: PandaNetTopic,
         live_mode: bool,
     ) -> Result<PandaNetStream, PandaNetTransportError> {
+        let topic = topic.into_inner();
         let handle = with_startup_timeout(
             PandaNetStartupStep::Stream,
             self.log_sync.stream(topic, live_mode),
@@ -167,11 +214,12 @@ impl PandaNetNode {
 
     pub async fn append_to_topic(
         &mut self,
-        topic: &Topic,
+        topic: PandaNetTopic,
         body: &[u8],
     ) -> Result<(), PandaNetTransportError> {
+        let topic = topic.into_inner();
         self.quarantine_log
-            .append_to_topic(topic, body, 0)
+            .append_to_topic(&topic, body, 0)
             .await
             .map(|_| ())
     }
@@ -259,4 +307,16 @@ async fn with_startup_timeout<T, E: ToString>(
             timeout_ms: STARTUP_TIMEOUT.as_millis() as u64,
         })?
         .map_err(|error| PandaNetTransportError::startup(step, error))
+}
+
+fn free_localhost_port() -> Result<u16, PandaNetTransportError> {
+    UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .map_err(|error| PandaNetTransportError::PortProbe {
+            message: error.to_string(),
+        })?
+        .local_addr()
+        .map_err(|error| PandaNetTransportError::PortProbe {
+            message: error.to_string(),
+        })
+        .map(|address| address.port())
 }

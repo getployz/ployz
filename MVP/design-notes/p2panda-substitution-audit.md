@@ -73,7 +73,7 @@ Primary sources checked during this audit:
 | Process fact source | `MVP/e2e/src/process_fact_source.rs` | Replace after persistence slice | It proves process fate separation today, but JSON entry/blob files are another custom fact store. | Process-role E2E uses p2panda persistent fact role; kill/restart fact role; serving/projection recover. |
 | Bus fact store | `MVP/bus/src/facts.rs`, `MVP/projection/src/bus_source.rs` | Shrink to fixture, then delete from product proofs | Useful harness for early bus/projection proofs; not the durable fact direction. | Projection, deploy, serving, scale, and machine scenarios use p2panda or an explicitly named test fixture. |
 | Iroh docs fact source | `MVP/iroh/src/facts.rs` | Park, then delete or shrink to transport bridge | It is the largest remaining custom fact local-view wrapper. p2panda now owns operation envelope/storage; iroh-docs should not be hardened in parallel. | Port `iroh-docs-contract` semantics to p2panda persistence/sync: conflict candidates, unauthorized/unverified status, missing payload, projection rebuild. |
-| p2panda spike crate | `MVP/p2panda-spike/src/lib.rs` | Delete after persistent adapter proof | It has served its purpose as compile evidence. Keeping it risks two examples diverging. | `mvp-p2panda-facts` covers every spike behavior plus persistence. |
+| p2panda spike crate | deleted in Slice 025 | Deleted | It served its purpose as compile evidence. Keeping it risked two examples diverging. | `mvp-p2panda-facts` covers every spike behavior plus persistence. |
 | Operation export/import | `MVP/p2panda-facts/src/lib.rs` | Keep narrow as harness/debug plumbing | Manual exchange is acceptable for deterministic local E2E. It is not the product replication contract. | Slice 020 proved p2panda-sync catch-up between stores and a git p2panda-net compatibility path. |
 | Membership/revocation | `MVP/mesh`, `MVP/machine`, bus grants | Spike `p2panda-auth` for membership only | Strong removal and eventually consistent group state map to island membership. Subject permissions, queue permissions, response permissions, and bridge imports/exports remain Ployz bus semantics. | Root add/remove/demote, concurrent remove/re-add, tombstone domination, and WireGuard projection tests. |
 | Advisory leases | `MVP/lease/src/lib.rs` | Keep reducer semantics; store as p2panda facts | Lease behavior is Ployz product semantics: TTL, renewal, epoch fencing, supersession, visible-node context, RAII release. p2panda can store signed facts, not decide lease policy. | ACME p2panda HTTP-01 contract after persistence. |
@@ -91,7 +91,7 @@ files:
 | `MVP/e2e/src/process_fact_source.rs` | 682 | Useful process-fate proof, but should be replaced by persistent p2panda fact role. |
 | `MVP/bus/src/facts.rs` | 677 | Keep as bus/test fixture until p2panda-backed proofs replace all production-shaped reads. |
 | `MVP/projection/src/bus_source.rs` | 180 | Fixture adapter; delete when no E2E scenarios need bus facts. |
-| `MVP/p2panda-spike/src/lib.rs` | 396 | Delete after persistent p2panda adapter covers spike behavior. |
+| `MVP/p2panda-spike/src/lib.rs` | 396 | Deleted in Slice 025 after persistent p2panda adapter covered spike behavior. |
 
 The honest near-term gain is not "delete thousands of lines immediately." It is
 to stop writing new feature code against these old paths and to make the next

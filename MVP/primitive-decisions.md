@@ -15,6 +15,15 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
+- Slice 025 consolidates git p2panda-net usage behind
+  `mvp-p2panda-transport`. E2E product canaries no longer import git p2panda
+  network/store/sync APIs directly; they move stable Ployz fact envelopes
+  through a Ployz-owned transport helper and then re-enter the canonical
+  trusted-replica import path.
+- Slice 025 deletes `mvp-p2panda-spike`. Its proof value is now covered by
+  `mvp-p2panda-facts` tests and E2Es: signed operation candidates, duplicate
+  and conflict handling, content-hash payload reads, trusted import,
+  persistence, sync, and p2panda-net transport.
 - Slice 024 extracts ACME HTTP-01 claim, present, and clear command semantics
   into `mvp-acme-command`. The p2panda ACME E2Es now exercise reusable business
   code instead of carrying a fixture-local lease/fact state machine.
@@ -209,10 +218,10 @@ the decision concrete.
 - Slice 018b makes p2panda fact writes session-bound. The p2panda keypair is
   the operation-signing identity, but the bus session remains the authority
   boundary for Ployz fact writes.
-- Slice 018b leaves `BusFactSource`, `IrohDocsFactSource`,
-  `ProcessFactSource`, and `MVP/p2panda-spike` in place as migration fixtures
-  or comparison evidence. They are no longer the preferred direction for new
-  fact-substrate work.
+- Slice 018b left `BusFactSource`, `IrohDocsFactSource`, `ProcessFactSource`,
+  and `MVP/p2panda-spike` in place as migration fixtures or comparison
+  evidence. Slice 025 deleted the spike; the remaining fixtures are no longer
+  the preferred direction for new fact-substrate work.
 - Slice 018c adds narrow p2panda operation export/import. Import validates the
   p2panda operation, requires same-island ingestion, checks the original fact
   author's write grant, and leaves reader authorization to `FactSource`

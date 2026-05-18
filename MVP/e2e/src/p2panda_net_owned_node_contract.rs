@@ -1,4 +1,3 @@
-use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -6,11 +5,10 @@ use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::NodeId;
 use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, PandaFactWireEnvelope};
 use mvp_p2panda_transport::{
-    PandaNetBindConfig, PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetNode,
-    PandaNetNodeConfig, PandaNetNodeInfo, import_fact_body, import_next_fact,
+    PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetWireTransportConfig,
+    import_fact_body, transport_wire_bodies,
 };
 use mvp_projection::{CandidateStatus, FactSource, NodeJoinedFact, ProjectionFactPayload};
-use p2panda_core_git::{SigningKey, Topic};
 use serde::Serialize;
 
 use crate::assertions::assert_eq_named;
@@ -172,7 +170,12 @@ async fn run_async() -> Result<(), String> {
         b"bad-envelope".to_vec(),
     ];
     let network_started = Instant::now();
-    let mut net = OwnedNetHarness::spawn(wire_operations).await?;
+    let transported = transport_wire_bodies(
+        PandaNetWireTransportConfig::new([73; 32], [73; 32], [11; 32], [12; 32]),
+        wire_operations,
+    )
+    .await
+    .map_err(|error| format!("transport owned p2panda-net bodies: {error}"))?;
     let network_sync_ms = network_started.elapsed().as_millis();
 
     let mut imported_operations = 0;
@@ -180,11 +183,8 @@ async fn run_async() -> Result<(), String> {
     let mut untrusted_author_rejected = false;
     let mut cross_island_rejected = false;
     let mut malformed_rejected = false;
-    for _ in 0..7 {
-        match import_next_fact(net.stream_mut(), &mut canonical, &sessions.right_replica)
-            .await
-            .map_err(|error| format!("import owned p2panda-net fact body: {error}"))?
-        {
+    for body in transported {
+        match import_fact_body(&body, &mut canonical, &sessions.right_replica).await {
             PandaNetFactImportOutcome::Imported | PandaNetFactImportOutcome::Conflict => {
                 imported_operations += 1;
             }
@@ -406,72 +406,4 @@ fn latest_wire_operation(store: &PandaFactStore) -> Result<Vec<u8>, String> {
         .last()
         .map(PandaFactWireEnvelope::encode)
         .ok_or_else(|| "source store did not export a p2panda fact operation".to_string())
-}
-
-struct OwnedNetHarness {
-    _receiver: PandaNetNode,
-    _sender: PandaNetNode,
-    _sender_stream: mvp_p2panda_transport::PandaNetStream,
-    receiver_stream: mvp_p2panda_transport::PandaNetStream,
-}
-
-impl OwnedNetHarness {
-    async fn spawn(wire_operations: Vec<Vec<u8>>) -> Result<Self, String> {
-        let topic: Topic = [73; 32].into();
-        let receiver = PandaNetNode::spawn(node_config([11; 32], free_port(), Vec::new()))
-            .await
-            .map_err(|error| format!("spawn owned p2panda-net receiver: {error}"))?;
-        let receiver_info = receiver.node_info();
-        let receiver_stream = receiver
-            .open_stream(topic, true)
-            .await
-            .map_err(|error| format!("open owned p2panda-net receiver stream: {error}"))?;
-
-        let mut sender =
-            PandaNetNode::spawn(node_config([12; 32], free_port(), vec![receiver_info]))
-                .await
-                .map_err(|error| format!("spawn owned p2panda-net sender: {error}"))?;
-        for wire in wire_operations {
-            sender
-                .append_to_topic(&topic, &wire)
-                .await
-                .map_err(|error| format!("append owned p2panda-net wire body: {error}"))?;
-        }
-        let sender_stream = sender
-            .open_stream(topic, true)
-            .await
-            .map_err(|error| format!("open owned p2panda-net sender stream: {error}"))?;
-
-        Ok(Self {
-            _receiver: receiver,
-            _sender: sender,
-            _sender_stream: sender_stream,
-            receiver_stream,
-        })
-    }
-
-    fn stream_mut(&mut self) -> &mut mvp_p2panda_transport::PandaNetStream {
-        &mut self.receiver_stream
-    }
-}
-
-fn node_config(
-    seed: [u8; 32],
-    port: u16,
-    bootstrap_nodes: Vec<PandaNetNodeInfo>,
-) -> PandaNetNodeConfig {
-    PandaNetNodeConfig {
-        network_id: [73; 32],
-        signing_key: SigningKey::from_bytes(&seed),
-        bind: PandaNetBindConfig::localhost(port, free_port()),
-        bootstrap_nodes,
-    }
-}
-
-fn free_port() -> u16 {
-    UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("bind UDP port probe")
-        .local_addr()
-        .expect("read UDP port probe")
-        .port()
 }
