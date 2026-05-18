@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use mvp_bus::{BusSession, FactKey, FactPayload};
 use mvp_p2panda_facts::{
@@ -12,6 +13,7 @@ use crate::{
     PandaNetTopic, PandaNetTransportError, import_fact_body_into_shared_store,
     node::PandaNetStreamBody,
 };
+use tokio::time::timeout;
 
 const DEFAULT_MAX_FACT_ENVELOPE_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_MAX_PENDING_IMPORTS: usize = 1024;
@@ -103,23 +105,45 @@ impl PandaNetFactNode {
     pub async fn import_next_fact_batch(
         &mut self,
     ) -> Result<Vec<PandaNetFactImportOutcome>, PandaNetTransportError> {
-        let outcome =
-            match self
-                .stream
-                .next_body_limited(self.max_fact_envelope_bytes)
-                .await?
-            {
-                PandaNetStreamBody::Body(body) => self.import_body(body).await,
-                PandaNetStreamBody::TooLarge { size, max } => PandaNetFactImportOutcome::Rejected(
-                    PandaNetFactImportRejection::EnvelopeTooLarge { size, max },
-                ),
-            };
+        let stream_body = self
+            .stream
+            .next_body_limited(self.max_fact_envelope_bytes)
+            .await?;
+        Ok(self.import_stream_body(stream_body).await)
+    }
+
+    pub async fn import_next_fact_batch_with_idle_timeout(
+        &mut self,
+        idle_timeout: Duration,
+    ) -> Result<Option<Vec<PandaNetFactImportOutcome>>, PandaNetTransportError> {
+        let stream_body = match timeout(
+            idle_timeout,
+            self.stream.next_body_limited(self.max_fact_envelope_bytes),
+        )
+        .await
+        {
+            Ok(stream_body) => stream_body?,
+            Err(_) => return Ok(None),
+        };
+        Ok(Some(self.import_stream_body(stream_body).await))
+    }
+
+    async fn import_stream_body(
+        &mut self,
+        stream_body: PandaNetStreamBody,
+    ) -> Vec<PandaNetFactImportOutcome> {
+        let outcome = match stream_body {
+            PandaNetStreamBody::Body(body) => self.import_body(body).await,
+            PandaNetStreamBody::TooLarge { size, max } => PandaNetFactImportOutcome::Rejected(
+                PandaNetFactImportRejection::EnvelopeTooLarge { size, max },
+            ),
+        };
         let can_unblock_pending = import_can_unblock_pending(&outcome);
         let mut outcomes = vec![outcome];
         if can_unblock_pending {
             outcomes.extend(self.retry_pending_imports().await);
         }
-        Ok(outcomes)
+        outcomes
     }
 
     pub async fn import_until_attempted(

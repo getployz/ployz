@@ -387,7 +387,7 @@ pub(crate) struct P2pandaNetScriptedPublisherProcess<'a> {
     pub(crate) author: &'a str,
     pub(crate) author_seed: &'a str,
     pub(crate) first: ServingCommitInput,
-    pub(crate) second: ServingCommitInput,
+    pub(crate) second: Option<ServingCommitInput>,
     pub(crate) second_delay_ms: u64,
     pub(crate) publish_malformed: bool,
 }
@@ -420,23 +420,23 @@ pub(crate) fn spawn_p2panda_net_scripted_publisher_process(
         .arg("--first-dns")
         .arg(&config.first.dns_value)
         .arg("--first-epoch")
-        .arg(config.first.epoch.to_string())
-        .arg("--second-commit-id")
-        .arg(&config.second.commit_id)
-        .arg("--second-backend")
-        .arg(&config.second.backend_address)
-        .arg("--second-dns")
-        .arg(&config.second.dns_value)
-        .arg("--second-epoch")
-        .arg(config.second.epoch.to_string())
-        .arg("--second-delay-ms")
-        .arg(config.second_delay_ms.to_string())
+        .arg(config.first.epoch.to_string());
+    if let Some(second) = &config.second {
+        command
+            .arg("--second-commit-id")
+            .arg(&second.commit_id)
+            .arg("--second-backend")
+            .arg(&second.backend_address)
+            .arg("--second-dns")
+            .arg(&second.dns_value)
+            .arg("--second-epoch")
+            .arg(second.epoch.to_string())
+            .arg("--second-delay-ms")
+            .arg(config.second_delay_ms.to_string());
+    }
+    command
         .arg("--publish-malformed")
-        .arg(if config.publish_malformed {
-            "true"
-        } else {
-            "false"
-        })
+        .arg(if config.publish_malformed { "true" } else { "false" })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -780,7 +780,7 @@ pub(crate) struct P2pandaNetServingScriptedPublisherConfig {
     author: PrincipalId,
     author_seed: String,
     first: ServingCommitInput,
-    second: ServingCommitInput,
+    second: Option<ServingCommitInput>,
     second_delay: Duration,
     publish_malformed: bool,
 }
@@ -1012,15 +1012,40 @@ fn parse_p2panda_net_serving_scripted_publisher_flags(
             first_dns.ok_or_else(|| format!("{role} requires --first-dns"))?,
             first_epoch.ok_or_else(|| format!("{role} requires --first-epoch"))?,
         ),
-        second: ServingCommitInput::new(
-            second_commit_id.ok_or_else(|| format!("{role} requires --second-commit-id"))?,
-            second_backend.ok_or_else(|| format!("{role} requires --second-backend"))?,
-            second_dns.ok_or_else(|| format!("{role} requires --second-dns"))?,
-            second_epoch.ok_or_else(|| format!("{role} requires --second-epoch"))?,
-        ),
+        second: optional_serving_commit_input(
+            role,
+            "second",
+            second_commit_id,
+            second_backend,
+            second_dns,
+            second_epoch,
+        )?,
         second_delay,
         publish_malformed,
     })
+}
+
+fn optional_serving_commit_input(
+    role: &'static str,
+    prefix: &'static str,
+    commit_id: Option<String>,
+    backend: Option<String>,
+    dns: Option<String>,
+    epoch: Option<u64>,
+) -> Result<Option<ServingCommitInput>, String> {
+    match (commit_id, backend, dns, epoch) {
+        (None, None, None, None) => Ok(None),
+        (Some(commit_id), Some(backend), Some(dns), Some(epoch)) => {
+            Ok(Some(ServingCommitInput::new(commit_id, backend, dns, epoch)))
+        }
+        (commit_id, backend, dns, epoch) => Err(format!(
+            "{role} requires all --{prefix}-* fields or none, got commit_id={}, backend={}, dns={}, epoch={}",
+            commit_id.is_some(),
+            backend.is_some(),
+            dns.is_some(),
+            epoch.is_some()
+        )),
+    }
 }
 
 fn parse_u64_flag(role: &'static str, flag: &'static str, value: &str) -> Result<u64, String> {
@@ -1500,11 +1525,27 @@ async fn run_p2panda_net_import_apply_loop(
     loop {
         let batch = {
             let mut fact_node = fact_node.lock().await;
-            timeout(P2PANDA_NET_IMPORT_IDLE, fact_node.import_next_fact_batch()).await
+            fact_node
+                .import_next_fact_batch_with_idle_timeout(P2PANDA_NET_IMPORT_IDLE)
+                .await
         };
         let batch = match batch {
-            Ok(Ok(batch)) => batch,
-            Ok(Err(error)) => {
+            Ok(Some(batch)) => batch,
+            Ok(None) => {
+                let refresh = {
+                    let mut fact_node = fact_node.lock().await;
+                    fact_node.refresh_stream().await
+                };
+                let mut status = import_status.lock().await;
+                status.stream_idle_refreshes += 1;
+                if let Err(error) = refresh {
+                    status.last_failure =
+                        Some(format!("stream refresh after idle failed: {error}"));
+                }
+                sleep(ROLE_REQUEST_PAUSE).await;
+                continue;
+            }
+            Err(error) => {
                 let refresh = {
                     let mut fact_node = fact_node.lock().await;
                     fact_node.refresh_stream().await
@@ -1516,19 +1557,6 @@ async fn run_p2panda_net_import_apply_loop(
                     }
                 };
                 import_status.lock().await.last_failure = Some(message);
-                sleep(ROLE_REQUEST_PAUSE).await;
-                continue;
-            }
-            Err(_) => {
-                let refresh = {
-                    let mut fact_node = fact_node.lock().await;
-                    fact_node.refresh_stream().await
-                };
-                let mut status = import_status.lock().await;
-                if let Err(error) = refresh {
-                    status.last_failure =
-                        Some(format!("stream refresh after idle failed: {error}"));
-                }
                 sleep(ROLE_REQUEST_PAUSE).await;
                 continue;
             }
@@ -1625,8 +1653,10 @@ pub(crate) async fn run_p2panda_net_serving_scripted_publisher(
     .map_err(|error| format!("spawn p2panda-net scripted publisher: {error}"))?;
 
     publish_serving_input(&mut node, &session, &author, config.first).await?;
-    sleep(config.second_delay).await;
-    publish_serving_input(&mut node, &session, &author, config.second).await?;
+    if let Some(second) = config.second {
+        sleep(config.second_delay).await;
+        publish_serving_input(&mut node, &session, &author, second).await?;
+    }
     if config.publish_malformed {
         sleep(ROLE_REQUEST_PAUSE).await;
         node.publish_body(b"bad-envelope".to_vec())
@@ -2533,19 +2563,22 @@ async fn status(state: Arc<Mutex<ServingProjectionState>>) -> Result<RoleSuccess
         projection: role_projection_status(projection),
         rebuild_in_progress: rebuild,
         mutation: RoleMutationStatus::UnavailableInThisRole,
-        p2panda_net: p2panda_net_status(p2panda_net).await,
+        role: role_status_kind(p2panda_net).await,
     })))
 }
 
-async fn p2panda_net_status(
+async fn role_status_kind(
     status: Option<(String, Arc<Mutex<P2pandaNetImportStatus>>)>,
-) -> Option<P2pandaNetRoleStatus> {
-    let (node_ticket, status) = status?;
+) -> RoleStatusKind {
+    let Some((node_ticket, status)) = status else {
+        return RoleStatusKind::ServingProjection;
+    };
     let status = status.lock().await;
-    Some(P2pandaNetRoleStatus {
+    RoleStatusKind::P2pandaNetServingProjection(P2pandaNetRoleStatus {
         node_ticket,
         imported: status.imported,
         rejected: status.rejected,
+        stream_idle_refreshes: status.stream_idle_refreshes,
         last_failure: status.last_failure.clone(),
         last_reload: status.last_reload.clone(),
     })
@@ -2586,6 +2619,7 @@ struct P2pandaNetServingRuntime {
 struct P2pandaNetImportStatus {
     imported: usize,
     rejected: usize,
+    stream_idle_refreshes: usize,
     last_failure: Option<String>,
     last_reload: Option<RoleServingStatus>,
 }
@@ -3359,7 +3393,23 @@ pub(crate) struct RoleStatus {
     pub(crate) projection: RoleProjectionStatus,
     pub(crate) rebuild_in_progress: Option<u64>,
     pub(crate) mutation: RoleMutationStatus,
-    pub(crate) p2panda_net: Option<P2pandaNetRoleStatus>,
+    pub(crate) role: RoleStatusKind,
+}
+
+impl RoleStatus {
+    pub(crate) fn p2panda_net(&self) -> Option<&P2pandaNetRoleStatus> {
+        match &self.role {
+            RoleStatusKind::ServingProjection => None,
+            RoleStatusKind::P2pandaNetServingProjection(status) => Some(status),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum RoleStatusKind {
+    ServingProjection,
+    P2pandaNetServingProjection(P2pandaNetRoleStatus),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3367,6 +3417,7 @@ pub(crate) struct P2pandaNetRoleStatus {
     pub(crate) node_ticket: String,
     pub(crate) imported: usize,
     pub(crate) rejected: usize,
+    pub(crate) stream_idle_refreshes: usize,
     pub(crate) last_failure: Option<String>,
     pub(crate) last_reload: Option<RoleServingStatus>,
 }
