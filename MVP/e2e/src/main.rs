@@ -5,6 +5,7 @@ mod bridge_contract;
 mod bus_contract;
 mod bus_syntax;
 mod deploy_commit_drain_contract;
+mod deploy_restart_recovery_contract;
 mod docs_backed_acme_http01_contract;
 mod iroh_docs_contract;
 mod lease_acme_contract;
@@ -121,6 +122,10 @@ const SCENARIOS: &[Scenario] = &[
     Scenario::new(
         "deploy-commit-drain-contract",
         deploy_commit_drain_contract::run,
+    ),
+    Scenario::new(
+        "deploy-restart-recovery-contract",
+        deploy_restart_recovery_contract::run,
     ),
     Scenario::new(
         "steady-state-serving-contract",

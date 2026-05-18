@@ -71,7 +71,8 @@ pub struct WrittenDeployFact {
 }
 
 impl WrittenDeployFact {
-    pub(crate) fn inserted(key: FactKey, content_hash: FactContentHash) -> Self {
+    #[must_use]
+    pub fn inserted(key: FactKey, content_hash: FactContentHash) -> Self {
         Self {
             key,
             content_hash,
@@ -79,7 +80,8 @@ impl WrittenDeployFact {
         }
     }
 
-    pub(crate) fn already_present(key: FactKey, content_hash: FactContentHash) -> Self {
+    #[must_use]
+    pub fn already_present(key: FactKey, content_hash: FactContentHash) -> Self {
         Self {
             key,
             content_hash,

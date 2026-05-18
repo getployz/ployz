@@ -171,6 +171,11 @@ Current proof status:
   consume p2panda-backed fact candidates, rebuild deleted SQLite, write
   gateway/DNS snapshots, and surface conflict candidates without changing
   reducer business logic.
+- Slice 018c extends the p2panda proof with operation export/import. A store can
+  export signed operations, another same-island store can import them, duplicate
+  imports are idempotent, same-key/different-content imports remain conflict
+  candidates, and reader permissions still control candidate status and payload
+  visibility.
 - Remaining E2E-4 work is remote service registry projection, route/DNS commit
   projection through the final synced fact substrate, and propagation histograms
   beyond the single local sync scenario.
@@ -277,8 +282,9 @@ Current proof status:
   capacity-payload rejection before mutation, projection-proof content mismatch
   rejection, and deterministic serving-head supersession.
 - The canary intentionally does not prove real runtime/Docker/ZFS operations,
-  WireGuard, real gateway/DNS process restart, or full coordinator
-  crash/restart recovery. Those remain E2E-7 and later substrate slices.
+  WireGuard, or real gateway/DNS process restart. Slice 018c adds the
+  coordinator restart proof after serving commit; pre-serving candidate
+  adoption/cleanup remains E2E-7 and later deploy participant ABI work.
 - Missing responders are only claimed for selected required participants. Open
   wildcard capacity fanout reports responders as visible-node evidence and does
   not fabricate an unknown missing set.
@@ -416,11 +422,24 @@ Current proof status:
   data-plane process before coordinator death, after the coordinator is killed,
   and after the data-plane role restarts while the coordinator remains dead.
   Local mutation attempts through the killed coordinator fail visibly.
-- Remaining E2E-7 work is deploy coordinator crash/restart around drain,
-  docs-backed cross-node serving replication beyond the local harness,
-  production WireGuard adapter proof, and replacing the HTTP/DNS fallback crates
-  with Pingora/`hickory-server` if those become the chosen production protocol
-  primitives.
+- Slice 018c adds `deploy-restart-recovery-contract`.
+- The scenario proves the deploy coordinator can be dropped after the
+  p2panda-backed serving commit is durable and before drain starts. A fresh
+  coordinator recovers the deploy decision plus serving commit from the
+  p2panda-backed fact source, requires `ProjectionCatchUp`, resumes drain/stop,
+  writes cleanup-done, and a later recovery returns complete without RPC.
+- The scenario also proves typed gateway/DNS serving keeps answering from
+  last-good snapshots while the coordinator object is absent, no
+  capacity/prepare/start participant work is replayed after restart,
+  cleanup-pending after restart carries visible nodes plus serving commit id,
+  and deploy decision, serving commit, and cleanup-done facts live in one fact
+  substrate for the proof.
+- Remaining E2E-7 work is pre-serving/pre-commit candidate adoption and
+  explicit participant cleanup ABI, docs-backed or p2panda-backed cross-node
+  serving replication beyond the local harness, p2panda fact-store process
+  crash/persistent-storage recovery, production WireGuard adapter proof, and
+  replacing the HTTP/DNS fallback crates with Pingora/`hickory-server` if those
+  become the chosen production protocol primitives.
 
 ### E2E-8: Scale And Reliability Harness
 

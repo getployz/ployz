@@ -329,12 +329,19 @@ The slice plan and report are
 and
 [MVP/slice-018b-p2panda-fact-substrate.md](slice-018b-p2panda-fact-substrate.md).
 
+Slice 018c then moved deploy restart recovery onto that p2panda-backed fact
+boundary. Deploy decision, serving commit, and cleanup-done facts now share one
+p2panda-backed proof path; a fresh coordinator can recover pending cleanup
+after the original coordinator dies post-serving-commit and before drain. The
+slice report is
+[MVP/slice-018c-p2panda-deploy-restart-recovery.md](slice-018c-p2panda-deploy-restart-recovery.md).
+
 The next product-feature slices remain:
 
-1. Deploy restart recovery and commit-before-drain rebuilt on the p2panda fact
-   boundary. The active plan is
-   [MVP/slice-018c-p2panda-deploy-restart-recovery-plan.md](slice-018c-p2panda-deploy-restart-recovery-plan.md).
-2. ACME moved onto the p2panda fact boundary and advisory lease semantics.
+1. ACME moved onto the p2panda fact boundary and advisory lease semantics.
+2. The next large-load or process-role proof that closes remaining E2E-7 gaps:
+   pre-serving candidate adoption/cleanup ABI, p2panda fact-store process
+   restart, or cross-node operation sync.
 
 ACME is the canary because it forces the advisory lease primitive to be honest:
 TTL, renewal, epoch fencing, RAII release-on-drop for local holders, and
@@ -343,9 +350,9 @@ cluster locks. They are foreground coordination hints and fencing tokens;
 resource-level enforcement, such as the ACME directory or storage backend, is
 where real exclusivity lives.
 
-The deploy slice should not port old `deploy.rs`. It should express the
+The shipped deploy restart slice did not port old `deploy.rs`. It expressed the
 smallest durable state machine from `MVP/architecture.md`: request-many
-capacity, prepare/start, local-docs-durable route commit, projection rebuild,
+capacity, prepare/start, p2panda-backed serving commit, projection catch-up,
 then drain as a consequence of that commit.
 
 Future multi-phase commands should watch for the pattern documented in
