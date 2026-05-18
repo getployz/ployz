@@ -799,8 +799,10 @@ Future slice plans should resolve these only when they become blocking:
 
 ## First Next Step
 
-Plan the next slice against the remaining manual-trust inventory instead of
-starting a broad cleanup. Pick one product canary still using manual p2panda
-authority setup, move it to the shared membership fixture, and record the exact
-semantic-leverage result. Good candidates are deploy restart recovery, machine
-remove, volume transfer, or environment branch/promote/rollback.
+Slice 043 is planned as the next targeted manual-trust migration:
+[MVP/slice-043-membership-backed-machine-remove-plan.md](slice-043-membership-backed-machine-remove-plan.md).
+Move `machine-remove-contract` to the shared membership-backed authority shape
+because it exercises command recovery, serving cutover, tombstone, projection
+rebuild, WireGuard behavior, and replica import in one product canary. Keep the
+slice narrow: no new product primitive, no quorum, and no broad cleanup outside
+the machine-remove proof.
