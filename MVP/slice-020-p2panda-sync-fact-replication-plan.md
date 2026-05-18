@@ -40,9 +40,12 @@ two persistent p2panda fact stores
   -> preserve duplicate, conflict, and payload-read semantics
 ```
 
-This is still not production transport. The proof target is the sync protocol
-and Ployz's fact boundary, not iroh networking. A later iroh slice should be
-able to carry the same protocol messages over `/ployz/fact-sync/1` streams.
+This is now a net-first slice. Earlier planning tried to prove only
+`p2panda-sync` over in-memory streams, but that kept pushing the real
+connectivity question forward. The slice should first prove that the real MVP
+workspace can compile and spawn git `p2panda-net` log-sync nodes, then replace
+manual p2panda operation copying through the smallest p2panda-backed network
+surface we can make reliable.
 
 ## Requirements Trace
 
@@ -59,9 +62,10 @@ able to carry the same protocol messages over `/ployz/fact-sync/1` streams.
   beyond single local-store proofs.
 - `MVP/primitive-decisions.md`: manual p2panda export/import is intentionally
   narrow and not a production sync protocol.
-- `MVP/design-notes/p2panda-substitution-audit.md`: evaluate `p2panda-sync`
-  after persistent stores exist on both sides; do not adopt `p2panda-net`
-  before a lower-level sync proof.
+- `MVP/design-notes/p2panda-substitution-audit.md`: originally advised
+  evaluating lower-level `p2panda-sync` first. The operator overrode that
+  posture: bias toward `p2panda-net` because its maintained network stack is
+  more likely to be correct than bespoke MVP transport code.
 - `MVP/slice-019b-persistent-p2panda-fact-store-plan.md`: p2panda operation
   logs are durable truth; derived Ployz indexes and projection SQLite are
   disposable.
@@ -71,6 +75,8 @@ able to carry the same protocol messages over `/ployz/fact-sync/1` streams.
 In scope:
 
 - Add `p2panda-sync` to the isolated `MVP/` workspace.
+- Add a git `p2panda-net` compatibility proof to the isolated `MVP/`
+  workspace and align the local iroh family as needed.
 - Add a narrow p2panda-sync adapter inside `mvp-p2panda-facts`.
 - Sync between two persistent SQLite-backed `PandaFactStore` instances over an
   in-memory typed stream.
@@ -90,9 +96,8 @@ Out of scope:
 
 - ACME behavior. It is the next product canary after this slice.
 - `p2panda-auth` membership and strong-removal semantics.
-- `p2panda-net`, p2panda discovery, gossip, blobs, or address books.
-- iroh transport wiring. This slice should name the future ALPN boundary but
-  still run over in-memory streams.
+- Broad p2panda discovery, blobs, address-book, and production deployment
+  topology work beyond the minimum needed to prove local log-sync nodes.
 - Replacing PloyzBus.
 - Changing reducers to async.
 - Deleting `IrohDocsFactSource`, `BusFactSource`, `ProcessFactSource`, or
@@ -120,18 +125,23 @@ Checked for this plan:
 - `p2panda-sync` does not automatically apply Ployz authorization semantics.
   That is correct: received operations must still flow through
   `PandaFactStore` import validation and derived-index rebuild/update.
-- `p2panda-net` includes iroh endpoint/discovery/gossip/log-sync modules, but
-  it brings a broader network topology and address-book model. Defer it. The
-  current slice should prove the lower-level protocol before adopting a network
-  stack.
+- `p2panda-net` includes iroh endpoint/discovery/gossip/log-sync modules. It
+  currently fits git p2panda APIs more cleanly than the crates.io 0.5.2 network
+  package, so this slice pins the git revision in dev/test first and keeps the
+  production fact store on stable p2panda crates until a deliberate API
+  migration.
 - `p2panda-stream` remains the ingestion/validation layer for storing received
   operations. Do not bypass the current import path's signature, body-hash,
   author-key, and grant checks.
 
 Decision:
 
-- Adopt `p2panda-sync` now, behind `mvp-p2panda-facts`.
-- Start with `LogSync`, not `TopicLogSync` or `p2panda-net`.
+- Adopt p2panda-maintained sync/network plumbing now, behind
+  `mvp-p2panda-facts`.
+- Start with a git `p2panda-net` spawn/log-sync smoke test before adding a
+  broader adapter. This proves dependency compatibility in the real workspace
+  and avoids writing more bespoke transport while the p2panda network stack is
+  usable.
 - Add only the API needed to run a bounded two-party sync session for known
   islands and trusted replica peers.
 - Keep transport abstract: the adapter should operate on a generic typed sink
@@ -244,6 +254,37 @@ advisory lease and HTTP-01 business semantics over a real p2panda sync
 boundary, not over manual operation copying.
 
 ## Implementation Units
+
+### Unit 0: p2panda-net Compatibility Proof
+
+Files:
+
+- `MVP/Cargo.lock`
+- `MVP/e2e/Cargo.toml`
+- `MVP/iroh/Cargo.toml`
+- `MVP/p2panda-facts/Cargo.toml`
+- `MVP/p2panda-facts/src/lib.rs`
+- `MVP/serving/Cargo.toml`
+
+Work:
+
+- Align the isolated `MVP/` iroh family to the line required by git
+  `p2panda-net`; using non-rc iroh is acceptable for this MVP workspace.
+- Keep production `mvp-p2panda-facts` on stable crates.io
+  `p2panda-core/store/stream 0.5.2` for this unit.
+- Add git `p2panda-net` and matching git p2panda core/store crates as
+  dev/test-only dependencies.
+- Add a smoke test that spawns two local `p2panda-net` test nodes and starts a
+  log-sync stream for the same topic.
+- Do not add a half-custom lower-level sync adapter in this unit; that belongs
+  after the net stack dependency surface is proven.
+
+Verification:
+
+- `cd MVP && cargo test -p mvp-p2panda-facts p2panda_net_git_stack_spawns_local_log_sync_nodes -- --nocapture`
+- `cd MVP && cargo test -p mvp-p2panda-facts --lib`
+- `cd MVP && cargo check -p mvp-serving`
+- `cd MVP && cargo check -p mvp-iroh`
 
 ### Unit 1: p2panda-sync Adapter Surface
 

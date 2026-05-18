@@ -237,6 +237,15 @@ the decision concrete.
   sync scope is selection-only and must be checked against store-owned trusted
   author bindings; same-island sync peers are trusted replicas for payload
   egress, not ordinary projection readers.
+- Slice 020 Unit 0 proved a practical `p2panda-net` path instead of treating it
+  as off-limits. The isolated `MVP/` iroh family moved from the 1.0.0 release
+  candidate line to `iroh 0.98.2`, `iroh-docs 0.98.0`,
+  `iroh-blobs 0.100.0`, and `iroh-gossip 0.98.0` so git `p2panda-net` can
+  compile and spawn local log-sync nodes in the real MVP workspace.
+- Slice 020 Unit 0 deliberately keeps production `mvp-p2panda-facts` on the
+  stable crates.io `p2panda-core/store/stream 0.5.2` API. The git
+  `p2panda-net` stack is a dev/test dependency until a separate migration
+  updates the production fact store to p2panda's current git API.
 
 ## Documented Design Gaps
 
@@ -649,9 +658,9 @@ Why this:
   through `FactSource`.
 
 Decision:
-- `MVP/` now declares Rust 1.91 so it can use current iroh crates:
-  `iroh 1.0.0-rc.0`, `iroh-docs 0.99.0`, `iroh-blobs 0.101.0`, and
-  `iroh-gossip 0.99.0`.
+- `MVP/` uses an iroh family compatible with git `p2panda-net`:
+  `iroh 0.98.2`, `iroh-docs 0.98.0`, `iroh-blobs 0.100.0`, and
+  `iroh-gossip 0.98.0`.
 - The root workspace is not changed by this decision.
 - Raw endpoint/docs/blob/gossip types are confined to `mvp-iroh` internals and
   E2E harness setup. Business reducers, deploy logic, and bus semantics should
@@ -669,8 +678,9 @@ Decision:
   verifiable on already-imported peers.
 
 Revisit:
-- If Rust 1.91 becomes unacceptable even inside `MVP/`, pinning an older iroh
-  line must be planned as its own compatibility slice.
+- If the older iroh line blocks a required transport capability, upgrade iroh
+  and the p2panda network stack together instead of letting the workspace carry
+  incompatible transport families.
 - If projection ever needs to await iroh APIs directly, redesign the adapter
   boundary instead of letting async transport concerns leak into reducers.
 

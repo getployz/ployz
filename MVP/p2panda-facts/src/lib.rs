@@ -1704,4 +1704,26 @@ mod tests {
                 .all(|candidate| candidate.status() == CandidateStatus::Conflict)
         );
     }
+
+    #[tokio::test]
+    async fn p2panda_net_git_stack_spawns_local_log_sync_nodes() {
+        let topic: p2panda_core_git::Topic = [42; 32].into();
+        let mut bootstrap = p2panda_net::test_utils::TestNode::spawn([1; 32], None).await;
+        let peer_info = bootstrap.node_info();
+        let peer = p2panda_net::test_utils::TestNode::spawn([2; 32], Some(peer_info)).await;
+
+        let bootstrap_stream = bootstrap
+            .log_sync
+            .stream(topic, false)
+            .await
+            .expect("bootstrap log sync stream starts");
+        let peer_stream = peer
+            .log_sync
+            .stream(topic, false)
+            .await
+            .expect("peer log sync stream starts");
+
+        assert_eq!(bootstrap_stream.topic(), topic);
+        assert_eq!(peer_stream.topic(), topic);
+    }
 }
