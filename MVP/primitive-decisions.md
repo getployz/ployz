@@ -74,6 +74,18 @@ the decision concrete.
   authority, a fresh coordinator reconstructs pending cleanup without replaying
   probe/drain/serving writes, `ProjectionCatchUp` still gates stop, and a later
   recovery observes cleanup-done without RPC.
+- Slice 030 promotes the p2panda-net proof from byte courier to running fact
+  node. `mvp-p2panda-transport::PandaNetFactNode` owns the live p2panda-net
+  stream and imports directly into a `SharedPandaFactStore`; E2Es should project
+  from the receiver node's local store rather than collect bodies and manually
+  import them in the scenario success path.
+- Slice 030 keeps authority above p2panda-net. The transport moves stable
+  Ployz fact envelopes, but import still goes through trusted replica session,
+  trusted author key, original writer grant, island match, and conflict
+  candidate handling in `mvp-p2panda-facts`.
+- Slice 030 keeps the non-RC iroh dependency decision local to
+  `mvp-p2panda-transport`. Domain crates depend on stable Ployz fact and
+  projection contracts, not on git p2panda-net or its iroh line.
 - Slice 027 adds `mvp-volume` as the first volume movement canary. Volume
   ownership authority is an immutable fact
   `/facts/volume/<namespace>/<volume>/ownership/<epoch>` with embedded transfer
@@ -1168,3 +1180,45 @@ Costs:
 Revisit if:
 - We need long-running benchmark trend storage or CI dashboards. That should be
   a harness concern, not bus business logic.
+
+## p2panda-net Fact Node Boundary
+
+Why this:
+- Earlier p2panda-net proofs still looked like a courier: the E2E collected
+  transported operation bodies and manually imported them into a canonical
+  store after the network step.
+- The production-shaped boundary is a running node with its own local fact
+  store, replica session, import policy, and projection reads.
+- The operator explicitly accepted avoiding the RC iroh path, so transport can
+  isolate the p2panda-net dependency line instead of forcing all MVP iroh crates
+  to align at once.
+
+Decision:
+- `mvp-p2panda-transport` owns the p2panda-net node wrapper and any git
+  p2panda/iroh compatibility surface.
+- `PandaNetFactNode` combines a `PandaNetNode`, topic stream, replica session,
+  and `SharedPandaFactStore`.
+- p2panda-net owns transport and live log delivery. Ployz still owns
+  authorization through `PandaFactStore::import_replica_operation`.
+- Import outcomes remain structured: inserted, duplicate, conflict, deferred,
+  rejected, and failed.
+- The main product proof projects from the receiver's synced local store. The
+  older opaque-body helpers remain lower-level fixtures, not the architectural
+  proof shape.
+
+What it replaces:
+- E2E-local post-network manual import as the success-path proof.
+- Future temptation to hand-roll an iroh fact-sync loop beside p2panda-net.
+
+Costs:
+- The fact node currently proves in-process local p2panda-net nodes, not
+  process-role lifecycle or production relay/discovery topology.
+- The transport crate still carries git p2panda crates because p2panda-net's
+  useful network surface is ahead of the crates.io stable store line.
+- The node ingests and reports only. It must not become a reconciler or command
+  coordinator.
+
+Revisit if:
+- p2panda-net publishes a stable crates.io release with the needed APIs.
+- Process-role serving replication needs long-lived supervisor/status surfaces.
+- p2panda-auth becomes ready to own island membership or replication grants.

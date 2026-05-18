@@ -212,6 +212,14 @@ Current proof status:
   instead of depending on network delivery order, rejects untrusted author,
   cross-island, and malformed envelopes, and projects only the valid
   non-conflicting node fact.
+- Slice 030 adds `p2panda-net-fact-node-contract`. The scenario gives the
+  receiver a running p2panda-net fact node and projects from that node's local
+  `SharedPandaFactStore`; the E2E no longer performs the main success-path
+  import by collecting `Vec<Vec<u8>>` after network transport. It records 11
+  attempted imports, six inserted operations, one duplicate, one conflict,
+  three rejected operations, one projected node/service/gateway/DNS set, live
+  sync/import timing, gateway/DNS snapshot loading, and deleted-SQLite
+  projection rebuild from the synced receiver store.
 - Slice 024 extracts ACME claim/present/clear into `mvp-acme-command`. The
   p2panda ACME and p2panda-net ACME scenarios still prove the same transport,
   projection, last-good serving, scoped-grant, stale-write, trusted-replica,
@@ -526,10 +534,12 @@ Current proof status:
   issuer adapter is absent, clear to 404 after a transported clear fact, and
   rebuild SQLite from transported p2panda operations.
 - Slice 023 adds the explicit pre-serving/pre-commit deploy cleanup ABI proof.
-  Remaining E2E-7 work is p2panda-net cross-process serving replication beyond
-  local owned nodes, production WireGuard adapter proof, and replacing the
-  HTTP/DNS fallback crates with Pingora/`hickory-server` if those become the
-  chosen production protocol primitives.
+- Slice 030 proves a running p2panda-net fact node can ingest into a local
+  `SharedPandaFactStore` and rebuild serving projections from that store. This
+  is still in-process local-node proof; remaining E2E-7 work is process-role
+  p2panda-net serving replication, production WireGuard adapter proof, and
+  replacing the HTTP/DNS fallback crates with Pingora/`hickory-server` if those
+  become the chosen production protocol primitives.
 
 ### E2E-8: Scale And Reliability Harness
 
