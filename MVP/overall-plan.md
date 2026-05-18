@@ -355,13 +355,24 @@ validation, and E2E proves persistent-store sync, projection rebuild,
 conflicts, no-op repeat sync, payload-read grants, and 10,000-operation sync
 stress.
 
+Slice 021 moved ACME onto the p2panda fact boundary. The
+`p2panda-acme-http01-contract` scenario writes advisory lease and HTTP-01
+challenge facts through `mvp-p2panda-facts`, syncs them with the Slice 020
+adapter, projects on a second local store, serves last-good HTTP-01 state while
+the issuer/coordinator adapter is absent, rejects stale/scoped writes, and
+rebuilds SQLite from synced p2panda operations.
+
 The next implementation/proof slices currently remain:
 
-1. ACME moved onto the p2panda fact boundary, p2panda-sync replication, and
-   advisory lease semantics.
+1. A p2panda-net / current p2panda API substitution slice. The goal is to find
+   the largest safe deletion of Ployz-owned substrate code now that ACME and
+   deploy both run over p2panda facts. It is fine to avoid direct rc iroh usage
+   if p2panda-net gives us the maintained transport/sync shape.
+   Active plan:
+   [MVP/slice-022-p2panda-net-current-api-substitution-plan.md](slice-022-p2panda-net-current-api-substitution-plan.md).
 2. The next product or process-role proof that closes remaining E2E-7 gaps:
    pre-serving candidate adoption/cleanup ABI, p2panda-auth membership, or
-   iroh transport for sync/bus traffic.
+   production transport for sync/bus traffic.
 
 ACME is the canary because it forces the advisory lease primitive to be honest:
 TTL, renewal, epoch fencing, RAII release-on-drop for local holders, and

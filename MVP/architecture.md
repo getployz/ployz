@@ -374,6 +374,10 @@ facts/deploy/<deploy_id>/phase/<n>/ready
 facts/deploy/<deploy_id>/phase/<n>/commit
 facts/deploy/<deploy_id>/done
 facts/routes/<route_commit_id>
+facts/lease/<resource>/<epoch>/claimed
+facts/lease/<resource>/<epoch>/released/<content_hash>
+facts/acme/http01/<hostname>/<token>/<epoch>/presented
+facts/acme/http01/<hostname>/<token>/<epoch>/cleared/<content_hash>
 facts/dns/<commit_id>
 facts/gateway/<commit_id>
 ```
@@ -451,6 +455,12 @@ ACME directory and challenge validation path. For storage it means the storage
 backend or filesystem primitive. A Ployz lease only decides whether a command
 should proceed and which epoch/fencing token it must carry when it talks to the
 resource.
+
+Slice 021 proves the ACME HTTP-01 canary on this contract: lease and challenge
+facts are signed p2panda operations, sync is performed through the generic
+p2panda-sync adapter, projection rebuilds on another local store, stale synced
+facts are superseded instead of rolling serving state back, and HTTP-01 keeps
+serving last-good state while the issuer/coordinator adapter is absent.
 
 ## Deploy Invariant
 
