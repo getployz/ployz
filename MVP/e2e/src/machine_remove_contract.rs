@@ -12,10 +12,11 @@ use mvp_commands_p2panda::PandaCommandPhaseStore;
 use mvp_identity::{NodeId, VisibleNodes};
 use mvp_machine::{
     MachineFactWriter, MachineRemoveCleanupDoneFact, MachineRemoveCommandInput,
-    MachineRemoveCoordinator, MachineRemoveId, MachineRemoveOutcome, MachineRemoveRequest,
-    MachineRemoveResult, MachineRemoveTimeouts, PrepareRemoveIntent, PrepareRemoveOutcome,
-    PrepareRemoveReply, PrepareRemoveRequest, RemoveCleanupStatus, StopRemovedWorkloadsOutcome,
-    StopRemovedWorkloadsReply, StopRemovedWorkloadsRequest, WrittenMachineFact,
+    MachineRemoveCoordinator, MachineRemoveDecisionFact, MachineRemoveId, MachineRemoveOutcome,
+    MachineRemoveRequest, MachineRemoveResult, MachineRemoveTimeouts, PrepareRemoveIntent,
+    PrepareRemoveOutcome, PrepareRemoveReply, PrepareRemoveRequest, RemoveCleanupStatus,
+    StopRemovedWorkloadsOutcome, StopRemovedWorkloadsReply, StopRemovedWorkloadsRequest,
+    WrittenMachineFact, machine_remove_decision_fact_key, machine_remove_decision_fact_payload,
     prepare_remove_subject, stop_removed_workloads_subject,
 };
 use mvp_machine_p2panda::{PandaMachineFactStore, PandaMachineFactWriter};
@@ -24,7 +25,8 @@ use mvp_mesh::{
     WireGuardAppliedSnapshot, WireGuardPublicKey, WireGuardSnapshotPaths, plan_full_mesh,
     write_applied_snapshot,
 };
-use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore};
+use mvp_p2panda_authz::ReplicaImportAccess;
+use mvp_p2panda_facts::{PandaFactAuthor, PandaFactError, PandaFactOperation, PandaFactStore};
 use mvp_projection::{
     BackendEndpoint, DnsRecordFact, FactSource, NodeRemovalStartedFact, NodeTombstonedFact,
     ProjectionIgnoreReason, ProjectionState, RouteId,
@@ -39,7 +41,9 @@ use serde::Serialize;
 use crate::assertions::assert_eq_named;
 use crate::bus_syntax::{fact_pattern, pattern};
 use crate::metrics::{reset_dir, scenario_dir, write_json};
-use crate::p2panda_projection_fixture::status_count;
+use crate::p2panda_projection_fixture::{
+    P2pandaMembershipFixture, create_p2panda_membership_fixture, status_count,
+};
 use crate::process_role_harness::{
     MeshRoleClientError, MeshRoleFailureKind as HarnessMeshFailureKind, MeshRoleRequest,
     MeshRoleSuccess, cleanup_orphaned_children as cleanup_process_children, request_mesh_role,
@@ -239,6 +243,16 @@ async fn run_async() -> Result<(), String> {
         PrincipalId::new("machine-remove-replica"),
         Grant::empty(),
     );
+    let replica_write_probe_session = authority.grant_in(
+        island.clone(),
+        PrincipalId::new("machine-remove-replica-write-probe"),
+        Grant::empty().with_fact_write(fact_pattern("/facts/machine-remove/>")?),
+    );
+    let node_only_writer_session = authority.grant_in(
+        island.clone(),
+        PrincipalId::new("node-fact-only"),
+        Grant::empty().with_fact_write(fact_pattern("/facts/node/*/tombstoned/>")?),
+    );
     let machine_writer_session = authority.grant_in(
         island.clone(),
         PrincipalId::new("machine-remove-writer"),
@@ -263,7 +277,35 @@ async fn run_async() -> Result<(), String> {
     let routing_author = Arc::new(PandaFactAuthor::new(
         routing_writer_session.principal().clone(),
     ));
-    let facts = PandaMachineFactStore::new(PandaFactStore::new(Arc::new(raw_bus.clone())));
+    let replica_author = Arc::new(PandaFactAuthor::new(replica_session.principal().clone()));
+    let replica_write_probe_author = Arc::new(PandaFactAuthor::new(
+        replica_write_probe_session.principal().clone(),
+    ));
+    let node_only_author = Arc::new(PandaFactAuthor::new(PrincipalId::new("node-fact-only")));
+    let conflict_author_a = Arc::new(PandaFactAuthor::new(PrincipalId::new("machine-conflict-a")));
+    let conflict_author_b = Arc::new(PandaFactAuthor::new(PrincipalId::new("machine-conflict-b")));
+    let membership = create_p2panda_membership_fixture(
+        &root.join("p2panda-membership"),
+        &island,
+        &[
+            join_author.as_ref(),
+            machine_author.as_ref(),
+            routing_author.as_ref(),
+            node_only_author.as_ref(),
+            conflict_author_a.as_ref(),
+            conflict_author_b.as_ref(),
+        ],
+        &[
+            (replica_author.as_ref(), ReplicaImportAccess::Read),
+            (
+                replica_write_probe_author.as_ref(),
+                ReplicaImportAccess::Read,
+            ),
+        ],
+    )
+    .await?;
+    let facts =
+        open_membership_machine_store(Arc::new(raw_bus.clone()), &membership, &island).await?;
 
     let node_ids = [
         NodeId::new("node-target"),
@@ -385,26 +427,29 @@ async fn run_async() -> Result<(), String> {
 
     let outage_started = Instant::now();
     let exported = facts.export_operations().await;
-    let rebuilt_facts = PandaMachineFactStore::new(PandaFactStore::new(Arc::new(raw_bus.clone())));
-    rebuilt_facts
-        .trust_replica_peer(&island, replica_session.principal().clone())
-        .await;
-    trust_fresh_store_authors(
-        &rebuilt_facts,
-        &island,
-        &[
-            (&join_writer_session, join_author.as_ref()),
-            (&machine_writer_session, machine_author.as_ref()),
-            (&routing_writer_session, routing_author.as_ref()),
-        ],
-    )
-    .await?;
+    let rebuilt_facts =
+        open_membership_machine_store(Arc::new(raw_bus.clone()), &membership, &island).await?;
     for operation in &exported {
         rebuilt_facts
             .import_replica_operation(&replica_session, operation)
             .await
             .map_err(|error| format!("import p2panda operation for recovery: {error}"))?;
     }
+    assert_recovery_import_rejects_author_without_fact_grant(
+        &island,
+        &membership,
+        &rebuilt_facts,
+        &replica_session,
+        node_only_author.as_ref(),
+    )
+    .await?;
+    assert_recovery_import_rejects_foreign_island_operation(
+        &root,
+        &island,
+        &rebuilt_facts,
+        &replica_session,
+    )
+    .await?;
     let coordinator_outage_ms = outage_started.elapsed().as_millis();
     let recovered_machine_writer = PandaMachineFactWriter::new(
         rebuilt_facts.clone(),
@@ -519,20 +564,7 @@ async fn run_async() -> Result<(), String> {
     let stop_attempts_after_cleanup = events.stop_attempts.load(Ordering::SeqCst);
     let completed_operations = rebuilt_facts.export_operations().await;
     let completed_replay =
-        PandaMachineFactStore::new(PandaFactStore::new(Arc::new(raw_bus.clone())));
-    completed_replay
-        .trust_replica_peer(&island, replica_session.principal().clone())
-        .await;
-    trust_fresh_store_authors(
-        &completed_replay,
-        &island,
-        &[
-            (&join_writer_session, join_author.as_ref()),
-            (&machine_writer_session, machine_author.as_ref()),
-            (&routing_writer_session, routing_author.as_ref()),
-        ],
-    )
-    .await?;
+        open_membership_machine_store(Arc::new(raw_bus.clone()), &membership, &island).await?;
     for operation in &completed_operations {
         completed_replay
             .import_replica_operation(&replica_session, operation)
@@ -621,8 +653,26 @@ async fn run_async() -> Result<(), String> {
         .await?;
     assert_machine_writer_cannot_join(&facts, &machine_writer_session, machine_author.as_ref())
         .await?;
-    assert_node_writer_cannot_write_command_fact(&island).await?;
-    assert_conflicting_tombstone_not_projected(&root, &island).await?;
+    assert_replica_importer_cannot_write_machine_fact(
+        &facts,
+        &replica_write_probe_session,
+        replica_write_probe_author.as_ref(),
+    )
+    .await?;
+    assert_node_writer_cannot_write_command_fact(
+        &facts,
+        &node_only_writer_session,
+        Arc::clone(&node_only_author),
+    )
+    .await?;
+    assert_conflicting_tombstone_not_projected(
+        &root,
+        &island,
+        &membership,
+        Arc::clone(&conflict_author_a),
+        Arc::clone(&conflict_author_b),
+    )
+    .await?;
 
     let mesh_started = Instant::now();
     let (remaining_traffic_success_count, removed_peer_rejected) =
@@ -757,23 +807,17 @@ async fn register_stop_handler(
     .map_err(|error| format!("register stop_removed_workloads handler: {error}"))
 }
 
-async fn trust_fresh_store_authors(
-    facts: &PandaMachineFactStore,
+async fn open_membership_machine_store(
+    bus: Arc<mvp_bus::harness::InMemoryBus>,
+    membership: &P2pandaMembershipFixture,
     island: &IslandId,
-    authors: &[(&BusSession, &PandaFactAuthor)],
-) -> Result<(), String> {
-    for (session, author) in authors {
-        facts
-            .trust_author_key(island, session.principal().clone(), author.author_key())
-            .await
-            .map_err(|error| {
-                format!(
-                    "trust p2panda author key for {}: {error}",
-                    session.principal().as_str()
-                )
-            })?;
-    }
-    Ok(())
+) -> Result<PandaMachineFactStore, String> {
+    let facts = PandaMachineFactStore::new(PandaFactStore::new(bus));
+    facts
+        .shared()
+        .install_authority_snapshot(membership.authority_snapshot(island).await?)
+        .await;
+    Ok(facts)
 }
 
 fn assert_fact_key_present(
@@ -841,17 +885,13 @@ async fn assert_machine_writer_cannot_join(
     }
 }
 
-async fn assert_node_writer_cannot_write_command_fact(island: &IslandId) -> Result<(), String> {
-    let (raw_bus, authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
-    let node_only = authority.grant_in(
-        island.clone(),
-        PrincipalId::new("node-fact-only"),
-        Grant::empty().with_fact_write(fact_pattern("/facts/node/*/tombstoned/>")?),
-    );
-    let facts = PandaMachineFactStore::new(PandaFactStore::new(Arc::new(raw_bus)));
-    let author = Arc::new(PandaFactAuthor::new(node_only.principal().clone()));
-    let writer = PandaMachineFactWriter::new(facts, node_only, author);
-    let decision = mvp_machine::MachineRemoveDecisionFact::new(
+async fn assert_node_writer_cannot_write_command_fact(
+    facts: &PandaMachineFactStore,
+    node_only: &BusSession,
+    author: Arc<PandaFactAuthor>,
+) -> Result<(), String> {
+    let writer = PandaMachineFactWriter::new(facts.clone(), node_only.clone(), author);
+    let decision = MachineRemoveDecisionFact::new(
         NodeId::new("node-target"),
         2,
         3,
@@ -868,9 +908,142 @@ async fn assert_node_writer_cannot_write_command_fact(island: &IslandId) -> Resu
     }
 }
 
+async fn assert_replica_importer_cannot_write_machine_fact(
+    facts: &PandaMachineFactStore,
+    replica_session: &BusSession,
+    replica_author: &PandaFactAuthor,
+) -> Result<(), String> {
+    let decision = denied_decision("replica-importer-write");
+    let result = facts
+        .write_fact_payload(
+            replica_session,
+            replica_author,
+            machine_remove_decision_fact_key(&decision.remove_id())
+                .map_err(|error| format!("build replica denied decision key: {error}"))?,
+            machine_remove_decision_fact_payload(&decision)
+                .map_err(|error| format!("build replica denied decision payload: {error}"))?,
+        )
+        .await;
+    match result {
+        Err(PandaFactError::UntrustedAuthorKey { .. }) => Ok(()),
+        other => Err(format!(
+            "expected replica-importer machine fact write denial, got {other:?}"
+        )),
+    }
+}
+
+async fn assert_recovery_import_rejects_author_without_fact_grant(
+    island: &IslandId,
+    membership: &P2pandaMembershipFixture,
+    target: &PandaMachineFactStore,
+    replica_session: &BusSession,
+    author_without_grant: &PandaFactAuthor,
+) -> Result<(), String> {
+    let (source_bus, source_authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
+    let source_session = source_authority.grant_in(
+        island.clone(),
+        author_without_grant.principal().clone(),
+        Grant::empty().with_fact_write(fact_pattern("/facts/machine-remove/>")?),
+    );
+    let source = open_membership_machine_store(Arc::new(source_bus), membership, island).await?;
+    let operation =
+        write_denied_import_source_operation(&source, &source_session, author_without_grant)
+            .await?;
+    let result = target
+        .import_replica_operation(replica_session, &operation)
+        .await;
+    match result {
+        Err(PandaFactError::UnauthorizedWrite { .. }) => Ok(()),
+        other => Err(format!(
+            "expected recovery import to reject author without fact grant, got {other:?}"
+        )),
+    }
+}
+
+async fn assert_recovery_import_rejects_foreign_island_operation(
+    root: &std::path::Path,
+    local_island: &IslandId,
+    target: &PandaMachineFactStore,
+    replica_session: &BusSession,
+) -> Result<(), String> {
+    let foreign_island = IslandId::new("foreign");
+    let (source_bus, source_authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
+    let foreign_author = PandaFactAuthor::new(PrincipalId::new("foreign-machine-writer"));
+    let foreign_session = source_authority.grant_in(
+        foreign_island.clone(),
+        foreign_author.principal().clone(),
+        Grant::empty().with_fact_write(fact_pattern("/facts/machine-remove/>")?),
+    );
+    let foreign_membership = create_p2panda_membership_fixture(
+        &root.join("foreign-machine-remove-membership"),
+        &foreign_island,
+        &[&foreign_author],
+        &[],
+    )
+    .await?;
+    let source =
+        open_membership_machine_store(Arc::new(source_bus), &foreign_membership, &foreign_island)
+            .await?;
+    let operation =
+        write_denied_import_source_operation(&source, &foreign_session, &foreign_author).await?;
+    let result = target
+        .import_replica_operation(replica_session, &operation)
+        .await;
+    match result {
+        Err(PandaFactError::ImportIslandMismatch { session, operation })
+            if session == *local_island && operation == foreign_island =>
+        {
+            Ok(())
+        }
+        other => Err(format!(
+            "expected recovery import to reject foreign island operation, got {other:?}"
+        )),
+    }
+}
+
+async fn write_denied_import_source_operation(
+    source: &PandaMachineFactStore,
+    session: &BusSession,
+    author: &PandaFactAuthor,
+) -> Result<PandaFactOperation, String> {
+    let decision = denied_decision("recovery-import-denied");
+    source
+        .write_fact_payload(
+            session,
+            author,
+            machine_remove_decision_fact_key(&decision.remove_id())
+                .map_err(|error| format!("build denied import decision key: {error}"))?,
+            machine_remove_decision_fact_payload(&decision)
+                .map_err(|error| format!("build denied import decision payload: {error}"))?,
+        )
+        .await
+        .map_err(|error| format!("write denied import source operation: {error}"))?;
+    match source.export_operations().await.as_slice() {
+        [operation] => Ok(operation.clone()),
+        operations => Err(format!(
+            "expected one denied import source operation, got {}",
+            operations.len()
+        )),
+    }
+}
+
+fn denied_decision(reason: &str) -> MachineRemoveDecisionFact {
+    MachineRemoveDecisionFact::new(
+        NodeId::new("node-denied"),
+        2,
+        3,
+        reason.to_string(),
+        VisibleNodes::new([NodeId::new("node-denied")]),
+        remove_serving_commit(),
+    )
+}
+
 async fn assert_conflicting_tombstone_not_projected(
     root: &std::path::Path,
     island: &IslandId,
+    membership: &P2pandaMembershipFixture,
+    author_a: Arc<PandaFactAuthor>,
+    author_b: Arc<PandaFactAuthor>,
 ) -> Result<(), String> {
     let conflict_root = root.join("conflicting-tombstone");
     reset_dir(&conflict_root)?;
@@ -891,9 +1064,7 @@ async fn assert_conflicting_tombstone_not_projected(
         PrincipalId::new("machine-conflict-reader"),
         Grant::empty().with_fact_read(fact_pattern("/facts/>")?),
     );
-    let author_a = Arc::new(PandaFactAuthor::new(writer_a.principal().clone()));
-    let author_b = Arc::new(PandaFactAuthor::new(writer_b.principal().clone()));
-    let facts = PandaMachineFactStore::new(PandaFactStore::new(Arc::new(raw_bus)));
+    let facts = open_membership_machine_store(Arc::new(raw_bus), membership, island).await?;
     let panda_writer_a =
         PandaMachineFactWriter::new(facts.clone(), writer_a, Arc::clone(&author_a));
     let panda_writer_b =
