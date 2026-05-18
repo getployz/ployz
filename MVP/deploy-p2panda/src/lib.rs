@@ -13,10 +13,7 @@ use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactOperation, PandaFactStore, PandaFactWriteOutcome,
 };
 use mvp_projection::{FactCandidate, FactSource, FactSourceError, FactSourceResult};
-use mvp_routing::{
-    RoutingError, RoutingResult, ServingCommitPlan, ServingFactWriter, WrittenServingFact,
-    serving_commit_fact_key, serving_commit_fact_payload,
-};
+use mvp_routing_p2panda::PandaServingFactSink;
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
@@ -41,7 +38,7 @@ impl PandaDeployFactStore {
             .collect()
     }
 
-    async fn write_fact_payload(
+    async fn write_panda_fact_payload(
         &self,
         session: &BusSession,
         author: &PandaFactAuthor,
@@ -59,6 +56,22 @@ impl PandaDeployFactStore {
         FactSourceError::Unavailable {
             name: "p2panda deploy fact store is locked by a writer".to_string(),
         }
+    }
+}
+
+impl PandaServingFactSink for PandaDeployFactStore {
+    fn write_fact_payload<'a>(
+        &'a self,
+        session: &'a BusSession,
+        author: &'a PandaFactAuthor,
+        key: FactKey,
+        payload: FactPayload,
+    ) -> Pin<Box<dyn Future<Output = mvp_p2panda_facts::Result<PandaFactWriteOutcome>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            self.write_panda_fact_payload(session, author, key, payload)
+                .await
+        })
     }
 }
 
@@ -120,7 +133,7 @@ impl DeployFactWriter for PandaDeployFactWriter {
             let payload = deploy_decision_fact_payload(&fact)?;
             let outcome = self
                 .facts
-                .write_fact_payload(&self.session, self.author.as_ref(), key, payload)
+                .write_panda_fact_payload(&self.session, self.author.as_ref(), key, payload)
                 .await
                 .map_err(|error| DeployError::FactSource(error.into()))?;
             deploy_fact_outcome(outcome)
@@ -136,50 +149,10 @@ impl DeployFactWriter for PandaDeployFactWriter {
             let payload = deploy_cleanup_done_fact_payload(&fact)?;
             let outcome = self
                 .facts
-                .write_fact_payload(&self.session, self.author.as_ref(), key, payload)
+                .write_panda_fact_payload(&self.session, self.author.as_ref(), key, payload)
                 .await
                 .map_err(|error| DeployError::FactSource(error.into()))?;
             deploy_fact_outcome(outcome)
-        })
-    }
-}
-
-#[derive(Clone)]
-pub struct PandaServingFactWriter {
-    facts: PandaDeployFactStore,
-    session: BusSession,
-    author: Arc<PandaFactAuthor>,
-}
-
-impl PandaServingFactWriter {
-    #[must_use]
-    pub fn new(
-        facts: PandaDeployFactStore,
-        session: BusSession,
-        author: Arc<PandaFactAuthor>,
-    ) -> Self {
-        Self {
-            facts,
-            session,
-            author,
-        }
-    }
-}
-
-impl ServingFactWriter for PandaServingFactWriter {
-    fn write_serving_commit<'a>(
-        &'a self,
-        commit: &'a ServingCommitPlan,
-    ) -> Pin<Box<dyn Future<Output = RoutingResult<WrittenServingFact>> + Send + 'a>> {
-        Box::pin(async move {
-            let key = serving_commit_fact_key(&commit.serving_commit_id)?;
-            let payload = serving_commit_fact_payload(commit)?;
-            let outcome = self
-                .facts
-                .write_fact_payload(&self.session, self.author.as_ref(), key, payload)
-                .await
-                .map_err(|error| RoutingError::FactSource(error.into()))?;
-            serving_fact_outcome(outcome)
         })
     }
 }
@@ -202,22 +175,6 @@ fn deploy_fact_outcome(outcome: PandaFactWriteOutcome) -> DeployResult<WrittenDe
     }
 }
 
-fn serving_fact_outcome(outcome: PandaFactWriteOutcome) -> RoutingResult<WrittenServingFact> {
-    match outcome {
-        PandaFactWriteOutcome::Inserted(metadata) => Ok(WrittenServingFact::inserted(
-            metadata.key().clone(),
-            metadata.content_hash().clone(),
-        )),
-        PandaFactWriteOutcome::AlreadyPresent(metadata) => Ok(WrittenServingFact::already_present(
-            metadata.key().clone(),
-            metadata.content_hash().clone(),
-        )),
-        PandaFactWriteOutcome::Conflict(metadata) => Err(RoutingError::ServingFactConflict {
-            key: metadata.key().clone(),
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -235,7 +192,9 @@ mod tests {
         ServingCommitPlan, ServingFactWriteStatus, ServingFactWriter,
     };
 
-    use crate::{PandaDeployFactStore, PandaDeployFactWriter, PandaServingFactWriter};
+    use mvp_routing_p2panda::PandaServingFactWriter;
+
+    use crate::{PandaDeployFactStore, PandaDeployFactWriter};
 
     fn serving_commit() -> ServingCommitPlan {
         ServingCommitPlan {

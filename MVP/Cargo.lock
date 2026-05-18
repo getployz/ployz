@@ -2762,6 +2762,7 @@ dependencies = [
  "mvp-p2panda-facts",
  "mvp-projection",
  "mvp-routing",
+ "mvp-routing-p2panda",
  "tokio",
 ]
 
@@ -2787,6 +2788,7 @@ dependencies = [
  "mvp-p2panda-transport",
  "mvp-projection",
  "mvp-routing",
+ "mvp-routing-p2panda",
  "mvp-serving",
  "serde",
  "serde_json",
@@ -2925,6 +2927,18 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "mvp-routing-p2panda"
+version = "0.1.0"
+dependencies = [
+ "mvp-bus",
+ "mvp-identity",
+ "mvp-p2panda-facts",
+ "mvp-projection",
+ "mvp-routing",
+ "tokio",
 ]
 
 [[package]]

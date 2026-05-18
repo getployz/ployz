@@ -14,13 +14,14 @@ use mvp_deploy::{
     ProjectionCatchUp, RevisionId, RouteCommitId, ServingCommitId, ServingCommitPlan,
     StopInstanceRequest, WrittenDeployFact,
 };
-use mvp_deploy_p2panda::{PandaDeployFactStore, PandaDeployFactWriter, PandaServingFactWriter};
+use mvp_deploy_p2panda::{PandaDeployFactStore, PandaDeployFactWriter};
 use mvp_identity::NodeId;
 use mvp_p2panda_facts::{PandaFactAuthor, PandaFactOperation, PandaFactStore};
 use mvp_projection::{
     BackendEndpoint, DnsRecordFact, RouteId, ServiceName, load_dns_snapshot, load_gateway_snapshot,
 };
 use mvp_routing::{RoutingResult, ServingFactWriter, WrittenServingFact};
+use mvp_routing_p2panda::PandaServingFactWriter;
 use mvp_serving::{ServingActorHandle, ServingSnapshotPaths};
 use serde::Serialize;
 
@@ -408,7 +409,7 @@ fn coordinator_with_panda_facts(
     timings: Arc<FactWriteTimings>,
 ) -> DeployCoordinator<
     TimedFactWriter<PandaDeployFactWriter>,
-    TimedFactWriter<PandaServingFactWriter>,
+    TimedFactWriter<PandaServingFactWriter<PandaDeployFactStore>>,
 > {
     DeployCoordinator::with_fact_writers(
         bus,
