@@ -51,10 +51,10 @@ Latest local `p2panda-net-fact-node-contract` metrics:
   "projected_services": 1,
   "projected_gateway_routes": 1,
   "projected_dns_records": 1,
-  "startup_ms": 42,
-  "sync_import_ms": 29,
-  "projection_rebuild_ms": 4,
-  "restart_projection_rebuild_ms": 3
+  "startup_ms": 28,
+  "sync_import_ms": 36,
+  "projection_rebuild_ms": 7,
+  "restart_projection_rebuild_ms": 7
 }
 ```
 
@@ -78,5 +78,9 @@ Passed:
 
 ```text
 cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-transport --all-targets
+cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-facts -p mvp-p2panda-transport
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-net-fact-node-contract
+cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-net-sync-contract
+cargo clippy --manifest-path MVP/Cargo.toml -p mvp-p2panda-transport -p mvp-e2e --all-targets -- -D warnings
+MVP_E2E_ALL_TIMEOUT=120s cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- all
 ```
