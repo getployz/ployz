@@ -312,7 +312,14 @@ the code and choose the next boundary.
 
 ## Next Product Proofs
 
-The next product-feature slices should be:
+Before the next product-feature implementation slice, run the p2panda
+substitution investigation in
+[MVP/slice-018a-p2panda-substitution-investigation-plan.md](slice-018a-p2panda-substitution-investigation-plan.md).
+The question is whether maintained p2panda crates can replace enough custom
+fact/auth/sync/blob substrate to reduce the long-term maintenance burden before
+the deploy restart recovery proof hardens those boundaries.
+
+The next product-feature slices remain:
 
 1. ACME on the new primitives.
 2. Deploy commit-before-drain rebuilt on the new primitives.
