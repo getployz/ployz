@@ -7,15 +7,15 @@ use mvp_acme::{
     AcmeChallengeId, AcmeChallengeToken, AcmeHostname, AcmeHttp01ClearedFact,
     AcmeHttp01PresentedFact, AcmeKeyAuthorization,
 };
-use mvp_bus::{BusSession, FactPayload, Grant, IslandId, PrincipalId, harness::InMemoryBus};
+use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::{NodeId, VisibleNodes};
 use mvp_lease::{
     LeaseClaimed, LeaseContentHash, LeaseEpoch, LeaseFact, LeaseHolder, LeaseReleased, LeaseState,
     LeaseTimestamp,
 };
 use mvp_p2panda_facts::{
-    PandaFactAuthor, PandaFactStore, PandaFactSyncScope, PandaFactWriteOutcome,
-    PandaSqliteOpenConfig, PandaTrustedAuthorKey, sync_panda_fact_stores,
+    PandaFactAuthor, PandaFactAuthorKey, PandaFactStore, PandaFactSyncError, PandaFactSyncScope,
+    PandaFactSyncSide, PandaSqliteOpenConfig, PandaTrustedAuthorKey, sync_panda_fact_stores,
 };
 use mvp_projection::{
     CandidateStatus, DnsCommitFact, FactCandidate, FactKind, FactSource, ProjectionFactPayload,
@@ -28,8 +28,11 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use crate::assertions::assert_eq_named;
-use crate::bus_syntax::{fact_key, fact_pattern};
+use crate::bus_syntax::fact_pattern;
 use crate::metrics::{reset_dir, scenario_dir, write_json};
+use crate::p2panda_projection_fixture::{
+    status_count, write_projection_fact as write_panda_projection_fact,
+};
 use crate::projection_harness::projection_actor;
 
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -74,23 +77,42 @@ async fn run_async() -> Result<(), String> {
     let prod = IslandId::new("prod");
     let (bus, sessions) = acme_bus_sessions(&prod)?;
     let bus = Arc::new(bus);
-    let issuer_a_author = PandaFactAuthor::new(sessions.issuer_a.principal().clone());
-    let issuer_b_author = PandaFactAuthor::new(sessions.issuer_b.principal().clone());
     let dns_author = PandaFactAuthor::new(sessions.dns_writer.principal().clone());
-    let authors = [&issuer_a_author, &issuer_b_author, &dns_author];
+    let visible_nodes = VisibleNodes::new([NodeId::new("node-a"), NodeId::new("node-b")]);
+    let mut adapter_a = AcmeP2pandaCommandAdapter::new(
+        sessions.issuer_a.clone(),
+        PandaFactAuthor::new(sessions.issuer_a.principal().clone()),
+        visible_nodes.clone(),
+    );
+    let mut adapter_b = AcmeP2pandaCommandAdapter::new(
+        sessions.issuer_b.clone(),
+        PandaFactAuthor::new(sessions.issuer_b.principal().clone()),
+        visible_nodes,
+    );
+    let trusted_authors = vec![
+        (
+            adapter_a.author().principal().clone(),
+            adapter_a.author().author_key(),
+        ),
+        (
+            adapter_b.author().principal().clone(),
+            adapter_b.author().author_key(),
+        ),
+        (dns_author.principal().clone(), dns_author.author_key()),
+    ];
 
     let mut left = open_store(
         bus.clone(),
         root.join("left-p2panda-facts.sqlite"),
         &prod,
-        &authors,
+        &trusted_authors,
     )
     .await?;
     let mut right = open_store(
         bus.clone(),
         root.join("right-p2panda-facts.sqlite"),
         &prod,
-        &authors,
+        &trusted_authors,
     )
     .await?;
     left.trust_replica_peer(&prod, sessions.left_replica.principal().clone());
@@ -105,14 +127,13 @@ async fn run_async() -> Result<(), String> {
         AcmeChallengeToken::parse(OTHER_TOKEN).map_err(|error| error.to_string())?,
     );
     let timeline = LeaseTimeline::fresh()?;
-    let visible_nodes = VisibleNodes::new([NodeId::new("node-a"), NodeId::new("node-b")]);
-    let scope = authors
+    let scope = trusted_authors
         .iter()
         .fold(PandaFactSyncScope::new(prod.clone()), |scope, author| {
-            scope.with_trusted_author(author.principal().clone(), author.author_key())
+            scope.with_trusted_author(author.0.clone(), author.1)
         });
 
-    write_projection_fact(
+    write_panda_projection_fact(
         &mut left,
         &sessions.dns_writer,
         &dns_author,
@@ -125,15 +146,9 @@ async fn run_async() -> Result<(), String> {
     )
     .await?;
 
-    let mut adapter_a =
-        AcmeP2pandaCommandAdapter::new(sessions.issuer_a.clone(), visible_nodes.clone());
-    let mut adapter_b =
-        AcmeP2pandaCommandAdapter::new(sessions.issuer_b.clone(), visible_nodes.clone());
-
     let claim_a = adapter_a
         .claim(
             &mut left,
-            &issuer_a_author,
             &challenge,
             timeline.acquired_at,
             timeline.expires_at,
@@ -143,7 +158,6 @@ async fn run_async() -> Result<(), String> {
     let present_a = adapter_a
         .present(
             &mut left,
-            &issuer_a_author,
             &challenge,
             &claim_a.lease,
             "thumbprint-a",
@@ -154,7 +168,6 @@ async fn run_async() -> Result<(), String> {
     let stale_before_mutation = adapter_b
         .claim(
             &mut left,
-            &issuer_b_author,
             &challenge,
             timeline.published_at,
             timeline.expires_at,
@@ -168,7 +181,6 @@ async fn run_async() -> Result<(), String> {
     let other_claim = adapter_a
         .claim(
             &mut left,
-            &issuer_a_author,
             &other_challenge,
             timeline.acquired_at,
             timeline.expires_at,
@@ -178,7 +190,6 @@ async fn run_async() -> Result<(), String> {
     let wrong_scope = adapter_a
         .present(
             &mut left,
-            &issuer_a_author,
             &other_challenge,
             &other_claim.lease,
             "thumbprint-wrong-scope",
@@ -215,7 +226,13 @@ async fn run_async() -> Result<(), String> {
     )
     .await
     .expect_err("projection-only principal cannot run replica sync");
-    let trusted_replica_required = rejected_sync.to_string().contains("not a trusted replica");
+    let trusted_replica_required = matches!(
+        rejected_sync,
+        PandaFactSyncError::UnauthorizedReplica {
+            side: PandaFactSyncSide::Left,
+            ..
+        }
+    );
     if !trusted_replica_required {
         return Err(format!(
             "projection-only sync failed for the wrong reason: {rejected_sync}"
@@ -233,7 +250,7 @@ async fn run_async() -> Result<(), String> {
     let duplicate_sync_noop = repeat.left.received + repeat.right.received == 0;
 
     let mut projection =
-        project_from_reopened_store(&root, bus.clone(), &prod, &authors, &sessions).await?;
+        project_from_reopened_store(&root, bus.clone(), &prod, &trusted_authors, &sessions).await?;
     assert_eq_named(
         "initial p2panda ACME projection count",
         projection.state.acme_http01.len(),
@@ -263,16 +280,15 @@ async fn run_async() -> Result<(), String> {
             .ends_with(present_a.key_authorization.as_str())
     {
         outage_success_count += 1;
+    } else {
+        return Err(format!(
+            "initial p2panda ACME HTTP response did not serve the challenge: {}",
+            initial_http.response
+        ));
     }
 
     let pending_clear = adapter_a
-        .clear(
-            &mut left,
-            &issuer_a_author,
-            &challenge,
-            &claim_a.lease,
-            timeline.cleared_at,
-        )
+        .clear(&mut left, &challenge, &claim_a.lease, timeline.cleared_at)
         .await
         .map_err(|error| error.to_string())?;
     drop(adapter_a);
@@ -286,6 +302,11 @@ async fn run_async() -> Result<(), String> {
         && outage_http.response.ends_with(&initial_key_authorization)
     {
         outage_success_count += 1;
+    } else {
+        return Err(format!(
+            "p2panda ACME serving did not preserve last-good response while adapter was down: {}",
+            outage_http.response
+        ));
     }
 
     sync_panda_fact_stores(
@@ -298,7 +319,7 @@ async fn run_async() -> Result<(), String> {
     .await
     .map_err(|error| format!("sync pending clear after adapter drop: {error}"))?;
     projection =
-        project_from_reopened_store(&root, bus.clone(), &prod, &authors, &sessions).await?;
+        project_from_reopened_store(&root, bus.clone(), &prod, &trusted_authors, &sessions).await?;
     serving
         .reload()
         .await
@@ -312,7 +333,6 @@ async fn run_async() -> Result<(), String> {
     let claim_b = adapter_b
         .claim(
             &mut left,
-            &issuer_b_author,
             &challenge,
             timeline.takeover_at,
             timeline.takeover_expires_at,
@@ -322,7 +342,6 @@ async fn run_async() -> Result<(), String> {
     let present_b = adapter_b
         .present(
             &mut left,
-            &issuer_b_author,
             &challenge,
             &claim_b.lease,
             "thumbprint-b",
@@ -336,10 +355,10 @@ async fn run_async() -> Result<(), String> {
         "thumbprint-stale",
         timeline.stale_arrival_at,
     )?;
-    write_projection_fact(
+    write_panda_projection_fact(
         &mut left,
         &sessions.issuer_b,
-        &issuer_b_author,
+        adapter_b.author(),
         &challenge.presented_fact_key(LeaseEpoch::first()),
         ProjectionFactPayload::AcmeHttp01Presented(stale_present),
     )
@@ -357,7 +376,7 @@ async fn run_async() -> Result<(), String> {
     .map_err(|error| format!("sync takeover and stale fact: {error}"))?;
     let projection_reload_started = Instant::now();
     projection =
-        project_from_reopened_store(&root, bus.clone(), &prod, &authors, &sessions).await?;
+        project_from_reopened_store(&root, bus.clone(), &prod, &trusted_authors, &sessions).await?;
     serving
         .reload()
         .await
@@ -385,7 +404,6 @@ async fn run_async() -> Result<(), String> {
     let final_clear = adapter_b
         .clear(
             &mut left,
-            &issuer_b_author,
             &challenge,
             &claim_b.lease,
             timeline.final_cleared_at,
@@ -402,7 +420,7 @@ async fn run_async() -> Result<(), String> {
     .await
     .map_err(|error| format!("sync final clear: {error}"))?;
     projection =
-        project_from_reopened_store(&root, bus.clone(), &prod, &authors, &sessions).await?;
+        project_from_reopened_store(&root, bus.clone(), &prod, &trusted_authors, &sessions).await?;
     serving
         .reload()
         .await
@@ -427,7 +445,7 @@ async fn run_async() -> Result<(), String> {
     std::fs::remove_file(&sqlite_path)
         .map_err(|error| format!("delete p2panda ACME projection sqlite: {error}"))?;
     let rebuilt =
-        project_from_reopened_store(&root, bus.clone(), &prod, &authors, &sessions).await?;
+        project_from_reopened_store(&root, bus.clone(), &prod, &trusted_authors, &sessions).await?;
     let sqlite = SqliteProjectionStore::new(sqlite_path);
     let row_counts = sqlite
         .row_counts()
@@ -440,21 +458,26 @@ async fn run_async() -> Result<(), String> {
         .await
         .map_err(|error| format!("shutdown p2panda ACME HTTP gateway: {error}"))?;
 
-    let visible_nodes_at_decision = [
+    let visible_node_counts = [
         claim_a.visible_nodes.len(),
         present_a.visible_nodes.len(),
         pending_clear.visible_nodes.len(),
         claim_b.visible_nodes.len(),
         present_b.visible_nodes.len(),
         final_clear.visible_nodes.len(),
-    ]
-    .into_iter()
-    .min()
-    .unwrap_or(0);
+    ];
+    if visible_node_counts
+        .iter()
+        .any(|visible_nodes| *visible_nodes != 2)
+    {
+        return Err(format!(
+            "expected every ACME command result to include exactly two visible nodes, got {visible_node_counts:?}"
+        ));
+    }
 
     let report = P2pandaAcmeHttp01Report {
         scenario: "p2panda-acme-http01-contract",
-        visible_nodes_at_decision,
+        visible_nodes_at_decision: 2,
         initial_key_authorization,
         takeover_key_authorization,
         sync_ms,
@@ -464,8 +487,7 @@ async fn run_async() -> Result<(), String> {
         stale_mutation_rejections: 1,
         scoped_grant_rejections: 1,
         stale_sync_preserved_winner,
-        release_fact_recorded: matches!(pending_clear.kind, AcmeFactWriteKind::Cleared)
-            && matches!(final_clear.kind, AcmeFactWriteKind::Cleared),
+        release_fact_recorded: pending_clear.release_recorded && final_clear.release_recorded,
         trusted_replica_required,
         duplicate_sync_noop,
         sqlite_rebuild_after_delete,
@@ -516,20 +538,12 @@ fn acme_bus_sessions(prod: &IslandId) -> Result<(InMemoryBus, AcmeBusSessions), 
         .with_fact_write(acme_pattern.clone())
         .with_fact_read(acme_pattern);
     let sessions = AcmeBusSessions {
-        issuer_a: authority.grant_in(prod.clone(), PrincipalId::new("issuer-a"), issuer_grant),
-        issuer_b: authority.grant_in(
+        issuer_a: authority.grant_in(
             prod.clone(),
-            PrincipalId::new("issuer-b"),
-            Grant::empty()
-                .with_fact_write(fact_pattern("/facts/lease/>")?)
-                .with_fact_read(fact_pattern("/facts/lease/>")?)
-                .with_fact_write(fact_pattern(&format!(
-                    "/facts/acme/http01/example.test/{ACME_TOKEN}/>"
-                ))?)
-                .with_fact_read(fact_pattern(&format!(
-                    "/facts/acme/http01/example.test/{ACME_TOKEN}/>"
-                ))?),
+            PrincipalId::new("issuer-a"),
+            issuer_grant.clone(),
         ),
+        issuer_b: authority.grant_in(prod.clone(), PrincipalId::new("issuer-b"), issuer_grant),
         dns_writer: authority.grant_in(
             prod.clone(),
             PrincipalId::new("dns-writer"),
@@ -556,21 +570,26 @@ fn acme_bus_sessions(prod: &IslandId) -> Result<(InMemoryBus, AcmeBusSessions), 
 
 struct AcmeP2pandaCommandAdapter {
     session: BusSession,
+    author: PandaFactAuthor,
     visible_nodes: VisibleNodes,
 }
 
 impl AcmeP2pandaCommandAdapter {
-    fn new(session: BusSession, visible_nodes: VisibleNodes) -> Self {
+    fn new(session: BusSession, author: PandaFactAuthor, visible_nodes: VisibleNodes) -> Self {
         Self {
             session,
+            author,
             visible_nodes,
         }
+    }
+
+    fn author(&self) -> &PandaFactAuthor {
+        &self.author
     }
 
     async fn claim(
         &mut self,
         store: &mut PandaFactStore,
-        author: &PandaFactAuthor,
         challenge: &AcmeChallengeId,
         acquired_at: LeaseTimestamp,
         expires_at: LeaseTimestamp,
@@ -609,10 +628,10 @@ impl AcmeP2pandaCommandAdapter {
             expires_at,
         );
         let claim_hash = LeaseFact::Claimed(fact.clone()).content_hash();
-        write_projection_fact(
+        write_panda_projection_fact(
             store,
             &self.session,
-            author,
+            &self.author,
             &challenge.lease_claimed_fact_key(epoch),
             ProjectionFactPayload::LeaseClaimed(fact),
         )
@@ -631,12 +650,11 @@ impl AcmeP2pandaCommandAdapter {
     async fn present(
         &mut self,
         store: &mut PandaFactStore,
-        author: &PandaFactAuthor,
         challenge: &AcmeChallengeId,
         lease: &AcmeLeaseHandle,
         thumbprint: &str,
         published_at: LeaseTimestamp,
-    ) -> Result<AcmeWriteResult, AcmeAdapterError> {
+    ) -> Result<AcmePresentResult, AcmeAdapterError> {
         lease.assert_challenge(challenge)?;
         assert_current_lease(store, &self.session, lease, published_at)?;
         let key_authorization = AcmeKeyAuthorization::parse_for_token(
@@ -653,16 +671,15 @@ impl AcmeP2pandaCommandAdapter {
             published_at,
         )
         .map_err(|error| AcmeAdapterError::Acme(error.to_string()))?;
-        write_projection_fact(
+        write_panda_projection_fact(
             store,
             &self.session,
-            author,
+            &self.author,
             &challenge.presented_fact_key(lease.epoch),
             ProjectionFactPayload::AcmeHttp01Presented(fact),
         )
         .await?;
-        Ok(AcmeWriteResult {
-            kind: AcmeFactWriteKind::Presented,
+        Ok(AcmePresentResult {
             key_authorization,
             visible_nodes: self.visible_nodes.clone(),
         })
@@ -671,11 +688,10 @@ impl AcmeP2pandaCommandAdapter {
     async fn clear(
         &mut self,
         store: &mut PandaFactStore,
-        author: &PandaFactAuthor,
         challenge: &AcmeChallengeId,
         lease: &AcmeLeaseHandle,
         cleared_at: LeaseTimestamp,
-    ) -> Result<AcmeWriteResult, AcmeAdapterError> {
+    ) -> Result<AcmeClearResult, AcmeAdapterError> {
         lease.assert_challenge(challenge)?;
         assert_current_lease(store, &self.session, lease, cleared_at)?;
         let release = LeaseReleased::new_at(
@@ -685,10 +701,10 @@ impl AcmeP2pandaCommandAdapter {
             lease.claim_hash,
             cleared_at,
         );
-        write_projection_fact(
+        write_panda_projection_fact(
             store,
             &self.session,
-            author,
+            &self.author,
             &challenge.lease_released_fact_key(lease.epoch, lease.claim_hash, release.release()),
             ProjectionFactPayload::LeaseReleased(release),
         )
@@ -700,21 +716,16 @@ impl AcmeP2pandaCommandAdapter {
             lease.claim_hash,
             cleared_at,
         );
-        write_projection_fact(
+        write_panda_projection_fact(
             store,
             &self.session,
-            author,
+            &self.author,
             &challenge.cleared_fact_key(lease.epoch, lease.claim_hash),
             ProjectionFactPayload::AcmeHttp01Cleared(clear),
         )
         .await?;
-        Ok(AcmeWriteResult {
-            kind: AcmeFactWriteKind::Cleared,
-            key_authorization: AcmeKeyAuthorization::parse_for_token(
-                challenge.token(),
-                format!("{}.cleared", challenge.token()),
-            )
-            .map_err(|error| AcmeAdapterError::Acme(error.to_string()))?,
+        Ok(AcmeClearResult {
+            release_recorded: true,
             visible_nodes: self.visible_nodes.clone(),
         })
     }
@@ -773,16 +784,15 @@ struct ClaimCommandResult {
 }
 
 #[derive(Debug)]
-struct AcmeWriteResult {
-    kind: AcmeFactWriteKind,
+struct AcmePresentResult {
     key_authorization: AcmeKeyAuthorization,
     visible_nodes: VisibleNodes,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AcmeFactWriteKind {
-    Presented,
-    Cleared,
+#[derive(Debug)]
+struct AcmeClearResult {
+    release_recorded: bool,
+    visible_nodes: VisibleNodes,
 }
 
 #[derive(Debug)]
@@ -807,22 +817,6 @@ impl AcmeLeaseHandle {
 
 fn challenge_label(challenge: &AcmeChallengeId) -> String {
     format!("{} {}", challenge.hostname(), challenge.token())
-}
-
-async fn write_projection_fact(
-    store: &mut PandaFactStore,
-    session: &BusSession,
-    author: &PandaFactAuthor,
-    key: &str,
-    payload: ProjectionFactPayload,
-) -> Result<PandaFactWriteOutcome, String> {
-    let bytes = payload
-        .to_fact_bytes()
-        .map_err(|error| format!("serialize p2panda ACME fact {key}: {error}"))?;
-    store
-        .write_fact_payload(session, author, fact_key(key)?, FactPayload::from(bytes))
-        .await
-        .map_err(|error| format!("write p2panda ACME fact {key}: {error}"))
 }
 
 fn assert_current_lease(
@@ -908,15 +902,15 @@ async fn open_store(
     bus: Arc<InMemoryBus>,
     path: PathBuf,
     island: &IslandId,
-    authors: &[&PandaFactAuthor],
+    trusted_authors: &[(PrincipalId, PandaFactAuthorKey)],
 ) -> Result<PandaFactStore, String> {
-    let config = authors.iter().fold(
+    let config = trusted_authors.iter().fold(
         PandaSqliteOpenConfig::new(path, vec![island.clone()]),
-        |config, author| {
+        |config, (principal, author_key)| {
             config.with_trusted_author_key(PandaTrustedAuthorKey::new(
                 island.clone(),
-                author.principal().clone(),
-                author.author_key(),
+                principal.clone(),
+                *author_key,
             ))
         },
     );
@@ -929,14 +923,14 @@ async fn project_from_reopened_store(
     root: &Path,
     bus: Arc<InMemoryBus>,
     island: &IslandId,
-    authors: &[&PandaFactAuthor],
+    trusted_authors: &[(PrincipalId, PandaFactAuthorKey)],
     sessions: &AcmeBusSessions,
 ) -> Result<mvp_projection::ProjectionReport, String> {
     let source = open_store(
         bus,
         root.join("right-p2panda-facts.sqlite"),
         island,
-        authors,
+        trusted_authors,
     )
     .await?;
     let actor = projection_actor(Arc::new(source), sessions.projection.clone(), root)?;
@@ -1009,16 +1003,6 @@ fn stale_presented_fact(
         published_at,
     )
     .map_err(|error| error.to_string())
-}
-
-fn status_count(
-    statuses: &[mvp_projection::ProjectionStatus],
-    reason: ProjectionIgnoreReason,
-) -> usize {
-    statuses
-        .iter()
-        .find(|status| status.reason == reason)
-        .map_or(0, |status| status.count)
 }
 
 struct TimedHttpResponse {
