@@ -13,14 +13,18 @@ use mvp_projection::{
     NodeRemovalStartedFact, NodeTombstonedFact, ProjectionFactPayload, ProjectionState,
 };
 use mvp_routing::{
-    BusServingFactWriter, ProjectionCatchUp, RoutingError, ServingCommitId, ServingCommitPlan,
-    ServingFactWriter, read_unconflicted_serving_commit,
+    BusServingFactWriter, ProjectionCatchUp, ServingCommitId, ServingCommitPlan, ServingFactWriter,
 };
+#[cfg(test)]
+use mvp_routing::{RoutingError, read_unconflicted_serving_commit};
 
 use crate::facts::{
     MachineRemoveCleanupDoneFact, MachineRemoveDecisionFact, MachineRemoveId,
     machine_remove_cleanup_done_fact_key, machine_remove_cleanup_done_fact_payload,
     machine_remove_decision_fact_key, machine_remove_decision_fact_payload,
+};
+#[cfg(test)]
+use crate::facts::{
     read_machine_remove_cleanup_done, read_machine_remove_decision,
     validate_machine_remove_cleanup_done, validate_machine_remove_removal_started,
 };
@@ -219,7 +223,8 @@ where
         }
     }
 
-    pub async fn execute_until_serving_commit(
+    #[cfg(test)]
+    pub(crate) async fn execute_until_serving_commit(
         &self,
         request: MachineRemoveRequest,
     ) -> MachineRemoveResult<PendingMachineRemove> {
@@ -264,7 +269,8 @@ where
         .await
     }
 
-    pub async fn finish_cleanup(
+    #[cfg(test)]
+    pub(crate) async fn finish_cleanup(
         &self,
         pending: PendingMachineRemove,
         projection: ProjectionCatchUp,
@@ -316,6 +322,7 @@ where
         }
     }
 
+    #[cfg(test)]
     async fn prepare_remove(&self, request: &MachineRemoveRequest) -> MachineRemoveResult<()> {
         let reply = self
             .request_prepare(request, PrepareRemoveIntent::Drain)
@@ -644,7 +651,8 @@ where
     }
 }
 
-pub fn recover_pending_machine_remove_cleanup(
+#[cfg(test)]
+pub(crate) fn recover_pending_machine_remove_cleanup(
     source: &dyn mvp_projection::FactSource,
     island: &mvp_bus::IslandId,
     session: &BusSession,
@@ -677,7 +685,7 @@ pub fn recover_pending_machine_remove_cleanup(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingMachineRemove {
+pub(crate) struct PendingMachineRemove {
     pub decision: MachineRemoveDecisionFact,
     pub removal_started_fact_key: FactKey,
 }
@@ -709,7 +717,8 @@ impl PendingMachineRemove {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MachineRemoveRecovery {
+#[cfg(test)]
+pub(crate) enum MachineRemoveRecovery {
     PreCommitIncomplete { decision: MachineRemoveDecisionFact },
     Pending(PendingMachineRemove),
     Complete(MachineRemoveCommandResult),
@@ -845,6 +854,7 @@ fn pending_from_decision(
     ))
 }
 
+#[cfg(test)]
 fn removed_result_from_facts(
     decision: &MachineRemoveDecisionFact,
     cleanup_done: MachineRemoveCleanupDoneFact,

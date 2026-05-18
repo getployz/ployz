@@ -2,10 +2,13 @@ use mvp_bus::{
     BusSession, FactContentHash, FactKey, FactKeyPattern, FactPayload, IslandId, PrincipalId,
 };
 use mvp_identity::{NodeId, VisibleNodes};
-use mvp_mesh::{removal_started_fact_key, tombstone_fact_key};
+#[cfg(test)]
+use mvp_mesh::removal_started_fact_key;
+use mvp_mesh::tombstone_fact_key;
+#[cfg(test)]
+use mvp_projection::NodeRemovalStartedFact;
 use mvp_projection::{
-    CandidateStatus, FactCandidate, FactSource, NodeRemovalStartedFact, NodeTombstonedFact,
-    ProjectionFactPayload,
+    CandidateStatus, FactCandidate, FactSource, NodeTombstonedFact, ProjectionFactPayload,
 };
 use mvp_routing::{ServingCommitId, ServingCommitPlan};
 use serde::{Deserialize, Serialize};
@@ -251,6 +254,7 @@ pub fn validate_machine_remove_cleanup_done(
     require_expected_tombstone_fact(source, island, session, decision, &expected_tombstone_key)
 }
 
+#[cfg(test)]
 pub fn validate_machine_remove_removal_started(
     source: &dyn FactSource,
     island: &IslandId,
@@ -450,6 +454,7 @@ fn decode_tombstone_fact(
     }
 }
 
+#[cfg(test)]
 fn decode_removal_started_fact(
     key: &FactKey,
     payload: &FactPayload,

@@ -15,10 +15,9 @@ pub use facts::{
 pub use remove::{
     BusMachineFactWriter, CleanupFailureKind, MachineFactWriter, MachineRemoveCommandInput,
     MachineRemoveCommandResult, MachineRemoveCoordinator, MachineRemoveOutcome,
-    MachineRemoveRecovery, MachineRemoveRequest, MachineRemoveTimeouts,
-    MachineRemoveValidationError, PendingMachineRemove, RemoveCleanupPendingReason,
-    RemoveCleanupStatus, WrittenMachineFact, prepare_remove_subject,
-    recover_pending_machine_remove_cleanup, stop_removed_workloads_subject,
+    MachineRemoveRequest, MachineRemoveTimeouts, MachineRemoveValidationError,
+    RemoveCleanupPendingReason, RemoveCleanupStatus, WrittenMachineFact, prepare_remove_subject,
+    stop_removed_workloads_subject,
 };
 pub use wire::{
     PrepareRemoveIntent, PrepareRemoveOutcome, PrepareRemoveReply, PrepareRemoveRequest,
