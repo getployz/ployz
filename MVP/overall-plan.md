@@ -336,7 +336,14 @@ after the original coordinator dies post-serving-commit and before drain. The
 slice report is
 [MVP/slice-018c-p2panda-deploy-restart-recovery.md](slice-018c-p2panda-deploy-restart-recovery.md).
 
-The next product-feature slices remain:
+Before the next product-feature implementation slice, Slice 019a should run a
+deep p2panda substitution audit:
+[MVP/slice-019a-p2panda-substitution-audit-plan.md](slice-019a-p2panda-substitution-audit-plan.md).
+The goal is to decide whether persistent p2panda storage, p2panda-auth, or
+p2panda-sync can delete enough custom substrate to justify moving them ahead of
+more product proof code.
+
+The next product-feature slices currently remain:
 
 1. ACME moved onto the p2panda fact boundary and advisory lease semantics.
 2. The next large-load or process-role proof that closes remaining E2E-7 gaps:
