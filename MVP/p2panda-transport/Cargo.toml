@@ -7,6 +7,8 @@ publish = false
 
 [dependencies]
 futures-util = "0.3"
+mvp-bus = { path = "../bus" }
+mvp-p2panda-facts = { path = "../p2panda-facts" }
 p2panda-core-git = { package = "p2panda-core", git = "https://github.com/p2panda/p2panda", rev = "f1087d347cded5912fd9c357066d4ebf2f91cac6" }
 p2panda-net = { git = "https://github.com/p2panda/p2panda", rev = "f1087d347cded5912fd9c357066d4ebf2f91cac6" }
 p2panda-store-git = { package = "p2panda-store", git = "https://github.com/p2panda/p2panda", rev = "f1087d347cded5912fd9c357066d4ebf2f91cac6", features = ["sqlite", "macros"] }

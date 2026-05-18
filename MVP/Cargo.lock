@@ -2755,6 +2755,7 @@ dependencies = [
  "mvp-machine",
  "mvp-mesh",
  "mvp-p2panda-facts",
+ "mvp-p2panda-transport",
  "mvp-projection",
  "mvp-routing",
  "mvp-serving",
@@ -2875,6 +2876,8 @@ name = "mvp-p2panda-transport"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "mvp-bus",
+ "mvp-p2panda-facts",
  "p2panda-core 0.5.2 (git+https://github.com/p2panda/p2panda?rev=f1087d347cded5912fd9c357066d4ebf2f91cac6)",
  "p2panda-net",
  "p2panda-store 0.5.2 (git+https://github.com/p2panda/p2panda?rev=f1087d347cded5912fd9c357066d4ebf2f91cac6)",
