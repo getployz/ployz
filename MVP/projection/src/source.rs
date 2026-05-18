@@ -9,6 +9,7 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FactKind {
     NodeJoined,
+    NodeRemovalStarted,
     NodeTombstoned,
     ServiceRegistered,
     ServingCommit,
@@ -53,6 +54,10 @@ pub fn classify_fact_key(key: &FactKey) -> FactKeyClassification {
         ["facts", "node", _node_id, "joined", epoch]
         | ["facts", "node", _node_id, "joined", epoch, _] => {
             classify_epoch(FactKind::NodeJoined, epoch)
+        }
+        ["facts", "node", _node_id, "removal_started", epoch]
+        | ["facts", "node", _node_id, "removal_started", epoch, _] => {
+            classify_epoch(FactKind::NodeRemovalStarted, epoch)
         }
         ["facts", "node", _node_id, "tombstoned", epoch]
         | ["facts", "node", _node_id, "tombstoned", epoch, _] => {
@@ -166,7 +171,8 @@ pub fn classify_fact_key(key: &FactKey) -> FactKeyClassification {
 pub(crate) fn is_reducible_conflict_kind(kind: FactKind) -> bool {
     matches!(
         kind,
-        FactKind::LeaseClaimed
+        FactKind::NodeRemovalStarted
+            | FactKind::LeaseClaimed
             | FactKind::LeaseRenewed
             | FactKind::LeaseReleased
             | FactKind::AcmeHttp01Presented
@@ -328,6 +334,14 @@ mod tests {
 
         assert_eq!(classification.kind(), FactKind::NodeTombstoned);
         assert_eq!(classification.epoch(), 13);
+    }
+
+    #[test]
+    fn classifies_removal_started_epochs() {
+        let classification = classify_fact_key(&key("/facts/node/node-1/removal_started/14"));
+
+        assert_eq!(classification.kind(), FactKind::NodeRemovalStarted);
+        assert_eq!(classification.epoch(), 14);
     }
 
     #[test]

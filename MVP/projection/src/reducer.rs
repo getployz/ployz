@@ -11,13 +11,13 @@ use mvp_lease::{
 };
 
 use crate::facts::{
-    DnsCommitFact, GatewayCommitFact, NodeTombstonedFact, ProjectionFactPayload, RouteCommitFact,
-    ServiceName, ServingCommitFact,
+    DnsCommitFact, GatewayCommitFact, NodeRemovalStartedFact, NodeTombstonedFact,
+    ProjectionFactPayload, RouteCommitFact, ServiceName, ServingCommitFact,
 };
 use crate::model::{
     AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsProjection, DnsRecordProjection,
     GatewayProjection, GatewayRouteProjection, NodeProjection, ProjectionIgnoreReason,
-    ProjectionState, ProjectionStatus, ServiceProjection,
+    ProjectionState, ProjectionStatus, RemovingNodeProjection, ServiceProjection,
 };
 use crate::source::{CandidateStatus, FactCandidate, FactKind, is_reducible_conflict_kind};
 use mvp_identity::NodeId;
@@ -63,6 +63,7 @@ struct Reducer<'a> {
     lease_releases: BTreeMap<LeaseResource, Vec<CommitCandidate<LeaseReleased>>>,
     acme_presented: BTreeMap<AcmeHttp01ChallengeKey, Vec<CommitCandidate<AcmeHttp01PresentedFact>>>,
     acme_cleared: BTreeMap<AcmeHttp01ChallengeKey, Vec<CommitCandidate<AcmeHttp01ClearedFact>>>,
+    node_removals: BTreeMap<NodeId, Vec<CommitCandidate<NodeRemovalStartedFact>>>,
     node_tombstones: BTreeMap<NodeId, u64>,
     node_conflicts: BTreeMap<NodeId, u64>,
     service_conflicts: BTreeMap<(ServiceName, NodeId), u64>,
@@ -83,6 +84,7 @@ impl<'a> Reducer<'a> {
             lease_releases: BTreeMap::new(),
             acme_presented: BTreeMap::new(),
             acme_cleared: BTreeMap::new(),
+            node_removals: BTreeMap::new(),
             node_tombstones: BTreeMap::new(),
             node_conflicts: BTreeMap::new(),
             service_conflicts: BTreeMap::new(),
@@ -140,6 +142,16 @@ impl<'a> Reducer<'a> {
                     wg_public_key: fact.wg_public_key,
                 };
                 self.apply_node(node);
+            }
+            (FactKind::NodeRemovalStarted, ProjectionFactPayload::NodeRemovalStarted(fact)) => {
+                self.node_removals
+                    .entry(fact.node_id.clone())
+                    .or_default()
+                    .push(CommitCandidate {
+                        author,
+                        content_hash,
+                        fact,
+                    });
             }
             (FactKind::NodeTombstoned, ProjectionFactPayload::NodeTombstoned(fact)) => {
                 self.apply_node_tombstone(fact);
@@ -246,6 +258,7 @@ impl<'a> Reducer<'a> {
     }
 
     fn finish(mut self) -> ProjectionState {
+        self.state.removing_nodes = self.project_node_removals();
         self.state.tombstoned_nodes = std::mem::take(&mut self.node_tombstones);
         self.state.acme_http01 = self.project_acme_http01();
         self.record_lease_supersession();
@@ -434,6 +447,38 @@ impl<'a> Reducer<'a> {
             + superseded_count(&self.lease_renewals)
             + superseded_count(&self.lease_releases);
         self.ignore_many(ProjectionIgnoreReason::Superseded, superseded);
+    }
+
+    fn project_node_removals(&mut self) -> BTreeMap<NodeId, RemovingNodeProjection> {
+        let mut removing = BTreeMap::new();
+        let node_ids = self.node_removals.keys().cloned().collect::<Vec<_>>();
+        for node_id in node_ids {
+            let Some(candidates) = self.node_removals.get(&node_id).cloned() else {
+                continue;
+            };
+            if self.node_tombstones.contains_key(&node_id) {
+                self.ignore_many(ProjectionIgnoreReason::Superseded, candidates.len());
+                continue;
+            }
+            let Some(selected) = select_head(
+                candidates.iter(),
+                |fact| fact.epoch,
+                |fact| fact.reason.as_str(),
+            ) else {
+                continue;
+            };
+            self.ignore_many(ProjectionIgnoreReason::Superseded, selected.superseded);
+            let fact = selected.fact;
+            removing.insert(
+                fact.node_id.clone(),
+                RemovingNodeProjection {
+                    node_id: fact.node_id,
+                    epoch: fact.epoch,
+                    reason: fact.reason,
+                },
+            );
+        }
+        removing
     }
 
     fn project_gateway(&mut self) -> Option<GatewayProjection> {
@@ -805,6 +850,10 @@ enum KeyExpectation {
         node_id: String,
         epoch: u64,
     },
+    NodeRemovalStarted {
+        node_id: String,
+        epoch: u64,
+    },
     NodeTombstoned {
         node_id: String,
         epoch: u64,
@@ -861,6 +910,11 @@ fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPayloa
             Some(KeyExpectation::NodeJoined { node_id, epoch }),
             FactKind::NodeJoined,
             ProjectionFactPayload::NodeJoined(fact),
+        ) => fact.node_id.as_str() == node_id && fact.epoch == epoch,
+        (
+            Some(KeyExpectation::NodeRemovalStarted { node_id, epoch }),
+            FactKind::NodeRemovalStarted,
+            ProjectionFactPayload::NodeRemovalStarted(fact),
         ) => fact.node_id.as_str() == node_id && fact.epoch == epoch,
         (
             Some(KeyExpectation::NodeTombstoned { node_id, epoch }),
@@ -975,6 +1029,13 @@ fn key_expectation(candidate: &FactCandidate) -> Option<KeyExpectation> {
             node_id: (*node_id).to_string(),
             epoch: epoch.parse().ok()?,
         }),
+        ["facts", "node", node_id, "removal_started", epoch]
+        | ["facts", "node", node_id, "removal_started", epoch, _] => {
+            Some(KeyExpectation::NodeRemovalStarted {
+                node_id: (*node_id).to_string(),
+                epoch: epoch.parse().ok()?,
+            })
+        }
         ["facts", "node", node_id, "tombstoned", epoch]
         | ["facts", "node", node_id, "tombstoned", epoch, _] => {
             Some(KeyExpectation::NodeTombstoned {
@@ -1139,8 +1200,8 @@ mod tests {
     use super::reduce_facts;
     use crate::facts::{
         BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeJoinedFact,
-        NodeTombstonedFact, ProjectionFactPayload, RouteCommitFact, RouteId, ServiceName,
-        ServiceRegistrationFact, ServingCommitFact,
+        NodeRemovalStartedFact, NodeTombstonedFact, ProjectionFactPayload, RouteCommitFact,
+        RouteId, ServiceName, ServiceRegistrationFact, ServingCommitFact,
     };
     use crate::model::{ProjectionIgnoreReason, ProjectionState};
     use crate::source::{CandidateStatus, FactCandidate, FactKind};
@@ -1531,6 +1592,174 @@ mod tests {
         assert_eq!(state.tombstoned_nodes.get(&NodeId::new("node-1")), Some(&1));
         assert!(state.services.is_empty());
         assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 2);
+    }
+
+    #[test]
+    fn reducer_projects_removal_started_without_removing_live_state() {
+        let mut payloads = BTreeMap::new();
+        let node_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::NodeJoined(NodeJoinedFact {
+                node_id: NodeId::new("node-1"),
+                epoch: 1,
+                overlay_ip: "fd00::1".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
+            }),
+        );
+        let service_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::ServiceRegistered(ServiceRegistrationFact {
+                service: ServiceName::new("web"),
+                node_id: NodeId::new("node-1"),
+                version: "1.0.0".to_string(),
+                endpoint_subject: "node.node-1.web".to_string(),
+                epoch: 1,
+            }),
+        );
+        let removal_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::NodeRemovalStarted(NodeRemovalStartedFact {
+                node_id: NodeId::new("node-1"),
+                epoch: 2,
+                reason: "graceful-remove".to_string(),
+            }),
+        );
+        let candidates = vec![
+            candidate(
+                "/facts/node/node-1/joined/1",
+                FactKind::NodeJoined,
+                node_hash,
+            ),
+            candidate(
+                "/facts/service/web/node-1/registered/1",
+                FactKind::ServiceRegistered,
+                service_hash,
+            ),
+            candidate(
+                "/facts/node/node-1/removal_started/2",
+                FactKind::NodeRemovalStarted,
+                removal_hash,
+            ),
+        ];
+
+        let state = reduce_facts(&island("prod"), &candidates, &payloads);
+
+        assert!(state.nodes.contains_key(&NodeId::new("node-1")));
+        assert!(
+            state
+                .services
+                .contains_key(&(ServiceName::new("web"), NodeId::new("node-1")))
+        );
+        let removing = state
+            .removing_nodes
+            .get(&NodeId::new("node-1"))
+            .expect("node marked removing");
+        assert_eq!(removing.epoch, 2);
+        assert_eq!(removing.reason, "graceful-remove");
+    }
+
+    #[test]
+    fn reducer_tombstone_supersedes_removal_started() {
+        let mut payloads = BTreeMap::new();
+        let node_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::NodeJoined(NodeJoinedFact {
+                node_id: NodeId::new("node-1"),
+                epoch: 1,
+                overlay_ip: "fd00::1".to_string(),
+                iroh_endpoint_id: "iroh-test".to_string(),
+                wg_public_key: "wg-test".to_string(),
+            }),
+        );
+        let removal_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::NodeRemovalStarted(NodeRemovalStartedFact {
+                node_id: NodeId::new("node-1"),
+                epoch: 2,
+                reason: "graceful-remove".to_string(),
+            }),
+        );
+        let tombstone_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::NodeTombstoned(NodeTombstonedFact {
+                node_id: NodeId::new("node-1"),
+                epoch: 3,
+                reason: "removed".to_string(),
+            }),
+        );
+        let candidates = vec![
+            candidate(
+                "/facts/node/node-1/joined/1",
+                FactKind::NodeJoined,
+                node_hash,
+            ),
+            candidate(
+                "/facts/node/node-1/removal_started/2",
+                FactKind::NodeRemovalStarted,
+                removal_hash,
+            ),
+            candidate(
+                "/facts/node/node-1/tombstoned/3",
+                FactKind::NodeTombstoned,
+                tombstone_hash,
+            ),
+        ];
+
+        let state = reduce_facts(&island("prod"), &candidates, &payloads);
+
+        assert!(state.nodes.is_empty());
+        assert!(state.removing_nodes.is_empty());
+        assert_eq!(state.tombstoned_nodes.get(&NodeId::new("node-1")), Some(&3));
+        assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 2);
+    }
+
+    #[test]
+    fn reducer_selects_removal_started_candidate_deterministically() {
+        let mut payloads = BTreeMap::new();
+        let first_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::NodeRemovalStarted(NodeRemovalStartedFact {
+                node_id: NodeId::new("node-1"),
+                epoch: 2,
+                reason: "first".to_string(),
+            }),
+        );
+        let second_hash = insert_payload(
+            &mut payloads,
+            ProjectionFactPayload::NodeRemovalStarted(NodeRemovalStartedFact {
+                node_id: NodeId::new("node-1"),
+                epoch: 2,
+                reason: "second".to_string(),
+            }),
+        );
+        let expected_reason = if first_hash <= second_hash {
+            "first"
+        } else {
+            "second"
+        };
+        let candidates = vec![
+            candidate(
+                "/facts/node/node-1/removal_started/2/a",
+                FactKind::NodeRemovalStarted,
+                first_hash,
+            ),
+            candidate(
+                "/facts/node/node-1/removal_started/2/b",
+                FactKind::NodeRemovalStarted,
+                second_hash,
+            ),
+        ];
+
+        let state = reduce_facts(&island("prod"), &candidates, &payloads);
+
+        let removing = state
+            .removing_nodes
+            .get(&NodeId::new("node-1"))
+            .expect("node marked removing");
+        assert_eq!(removing.epoch, 2);
+        assert_eq!(removing.reason, expected_reason);
+        assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 1);
     }
 
     #[test]

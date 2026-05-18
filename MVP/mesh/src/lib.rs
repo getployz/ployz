@@ -13,7 +13,7 @@ pub use domain::{
 pub use error::{MeshError, MeshResult};
 pub use invite::{
     InviteId, InviteSecret, JoinCommand, JoinCommandResult, JoinRequest, TombstoneCommand,
-    TombstoneCommandResult,
+    TombstoneCommandResult, removal_started_fact_key, removal_started_fact_payload,
 };
 pub use snapshot::{
     WireGuardAppliedSnapshot, WireGuardSnapshotPaths, load_applied_snapshot, write_applied_snapshot,

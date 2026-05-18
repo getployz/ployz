@@ -12,7 +12,7 @@ use crate::facts::{BackendEndpoint, DnsRecordFact, RouteId, ServiceName};
 use crate::model::{
     AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsProjection, DnsRecordProjection,
     GatewayProjection, GatewayRouteProjection, NodeProjection, ProjectionIgnoreReason,
-    ProjectionState, ProjectionStatus, ServiceProjection,
+    ProjectionState, ProjectionStatus, RemovingNodeProjection, ServiceProjection,
 };
 use mvp_identity::NodeId;
 
@@ -24,6 +24,7 @@ pub struct SqliteProjectionStore {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionRowCounts {
     pub nodes: usize,
+    pub removing_nodes: usize,
     pub tombstoned_nodes: usize,
     pub services: usize,
     pub gateway_routes: usize,
@@ -86,6 +87,7 @@ impl SqliteProjectionStore {
         clear_projection_tables(&transaction)?;
         write_metadata(&transaction, state)?;
         write_nodes(&transaction, state)?;
+        write_removing_nodes(&transaction, state)?;
         write_tombstoned_nodes(&transaction, state)?;
         write_services(&transaction, state)?;
         write_gateway(&transaction, state)?;
@@ -115,6 +117,7 @@ impl SqliteProjectionStore {
         };
         let mut state = ProjectionState::for_island(island);
         load_nodes(&connection, &mut state)?;
+        load_removing_nodes(&connection, &mut state)?;
         load_tombstoned_nodes(&connection, &mut state)?;
         load_services(&connection, &mut state)?;
         load_gateway(&connection, &mut state)?;
@@ -129,6 +132,7 @@ impl SqliteProjectionStore {
         create_schema(&connection)?;
         Ok(ProjectionRowCounts {
             nodes: count_rows(&connection, "nodes")?,
+            removing_nodes: count_rows(&connection, "removing_nodes")?,
             tombstoned_nodes: count_rows(&connection, "tombstoned_nodes")?,
             services: count_rows(&connection, "services")?,
             gateway_routes: count_rows(&connection, "gateway_routes")?,
@@ -156,6 +160,11 @@ fn create_schema(connection: &Connection) -> ProjectionResult<()> {
         CREATE TABLE IF NOT EXISTS tombstoned_nodes (
           node_id TEXT PRIMARY KEY,
           epoch INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS removing_nodes (
+          node_id TEXT PRIMARY KEY,
+          epoch INTEGER NOT NULL,
+          reason TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS services (
           service TEXT NOT NULL,
@@ -212,6 +221,7 @@ fn clear_projection_tables(connection: &Connection) -> ProjectionResult<()> {
     for table in [
         "projection_metadata",
         "nodes",
+        "removing_nodes",
         "tombstoned_nodes",
         "services",
         "gateway_routes",
@@ -246,6 +256,23 @@ fn write_nodes(connection: &Connection, state: &ProjectionState) -> ProjectionRe
             node.overlay_ip.as_str(),
             node.iroh_endpoint_id.as_str(),
             node.wg_public_key.as_str()
+        ])?;
+    }
+    Ok(())
+}
+
+fn write_removing_nodes(connection: &Connection, state: &ProjectionState) -> ProjectionResult<()> {
+    let mut statement = connection.prepare(
+        "
+        INSERT INTO removing_nodes (node_id, epoch, reason)
+        VALUES (?1, ?2, ?3)
+        ",
+    )?;
+    for removing in state.removing_nodes.values() {
+        statement.execute(params![
+            removing.node_id.as_str(),
+            removing.epoch as i64,
+            removing.reason.as_str()
         ])?;
     }
     Ok(())
@@ -399,6 +426,34 @@ fn load_nodes(connection: &Connection, state: &mut ProjectionState) -> Projectio
     for row in rows {
         let node = row?;
         state.nodes.insert(node.node_id.clone(), node);
+    }
+    Ok(())
+}
+
+fn load_removing_nodes(
+    connection: &Connection,
+    state: &mut ProjectionState,
+) -> ProjectionResult<()> {
+    let mut statement = connection.prepare(
+        "
+        SELECT node_id, epoch, reason
+        FROM removing_nodes
+        ORDER BY node_id
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        let node_id = NodeId::new(row.get::<_, String>(0)?);
+        Ok(RemovingNodeProjection {
+            node_id,
+            epoch: row.get::<_, i64>(1)? as u64,
+            reason: row.get(2)?,
+        })
+    })?;
+    for row in rows {
+        let removing = row?;
+        state
+            .removing_nodes
+            .insert(removing.node_id.clone(), removing);
     }
     Ok(())
 }
@@ -639,7 +694,7 @@ mod tests {
     use crate::model::{
         DnsProjection, DnsRecordProjection, GatewayProjection, GatewayRouteProjection,
         NodeProjection, ProjectionIgnoreReason, ProjectionState, ProjectionStatus,
-        ServiceProjection,
+        RemovingNodeProjection, ServiceProjection,
     };
     use mvp_bus::IslandId;
     use mvp_identity::NodeId;
@@ -655,6 +710,14 @@ mod tests {
                 overlay_ip: "fd00::1".to_string(),
                 iroh_endpoint_id: "iroh-test".to_string(),
                 wg_public_key: "wg-test".to_string(),
+            },
+        );
+        state.removing_nodes.insert(
+            NodeId::new("node-removing"),
+            RemovingNodeProjection {
+                node_id: NodeId::new("node-removing"),
+                epoch: 2,
+                reason: "graceful-remove".to_string(),
             },
         );
         state.tombstoned_nodes.insert(NodeId::new("node-2"), 3);
@@ -744,6 +807,7 @@ mod tests {
         let mut state = sample_state();
         store.rebuild(&state).expect("rebuild projection");
         state.nodes.clear();
+        state.removing_nodes.clear();
         state.tombstoned_nodes.clear();
         state.services.clear();
         state.gateway = None;
