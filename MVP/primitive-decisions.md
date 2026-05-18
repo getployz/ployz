@@ -27,6 +27,20 @@ the decision concrete.
   only one production implementor today, so do not promote it into
   `mvp-p2panda-facts` or a broader store facade until a second command repeats
   the same storage boundary.
+- Slice 027 adds `mvp-volume` as the first volume movement canary. Volume
+  ownership authority is an immutable fact
+  `/facts/volume/<namespace>/<volume>/ownership/<epoch>` with embedded transfer
+  evidence and advisory lease fencing fields. The command reads ownership and
+  lease candidates before mutation, writes a durable lease claim before
+  participant RPC, validates exact snapshot/receive evidence, rechecks lease
+  and ownership after participant work, and writes the ownership commit only
+  after the receive proof. Write conflicts are foreground `FactConflict`
+  results, and success requires the just-written ownership fact to reduce as
+  current.
+- Slice 027 intentionally keeps p2panda volume persistence as E2E-local glue.
+  One caller is not enough evidence for a reusable `mvp-volume-p2panda` adapter;
+  extract it only when another storage/volume command repeats the same store
+  boundary.
 - Slice 026 extracts deploy p2panda fact-writing glue from
   `deploy-restart-recovery-contract` into `mvp-deploy-p2panda`. Core
   `mvp-deploy` stays free of p2panda dependencies; the adapter crate owns

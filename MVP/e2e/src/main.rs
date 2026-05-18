@@ -87,6 +87,7 @@ mod projection_contract;
 mod projection_harness;
 mod scale;
 mod steady_state_serving_contract;
+mod volume_transfer_contract;
 
 use std::env;
 use std::process;
@@ -198,6 +199,7 @@ const SCENARIOS: &[Scenario] = &[
         machine_remove_contract::run,
         machine_remove_contract::cleanup_orphaned_children,
     ),
+    Scenario::new("volume-transfer-contract", volume_transfer_contract::run),
     Scenario::new("scale", scale::run),
 ];
 

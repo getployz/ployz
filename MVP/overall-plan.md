@@ -409,6 +409,14 @@ p2panda-backed serving commit, projection catch-up, then drain as a
 consequence of that commit. See
 [MVP/slice-026-deploy-p2panda-command-surface.md](slice-026-deploy-p2panda-command-surface.md).
 
+Slice 027 adds the volume movement canary:
+[MVP/slice-027-volume-ownership-transfer.md](slice-027-volume-ownership-transfer.md).
+`volume-transfer-contract` proves advisory lease fencing, bus-backed
+snapshot/receive, exact receive-evidence validation, p2panda-backed ownership
+commit, post-commit recovery, stale-holder rejection, and pre-commit no-success
+semantics without adding ZFS, a generic workflow runner, or a reusable volume
+p2panda adapter.
+
 The routing-owned serving commit correction then moved serving fact writer
 ownership to `mvp-routing`. Deploy and machine remove both consume the same
 `ServingFactWriter` contract, and the p2panda serving writer lives in
