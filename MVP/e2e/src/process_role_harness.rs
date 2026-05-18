@@ -436,7 +436,11 @@ pub(crate) fn spawn_p2panda_net_scripted_publisher_process(
     }
     command
         .arg("--publish-malformed")
-        .arg(if config.publish_malformed { "true" } else { "false" })
+        .arg(if config.publish_malformed {
+            "true"
+        } else {
+            "false"
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -1035,9 +1039,9 @@ fn optional_serving_commit_input(
 ) -> Result<Option<ServingCommitInput>, String> {
     match (commit_id, backend, dns, epoch) {
         (None, None, None, None) => Ok(None),
-        (Some(commit_id), Some(backend), Some(dns), Some(epoch)) => {
-            Ok(Some(ServingCommitInput::new(commit_id, backend, dns, epoch)))
-        }
+        (Some(commit_id), Some(backend), Some(dns), Some(epoch)) => Ok(Some(
+            ServingCommitInput::new(commit_id, backend, dns, epoch),
+        )),
         (commit_id, backend, dns, epoch) => Err(format!(
             "{role} requires all --{prefix}-* fields or none, got commit_id={}, backend={}, dns={}, epoch={}",
             commit_id.is_some(),
@@ -1386,14 +1390,6 @@ pub(crate) async fn run_p2panda_net_serving_projection_role(
         config.root.join("gateway.snapshot"),
         config.root.join("dns.snapshot"),
     );
-    let projection = spawn_projection(
-        Arc::new(store.clone()),
-        expected_island.clone(),
-        projection_session.clone(),
-        pattern.clone(),
-        config.root.as_path(),
-        &snapshot_paths,
-    );
 
     let bootstrap = config
         .bootstrap
@@ -1407,7 +1403,7 @@ pub(crate) async fn run_p2panda_net_serving_projection_role(
     let fact_node = PandaNetFactNode::spawn(PandaNetFactNodeConfig::new(
         PandaNetNodeConfig::localhost_ephemeral(config.network_id, config.seed, bootstrap),
         config.topic,
-        store,
+        store.clone(),
         replica_session,
     ))
     .await
@@ -1419,24 +1415,18 @@ pub(crate) async fn run_p2panda_net_serving_projection_role(
     let fact_node = Arc::new(Mutex::new(fact_node));
     let import_status = Arc::new(Mutex::new(P2pandaNetImportStatus::default()));
 
-    let state = Arc::new(Mutex::new(ServingProjectionState {
+    let state = Arc::new(Mutex::new(ServingProjectionState::from_source(
         expected_island,
         projection_session,
-        source_config: ServingProjectionFactSourceConfig::P2pandaSqlite(Box::new(
-            P2pandaSqliteFactSourceConfig {
-                path: config.store_path.clone(),
-                trusted_author: config.trusted_author.clone(),
-            },
-        )),
-        root: config.root,
+        ServingProjectionFactSourceConfig::P2pandaSqlite(Box::new(P2pandaSqliteFactSourceConfig {
+            path: config.store_path.clone(),
+            trusted_author: config.trusted_author.clone(),
+        })),
+        config.root,
         snapshot_paths,
         pattern,
-        projection,
-        serving: None,
-        rebuild: None,
-        next_rebuild_token: 1,
-        p2panda_net: None,
-    }));
+        Arc::new(store.clone()),
+    )));
     let task = tokio::spawn(run_p2panda_net_import_apply_loop(
         Arc::clone(&state),
         Arc::clone(&fact_node),
@@ -2682,19 +2672,39 @@ impl ServingProjectionState {
             &pattern,
         )
         .await?;
+        Ok(Self::from_source(
+            expected_island,
+            projection_session,
+            config.fact_source,
+            config.root,
+            snapshot_paths,
+            pattern,
+            source,
+        ))
+    }
+
+    fn from_source(
+        expected_island: IslandId,
+        projection_session: BusSession,
+        source_config: ServingProjectionFactSourceConfig,
+        root: PathBuf,
+        snapshot_paths: ServingSnapshotPaths,
+        pattern: FactKeyPattern,
+        source: Arc<dyn FactSource>,
+    ) -> Self {
         let projection = spawn_projection(
             source,
             expected_island.clone(),
             projection_session.clone(),
             pattern.clone(),
-            config.root.as_path(),
+            root.as_path(),
             &snapshot_paths,
         );
-        Ok(Self {
+        Self {
             expected_island,
             projection_session,
-            source_config: config.fact_source,
-            root: config.root,
+            source_config,
+            root,
             snapshot_paths,
             pattern,
             projection,
@@ -2702,7 +2712,7 @@ impl ServingProjectionState {
             rebuild: None,
             next_rebuild_token: 1,
             p2panda_net: None,
-        })
+        }
     }
 }
 

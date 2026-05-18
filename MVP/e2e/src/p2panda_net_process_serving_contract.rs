@@ -1,5 +1,5 @@
-use std::{fs, path::Path};
 use std::time::{Duration, Instant};
+use std::{fs, path::Path};
 
 use mvp_bus::PrincipalId;
 use mvp_p2panda_facts::PandaFactAuthor;
@@ -84,14 +84,13 @@ async fn run_async() -> Result<(), String> {
         &receiver_arg_refs,
     )?;
     wait_for_serving_role(&serving_socket).await?;
-    let receiver_ticket = wait_for_p2panda_net_status(&serving_socket, |status| {
-        status.p2panda_net().is_some()
-    })
-    .await?
-    .p2panda_net()
-    .ok_or_else(|| "p2panda-net status missing after readiness".to_string())?
-    .node_ticket
-    .clone();
+    let receiver_ticket =
+        wait_for_p2panda_net_status(&serving_socket, |status| status.p2panda_net().is_some())
+            .await?
+            .p2panda_net()
+            .ok_or_else(|| "p2panda-net status missing after readiness".to_string())?
+            .node_ticket
+            .clone();
 
     let mut baseline_publisher =
         spawn_p2panda_net_scripted_publisher_process(P2pandaNetScriptedPublisherProcess {
