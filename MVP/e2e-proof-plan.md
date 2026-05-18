@@ -272,6 +272,13 @@ Current proof status:
   replans the last-applied mesh snapshot, proves remaining source-to-destination
   traffic still works, and rejects traffic to the removed target from the
   applied peer table.
+- Slice 029 extends `machine-remove-contract` with coordinator restart
+  recovery after serving commit and before stop/tombstone. The command writes a
+  machine-remove decision fact before mutation, drops the original coordinator
+  and in-memory pending value, replays p2panda operations into a fresh store,
+  reconstructs pending cleanup from facts, proves probe/drain/serving writes
+  are not replayed, gates stop on `ProjectionCatchUp`, writes tombstone plus
+  cleanup-done, and proves a second recovery completes without RPC.
 - Remaining E2E-5 work is real host/container WireGuard interface mutation,
   real runtime workload stop/transfer backends behind the same participant
   contract, and a production join/remove RPC path over iroh/PloyzBus.
@@ -501,6 +508,13 @@ Current proof status:
   `FactSource` wrapper from this E2E into `mvp-deploy-p2panda`. The restart
   scenario still owns process choreography and operation export/import, but it
   no longer owns deploy-specific p2panda outcome mapping.
+- Slice 029 adds the machine-remove equivalent recovery proof. The target
+  command coordinator is dropped after the p2panda-backed serving cutover and
+  before stop/tombstone. A fresh store imports the surviving operations through
+  trusted replica authority; recovery reads the decision and exact serving
+  commit, returns pending cleanup, still requires projection catch-up before
+  stop, and later observes cleanup-done without contacting the participant.
+  Remaining mesh traffic continues after the coordinator outage/recovery.
 - Slice 021 adds coordinator/issuer absence to the ACME serving path. HTTP-01
   continues serving the last-good challenge after the command adapter is
   dropped, a later p2panda sync/rebuild clears the challenge explicitly, stale
@@ -629,6 +643,13 @@ Current proof status:
   leverage win is boundary clarity rather than line count: `DocsMachineFactWriter`
   and `CombinedFactSource` are gone, joined-node/removal/tombstone/serving facts
   rebuild from one p2panda store, and scoped author checks are explicit.
+- Slice 029 is a mixed implementation/reuse win. Machine remove gains durable
+  restart recovery facts and E2E proof without adding a generic workflow
+  engine; the business rule is still visible as probe, decision, serving
+  commit, projection catch-up, stop, tombstone, cleanup-done. At the same time,
+  repeated p2panda wrapper mechanics moved into `SharedPandaFactStore`, so the
+  next command should not need another local `Arc<Mutex<PandaFactStore>>`
+  adapter shell.
 
 ## Required Test Artifacts
 

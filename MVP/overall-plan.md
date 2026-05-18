@@ -431,6 +431,16 @@ facts, and serving commits from one p2panda-backed fact source. The slice adds
 combined fact source, proves scoped join/machine/routing write authority, and
 keeps coordinator-resume after serving commit explicitly deferred.
 
+Slice 029 closes that deferred recovery point:
+[MVP/slice-029-machine-remove-restart-recovery.md](slice-029-machine-remove-restart-recovery.md).
+Machine remove now writes a command decision fact after target probe and before
+mutation, writes cleanup-done only after tombstone, and can recover pending
+cleanup from p2panda-backed facts after the original coordinator and in-memory
+pending value are gone. The same slice also centralizes repeated p2panda store
+wrapper mechanics in `SharedPandaFactStore`, so deploy, routing, machine, and
+volume fixtures share the same storage shell while domain writers keep their
+own error semantics.
+
 The next implementation/proof slice should keep paying down product semantic
 leverage rather than adding another generic substrate layer. Plan it against
 the current map and prefer a product rule that reuses bus, p2panda facts,
