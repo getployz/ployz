@@ -132,12 +132,13 @@ impl PandaNetFactNode {
         &mut self,
         stream_body: PandaNetStreamBody,
     ) -> Vec<PandaNetFactImportOutcome> {
-        let outcome = match stream_body {
-            PandaNetStreamBody::Body(body) => self.import_body(body).await,
-            PandaNetStreamBody::TooLarge { size, max } => PandaNetFactImportOutcome::Rejected(
-                PandaNetFactImportRejection::EnvelopeTooLarge { size, max },
-            ),
-        };
+        let outcome =
+            match stream_body {
+                PandaNetStreamBody::Body(body) => self.import_body(body).await,
+                PandaNetStreamBody::TooLarge { size, max } => PandaNetFactImportOutcome::Rejected(
+                    PandaNetFactImportRejection::EnvelopeTooLarge { size, max },
+                ),
+            };
         let can_unblock_pending = import_can_unblock_pending(&outcome);
         let mut outcomes = vec![outcome];
         if can_unblock_pending {

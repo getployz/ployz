@@ -68,8 +68,9 @@ Add `p2panda-net-process-serving-contract`:
    synced local p2panda store,
 8. restart the serving/projection process while no coordinator is running and
    load last-good snapshots before answering,
-9. reject or surface malformed, wrong-island, untrusted-author, and
-   unauthorized-replica p2panda-net operations as structured import status,
+9. reject malformed p2panda-net operations as structured import status, with
+   wrong-island, untrusted-author, and unauthorized-replica process-status
+   mirroring left to a hardening follow-up,
 10. keep local mutation attempts through the dead coordinator path visibly
     unavailable.
 
@@ -83,6 +84,10 @@ serving update after baseline, malformed message rejection, deleted SQLite
 rebuild, and restart from last-good snapshots/local p2panda store. The receiver
 refreshes its p2panda stream after idle timeouts so later appends from a stable
 remote peer are picked up without the local coordinator.
+Wrong-island, untrusted-author, and unauthorized-replica rejection remain
+covered by the lower-level `p2panda-net-fact-node-contract`; mirroring those
+exact rejection classes through process-role status is intentionally left as a
+hardening follow-up.
 
 ## Requirements Trace
 
@@ -289,8 +294,10 @@ Requirements:
 - It opens a local `SharedPandaFactStore` with the requested author/grants,
   writes a serving commit payload, publishes the resulting operation through
   `PandaNetFactNode`, prints a JSON ack, and exits.
-- It can also publish malformed or wrong-island/untrusted test bodies for the
-  rejection path.
+- It can also publish malformed bodies for the process-role rejection path.
+  Wrong-island/untrusted/unauthorized rejection remains covered by the
+  lower-level fact-node contract until a dedicated hardening slice mirrors
+  those variants through process status.
 - It must not share the receiver's SQLite file. Replication must happen through
   p2panda-net.
 
@@ -321,8 +328,9 @@ Scenario:
    publish `serving-2`.
 8. While import/apply is happening, assert serving still answers last good.
 9. Wait for receiver to expose `serving-2`; assert gateway/DNS answer updated.
-10. Publish malformed, wrong-island, and untrusted-author bodies; assert status
-    reports structured rejections and no cross-island leakage.
+10. Publish a malformed body; assert status reports structured rejection and no
+    serving-state corruption. Wrong-island and untrusted-author behavior remains
+    covered by `p2panda-net-fact-node-contract`.
 11. Delete `projections.sqlite`, request rebuild, and assert serving answers
     throughout.
 12. Restart receiver with no coordinator and assert it loads snapshots/local
@@ -401,8 +409,10 @@ budget with metrics.
 - The receiver process updates gateway/DNS serving state from p2panda-net facts
   while no local coordinator is alive.
 - Local mutation attempts fail visibly while serving/projection continues.
-- Malformed, wrong-island, untrusted-author, and unauthorized-replica paths are
-  visible in structured status and do not corrupt last-good serving state.
+- Malformed p2panda-net payloads are visible in structured status and do not
+  corrupt last-good serving state. Wrong-island, untrusted-author, and
+  unauthorized-replica paths remain covered in the lower-level fact-node
+  contract, with process-status mirroring deferred.
 - Deleted SQLite projection rebuilds from the receiver's local p2panda store
   while serving continues.
 - Restart with no coordinator loads last-good snapshots and local p2panda state.
