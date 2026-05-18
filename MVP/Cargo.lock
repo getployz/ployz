@@ -2713,6 +2713,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mvp-acme-command"
+version = "0.1.0"
+dependencies = [
+ "mvp-acme",
+ "mvp-bus",
+ "mvp-identity",
+ "mvp-lease",
+ "mvp-p2panda-facts",
+ "mvp-projection",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "mvp-bus"
 version = "0.1.0"
 dependencies = [
@@ -2747,6 +2761,7 @@ dependencies = [
  "hickory-proto",
  "memory-stats",
  "mvp-acme",
+ "mvp-acme-command",
  "mvp-bus",
  "mvp-deploy",
  "mvp-identity",

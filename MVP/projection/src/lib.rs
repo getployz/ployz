@@ -24,7 +24,7 @@ pub use model::{
     GatewayProjection, GatewayRouteProjection, NodeProjection, ProjectionIgnoreReason,
     ProjectionState, ProjectionStatus, RemovingNodeProjection, ServiceProjection,
 };
-pub use reducer::reduce_facts;
+pub use reducer::{payload_matches_key, reduce_facts};
 pub use snapshot::{
     DnsSnapshotFile, GatewaySnapshotFile, ProjectionSnapshotWriteReport, SnapshotWriteReport,
     load_dns_snapshot, load_gateway_snapshot, write_projection_snapshots,

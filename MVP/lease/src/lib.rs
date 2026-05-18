@@ -874,6 +874,10 @@ impl LeaseBook {
         LeaseFactImporter { book: self }
     }
 
+    pub fn record_observed_fact(&self, fact: LeaseFact) {
+        self.push_fact(fact);
+    }
+
     fn id(&self) -> LeaseBookId {
         self.inner.borrow().id
     }

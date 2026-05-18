@@ -4,15 +4,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use mvp_acme::{
-    AcmeChallengeId, AcmeChallengeToken, AcmeHostname, AcmeHttp01ClearedFact,
-    AcmeHttp01PresentedFact, AcmeKeyAuthorization,
+    AcmeChallengeId, AcmeChallengeToken, AcmeHostname, AcmeHttp01PresentedFact,
+    AcmeKeyAuthorization,
 };
-use mvp_bus::{BusSession, FactKey, Grant, IslandId, PrincipalId, harness::InMemoryBus};
+use mvp_acme_command::{
+    AcmeClaimCommand, AcmeClearHttp01Command, AcmeCommandError, AcmeLeaseHandle,
+    AcmePresentHttp01Command, PandaAcmeCommandAdapter,
+};
+use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::{NodeId, VisibleNodes};
-use mvp_lease::{
-    LeaseClaimed, LeaseContentHash, LeaseEpoch, LeaseFact, LeaseHolder, LeaseRelease,
-    LeaseReleased, LeaseState, LeaseTimestamp,
-};
+use mvp_lease::{LeaseEpoch, LeaseTimestamp};
 use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactAuthorKey, PandaFactStore, PandaFactSyncError, PandaFactSyncScope,
     PandaFactSyncSide, PandaFactWireEnvelope, PandaSqliteOpenConfig, PandaTrustedAuthorKey,
@@ -23,8 +24,7 @@ use mvp_p2panda_transport::{
     PandaNetNodeConfig, PandaNetNodeInfo, import_fact_body, import_next_fact,
 };
 use mvp_projection::{
-    CandidateStatus, DnsCommitFact, FactCandidate, FactKind, FactSource, ProjectionFactPayload,
-    ProjectionIgnoreReason, SqliteProjectionStore,
+    DnsCommitFact, FactSource, ProjectionFactPayload, ProjectionIgnoreReason, SqliteProjectionStore,
 };
 use mvp_serving::{ServingActorHandle, ServingSnapshotPaths, WireServingState, spawn_http_gateway};
 use p2panda_core_git::{SigningKey, Topic};
@@ -117,7 +117,7 @@ async fn run_net_async() -> Result<(), String> {
     let bus = Arc::new(bus);
     let dns_author = PandaFactAuthor::new(sessions.dns_writer.principal().clone());
     let visible_nodes = VisibleNodes::new([NodeId::new("node-a"), NodeId::new("node-b")]);
-    let mut adapter = AcmeP2pandaCommandAdapter::new(
+    let mut adapter = PandaAcmeCommandAdapter::new(
         sessions.issuer_a.clone(),
         PandaFactAuthor::new(sessions.issuer_a.principal().clone()),
         visible_nodes,
@@ -163,19 +163,19 @@ async fn run_net_async() -> Result<(), String> {
     let claim = adapter
         .claim(
             &mut left,
-            &challenge,
-            timeline.acquired_at,
-            timeline.expires_at,
+            AcmeClaimCommand::new(challenge.clone(), timeline.acquired_at, timeline.expires_at),
         )
         .await
         .map_err(|error| error.to_string())?;
     let present = adapter
         .present(
             &mut left,
-            &challenge,
-            &claim.lease,
-            "thumbprint-net",
-            timeline.published_at,
+            AcmePresentHttp01Command::new(
+                challenge.clone(),
+                claim.lease().clone(),
+                "thumbprint-net",
+                timeline.published_at,
+            ),
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -247,7 +247,7 @@ async fn run_net_async() -> Result<(), String> {
     if !initial_http.response.starts_with("HTTP/1.1 200 OK")
         || !initial_http
             .response
-            .ends_with(present.key_authorization.as_str())
+            .ends_with(present.key_authorization().as_str())
     {
         return Err(format!(
             "p2panda-net ACME HTTP response did not serve the challenge: {}",
@@ -256,7 +256,14 @@ async fn run_net_async() -> Result<(), String> {
     }
 
     let clear = adapter
-        .clear(&mut left, &challenge, &claim.lease, timeline.cleared_at)
+        .clear(
+            &mut left,
+            AcmeClearHttp01Command::new(
+                challenge.clone(),
+                claim.lease().clone(),
+                timeline.cleared_at,
+            ),
+        )
         .await
         .map_err(|error| error.to_string())?;
     drop(adapter);
@@ -338,7 +345,7 @@ async fn run_net_async() -> Result<(), String> {
 
     let report = P2pandaNetAcmeHttp01Report {
         scenario: "p2panda-net-acme-http01-contract",
-        visible_nodes_at_decision: claim.visible_nodes.len(),
+        visible_nodes_at_decision: claim.visible_nodes().len(),
         key_authorization,
         replayed_operations_before_clear: before_clear.replayed,
         replayed_operations_after_clear: after_clear.replayed,
@@ -349,7 +356,7 @@ async fn run_net_async() -> Result<(), String> {
         projection_reload_ms,
         http_request_us: initial_http.elapsed_us,
         command_adapter_outage_serving_success_count: 1,
-        release_fact_recorded: clear.release_recorded,
+        release_fact_recorded: clear.release_recorded(),
         sqlite_rebuild_after_delete,
         http_404_after_clear,
         elapsed_ms: started.elapsed().as_millis(),
@@ -391,12 +398,12 @@ async fn run_async() -> Result<(), String> {
     let bus = Arc::new(bus);
     let dns_author = PandaFactAuthor::new(sessions.dns_writer.principal().clone());
     let visible_nodes = VisibleNodes::new([NodeId::new("node-a"), NodeId::new("node-b")]);
-    let mut adapter_a = AcmeP2pandaCommandAdapter::new(
+    let mut adapter_a = PandaAcmeCommandAdapter::new(
         sessions.issuer_a.clone(),
         PandaFactAuthor::new(sessions.issuer_a.principal().clone()),
         visible_nodes.clone(),
     );
-    let mut adapter_b = AcmeP2pandaCommandAdapter::new(
+    let mut adapter_b = PandaAcmeCommandAdapter::new(
         sessions.issuer_b.clone(),
         PandaFactAuthor::new(sessions.issuer_b.principal().clone()),
         visible_nodes,
@@ -452,45 +459,52 @@ async fn run_async() -> Result<(), String> {
     let claim_a = adapter_a
         .claim(
             &mut left,
-            &challenge,
-            timeline.acquired_at,
-            timeline.expires_at,
+            AcmeClaimCommand::new(challenge.clone(), timeline.acquired_at, timeline.expires_at),
         )
         .await
         .map_err(|error| error.to_string())?;
     let present_a = adapter_a
         .present(
             &mut left,
-            &challenge,
-            &claim_a.lease,
-            "thumbprint-a",
-            timeline.published_at,
+            AcmePresentHttp01Command::new(
+                challenge.clone(),
+                claim_a.lease().clone(),
+                "thumbprint-a",
+                timeline.published_at,
+            ),
         )
         .await
         .map_err(|error| error.to_string())?;
     let stale_before_mutation = adapter_b
         .claim(
             &mut left,
-            &challenge,
-            timeline.published_at,
-            timeline.expires_at,
+            AcmeClaimCommand::new(
+                challenge.clone(),
+                timeline.published_at,
+                timeline.expires_at,
+            ),
         )
         .await
         .expect_err("locally visible lease conflict rejects second issuer");
     assert!(matches!(
         stale_before_mutation,
-        AcmeAdapterError::Conflict { .. }
+        AcmeCommandError::Conflict { .. }
     ));
     let wrong_scope = adapter_a
         .claim(
             &mut left,
-            &other_challenge,
-            timeline.acquired_at,
-            timeline.expires_at,
+            AcmeClaimCommand::new(
+                other_challenge.clone(),
+                timeline.acquired_at,
+                timeline.expires_at,
+            ),
         )
         .await
         .expect_err("ACME grant scoped to one challenge rejects another lease");
-    assert!(matches!(wrong_scope, AcmeAdapterError::Fact(_)));
+    assert!(matches!(
+        wrong_scope,
+        AcmeCommandError::UnauthorizedFactWrite { .. }
+    ));
 
     let sync_started = Instant::now();
     let first_sync = sync_panda_fact_stores(
@@ -570,7 +584,7 @@ async fn run_async() -> Result<(), String> {
     if initial_http.response.starts_with("HTTP/1.1 200 OK")
         && initial_http
             .response
-            .ends_with(present_a.key_authorization.as_str())
+            .ends_with(present_a.key_authorization().as_str())
     {
         outage_success_count += 1;
     } else {
@@ -581,7 +595,14 @@ async fn run_async() -> Result<(), String> {
     }
 
     let pending_clear = adapter_a
-        .clear(&mut left, &challenge, &claim_a.lease, timeline.cleared_at)
+        .clear(
+            &mut left,
+            AcmeClearHttp01Command::new(
+                challenge.clone(),
+                claim_a.lease().clone(),
+                timeline.cleared_at,
+            ),
+        )
         .await
         .map_err(|error| error.to_string())?;
     let outage_http = timed_http_get(
@@ -626,19 +647,23 @@ async fn run_async() -> Result<(), String> {
     let claim_b = adapter_b
         .claim(
             &mut left,
-            &challenge,
-            timeline.takeover_at,
-            timeline.takeover_expires_at,
+            AcmeClaimCommand::new(
+                challenge.clone(),
+                timeline.takeover_at,
+                timeline.takeover_expires_at,
+            ),
         )
         .await
         .map_err(|error| error.to_string())?;
     let present_b = adapter_b
         .present(
             &mut left,
-            &challenge,
-            &claim_b.lease,
-            "thumbprint-b",
-            timeline.takeover_presented_at,
+            AcmePresentHttp01Command::new(
+                challenge.clone(),
+                claim_b.lease().clone(),
+                "thumbprint-b",
+                timeline.takeover_presented_at,
+            ),
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -647,16 +672,18 @@ async fn run_async() -> Result<(), String> {
     let stale_present_attempt = adapter_a
         .present(
             &mut left,
-            &challenge,
-            &claim_a.lease,
-            "thumbprint-stale-local",
-            timeline.stale_arrival_at,
+            AcmePresentHttp01Command::new(
+                challenge.clone(),
+                claim_a.lease().clone(),
+                "thumbprint-stale-local",
+                timeline.stale_arrival_at,
+            ),
         )
         .await
         .expect_err("stale local ACME presenter is rejected before mutation");
     assert!(matches!(
         stale_present_attempt,
-        AcmeAdapterError::StaleLease
+        AcmeCommandError::StaleLease
     ));
     assert_eq_named(
         "stale local ACME present did not append facts",
@@ -666,10 +693,11 @@ async fn run_async() -> Result<(), String> {
     drop(adapter_a);
     let stale_present = stale_presented_fact(
         challenge.clone(),
-        &claim_a.lease,
+        claim_a.lease(),
         "thumbprint-stale",
         timeline.stale_arrival_at,
-    )?;
+    )
+    .map_err(|error| error.to_string())?;
     write_panda_projection_fact(
         &mut left,
         &sessions.issuer_b,
@@ -707,8 +735,8 @@ async fn run_async() -> Result<(), String> {
     let stale_sync_preserved_winner = takeover_http.response.starts_with("HTTP/1.1 200 OK")
         && takeover_http
             .response
-            .ends_with(present_b.key_authorization.as_str())
-        && takeover_key_authorization == present_b.key_authorization.as_str();
+            .ends_with(present_b.key_authorization().as_str())
+        && takeover_key_authorization == present_b.key_authorization().as_str();
     if !stale_sync_preserved_winner {
         return Err(format!(
             "stale synced ACME fact rolled back serving: {}",
@@ -724,7 +752,7 @@ async fn run_async() -> Result<(), String> {
     if adapter_dropped_http.response.starts_with("HTTP/1.1 200 OK")
         && adapter_dropped_http
             .response
-            .ends_with(present_b.key_authorization.as_str())
+            .ends_with(present_b.key_authorization().as_str())
     {
         outage_success_count += 1;
     } else {
@@ -737,9 +765,11 @@ async fn run_async() -> Result<(), String> {
     let final_clear = adapter_b
         .clear(
             &mut left,
-            &challenge,
-            &claim_b.lease,
-            timeline.final_cleared_at,
+            AcmeClearHttp01Command::new(
+                challenge.clone(),
+                claim_b.lease().clone(),
+                timeline.final_cleared_at,
+            ),
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -792,12 +822,12 @@ async fn run_async() -> Result<(), String> {
         .map_err(|error| format!("shutdown p2panda ACME HTTP gateway: {error}"))?;
 
     let visible_node_counts = [
-        claim_a.visible_nodes.len(),
-        present_a.visible_nodes.len(),
-        pending_clear.visible_nodes.len(),
-        claim_b.visible_nodes.len(),
-        present_b.visible_nodes.len(),
-        final_clear.visible_nodes.len(),
+        claim_a.visible_nodes().len(),
+        present_a.visible_nodes().len(),
+        pending_clear.visible_nodes().len(),
+        claim_b.visible_nodes().len(),
+        present_b.visible_nodes().len(),
+        final_clear.visible_nodes().len(),
     ];
     if visible_node_counts
         .iter()
@@ -820,7 +850,7 @@ async fn run_async() -> Result<(), String> {
         stale_mutation_rejections: 2,
         scoped_grant_rejections: 1,
         stale_sync_preserved_winner,
-        release_fact_recorded: pending_clear.release_recorded && final_clear.release_recorded,
+        release_fact_recorded: pending_clear.release_recorded() && final_clear.release_recorded(),
         trusted_replica_required,
         duplicate_sync_noop,
         sqlite_rebuild_after_delete,
@@ -903,482 +933,6 @@ fn acme_bus_sessions(
         ),
     };
     Ok((bus, sessions))
-}
-
-struct AcmeP2pandaCommandAdapter {
-    session: BusSession,
-    author: PandaFactAuthor,
-    visible_nodes: VisibleNodes,
-}
-
-impl AcmeP2pandaCommandAdapter {
-    fn new(session: BusSession, author: PandaFactAuthor, visible_nodes: VisibleNodes) -> Self {
-        Self {
-            session,
-            author,
-            visible_nodes,
-        }
-    }
-
-    fn author(&self) -> &PandaFactAuthor {
-        &self.author
-    }
-
-    async fn claim(
-        &mut self,
-        store: &mut PandaFactStore,
-        challenge: &AcmeChallengeId,
-        acquired_at: LeaseTimestamp,
-        expires_at: LeaseTimestamp,
-    ) -> Result<ClaimCommandResult, AcmeAdapterError> {
-        let state = lease_state_from_store(store, &self.session, challenge, acquired_at)?;
-        let epoch = match state {
-            LeaseState::Vacant { next_epoch, .. }
-            | LeaseState::Expired {
-                next_epoch: Some(next_epoch),
-                ..
-            }
-            | LeaseState::Released {
-                next_epoch: Some(next_epoch),
-                ..
-            } => next_epoch,
-            LeaseState::Active { current, .. } => {
-                return Err(AcmeAdapterError::Conflict {
-                    holder: current.holder().clone(),
-                    epoch: current.epoch(),
-                });
-            }
-            LeaseState::Expired {
-                next_epoch: None, ..
-            }
-            | LeaseState::Released {
-                next_epoch: None, ..
-            } => {
-                return Err(AcmeAdapterError::EpochOverflow);
-            }
-        };
-        let fact = LeaseClaimed::new(
-            challenge.lease_resource().clone(),
-            LeaseHolder::new(self.session.principal().as_str()),
-            epoch,
-            acquired_at,
-            expires_at,
-        );
-        let claim_hash = LeaseFact::Claimed(fact.clone()).content_hash();
-        write_panda_projection_fact(
-            store,
-            &self.session,
-            &self.author,
-            &challenge.lease_claimed_fact_key(epoch),
-            ProjectionFactPayload::LeaseClaimed(fact),
-        )
-        .await?;
-        Ok(ClaimCommandResult {
-            lease: AcmeLeaseHandle {
-                challenge: challenge.clone(),
-                holder: LeaseHolder::new(self.session.principal().as_str()),
-                epoch,
-                claim_hash,
-            },
-            visible_nodes: self.visible_nodes.clone(),
-        })
-    }
-
-    async fn present(
-        &mut self,
-        store: &mut PandaFactStore,
-        challenge: &AcmeChallengeId,
-        lease: &AcmeLeaseHandle,
-        thumbprint: &str,
-        published_at: LeaseTimestamp,
-    ) -> Result<AcmePresentResult, AcmeAdapterError> {
-        lease.assert_challenge(challenge)?;
-        assert_current_lease(store, &self.session, lease, published_at)?;
-        let key_authorization = AcmeKeyAuthorization::parse_for_token(
-            challenge.token(),
-            format!("{}.{thumbprint}", challenge.token()),
-        )
-        .map_err(|error| AcmeAdapterError::Acme(error.to_string()))?;
-        let fact = AcmeHttp01PresentedFact::from_parts(
-            challenge.clone(),
-            key_authorization.clone(),
-            lease.holder.clone(),
-            lease.epoch,
-            lease.claim_hash,
-            published_at,
-        )
-        .map_err(|error| AcmeAdapterError::Acme(error.to_string()))?;
-        write_panda_projection_fact(
-            store,
-            &self.session,
-            &self.author,
-            &challenge.presented_fact_key(lease.epoch),
-            ProjectionFactPayload::AcmeHttp01Presented(fact),
-        )
-        .await?;
-        Ok(AcmePresentResult {
-            key_authorization,
-            visible_nodes: self.visible_nodes.clone(),
-        })
-    }
-
-    async fn clear(
-        &mut self,
-        store: &mut PandaFactStore,
-        challenge: &AcmeChallengeId,
-        lease: &AcmeLeaseHandle,
-        cleared_at: LeaseTimestamp,
-    ) -> Result<AcmeClearResult, AcmeAdapterError> {
-        lease.assert_challenge(challenge)?;
-        assert_current_lease(store, &self.session, lease, cleared_at)?;
-        let release = LeaseReleased::new_at(
-            challenge.lease_resource().clone(),
-            lease.holder.clone(),
-            lease.epoch,
-            lease.claim_hash,
-            cleared_at,
-        );
-        let release_key =
-            challenge.lease_released_fact_key(lease.epoch, lease.claim_hash, release.release());
-        let clear_key = challenge.cleared_fact_key(lease.epoch, lease.claim_hash);
-        preflight_fact_write(store, &self.session, &release_key)?;
-        preflight_fact_write(store, &self.session, &clear_key)?;
-        write_panda_projection_fact(
-            store,
-            &self.session,
-            &self.author,
-            &release_key,
-            ProjectionFactPayload::LeaseReleased(release),
-        )
-        .await?;
-        let clear = AcmeHttp01ClearedFact::from_parts(
-            challenge.clone(),
-            lease.holder.clone(),
-            lease.epoch,
-            lease.claim_hash,
-            cleared_at,
-        );
-        write_panda_projection_fact(
-            store,
-            &self.session,
-            &self.author,
-            &clear_key,
-            ProjectionFactPayload::AcmeHttp01Cleared(clear),
-        )
-        .await?;
-        Ok(AcmeClearResult {
-            release_recorded: true,
-            visible_nodes: self.visible_nodes.clone(),
-        })
-    }
-}
-
-#[derive(Debug)]
-enum AcmeAdapterError {
-    Conflict {
-        holder: LeaseHolder,
-        epoch: LeaseEpoch,
-    },
-    ChallengeMismatch {
-        expected: String,
-        actual: String,
-    },
-    StaleLease,
-    UnreadableLeaseCandidate,
-    MalformedLeaseCandidate,
-    EpochOverflow,
-    Acme(String),
-    Fact(String),
-}
-
-impl std::fmt::Display for AcmeAdapterError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Conflict { holder, epoch } => {
-                write!(
-                    formatter,
-                    "ACME lease conflict with {holder} at epoch {epoch}"
-                )
-            }
-            Self::ChallengeMismatch { expected, actual } => {
-                write!(
-                    formatter,
-                    "ACME challenge mismatch: expected {expected}, got {actual}"
-                )
-            }
-            Self::StaleLease => formatter.write_str("ACME lease is stale"),
-            Self::UnreadableLeaseCandidate => {
-                formatter.write_str("ACME lease state contains unreadable candidates")
-            }
-            Self::MalformedLeaseCandidate => {
-                formatter.write_str("ACME lease state contains malformed candidates")
-            }
-            Self::EpochOverflow => formatter.write_str("ACME lease epoch overflow"),
-            Self::Acme(message) | Self::Fact(message) => formatter.write_str(message),
-        }
-    }
-}
-
-impl std::error::Error for AcmeAdapterError {}
-
-impl From<String> for AcmeAdapterError {
-    fn from(value: String) -> Self {
-        Self::Fact(value)
-    }
-}
-
-#[derive(Debug)]
-struct ClaimCommandResult {
-    lease: AcmeLeaseHandle,
-    visible_nodes: VisibleNodes,
-}
-
-#[derive(Debug)]
-struct AcmePresentResult {
-    key_authorization: AcmeKeyAuthorization,
-    visible_nodes: VisibleNodes,
-}
-
-#[derive(Debug)]
-struct AcmeClearResult {
-    release_recorded: bool,
-    visible_nodes: VisibleNodes,
-}
-
-#[derive(Debug)]
-struct AcmeLeaseHandle {
-    challenge: AcmeChallengeId,
-    holder: LeaseHolder,
-    epoch: LeaseEpoch,
-    claim_hash: LeaseContentHash,
-}
-
-impl AcmeLeaseHandle {
-    fn assert_challenge(&self, challenge: &AcmeChallengeId) -> Result<(), AcmeAdapterError> {
-        if &self.challenge == challenge {
-            return Ok(());
-        }
-        Err(AcmeAdapterError::ChallengeMismatch {
-            expected: challenge_label(&self.challenge),
-            actual: challenge_label(challenge),
-        })
-    }
-}
-
-fn challenge_label(challenge: &AcmeChallengeId) -> String {
-    format!("{} {}", challenge.hostname(), challenge.token())
-}
-
-fn preflight_fact_write(
-    store: &PandaFactStore,
-    session: &BusSession,
-    key: &str,
-) -> Result<(), AcmeAdapterError> {
-    let key = FactKey::parse(key).map_err(|error| AcmeAdapterError::Fact(error.to_string()))?;
-    if store.can_write_fact(session, &key) {
-        return Ok(());
-    }
-    Err(AcmeAdapterError::Fact(format!(
-        "principal {} cannot write fact {key}",
-        session.principal()
-    )))
-}
-
-fn assert_current_lease(
-    store: &PandaFactStore,
-    session: &BusSession,
-    lease: &AcmeLeaseHandle,
-    now: LeaseTimestamp,
-) -> Result<(), AcmeAdapterError> {
-    match lease_state_from_store(store, session, &lease.challenge, now)? {
-        LeaseState::Active { current, .. }
-            if current.holder() == &lease.holder
-                && current.epoch() == lease.epoch
-                && current.content_hash() == lease.claim_hash =>
-        {
-            Ok(())
-        }
-        LeaseState::Active { .. }
-        | LeaseState::Vacant { .. }
-        | LeaseState::Expired { .. }
-        | LeaseState::Released { .. } => Err(AcmeAdapterError::StaleLease),
-    }
-}
-
-fn lease_state_from_store(
-    store: &PandaFactStore,
-    session: &BusSession,
-    challenge: &AcmeChallengeId,
-    now: LeaseTimestamp,
-) -> Result<LeaseState, AcmeAdapterError> {
-    let pattern = fact_pattern(&format!("/facts/lease/{}/>", challenge.lease_resource()))?;
-    let candidates = store
-        .list_candidates(session.island(), &pattern, session)
-        .map_err(|error| AcmeAdapterError::Fact(error.to_string()))?;
-    let payloads = store
-        .read_payloads(session.island(), &candidates, session)
-        .map_err(|error| AcmeAdapterError::Fact(error.to_string()))?;
-    let book = mvp_lease::LeaseBook::new();
-    let importer = book.importer();
-    for candidate in lease_candidates(&candidates) {
-        if !matches!(
-            candidate.status(),
-            CandidateStatus::Verified | CandidateStatus::Conflict
-        ) {
-            return Err(AcmeAdapterError::UnreadableLeaseCandidate);
-        }
-        let Some(payload) = payloads.get(candidate.content_hash()) else {
-            return Err(AcmeAdapterError::UnreadableLeaseCandidate);
-        };
-        let payload = ProjectionFactPayload::from_fact_bytes(payload.as_bytes())
-            .map_err(|error| AcmeAdapterError::Fact(error.to_string()))?;
-        if !lease_payload_matches_key(candidate, &payload) {
-            return Err(AcmeAdapterError::MalformedLeaseCandidate);
-        }
-        match payload {
-            ProjectionFactPayload::LeaseClaimed(fact) => {
-                importer.record(LeaseFact::Claimed(fact));
-            }
-            ProjectionFactPayload::LeaseRenewed(fact) => {
-                importer.record(LeaseFact::Renewed(fact));
-            }
-            ProjectionFactPayload::LeaseReleased(fact) => {
-                importer.record(LeaseFact::Released(fact));
-            }
-            ProjectionFactPayload::NodeJoined(_)
-            | ProjectionFactPayload::NodeRemovalStarted(_)
-            | ProjectionFactPayload::NodeTombstoned(_)
-            | ProjectionFactPayload::ServiceRegistered(_)
-            | ProjectionFactPayload::ServingCommit(_)
-            | ProjectionFactPayload::RouteCommit(_)
-            | ProjectionFactPayload::GatewayCommit(_)
-            | ProjectionFactPayload::DnsCommit(_)
-            | ProjectionFactPayload::AcmeHttp01Presented(_)
-            | ProjectionFactPayload::AcmeHttp01Cleared(_) => {}
-        }
-    }
-    Ok(book.state(challenge.lease_resource(), now))
-}
-
-fn lease_candidates(candidates: &[FactCandidate]) -> impl Iterator<Item = &FactCandidate> {
-    candidates.iter().filter(|candidate| {
-        matches!(
-            candidate.kind(),
-            FactKind::LeaseClaimed | FactKind::LeaseRenewed | FactKind::LeaseReleased
-        )
-    })
-}
-
-fn lease_payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPayload) -> bool {
-    let segments = candidate.key().segments().collect::<Vec<_>>();
-    match (segments.as_slice(), candidate.kind(), payload) {
-        (
-            ["facts", "lease", resource, "claimed", epoch],
-            FactKind::LeaseClaimed,
-            ProjectionFactPayload::LeaseClaimed(fact),
-        )
-        | (
-            ["facts", "lease", resource, "claimed", epoch, _],
-            FactKind::LeaseClaimed,
-            ProjectionFactPayload::LeaseClaimed(fact),
-        ) => {
-            fact.resource().as_str() == *resource && parse_lease_epoch(epoch) == Some(fact.epoch())
-        }
-        (
-            [
-                "facts",
-                "lease",
-                resource,
-                "renewed",
-                epoch,
-                claim_hash,
-                renewed_at,
-            ],
-            FactKind::LeaseRenewed,
-            ProjectionFactPayload::LeaseRenewed(fact),
-        )
-        | (
-            [
-                "facts",
-                "lease",
-                resource,
-                "renewed",
-                epoch,
-                claim_hash,
-                renewed_at,
-                _,
-            ],
-            FactKind::LeaseRenewed,
-            ProjectionFactPayload::LeaseRenewed(fact),
-        ) => {
-            fact.resource().as_str() == *resource
-                && parse_lease_epoch(epoch) == Some(fact.epoch())
-                && parse_lease_hash(claim_hash) == Some(fact.claim_hash())
-                && parse_lease_timestamp(renewed_at) == Some(fact.renewed_at())
-        }
-        (
-            [
-                "facts",
-                "lease",
-                resource,
-                "released",
-                epoch,
-                claim_hash,
-                release,
-            ],
-            FactKind::LeaseReleased,
-            ProjectionFactPayload::LeaseReleased(fact),
-        )
-        | (
-            [
-                "facts",
-                "lease",
-                resource,
-                "released",
-                epoch,
-                claim_hash,
-                release,
-                _,
-            ],
-            FactKind::LeaseReleased,
-            ProjectionFactPayload::LeaseReleased(fact),
-        ) => {
-            fact.resource().as_str() == *resource
-                && parse_lease_epoch(epoch) == Some(fact.epoch())
-                && parse_lease_hash(claim_hash) == Some(fact.claim_hash())
-                && parse_lease_release(release) == Some(fact.release())
-        }
-        _ => false,
-    }
-}
-
-fn parse_lease_epoch(value: &str) -> Option<LeaseEpoch> {
-    LeaseEpoch::from_u64(value.parse().ok()?).ok()
-}
-
-fn parse_lease_hash(value: &str) -> Option<LeaseContentHash> {
-    LeaseContentHash::from_hex(value).ok()
-}
-
-fn parse_lease_timestamp(value: &str) -> Option<LeaseTimestamp> {
-    Some(LeaseTimestamp::from_secs(value.parse().ok()?))
-}
-
-fn parse_lease_release(value: &str) -> Option<LeaseRelease> {
-    if value == "drop" {
-        return Some(LeaseRelease::DroppedWithoutTimestamp);
-    }
-    parse_lease_timestamp(value).map(LeaseRelease::At)
-}
-
-fn visible_candidate_count(
-    store: &PandaFactStore,
-    session: &BusSession,
-) -> Result<usize, AcmeAdapterError> {
-    store
-        .list_candidates(session.island(), &fact_pattern("/facts/>")?, session)
-        .map(|candidates| candidates.len())
-        .map_err(|error| AcmeAdapterError::Fact(error.to_string()))
 }
 
 #[derive(Debug)]
@@ -1559,6 +1113,33 @@ fn projected_key_authorization(
         .ok_or_else(|| "p2panda ACME projection did not expose a challenge".to_string())
 }
 
+fn visible_candidate_count(store: &PandaFactStore, session: &BusSession) -> Result<usize, String> {
+    store
+        .list_candidates(session.island(), &fact_pattern("/facts/>")?, session)
+        .map(|candidates| candidates.len())
+        .map_err(|error| error.to_string())
+}
+
+fn stale_presented_fact(
+    id: AcmeChallengeId,
+    lease: &AcmeLeaseHandle,
+    thumbprint: &str,
+    published_at: LeaseTimestamp,
+) -> Result<AcmeHttp01PresentedFact, String> {
+    let key_authorization =
+        AcmeKeyAuthorization::parse_for_token(id.token(), format!("{}.{thumbprint}", id.token()))
+            .map_err(|error| error.to_string())?;
+    AcmeHttp01PresentedFact::from_parts(
+        id,
+        key_authorization,
+        lease.holder().clone(),
+        lease.epoch(),
+        lease.claim_hash(),
+        published_at,
+    )
+    .map_err(|error| error.to_string())
+}
+
 #[derive(Debug, Clone, Copy)]
 struct LeaseTimeline {
     acquired_at: LeaseTimestamp,
@@ -1590,26 +1171,6 @@ impl LeaseTimeline {
             expires_at: LeaseTimestamp::from_secs(now + 600),
         })
     }
-}
-
-fn stale_presented_fact(
-    id: AcmeChallengeId,
-    lease: &AcmeLeaseHandle,
-    thumbprint: &str,
-    published_at: LeaseTimestamp,
-) -> Result<AcmeHttp01PresentedFact, String> {
-    let key_authorization =
-        AcmeKeyAuthorization::parse_for_token(id.token(), format!("{}.{thumbprint}", id.token()))
-            .map_err(|error| error.to_string())?;
-    AcmeHttp01PresentedFact::from_parts(
-        id,
-        key_authorization,
-        lease.holder.clone(),
-        lease.epoch,
-        lease.claim_hash,
-        published_at,
-    )
-    .map_err(|error| error.to_string())
 }
 
 struct TimedHttpResponse {
