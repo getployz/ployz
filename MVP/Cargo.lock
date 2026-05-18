@@ -2951,6 +2951,7 @@ name = "mvp-machine"
 version = "0.1.0"
 dependencies = [
  "mvp-bus",
+ "mvp-commands",
  "mvp-identity",
  "mvp-mesh",
  "mvp-projection",

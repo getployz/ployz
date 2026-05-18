@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 mvp-bus = { path = "../bus" }
+mvp-commands = { path = "../commands" }
 mvp-identity = { path = "../identity" }
 mvp-mesh = { path = "../mesh" }
 mvp-projection = { path = "../projection" }
