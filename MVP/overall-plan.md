@@ -564,7 +564,7 @@ the old opaque p2panda-net body transport is gone from active Rust sources.
 direct rejection probes operate on canonical p2panda operations, and the
 redundant opaque-body E2Es were removed from `mvp-e2e -- all`.
 
-Slice 041 is active:
+Slice 041 completed the durable membership substitution:
 [MVP/slice-041-p2panda-auth-membership-substitution-plan.md](slice-041-p2panda-auth-membership-substitution-plan.md).
 Durable p2panda-auth-backed island membership now feeds fact-store authority
 through `PandaFactAuthoritySource`, and product-shaped process-serving paths no
@@ -572,6 +572,13 @@ longer take general trusted-author flags. The slice keeps Ployz-owned policy
 boundaries intact: root anchoring, principal/key/epoch binding, fact-key grants,
 subject permissions, command preconditions, visible-node evidence, and tombstone
 semantics remain outside p2panda-auth.
+
+Slice 042 is active:
+[MVP/slice-042-membership-backed-acme-sync-plan.md](slice-042-membership-backed-acme-sync-plan.md).
+The target is to move ACME and the p2panda sync proof off manual trusted-author
+and trusted-replica setup, using durable membership snapshots for product-shaped
+authority while containing any remaining manual trust APIs as explicit
+fixtures.
 
 ## Crate Scout Protocol
 
@@ -786,7 +793,8 @@ Future slice plans should resolve these only when they become blocking:
 
 ## First Next Step
 
-The next action is Slice 041. Start with the p2panda-auth processor fit check,
-then either adopt its store/processor support directly or document why the
-current Ployz wrapper must keep using p2panda-auth's group CRDT while storing
-membership operations itself.
+The next action is Slice 042. Start with the ACME contract because it is the
+product canary for advisory leases, fact sync, projection rebuild, and
+last-good HTTP-01 serving. Then move the core sync contract onto the same
+membership-backed authority shape and record which manual trust APIs remain as
+fixtures only.
