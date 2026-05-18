@@ -14,7 +14,6 @@ use mvp_acme_command::{
 use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::{NodeId, VisibleNodes};
 use mvp_lease::{LeaseEpoch, LeaseTimestamp};
-use mvp_p2panda_authz::ReplicaImportAccess;
 use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactStore, PandaFactSyncError, PandaFactSyncScope, PandaFactSyncSide,
     PandaSqliteOpenConfig, sync_panda_fact_stores,
@@ -32,7 +31,8 @@ use crate::assertions::assert_eq_named;
 use crate::bus_syntax::fact_pattern;
 use crate::metrics::{reset_dir, scenario_dir, write_json};
 use crate::p2panda_projection_fixture::{
-    P2pandaMembershipFixture, create_p2panda_membership_fixture, status_count,
+    P2pandaMembershipFixture, create_p2panda_membership_fixture, p2panda_read_replica_importers,
+    p2panda_replica_importer_members, status_count,
     write_projection_fact as write_panda_projection_fact,
 };
 use crate::projection_harness::projection_actor;
@@ -99,22 +99,16 @@ async fn run_async() -> Result<(), String> {
         PandaFactAuthor::new(sessions.issuer_b.principal().clone()),
         visible_nodes,
     );
-    let left_replica_author = PandaFactAuthor::from_private_key_bytes(
-        sessions.left_replica.principal().clone(),
-        [51; 32],
-    );
-    let right_replica_author = PandaFactAuthor::from_private_key_bytes(
-        sessions.right_replica.principal().clone(),
-        [52; 32],
-    );
+    let replica_importers = p2panda_read_replica_importers([
+        (&sessions.left_replica, [51; 32]),
+        (&sessions.right_replica, [52; 32]),
+    ]);
+    let replica_importer_members = p2panda_replica_importer_members(&replica_importers);
     let membership = create_p2panda_membership_fixture(
         &root.join("p2panda-membership.sqlite"),
         &prod,
         &[adapter_a.author(), adapter_b.author(), &dns_author],
-        &[
-            (&left_replica_author, ReplicaImportAccess::Read),
-            (&right_replica_author, ReplicaImportAccess::Read),
-        ],
+        &replica_importer_members,
     )
     .await?;
 

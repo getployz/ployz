@@ -61,7 +61,7 @@ Slice 042 hits that substitution target without claiming a raw size win. The
 slice changes ACME and the main p2panda sync proof from manual trusted-author
 maps, trusted-replica setup, and hand-built sync scopes to shared
 membership-backed authority. The slice diff is only a small net E2E increase
-(`176` added, `130` deleted from the plan commit), but it removes a second
+(`218` added, `152` deleted from the plan commit), but it removes a second
 authority idiom from product-shaped proofs. ACME remains larger than the old
 cert path: old cert coordination/backend files are roughly 1,180 physical Rust
 lines, while `MVP/acme`, `MVP/acme-command`, and `MVP/lease` are roughly 4,151
@@ -82,7 +82,7 @@ Old broad deploy-path files:                     ~25,100 LOC
 
 MVP machine + machine-p2panda:                    ~3,500 LOC
 MVP environment + environment-p2panda:             ~2,000 LOC
-MVP acme + acme-command + lease:                  ~3,700 LOC
+MVP acme + acme-command + lease:                  ~4,151 LOC
 MVP serving + routing + routing-p2panda
   + projection:                                   ~8,600 LOC
 MVP bus + mesh + iroh + p2panda facts

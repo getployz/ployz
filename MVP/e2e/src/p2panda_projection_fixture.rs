@@ -65,6 +65,35 @@ impl P2pandaMembershipFixture {
     }
 }
 
+pub(crate) struct P2pandaReplicaImporterFixture {
+    author: PandaFactAuthor,
+}
+
+pub(crate) fn p2panda_read_replica_importers<const N: usize>(
+    importers: [(&BusSession, [u8; 32]); N],
+) -> Vec<P2pandaReplicaImporterFixture> {
+    importers
+        .into_iter()
+        .map(
+            |(session, private_key_bytes)| P2pandaReplicaImporterFixture {
+                author: PandaFactAuthor::from_private_key_bytes(
+                    session.principal().clone(),
+                    private_key_bytes,
+                ),
+            },
+        )
+        .collect()
+}
+
+pub(crate) fn p2panda_replica_importer_members(
+    importers: &[P2pandaReplicaImporterFixture],
+) -> Vec<(&PandaFactAuthor, ReplicaImportAccess)> {
+    importers
+        .iter()
+        .map(|importer| (&importer.author, ReplicaImportAccess::Read))
+        .collect()
+}
+
 pub(crate) async fn create_p2panda_membership_fixture(
     path: &Path,
     island: &IslandId,

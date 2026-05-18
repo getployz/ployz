@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use mvp_bus::{BusSession, FactPayload, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::NodeId;
-use mvp_p2panda_authz::{IslandAuthoritySnapshot, ReplicaImportAccess};
+use mvp_p2panda_authz::IslandAuthoritySnapshot;
 use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactAuthoritySource, PandaFactStore, PandaFactSyncReport,
     PandaFactSyncScope, PandaSqliteOpenConfig, sync_panda_fact_stores,
@@ -20,8 +20,8 @@ use crate::assertions::assert_eq_named;
 use crate::bus_syntax::{fact_key, fact_pattern};
 use crate::metrics::{MemorySnapshot, memory_snapshot, reset_dir, scenario_dir, write_json};
 use crate::p2panda_projection_fixture::{
-    P2pandaMembershipFixture, create_p2panda_membership_fixture, seed_projection_facts,
-    status_count, write_projection_fact,
+    P2pandaMembershipFixture, create_p2panda_membership_fixture, p2panda_read_replica_importers,
+    p2panda_replica_importer_members, seed_projection_facts, status_count, write_projection_fact,
 };
 use crate::projection_harness::projection_actor;
 
@@ -107,14 +107,11 @@ async fn run_async() -> Result<(), String> {
     let right_author = PandaFactAuthor::new(sessions.right_writer.principal().clone());
     let prod = IslandId::new("prod");
     let laptop = IslandId::new("laptop");
-    let left_replica_author = PandaFactAuthor::from_private_key_bytes(
-        sessions.left_replica.principal().clone(),
-        [61; 32],
-    );
-    let right_replica_author = PandaFactAuthor::from_private_key_bytes(
-        sessions.right_replica.principal().clone(),
-        [62; 32],
-    );
+    let prod_replica_importers = p2panda_read_replica_importers([
+        (&sessions.left_replica, [61; 32]),
+        (&sessions.right_replica, [62; 32]),
+    ]);
+    let prod_replica_importer_members = p2panda_replica_importer_members(&prod_replica_importers);
     let memberships = SyncMembershipFixtures {
         prod_island: prod.clone(),
         laptop_island: laptop.clone(),
@@ -122,10 +119,7 @@ async fn run_async() -> Result<(), String> {
             &root.join("prod-membership.sqlite"),
             &prod,
             &[&left_author, &right_author],
-            &[
-                (&left_replica_author, ReplicaImportAccess::Read),
-                (&right_replica_author, ReplicaImportAccess::Read),
-            ],
+            &prod_replica_importer_members,
         )
         .await?,
         laptop: create_p2panda_membership_fixture(
