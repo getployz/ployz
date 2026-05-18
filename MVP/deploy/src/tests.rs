@@ -17,7 +17,8 @@ use mvp_projection::{
 
 use crate::wire::{decode, encode};
 use crate::{
-    BusDeployFactWriter, CapacityRequest, CleanupFailureKind, CleanupStatus,
+    BusDeployFactWriter, CandidateCleanupState, CandidateCleanupStatus, CandidateCleanupTarget,
+    CapacityRequest, CleanupDeployCandidatesRequest, CleanupFailureKind, CleanupStatus,
     DeployDecisionCandidate, DeployDecisionFact, DeployError, DeployFactWriteStatus,
     DeployFactWriter, DeployId, DeployManifest, DeployOutcome, DeployRecovery, DeployStateMachine,
     DeployTimeouts, DnsCommitId, DrainInstanceRequest, GatewayCommitId,
@@ -444,6 +445,131 @@ async fn cleanup_requests_include_explicit_cleanup_target() {
         stopped.lock().expect("stopped targets").as_slice(),
         std::slice::from_ref(&expected_target)
     );
+}
+
+#[test]
+fn candidate_cleanup_request_round_trips_with_typed_candidate_state() {
+    let request = CleanupDeployCandidatesRequest {
+        deploy_id: DeployId::new("deploy-cleanup-candidate"),
+        candidates: vec![CandidateCleanupTarget::new(
+            InstanceId::new("web-1"),
+            mvp_projection::ServiceName::new("web"),
+            RevisionId::new("rev-web"),
+            CandidateCleanupState::Prepared,
+        )],
+    };
+
+    let bytes = encode(&request, "candidate cleanup request").expect("encode request");
+    let payload: mvp_bus::Payload = bytes.into();
+    let decoded: CleanupDeployCandidatesRequest =
+        decode(&payload, "candidate cleanup request").expect("decode request");
+
+    assert_eq!(decoded, request);
+}
+
+#[tokio::test]
+async fn prepare_handler_failure_cleans_attempted_candidate() {
+    let (bus, authority, _raw_bus) = mvp_bus::harness::actor_with_authority();
+    let operator = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("operator"),
+        Grant::allow_all(),
+    );
+    let node = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("node"),
+        Grant::allow_all(),
+    );
+    let (events, deploy_writer, serving_writer) = recording_writers();
+    let cleaned = Arc::new(Mutex::new(Vec::new()));
+    register_capacity(&bus, &node).await;
+    register_prepare_failure_participant(&bus, &node).await;
+    register_candidate_cleanup_participant(&bus, &node, Arc::clone(&cleaned)).await;
+    let coordinator = crate::DeployCoordinator::with_fact_writers(
+        bus,
+        operator,
+        deploy_writer,
+        serving_writer,
+        test_timeouts(),
+    );
+
+    let error = coordinator
+        .execute_until_serving_commit(coordinator_manifest())
+        .await
+        .expect_err("prepare handler failure should clean attempted candidate");
+
+    let DeployError::PreCommitFailed { source, cleanup } = error else {
+        panic!("expected pre-commit cleanup error");
+    };
+    assert!(matches!(
+        *source,
+        DeployError::Bus(BusError::HandlerFailed { .. })
+    ));
+    assert_eq!(cleanup.status, CandidateCleanupStatus::Done);
+    assert_eq!(
+        cleanup.visible_nodes,
+        VisibleNodes::new([NodeId::new("node-new")])
+    );
+    let [attempted] = cleanup.attempted.as_slice() else {
+        panic!("expected one candidate cleanup target");
+    };
+    assert_eq!(attempted.node_id, NodeId::new("node-new"));
+    assert_eq!(
+        attempted.candidates[0].state,
+        CandidateCleanupState::PrepareAttempted
+    );
+    assert_eq!(cleaned.lock().expect("candidate cleanup requests").len(), 1);
+    assert_eq!(
+        events.lock().expect("recording events").as_slice(),
+        [CoordinatorEvent::Decision]
+    );
+}
+
+#[tokio::test]
+async fn pre_commit_recovery_cleans_planned_candidates_without_rerunning_prepare() {
+    let (bus, authority, raw_bus) = mvp_bus::harness::actor_with_authority();
+    let operator = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("operator"),
+        Grant::allow_all(),
+    );
+    let node = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("node"),
+        Grant::allow_all(),
+    );
+    let cleaned = Arc::new(Mutex::new(Vec::new()));
+    let manifest = coordinator_manifest();
+    BusDeployFactWriter::new(bus.clone(), operator.clone())
+        .write_decision(DeployDecisionFact::new(manifest.clone(), visible_nodes()))
+        .await
+        .expect("write pre-commit decision");
+    register_candidate_cleanup_participant(&bus, &node, Arc::clone(&cleaned)).await;
+    let source = BusFactSource::new(raw_bus);
+    let coordinator = crate::DeployCoordinator::new(bus, operator.clone(), test_timeouts());
+    let DeployRecovery::PreCommitIncomplete(recovery) = coordinator
+        .recover_pending_cleanup(&source, operator.island(), &operator, &manifest.deploy_id)
+        .expect("recover pre-commit incomplete")
+    else {
+        panic!("expected pre-commit incomplete recovery");
+    };
+
+    let cleanup = coordinator.cleanup_pre_commit_incomplete(&recovery).await;
+
+    assert_eq!(cleanup.status, CandidateCleanupStatus::Done);
+    let [attempted] = cleanup.attempted.as_slice() else {
+        panic!("expected one planned candidate cleanup target");
+    };
+    assert_eq!(
+        attempted.candidates[0].state,
+        CandidateCleanupState::Planned
+    );
+    let requests = cleaned.lock().expect("candidate cleanup requests");
+    let [request] = requests.as_slice() else {
+        panic!("expected one cleanup request");
+    };
+    assert_eq!(request.deploy_id, manifest.deploy_id);
+    assert_eq!(request.candidates[0].state, CandidateCleanupState::Planned);
 }
 
 #[tokio::test]
@@ -928,6 +1054,59 @@ async fn register_instance_participants(
     )
     .await
     .expect("register start");
+}
+
+async fn register_prepare_failure_participant(bus: &BusActorHandle, session: &BusSession) {
+    bus.subscribe(
+        session,
+        SubjectPattern::parse("node.node-new.rpc.prepare_instance").expect("prepare subject"),
+        move |ctx| {
+            let _request: InstanceCommandRequest =
+                decode(ctx.message.payload(), "prepare instance request").map_err(|_| {
+                    BusError::HandlerFailed {
+                        subject: ctx.message.subject().to_string(),
+                        failure: HandlerFailure::Application,
+                    }
+                })?;
+            Err(BusError::HandlerFailed {
+                subject: ctx.message.subject().to_string(),
+                failure: HandlerFailure::Application,
+            })
+        },
+    )
+    .await
+    .expect("register failing prepare");
+}
+
+async fn register_candidate_cleanup_participant(
+    bus: &BusActorHandle,
+    session: &BusSession,
+    cleaned: Arc<Mutex<Vec<CleanupDeployCandidatesRequest>>>,
+) {
+    bus.subscribe(
+        session,
+        SubjectPattern::parse("node.node-new.rpc.cleanup_deploy_candidates")
+            .expect("candidate cleanup subject"),
+        move |ctx| {
+            let request: CleanupDeployCandidatesRequest =
+                decode(ctx.message.payload(), "candidate cleanup request").map_err(|_| {
+                    BusError::HandlerFailed {
+                        subject: ctx.message.subject().to_string(),
+                        failure: HandlerFailure::Application,
+                    }
+                })?;
+            cleaned
+                .lock()
+                .map_err(|_| BusError::HandlerFailed {
+                    subject: ctx.message.subject().to_string(),
+                    failure: HandlerFailure::Application,
+                })?
+                .push(request);
+            ctx.reply(b"cleaned".to_vec())
+        },
+    )
+    .await
+    .expect("register candidate cleanup");
 }
 
 async fn register_cleanup_participants(

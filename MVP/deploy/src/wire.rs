@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use mvp_projection::{BackendEndpoint, ServiceName};
 
-use crate::{CapacityReply, DeployError, DeployId, DeployResult, InstanceId, RevisionId};
+use crate::{
+    CandidateCleanupTarget, CapacityReply, DeployError, DeployId, DeployResult, InstanceId,
+    RevisionId,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapacityRequest {
@@ -46,6 +49,12 @@ pub struct DrainInstanceRequest {
 pub struct StopInstanceRequest {
     pub deploy_id: DeployId,
     pub cleanup_target: BackendEndpoint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CleanupDeployCandidatesRequest {
+    pub deploy_id: DeployId,
+    pub candidates: Vec<CandidateCleanupTarget>,
 }
 
 pub fn encode<T: Serialize>(value: &T, context: &'static str) -> DeployResult<Vec<u8>> {

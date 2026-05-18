@@ -11,10 +11,12 @@ pub use coordinator::{
     ProjectedPendingCleanup, RecoveredPendingCleanup,
 };
 pub use domain::{
+    CandidateCleanupFailure, CandidateCleanupState, CandidateCleanupStatus, CandidateCleanupTarget,
     CapacityRejectionReason, CapacityReply, CleanupFailureKind, CleanupPendingReason,
     CleanupStatus, DeployCommandResult, DeployId, DeployManifest, DeployOutcome, DrainStatus,
-    InstanceCapacityRequirement, InstanceId, InstancePlan, PhaseId, PhasePlan, PhasePolicy,
-    PhaseReversibility, RevisionId, ServingPublication,
+    InstanceCapacityRequirement, InstanceId, InstancePlan, NodeCandidateCleanup, PhaseId,
+    PhasePlan, PhasePolicy, PhaseReversibility, PreCommitCleanupReport, RevisionId,
+    ServingPublication,
 };
 pub use error::{DeployError, DeployResult};
 pub use facts::{
@@ -35,8 +37,8 @@ pub use serving_commit::{
 };
 pub use state_machine::{DeployStateMachine, PhaseState};
 pub use wire::{
-    CapacityRequest, DrainInstanceRequest, InstanceCommandReply, InstanceCommandRequest,
-    InstanceNotReadyReason, InstanceStartOutcome, StopInstanceRequest,
+    CapacityRequest, CleanupDeployCandidatesRequest, DrainInstanceRequest, InstanceCommandReply,
+    InstanceCommandRequest, InstanceNotReadyReason, InstanceStartOutcome, StopInstanceRequest,
 };
 
 #[cfg(test)]

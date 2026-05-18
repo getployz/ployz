@@ -15,13 +15,16 @@ use crate::facts::{
 };
 use crate::serving_commit::{BusServingFactWriter, ServingFactWriter};
 use crate::wire::{
-    CapacityRequest, DrainInstanceRequest, InstanceCommandReply, InstanceCommandRequest,
-    InstanceStartOutcome, StopInstanceRequest, decode, decode_capacity_reply, encode,
+    CapacityRequest, CleanupDeployCandidatesRequest, DrainInstanceRequest, InstanceCommandReply,
+    InstanceCommandRequest, InstanceStartOutcome, StopInstanceRequest, decode,
+    decode_capacity_reply, encode,
 };
 use crate::{
+    CandidateCleanupFailure, CandidateCleanupState, CandidateCleanupStatus, CandidateCleanupTarget,
     CapacityRejectionReason, CapacityReply, CleanupFailureKind, CleanupPendingReason,
-    CleanupStatus, DeployCommandResult, DeployError, DeployManifest, DeployResult,
-    DeployStateMachine, InstanceCapacityRequirement, InstancePlan, ProjectionCatchUp,
+    CleanupStatus, DeployCommandResult, DeployError, DeployId, DeployManifest, DeployResult,
+    DeployStateMachine, InstanceCapacityRequirement, InstanceId, InstancePlan,
+    NodeCandidateCleanup, PreCommitCleanupReport, ProjectionCatchUp,
 };
 
 const CAPACITY_PROBE_CONCURRENCY: usize = 32;
@@ -60,6 +63,7 @@ pub struct RecoveredPendingCleanup {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreCommitIncompleteRecovery {
     pub deploy_id: crate::DeployId,
+    pub manifest: DeployManifest,
     pub visible_nodes: VisibleNodes,
     pub serving_commit_id: crate::ServingCommitId,
     pub superseded_decisions: Vec<DeployDecisionCandidate>,
@@ -102,6 +106,57 @@ impl RecoveredPendingCleanup {
     #[must_use]
     pub fn superseded_decisions(&self) -> &[DeployDecisionCandidate] {
         &self.superseded_decisions
+    }
+}
+
+#[derive(Debug, Default)]
+struct CandidateCleanupTracker {
+    by_node: BTreeMap<NodeId, BTreeMap<InstanceId, CandidateCleanupTarget>>,
+}
+
+impl CandidateCleanupTracker {
+    fn from_manifest_planned(manifest: &DeployManifest) -> Self {
+        let mut tracker = Self::default();
+        for phase in &manifest.phases {
+            for instance in &phase.instances {
+                tracker.track(instance, CandidateCleanupState::Planned);
+            }
+        }
+        tracker
+    }
+
+    fn track(&mut self, instance: &InstancePlan, state: CandidateCleanupState) {
+        self.by_node
+            .entry(instance.node_id.clone())
+            .or_default()
+            .insert(
+                instance.instance_id.clone(),
+                CandidateCleanupTarget::from_instance(instance, state),
+            );
+    }
+
+    fn discard_prepare_attempt_without_dispatch(&mut self, instance: &InstancePlan) {
+        let Some(instances) = self.by_node.get_mut(&instance.node_id) else {
+            return;
+        };
+        let remove = instances
+            .get(&instance.instance_id)
+            .is_some_and(|target| target.state == CandidateCleanupState::PrepareAttempted);
+        if remove {
+            instances.remove(&instance.instance_id);
+        }
+        if instances.is_empty() {
+            self.by_node.remove(&instance.node_id);
+        }
+    }
+
+    fn node_targets(&self) -> Vec<NodeCandidateCleanup> {
+        self.by_node
+            .iter()
+            .map(|(node_id, instances)| {
+                NodeCandidateCleanup::new(node_id.clone(), instances.values().cloned().collect())
+            })
+            .collect()
     }
 }
 
@@ -161,26 +216,68 @@ where
             ))
             .await?;
         state.record_visible_nodes(visible_nodes);
+        let mut candidates = CandidateCleanupTracker::default();
 
         for phase in &manifest.phases {
             state.mark_preparing(phase.phase_id)?;
             for instance in &phase.instances {
-                self.prepare_instance(&manifest, instance)
-                    .await
-                    .map_err(|error| classify_pre_commit_error(&mut state, error))?;
-                let reply = self
-                    .start_instance(&manifest, instance)
-                    .await
-                    .map_err(|error| classify_pre_commit_error(&mut state, error))?;
-                classify_start_reply(&mut state, instance, reply)?;
+                candidates.track(instance, CandidateCleanupState::PrepareAttempted);
+                if let Err(error) = self.prepare_instance(&manifest, instance).await {
+                    if prepare_failed_before_dispatch(&error) {
+                        candidates.discard_prepare_attempt_without_dispatch(instance);
+                    }
+                    return Err(self
+                        .classify_or_cleanup_pre_commit_failure(
+                            &mut state,
+                            &manifest,
+                            &candidates,
+                            error,
+                        )
+                        .await);
+                }
+                candidates.track(instance, CandidateCleanupState::Prepared);
+                let reply = match self.start_instance(&manifest, instance).await {
+                    Ok(reply) => reply,
+                    Err(error) => {
+                        return Err(self
+                            .classify_or_cleanup_pre_commit_failure(
+                                &mut state,
+                                &manifest,
+                                &candidates,
+                                error,
+                            )
+                            .await);
+                    }
+                };
+                candidates.track(instance, CandidateCleanupState::Started);
+                if let Err(error) = classify_start_reply(&mut state, instance, reply) {
+                    return Err(self
+                        .classify_or_cleanup_pre_commit_failure(
+                            &mut state,
+                            &manifest,
+                            &candidates,
+                            error,
+                        )
+                        .await);
+                }
             }
             state.mark_ready(phase.phase_id)?;
             state.commit_phase(phase.phase_id, phase.policy)?;
             if phase.policy.commits_serving() {
-                self.serving_writer
+                if let Err(error) = self
+                    .serving_writer
                     .write_serving_commit(&manifest.serving_commit)
                     .await
-                    .map_err(|error| classify_pre_commit_error(&mut state, error))?;
+                {
+                    return Err(self
+                        .classify_or_cleanup_pre_commit_failure(
+                            &mut state,
+                            &manifest,
+                            &candidates,
+                            error,
+                        )
+                        .await);
+                }
                 state.commit_serving(manifest.serving_commit.serving_commit_id.clone())?;
                 return Ok(PendingCleanup { manifest, state });
             }
@@ -235,7 +332,8 @@ where
             Err(RoutingError::ServingFactMissing { .. }) => {
                 return Ok(DeployRecovery::PreCommitIncomplete(
                     PreCommitIncompleteRecovery {
-                        deploy_id: decision.deploy_id,
+                        deploy_id: decision.deploy_id.clone(),
+                        manifest: decision.manifest,
                         visible_nodes: decision.visible_nodes,
                         serving_commit_id: decision.expected_serving_commit_id,
                         superseded_decisions: selection.superseded,
@@ -260,6 +358,19 @@ where
             },
             superseded_decisions: selection.superseded,
         })))
+    }
+
+    pub async fn cleanup_pre_commit_incomplete(
+        &self,
+        recovery: &PreCommitIncompleteRecovery,
+    ) -> PreCommitCleanupReport {
+        let candidates = CandidateCleanupTracker::from_manifest_planned(&recovery.manifest);
+        self.cleanup_candidate_targets(
+            &recovery.deploy_id,
+            recovery.visible_nodes.clone(),
+            candidates.node_targets(),
+        )
+        .await
     }
 
     async fn cleanup_old_backends(
@@ -329,6 +440,80 @@ where
             }
         }
         Ok(None)
+    }
+
+    async fn classify_or_cleanup_pre_commit_failure(
+        &self,
+        state: &mut DeployStateMachine,
+        manifest: &DeployManifest,
+        candidates: &CandidateCleanupTracker,
+        error: DeployError,
+    ) -> DeployError {
+        if state.has_irreversible_commit() || state.has_serving_commit() {
+            let _ = state.block_after_irreversible();
+            return DeployError::BlockedAfterIrreversiblePhase;
+        }
+        let cleanup = self
+            .cleanup_candidate_targets(
+                &manifest.deploy_id,
+                state.visible_nodes().clone(),
+                candidates.node_targets(),
+            )
+            .await;
+        if cleanup.status == CandidateCleanupStatus::NotNeeded {
+            error
+        } else {
+            DeployError::PreCommitFailed {
+                source: Box::new(error),
+                cleanup,
+            }
+        }
+    }
+
+    async fn cleanup_candidate_targets(
+        &self,
+        deploy_id: &DeployId,
+        visible_nodes: VisibleNodes,
+        attempted: Vec<NodeCandidateCleanup>,
+    ) -> PreCommitCleanupReport {
+        if attempted.is_empty() {
+            return PreCommitCleanupReport::new(
+                deploy_id.clone(),
+                visible_nodes,
+                attempted,
+                CandidateCleanupStatus::NotNeeded,
+            );
+        }
+
+        let mut failures = Vec::new();
+        for target in &attempted {
+            if let Err(error) = self.cleanup_node_candidates(deploy_id, target).await {
+                failures.push(CandidateCleanupFailure::new(
+                    target.node_id.clone(),
+                    target.candidates.clone(),
+                    cleanup_failure_kind(&error),
+                ));
+            }
+        }
+        let status = if failures.is_empty() {
+            CandidateCleanupStatus::Done
+        } else {
+            CandidateCleanupStatus::Pending { failures }
+        };
+        PreCommitCleanupReport::new(deploy_id.clone(), visible_nodes, attempted, status)
+    }
+
+    async fn cleanup_node_candidates(
+        &self,
+        deploy_id: &DeployId,
+        target: &NodeCandidateCleanup,
+    ) -> DeployResult<()> {
+        let subject = candidate_cleanup_subject(target.node_id.as_str())?;
+        let request = CleanupDeployCandidatesRequest {
+            deploy_id: deploy_id.clone(),
+            candidates: target.candidates.clone(),
+        };
+        self.request_unit(subject, &request).await
     }
 
     async fn inspect_capacity(
@@ -485,6 +670,10 @@ fn cleanup_subject(node_id: &str, op: CleanupParticipantOp) -> DeployResult<Subj
     participant_subject(node_id, op.subject_suffix())
 }
 
+fn candidate_cleanup_subject(node_id: &str) -> DeployResult<Subject> {
+    participant_subject(node_id, "cleanup_deploy_candidates")
+}
+
 fn participant_subject(node_id: &str, suffix: &str) -> DeployResult<Subject> {
     Ok(Subject::parse(format!("node.{node_id}.rpc.{suffix}"))?)
 }
@@ -624,6 +813,10 @@ fn classify_pre_commit_error(state: &mut DeployStateMachine, error: DeployError)
     error
 }
 
+fn prepare_failed_before_dispatch(error: &DeployError) -> bool {
+    matches!(error, DeployError::Bus(BusError::NoResponders { .. }))
+}
+
 fn cleanup_failure_kind(error: &DeployError) -> CleanupFailureKind {
     match error {
         DeployError::Bus(BusError::NoResponders { .. }) => CleanupFailureKind::NoResponders,
@@ -636,6 +829,7 @@ fn cleanup_failure_kind(error: &DeployError) -> CleanupFailureKind {
         | DeployError::ProjectionCatchUpMissing
         | DeployError::ProjectionCatchUpMismatch { .. }
         | DeployError::BlockedAfterIrreversiblePhase
+        | DeployError::PreCommitFailed { .. }
         | DeployError::DeployStillRunning
         | DeployError::ServingCommitPhaseRequired
         | DeployError::ServingFactConflict { .. }
