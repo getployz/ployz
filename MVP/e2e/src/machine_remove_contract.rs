@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use mvp_bus::{BusError, BusSession, FactKey, Grant, HandlerFailure, IslandId, PrincipalId};
+use mvp_bus::{
+    BusAuthority, BusError, BusSession, FactKey, Grant, HandlerFailure, IslandId, PrincipalId,
+};
 use mvp_commands::CommandContext;
 use mvp_commands_p2panda::PandaCommandPhaseStore;
 use mvp_identity::{NodeId, VisibleNodes};
@@ -95,6 +97,44 @@ struct ParticipantState {
     events: Mutex<Vec<RemoveEvent>>,
     stop_attempts: AtomicUsize,
     projection_caught_up: AtomicBool,
+}
+
+struct NegativeAuthProbes {
+    replica_write_session: BusSession,
+    replica_write_author: Arc<PandaFactAuthor>,
+    node_only_session: BusSession,
+    node_only_author: Arc<PandaFactAuthor>,
+    conflict_author_a: Arc<PandaFactAuthor>,
+    conflict_author_b: Arc<PandaFactAuthor>,
+}
+
+impl NegativeAuthProbes {
+    fn new(authority: &BusAuthority, island: &IslandId) -> Result<Self, String> {
+        let replica_write_session = authority.grant_in(
+            island.clone(),
+            PrincipalId::new("machine-remove-replica-write-probe"),
+            Grant::empty().with_fact_write(fact_pattern("/facts/machine-remove/>")?),
+        );
+        let node_only_session = authority.grant_in(
+            island.clone(),
+            PrincipalId::new("node-fact-only"),
+            Grant::empty().with_fact_write(fact_pattern("/facts/node/*/tombstoned/>")?),
+        );
+        Ok(Self {
+            replica_write_author: Arc::new(PandaFactAuthor::new(
+                replica_write_session.principal().clone(),
+            )),
+            replica_write_session,
+            node_only_author: Arc::new(PandaFactAuthor::new(PrincipalId::new("node-fact-only"))),
+            node_only_session,
+            conflict_author_a: Arc::new(PandaFactAuthor::new(PrincipalId::new(
+                "machine-conflict-a",
+            ))),
+            conflict_author_b: Arc::new(PandaFactAuthor::new(PrincipalId::new(
+                "machine-conflict-b",
+            ))),
+        })
+    }
 }
 
 impl ParticipantState {
@@ -243,16 +283,7 @@ async fn run_async() -> Result<(), String> {
         PrincipalId::new("machine-remove-replica"),
         Grant::empty(),
     );
-    let replica_write_probe_session = authority.grant_in(
-        island.clone(),
-        PrincipalId::new("machine-remove-replica-write-probe"),
-        Grant::empty().with_fact_write(fact_pattern("/facts/machine-remove/>")?),
-    );
-    let node_only_writer_session = authority.grant_in(
-        island.clone(),
-        PrincipalId::new("node-fact-only"),
-        Grant::empty().with_fact_write(fact_pattern("/facts/node/*/tombstoned/>")?),
-    );
+    let negative_auth = NegativeAuthProbes::new(&authority, &island)?;
     let machine_writer_session = authority.grant_in(
         island.clone(),
         PrincipalId::new("machine-remove-writer"),
@@ -278,12 +309,6 @@ async fn run_async() -> Result<(), String> {
         routing_writer_session.principal().clone(),
     ));
     let replica_author = Arc::new(PandaFactAuthor::new(replica_session.principal().clone()));
-    let replica_write_probe_author = Arc::new(PandaFactAuthor::new(
-        replica_write_probe_session.principal().clone(),
-    ));
-    let node_only_author = Arc::new(PandaFactAuthor::new(PrincipalId::new("node-fact-only")));
-    let conflict_author_a = Arc::new(PandaFactAuthor::new(PrincipalId::new("machine-conflict-a")));
-    let conflict_author_b = Arc::new(PandaFactAuthor::new(PrincipalId::new("machine-conflict-b")));
     let membership = create_p2panda_membership_fixture(
         &root.join("p2panda-membership"),
         &island,
@@ -291,14 +316,14 @@ async fn run_async() -> Result<(), String> {
             join_author.as_ref(),
             machine_author.as_ref(),
             routing_author.as_ref(),
-            node_only_author.as_ref(),
-            conflict_author_a.as_ref(),
-            conflict_author_b.as_ref(),
+            negative_auth.node_only_author.as_ref(),
+            negative_auth.conflict_author_a.as_ref(),
+            negative_auth.conflict_author_b.as_ref(),
         ],
         &[
             (replica_author.as_ref(), ReplicaImportAccess::Read),
             (
-                replica_write_probe_author.as_ref(),
+                negative_auth.replica_write_author.as_ref(),
                 ReplicaImportAccess::Read,
             ),
         ],
@@ -441,7 +466,7 @@ async fn run_async() -> Result<(), String> {
         &membership,
         &rebuilt_facts,
         &replica_session,
-        node_only_author.as_ref(),
+        negative_auth.node_only_author.as_ref(),
     )
     .await?;
     assert_recovery_import_rejects_foreign_island_operation(
@@ -655,22 +680,22 @@ async fn run_async() -> Result<(), String> {
         .await?;
     assert_replica_importer_cannot_write_machine_fact(
         &facts,
-        &replica_write_probe_session,
-        replica_write_probe_author.as_ref(),
+        &negative_auth.replica_write_session,
+        negative_auth.replica_write_author.as_ref(),
     )
     .await?;
     assert_node_writer_cannot_write_command_fact(
         &facts,
-        &node_only_writer_session,
-        Arc::clone(&node_only_author),
+        &negative_auth.node_only_session,
+        Arc::clone(&negative_auth.node_only_author),
     )
     .await?;
     assert_conflicting_tombstone_not_projected(
         &root,
         &island,
         &membership,
-        Arc::clone(&conflict_author_a),
-        Arc::clone(&conflict_author_b),
+        Arc::clone(&negative_auth.conflict_author_a),
+        Arc::clone(&negative_auth.conflict_author_b),
     )
     .await?;
 
@@ -937,17 +962,17 @@ async fn assert_recovery_import_rejects_author_without_fact_grant(
     membership: &P2pandaMembershipFixture,
     target: &PandaMachineFactStore,
     replica_session: &BusSession,
-    author_without_grant: &PandaFactAuthor,
+    target_denied_author: &PandaFactAuthor,
 ) -> Result<(), String> {
     let (source_bus, source_authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
     let source_session = source_authority.grant_in(
         island.clone(),
-        author_without_grant.principal().clone(),
+        target_denied_author.principal().clone(),
         Grant::empty().with_fact_write(fact_pattern("/facts/machine-remove/>")?),
     );
     let source = open_membership_machine_store(Arc::new(source_bus), membership, island).await?;
     let operation =
-        write_denied_import_source_operation(&source, &source_session, author_without_grant)
+        write_denied_import_source_operation(&source, &source_session, target_denied_author)
             .await?;
     let result = target
         .import_replica_operation(replica_session, &operation)
