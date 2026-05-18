@@ -1,5 +1,6 @@
 use mvp_bus::{FactKey, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, SharedPandaFactStore};
+use std::time::Duration;
 
 use crate::{
     PandaNetConfigError, PandaNetFactImportFailure, PandaNetFactImportOutcome,
@@ -143,6 +144,8 @@ async fn fact_node_receives_after_refreshing_stream() {
     );
 
     receiver.refresh_stream().await.expect("refresh stream");
+    assert_eq!(receiver.stats().stream_refreshes, 1);
+    assert_eq!(receiver.stats().stream_refresh_failures, 0);
     sender
         .publish_fact_payload(
             &fixture.writer,
@@ -160,6 +163,23 @@ async fn fact_node_receives_after_refreshing_stream() {
             .expect("import after refresh"),
         PandaNetFactImportOutcome::Imported
     );
+}
+
+#[tokio::test]
+async fn fact_node_records_idle_import_waits() {
+    let fixture = FactNodeFixture::new("fact-node-idle-wait");
+    let mut receiver = fixture
+        .node([47; 32], Vec::new(), ReplicaTrust::Trusted)
+        .await
+        .expect("spawn receiver fact node");
+
+    let batch = receiver
+        .import_next_fact_batch_with_idle_timeout(Duration::from_millis(5))
+        .await
+        .expect("idle wait does not fail");
+
+    assert!(batch.is_none());
+    assert_eq!(receiver.stats().idle_timeouts, 1);
 }
 
 #[tokio::test]
