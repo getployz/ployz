@@ -61,8 +61,8 @@ Before Slice 028:
 
 After Slice 028:
 
-- `MVP/e2e/src/machine_remove_contract.rs`: 1,055 LOC.
-- `MVP/machine-p2panda/src/lib.rs`: 749 LOC including adapter tests.
+- `MVP/e2e/src/machine_remove_contract.rs`: 1,037 LOC.
+- `MVP/machine-p2panda/src/lib.rs`: 666 LOC including adapter tests.
 - `MVP/machine/src/error.rs`: structured p2panda fact-write denial variants
   plus a fallback `FactStore` variant.
 - `MVP/machine/src/remove.rs`: cleanup failure classification now enumerates
@@ -71,6 +71,9 @@ After Slice 028:
 - The E2E grew because it now proves scoped p2panda authority, fresh-store
   trust setup, and conflict rejection instead of only changing the storage
   backend.
+- The follow-up simplify pass removed the machine-specific p2panda sink trait
+  and moved stale-candidate payload filtering into the shared
+  `PandaFactStore::read_payloads` path.
 
 Assessment: **yellow** on raw LOC, **green** on storage-boundary clarity. This
 slice is not a line-count reduction. It removes the mixed iroh-docs/bus fact

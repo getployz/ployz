@@ -1301,16 +1301,12 @@ impl FactSource for PandaFactStore {
             else {
                 continue;
             };
-            if !self.authorizer.can_session_access_fact(
-                session,
-                &stored.metadata.key,
-                FactAccess::Read,
-            ) || !self.authorizer.can_principal_access_fact(
-                &stored.metadata.island,
-                &stored.metadata.author,
-                &stored.metadata.key,
-                FactAccess::Write,
-            ) {
+            let Some(current) =
+                self.candidate_for(stored, island, &exact_pattern(candidate), session)
+            else {
+                continue;
+            };
+            if current != *candidate || !candidate_payload_is_readable(current.status()) {
                 continue;
             }
             if let Some(payload) = self.payloads.get(&stored.metadata.content_hash) {
@@ -1319,6 +1315,18 @@ impl FactSource for PandaFactStore {
         }
         Ok(payloads)
     }
+}
+
+fn exact_pattern(candidate: &FactCandidate) -> FactKeyPattern {
+    FactKeyPattern::parse(candidate.key().as_str())
+        .expect("stored fact candidate key is always a valid exact fact pattern")
+}
+
+fn candidate_payload_is_readable(status: CandidateStatus) -> bool {
+    matches!(
+        status,
+        CandidateStatus::Verified | CandidateStatus::Conflict
+    )
 }
 
 impl PandaFactStore {
