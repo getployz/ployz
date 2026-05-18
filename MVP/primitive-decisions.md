@@ -1202,6 +1202,13 @@ Decision:
   authorization through `PandaFactStore::import_replica_operation`.
 - Import outcomes remain structured: inserted, duplicate, conflict, deferred,
   rejected, and failed.
+- Out-of-order imports use a bounded pending queue. Deferred bodies are retried
+  after any successful imported/duplicate/conflict operation, including
+  transitive chains, and queue exhaustion is a structured import failure.
+- Fact-node body-size limits are checked at the p2panda stream event boundary
+  before converting the operation body into bytes for Ployz import. This avoids
+  local decode/import memory growth, but it does not claim to be a network
+  ingress limit for the p2panda-net node itself.
 - The main product proof projects from the receiver's synced local store. The
   older opaque-body helpers remain lower-level fixtures, not the architectural
   proof shape.
@@ -1217,6 +1224,10 @@ Costs:
   useful network surface is ahead of the crates.io stable store line.
 - The node ingests and reports only. It must not become a reconciler or command
   coordinator.
+- Topic material is island-replica material in this MVP. p2panda-net transport
+  privacy and membership are not a substitute for Ployz import authority; tighter
+  pre-delivery privacy belongs with p2panda-auth or process/topology isolation,
+  not with ad hoc fact-node filtering.
 
 Revisit if:
 - p2panda-net publishes a stable crates.io release with the needed APIs.
