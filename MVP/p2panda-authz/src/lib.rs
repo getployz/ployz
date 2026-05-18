@@ -1585,6 +1585,11 @@ pub enum IslandAccessLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use p2panda_auth::processor::{GroupsArgs, GroupsOperation, GroupsProcessor};
+    use p2panda_core::test_utils::TestLog;
+    use p2panda_core::{Extension, Hash, Header, Topic, VerifyingKey};
+    use p2panda_store::groups::GroupsStore;
+    use p2panda_store::{SqliteStore, Transaction};
 
     fn island() -> IslandId {
         IslandId::new("default")
@@ -1725,6 +1730,45 @@ mod tests {
         )
     }
 
+    type ProcessorLogId = u64;
+    type ProcessorState = GroupCrdtState<
+        VerifyingKey,
+        Hash,
+        GroupsOperation<IslandMemberCondition>,
+        IslandMemberCondition,
+    >;
+    type AuthzProcessor =
+        GroupsProcessor<Topic, ProcessorFitExtensions, ProcessorLogId, IslandMemberCondition>;
+
+    const PROCESSOR_LOG_ID: ProcessorLogId = 7;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct ProcessorFitExtensions {
+        log_id: ProcessorLogId,
+        groups: Option<GroupsArgs<IslandMemberCondition>>,
+    }
+
+    impl Extension<GroupsArgs<IslandMemberCondition>> for ProcessorFitExtensions {
+        fn extract(header: &Header<Self>) -> Option<GroupsArgs<IslandMemberCondition>> {
+            header.extensions.groups.clone()
+        }
+    }
+
+    impl Extension<ProcessorLogId> for ProcessorFitExtensions {
+        fn extract(header: &Header<Self>) -> Option<ProcessorLogId> {
+            Some(header.extensions.log_id)
+        }
+    }
+
+    impl From<GroupsArgs<IslandMemberCondition>> for ProcessorFitExtensions {
+        fn from(groups: GroupsArgs<IslandMemberCondition>) -> Self {
+            Self {
+                log_id: PROCESSOR_LOG_ID,
+                groups: Some(groups),
+            }
+        }
+    }
+
     #[test]
     fn root_creates_island_group_as_manager() {
         let (authz, root) = new_authz();
@@ -1762,6 +1806,76 @@ mod tests {
             .apply_signed(signed)
             .expect("signed add should be accepted");
         assert!(authz.can_write_member(writer_id));
+    }
+
+    #[tokio::test]
+    async fn groups_processor_fit_check_uses_verifying_key_hash_identity_model() {
+        let store = SqliteStore::temporary().await;
+        let processor = AuthzProcessor::new(store.clone());
+        let topic = Topic::random();
+        let state_id = 41_u64;
+        let manager_log = TestLog::new();
+        let importer_log = TestLog::new();
+        let group_key = SigningKey::generate().verifying_key();
+
+        let create = manager_log.operation(
+            &[],
+            ProcessorFitExtensions::from(GroupsArgs {
+                group_id: group_key,
+                action: GroupAction::Create {
+                    initial_members: vec![(
+                        GroupMember::Individual(manager_log.author()),
+                        Access::manage(),
+                    )],
+                },
+                dependencies: Vec::new(),
+            }),
+        );
+        processor
+            .process(&state_id, &topic, &create)
+            .await
+            .expect("processor should store create group operation");
+
+        let add_importer = manager_log.operation(
+            &[],
+            ProcessorFitExtensions::from(GroupsArgs {
+                group_id: group_key,
+                action: GroupAction::Add {
+                    member: GroupMember::Individual(importer_log.author()),
+                    access: ReplicaImportAccess::Read.into_access(),
+                },
+                dependencies: vec![create.hash],
+            }),
+        );
+        processor
+            .process(&state_id, &topic, &add_importer)
+            .await
+            .expect("processor should store add-member operation");
+
+        let permit = store.begin().await.expect("begin processor store read");
+        let state: ProcessorState = store
+            .get_groups_state(&state_id)
+            .await
+            .expect("read processor group state")
+            .expect("processor group state should exist");
+        store.commit(permit).await.expect("commit processor read");
+
+        let members = state.members(group_key);
+        assert_eq!(members.len(), 2);
+        assert!(members.contains(&(manager_log.author(), Access::manage())));
+        assert!(members.contains(&(
+            importer_log.author(),
+            ReplicaImportAccess::Read.into_access()
+        )));
+
+        // This processor stores group and member identities as p2panda
+        // VerifyingKey values, with operation identity fixed to the signed
+        // p2panda operation hash. Slice 041 still needs Ployz-owned
+        // island/principal/epoch/key bindings and root anchoring above it.
+        assert_ne!(
+            group_key.as_bytes(),
+            &IslandGroupId::from_island(&island()).auth_id().0
+        );
     }
 
     #[tokio::test]
