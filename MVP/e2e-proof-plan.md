@@ -378,8 +378,15 @@ Current proof status:
   superseded loser reporting, and gateway HTTP-01 serving from the synced
   projection.
 - Remaining work for E2E-6a is applying the same lease-fenced command shape to
-  the next real singleton resource, such as volume ownership or machine
+  another real singleton resource after volume ownership, such as machine
   mutation.
+- Slice 027 adds `volume-transfer-contract`. It proves the lease-fenced command
+  shape for volume ownership: current ownership and lease facts are read before
+  mutation, active holder conflict fails before participant RPC, a durable lease
+  claim is written before snapshot/receive, ownership write authorization is
+  preflighted before lease write or participant RPC, stale holder/expired lease
+  mutation fails before ownership commit, concurrent ownership races fail before
+  stale commit, and the command result reports visible nodes at decision time.
 
 Metrics:
 
@@ -608,6 +615,14 @@ Current proof status:
   import/authority path. No product business logic moved; the semantic gain is
   deleting the future need to hand-roll iroh transport for fact sync, not yet
   shrinking the current stable `PandaFactStore` implementation.
+- Slice 027 is the first volume movement canary. The old reference surface
+  across volume transfer/listener/API/smoke test is 1,707 LOC. The MVP adds
+  about 1,150 lines of `mvp-volume` domain/command code, about 800 lines of
+  focused unit tests, and about 1,200 lines of p2panda-backed E2E harness. The
+  result is yellow-green but not a raw LOC reduction: ownership and fencing
+  semantics are visible in typed command code, and no new generic substrate was
+  added, but the E2E-local p2panda harness is still large and should only be
+  extracted after a second volume/storage command repeats it.
 
 ## Required Test Artifacts
 

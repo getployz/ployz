@@ -17,6 +17,7 @@ members = [
     "routing",
     "routing-p2panda",
     "serving",
+    "volume",
 ]
 resolver = "3"
 
