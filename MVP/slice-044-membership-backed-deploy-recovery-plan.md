@@ -87,9 +87,9 @@ In scope:
   absent, recovery does not rerun precommit work, cleanup-pending is visible
   when stop has no responder, and cleanup-done makes recovery idempotent.
 - Add narrow negative authority probes around deploy recovery import.
-- Leave `mvp-deploy-p2panda` adapter unit tests on raw in-memory stores unless
-  implementation turns them into product authority tests. Those tests validate
-  write/conflict mapping, not membership behavior.
+- Leave `mvp-deploy-p2panda` adapter unit tests on raw in-memory stores. Those
+  tests validate write/conflict mapping, not membership behavior; run them as
+  regression gates, but do not rewrite them in this slice.
 - Update the semantic-leverage ledger and roadmap with what got simpler and
   what manual-trust inventory remains.
 
@@ -157,7 +157,10 @@ Plan:
    deploy writer grants cover `/facts/deploy/>` and `/facts/serving/>`;
    projection still has read-only access; the normal recovery replica importer
    has no bus write grant.
-5. Avoid creating a deploy-specific authority abstraction. The E2E can have a
+5. Add a separate replica-write probe session whose bus grant allows deploy or
+   serving fact writes while its p2panda-auth role is replica importer only.
+   This proves membership-layer writer rejection, not simple bus denial.
+6. Avoid creating a deploy-specific authority abstraction. The E2E can have a
    small fixture struct for sessions/authors if that makes the contract easier
    to read.
 
@@ -180,7 +183,7 @@ Verification:
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-restart-recovery-contract
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-commit-drain-contract
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-candidate-cleanup-contract
-rg -n "trust_author_key|trust_replica_peer|with_trusted_author_key|from_trusted_authors" MVP/e2e/src/deploy_restart_recovery_contract.rs
+! rg -n "trust_author_key|trust_replica_peer|with_trusted_author_key|from_trusted_authors" MVP/e2e/src/deploy_restart_recovery_contract.rs
 rg -n "PandaFactStore::new" MVP/e2e/src/deploy_restart_recovery_contract.rs
 ```
 
@@ -211,13 +214,18 @@ Plan:
      deploy decision or cleanup fact, which must be rejected;
    - source author has only `/facts/deploy/>` on the target and imports a
      serving commit fact, which must be rejected.
-6. Add a non-replica import probe: a same-island principal with the original
+6. Add a same-island original-author membership probe: an operation signed by an
+   author with a bus fact grant but no active writer membership must be rejected
+   with a structured membership/key error. If the source operation needs to be
+   manufactured through an explicitly named raw negative fixture, keep that raw
+   store outside the product recovery path and name it as a negative fixture.
+7. Add a non-replica import probe: a same-island principal with the original
    author and fact-key grants but no replica-import membership attempts to
    import an otherwise valid deploy/serving operation and must fail with the
    structured unauthorized-replica-import error.
-7. Add a foreign-island negative source operation and assert recovery import
+8. Add a foreign-island negative source operation and assert recovery import
    rejects it with the structured island-mismatch error.
-8. Keep the existing recovery assertions unchanged: no precommit rerun, pending
+9. Keep the existing recovery assertions unchanged: no precommit rerun, pending
    cleanup recovery, cleanup-pending when stop has no responders, final stop
    completion, and cleanup-done idempotency.
 
@@ -229,6 +237,8 @@ Test Scenarios:
   original author lacks the required fact-key grant.
 - A valid local replica importer cannot import a serving operation whose
   original author lacks the required serving fact-key grant.
+- A valid local replica importer cannot import a same-island operation whose
+  original author has a bus fact grant but no active writer membership.
 - A same-island non-replica principal cannot import an otherwise valid operation.
 - A valid local replica importer cannot import a foreign-island deploy
   operation.
@@ -256,8 +266,8 @@ Plan:
    name remaining manual-trust inventory, especially volume transfer and
    p2panda-net fallback probes.
 2. Keep the p2panda-net fact-node contract classified as a low-level fallback
-   regression fixture unless implementation discovers a simple membership-backed
-   replacement that preserves its negative import probes.
+   regression fixture. Do not implement a p2panda-net fallback replacement in
+   this slice.
 3. Add a small semantic-leverage note: this slice should ideally remove a
    deploy-specific trust setup path without adding shared substrate. If it grows
    E2E lines, explain why the product authority model is still simpler for
@@ -286,7 +296,6 @@ cargo check --manifest-path MVP/Cargo.toml -p mvp-e2e
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-restart-recovery-contract
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-commit-drain-contract
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-candidate-cleanup-contract
-cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- environment-branch-promote-rollback-contract
 cargo test --manifest-path MVP/Cargo.toml -p mvp-deploy-p2panda
 cargo test --manifest-path MVP/Cargo.toml -p mvp-deploy
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- all
