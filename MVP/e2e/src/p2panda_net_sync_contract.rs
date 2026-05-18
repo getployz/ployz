@@ -8,6 +8,7 @@ use p2panda_sync_git::{FromSync, protocols::TopicLogSyncEvent};
 use serde::Serialize;
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::NodeId;
@@ -24,6 +25,8 @@ use crate::projection_harness::projection_actor;
 
 const NET_EVENT_TIMEOUT: Duration = Duration::from_secs(5);
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+type NetEvent = Result<FromSync<TopicLogSyncEvent>, BroadcastStreamRecvError>;
 
 #[derive(Debug, Serialize)]
 struct P2pandaNetSyncReport {
@@ -389,14 +392,7 @@ async fn transport_wire_operations(wire_operations: Vec<Vec<u8>>) -> Result<Vec<
 }
 
 async fn collect_transported_operations(
-    events: &mut (
-             impl Stream<
-        Item = Result<
-            FromSync<TopicLogSyncEvent>,
-            tokio_stream::wrappers::errors::BroadcastStreamRecvError,
-        >,
-    > + Unpin
-         ),
+    events: &mut (impl Stream<Item = NetEvent> + Unpin),
     expected: usize,
 ) -> Result<Vec<Vec<u8>>, String> {
     let mut received = Vec::with_capacity(expected);
@@ -423,14 +419,7 @@ async fn collect_transported_operations(
 }
 
 async fn next_net_event(
-    events: &mut (
-             impl Stream<
-        Item = Result<
-            FromSync<TopicLogSyncEvent>,
-            tokio_stream::wrappers::errors::BroadcastStreamRecvError,
-        >,
-    > + Unpin
-         ),
+    events: &mut (impl Stream<Item = NetEvent> + Unpin),
     label: &'static str,
 ) -> Result<FromSync<TopicLogSyncEvent>, String> {
     timeout(NET_EVENT_TIMEOUT, events.next())
