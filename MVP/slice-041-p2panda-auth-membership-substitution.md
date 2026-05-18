@@ -89,6 +89,10 @@ authority instead of general trusted-author flags:
   policy.
 - Replica import authority comes from membership-backed
   `ReplicaImporter(Pull)` membership, not `trust_replica_peer`.
+- The p2panda-net receiver validates the configured replica principal at
+  startup and refreshes the installed membership authority before import
+  batches, so a long-running process does not keep accepting fresh operations
+  against a stale writer snapshot.
 - Fact-key authorization remains Ployz-owned: the process harness still grants
   `/facts/>` write/read policy explicitly to requested writers after verifying
   each one is active in membership.
