@@ -451,6 +451,13 @@ collecting network bodies and manually importing them in the scenario. The
 non-RC-iroh decision remains isolated inside `mvp-p2panda-transport`; domain
 crates do not learn git p2panda transport types.
 
+Slice 031 is planned next:
+[MVP/slice-031-p2panda-net-process-serving-plan.md](slice-031-p2panda-net-process-serving-plan.md).
+It should connect the Slice 030 fact-node proof to the daemon-down serving
+invariant: a separate serving/projection process receives p2panda-net fact
+traffic, imports into its local store, rebuilds gateway/DNS projections, and
+reloads last-good serving state while the local coordinator remains dead.
+
 The next implementation/proof slice should keep paying down product semantic
 leverage rather than adding another generic substrate layer. Plan it against
 the current map and prefer a product rule that reuses bus, p2panda facts,
@@ -610,6 +617,13 @@ Recent semantic-leverage proof:
   foundation has a real upfront cost. New slices should report whether they add
   product logic on top of existing primitives or grow bus/fact/projection
   substrate again.
+- Future slice closeouts should include a small LOC ledger: feature/business
+  LOC, shared primitive LOC, adapter/backend LOC, E2E/harness LOC, old
+  equivalent LOC made irrelevant, and repeated glue deleted. The important
+  trend is not total MVP LOC during the proof phase; it is whether new product
+  primitives add less bespoke transport/storage/projection choreography over
+  time. The current baseline is recorded in
+  [MVP/design-notes/semantic-leverage-loc.md](design-notes/semantic-leverage-loc.md).
 
 ## Non-Goals Until Proven Necessary
 
