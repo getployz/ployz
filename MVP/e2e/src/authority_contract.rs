@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use mvp_bus::{
@@ -195,6 +196,7 @@ async fn run_async() -> Result<(), String> {
 
     let duplicate_response_error = Arc::new(Mutex::new(None));
     let duplicate_response_error_for_handler = Arc::clone(&duplicate_response_error);
+    let (duplicate_recorded_tx, duplicate_recorded_rx) = mpsc::channel();
     bus.subscribe(&laptop_admin, pattern("node.local.inspect")?, move |ctx| {
         ctx.reply(b"ok".to_vec())?;
         let error = ctx.reply(b"second".to_vec()).unwrap_err();
@@ -204,6 +206,7 @@ async fn run_async() -> Result<(), String> {
                 subject: String::from("node.local.inspect"),
                 failure: HandlerFailure::LockPoisoned,
             })? = Some(error);
+        let _ = duplicate_recorded_tx.send(());
         Ok(())
     })
     .await
@@ -222,6 +225,9 @@ async fn run_async() -> Result<(), String> {
         inspect.payload().as_bytes(),
         b"ok".as_slice(),
     )?;
+    duplicate_recorded_rx
+        .recv_timeout(Duration::from_secs(1))
+        .map_err(|error| format!("duplicate response error was not recorded: {error}"))?;
     let duplicate_error = duplicate_response_error
         .lock()
         .map_err(|_| String::from("duplicate response lock poisoned"))?
