@@ -756,36 +756,36 @@ fn same_head_candidate(left: &EnvironmentHeadCandidate, right: &EnvironmentHeadC
 
 fn map_serving_error(error: RoutingError) -> EnvironmentError {
     match error {
-        RoutingError::ProjectionCatchUpMissing => EnvironmentError::ServingWrite {
-            message: RoutingError::ProjectionCatchUpMissing.to_string(),
-        },
+        RoutingError::ProjectionCatchUpMissing => {
+            EnvironmentError::ServingRouting(RoutingError::ProjectionCatchUpMissing)
+        }
         RoutingError::ProjectionCatchUpMismatch { serving_commit_id } => {
-            EnvironmentError::ServingWrite {
-                message: RoutingError::ProjectionCatchUpMismatch { serving_commit_id }.to_string(),
-            }
+            EnvironmentError::ServingRouting(RoutingError::ProjectionCatchUpMismatch {
+                serving_commit_id,
+            })
         }
         RoutingError::ServingFactConflict { key } => EnvironmentError::ServingFactConflict { key },
-        RoutingError::ServingFactMissing { key } => EnvironmentError::ServingWrite {
-            message: RoutingError::ServingFactMissing { key }.to_string(),
-        },
-        RoutingError::ServingFactKindMismatch { key } => EnvironmentError::ServingWrite {
-            message: RoutingError::ServingFactKindMismatch { key }.to_string(),
-        },
-        RoutingError::ServingFactMismatch { serving_commit_id } => EnvironmentError::ServingWrite {
-            message: RoutingError::ServingFactMismatch { serving_commit_id }.to_string(),
-        },
-        RoutingError::WirePayload { context, source } => EnvironmentError::ServingWrite {
-            message: RoutingError::WirePayload { context, source }.to_string(),
-        },
-        RoutingError::Bus(source) => EnvironmentError::ServingWrite {
-            message: source.to_string(),
-        },
-        RoutingError::FactSource(source) => EnvironmentError::ServingWrite {
-            message: source.to_string(),
-        },
-        RoutingError::FactKeyParse(source) => EnvironmentError::ServingWrite {
-            message: source.to_string(),
-        },
+        RoutingError::ServingFactMissing { key } => {
+            EnvironmentError::ServingRouting(RoutingError::ServingFactMissing { key })
+        }
+        RoutingError::ServingFactKindMismatch { key } => {
+            EnvironmentError::ServingRouting(RoutingError::ServingFactKindMismatch { key })
+        }
+        RoutingError::ServingFactMismatch { serving_commit_id } => {
+            EnvironmentError::ServingRouting(RoutingError::ServingFactMismatch {
+                serving_commit_id,
+            })
+        }
+        RoutingError::WirePayload { context, source } => {
+            EnvironmentError::ServingRouting(RoutingError::WirePayload { context, source })
+        }
+        RoutingError::Bus(source) => EnvironmentError::ServingRouting(RoutingError::Bus(source)),
+        RoutingError::FactSource(source) => {
+            EnvironmentError::ServingRouting(RoutingError::FactSource(source))
+        }
+        RoutingError::FactKeyParse(source) => {
+            EnvironmentError::ServingRouting(RoutingError::FactKeyParse(source))
+        }
     }
 }
 

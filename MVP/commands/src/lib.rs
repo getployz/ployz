@@ -65,6 +65,17 @@ pub enum CommandError {
     DeserializePhase { key: FactKey, message: String },
     #[error("command phase has conflicting candidates at {key}")]
     PhaseConflict { key: FactKey },
+    #[error("command phase already advanced at {key}")]
+    PhaseAdvanced { key: FactKey },
+    #[error(
+        "command phase history has a gap for {command}/{intent}: expected {expected_index}, found {actual_index}"
+    )]
+    PhaseHistoryGap {
+        command: CommandName,
+        intent: IntentId,
+        expected_index: u64,
+        actual_index: u64,
+    },
     #[error("command store failed: {message}")]
     Store { message: String },
     #[error("command phase index overflow for {command}/{intent}")]
@@ -142,18 +153,27 @@ pub struct StoredCommandPhase {
 }
 
 pub trait CommandPhaseStore: Send + Sync {
+    fn read_phase_history(
+        &self,
+        command: &CommandName,
+        intent: &IntentId,
+    ) -> CommandResult<Vec<StoredCommandPhase>>;
+
     fn read_latest_phase(
         &self,
         command: &CommandName,
         intent: &IntentId,
-    ) -> CommandResult<Option<StoredCommandPhase>>;
+    ) -> CommandResult<Option<StoredCommandPhase>> {
+        Ok(self.read_phase_history(command, intent)?.into_iter().last())
+    }
 
     fn write_intent(&self, fact: CommandFact) -> CommandResult<FactKey>;
 
-    fn write_phase(
+    fn append_phase(
         &self,
         command: &CommandName,
         intent: &IntentId,
+        expected_previous: Option<&StoredCommandPhase>,
         index: u64,
         payload: FactPayload,
     ) -> CommandResult<FactKey>;
@@ -194,6 +214,14 @@ impl CommandContext {
             .read_latest_phase(&command.name(), &command.intent_id())
     }
 
+    pub fn read_stored_phase_history(
+        &self,
+        command: &impl Command,
+    ) -> CommandResult<Vec<StoredCommandPhase>> {
+        self.store
+            .read_phase_history(&command.name(), &command.intent_id())
+    }
+
     pub fn write_phase<P: Phase>(
         &self,
         command: &impl Command,
@@ -201,7 +229,8 @@ impl CommandContext {
     ) -> CommandResult<FactKey> {
         let name = command.name();
         let intent = command.intent_id();
-        let next_index = match self.store.read_latest_phase(&name, &intent)? {
+        let expected_previous = self.store.read_latest_phase(&name, &intent)?;
+        let next_index = match &expected_previous {
             Some(stored) => {
                 stored
                     .index
@@ -218,7 +247,52 @@ impl CommandContext {
             .map_err(|error| CommandError::SerializePhase {
                 message: error.to_string(),
             })?;
-        self.store.write_phase(&name, &intent, next_index, payload)
+        self.store.append_phase(
+            &name,
+            &intent,
+            expected_previous.as_ref(),
+            next_index,
+            payload,
+        )
+    }
+
+    fn write_next_phase<P: Phase>(
+        &self,
+        command: &impl Command,
+        expected_previous: Option<&StoredCommandPhase>,
+        phase: &P,
+    ) -> CommandResult<StoredCommandPhase> {
+        let name = command.name();
+        let intent = command.intent_id();
+        let next_index = expected_previous
+            .map(|stored| {
+                stored
+                    .index
+                    .checked_add(1)
+                    .ok_or_else(|| CommandError::PhaseIndexOverflow {
+                        command: name.clone(),
+                        intent: intent.clone(),
+                    })
+            })
+            .transpose()?
+            .unwrap_or(1);
+        let payload = serde_json::to_vec(phase)
+            .map(FactPayload::from)
+            .map_err(|error| CommandError::SerializePhase {
+                message: error.to_string(),
+            })?;
+        let key = self.store.append_phase(
+            &name,
+            &intent,
+            expected_previous,
+            next_index,
+            payload.clone(),
+        )?;
+        Ok(StoredCommandPhase {
+            key,
+            index: next_index,
+            payload,
+        })
     }
 }
 
@@ -227,43 +301,59 @@ where
     C: PhasedCommand,
 {
     cx.write_intent(CommandFact::new(command.name(), command.intent_id()))?;
-    let stored = cx.read_stored_phase(command)?;
-    let mut current = match &stored {
-        Some(stored) => serde_json::from_slice(stored.payload.as_ref()).map_err(|error| {
-            CommandError::DeserializePhase {
-                key: stored.key.clone(),
-                message: error.to_string(),
-            }
-        })?,
-        None => command.initial_phase(),
-    };
-    let mut committed = match stored {
-        Some(_) => vec![current.clone()],
-        None => Vec::new(),
-    };
+    let history = cx
+        .store
+        .read_phase_history(&command.name(), &command.intent_id())?;
+    let mut current_stored = history.last().cloned();
+    let mut committed = deserialize_phase_history::<C::Phase>(history)?;
+    let mut current = committed
+        .last()
+        .cloned()
+        .unwrap_or_else(|| command.initial_phase());
 
     loop {
         match command.step(cx, current.clone()).await {
             Ok(PhaseTransition::Continue(next)) => {
-                if let Err(error) = cx.write_phase(command, &next) {
-                    let _ = command.compensate(cx, next).await;
-                    for phase in committed.into_iter().rev() {
-                        let _ = command.compensate(cx, phase).await;
+                let stored_next = match cx.write_next_phase(command, current_stored.as_ref(), &next)
+                {
+                    Ok(stored_next) => stored_next,
+                    Err(error) => {
+                        if let Err(compensation_error) = command.compensate(cx, next).await {
+                            return Err(compensation_error);
+                        }
+                        return Err(error.into());
                     }
-                    return Err(error.into());
-                }
+                };
                 committed.push(next.clone());
+                current_stored = Some(stored_next);
                 current = next;
             }
             Ok(PhaseTransition::Done(output)) => return Ok(output),
             Err(error) => {
                 for phase in committed.into_iter().rev() {
-                    let _ = command.compensate(cx, phase).await;
+                    if let Err(compensation_error) = command.compensate(cx, phase).await {
+                        return Err(compensation_error);
+                    }
                 }
                 return Err(error);
             }
         }
     }
+}
+
+fn deserialize_phase_history<P: Phase>(history: Vec<StoredCommandPhase>) -> CommandResult<Vec<P>> {
+    let mut phases = Vec::with_capacity(history.len());
+    for stored in history {
+        phases.push(
+            serde_json::from_slice(stored.payload.as_ref()).map_err(|error| {
+                CommandError::DeserializePhase {
+                    key: stored.key,
+                    message: error.to_string(),
+                }
+            })?,
+        );
+    }
+    Ok(phases)
 }
 
 #[derive(Debug, Clone)]
@@ -322,27 +412,35 @@ impl InMemoryCommandPhaseStoreInner {
 }
 
 impl CommandPhaseStore for InMemoryCommandPhaseStore {
-    fn read_latest_phase(
+    fn read_phase_history(
         &self,
         command: &CommandName,
         intent: &IntentId,
-    ) -> CommandResult<Option<StoredCommandPhase>> {
+    ) -> CommandResult<Vec<StoredCommandPhase>> {
         let inner = self.inner.lock().map_err(|_| CommandError::Store {
             message: "command phase store lock poisoned".to_string(),
         })?;
-        let Some((index, phases)) = inner
-            .phases
-            .get(&(command.clone(), intent.clone()))
-            .and_then(|phases| phases.last_key_value())
-        else {
-            return Ok(None);
+        let Some(phases) = inner.phases.get(&(command.clone(), intent.clone())) else {
+            return Ok(Vec::new());
         };
-        let [phase] = phases.as_slice() else {
-            return Err(CommandError::PhaseConflict {
-                key: command_phase_fact_key(command, intent, *index)?,
-            });
-        };
-        Ok(Some(phase.clone()))
+        let mut history = Vec::with_capacity(phases.len());
+        for (expected_index, (index, candidates)) in (1..).zip(phases.iter()) {
+            if *index != expected_index {
+                return Err(CommandError::PhaseHistoryGap {
+                    command: command.clone(),
+                    intent: intent.clone(),
+                    expected_index,
+                    actual_index: *index,
+                });
+            }
+            let [phase] = candidates.as_slice() else {
+                return Err(CommandError::PhaseConflict {
+                    key: command_phase_fact_key(command, intent, *index)?,
+                });
+            };
+            history.push(phase.clone());
+        }
+        Ok(history)
     }
 
     fn write_intent(&self, fact: CommandFact) -> CommandResult<FactKey> {
@@ -357,10 +455,11 @@ impl CommandPhaseStore for InMemoryCommandPhaseStore {
         Ok(key)
     }
 
-    fn write_phase(
+    fn append_phase(
         &self,
         command: &CommandName,
         intent: &IntentId,
+        expected_previous: Option<&StoredCommandPhase>,
         index: u64,
         payload: FactPayload,
     ) -> CommandResult<FactKey> {
@@ -368,12 +467,35 @@ impl CommandPhaseStore for InMemoryCommandPhaseStore {
         let mut inner = self.inner.lock().map_err(|_| CommandError::Store {
             message: "command phase store lock poisoned".to_string(),
         })?;
-        let candidates = inner
+        let phases = inner
             .phases
             .entry((command.clone(), intent.clone()))
-            .or_default()
-            .entry(index)
             .or_default();
+        match phases.last_key_value() {
+            Some((latest_index, latest_candidates)) => {
+                let [latest] = latest_candidates.as_slice() else {
+                    return Err(CommandError::PhaseConflict {
+                        key: command_phase_fact_key(command, intent, *latest_index)?,
+                    });
+                };
+                if expected_previous != Some(latest) {
+                    return Err(CommandError::PhaseAdvanced {
+                        key: latest.key.clone(),
+                    });
+                }
+            }
+            None if expected_previous.is_some() => {
+                return Err(CommandError::PhaseAdvanced {
+                    key: expected_previous
+                        .expect("expected previous checked above")
+                        .key
+                        .clone(),
+                });
+            }
+            None => {}
+        }
+
+        let candidates = phases.entry(index).or_default();
         if candidates.iter().any(|phase| phase.payload == payload) {
             return Ok(key);
         }
@@ -432,6 +554,7 @@ mod tests {
 
     use mvp_bus::{FactKey, FactPayload};
     use serde::{Deserialize, Serialize};
+    use tokio::sync::{Notify, oneshot};
 
     use crate::{
         Command, CommandContext, CommandError, CommandFact, CommandName, CommandPhaseStore,
@@ -448,13 +571,14 @@ mod tests {
 
     #[derive(Debug)]
     enum TestError {
-        Command,
+        Command(CommandError),
         Failed,
+        Compensation,
     }
 
     impl From<CommandError> for TestError {
-        fn from(_error: CommandError) -> Self {
-            Self::Command
+        fn from(error: CommandError) -> Self {
+            Self::Command(error)
         }
     }
 
@@ -540,7 +664,7 @@ mod tests {
                     .expect("compensated lock")
                     .push(phase);
                 if self.fail_compensation {
-                    return Err(TestError::Failed);
+                    return Err(TestError::Compensation);
                 }
                 Ok(())
             })
@@ -625,6 +749,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resumed_failure_compensates_full_persisted_history() {
+        let store = Arc::new(InMemoryCommandPhaseStore::empty());
+        let cx = CommandContext::new(store);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let compensated = Arc::new(Mutex::new(Vec::new()));
+        let command = TestCommand::new(
+            Some(TestPhase::Committed),
+            Arc::clone(&seen),
+            Arc::clone(&compensated),
+        );
+        cx.write_phase(&command, &TestPhase::Prepared)
+            .expect("seed prepared phase");
+        cx.write_phase(&command, &TestPhase::Committed)
+            .expect("seed committed phase");
+
+        let error = run_phased(&cx, &command)
+            .await
+            .expect_err("committed fails");
+
+        assert!(matches!(error, TestError::Failed));
+        assert_eq!(
+            seen.lock().expect("seen lock").as_slice(),
+            &[TestPhase::Committed]
+        );
+        assert_eq!(
+            compensated.lock().expect("compensated lock").as_slice(),
+            &[TestPhase::Committed, TestPhase::Prepared]
+        );
+    }
+
+    #[tokio::test]
+    async fn overlapping_runner_cannot_append_stale_phase_after_latest_advanced() {
+        let store = Arc::new(InMemoryCommandPhaseStore::empty());
+        let cx = CommandContext::new(store);
+        let slow_started = Arc::new(Notify::new());
+        let slow_release = Arc::new(Notify::new());
+        let slow_seen = Arc::new(Mutex::new(Vec::new()));
+        let slow_compensated = Arc::new(Mutex::new(Vec::new()));
+        let slow = GatedStartCommand {
+            started: Arc::clone(&slow_started),
+            release: Arc::clone(&slow_release),
+            seen: Arc::clone(&slow_seen),
+            compensated: Arc::clone(&slow_compensated),
+        };
+        let (result_tx, result_rx) = oneshot::channel();
+
+        let slow_cx = cx.clone();
+        tokio::spawn(async move {
+            let _ = result_tx.send(run_phased(&slow_cx, &slow).await);
+        });
+        slow_started.notified().await;
+
+        let fast_seen = Arc::new(Mutex::new(Vec::new()));
+        let fast_compensated = Arc::new(Mutex::new(Vec::new()));
+        let fast = TestCommand::new(None, Arc::clone(&fast_seen), fast_compensated);
+        run_phased(&cx, &fast).await.expect("fast runner completes");
+
+        slow_release.notify_waiters();
+        let error = result_rx
+            .await
+            .expect("slow runner sends result")
+            .expect_err("slow runner detects stale predecessor");
+
+        assert!(matches!(
+            error,
+            TestError::Command(CommandError::PhaseAdvanced { .. })
+        ));
+        assert_eq!(
+            cx.read_phase::<TestPhase>(&fast).expect("latest phase"),
+            Some(TestPhase::Committed)
+        );
+        assert_eq!(
+            slow_compensated
+                .lock()
+                .expect("slow compensated")
+                .as_slice(),
+            &[TestPhase::Prepared]
+        );
+    }
+
+    #[tokio::test]
     async fn compensation_walks_committed_phases_in_reverse_without_failing_phase() {
         let store = Arc::new(InMemoryCommandPhaseStore::empty());
         let cx = CommandContext::new(store);
@@ -644,7 +849,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compensation_failure_preserves_original_error() {
+    async fn compensation_failure_is_returned_to_caller() {
         let store = Arc::new(InMemoryCommandPhaseStore::empty());
         let cx = CommandContext::new(store);
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -654,12 +859,12 @@ mod tests {
 
         let error = run_phased(&cx, &command)
             .await
-            .expect_err("original command error returned");
+            .expect_err("compensation error returned");
 
-        assert!(matches!(error, TestError::Failed));
+        assert!(matches!(error, TestError::Compensation));
         assert_eq!(
             compensated.lock().expect("compensated lock").as_slice(),
-            &[TestPhase::Committed, TestPhase::Prepared]
+            &[TestPhase::Committed]
         );
     }
 
@@ -699,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn same_index_phase_write_conflict_is_immediate() {
+    fn stale_same_index_phase_write_is_rejected_as_advanced() {
         let store = Arc::new(InMemoryCommandPhaseStore::empty());
         let cx = CommandContext::new(store);
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -713,21 +918,22 @@ mod tests {
 
         let error = cx
             .store
-            .write_phase(
+            .append_phase(
                 &name,
                 &intent,
+                None,
                 1,
                 FactPayload::from(br#""Committed""#.to_vec()),
             )
-            .expect_err("same index conflict");
+            .expect_err("same index write is stale");
 
         assert!(
-            matches!(error, CommandError::PhaseConflict { key: error_key } if error_key == key)
+            matches!(error, CommandError::PhaseAdvanced { key: error_key } if error_key == key)
         );
     }
 
     #[tokio::test]
-    async fn phase_write_failure_compensates_next_and_prior_phases() {
+    async fn phase_write_failure_compensates_only_uncommitted_next_phase() {
         let store = Arc::new(FailingPhaseWriteStore);
         let cx = CommandContext::new(store);
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -738,7 +944,7 @@ mod tests {
             .await
             .expect_err("phase write fails");
 
-        assert!(matches!(error, TestError::Command));
+        assert!(matches!(error, TestError::Command(_)));
         assert_eq!(
             seen.lock().expect("seen lock").as_slice(),
             &[TestPhase::Start]
@@ -764,27 +970,95 @@ mod tests {
     struct FailingPhaseWriteStore;
 
     impl CommandPhaseStore for FailingPhaseWriteStore {
-        fn read_latest_phase(
+        fn read_phase_history(
             &self,
             _command: &CommandName,
             _intent: &IntentId,
-        ) -> crate::CommandResult<Option<StoredCommandPhase>> {
-            Ok(None)
+        ) -> crate::CommandResult<Vec<StoredCommandPhase>> {
+            Ok(Vec::new())
         }
 
         fn write_intent(&self, fact: CommandFact) -> crate::CommandResult<FactKey> {
             crate::command_intent_fact_key(&fact.command, &fact.intent)
         }
 
-        fn write_phase(
+        fn append_phase(
             &self,
             command: &CommandName,
             intent: &IntentId,
+            _expected_previous: Option<&StoredCommandPhase>,
             _index: u64,
             _payload: FactPayload,
         ) -> crate::CommandResult<FactKey> {
             Err(CommandError::PhaseConflict {
                 key: crate::command_phase_fact_key(command, intent, 1)?,
+            })
+        }
+    }
+
+    struct GatedStartCommand {
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+        seen: Arc<Mutex<Vec<TestPhase>>>,
+        compensated: Arc<Mutex<Vec<TestPhase>>>,
+    }
+
+    impl Command for GatedStartCommand {
+        type Output = &'static str;
+        type Error = TestError;
+
+        fn name(&self) -> CommandName {
+            CommandName::parse("test-command").expect("valid command")
+        }
+
+        fn intent_id(&self) -> IntentId {
+            IntentId::parse("intent-1").expect("valid intent")
+        }
+    }
+
+    impl PhasedCommand for GatedStartCommand {
+        type Phase = TestPhase;
+
+        fn initial_phase(&self) -> Self::Phase {
+            TestPhase::Start
+        }
+
+        fn step<'a>(
+            &'a self,
+            _cx: &'a CommandContext,
+            phase: Self::Phase,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<PhaseTransition<Self::Phase, Self::Output>, Self::Error>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                self.seen.lock().expect("seen lock").push(phase.clone());
+                match phase {
+                    TestPhase::Start => {
+                        self.started.notify_waiters();
+                        self.release.notified().await;
+                        Ok(PhaseTransition::Continue(TestPhase::Prepared))
+                    }
+                    TestPhase::Prepared => Ok(PhaseTransition::Continue(TestPhase::Committed)),
+                    TestPhase::Committed => Ok(PhaseTransition::Done("done")),
+                }
+            })
+        }
+
+        fn compensate<'a>(
+            &'a self,
+            _cx: &'a CommandContext,
+            phase: Self::Phase,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+            Box::pin(async move {
+                self.compensated
+                    .lock()
+                    .expect("compensated lock")
+                    .push(phase);
+                Ok(())
             })
         }
     }

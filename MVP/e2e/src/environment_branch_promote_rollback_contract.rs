@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -268,10 +269,13 @@ async fn run_async() -> Result<(), String> {
         "environment promoted",
     )
     .await?;
+    let mut poisoned_promote_request = promote_request;
+    poisoned_promote_request.serving_commit =
+        serving_plan("serving-promote-poison", "fd00::99:8080", "fd00::99", 99);
     promote_command
         .execute_phased(
             &promote_resume_cx,
-            promote_request,
+            poisoned_promote_request,
             Some(catch_up(&island, &promote_plan)),
         )
         .await
@@ -339,10 +343,13 @@ async fn run_async() -> Result<(), String> {
         "environment rollback",
     )
     .await?;
+    let mut poisoned_rollback_request = rollback_request;
+    poisoned_rollback_request.serving_commit =
+        serving_plan("serving-rollback-poison", "fd00::99:8080", "fd00::99", 99);
     rollback_command
         .execute_phased(
             &rollback_resume_cx,
-            rollback_request,
+            poisoned_rollback_request,
             Some(catch_up(&island, &rollback_plan)),
         )
         .await
@@ -575,11 +582,11 @@ impl PandaCommandPhaseStore {
 }
 
 impl CommandPhaseStore for PandaCommandPhaseStore {
-    fn read_latest_phase(
+    fn read_phase_history(
         &self,
         command: &CommandName,
         intent: &IntentId,
-    ) -> CommandResult<Option<StoredCommandPhase>> {
+    ) -> CommandResult<Vec<StoredCommandPhase>> {
         let pattern = FactKeyPattern::parse(format!(
             "/facts/command/{}/{}/phase/>",
             command.as_str(),
@@ -591,7 +598,7 @@ impl CommandPhaseStore for PandaCommandPhaseStore {
             .map_err(|error| CommandError::Store {
                 message: error.to_string(),
             })?;
-        latest_command_phase(&self.store, &self.session, command, intent, candidates)
+        command_phase_history(&self.store, &self.session, command, intent, candidates)
     }
 
     fn write_intent(&self, fact: CommandFact) -> CommandResult<FactKey> {
@@ -604,15 +611,33 @@ impl CommandPhaseStore for PandaCommandPhaseStore {
         write_command_fact_payload(&self.store, &self.session, &self.author, key, payload)
     }
 
-    fn write_phase(
+    fn append_phase(
         &self,
-        _command: &CommandName,
-        _intent: &IntentId,
-        _index: u64,
+        command: &CommandName,
+        intent: &IntentId,
+        expected_previous: Option<&StoredCommandPhase>,
+        index: u64,
         payload: FactPayload,
     ) -> CommandResult<FactKey> {
-        let key = command_phase_fact_key(_command, _intent, _index)?;
-        write_command_fact_payload(&self.store, &self.session, &self.author, key, payload)
+        let latest = self.read_latest_phase(command, intent)?;
+        let key = command_phase_fact_key(command, intent, index)?;
+        match latest.as_ref() {
+            Some(stored) if expected_previous != Some(stored) => {
+                return Err(CommandError::PhaseAdvanced {
+                    key: stored.key.clone(),
+                });
+            }
+            None if expected_previous.is_some() => {
+                return Err(CommandError::PhaseAdvanced {
+                    key: expected_previous
+                        .expect("expected previous checked above")
+                        .key
+                        .clone(),
+                });
+            }
+            Some(_) | None => {}
+        }
+        append_command_phase_payload(&self.store, &self.session, &self.author, key, payload)
     }
 }
 
@@ -671,47 +696,97 @@ fn write_command_fact_payload(
     }
 }
 
-fn latest_command_phase(
+fn append_command_phase_payload(
+    store: &SharedPandaFactStore,
+    session: &BusSession,
+    author: &Arc<PandaFactAuthor>,
+    key: FactKey,
+    payload: FactPayload,
+) -> CommandResult<FactKey> {
+    let outcome = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(store.write_fact_payload(
+            session,
+            author,
+            key.clone(),
+            payload,
+        ))
+    })
+    .map_err(|error| CommandError::Store {
+        message: error.to_string(),
+    })?;
+    match outcome {
+        mvp_p2panda_facts::PandaFactWriteOutcome::Inserted(_)
+        | mvp_p2panda_facts::PandaFactWriteOutcome::AlreadyPresent(_) => Ok(key),
+        mvp_p2panda_facts::PandaFactWriteOutcome::Conflict(_) => {
+            Err(CommandError::PhaseConflict { key })
+        }
+    }
+}
+
+fn command_phase_history(
     store: &SharedPandaFactStore,
     session: &BusSession,
     command: &CommandName,
     intent: &IntentId,
     candidates: Vec<FactCandidate>,
-) -> CommandResult<Option<StoredCommandPhase>> {
-    let Some(index) = candidates
-        .iter()
-        .filter_map(|candidate| command_phase_index(candidate.key(), command, intent))
-        .max()
-    else {
-        return Ok(None);
-    };
-    let key = command_phase_fact_key(command, intent, index)?;
-    let candidates = candidates
-        .into_iter()
-        .filter(|candidate| candidate.key() == &key)
-        .collect::<Vec<_>>();
-    let [candidate] = candidates.as_slice() else {
-        return Err(CommandError::PhaseConflict { key });
-    };
-    if candidate.status() == CandidateStatus::Conflict {
-        return Err(CommandError::PhaseConflict { key });
+) -> CommandResult<Vec<StoredCommandPhase>> {
+    let mut candidates_by_index = BTreeMap::<u64, Vec<FactCandidate>>::new();
+    for candidate in candidates {
+        if let Some(index) = command_phase_index(candidate.key(), command, intent) {
+            candidates_by_index
+                .entry(index)
+                .or_default()
+                .push(candidate);
+        }
+    }
+    let mut selected = Vec::with_capacity(candidates_by_index.len());
+    for (expected_index, (index, candidates)) in (1..).zip(candidates_by_index) {
+        if index != expected_index {
+            return Err(CommandError::PhaseHistoryGap {
+                command: command.clone(),
+                intent: intent.clone(),
+                expected_index,
+                actual_index: index,
+            });
+        }
+        let key = command_phase_fact_key(command, intent, index)?;
+        let [candidate] = candidates.as_slice() else {
+            return Err(CommandError::PhaseConflict { key });
+        };
+        if candidate.status() == CandidateStatus::Conflict {
+            return Err(CommandError::PhaseConflict { key });
+        }
+        selected.push(candidate.clone());
     }
     let payloads = store
-        .read_payloads(session.island(), &candidates, session)
+        .read_payloads(session.island(), &selected, session)
         .map_err(|error| CommandError::Store {
             message: error.to_string(),
         })?;
-    let payload = payloads
-        .get(candidate.content_hash())
-        .cloned()
-        .ok_or_else(|| CommandError::Store {
-            message: format!("command phase payload missing for {key}"),
-        })?;
-    Ok(Some(StoredCommandPhase {
-        key,
-        index,
-        payload,
-    }))
+    selected
+        .into_iter()
+        .map(|candidate| {
+            let index = command_phase_index(candidate.key(), command, intent).ok_or_else(|| {
+                CommandError::Store {
+                    message: format!(
+                        "candidate key does not match command phase pattern: {}",
+                        candidate.key()
+                    ),
+                }
+            })?;
+            let payload = payloads
+                .get(candidate.content_hash())
+                .cloned()
+                .ok_or_else(|| CommandError::Store {
+                    message: format!("command phase payload missing for {}", candidate.key()),
+                })?;
+            Ok(StoredCommandPhase {
+                key: candidate.key().clone(),
+                index,
+                payload,
+            })
+        })
+        .collect()
 }
 
 fn command_phase_index(key: &FactKey, command: &CommandName, intent: &IntentId) -> Option<u64> {
@@ -731,6 +806,66 @@ fn command_phase_index(key: &FactKey, command: &CommandName, intent: &IntentId) 
         return None;
     }
     index.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn p2panda_command_phase_conflict_blocks_history_read() {
+        let root = scenario_dir("environment-command-phase-conflict-test");
+        reset_dir(&root).expect("reset test dir");
+        let island = IslandId::new("prod");
+        let author = Arc::new(PandaFactAuthor::new(PrincipalId::new(
+            "environment-operator",
+        )));
+        let (raw_bus, session) = p2panda_writer_bus(&island, author.principal());
+        let fact_authorizer: Arc<dyn FactAuthorizer> = Arc::new(raw_bus);
+        let store = SharedPandaFactStore::new(
+            PandaFactStore::open_sqlite(
+                Arc::clone(&fact_authorizer),
+                PandaSqliteOpenConfig::new(root.join("facts.sqlite"), vec![island.clone()])
+                    .with_trusted_author_key(PandaTrustedAuthorKey::new(
+                        island,
+                        author.principal().clone(),
+                        author.author_key(),
+                    )),
+            )
+            .await
+            .expect("open p2panda store"),
+        );
+        let command = CommandName::parse("environment.promote").expect("command name");
+        let intent = IntentId::parse("promote-conflict").expect("intent id");
+        let key = command_phase_fact_key(&command, &intent, 1).expect("phase key");
+        store
+            .write_fact_payload(
+                &session,
+                &author,
+                key.clone(),
+                FactPayload::from(br#""DecisionWritten""#.to_vec()),
+            )
+            .await
+            .expect("write first phase candidate");
+        store
+            .write_fact_payload(
+                &session,
+                &author,
+                key.clone(),
+                FactPayload::from(br#""ServingCommitWritten""#.to_vec()),
+            )
+            .await
+            .expect("write conflicting phase candidate");
+        let phase_store = PandaCommandPhaseStore::new(store, session, author);
+
+        let error = phase_store
+            .read_phase_history(&command, &intent)
+            .expect_err("conflict blocks phase resume");
+
+        assert!(
+            matches!(error, CommandError::PhaseConflict { key: error_key } if error_key == key)
+        );
+    }
 }
 
 async fn rebuild_projection(socket: &std::path::Path) -> Result<(), String> {

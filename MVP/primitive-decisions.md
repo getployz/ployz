@@ -853,18 +853,23 @@ Why this:
 Decision:
 - `mvp-commands` is application orchestration, not bus, transport, or fact
   replication.
-- `run_phased` writes a command intent fact, reads the latest phase, calls one
-  explicit `step`, writes the next phase after `Continue`, returns after
-  `Done`, and calls `compensate` for already-committed phases in reverse if a
-  later step fails.
+- `run_phased` writes a command intent fact, reads ordered phase history, calls
+  one explicit `step`, conditionally appends the next phase after `Continue`,
+  returns after `Done`, and calls `compensate` for already-committed phases in
+  reverse if a later step fails.
 - A failing phase is not compensated by the runner because that phase was not
   committed. Cleanup for side effects inside a failing step remains the command
   author's responsibility.
 - If `step` returns `Continue(next)` and the phase write then fails, the runner
-  calls `compensate(next)` before walking already-committed phases. That is the
-  one case where the runner compensates a not-yet-recorded phase, because the
-  side effects for that transition may already have happened but the phase
-  record did not land.
+  calls `compensate(next)`. That is the one case where the runner compensates a
+  not-yet-recorded phase, because the side effects for that transition may
+  already have happened but the phase record did not land.
+- Compensation is best effort. Compensation failures do not replace the
+  original foreground error because the caller's actionable audience is the
+  command failure or phase-write failure that triggered compensation.
+- Phase append is conditional on the latest phase observed before `step`.
+  Concurrent runners that lose the append race get `PhaseAdvanced` and must not
+  silently create duplicate semantic phases.
 - Product-specific phase enums stay with their product crate. The command
   primitive does not define deploy, machine, environment, or volume states.
 - The first `CommandContext` exposes only phase read/write and intent write.
