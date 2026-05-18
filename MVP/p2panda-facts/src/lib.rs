@@ -11,7 +11,7 @@ use mvp_projection::{
     classify_fact_key,
 };
 use p2panda_core::cbor::decode_cbor;
-use p2panda_core::{Body, Hash, Header, Operation, PrivateKey, validate_operation};
+use p2panda_core::{Body, Hash, Header, Operation, PrivateKey, PublicKey, validate_operation};
 use p2panda_store::{LogStore, MemoryStore};
 use p2panda_stream::operation::{IngestError, IngestResult, ingest_operation};
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,33 @@ pub enum PandaFactError {
     ImportIslandMismatch {
         session: IslandId,
         operation: IslandId,
+    },
+    #[error("principal {principal} in island {island} has no trusted p2panda author key")]
+    UntrustedAuthorKey {
+        island: IslandId,
+        principal: PrincipalId,
+    },
+    #[error(
+        "principal {principal} in island {island} used a p2panda author key that is not trusted"
+    )]
+    AuthorKeyMismatch {
+        island: IslandId,
+        principal: PrincipalId,
+    },
+    #[error(
+        "p2panda operation for fact {key} by {principal} in island {island} is missing {missing_operations} predecessor operations"
+    )]
+    OutOfOrderOperation {
+        island: IslandId,
+        principal: PrincipalId,
+        key: FactKey,
+        missing_operations: u64,
+    },
+    #[error("p2panda operation for fact {key} by {principal} in island {island} is outdated")]
+    OutdatedOperation {
+        island: IslandId,
+        principal: PrincipalId,
+        key: FactKey,
     },
     #[error("author principal {author} does not match session principal {session}")]
     PrincipalMismatch {
@@ -96,7 +123,15 @@ impl PandaFactAuthor {
     fn public_key(&self) -> p2panda_core::PublicKey {
         self.key.public_key()
     }
+
+    #[must_use]
+    pub fn author_key(&self) -> PandaFactAuthorKey {
+        PandaFactAuthorKey(self.public_key())
+    }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PandaFactAuthorKey(PublicKey);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PandaFactMetadata {
@@ -175,8 +210,12 @@ pub struct PandaFactStore {
     store: MemoryStore<IslandLog, PandaFactExtensions>,
     authorizer: Arc<dyn FactAuthorizer>,
     fact_index: BTreeMap<(IslandId, FactKey), BTreeSet<FactContentHash>>,
-    operations: Vec<StoredFactOperation>,
-    operation_by_hash: BTreeMap<FactContentHash, usize>,
+    operations: Vec<PandaFactOperation>,
+    operation_hashes: BTreeSet<Hash>,
+    facts: Vec<StoredFactOperation>,
+    facts_by_identity: BTreeMap<StoredFactIdentity, usize>,
+    payloads: BTreeMap<FactContentHash, FactPayload>,
+    trusted_author_keys: BTreeMap<(IslandId, PrincipalId), PublicKey>,
 }
 
 impl PandaFactStore {
@@ -187,8 +226,21 @@ impl PandaFactStore {
             authorizer,
             fact_index: BTreeMap::new(),
             operations: Vec::new(),
-            operation_by_hash: BTreeMap::new(),
+            operation_hashes: BTreeSet::new(),
+            facts: Vec::new(),
+            facts_by_identity: BTreeMap::new(),
+            payloads: BTreeMap::new(),
+            trusted_author_keys: BTreeMap::new(),
         }
+    }
+
+    pub fn trust_author_key(
+        &mut self,
+        island: &IslandId,
+        principal: PrincipalId,
+        author_key: PandaFactAuthorKey,
+    ) -> Result<()> {
+        self.bind_author_key(island, &principal, author_key.0)
     }
 
     pub async fn write_fact_payload(
@@ -214,6 +266,7 @@ impl PandaFactStore {
                 key,
             });
         }
+        self.bind_author_key(session.island(), author.principal(), author.public_key())?;
 
         let body = Body::new(payload.as_bytes());
         let content_hash = content_hash_from_body(&body);
@@ -261,11 +314,12 @@ impl PandaFactStore {
         validate_operation(&operation).map_err(|_| PandaFactError::InvalidOperation)?;
         let metadata = metadata_from_operation(&operation, content_hash)?;
 
-        Ok(self.record_fact_operation(metadata, raw_operation, pre_ingest))
+        self.record_operation(operation.hash, raw_operation);
+        Ok(self.record_fact_operation(metadata, payload, pre_ingest))
     }
 
     pub fn export_operations(&self) -> impl Iterator<Item = &PandaFactOperation> {
-        self.operations.iter().map(|stored| &stored.raw)
+        self.operations.iter()
     }
 
     pub async fn import_operation(
@@ -280,10 +334,10 @@ impl PandaFactStore {
         let body = Body::new(operation.body());
         let content_hash = content_hash_from_body(&body);
         let metadata = metadata_from_header(&header, content_hash)?;
-        self.authorize_import(session, &metadata)?;
-
-        let pre_ingest = self.pre_ingest_status(&metadata);
-        if pre_ingest == FactPreIngestStatus::AlreadyPresent {
+        let operation_hash = header.hash();
+        let public_key = header.public_key;
+        self.authorize_import(session, &metadata, public_key)?;
+        if self.operation_hashes.contains(&operation_hash) {
             return Ok(PandaFactWriteOutcome::AlreadyPresent(metadata));
         }
         let result = ingest_operation(
@@ -295,21 +349,48 @@ impl PandaFactStore {
             false,
         )
         .await?;
-        let IngestResult::Complete(imported) = result else {
-            return Err(PandaFactError::InvalidOperation);
+        let imported = match result {
+            IngestResult::Complete(imported) => imported,
+            IngestResult::Retry(_, _, _, missing_operations) => {
+                return Err(PandaFactError::OutOfOrderOperation {
+                    island: metadata.island,
+                    principal: metadata.author,
+                    key: metadata.key,
+                    missing_operations,
+                });
+            }
+            IngestResult::Outdated(_) => {
+                return Err(PandaFactError::OutdatedOperation {
+                    island: metadata.island,
+                    principal: metadata.author,
+                    key: metadata.key,
+                });
+            }
         };
         validate_operation(&imported).map_err(|_| PandaFactError::InvalidOperation)?;
 
-        Ok(self.record_fact_operation(metadata, operation.clone(), pre_ingest))
+        let pre_ingest = self.pre_ingest_status(&metadata);
+        self.record_operation(operation_hash, operation.clone());
+        Ok(self.record_fact_operation(
+            metadata,
+            FactPayload::from(operation.body().to_vec()),
+            pre_ingest,
+        ))
     }
 
-    fn authorize_import(&self, session: &BusSession, metadata: &PandaFactMetadata) -> Result<()> {
+    fn authorize_import(
+        &self,
+        session: &BusSession,
+        metadata: &PandaFactMetadata,
+        public_key: PublicKey,
+    ) -> Result<()> {
         if session.island() != &metadata.island {
             return Err(PandaFactError::ImportIslandMismatch {
                 session: session.island().clone(),
                 operation: metadata.island.clone(),
             });
         }
+        self.require_author_key(&metadata.island, &metadata.author, public_key)?;
         if !self.authorizer.can_principal_access_fact(
             &metadata.island,
             &metadata.author,
@@ -323,6 +404,51 @@ impl PandaFactStore {
             });
         }
         Ok(())
+    }
+
+    fn bind_author_key(
+        &mut self,
+        island: &IslandId,
+        principal: &PrincipalId,
+        public_key: PublicKey,
+    ) -> Result<()> {
+        match self
+            .trusted_author_keys
+            .get(&(island.clone(), principal.clone()))
+        {
+            Some(existing) if *existing == public_key => Ok(()),
+            Some(_) => Err(PandaFactError::AuthorKeyMismatch {
+                island: island.clone(),
+                principal: principal.clone(),
+            }),
+            None => {
+                self.trusted_author_keys
+                    .insert((island.clone(), principal.clone()), public_key);
+                Ok(())
+            }
+        }
+    }
+
+    fn require_author_key(
+        &self,
+        island: &IslandId,
+        principal: &PrincipalId,
+        public_key: PublicKey,
+    ) -> Result<()> {
+        match self
+            .trusted_author_keys
+            .get(&(island.clone(), principal.clone()))
+        {
+            Some(existing) if *existing == public_key => Ok(()),
+            Some(_) => Err(PandaFactError::AuthorKeyMismatch {
+                island: island.clone(),
+                principal: principal.clone(),
+            }),
+            None => Err(PandaFactError::UntrustedAuthorKey {
+                island: island.clone(),
+                principal: principal.clone(),
+            }),
+        }
     }
 
     async fn next_log_position(
@@ -361,21 +487,34 @@ impl PandaFactStore {
         }
     }
 
+    fn record_operation(&mut self, operation_hash: Hash, operation: PandaFactOperation) {
+        if self.operation_hashes.insert(operation_hash) {
+            self.operations.push(operation);
+        }
+    }
+
     fn record_fact_operation(
         &mut self,
         metadata: PandaFactMetadata,
-        operation: PandaFactOperation,
+        payload: FactPayload,
         status: FactPreIngestStatus,
     ) -> PandaFactWriteOutcome {
+        if status == FactPreIngestStatus::AlreadyPresent {
+            return PandaFactWriteOutcome::AlreadyPresent(metadata);
+        }
         self.fact_index
             .entry((metadata.island.clone(), metadata.key.clone()))
             .or_default()
             .insert(metadata.content_hash.clone());
-        self.operation_by_hash
+        self.payloads
             .entry(metadata.content_hash.clone())
-            .or_insert(self.operations.len());
-        self.operations
-            .push(StoredFactOperation::new(metadata.clone(), operation));
+            .or_insert(payload);
+        let identity = StoredFactIdentity::from_metadata(&metadata);
+        self.facts_by_identity.entry(identity).or_insert_with(|| {
+            let index = self.facts.len();
+            self.facts.push(StoredFactOperation::new(metadata.clone()));
+            index
+        });
         match status {
             FactPreIngestStatus::Inserted => PandaFactWriteOutcome::Inserted(metadata),
             FactPreIngestStatus::Conflict => PandaFactWriteOutcome::Conflict(metadata),
@@ -392,7 +531,7 @@ impl FactSource for PandaFactStore {
         session: &BusSession,
     ) -> FactSourceResult<Vec<FactCandidate>> {
         let candidates = self
-            .operations
+            .facts
             .iter()
             .filter_map(|stored| self.candidate_for(stored, island, pattern, session))
             .collect::<Vec<_>>();
@@ -405,26 +544,35 @@ impl FactSource for PandaFactStore {
         candidates: &[FactCandidate],
         session: &BusSession,
     ) -> FactSourceResult<BTreeMap<FactContentHash, FactPayload>> {
-        let wanted = candidates
-            .iter()
-            .filter(|candidate| candidate.island() == island)
-            .filter(|candidate| {
-                self.authorizer
-                    .can_session_access_fact(session, candidate.key(), FactAccess::Read)
-            })
-            .map(FactCandidate::content_hash)
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let payloads = wanted
-            .into_iter()
-            .filter_map(|hash| {
-                let operation = self
-                    .operation_by_hash
-                    .get(&hash)
-                    .and_then(|index| self.operations.get(*index))?;
-                Some((hash, FactPayload::from(operation.raw.body().to_vec())))
-            })
-            .collect();
+        let mut payloads = BTreeMap::new();
+        for candidate in candidates {
+            if candidate.island() != island {
+                continue;
+            }
+            let identity = StoredFactIdentity::from_candidate(candidate);
+            let Some(stored) = self
+                .facts_by_identity
+                .get(&identity)
+                .and_then(|index| self.facts.get(*index))
+            else {
+                continue;
+            };
+            if !self.authorizer.can_session_access_fact(
+                session,
+                &stored.metadata.key,
+                FactAccess::Read,
+            ) || !self.authorizer.can_principal_access_fact(
+                &stored.metadata.island,
+                &stored.metadata.author,
+                &stored.metadata.key,
+                FactAccess::Write,
+            ) {
+                continue;
+            }
+            if let Some(payload) = self.payloads.get(&stored.metadata.content_hash) {
+                payloads.insert(stored.metadata.content_hash.clone(), payload.clone());
+            }
+        }
         Ok(payloads)
     }
 }
@@ -448,6 +596,13 @@ impl PandaFactStore {
             FactAccess::Read,
         ) {
             CandidateStatus::Unauthorized
+        } else if !self.authorizer.can_principal_access_fact(
+            &stored.metadata.island,
+            &stored.metadata.author,
+            &stored.metadata.key,
+            FactAccess::Write,
+        ) {
+            CandidateStatus::Unverified
         } else if self
             .fact_index
             .get(&(stored.metadata.island.clone(), stored.metadata.key.clone()))
@@ -472,12 +627,39 @@ impl PandaFactStore {
 
 struct StoredFactOperation {
     metadata: PandaFactMetadata,
-    raw: PandaFactOperation,
 }
 
 impl StoredFactOperation {
-    fn new(metadata: PandaFactMetadata, raw: PandaFactOperation) -> Self {
-        Self { metadata, raw }
+    fn new(metadata: PandaFactMetadata) -> Self {
+        Self { metadata }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct StoredFactIdentity {
+    island: IslandId,
+    key: FactKey,
+    author: PrincipalId,
+    content_hash: FactContentHash,
+}
+
+impl StoredFactIdentity {
+    fn from_metadata(metadata: &PandaFactMetadata) -> Self {
+        Self {
+            island: metadata.island.clone(),
+            key: metadata.key.clone(),
+            author: metadata.author.clone(),
+            content_hash: metadata.content_hash.clone(),
+        }
+    }
+
+    fn from_candidate(candidate: &FactCandidate) -> Self {
+        Self {
+            island: candidate.island().clone(),
+            key: candidate.key().clone(),
+            author: candidate.author().clone(),
+            content_hash: candidate.content_hash().clone(),
+        }
     }
 }
 
@@ -570,6 +752,16 @@ mod tests {
 
     fn store_from_bus(bus: InMemoryBus) -> PandaFactStore {
         PandaFactStore::new(Arc::new(bus))
+    }
+
+    fn trust_author(store: &mut PandaFactStore, session: &BusSession, author: &PandaFactAuthor) {
+        store
+            .trust_author_key(
+                session.island(),
+                author.principal().clone(),
+                author.author_key(),
+            )
+            .expect("trust p2panda author key");
     }
 
     #[tokio::test]
@@ -746,6 +938,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_payloads_rejects_forged_candidate_metadata() {
+        let (mut store, authority) = store_with_authority();
+        let writer = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty()
+                .with_fact_write(pattern("/facts/>"))
+                .with_fact_read(pattern("/facts/public/>")),
+        );
+        let reader = grant_prod(
+            &authority,
+            "reader",
+            Grant::empty().with_fact_read(pattern("/facts/public/>")),
+        );
+        let author = PandaFactAuthor::new(principal("writer"));
+        store
+            .write_fact_payload(
+                &writer,
+                &author,
+                key("/facts/private/node-1"),
+                FactPayload::from_static(b"private"),
+            )
+            .await
+            .expect("write private fact");
+        let private_candidate = store
+            .list_candidates(writer.island(), &pattern("/facts/>"), &writer)
+            .expect("list private candidate")
+            .into_iter()
+            .find(|candidate| candidate.key() == &key("/facts/private/node-1"))
+            .expect("private candidate exists");
+        let forged = FactCandidate::new(
+            writer.island().clone(),
+            key("/facts/public/forged"),
+            principal("writer"),
+            private_candidate.content_hash().clone(),
+            mvp_projection::FactKind::Unsupported,
+            0,
+            CandidateStatus::Verified,
+        );
+
+        let payloads = store
+            .read_payloads(reader.island(), &[forged], &reader)
+            .expect("read payloads");
+        assert!(payloads.is_empty());
+    }
+
+    #[tokio::test]
     async fn exported_operations_import_into_an_empty_store() {
         let (bus, authority) = InMemoryBus::new_with_authority();
         let mut source = store_from_bus(bus.clone());
@@ -775,6 +1014,7 @@ mod tests {
         let exported = source.export_operations().cloned().collect::<Vec<_>>();
 
         let mut imported = store_from_bus(bus);
+        trust_author(&mut imported, &writer, &author);
         let outcome = imported
             .import_operation(&projection, &exported[0])
             .await
@@ -794,6 +1034,169 @@ mod tests {
                 .values()
                 .any(|payload| payload.as_bytes() == b"payload")
         );
+    }
+
+    #[tokio::test]
+    async fn import_rejects_cross_island_untrusted_and_revoked_authors() {
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let mut source = store_from_bus(bus.clone());
+        let writer = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty()
+                .with_fact_write(pattern("/facts/>"))
+                .with_fact_read(pattern("/facts/>")),
+        );
+        let laptop = authority.grant_in(
+            island("laptop"),
+            principal("projection"),
+            Grant::empty().with_fact_read(pattern("/facts/>")),
+        );
+        let author = PandaFactAuthor::new(principal("writer"));
+        let fact_key = key("/facts/node/node-1/joined/1");
+        source
+            .write_fact_payload(
+                &writer,
+                &author,
+                fact_key.clone(),
+                FactPayload::from_static(b"payload"),
+            )
+            .await
+            .expect("write source fact");
+        let exported = source.export_operations().cloned().collect::<Vec<_>>();
+        let [operation] = exported.as_slice() else {
+            panic!("expected one exported operation");
+        };
+
+        let mut imported = store_from_bus(bus.clone());
+        trust_author(&mut imported, &writer, &author);
+        let cross_island = imported
+            .import_operation(&laptop, operation)
+            .await
+            .expect_err("cross-island import fails");
+        assert!(matches!(
+            cross_island,
+            PandaFactError::ImportIslandMismatch { .. }
+        ));
+
+        let mut untrusted = store_from_bus(bus.clone());
+        let missing_key = untrusted
+            .import_operation(&writer, operation)
+            .await
+            .expect_err("untrusted import fails");
+        assert!(matches!(
+            missing_key,
+            PandaFactError::UntrustedAuthorKey { .. }
+        ));
+
+        authority.revoke(&writer);
+        let mut revoked = store_from_bus(bus);
+        trust_author(&mut revoked, &writer, &author);
+        let revoked_author = revoked
+            .import_operation(&writer, operation)
+            .await
+            .expect_err("revoked author import fails");
+        assert!(matches!(
+            revoked_author,
+            PandaFactError::UnauthorizedWrite { key, .. } if key == fact_key
+        ));
+    }
+
+    #[tokio::test]
+    async fn import_rejects_operation_signed_by_untrusted_key_for_claimed_author() {
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let writer = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty()
+                .with_fact_write(pattern("/facts/>"))
+                .with_fact_read(pattern("/facts/>")),
+        );
+        let trusted_author = PandaFactAuthor::new(principal("writer"));
+        let forged_author = PandaFactAuthor::new(principal("writer"));
+        let mut source = store_from_bus(bus.clone());
+        source
+            .write_fact_payload(
+                &writer,
+                &forged_author,
+                key("/facts/node/node-1/joined/1"),
+                FactPayload::from_static(b"payload"),
+            )
+            .await
+            .expect("write forged-key source fact");
+        let exported = source.export_operations().cloned().collect::<Vec<_>>();
+
+        let mut imported = store_from_bus(bus);
+        trust_author(&mut imported, &writer, &trusted_author);
+        let error = imported
+            .import_operation(&writer, &exported[0])
+            .await
+            .expect_err("mismatched author key fails");
+        assert!(matches!(error, PandaFactError::AuthorKeyMismatch { .. }));
+    }
+
+    #[tokio::test]
+    async fn import_reports_out_of_order_operations_without_calling_them_invalid() {
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let mut source = store_from_bus(bus.clone());
+        let writer = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty()
+                .with_fact_write(pattern("/facts/>"))
+                .with_fact_read(pattern("/facts/>")),
+        );
+        let author = PandaFactAuthor::new(principal("writer"));
+        source
+            .write_fact_payload(
+                &writer,
+                &author,
+                key("/facts/node/node-1/joined/1"),
+                FactPayload::from_static(b"one"),
+            )
+            .await
+            .expect("write first operation");
+        source
+            .write_fact_payload(
+                &writer,
+                &author,
+                key("/facts/node/node-2/joined/1"),
+                FactPayload::from_static(b"two"),
+            )
+            .await
+            .expect("write second operation");
+        let exported = source.export_operations().cloned().collect::<Vec<_>>();
+        let [first, second] = exported.as_slice() else {
+            panic!("expected two exported operations");
+        };
+
+        let mut imported = store_from_bus(bus);
+        trust_author(&mut imported, &writer, &author);
+        let retry = imported
+            .import_operation(&writer, second)
+            .await
+            .expect_err("second operation is out of order");
+        assert!(matches!(
+            retry,
+            PandaFactError::OutOfOrderOperation {
+                missing_operations: 1,
+                ..
+            }
+        ));
+        assert!(matches!(
+            imported
+                .import_operation(&writer, first)
+                .await
+                .expect("import first operation"),
+            PandaFactWriteOutcome::Inserted(_)
+        ));
+        assert!(matches!(
+            imported
+                .import_operation(&writer, second)
+                .await
+                .expect("retry second operation after predecessor"),
+            PandaFactWriteOutcome::Inserted(_)
+        ));
     }
 
     #[tokio::test]
@@ -824,6 +1227,7 @@ mod tests {
         };
 
         let mut imported = store_from_bus(bus);
+        trust_author(&mut imported, &writer, &author);
         let outcome = imported
             .import_operation(&blind_reader, exported)
             .await
@@ -879,6 +1283,7 @@ mod tests {
         let exported = source.export_operations().cloned().collect::<Vec<_>>();
 
         let mut imported = store_from_bus(bus);
+        trust_author(&mut imported, &session, &author);
         assert!(matches!(
             imported
                 .import_operation(&session, &exported[0])

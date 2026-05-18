@@ -174,8 +174,10 @@ Current proof status:
 - Slice 018c extends the p2panda proof with operation export/import. A store can
   export signed operations, another same-island store can import them, duplicate
   imports are idempotent, same-key/different-content imports remain conflict
-  candidates, and reader permissions still control candidate status and payload
-  visibility.
+  candidates, imported operations must match a trusted author key for the
+  claimed principal, and reader permissions still control candidate status and
+  payload visibility. Payload reads require exact stored fact identity before
+  using content-hash storage.
 - Remaining E2E-4 work is remote service registry projection, route/DNS commit
   projection through the final synced fact substrate, and propagation histograms
   beyond the single local sync scenario.
@@ -424,10 +426,12 @@ Current proof status:
   Local mutation attempts through the killed coordinator fail visibly.
 - Slice 018c adds `deploy-restart-recovery-contract`.
 - The scenario proves the deploy coordinator can be dropped after the
-  p2panda-backed serving commit is durable and before drain starts. A fresh
-  coordinator recovers the deploy decision plus serving commit from the
-  p2panda-backed fact source, requires `ProjectionCatchUp`, resumes drain/stop,
-  writes cleanup-done, and a later recovery returns complete without RPC.
+  p2panda-backed serving commit is durable and before drain starts. The proof
+  exports the surviving p2panda operations, imports them into a fresh fact
+  store, and a fresh coordinator recovers the deploy decision plus serving
+  commit from that imported fact source. Recovery requires `ProjectionCatchUp`,
+  resumes drain/stop, writes cleanup-done, and a later recovery returns
+  complete without RPC.
 - The scenario also proves typed gateway/DNS serving keeps answering from
   last-good snapshots while the coordinator object is absent, no
   capacity/prepare/start participant work is replayed after restart,

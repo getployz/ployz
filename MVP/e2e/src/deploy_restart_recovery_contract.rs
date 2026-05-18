@@ -21,7 +21,9 @@ use mvp_deploy::{
     deploy_decision_fact_key, deploy_decision_fact_payload,
 };
 use mvp_identity::NodeId;
-use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, PandaFactWriteOutcome};
+use mvp_p2panda_facts::{
+    PandaFactAuthor, PandaFactOperation, PandaFactStore, PandaFactWriteOutcome,
+};
 use mvp_projection::{
     BackendEndpoint, DnsRecordFact, FactCandidate, FactSource, FactSourceError, FactSourceResult,
     RouteId, ServiceName, load_dns_snapshot, load_gateway_snapshot,
@@ -93,7 +95,8 @@ async fn run_async() -> Result<(), String> {
         Grant::allow_all(),
     );
 
-    let facts = SharedPandaFacts::new(PandaFactStore::new(Arc::new(raw_bus)));
+    let facts = SharedPandaFacts::new(PandaFactStore::new(Arc::new(raw_bus.clone())));
+    let operator_author = Arc::new(PandaFactAuthor::new(operator.principal().clone()));
     let timings = Arc::new(FactWriteTimings::default());
     let participant_state = Arc::new(ParticipantState::default());
     register_capacity(&bus, &node, &participant_state, "node-db", true).await?;
@@ -113,6 +116,7 @@ async fn run_async() -> Result<(), String> {
         bus.clone(),
         operator.clone(),
         facts.clone(),
+        Arc::clone(&operator_author),
         Arc::clone(&timings),
     );
 
@@ -157,16 +161,26 @@ async fn run_async() -> Result<(), String> {
     let data_plane_requests_served_during_outage =
         assert_serving_answers_without_coordinator(&serving).await?;
     let coordinator_outage_ms = outage_started.elapsed().as_millis();
+    let exported_recovery_operations = facts.export_operations().await;
+    let recovered_facts = import_shared_panda_facts(
+        raw_bus.clone(),
+        &prod,
+        &operator,
+        operator_author.as_ref(),
+        &exported_recovery_operations,
+    )
+    .await?;
 
     let recovery_coordinator = coordinator_with_panda_facts(
         bus.clone(),
         operator.clone(),
-        facts.clone(),
+        recovered_facts.clone(),
+        Arc::clone(&operator_author),
         Arc::clone(&timings),
     );
     let recovery_read_started = Instant::now();
     let recovered = match recovery_coordinator
-        .recover_pending_cleanup(&facts, &prod, &projection, &manifest.deploy_id)
+        .recover_pending_cleanup(&recovered_facts, &prod, &projection, &manifest.deploy_id)
         .map_err(|error| format!("recover pending cleanup: {error}"))?
     {
         DeployRecovery::Pending(recovered) => recovered,
@@ -229,10 +243,15 @@ async fn run_async() -> Result<(), String> {
     )?;
 
     register_stop_participant(&bus, &node, &participant_state).await?;
-    let final_coordinator =
-        coordinator_with_panda_facts(bus, operator, facts.clone(), Arc::clone(&timings));
+    let final_coordinator = coordinator_with_panda_facts(
+        bus,
+        operator,
+        recovered_facts.clone(),
+        Arc::clone(&operator_author),
+        Arc::clone(&timings),
+    );
     let recovered = match final_coordinator
-        .recover_pending_cleanup(&facts, &prod, &projection, &manifest.deploy_id)
+        .recover_pending_cleanup(&recovered_facts, &prod, &projection, &manifest.deploy_id)
         .map_err(|error| format!("recover pending cleanup after stop registers: {error}"))?
     {
         DeployRecovery::Pending(recovered) => recovered,
@@ -267,7 +286,7 @@ async fn run_async() -> Result<(), String> {
 
     let cleanup_done_recovered = matches!(
         final_coordinator
-            .recover_pending_cleanup(&facts, &prod, &projection, &manifest.deploy_id)
+            .recover_pending_cleanup(&recovered_facts, &prod, &projection, &manifest.deploy_id)
             .map_err(|error| format!("recover cleanup done fact: {error}"))?,
         DeployRecovery::CleanupDone(_)
     );
@@ -347,11 +366,40 @@ impl SharedPandaFacts {
         Ok(outcome)
     }
 
+    async fn export_operations(&self) -> Vec<PandaFactOperation> {
+        self.store
+            .lock()
+            .await
+            .export_operations()
+            .cloned()
+            .collect()
+    }
+
     fn unavailable() -> FactSourceError {
         FactSourceError::Unavailable {
             name: "p2panda fact store is locked by a writer".to_string(),
         }
     }
+}
+
+async fn import_shared_panda_facts(
+    authorizer: mvp_bus::harness::InMemoryBus,
+    island: &IslandId,
+    session: &BusSession,
+    author: &PandaFactAuthor,
+    operations: &[PandaFactOperation],
+) -> Result<SharedPandaFacts, String> {
+    let mut imported = PandaFactStore::new(Arc::new(authorizer));
+    imported
+        .trust_author_key(island, author.principal().clone(), author.author_key())
+        .map_err(|error| format!("trust p2panda author key for restart recovery: {error}"))?;
+    for operation in operations {
+        imported
+            .import_operation(session, operation)
+            .await
+            .map_err(|error| format!("import p2panda restart recovery operation: {error}"))?;
+    }
+    Ok(SharedPandaFacts::new(imported))
 }
 
 impl FactSource for SharedPandaFacts {
@@ -390,7 +438,7 @@ struct FactWriteTimings {
 struct PandaDeployFactWriter {
     facts: SharedPandaFacts,
     session: BusSession,
-    author: PandaFactAuthor,
+    author: Arc<PandaFactAuthor>,
     timings: Arc<FactWriteTimings>,
 }
 
@@ -406,7 +454,7 @@ impl DeployFactWriter for PandaDeployFactWriter {
                 .facts
                 .write_timed(
                     &self.session,
-                    &self.author,
+                    self.author.as_ref(),
                     key.clone(),
                     payload,
                     &self.timings.decision_ms,
@@ -427,7 +475,7 @@ impl DeployFactWriter for PandaDeployFactWriter {
                 .facts
                 .write_timed(
                     &self.session,
-                    &self.author,
+                    self.author.as_ref(),
                     key.clone(),
                     payload,
                     &self.timings.cleanup_done_ms,
@@ -441,7 +489,7 @@ impl DeployFactWriter for PandaDeployFactWriter {
 struct PandaServingFactWriter {
     facts: SharedPandaFacts,
     session: BusSession,
-    author: PandaFactAuthor,
+    author: Arc<PandaFactAuthor>,
     timings: Arc<FactWriteTimings>,
 }
 
@@ -457,7 +505,7 @@ impl ServingFactWriter for PandaServingFactWriter {
                 .facts
                 .write_timed(
                     &self.session,
-                    &self.author,
+                    self.author.as_ref(),
                     key.clone(),
                     payload,
                     &self.timings.serving_ms,
@@ -472,6 +520,7 @@ fn coordinator_with_panda_facts(
     bus: BusActorHandle,
     session: BusSession,
     facts: SharedPandaFacts,
+    author: Arc<PandaFactAuthor>,
     timings: Arc<FactWriteTimings>,
 ) -> DeployCoordinator<PandaDeployFactWriter, PandaServingFactWriter> {
     DeployCoordinator::with_fact_writers(
@@ -479,13 +528,13 @@ fn coordinator_with_panda_facts(
         session.clone(),
         PandaDeployFactWriter {
             facts: facts.clone(),
-            author: PandaFactAuthor::new(session.principal().clone()),
+            author: Arc::clone(&author),
             session: session.clone(),
             timings: Arc::clone(&timings),
         },
         PandaServingFactWriter {
             facts,
-            author: PandaFactAuthor::new(session.principal().clone()),
+            author,
             session,
             timings,
         },
