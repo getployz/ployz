@@ -745,7 +745,7 @@ enum ServingProjectionFactSourceConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct P2pandaSqliteFactSourceConfig {
     path: PathBuf,
-    trusted_author: TrustedP2pandaAuthor,
+    trusted_authors: Vec<TrustedP2pandaAuthor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -763,7 +763,7 @@ pub(crate) struct P2pandaNetServingProjectionRoleConfig {
     topic: PandaNetTopic,
     seed: PandaNetNodeSeed,
     replica_principal: PrincipalId,
-    trusted_author: TrustedP2pandaAuthor,
+    trusted_authors: Vec<TrustedP2pandaAuthor>,
     bootstrap: Vec<PandaNetNodeTicket>,
 }
 
@@ -865,12 +865,12 @@ fn parse_serving_projection_flags(args: &[String]) -> Result<ServingProjectionRo
             ServingProjectionFactSourceConfig::P2pandaSqlite(Box::new(
                 P2pandaSqliteFactSourceConfig {
                     path: p2panda_path.ok_or_else(|| format!("{role} requires --p2panda-path"))?,
-                    trusted_author: TrustedP2pandaAuthor {
+                    trusted_authors: vec![TrustedP2pandaAuthor {
                         principal: p2panda_author
                             .ok_or_else(|| format!("{role} requires --p2panda-author"))?,
                         author_key: p2panda_author_key
                             .ok_or_else(|| format!("{role} requires --p2panda-author-key"))?,
-                    },
+                    }],
                 },
             ))
         }
@@ -893,7 +893,7 @@ fn parse_p2panda_net_serving_projection_flags(
     let mut topic = None;
     let mut seed = None;
     let mut replica_principal = None;
-    let mut trusted_author = None;
+    let mut trusted_authors = Vec::new();
     let mut bootstrap = Vec::new();
     let mut remaining = args;
     while let [flag, value, tail @ ..] = remaining {
@@ -908,12 +908,7 @@ fn parse_p2panda_net_serving_projection_flags(
             "--p2panda-seed" => seed = Some(parse_seed_flag(role, "--p2panda-seed", value)?),
             "--p2panda-replica" => replica_principal = Some(PrincipalId::new(value.clone())),
             "--p2panda-trusted-author" => {
-                if trusted_author.is_some() {
-                    return Err(format!(
-                        "{role} accepts exactly one --p2panda-trusted-author"
-                    ));
-                }
-                trusted_author = Some(parse_trusted_author_flag(role, value)?);
+                trusted_authors.push(parse_trusted_author_flag(role, value)?);
             }
             "--p2panda-bootstrap" => bootstrap.push(parse_ticket_flag(role, value)?),
             other => return Err(format!("unknown {role} flag '{other}'")),
@@ -934,10 +929,19 @@ fn parse_p2panda_net_serving_projection_flags(
         seed: seed.ok_or_else(|| format!("{role} requires --p2panda-seed"))?,
         replica_principal: replica_principal
             .ok_or_else(|| format!("{role} requires --p2panda-replica"))?,
-        trusted_author: trusted_author
-            .ok_or_else(|| format!("{role} requires --p2panda-trusted-author"))?,
+        trusted_authors: require_trusted_authors(role, trusted_authors)?,
         bootstrap,
     })
+}
+
+fn require_trusted_authors(
+    role: &'static str,
+    trusted_authors: Vec<TrustedP2pandaAuthor>,
+) -> Result<Vec<TrustedP2pandaAuthor>, String> {
+    if trusted_authors.is_empty() {
+        return Err(format!("{role} requires --p2panda-trusted-author"));
+    }
+    Ok(trusted_authors)
 }
 
 fn parse_p2panda_net_serving_scripted_publisher_flags(
@@ -1420,7 +1424,7 @@ pub(crate) async fn run_p2panda_net_serving_projection_role(
         projection_session,
         ServingProjectionFactSourceConfig::P2pandaSqlite(Box::new(P2pandaSqliteFactSourceConfig {
             path: config.store_path.clone(),
-            trusted_author: config.trusted_author.clone(),
+            trusted_authors: config.trusted_authors.clone(),
         })),
         config.root,
         snapshot_paths,
@@ -1484,19 +1488,23 @@ async fn open_p2panda_net_shared_store(
         config.replica_principal.clone(),
         Grant::empty(),
     );
-    authority.grant_in(
-        island.clone(),
-        config.trusted_author.principal.clone(),
-        Grant::empty()
-            .with_fact_write(pattern.clone())
-            .with_fact_read(pattern.clone()),
-    );
-    let open_config = PandaSqliteOpenConfig::new(config.store_path.clone(), vec![island.clone()])
-        .with_trusted_author_key(PandaTrustedAuthorKey::new(
+    for trusted_author in &config.trusted_authors {
+        authority.grant_in(
             island.clone(),
-            config.trusted_author.principal.clone(),
-            config.trusted_author.author_key,
+            trusted_author.principal.clone(),
+            Grant::empty()
+                .with_fact_write(pattern.clone())
+                .with_fact_read(pattern.clone()),
+        );
+    }
+    let mut open_config = PandaSqliteOpenConfig::new(config.store_path.clone(), vec![island.clone()]);
+    for trusted_author in &config.trusted_authors {
+        open_config = open_config.with_trusted_author_key(PandaTrustedAuthorKey::new(
+            island.clone(),
+            trusted_author.principal.clone(),
+            trusted_author.author_key,
         ));
+    }
     let store = PandaFactStore::open_sqlite(Arc::new(bus), open_config)
         .await
         .map_err(|error| format!("open p2panda-net serving store: {error}"))?;
@@ -2792,20 +2800,23 @@ async fn open_serving_fact_source(
                 projection_principal.clone(),
                 Grant::empty().with_fact_read(pattern.clone()),
             );
-            authority.grant_in(
-                island.clone(),
-                config.trusted_author.principal.clone(),
-                Grant::empty().with_fact_write(pattern.clone()),
-            );
-            let store = PandaFactStore::open_sqlite(
-                Arc::new(bus),
-                PandaSqliteOpenConfig::new(config.path.clone(), vec![island.clone()])
-                    .with_trusted_author_key(PandaTrustedAuthorKey::new(
-                        island.clone(),
-                        config.trusted_author.principal.clone(),
-                        config.trusted_author.author_key,
-                    )),
-            )
+            for trusted_author in &config.trusted_authors {
+                authority.grant_in(
+                    island.clone(),
+                    trusted_author.principal.clone(),
+                    Grant::empty().with_fact_write(pattern.clone()),
+                );
+            }
+            let mut open_config =
+                PandaSqliteOpenConfig::new(config.path.clone(), vec![island.clone()]);
+            for trusted_author in &config.trusted_authors {
+                open_config = open_config.with_trusted_author_key(PandaTrustedAuthorKey::new(
+                    island.clone(),
+                    trusted_author.principal.clone(),
+                    trusted_author.author_key,
+                ));
+            }
+            let store = PandaFactStore::open_sqlite(Arc::new(bus), open_config)
             .await
             .map_err(|error| format!("open p2panda serving fact source: {error}"))?;
             Ok(Arc::new(store))
