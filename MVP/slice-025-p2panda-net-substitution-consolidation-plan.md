@@ -56,8 +56,9 @@ and return to the deploy command-surface slice instead.
   p2panda-net if the maintained stack covers the path.
 - `MVP/overall-plan.md`: p2panda is the preferred durable fact substrate and
   future slices should reduce custom glue rather than add parallel scaffolds.
-- `MVP/architecture.md`: iroh remains connectivity direction, but p2panda-net
-  can be the network carrier under the Ployz fact/bus boundaries.
+- `MVP/architecture.md`: iroh remains connectivity direction. In this slice,
+  p2panda-net is only the fact-operation carrier; PloyzBus remains its own
+  NATS-shaped request/reply, queue, service, bridge, and permission contract.
 - `MVP/design-notes/p2panda-substitution-audit.md`: keep `FactSource`, keep
   PloyzBus, keep product reducers; replace generic substrate where p2panda
   already owns the better primitive.
@@ -97,6 +98,12 @@ Decision:
 
 ## Scope
 
+Single proof target:
+
+- p2panda-net fact-operation transport becomes a reusable Ployz-owned boundary
+  that deletes ACME-local transport boilerplate and stops E2E product canaries
+  from importing git p2panda network APIs directly.
+
 In scope:
 
 - Consolidate p2panda-net git API exposure behind `mvp-p2panda-transport`.
@@ -109,8 +116,6 @@ In scope:
 - Preserve existing `p2panda-net-sync-contract`,
   `p2panda-net-owned-node-contract`, and
   `p2panda-net-acme-http01-contract` behavior.
-- Delete or retire `MVP/p2panda-spike` if current production-shaped tests cover
-  all of its remaining proof value.
 - Record a concrete substitution ledger: LOC/API surface removed from E2E,
   direct dependency leakage removed, and remaining custom substrate that still
   needs a future slice.
@@ -124,8 +129,8 @@ Deletion gates:
   p2panda-net node harness and use a Ployz-owned transport helper.
 - `MVP/e2e/src/p2panda_net_owned_node_contract.rs` should keep scenario
   assertions but shed repeated node setup/import loops where the helper applies.
-- `MVP/p2panda-spike` should be deleted if its remaining proof value is covered
-  by production-shaped p2panda fact and transport contracts.
+- `MVP/p2panda-spike` deletion is a follow-up gate, not the primary proof. This
+  slice may delete it only if explicit coverage mapping is cheap and complete.
 
 Out of scope:
 
@@ -210,11 +215,16 @@ Files:
 - `MVP/e2e/src/p2panda_net_sync_contract.rs`
 - `MVP/e2e/src/p2panda_net_owned_node_contract.rs`
 - `MVP/e2e/src/p2panda_acme_http01_contract.rs`
+- `MVP/p2panda-facts/Cargo.toml`
 
 Work:
 
 - Inventory every direct git p2panda type used outside
   `mvp-p2panda-transport`.
+- Treat `mvp-p2panda-facts` dev-test git dependencies as an intentional
+  exception unless this slice explicitly moves those smoke tests to
+  `mvp-p2panda-transport`. The success criterion is removing git p2panda
+  leakage from E2E/product canaries first.
 - Record before-counts for direct git p2panda imports and E2E local transport
   helper LOC so closeout can show whether this slice reduced maintenance
   burden.
@@ -234,13 +244,6 @@ Work:
     session.
 - Keep this unit read/plan-shaped or deletion-coupled; avoid additive
   abstraction before the E2E contracts are pinned.
-
-Test scenarios:
-
-- Existing p2panda-net E2Es still pass before and after the wrapper is
-  introduced.
-- Wrapper API can express trusted replica gating without depending on network
-  delivery order.
 
 Verification:
 
@@ -287,6 +290,7 @@ Files:
 
 - `MVP/e2e/src/p2panda_net_sync_contract.rs`
 - `MVP/e2e/src/p2panda_net_owned_node_contract.rs`
+- `MVP/e2e/Cargo.toml`
 - `MVP/p2panda-transport/src/lib.rs`
 - `MVP/p2panda-transport/src/node.rs`
 
@@ -307,13 +311,17 @@ Test scenarios:
   p2panda test utilities.
 - E2E no longer imports p2panda-net/core/store/sync git crates directly unless
   a documented exception remains.
+- `MVP/e2e/Cargo.toml` no longer depends directly on git p2panda crates unless
+  the closeout report names a concrete exception and why the transport crate
+  cannot own it yet.
 
 Verification:
 
 - `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-net-sync-contract`
 - `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-net-owned-node-contract`
+- `cargo check --manifest-path MVP/Cargo.toml -p mvp-e2e`
 
-### Unit 4: Delete Obsolete Spike Surface If Covered
+### Unit 4: Spike Coverage Mapping
 
 Files:
 
@@ -338,6 +346,8 @@ Work:
   `mvp-p2panda-spike` from the MVP workspace and delete the crate.
 - If any behavior remains unique, keep the crate and document exactly what it
   still proves.
+- This unit is not the main proof target. If it threatens to broaden the slice,
+  defer deletion and land only the coverage map in the closeout report.
 
 Test scenarios:
 
