@@ -65,6 +65,7 @@ pub struct RecoveredPendingCleanup {
 pub struct PreCommitIncompleteRecovery {
     pub manifest: DeployManifest,
     pub visible_nodes: VisibleNodes,
+    pub superseded_decisions: Vec<DeployDecisionCandidate>,
 }
 
 #[derive(Debug)]
@@ -115,12 +116,24 @@ struct CandidateCleanupTracker {
 impl CandidateCleanupTracker {
     fn from_manifest_planned(manifest: &DeployManifest) -> Self {
         let mut tracker = Self::default();
-        for phase in &manifest.phases {
-            for instance in &phase.instances {
-                tracker.track(instance, CandidateCleanupState::Planned);
-            }
+        tracker.track_manifest_planned(manifest);
+        tracker
+    }
+
+    fn from_recovery_planned(recovery: &PreCommitIncompleteRecovery) -> Self {
+        let mut tracker = Self::from_manifest_planned(&recovery.manifest);
+        for decision in &recovery.superseded_decisions {
+            tracker.track_manifest_planned(&decision.fact.manifest);
         }
         tracker
+    }
+
+    fn track_manifest_planned(&mut self, manifest: &DeployManifest) {
+        for phase in &manifest.phases {
+            for instance in &phase.instances {
+                self.track(instance, CandidateCleanupState::Planned);
+            }
+        }
     }
 
     fn track(&mut self, instance: &InstancePlan, state: CandidateCleanupState) {
@@ -332,6 +345,7 @@ where
                     PreCommitIncompleteRecovery {
                         manifest: decision.manifest,
                         visible_nodes: decision.visible_nodes,
+                        superseded_decisions: selection.superseded,
                     },
                 )));
             }
@@ -359,7 +373,7 @@ where
         &self,
         recovery: &PreCommitIncompleteRecovery,
     ) -> PreCommitCleanupReport {
-        let candidates = CandidateCleanupTracker::from_manifest_planned(&recovery.manifest);
+        let candidates = CandidateCleanupTracker::from_recovery_planned(recovery);
         self.cleanup_candidate_targets(
             &recovery.manifest.deploy_id,
             recovery.visible_nodes.clone(),

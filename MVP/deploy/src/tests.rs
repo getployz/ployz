@@ -621,10 +621,73 @@ async fn recovery_with_decision_but_no_serving_commit_is_pre_commit_incomplete()
     };
     assert_eq!(status.manifest.deploy_id, manifest.deploy_id);
     assert_eq!(status.visible_nodes, visible_nodes());
+    assert!(status.superseded_decisions.is_empty());
     assert_eq!(
         status.manifest.serving_commit.serving_commit_id,
         manifest.serving_commit.serving_commit_id
     );
+}
+
+#[tokio::test]
+async fn pre_commit_recovery_cleans_superseded_decision_candidates() {
+    let (bus, authority, raw_bus) = mvp_bus::harness::actor_with_authority();
+    let operator = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("operator"),
+        Grant::allow_all(),
+    );
+    let node = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("node"),
+        Grant::allow_all(),
+    );
+    let cleaned = Arc::new(Mutex::new(Vec::new()));
+    let deploy_id = DeployId::new("deploy-superseded");
+    let mut older = coordinator_manifest();
+    older.deploy_id = deploy_id.clone();
+    older.serving_commit.epoch = 1;
+    older.serving_commit.serving_commit_id = crate::ServingCommitId::new("older-serving");
+    older.phases[0].instances[0].instance_id = InstanceId::new("older-web");
+    let mut newer = coordinator_manifest();
+    newer.deploy_id = deploy_id.clone();
+    newer.serving_commit.epoch = 2;
+    newer.serving_commit.serving_commit_id = crate::ServingCommitId::new("newer-serving");
+    newer.phases[0].instances[0].instance_id = InstanceId::new("newer-web");
+    let writer = BusDeployFactWriter::new(bus.clone(), operator.clone());
+    writer
+        .write_decision(DeployDecisionFact::new(older.clone(), visible_nodes()))
+        .await
+        .expect("write older decision");
+    writer
+        .write_decision(DeployDecisionFact::new(newer.clone(), visible_nodes()))
+        .await
+        .expect_err("newer decision is stored as a conflict candidate");
+    register_candidate_cleanup_participant(&bus, &node, Arc::clone(&cleaned)).await;
+    let source = BusFactSource::new(raw_bus);
+    let coordinator = crate::DeployCoordinator::new(bus, operator.clone(), test_timeouts());
+    let DeployRecovery::PreCommitIncomplete(recovery) = coordinator
+        .recover_pending_cleanup(&source, operator.island(), &operator, &deploy_id)
+        .expect("recover pre-commit incomplete")
+    else {
+        panic!("expected pre-commit incomplete recovery");
+    };
+    assert_eq!(recovery.manifest.deploy_id, deploy_id);
+    assert_eq!(recovery.manifest.serving_commit.epoch, 2);
+    assert_eq!(recovery.superseded_decisions.len(), 1);
+
+    let cleanup = coordinator.cleanup_pre_commit_incomplete(&recovery).await;
+
+    assert_eq!(cleanup.status, CandidateCleanupStatus::Done);
+    let [attempted] = cleanup.attempted.as_slice() else {
+        panic!("expected one node cleanup target");
+    };
+    let instance_ids = attempted
+        .candidates
+        .iter()
+        .map(|candidate| candidate.instance_id.as_str())
+        .collect::<Vec<_>>();
+    assert!(instance_ids.contains(&"older-web"));
+    assert!(instance_ids.contains(&"newer-web"));
 }
 
 #[tokio::test]
