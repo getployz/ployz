@@ -122,7 +122,7 @@ Target commands:
 cd MVP && cargo test -p mvp-p2panda-facts --lib
 cd MVP && cargo run -p mvp-e2e -- p2panda-fact-source-contract
 cd MVP && cargo run -p mvp-e2e -- deploy-restart-recovery-contract
-cd MVP && cargo run -p mvp-e2e -- process-role-contract
+cd MVP && cargo run -p mvp-e2e -- process-role-serving-contract
 cd MVP && MVP_E2E_ALL_TIMEOUT=120s cargo run -p mvp-e2e -- all
 ```
 

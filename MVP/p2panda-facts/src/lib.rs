@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Display;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mvp_bus::{
@@ -11,7 +12,12 @@ use mvp_projection::{
     classify_fact_key,
 };
 use p2panda_core::cbor::decode_cbor;
-use p2panda_core::{Body, Hash, Header, Operation, PrivateKey, PublicKey, validate_operation};
+use p2panda_core::{
+    Body, Hash, Header, Operation, PrivateKey, PublicKey, RawOperation, validate_operation,
+};
+use p2panda_store::sqlite::store::{
+    SqliteStore, connection_pool, create_database, run_pending_migrations,
+};
 use p2panda_store::{LogStore, MemoryStore};
 use p2panda_stream::operation::{IngestError, IngestResult, ingest_operation};
 use serde::{Deserialize, Serialize};
@@ -25,6 +31,10 @@ pub enum PandaFactError {
     InvalidOperation,
     #[error("p2panda store failed: {message}")]
     Store { message: String },
+    #[error("p2panda persistent store path {path} is invalid: {message}")]
+    InvalidStorePath { path: PathBuf, message: String },
+    #[error("p2panda persistent operation for fact {key} is missing payload bytes")]
+    MissingPayload { key: FactKey },
     #[error("p2panda operation extensions were invalid: {message}")]
     InvalidExtensions { message: String },
     #[error("cannot import {operation} operation through {session} island session")]
@@ -134,6 +144,56 @@ impl PandaFactAuthor {
 pub struct PandaFactAuthorKey(PublicKey);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PandaTrustedAuthorKey {
+    island: IslandId,
+    principal: PrincipalId,
+    author_key: PandaFactAuthorKey,
+}
+
+impl PandaTrustedAuthorKey {
+    #[must_use]
+    pub fn new(island: IslandId, principal: PrincipalId, author_key: PandaFactAuthorKey) -> Self {
+        Self {
+            island,
+            principal,
+            author_key,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PandaSqliteOpenConfig {
+    path: PathBuf,
+    known_islands: Vec<IslandId>,
+    trusted_author_keys: Vec<PandaTrustedAuthorKey>,
+    max_connections: u32,
+}
+
+impl PandaSqliteOpenConfig {
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>, known_islands: Vec<IslandId>) -> Self {
+        Self {
+            path: path.into(),
+            known_islands,
+            trusted_author_keys: Vec::new(),
+            max_connections: 1,
+        }
+    }
+
+    #[must_use]
+    pub fn with_trusted_author_key(mut self, trusted: PandaTrustedAuthorKey) -> Self {
+        self.trusted_author_keys.push(trusted);
+        self
+    }
+
+    #[must_use]
+    pub fn with_max_connections(mut self, max_connections: u32) -> Self {
+        self.max_connections = max_connections.max(1);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PandaFactMetadata {
     island: IslandId,
     key: FactKey,
@@ -207,7 +267,7 @@ impl PandaFactOperation {
 }
 
 pub struct PandaFactStore {
-    store: MemoryStore<IslandLog, PandaFactExtensions>,
+    backend: PandaFactBackend,
     authorizer: Arc<dyn FactAuthorizer>,
     fact_index: BTreeMap<(IslandId, FactKey), BTreeSet<FactContentHash>>,
     operations: Vec<PandaFactOperation>,
@@ -218,11 +278,80 @@ pub struct PandaFactStore {
     trusted_author_keys: BTreeMap<(IslandId, PrincipalId), PublicKey>,
 }
 
+enum PandaFactBackend {
+    Memory(MemoryStore<IslandLog, PandaFactExtensions>),
+    Sqlite(SqliteStore<IslandLog, PandaFactExtensions>),
+}
+
+impl PandaFactBackend {
+    async fn ingest_operation(
+        &mut self,
+        header: Header<PandaFactExtensions>,
+        body: Option<Body>,
+        header_bytes: Vec<u8>,
+        log_id: &IslandLog,
+    ) -> Result<IngestResult<PandaFactExtensions>> {
+        match self {
+            Self::Memory(store) => {
+                ingest_operation(store, header, body, header_bytes, log_id, false)
+                    .await
+                    .map_err(PandaFactError::Ingest)
+            }
+            Self::Sqlite(store) => {
+                ingest_operation(store, header, body, header_bytes, log_id, false)
+                    .await
+                    .map_err(PandaFactError::Ingest)
+            }
+        }
+    }
+
+    async fn latest_operation(
+        &self,
+        public_key: &PublicKey,
+        log_id: &IslandLog,
+    ) -> Result<Option<(Header<PandaFactExtensions>, Option<Body>)>> {
+        match self {
+            Self::Memory(store) => store
+                .latest_operation(public_key, log_id)
+                .await
+                .map_err(store_error),
+            Self::Sqlite(store) => store
+                .latest_operation(public_key, log_id)
+                .await
+                .map_err(store_error),
+        }
+    }
+
+    async fn get_log_heights(&self, log_id: &IslandLog) -> Result<Vec<(PublicKey, u64)>> {
+        match self {
+            Self::Memory(store) => store.get_log_heights(log_id).await.map_err(store_error),
+            Self::Sqlite(store) => store.get_log_heights(log_id).await.map_err(store_error),
+        }
+    }
+
+    async fn get_raw_log(
+        &self,
+        public_key: &PublicKey,
+        log_id: &IslandLog,
+    ) -> Result<Option<Vec<RawOperation>>> {
+        match self {
+            Self::Memory(store) => store
+                .get_raw_log(public_key, log_id, None)
+                .await
+                .map_err(store_error),
+            Self::Sqlite(store) => store
+                .get_raw_log(public_key, log_id, None)
+                .await
+                .map_err(store_error),
+        }
+    }
+}
+
 impl PandaFactStore {
     #[must_use]
     pub fn new(authorizer: Arc<dyn FactAuthorizer>) -> Self {
         Self {
-            store: MemoryStore::new(),
+            backend: PandaFactBackend::Memory(MemoryStore::new()),
             authorizer,
             fact_index: BTreeMap::new(),
             operations: Vec::new(),
@@ -232,6 +361,35 @@ impl PandaFactStore {
             payloads: BTreeMap::new(),
             trusted_author_keys: BTreeMap::new(),
         }
+    }
+
+    pub async fn open_sqlite(
+        authorizer: Arc<dyn FactAuthorizer>,
+        config: PandaSqliteOpenConfig,
+    ) -> Result<Self> {
+        prepare_sqlite_parent(&config.path)?;
+        let url = sqlite_url(&config.path);
+        create_database(&url).await.map_err(store_error)?;
+        let pool = connection_pool(&url, config.max_connections)
+            .await
+            .map_err(store_error)?;
+        run_pending_migrations(&pool).await.map_err(store_error)?;
+        let mut store = Self {
+            backend: PandaFactBackend::Sqlite(SqliteStore::new(pool)),
+            authorizer,
+            fact_index: BTreeMap::new(),
+            operations: Vec::new(),
+            operation_hashes: BTreeSet::new(),
+            facts: Vec::new(),
+            facts_by_identity: BTreeMap::new(),
+            payloads: BTreeMap::new(),
+            trusted_author_keys: BTreeMap::new(),
+        };
+        for trusted in config.trusted_author_keys {
+            store.bind_author_key(&trusted.island, &trusted.principal, trusted.author_key.0)?;
+        }
+        store.rebuild_indexes(&config.known_islands).await?;
+        Ok(store)
     }
 
     pub fn trust_author_key(
@@ -298,15 +456,15 @@ impl PandaFactStore {
         header.sign(&author.key);
         let header_bytes = header.to_bytes();
         let raw_operation = PandaFactOperation::new(header_bytes.clone(), raw_body);
-        let result = ingest_operation(
-            &mut self.store,
-            header,
-            Some(body),
-            header_bytes,
-            &IslandLog::from(session.island()),
-            false,
-        )
-        .await?;
+        let result = self
+            .backend
+            .ingest_operation(
+                header,
+                Some(body),
+                header_bytes,
+                &IslandLog::from(session.island()),
+            )
+            .await?;
 
         let IngestResult::Complete(operation) = result else {
             return Err(PandaFactError::InvalidOperation);
@@ -340,15 +498,15 @@ impl PandaFactStore {
         if self.operation_hashes.contains(&operation_hash) {
             return Ok(PandaFactWriteOutcome::AlreadyPresent(metadata));
         }
-        let result = ingest_operation(
-            &mut self.store,
-            header,
-            Some(body),
-            operation.header_bytes(),
-            &IslandLog::from(&metadata.island),
-            false,
-        )
-        .await?;
+        let result = self
+            .backend
+            .ingest_operation(
+                header,
+                Some(body),
+                operation.header_bytes(),
+                &IslandLog::from(&metadata.island),
+            )
+            .await?;
         let imported = match result {
             IngestResult::Complete(imported) => imported,
             IngestResult::Retry(_, _, _, missing_operations) => {
@@ -457,10 +615,9 @@ impl PandaFactStore {
         author: &PandaFactAuthor,
     ) -> Result<LogPosition> {
         let latest = self
-            .store
+            .backend
             .latest_operation(&author.public_key(), &IslandLog::from(island))
-            .await
-            .map_err(store_error)?;
+            .await?;
         Ok(match latest {
             Some((header, _)) => LogPosition {
                 seq_num: header.seq_num + 1,
@@ -471,6 +628,68 @@ impl PandaFactStore {
                 backlink: None,
             },
         })
+    }
+
+    async fn rebuild_indexes(&mut self, islands: &[IslandId]) -> Result<()> {
+        self.clear_derived_indexes();
+        for island in islands {
+            let log_id = IslandLog::from(island);
+            for (public_key, _height) in self.backend.get_log_heights(&log_id).await? {
+                let Some(raw_operations) = self.backend.get_raw_log(&public_key, &log_id).await?
+                else {
+                    continue;
+                };
+                for raw_operation in raw_operations {
+                    self.record_rebuilt_operation(raw_operation)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn clear_derived_indexes(&mut self) {
+        self.fact_index.clear();
+        self.operations.clear();
+        self.operation_hashes.clear();
+        self.facts.clear();
+        self.facts_by_identity.clear();
+        self.payloads.clear();
+    }
+
+    fn record_rebuilt_operation(&mut self, raw_operation: RawOperation) -> Result<()> {
+        let (header_bytes, body_bytes) = raw_operation;
+        let header: Header<PandaFactExtensions> =
+            decode_cbor(header_bytes.as_slice()).map_err(|error| {
+                PandaFactError::InvalidExtensions {
+                    message: error.to_string(),
+                }
+            })?;
+        let missing_payload_key =
+            FactKey::parse(header.extensions.key.clone()).map_err(|error| {
+                PandaFactError::InvalidExtensions {
+                    message: error.to_string(),
+                }
+            })?;
+        let body_bytes = body_bytes.ok_or(PandaFactError::MissingPayload {
+            key: missing_payload_key,
+        })?;
+        let body = Body::new(&body_bytes);
+        let content_hash = content_hash_from_body(&body);
+        let metadata = metadata_from_header(&header, content_hash)?;
+        self.require_author_key(&metadata.island, &metadata.author, header.public_key)?;
+        let operation = Operation {
+            hash: header.hash(),
+            header,
+            body: Some(body),
+        };
+        validate_operation(&operation).map_err(|_| PandaFactError::InvalidOperation)?;
+        let pre_ingest = self.pre_ingest_status(&metadata);
+        self.record_operation(
+            operation.hash,
+            PandaFactOperation::new(header_bytes, body_bytes.clone()),
+        );
+        self.record_fact_operation(metadata, FactPayload::from(body_bytes), pre_ingest);
+        Ok(())
     }
 
     fn pre_ingest_status(&self, metadata: &PandaFactMetadata) -> FactPreIngestStatus {
@@ -709,6 +928,22 @@ fn store_error(error: impl Display) -> PandaFactError {
     }
 }
 
+fn prepare_sqlite_parent(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|error| PandaFactError::InvalidStorePath {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        })?;
+    }
+    Ok(())
+}
+
+fn sqlite_url(path: &Path) -> String {
+    format!("sqlite://{}", path.display())
+}
+
 impl From<PandaFactError> for FactSourceError {
     fn from(error: PandaFactError) -> Self {
         Self::Unavailable {
@@ -722,6 +957,7 @@ mod tests {
     use std::sync::Arc;
 
     use mvp_bus::{BusAuthority, Grant, harness::InMemoryBus};
+    use tempfile::tempdir;
 
     use super::*;
 
@@ -752,6 +988,20 @@ mod tests {
 
     fn store_from_bus(bus: InMemoryBus) -> PandaFactStore {
         PandaFactStore::new(Arc::new(bus))
+    }
+
+    fn sqlite_config(
+        path: impl Into<PathBuf>,
+        island: &IslandId,
+        author: &PandaFactAuthor,
+    ) -> PandaSqliteOpenConfig {
+        PandaSqliteOpenConfig::new(path, vec![island.clone()]).with_trusted_author_key(
+            PandaTrustedAuthorKey::new(
+                island.clone(),
+                author.principal().clone(),
+                author.author_key(),
+            ),
+        )
     }
 
     fn trust_author(store: &mut PandaFactStore, session: &BusSession, author: &PandaFactAuthor) {
@@ -1034,6 +1284,126 @@ mod tests {
                 .values()
                 .any(|payload| payload.as_bytes() == b"payload")
         );
+    }
+
+    #[tokio::test]
+    async fn sqlite_store_reopens_and_rebuilds_fact_indexes() {
+        let directory = tempdir().expect("create tempdir");
+        let path = directory.path().join("facts.sqlite");
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let writer = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty()
+                .with_fact_write(pattern("/facts/>"))
+                .with_fact_read(pattern("/facts/>")),
+        );
+        let author = PandaFactAuthor::new(principal("writer"));
+        let fact_key = key("/facts/node/node-1/joined/1");
+        let mut store = PandaFactStore::open_sqlite(
+            Arc::new(bus.clone()),
+            PandaSqliteOpenConfig::new(&path, vec![writer.island().clone()]),
+        )
+        .await
+        .expect("open sqlite store");
+        store
+            .write_fact_payload(
+                &writer,
+                &author,
+                fact_key.clone(),
+                FactPayload::from_static(b"payload"),
+            )
+            .await
+            .expect("write persistent fact");
+        drop(store);
+
+        let mut reopened = PandaFactStore::open_sqlite(
+            Arc::new(bus),
+            sqlite_config(&path, writer.island(), &author),
+        )
+        .await
+        .expect("reopen sqlite store");
+        let candidates = reopened
+            .list_candidates(writer.island(), &pattern("/facts/node/>"), &writer)
+            .expect("list reopened candidates");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].status(), CandidateStatus::Verified);
+        let payloads = reopened
+            .read_payloads(writer.island(), &candidates, &writer)
+            .expect("read reopened payload");
+        assert!(
+            payloads
+                .values()
+                .any(|payload| payload.as_bytes() == b"payload")
+        );
+
+        let duplicate = reopened
+            .write_fact_payload(
+                &writer,
+                &author,
+                fact_key.clone(),
+                FactPayload::from_static(b"payload"),
+            )
+            .await
+            .expect("write duplicate after reopen");
+        assert!(matches!(
+            duplicate,
+            PandaFactWriteOutcome::AlreadyPresent(_)
+        ));
+
+        let conflict = reopened
+            .write_fact_payload(
+                &writer,
+                &author,
+                fact_key,
+                FactPayload::from_static(b"conflict"),
+            )
+            .await
+            .expect("write conflict after reopen");
+        assert!(matches!(conflict, PandaFactWriteOutcome::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn sqlite_reopen_requires_trusted_author_keys_for_stored_operations() {
+        let directory = tempdir().expect("create tempdir");
+        let path = directory.path().join("facts.sqlite");
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let writer = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty().with_fact_write(pattern("/facts/>")),
+        );
+        let author = PandaFactAuthor::new(principal("writer"));
+        let mut store = PandaFactStore::open_sqlite(
+            Arc::new(bus.clone()),
+            PandaSqliteOpenConfig::new(&path, vec![writer.island().clone()]),
+        )
+        .await
+        .expect("open sqlite store");
+        store
+            .write_fact_payload(
+                &writer,
+                &author,
+                key("/facts/node/node-1/joined/1"),
+                FactPayload::from_static(b"payload"),
+            )
+            .await
+            .expect("write persistent fact");
+        drop(store);
+
+        let error = match PandaFactStore::open_sqlite(
+            Arc::new(bus),
+            PandaSqliteOpenConfig::new(&path, vec![writer.island().clone()]),
+        )
+        .await
+        {
+            Ok(_) => panic!("reopen without trusted author key fails"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            PandaFactError::UntrustedAuthorKey { principal, .. } if principal == PrincipalId::new("writer")
+        ));
     }
 
     #[tokio::test]
