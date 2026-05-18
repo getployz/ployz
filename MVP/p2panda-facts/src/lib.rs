@@ -47,6 +47,8 @@ pub enum PandaFactError {
     MissingPayload { key: FactKey },
     #[error("p2panda author key is invalid: {message}")]
     InvalidAuthorKey { message: String },
+    #[error("p2panda author private key is invalid: {message}")]
+    InvalidAuthorPrivateKey { message: String },
     #[error("p2panda operation extensions were invalid: {message}")]
     InvalidExtensions { message: String },
     #[error("cannot import {operation} operation through {session} island session")]
@@ -210,6 +212,32 @@ impl PandaFactAuthor {
     }
 
     #[must_use]
+    pub fn from_seed(principal: PrincipalId, seed: [u8; 32]) -> Self {
+        Self {
+            principal,
+            key: PrivateKey::from_bytes(&seed),
+        }
+    }
+
+    #[must_use]
+    pub fn from_private_key_bytes(principal: PrincipalId, bytes: [u8; 32]) -> Self {
+        Self {
+            principal,
+            key: PrivateKey::from_bytes(&bytes),
+        }
+    }
+
+    pub fn from_private_key_hex(principal: PrincipalId, value: &str) -> Result<Self> {
+        let bytes = parse_author_private_key_hex(value)?;
+        Ok(Self::from_private_key_bytes(principal, bytes))
+    }
+
+    #[must_use]
+    pub fn private_key_hex(&self) -> String {
+        self.key.to_hex()
+    }
+
+    #[must_use]
     pub fn principal(&self) -> &PrincipalId {
         &self.principal
     }
@@ -245,6 +273,39 @@ impl PandaFactAuthorKey {
 
     fn public_key(self) -> PublicKey {
         self.0
+    }
+}
+
+fn parse_author_private_key_hex(value: &str) -> Result<[u8; 32]> {
+    let trimmed = value.trim();
+    if trimmed.len() != 64 {
+        return Err(PandaFactError::InvalidAuthorPrivateKey {
+            message: format!(
+                "private key must be 64 lowercase hex characters, got {}",
+                trimmed.len()
+            ),
+        });
+    }
+    let mut bytes = [0_u8; 32];
+    for (index, chunk) in trimmed.as_bytes().chunks_exact(2).enumerate() {
+        let high =
+            decode_hex_nibble(chunk[0]).ok_or_else(|| PandaFactError::InvalidAuthorPrivateKey {
+                message: "private key contains invalid hex".to_string(),
+            })?;
+        let low =
+            decode_hex_nibble(chunk[1]).ok_or_else(|| PandaFactError::InvalidAuthorPrivateKey {
+                message: "private key contains invalid hex".to_string(),
+            })?;
+        bytes[index] = (high << 4) | low;
+    }
+    Ok(bytes)
+}
+
+fn decode_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
     }
 }
 
@@ -1763,6 +1824,27 @@ mod tests {
     fn store_with_authority() -> (PandaFactStore, BusAuthority) {
         let (bus, authority) = InMemoryBus::new_with_authority();
         (PandaFactStore::new(Arc::new(bus)), authority)
+    }
+
+    #[test]
+    fn author_private_key_hex_round_trips_for_process_roles() {
+        let seed = "12".repeat(32);
+        let author = PandaFactAuthor::from_private_key_hex(principal("writer"), &seed)
+            .expect("private key parses");
+        let same_author =
+            PandaFactAuthor::from_private_key_hex(principal("writer"), &author.private_key_hex())
+                .expect("private key round trips");
+
+        assert_eq!(author.private_key_hex(), seed);
+        assert_eq!(same_author.author_key(), author.author_key());
+        assert!(matches!(
+            PandaFactAuthor::from_private_key_hex(principal("writer"), "123"),
+            Err(PandaFactError::InvalidAuthorPrivateKey { .. })
+        ));
+        assert!(matches!(
+            PandaFactAuthor::from_private_key_hex(principal("writer"), &"GG".repeat(32)),
+            Err(PandaFactError::InvalidAuthorPrivateKey { .. })
+        ));
     }
 
     fn store_from_bus(bus: InMemoryBus) -> PandaFactStore {
