@@ -16,7 +16,7 @@ use mvp_projection::{
     NodeJoinedFact, ProjectionFactPayload, ProjectionIgnoreReason, SqliteProjectionStore,
     load_dns_snapshot, load_gateway_snapshot,
 };
-use p2panda_core::PrivateKey;
+use p2panda_core::SigningKey;
 use serde::Serialize;
 
 use crate::assertions::assert_eq_named;
@@ -259,13 +259,13 @@ async fn p2panda_authority_snapshot(
     writer: &PandaFactAuthor,
     replica: &PrincipalId,
 ) -> Result<IslandAuthoritySnapshot, String> {
-    let root_private_key = PrivateKey::from_bytes(&[9; 32]);
-    let replica_private_key = PrivateKey::from_bytes(&[8; 32]);
+    let root_private_key = SigningKey::from_bytes(&[9; 32]);
+    let replica_private_key = SigningKey::from_bytes(&[8; 32]);
     let root = authority_binding(
         island,
         &PrincipalId::new("root"),
         1,
-        IslandMemberAuthorKey::from_public_key(root_private_key.public_key()),
+        IslandMemberAuthorKey::from_public_key(root_private_key.verifying_key()),
     )?;
     let writer = IslandMemberKeyBinding::new(
         island.clone(),
@@ -277,7 +277,7 @@ async fn p2panda_authority_snapshot(
         island,
         replica,
         1,
-        IslandMemberAuthorKey::from_public_key(replica_private_key.public_key()),
+        IslandMemberAuthorKey::from_public_key(replica_private_key.verifying_key()),
     )?;
 
     let mut log = IslandAuthzMemoryLog::new(island.clone());

@@ -1,6 +1,6 @@
 ---
 title: Slice 038 p2panda 0.6 Canonical Transport Migration Plan
-status: active
+status: completed
 created: 2026-05-19
 origin:
   - VISION.md

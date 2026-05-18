@@ -5,10 +5,11 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
-use p2panda_core::{Hash, Operation, PrivateKey};
+use p2panda_core::{Hash, Operation, SigningKey, Topic};
 use p2panda_net::addrs::NodeInfo;
-use p2panda_net::iroh_endpoint::{EndpointAddr, IrohConfig, from_public_key};
-use p2panda_net::{AddressBook, Discovery, Endpoint, Gossip, LogSync, NetworkId, TopicId};
+use p2panda_net::iroh_endpoint::{EndpointAddr, IrohConfig};
+use p2panda_net::utils::from_verifying_key;
+use p2panda_net::{AddressBook, Discovery, Endpoint, Gossip, LogSync, NetworkId};
 use p2panda_sync::FromSync;
 use p2panda_sync::protocols::TopicLogSyncEvent;
 use thiserror::Error;
@@ -16,7 +17,7 @@ use tokio::time::timeout;
 
 use crate::{
     PandaNetStartupStep, PandaNetTransportError,
-    quarantine_log::{PandaNetLogId, PandaNetQuarantineLog, PandaNetStore, PandaNetTopicMap},
+    quarantine_log::{PandaNetLogId, PandaNetQuarantineLog, PandaNetStore},
 };
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -83,8 +84,8 @@ impl PandaNetNodeSeed {
         encode_hex(&self.0)
     }
 
-    fn private_key(self) -> PrivateKey {
-        PrivateKey::from_bytes(&self.0)
+    fn signing_key(self) -> SigningKey {
+        SigningKey::from_bytes(&self.0)
     }
 }
 
@@ -112,8 +113,8 @@ impl PandaNetTopic {
         encode_hex(&self.0)
     }
 
-    fn into_inner(self) -> TopicId {
-        self.0
+    fn into_inner(self) -> Topic {
+        self.0.into()
     }
 }
 
@@ -223,7 +224,7 @@ impl PandaNetNodeTicket {
 #[derive(Clone)]
 pub struct PandaNetNodeConfig {
     network_id: PandaNetNetworkId,
-    private_key: PrivateKey,
+    signing_key: SigningKey,
     bind: PandaNetBindConfig,
     bootstrap_nodes: Vec<PandaNetNodeInfo>,
 }
@@ -284,7 +285,7 @@ impl PandaNetNodeConfig {
     ) -> Self {
         Self {
             network_id,
-            private_key: signing_key_seed.private_key(),
+            signing_key: signing_key_seed.signing_key(),
             bind,
             bootstrap_nodes,
         }
@@ -310,16 +311,16 @@ pub struct PandaNetNode {
     discovery: Discovery,
     endpoint: Endpoint,
     gossip: Gossip,
-    log_sync: LogSync<PandaNetStore, PandaNetLogId, (), PandaNetTopicMap>,
+    log_sync: LogSync<PandaNetStore, PandaNetLogId, ()>,
     quarantine_log: PandaNetQuarantineLog,
-    publish_streams: HashMap<TopicId, PandaNetSyncHandle>,
+    publish_streams: HashMap<Topic, PandaNetSyncHandle>,
     node_info: PandaNetNodeInfo,
 }
 
 impl PandaNetNode {
     pub async fn spawn(config: PandaNetNodeConfig) -> Result<Self, PandaNetTransportError> {
-        let quarantine_log = PandaNetQuarantineLog::new(config.private_key.clone());
-        let private_key = config.private_key.clone();
+        let quarantine_log = PandaNetQuarantineLog::new(config.signing_key.clone());
+        let signing_key = config.signing_key.clone();
 
         let address_book = with_startup_timeout(
             PandaNetStartupStep::AddressBook,
@@ -340,11 +341,11 @@ impl PandaNetNode {
             Endpoint::builder(address_book.clone())
                 .network_id(config.network_id.into_inner())
                 .config(config.bind.iroh_config())
-                .private_key(config.private_key)
+                .signing_key(config.signing_key)
                 .spawn(),
         )
         .await?;
-        let node_info = node_info_from_endpoint(&private_key, &endpoint).await?;
+        let node_info = node_info_from_endpoint(&signing_key, &endpoint).await?;
 
         let discovery = with_startup_timeout(
             PandaNetStartupStep::Discovery,
@@ -360,13 +361,7 @@ impl PandaNetNode {
 
         let log_sync = with_startup_timeout(
             PandaNetStartupStep::LogSync,
-            LogSync::builder(
-                quarantine_log.store(),
-                quarantine_log.topic_map(),
-                endpoint.clone(),
-                gossip.clone(),
-            )
-            .spawn(),
+            LogSync::builder(quarantine_log.store(), endpoint.clone(), gossip.clone()).spawn(),
         )
         .await?;
 
@@ -446,7 +441,7 @@ impl Drop for PandaNetNode {
 }
 
 pub struct PandaNetStream {
-    topic: TopicId,
+    topic: Topic,
     _handle: PandaNetSyncHandle,
     subscription: p2panda_net::sync::SyncSubscription<TopicLogSyncEvent<()>>,
     quarantine_log: PandaNetQuarantineLog,
@@ -620,7 +615,7 @@ impl PandaNetStream {
 
             match event {
                 FromSync {
-                    event: TopicLogSyncEvent::Operation(operation),
+                    event: TopicLogSyncEvent::OperationReceived { operation, .. },
                     ..
                 } => {
                     self.quarantine_log
@@ -654,12 +649,11 @@ impl PandaNetStream {
                 }
                 FromSync {
                     event:
-                        TopicLogSyncEvent::SyncFinished(_)
+                        TopicLogSyncEvent::SessionStarted
+                        | TopicLogSyncEvent::SyncFinished { .. }
                         | TopicLogSyncEvent::LiveModeStarted
-                        | TopicLogSyncEvent::LiveModeFinished(_)
-                        | TopicLogSyncEvent::Success
-                        | TopicLogSyncEvent::SyncStatus(_)
-                        | TopicLogSyncEvent::SyncStarted(_),
+                        | TopicLogSyncEvent::SessionFinished { .. }
+                        | TopicLogSyncEvent::SyncStarted { .. },
                     ..
                 } => {}
             }
@@ -668,7 +662,7 @@ impl PandaNetStream {
 }
 
 async fn node_info_from_endpoint(
-    private_key: &PrivateKey,
+    signing_key: &SigningKey,
     endpoint: &Endpoint,
 ) -> Result<PandaNetNodeInfo, PandaNetTransportError> {
     let iroh_endpoint =
@@ -679,8 +673,8 @@ async fn node_info_from_endpoint(
             message: "endpoint reported no bound sockets".to_string(),
         });
     };
-    let endpoint_addr =
-        EndpointAddr::new(from_public_key(private_key.public_key())).with_ip_addr(bound_socket);
+    let endpoint_addr = EndpointAddr::new(from_verifying_key(signing_key.verifying_key()))
+        .with_ip_addr(bound_socket);
     Ok(PandaNetNodeInfo(NodeInfo::from(endpoint_addr).bootstrap()))
 }
 

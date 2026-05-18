@@ -10,10 +10,10 @@ name = "mvp_iroh"
 path = "src/lib.rs"
 
 [dependencies]
-iroh = "0.96.1"
-iroh-blobs = "0.98.0"
-iroh-docs = "0.96.0"
-iroh-gossip = "0.96.0"
+iroh = "0.98.2"
+iroh-blobs = "0.100.0"
+iroh-docs = "0.98.0"
+iroh-gossip = "0.98.0"
 mvp-bus = { path = "../bus" }
 mvp-identity = { path = "../identity" }
 mvp-projection = { path = "../projection" }
