@@ -162,8 +162,8 @@ impl IslandMemberKey {
         Self(bytes)
     }
 
-    #[must_use]
-    pub fn from_seed(seed: impl AsRef<[u8]>) -> Self {
+    #[cfg(test)]
+    fn from_seed(seed: impl AsRef<[u8]>) -> Self {
         Self(*blake3::hash(seed.as_ref()).as_bytes())
     }
 
@@ -755,9 +755,7 @@ impl IslandAuthz {
         }
         validate_supported_action_shape(&payload.action)?;
         match &payload.action {
-            GroupAction::Add { member, .. }
-            | GroupAction::Promote { member, .. }
-            | GroupAction::Demote { member, .. } => {
+            GroupAction::Add { member, .. } => {
                 let Some(binding) = signed.introduced_binding.as_ref() else {
                     return Err(IslandAuthzError::MissingIntroducedBinding(IslandMemberId(
                         member.id(),
@@ -774,6 +772,17 @@ impl IslandAuthz {
                         expected: IslandMemberId(member.id()),
                         actual: binding.member_id(),
                     });
+                }
+            }
+            GroupAction::Promote { member, .. } | GroupAction::Demote { member, .. } => {
+                if signed.introduced_binding.is_some() {
+                    return Err(IslandAuthzError::UnexpectedIntroducedBinding(
+                        signed.operation_id(),
+                    ));
+                }
+                let member_id = IslandMemberId(member.id());
+                if !self.bindings.contains_key(&member_id) {
+                    return Err(IslandAuthzError::MissingBinding(member_id));
                 }
             }
             GroupAction::Create { .. } | GroupAction::Remove { .. } => {
@@ -829,11 +838,13 @@ fn sign_membership_operation(
     hash_bytes(&mut hasher, &signer_key.as_bytes());
     hash_operation_id(&mut hasher, operation.id());
     hash_auth_id(&mut hasher, operation.author());
-    hash_u64(&mut hasher, operation.dependencies().len() as u64);
-    for dependency in operation.dependencies() {
+    let dependencies = operation.dependencies();
+    hash_u64(&mut hasher, dependencies.len() as u64);
+    for dependency in dependencies {
         hash_operation_id(&mut hasher, dependency);
     }
-    hash_payload(&mut hasher, &operation.payload());
+    let payload = operation.payload();
+    hash_payload(&mut hasher, &payload);
     match introduced_binding {
         Some(binding) => {
             hasher.update(&[1]);
@@ -1355,6 +1366,33 @@ mod tests {
             authz.apply_signed(signed),
             Err(IslandAuthzError::UnexpectedIntroducedBinding(_))
         ));
+    }
+
+    #[test]
+    fn signed_membership_operation_demotes_without_introduced_binding() {
+        let island = island();
+        let root = member("root", &island, 1);
+        let mut authz =
+            IslandAuthz::create(island.clone(), root.clone()).expect("root group should create");
+        let writer = member("writer", &island, 1);
+        let writer_id = writer.member_id();
+        authz
+            .add_writer(root.member_id(), writer)
+            .expect("root manager should add writer");
+        let operation = demote_operation(
+            root.member_id(),
+            100,
+            authz.group_id(),
+            writer_id,
+            IslandMemberRole::ReplicaImporter(ReplicaImportAccess::Read),
+            &authz.current_heads(),
+        );
+        let signed = IslandSignedOperation::sign(operation, root.member_id(), root.key(), None);
+        authz
+            .apply_signed(signed)
+            .expect("signed demote should be accepted");
+        assert!(!authz.can_write_member(writer_id));
+        assert!(authz.can_import_replica(writer_id));
     }
 
     #[test]
