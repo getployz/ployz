@@ -1,15 +1,23 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Debug, Display, Formatter};
 use std::num::NonZeroU64;
+use std::path::Path;
 
 use mvp_bus::{IslandId, PrincipalId};
 use p2panda_auth::group::resolver::StrongRemove;
-use p2panda_auth::group::{GroupAction, GroupCrdt, GroupCrdtError, GroupCrdtState, GroupMember};
+use p2panda_auth::group::{
+    GroupAction, GroupCrdt, GroupCrdtError, GroupCrdtInnerError, GroupCrdtState, GroupMember,
+    GroupMembershipError,
+};
 use p2panda_auth::traits::{Conditions, IdentityHandle, Operation, OperationId};
 use p2panda_auth::{Access, AccessLevel};
-use p2panda_core::cbor::encode_cbor;
-use p2panda_core::{Body, Header, Operation as PandaOperation, SigningKey, VerifyingKey};
+use p2panda_core::cbor::{decode_cbor, encode_cbor};
+use p2panda_core::{Body, Hash, Header, Operation as PandaOperation, SigningKey, VerifyingKey};
 use p2panda_core::{Signature, validate_operation};
+use p2panda_store::logs::LogStore;
+use p2panda_store::topics::TopicStore;
+use p2panda_store::{SqliteStore, SqliteStoreBuilder};
+use p2panda_stream::ingest::ingest_operation;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -404,6 +412,8 @@ impl IslandSignedOperation {
     }
 }
 
+type IslandMembershipOperation = PandaOperation<IslandMembershipExtensions>;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct IslandMembershipExtensions {
     island: String,
@@ -419,6 +429,146 @@ impl IslandMembershipExtensions {
             actor: signed.signer.auth_id(),
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+struct IslandMembershipLog(String);
+
+impl IslandMembershipLog {
+    fn from_island(island: &IslandId) -> Self {
+        Self(island.as_str().to_owned())
+    }
+}
+
+fn build_membership_panda_operation(
+    island: &IslandId,
+    signed: &IslandSignedOperation,
+    signer_private_key: &SigningKey,
+    latest: Option<&Header<IslandMembershipExtensions>>,
+) -> Result<PandaOperation<IslandMembershipExtensions>, IslandAuthzError> {
+    verify_private_key_signed(signed, signer_private_key)?;
+    let public_key = signer_private_key.verifying_key();
+    let (seq_num, backlink) = latest
+        .map(|header| (header.seq_num + 1, Some(header.hash())))
+        .unwrap_or((0, None));
+    let body_bytes = encode_cbor(signed).map_err(encode_error)?;
+    let body = Body::new(&body_bytes);
+    let mut header = Header {
+        version: 1,
+        verifying_key: public_key,
+        signature: None,
+        payload_size: body.size(),
+        payload_hash: Some(body.hash()),
+        timestamp: p2panda_core::Timestamp::now(),
+        seq_num,
+        backlink,
+        extensions: IslandMembershipExtensions::new(island, signed),
+    };
+    header.sign(signer_private_key);
+    let operation = PandaOperation {
+        hash: header.hash(),
+        header,
+        body: Some(body),
+    };
+    validate_operation(&operation).map_err(|error| IslandAuthzError::InvalidPandaOperation {
+        message: error.to_string(),
+    })?;
+    Ok(operation)
+}
+
+fn signed_from_membership_operation(
+    island: &IslandId,
+    operation: PandaOperation<IslandMembershipExtensions>,
+) -> Result<(Header<IslandMembershipExtensions>, IslandSignedOperation), IslandAuthzError> {
+    validate_operation(&operation).map_err(|error| IslandAuthzError::InvalidPandaOperation {
+        message: error.to_string(),
+    })?;
+    if operation.header.extensions.island != island.as_str() {
+        return Err(IslandAuthzError::WrongIsland {
+            expected: island.clone(),
+            actual: IslandId::new(operation.header.extensions.island.clone()),
+        });
+    }
+    let expected_group = IslandGroupId::from_island(island);
+    if operation.header.extensions.group != expected_group.auth_id() {
+        return Err(IslandAuthzError::WrongGroup {
+            expected: expected_group,
+            actual: IslandGroupId(operation.header.extensions.group),
+        });
+    }
+    let body = operation
+        .body
+        .ok_or(IslandAuthzError::MissingMembershipPayload {
+            operation: operation.hash,
+        })?;
+    let body_bytes = body.to_bytes();
+    let signed: IslandSignedOperation =
+        decode_cbor(&body_bytes[..]).map_err(|error| IslandAuthzError::Decode {
+            message: error.to_string(),
+        })?;
+    if signed.signer().auth_id() != operation.header.extensions.actor {
+        return Err(IslandAuthzError::SignerMismatch {
+            signer: signed.signer(),
+            author: IslandMemberId(operation.header.extensions.actor),
+        });
+    }
+    Ok((operation.header, signed))
+}
+
+fn replay_signed_membership_operations(
+    island: &IslandId,
+    root_authority: &IslandRootAuthority,
+    mut signed_operations: Vec<(Header<IslandMembershipExtensions>, IslandSignedOperation)>,
+) -> Result<IslandAuthz, IslandAuthzError> {
+    if root_authority.binding().island() != island {
+        return Err(IslandAuthzError::WrongIsland {
+            expected: island.clone(),
+            actual: root_authority.binding().island().clone(),
+        });
+    }
+    signed_operations.sort_by_key(|(header, _)| (header.seq_num, header.hash()));
+    let Some((_, root_signed)) = signed_operations.first() else {
+        return Err(IslandAuthzError::EmptyMembershipLog {
+            island: island.clone(),
+        });
+    };
+    validate_root_anchor(island, root_authority.binding(), root_signed)?;
+    let mut authz = IslandAuthz::empty_with_root(island.clone(), root_authority.binding().clone())?;
+    authz.apply_signed(root_signed.clone())?;
+
+    for (_, signed) in signed_operations.into_iter().skip(1) {
+        authz.apply_signed(signed)?;
+    }
+    Ok(authz)
+}
+
+fn validate_root_anchor(
+    island: &IslandId,
+    root: &IslandMemberKeyBinding,
+    signed: &IslandSignedOperation,
+) -> Result<(), IslandAuthzError> {
+    if root.island() != island {
+        return Err(IslandAuthzError::WrongIsland {
+            expected: island.clone(),
+            actual: root.island().clone(),
+        });
+    }
+    if signed.signer != root.member_id() || signed.operation.author() != root.member_id().auth_id()
+    {
+        return Err(IslandAuthzError::UnanchoredRootCreate(root.member_id()));
+    }
+    if !matches!(signed.operation.action, GroupAction::Create { .. }) {
+        return Err(IslandAuthzError::UnanchoredRootCreate(root.member_id()));
+    }
+    let signature_payload = membership_operation_payload(&signed.operation, signed.signer, None);
+    if !root
+        .author_key()
+        .public_key()
+        .verify(&signature_payload.0, &signed.signature)
+    {
+        return Err(IslandAuthzError::InvalidSignature(signed.operation_id()));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -642,7 +792,7 @@ impl IslandAuthzMemoryLog {
         manager_private_key: &SigningKey,
         member: IslandMemberId,
     ) -> Result<IslandAuthChange, IslandAuthzError> {
-        self.validate_membership_mutation(authz, manager, manager_private_key)?;
+        validate_membership_mutation_for_island(&self.island, authz, manager, manager_private_key)?;
         let mut candidate = authz.clone();
         let operation = candidate.remove_member_operation(manager.member_id(), member)?;
         let change = IslandAuthChange {
@@ -664,7 +814,7 @@ impl IslandAuthzMemoryLog {
         member: IslandMemberId,
         access: ReplicaImportAccess,
     ) -> Result<IslandAuthChange, IslandAuthzError> {
-        self.validate_membership_mutation(authz, manager, manager_private_key)?;
+        validate_membership_mutation_for_island(&self.island, authz, manager, manager_private_key)?;
         let mut candidate = authz.clone();
         let operation = candidate.demote_member_operation(
             manager.member_id(),
@@ -690,7 +840,7 @@ impl IslandAuthzMemoryLog {
         member: IslandMemberKeyBinding,
         role: IslandMemberRole,
     ) -> Result<IslandAuthChange, IslandAuthzError> {
-        self.validate_membership_mutation(authz, manager, manager_private_key)?;
+        validate_membership_mutation_for_island(&self.island, authz, manager, manager_private_key)?;
         if member.island() != &self.island {
             return Err(IslandAuthzError::WrongIsland {
                 expected: self.island.clone(),
@@ -718,56 +868,11 @@ impl IslandAuthzMemoryLog {
         Ok(change)
     }
 
-    fn validate_membership_mutation(
-        &self,
-        authz: &IslandAuthz,
-        manager: &IslandMemberKeyBinding,
-        manager_private_key: &SigningKey,
-    ) -> Result<(), IslandAuthzError> {
-        if authz.island() != &self.island {
-            return Err(IslandAuthzError::WrongIsland {
-                expected: self.island.clone(),
-                actual: authz.island().clone(),
-            });
-        }
-        if manager.island() != &self.island {
-            return Err(IslandAuthzError::WrongIsland {
-                expected: self.island.clone(),
-                actual: manager.island().clone(),
-            });
-        }
-        if manager.author_key().public_key() != manager_private_key.verifying_key() {
-            return Err(IslandAuthzError::MemberKeyMismatch(manager.member_id()));
-        }
-        Ok(())
-    }
-
     pub async fn replay(
         &self,
         root_authority: &IslandRootAuthority,
     ) -> Result<IslandAuthz, IslandAuthzError> {
-        if root_authority.binding().island() != &self.island {
-            return Err(IslandAuthzError::WrongIsland {
-                expected: self.island.clone(),
-                actual: root_authority.binding().island().clone(),
-            });
-        }
-        let mut signed_operations = self.signed_operations();
-        signed_operations.sort_by_key(|(header, _)| (header.seq_num, header.hash()));
-        let Some((_, root_signed)) = signed_operations.first() else {
-            return Err(IslandAuthzError::EmptyMembershipLog {
-                island: self.island.clone(),
-            });
-        };
-        Self::validate_root_anchor(&self.island, root_authority.binding(), root_signed)?;
-        let mut authz =
-            IslandAuthz::empty_with_root(self.island.clone(), root_authority.binding().clone())?;
-        authz.apply_signed(root_signed.clone())?;
-
-        for (_, signed) in signed_operations.into_iter().skip(1) {
-            authz.apply_signed(signed)?;
-        }
-        Ok(authz)
+        replay_signed_membership_operations(&self.island, root_authority, self.signed_operations())
     }
 
     fn signed_operations(
@@ -782,72 +887,407 @@ impl IslandAuthzMemoryLog {
         signer_private_key: &SigningKey,
     ) -> Result<(), IslandAuthzError> {
         let public_key = signer_private_key.verifying_key();
-        verify_private_key_signed(signed, signer_private_key)?;
         let latest = self
             .operations
             .iter()
             .rev()
             .find(|(header, _)| header.verifying_key == public_key);
-        let (seq_num, backlink) = latest
-            .map(|(header, _)| (header.seq_num + 1, Some(header.hash())))
-            .unwrap_or((0, None));
-        let body_bytes = encode_cbor(signed).map_err(encode_error)?;
-        let body = Body::new(&body_bytes);
-        let mut header = Header {
-            version: 1,
-            verifying_key: public_key,
-            signature: None,
-            payload_size: body.size(),
-            payload_hash: Some(body.hash()),
-            timestamp: p2panda_core::Timestamp::now(),
-            seq_num,
-            backlink,
-            extensions: IslandMembershipExtensions::new(&self.island, signed),
+        let operation = build_membership_panda_operation(
+            &self.island,
+            signed,
+            signer_private_key,
+            latest.map(|(header, _)| header),
+        )?;
+        self.operations.push((operation.header, signed.clone()));
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct IslandAuthzStore {
+    island: IslandId,
+    root_authority: IslandRootAuthority,
+    store: SqliteStore,
+}
+
+impl IslandAuthzStore {
+    pub async fn open(
+        path: impl AsRef<Path>,
+        island: IslandId,
+        root_authority: IslandRootAuthority,
+    ) -> Result<Self, IslandAuthzError> {
+        if root_authority.binding().island() != &island {
+            return Err(IslandAuthzError::WrongIsland {
+                expected: island,
+                actual: root_authority.binding().island().clone(),
+            });
+        }
+        prepare_sqlite_parent(path.as_ref())?;
+        let url = sqlite_url(path.as_ref());
+        let store = SqliteStoreBuilder::new()
+            .database_url(&url)
+            .build()
+            .await
+            .map_err(store_error)?;
+        let authz_store = Self {
+            island,
+            root_authority,
+            store,
         };
-        header.sign(signer_private_key);
-        let operation = PandaOperation {
-            hash: header.hash(),
-            header: header.clone(),
-            body: Some(body.clone()),
+        let signed_operations = authz_store.signed_operations().await?;
+        if !signed_operations.is_empty() {
+            replay_signed_membership_operations(
+                &authz_store.island,
+                &authz_store.root_authority,
+                signed_operations,
+            )?;
+        }
+        Ok(authz_store)
+    }
+
+    pub async fn create_root(
+        &self,
+        root: IslandMemberKeyBinding,
+        root_key: &SigningKey,
+    ) -> Result<IslandAuthz, IslandAuthzError> {
+        if self.has_membership_log_association().await? {
+            return Err(IslandAuthzError::RootAlreadyPinned {
+                island: self.island.clone(),
+            });
+        }
+        if root.member_id() != self.root_authority.binding().member_id() {
+            return Err(IslandAuthzError::RootAuthorityMismatch(root.member_id()));
+        }
+        if root.author_key().public_key() != root_key.verifying_key() {
+            return Err(IslandAuthzError::RootAuthorityMismatch(root.member_id()));
+        }
+        let mut authz = IslandAuthz::empty_with_root(self.island.clone(), root.clone())?;
+        let operation = authz.create_group_operation(root.member_id())?;
+        let signed = IslandSignedOperation::sign(operation, root.member_id(), root_key, None);
+        self.insert_signed(&signed, root_key).await?;
+        Ok(authz)
+    }
+
+    pub async fn apply_signed(
+        &self,
+        authz: &mut IslandAuthz,
+        signed: IslandSignedOperation,
+        signer_private_key: &SigningKey,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
+        authz.validate_signed(&signed)?;
+        let mut candidate = authz.clone();
+        let change = candidate.apply_validated_signed(signed.clone())?;
+        self.insert_signed(&signed, signer_private_key).await?;
+        *authz = candidate;
+        Ok(change)
+    }
+
+    pub async fn add_writer(
+        &self,
+        authz: &mut IslandAuthz,
+        manager: &IslandMemberKeyBinding,
+        manager_private_key: &SigningKey,
+        member: IslandMemberKeyBinding,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
+        self.add_member(
+            authz,
+            manager,
+            manager_private_key,
+            member,
+            IslandMemberRole::Writer,
+        )
+        .await
+    }
+
+    pub async fn add_replica_importer(
+        &self,
+        authz: &mut IslandAuthz,
+        manager: &IslandMemberKeyBinding,
+        manager_private_key: &SigningKey,
+        member: IslandMemberKeyBinding,
+        access: ReplicaImportAccess,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
+        self.add_member(
+            authz,
+            manager,
+            manager_private_key,
+            member,
+            IslandMemberRole::ReplicaImporter(access),
+        )
+        .await
+    }
+
+    pub async fn demote_to_replica_importer(
+        &self,
+        authz: &mut IslandAuthz,
+        manager: &IslandMemberKeyBinding,
+        manager_private_key: &SigningKey,
+        member: IslandMemberId,
+        access: ReplicaImportAccess,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
+        validate_membership_mutation_for_island(&self.island, authz, manager, manager_private_key)?;
+        let mut candidate = authz.clone();
+        let operation = candidate.demote_member_operation(
+            manager.member_id(),
+            member,
+            IslandMemberRole::ReplicaImporter(access),
+        )?;
+        let change = IslandAuthChange {
+            operation_id: operation.id(),
+            actor: manager.member_id(),
         };
-        validate_operation(&operation).map_err(|error| {
-            IslandAuthzError::InvalidPandaOperation {
-                message: error.to_string(),
+        let signed =
+            IslandSignedOperation::sign(operation, manager.member_id(), manager_private_key, None);
+        self.insert_signed(&signed, manager_private_key).await?;
+        *authz = candidate;
+        Ok(change)
+    }
+
+    pub async fn remove_member(
+        &self,
+        authz: &mut IslandAuthz,
+        manager: &IslandMemberKeyBinding,
+        manager_private_key: &SigningKey,
+        member: IslandMemberId,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
+        validate_membership_mutation_for_island(&self.island, authz, manager, manager_private_key)?;
+        let mut candidate = authz.clone();
+        let operation = candidate.remove_member_operation(manager.member_id(), member)?;
+        let change = IslandAuthChange {
+            operation_id: operation.id(),
+            actor: manager.member_id(),
+        };
+        let signed =
+            IslandSignedOperation::sign(operation, manager.member_id(), manager_private_key, None);
+        self.insert_signed(&signed, manager_private_key).await?;
+        *authz = candidate;
+        Ok(change)
+    }
+
+    pub async fn replay(&self) -> Result<IslandAuthz, IslandAuthzError> {
+        replay_signed_membership_operations(
+            &self.island,
+            &self.root_authority,
+            self.signed_operations().await?,
+        )
+    }
+
+    pub async fn authority_snapshot(&self) -> Result<IslandAuthoritySnapshot, IslandAuthzError> {
+        Ok(self.replay().await?.authority_snapshot())
+    }
+
+    #[cfg(test)]
+    async fn export_operations(&self) -> Result<Vec<IslandMembershipOperation>, IslandAuthzError> {
+        self.panda_operations().await
+    }
+
+    #[cfg(test)]
+    async fn import_operation(
+        &self,
+        operation: IslandMembershipOperation,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
+        let candidate = signed_from_membership_operation(&self.island, operation.clone())?;
+        let existing = self.signed_operations().await?;
+        if let Some((_, existing_signed)) = existing
+            .iter()
+            .find(|(_, signed)| signed.operation_id() == candidate.1.operation_id())
+        {
+            if existing_signed == &candidate.1 {
+                return Ok(IslandAuthChange {
+                    operation_id: existing_signed.operation_id(),
+                    actor: existing_signed.signer(),
+                });
             }
-        })?;
-        self.operations.push((header, signed.clone()));
+            return Err(IslandAuthzError::DuplicateMembershipOperation(
+                candidate.1.operation_id(),
+            ));
+        }
+        if !existing.is_empty()
+            && matches!(candidate.1.operation.action, GroupAction::Create { .. })
+        {
+            return Err(IslandAuthzError::RootAlreadyPinned {
+                island: self.island.clone(),
+            });
+        }
+
+        let mut candidate_replay = existing;
+        candidate_replay.push(candidate.clone());
+        replay_signed_membership_operations(&self.island, &self.root_authority, candidate_replay)?;
+        self.insert_operation(&operation).await?;
+        Ok(IslandAuthChange {
+            operation_id: candidate.1.operation_id(),
+            actor: candidate.1.signer(),
+        })
+    }
+
+    async fn add_member(
+        &self,
+        authz: &mut IslandAuthz,
+        manager: &IslandMemberKeyBinding,
+        manager_private_key: &SigningKey,
+        member: IslandMemberKeyBinding,
+        role: IslandMemberRole,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
+        validate_membership_mutation_for_island(&self.island, authz, manager, manager_private_key)?;
+        if member.island() != &self.island {
+            return Err(IslandAuthzError::WrongIsland {
+                expected: self.island.clone(),
+                actual: member.island().clone(),
+            });
+        }
+        let mut candidate = authz.clone();
+        let member_id = member.member_id();
+        let operation = candidate.add_member_operation(manager.member_id(), member_id, role)?;
+        let change = IslandAuthChange {
+            operation_id: operation.id(),
+            actor: manager.member_id(),
+        };
+        let signed = IslandSignedOperation::sign(
+            operation,
+            manager.member_id(),
+            manager_private_key,
+            Some(member),
+        );
+        self.insert_signed(&signed, manager_private_key).await?;
+        if let Some(binding) = signed.introduced_binding.clone() {
+            candidate.bindings.insert(member_id, binding);
+        }
+        *authz = candidate;
+        Ok(change)
+    }
+
+    async fn insert_signed(
+        &self,
+        signed: &IslandSignedOperation,
+        signer_private_key: &SigningKey,
+    ) -> Result<(), IslandAuthzError> {
+        let public_key = signer_private_key.verifying_key();
+        let log_id = IslandMembershipLog::from_island(&self.island);
+        let latest = self
+            .store
+            .get_latest_entry(&public_key, &log_id)
+            .await
+            .map_err(store_error)?;
+        let operation = build_membership_panda_operation(
+            &self.island,
+            signed,
+            signer_private_key,
+            latest.as_ref().map(|operation| &operation.header),
+        )?;
+        self.insert_operation(&operation).await?;
         Ok(())
     }
 
-    fn validate_root_anchor(
-        island: &IslandId,
-        root: &IslandMemberKeyBinding,
-        signed: &IslandSignedOperation,
-    ) -> Result<(), IslandAuthzError> {
-        if root.island() != island {
-            return Err(IslandAuthzError::WrongIsland {
-                expected: island.clone(),
-                actual: root.island().clone(),
-            });
+    async fn insert_operation(
+        &self,
+        operation: &IslandMembershipOperation,
+    ) -> Result<bool, IslandAuthzError> {
+        let log_id = IslandMembershipLog::from_island(&self.island);
+        ingest_operation(&self.store, operation, &log_id, &log_id, false)
+            .await
+            .map_err(|error| IslandAuthzError::InvalidPandaOperation {
+                message: error.to_string(),
+            })
+    }
+
+    async fn panda_operations(&self) -> Result<Vec<IslandMembershipOperation>, IslandAuthzError> {
+        let log_id = IslandMembershipLog::from_island(&self.island);
+        let associations = <SqliteStore as TopicStore<
+            IslandMembershipLog,
+            VerifyingKey,
+            IslandMembershipLog,
+        >>::resolve(&self.store, &log_id)
+        .await
+        .map_err(store_error)?;
+        let mut operations = Vec::new();
+        for (author, logs) in associations {
+            for log in logs {
+                let Some(entries) =
+                    <SqliteStore as LogStore<
+                        PandaOperation<IslandMembershipExtensions>,
+                        VerifyingKey,
+                        IslandMembershipLog,
+                        u64,
+                        Hash,
+                    >>::get_log_entries(&self.store, &author, &log, None, None)
+                    .await
+                    .map_err(store_error)?
+                else {
+                    continue;
+                };
+                operations.extend(entries.into_iter().map(|(operation, _)| operation));
+            }
         }
-        if signed.signer != root.member_id()
-            || signed.operation.author() != root.member_id().auth_id()
-        {
-            return Err(IslandAuthzError::UnanchoredRootCreate(root.member_id()));
-        }
-        if !matches!(signed.operation.action, GroupAction::Create { .. }) {
-            return Err(IslandAuthzError::UnanchoredRootCreate(root.member_id()));
-        }
-        let signature_payload =
-            membership_operation_payload(&signed.operation, signed.signer, None);
-        if !root
-            .author_key()
-            .public_key()
-            .verify(&signature_payload.0, &signed.signature)
-        {
-            return Err(IslandAuthzError::InvalidSignature(signed.operation_id()));
-        }
-        Ok(())
+        operations.sort_by_key(|operation| (operation.header.seq_num, operation.hash));
+        Ok(operations)
+    }
+
+    async fn signed_operations(
+        &self,
+    ) -> Result<Vec<(Header<IslandMembershipExtensions>, IslandSignedOperation)>, IslandAuthzError>
+    {
+        self.panda_operations()
+            .await?
+            .into_iter()
+            .map(|operation| signed_from_membership_operation(&self.island, operation))
+            .collect()
+    }
+
+    async fn has_membership_log_association(&self) -> Result<bool, IslandAuthzError> {
+        let log_id = IslandMembershipLog::from_island(&self.island);
+        let associations = <SqliteStore as TopicStore<
+            IslandMembershipLog,
+            VerifyingKey,
+            IslandMembershipLog,
+        >>::resolve(&self.store, &log_id)
+        .await
+        .map_err(store_error)?;
+        Ok(!associations.is_empty())
+    }
+}
+
+fn validate_membership_mutation_for_island(
+    island: &IslandId,
+    authz: &IslandAuthz,
+    manager: &IslandMemberKeyBinding,
+    manager_private_key: &SigningKey,
+) -> Result<(), IslandAuthzError> {
+    if authz.island() != island {
+        return Err(IslandAuthzError::WrongIsland {
+            expected: island.clone(),
+            actual: authz.island().clone(),
+        });
+    }
+    if manager.island() != island {
+        return Err(IslandAuthzError::WrongIsland {
+            expected: island.clone(),
+            actual: manager.island().clone(),
+        });
+    }
+    if manager.author_key().public_key() != manager_private_key.verifying_key() {
+        return Err(IslandAuthzError::MemberKeyMismatch(manager.member_id()));
+    }
+    Ok(())
+}
+
+fn prepare_sqlite_parent(path: &Path) -> Result<(), IslandAuthzError> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|error| IslandAuthzError::Store {
+            message: error.to_string(),
+        })?;
+    }
+    Ok(())
+}
+
+fn sqlite_url(path: &Path) -> String {
+    format!("sqlite://{}", path.display())
+}
+
+fn store_error(error: impl Display) -> IslandAuthzError {
+    IslandAuthzError::Store {
+        message: error.to_string(),
     }
 }
 
@@ -1523,8 +1963,18 @@ pub enum IslandAuthzError {
     InvalidPandaOperation { message: String },
     #[error("membership payload encoding failed: {message}")]
     Encode { message: String },
+    #[error("membership payload decoding failed: {message}")]
+    Decode { message: String },
+    #[error("membership store failed: {message}")]
+    Store { message: String },
+    #[error("membership operation {operation} has no payload")]
+    MissingMembershipPayload { operation: Hash },
+    #[error("membership operation {0} already exists with different payload")]
+    DuplicateMembershipOperation(IslandOperationId),
     #[error("island {island} has no durable membership operations")]
     EmptyMembershipLog { island: IslandId },
+    #[error("island {island} already has a pinned root membership operation")]
+    RootAlreadyPinned { island: IslandId },
     #[error("root create is not anchored by the configured root member {0}")]
     UnanchoredRootCreate(IslandMemberId),
     #[error("root authority does not match signer/member {0}")]
@@ -1911,6 +2361,203 @@ mod tests {
 
         assert!(reopened.can_write_member(root.member_id()));
         assert!(reopened.can_write_member(writer_id));
+    }
+
+    #[tokio::test]
+    async fn sqlite_membership_store_reopens_root_and_writer() {
+        let island = island();
+        let (root, root_key) = member_with_private_key("root", &island, 1);
+        let root_authority = IslandRootAuthority::new(root.clone());
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join("membership.sqlite");
+        let store = IslandAuthzStore::open(&path, island.clone(), root_authority.clone())
+            .await
+            .expect("open membership store");
+        let mut authz = store
+            .create_root(root.clone(), &root_key)
+            .await
+            .expect("root create should persist");
+
+        let writer = member("writer", &island, 1);
+        let writer_id = writer.member_id();
+        store
+            .add_writer(&mut authz, &root, &root_key, writer)
+            .await
+            .expect("writer add should persist");
+
+        let reopened = IslandAuthzStore::open(&path, island, root_authority)
+            .await
+            .expect("reopen membership store")
+            .replay()
+            .await
+            .expect("stored operations should replay");
+        assert!(reopened.can_write_member(root.member_id()));
+        assert!(reopened.can_write_member(writer_id));
+    }
+
+    #[tokio::test]
+    async fn sqlite_membership_store_rejects_second_root() {
+        let island = island();
+        let (root, root_key) = member_with_private_key("root", &island, 1);
+        let root_authority = IslandRootAuthority::new(root.clone());
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join("membership.sqlite");
+        let store = IslandAuthzStore::open(&path, island.clone(), root_authority)
+            .await
+            .expect("open membership store");
+        store
+            .create_root(root.clone(), &root_key)
+            .await
+            .expect("root create should persist");
+        let error = match store.create_root(root, &root_key).await {
+            Ok(_) => panic!("second root create should fail"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            IslandAuthzError::RootAlreadyPinned { island: failed_island }
+                if failed_island == island
+        ));
+    }
+
+    #[tokio::test]
+    async fn sqlite_membership_store_imports_duplicate_operation_idempotently() {
+        let island = island();
+        let (root, root_key) = member_with_private_key("root", &island, 1);
+        let root_authority = IslandRootAuthority::new(root.clone());
+        let writer = member("writer", &island, 1);
+        let writer_id = writer.member_id();
+        let tempdir = tempfile::tempdir().expect("tempdir");
+
+        let source = IslandAuthzStore::open(
+            tempdir.path().join("source.sqlite"),
+            island.clone(),
+            root_authority.clone(),
+        )
+        .await
+        .expect("open source membership store");
+        let mut source_authz = source
+            .create_root(root.clone(), &root_key)
+            .await
+            .expect("source root create should persist");
+        source
+            .add_writer(&mut source_authz, &root, &root_key, writer)
+            .await
+            .expect("source writer add should persist");
+        let operations = source
+            .export_operations()
+            .await
+            .expect("source operations should export");
+        assert_eq!(operations.len(), 2);
+
+        let target = IslandAuthzStore::open(
+            tempdir.path().join("target.sqlite"),
+            island.clone(),
+            root_authority,
+        )
+        .await
+        .expect("open target membership store");
+        target
+            .import_operation(operations[0].clone())
+            .await
+            .expect("root import should persist");
+        let first_import = target
+            .import_operation(operations[1].clone())
+            .await
+            .expect("writer import should persist");
+        let duplicate_import = target
+            .import_operation(operations[1].clone())
+            .await
+            .expect("duplicate writer import should be idempotent");
+
+        assert_eq!(first_import, duplicate_import);
+        assert!(
+            target
+                .replay()
+                .await
+                .expect("target membership should replay")
+                .can_write_member(writer_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_membership_store_rejects_shadow_root_import() {
+        let island = island();
+        let (root, root_key) = member_with_private_key("root", &island, 1);
+        let root_authority = IslandRootAuthority::new(root.clone());
+        let (shadow_root, shadow_root_key) = member_with_private_key("shadow-root", &island, 1);
+        let tempdir = tempfile::tempdir().expect("tempdir");
+
+        let target = IslandAuthzStore::open(
+            tempdir.path().join("target.sqlite"),
+            island.clone(),
+            root_authority,
+        )
+        .await
+        .expect("open target membership store");
+        target
+            .create_root(root.clone(), &root_key)
+            .await
+            .expect("target root create should persist");
+
+        let shadow = IslandAuthzStore::open(
+            tempdir.path().join("shadow.sqlite"),
+            island.clone(),
+            IslandRootAuthority::new(shadow_root.clone()),
+        )
+        .await
+        .expect("open shadow membership store");
+        shadow
+            .create_root(shadow_root, &shadow_root_key)
+            .await
+            .expect("shadow root create should persist");
+        let shadow_root_operation = shadow
+            .export_operations()
+            .await
+            .expect("shadow root should export")
+            .remove(0);
+
+        let error = match target.import_operation(shadow_root_operation).await {
+            Ok(_) => panic!("shadow root import should fail"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            IslandAuthzError::RootAlreadyPinned { island: failed_island }
+                if failed_island == island
+        ));
+        assert!(
+            target
+                .replay()
+                .await
+                .expect("target membership should remain valid")
+                .can_write_member(root.member_id())
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_membership_store_rejects_wrong_root_on_open() {
+        let island = island();
+        let (root, root_key) = member_with_private_key("root", &island, 1);
+        let root_authority = IslandRootAuthority::new(root.clone());
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join("membership.sqlite");
+        let store = IslandAuthzStore::open(&path, island.clone(), root_authority)
+            .await
+            .expect("open membership store");
+        store
+            .create_root(root, &root_key)
+            .await
+            .expect("root create should persist");
+
+        let wrong_root = member("wrong-root", &island, 1);
+        let error = IslandAuthzStore::open(&path, island, IslandRootAuthority::new(wrong_root))
+            .await
+            .expect_err("wrong root authority should fail on open");
+
+        assert!(matches!(error, IslandAuthzError::UnanchoredRootCreate(_)));
     }
 
     #[tokio::test]
