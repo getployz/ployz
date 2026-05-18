@@ -4,7 +4,10 @@ use std::time::{Duration, Instant};
 
 use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::NodeId;
-use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, PandaFactWriteOutcome};
+use mvp_p2panda_facts::{
+    PandaFactAuthor, PandaFactStore, PandaFactWriteOutcome, PandaSqliteOpenConfig,
+    PandaTrustedAuthorKey,
+};
 use mvp_projection::{
     BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeJoinedFact,
     ProjectionFactPayload, ProjectionIgnoreReason, RouteCommitFact, RouteId, ServiceName,
@@ -28,6 +31,8 @@ struct P2pandaFactSourceReport {
     projected_dns_records: usize,
     conflict_write_recorded: bool,
     conflict_status_count: usize,
+    persistent_reopen: bool,
+    persistent_import_reopen: bool,
     sqlite_rebuild_after_delete: bool,
     gateway_snapshot_bytes: usize,
     dns_snapshot_bytes: usize,
@@ -49,28 +54,61 @@ async fn run_async() -> Result<(), String> {
     let root = scenario_dir("p2panda-fact-source-contract");
     reset_dir(&root)?;
 
-    let (mut store, projection_session) = p2panda_store_with_projection_session();
+    let (bus, projection_session) = p2panda_bus_with_projection_session();
     let author = PandaFactAuthor::new(projection_session.principal().clone());
+    let store_path = root.join("p2panda-facts.sqlite");
+    let mut store = PandaFactStore::open_sqlite(
+        Arc::new(bus.clone()),
+        trusted_sqlite_config(&store_path, &projection_session, &author),
+    )
+    .await
+    .map_err(|error| format!("open persistent p2panda fact store: {error}"))?;
     seed_projection_facts(&mut store, &projection_session, &author).await?;
     let conflict_write_recorded =
         seed_conflict_facts(&mut store, &projection_session, &author).await?;
-    let exported = store.export_operations().cloned().collect::<Vec<_>>();
-    let (mut imported_store, imported_session) = p2panda_store_with_projection_session();
+    drop(store);
+
+    let reopened = PandaFactStore::open_sqlite(
+        Arc::new(bus.clone()),
+        trusted_sqlite_config(&store_path, &projection_session, &author),
+    )
+    .await
+    .map_err(|error| format!("reopen persistent p2panda fact store: {error}"))?;
+    let exported = reopened.export_operations().cloned().collect::<Vec<_>>();
+    if exported.is_empty() {
+        return Err("persistent p2panda reopen produced no exported operations".to_string());
+    }
+
+    let import_path = root.join("imported-p2panda-facts.sqlite");
+    let mut imported_store = PandaFactStore::open_sqlite(
+        Arc::new(bus.clone()),
+        trusted_sqlite_config(&import_path, &projection_session, &author),
+    )
+    .await
+    .map_err(|error| format!("open persistent p2panda import store: {error}"))?;
     imported_store
         .trust_author_key(
-            imported_session.island(),
+            projection_session.island(),
             author.principal().clone(),
             author.author_key(),
         )
         .map_err(|error| format!("trust p2panda author key for projection import: {error}"))?;
     for operation in &exported {
         imported_store
-            .import_operation(&imported_session, operation)
+            .import_operation(&projection_session, operation)
             .await
             .map_err(|error| format!("import p2panda operation for projection: {error}"))?;
     }
+    drop(imported_store);
 
-    let actor = projection_actor(Arc::new(imported_store), imported_session, &root)?;
+    let reopened_import = PandaFactStore::open_sqlite(
+        Arc::new(bus),
+        trusted_sqlite_config(&import_path, &projection_session, &author),
+    )
+    .await
+    .map_err(|error| format!("reopen persistent imported p2panda fact store: {error}"))?;
+
+    let actor = projection_actor(Arc::new(reopened_import), projection_session, &root)?;
     let first = actor
         .project_once(PROJECT_TIMEOUT)
         .await
@@ -152,6 +190,8 @@ async fn run_async() -> Result<(), String> {
             &rebuilt.state.statuses,
             ProjectionIgnoreReason::Conflict,
         ),
+        persistent_reopen: true,
+        persistent_import_reopen: true,
         sqlite_rebuild_after_delete: true,
         gateway_snapshot_bytes: gateway_bytes.len(),
         dns_snapshot_bytes: dns_bytes.len(),
@@ -173,7 +213,7 @@ async fn run_async() -> Result<(), String> {
     Ok(())
 }
 
-fn p2panda_store_with_projection_session() -> (PandaFactStore, BusSession) {
+fn p2panda_bus_with_projection_session() -> (InMemoryBus, BusSession) {
     let (bus, authority) = InMemoryBus::new_with_authority();
     let session = authority.grant_in(
         IslandId::new("prod"),
@@ -182,7 +222,21 @@ fn p2panda_store_with_projection_session() -> (PandaFactStore, BusSession) {
             .with_fact_write(fact_pattern("/facts/>").expect("fact pattern parses"))
             .with_fact_read(fact_pattern("/facts/>").expect("fact pattern parses")),
     );
-    (PandaFactStore::new(Arc::new(bus)), session)
+    (bus, session)
+}
+
+fn trusted_sqlite_config(
+    path: &std::path::Path,
+    session: &BusSession,
+    author: &PandaFactAuthor,
+) -> PandaSqliteOpenConfig {
+    PandaSqliteOpenConfig::new(path, vec![session.island().clone()]).with_trusted_author_key(
+        PandaTrustedAuthorKey::new(
+            session.island().clone(),
+            author.principal().clone(),
+            author.author_key(),
+        ),
+    )
 }
 
 async fn seed_projection_facts(
