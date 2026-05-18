@@ -47,9 +47,101 @@ pub struct PandaNetFactNode {
     publish_stream: Option<PandaNetFactSyncHandle>,
     pending_imports: VecDeque<Operation<PandaFactExtensions>>,
     replay_cache: PandaNetReplayCache,
+    stats: PandaNetFactNodeStats,
     max_fact_operation_bytes: usize,
     max_pending_imports: usize,
     node_info: PandaNetNodeInfo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PandaNetFactNodeStats {
+    pub idle_timeouts: u64,
+    pub stream_refreshes: u64,
+    pub stream_refresh_failures: u64,
+    pub stream_ended: u64,
+    pub stream_lagged: u64,
+    pub stream_failed: u64,
+    pub replayed_operations_skipped: u64,
+    pub session_started: u64,
+    pub sync_started: u64,
+    pub sync_finished: u64,
+    pub live_mode_started: u64,
+    pub session_finished: u64,
+}
+
+impl PandaNetFactNodeStats {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            idle_timeouts: 0,
+            stream_refreshes: 0,
+            stream_refresh_failures: 0,
+            stream_ended: 0,
+            stream_lagged: 0,
+            stream_failed: 0,
+            replayed_operations_skipped: 0,
+            session_started: 0,
+            sync_started: 0,
+            sync_finished: 0,
+            live_mode_started: 0,
+            session_finished: 0,
+        }
+    }
+
+    fn record_idle_timeout(&mut self) {
+        self.idle_timeouts = self.idle_timeouts.saturating_add(1);
+    }
+
+    fn record_stream_refresh(&mut self) {
+        self.stream_refreshes = self.stream_refreshes.saturating_add(1);
+    }
+
+    fn record_stream_refresh_failure(&mut self) {
+        self.stream_refresh_failures = self.stream_refresh_failures.saturating_add(1);
+    }
+
+    fn record_replayed_operation(&mut self) {
+        self.replayed_operations_skipped = self.replayed_operations_skipped.saturating_add(1);
+    }
+
+    fn record_stream_error(&mut self, error: &PandaNetTransportError) {
+        match error {
+            PandaNetTransportError::StreamEnded { .. } => {
+                self.stream_ended = self.stream_ended.saturating_add(1);
+            }
+            PandaNetTransportError::StreamLagged { .. } => {
+                self.stream_lagged = self.stream_lagged.saturating_add(1);
+            }
+            PandaNetTransportError::StreamFailed { .. } => {
+                self.stream_failed = self.stream_failed.saturating_add(1);
+            }
+            PandaNetTransportError::Timeout { .. }
+            | PandaNetTransportError::Startup { .. }
+            | PandaNetTransportError::FactStore { .. }
+            | PandaNetTransportError::MissingLocalOperation => {}
+        }
+    }
+
+    fn record_sync_event(&mut self, event: &TopicLogSyncEvent<PandaFactExtensions>) {
+        match event {
+            TopicLogSyncEvent::SessionStarted => {
+                self.session_started = self.session_started.saturating_add(1);
+            }
+            TopicLogSyncEvent::SyncStarted { .. } => {
+                self.sync_started = self.sync_started.saturating_add(1);
+            }
+            TopicLogSyncEvent::SyncFinished { .. } => {
+                self.sync_finished = self.sync_finished.saturating_add(1);
+            }
+            TopicLogSyncEvent::LiveModeStarted => {
+                self.live_mode_started = self.live_mode_started.saturating_add(1);
+            }
+            TopicLogSyncEvent::SessionFinished { .. } => {
+                self.session_finished = self.session_finished.saturating_add(1);
+            }
+            TopicLogSyncEvent::OperationReceived { .. } | TopicLogSyncEvent::Failed { .. } => {}
+        }
+    }
 }
 
 impl PandaNetFactNode {
@@ -111,6 +203,7 @@ impl PandaNetFactNode {
             publish_stream: None,
             pending_imports: VecDeque::new(),
             replay_cache: PandaNetReplayCache::new(DEFAULT_REPLAY_CACHE_CAPACITY),
+            stats: PandaNetFactNodeStats::new(),
             max_fact_operation_bytes: config.max_fact_operation_bytes,
             max_pending_imports: config.max_pending_imports,
             node_info,
@@ -128,9 +221,18 @@ impl PandaNetFactNode {
     }
 
     pub async fn refresh_stream(&mut self) -> Result<(), PandaNetTransportError> {
+        self.stats.record_stream_refresh();
         drop(self.stream.take());
-        self.stream = Some(open_fact_stream(&self.log_sync, self.topic).await?);
-        Ok(())
+        match open_fact_stream(&self.log_sync, self.topic).await {
+            Ok(stream) => {
+                self.stream = Some(stream);
+                Ok(())
+            }
+            Err(error) => {
+                self.stats.record_stream_refresh_failure();
+                Err(error)
+            }
+        }
     }
 
     pub async fn publish_fact_payload(
@@ -186,15 +288,24 @@ impl PandaNetFactNode {
         &mut self,
     ) -> Result<PandaNetStreamOperation, PandaNetTransportError> {
         let max_fact_operation_bytes = self.max_fact_operation_bytes;
-        let stream = self
-            .stream
-            .as_mut()
-            .ok_or(PandaNetTransportError::StreamEnded {
+        let Some(stream) = self.stream.as_mut() else {
+            let error = PandaNetTransportError::StreamEnded {
                 topic: self.topic.into_inner(),
-            })?;
-        stream
-            .next_unseen_operation_limited(max_fact_operation_bytes, &mut self.replay_cache)
-            .await
+            };
+            self.stats.record_stream_error(&error);
+            return Err(error);
+        };
+        let result = stream
+            .next_unseen_operation_limited(
+                max_fact_operation_bytes,
+                &mut self.replay_cache,
+                &mut self.stats,
+            )
+            .await;
+        if let Err(error) = &result {
+            self.stats.record_stream_error(error);
+        }
+        result
     }
 
     async fn next_unique_stream_operation_with_idle_timeout(
@@ -202,19 +313,27 @@ impl PandaNetFactNode {
         idle_timeout: Duration,
     ) -> Result<Option<PandaNetStreamOperation>, PandaNetTransportError> {
         let max_fact_operation_bytes = self.max_fact_operation_bytes;
-        let stream = self
-            .stream
-            .as_mut()
-            .ok_or(PandaNetTransportError::StreamEnded {
+        let Some(stream) = self.stream.as_mut() else {
+            let error = PandaNetTransportError::StreamEnded {
                 topic: self.topic.into_inner(),
-            })?;
-        stream
+            };
+            self.stats.record_stream_error(&error);
+            return Err(error);
+        };
+        let result = stream
             .next_unseen_operation_limited_with_idle_timeout(
                 max_fact_operation_bytes,
                 &mut self.replay_cache,
+                &mut self.stats,
                 idle_timeout,
             )
-            .await
+            .await;
+        match &result {
+            Ok(None) => self.stats.record_idle_timeout(),
+            Err(error) => self.stats.record_stream_error(error),
+            Ok(Some(_)) => {}
+        }
+        result
     }
 
     async fn import_stream_operation(
@@ -406,6 +525,11 @@ impl PandaNetFactNode {
     pub fn replayed_operations_skipped(&self) -> u64 {
         self.replay_cache.skipped()
     }
+
+    #[must_use]
+    pub fn stats(&self) -> PandaNetFactNodeStats {
+        self.stats
+    }
 }
 
 struct PandaNetFactStream {
@@ -445,12 +569,15 @@ impl PandaNetFactStream {
         &mut self,
         max_operation_bytes: usize,
         replay_cache: &mut PandaNetReplayCache,
+        stats: &mut PandaNetFactNodeStats,
     ) -> Result<PandaNetStreamOperation, PandaNetTransportError> {
         loop {
-            let stream_operation = self.next_operation_limited(max_operation_bytes).await?;
+            let stream_operation = self
+                .next_operation_limited(max_operation_bytes, stats)
+                .await?;
             match replay_cache.check_seen(stream_operation.operation_hash()) {
                 PandaNetReplayStatus::Fresh => return Ok(stream_operation),
-                PandaNetReplayStatus::Replayed => {}
+                PandaNetReplayStatus::Replayed => stats.record_replayed_operation(),
             }
         }
     }
@@ -459,11 +586,12 @@ impl PandaNetFactStream {
         &mut self,
         max_operation_bytes: usize,
         replay_cache: &mut PandaNetReplayCache,
+        stats: &mut PandaNetFactNodeStats,
         idle_timeout: Duration,
     ) -> Result<Option<PandaNetStreamOperation>, PandaNetTransportError> {
         match timeout(
             idle_timeout,
-            self.next_unseen_operation_limited(max_operation_bytes, replay_cache),
+            self.next_unseen_operation_limited(max_operation_bytes, replay_cache, stats),
         )
         .await
         {
@@ -475,6 +603,7 @@ impl PandaNetFactStream {
     async fn next_operation_limited(
         &mut self,
         max_operation_bytes: usize,
+        stats: &mut PandaNetFactNodeStats,
     ) -> Result<PandaNetStreamOperation, PandaNetTransportError> {
         loop {
             let event = timeout(STREAM_TIMEOUT, self.subscription.next())
@@ -526,15 +655,7 @@ impl PandaNetFactStream {
                         message: error.to_string(),
                     });
                 }
-                FromSync {
-                    event:
-                        TopicLogSyncEvent::SessionStarted
-                        | TopicLogSyncEvent::SyncFinished { .. }
-                        | TopicLogSyncEvent::LiveModeStarted
-                        | TopicLogSyncEvent::SessionFinished { .. }
-                        | TopicLogSyncEvent::SyncStarted { .. },
-                    ..
-                } => {}
+                FromSync { event, .. } => stats.record_sync_event(&event),
             }
         }
     }
