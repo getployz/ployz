@@ -2946,7 +2946,9 @@ dependencies = [
  "p2panda-auth",
  "p2panda-core",
  "p2panda-store",
+ "p2panda-stream",
  "serde",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
 ]

@@ -42,3 +42,31 @@ Verification:
 ```text
 cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-authz groups_processor_fit_check_uses_verifying_key_hash_identity_model
 ```
+
+## Unit 2 Result: Durable Membership Store
+
+`mvp-p2panda-authz` now has `IslandAuthzStore`, a SQLite-backed durable store
+for signed island membership operations. It stores validated p2panda operations
+with `IslandMembershipExtensions`, then replays those operations through the
+existing Ployz-owned `GroupCrdt<AuthId, IslandOperationId, ...>` wrapper chosen
+in Unit 1.
+
+The store deliberately does not adopt `GroupsProcessor` yet. The p2panda
+operation envelope is used for durable signed storage and log integrity; Ployz
+still owns root anchoring, principal/key/epoch bindings, introduced-binding
+checks, and the exact authority snapshot shape consumed by fact stores.
+
+Proofs added:
+
+- SQLite store reopens and reconstructs root plus writer authority.
+- A second root create is rejected with `RootAlreadyPinned`.
+- Opening an existing store with the wrong root authority fails closed before
+  returning the store.
+- The previous in-memory membership log now shares the same p2panda operation
+  builder as the SQLite store.
+
+Verification:
+
+```text
+cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-authz
+```
