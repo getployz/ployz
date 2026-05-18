@@ -20,7 +20,7 @@ mvp-lease = { path = "../lease", features = ["harness"] }
 mvp-machine = { path = "../machine" }
 mvp-mesh = { path = "../mesh" }
 mvp-p2panda-facts = { path = "../p2panda-facts" }
-mvp-p2panda-transport = { path = "../p2panda-transport" }
+mvp-p2panda-transport = { path = "../p2panda-transport", features = ["harness"] }
 mvp-projection = { path = "../projection" }
 mvp-routing = { path = "../routing" }
 mvp-serving = { path = "../serving" }
