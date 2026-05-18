@@ -490,6 +490,10 @@ Current proof status:
   cleanup-pending after restart carries visible nodes plus serving commit id,
   and deploy decision, serving commit, and cleanup-done facts live in one fact
   substrate for the proof.
+- Slice 026 extracts the p2panda deploy/serving fact writers and p2panda
+  `FactSource` wrapper from this E2E into `mvp-deploy-p2panda`. The restart
+  scenario still owns process choreography and operation export/import, but it
+  no longer owns deploy-specific p2panda outcome mapping.
 - Slice 021 adds coordinator/issuer absence to the ACME serving path. HTTP-01
   continues serving the last-good challenge after the command adapter is
   dropped, a later p2panda sync/rebuild clears the challenge explicitly, stale
@@ -582,6 +586,16 @@ Current proof status:
   `mvp-p2panda-transport`, keeps test wire movement behind that crate's
   `harness` feature, and deletes the 396-line `mvp-p2panda-spike` source after
   production-shaped p2panda fact tests cover its behaviors.
+- Slice 026 is the deploy equivalent of Slice 024's ACME extraction. The
+  restart-recovery E2E shrinks from 945 to 789 lines and stops carrying
+  deploy-specific p2panda writer/outcome glue; `mvp-deploy-p2panda` is the
+  reusable 492-line adapter plus focused tests.
+- A read-only LOC check after Slice 026 says the representative deploy surface
+  is now about 2,636 MVP LOC versus about 14,288 old production deploy LOC, or
+  roughly 81 percent smaller before E2E tests. Counting old deploy tests and
+  MVP deploy E2Es, the comparison is about 6,323 versus 23,950 LOC. This is a
+  real feature-surface win, but the MVP foundation itself is already large, so
+  future slices must track how much new shared substrate they add.
 - Slice 022 is a mixed leverage result. It adds a 430-line E2E transport proof
   and 84 lines of fact-store envelope/test surface, but it prevents a worse
   fork: p2panda-net is now proven as the carrier while Ployz keeps one canonical

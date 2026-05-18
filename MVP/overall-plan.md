@@ -400,28 +400,20 @@ transport crate's harness module, and the obsolete `mvp-p2panda-spike` crate
 was deleted after `mvp-p2panda-facts` covered its proof value. See
 [MVP/slice-025-p2panda-net-substitution-consolidation.md](slice-025-p2panda-net-substitution-consolidation.md).
 
-The next implementation/proof slice should return to product semantic leverage:
-do the deploy commit/drain equivalent of Slice 024, deleting or retiring
-corresponding old coordination shape instead of adding another parallel
-scaffold.
+Slice 026 then did the deploy command-surface equivalent of Slice 024 without
+porting old `deploy.rs`: `mvp-deploy-p2panda` now owns the reusable p2panda
+fact writer and recovery-read adapter, while `mvp-deploy` remains core-only.
+The deploy restart proof still expresses the smallest durable state machine
+from `MVP/architecture.md`: request-many capacity, prepare/start,
+p2panda-backed serving commit, projection catch-up, then drain as a
+consequence of that commit. See
+[MVP/slice-026-deploy-p2panda-command-surface.md](slice-026-deploy-p2panda-command-surface.md).
 
-ACME is the canary because it forces the advisory lease primitive to be honest:
-TTL, renewal, epoch fencing, RAII release-on-drop for local holders, and
-conflict-as-candidate facts on the existing fact contract. Leases are not
-cluster locks. They are foreground coordination hints and fencing tokens;
-resource-level enforcement, such as the ACME directory or storage backend, is
-where real exclusivity lives.
-
-The p2panda-sync slice closed the specific false boundary left after
-persistence: manual export/import is good deterministic harness plumbing, but
-ACME should not harden that shape into the product canary. The next slice
-should now pay off the sync boundary with ACME rather than adding another
-generic substrate layer.
-
-The shipped deploy restart slice did not port old `deploy.rs`. It expressed the
-smallest durable state machine from `MVP/architecture.md`: request-many
-capacity, prepare/start, p2panda-backed serving commit, projection catch-up,
-then drain as a consequence of that commit.
+The next implementation/proof slice should keep paying down product semantic
+leverage rather than adding another generic substrate layer. Plan it against
+the current map and prefer a product rule that reuses bus, p2panda facts,
+projection, advisory leases, serving actors, or deploy adapters without
+growing those foundations again.
 
 Future multi-phase commands should watch for the pattern documented in
 [MVP/design-notes/phased-command.md](design-notes/phased-command.md). Do not
@@ -564,6 +556,18 @@ Each future slice should improve at least one of these gates:
   whether concepts have one representation, whether feature authors get a small
   ergonomic API, and whether complexity is isolated behind primitives rather
   than leaked into business logic.
+
+Recent semantic-leverage proof:
+
+- Slice 026 extracts deploy p2panda fact-writing/recovery glue from the
+  restart-recovery E2E into `mvp-deploy-p2panda`. The deploy coordinator stays
+  core-only, while the p2panda adapter becomes reusable business plumbing for
+  decision, serving commit, cleanup-done, and recovery reads.
+- The first LOC check is directionally good but not a free pass. Representative
+  deploy code is materially smaller than the old deploy surface, but the MVP
+  foundation has a real upfront cost. New slices should report whether they add
+  product logic on top of existing primitives or grow bus/fact/projection
+  substrate again.
 
 ## Non-Goals Until Proven Necessary
 

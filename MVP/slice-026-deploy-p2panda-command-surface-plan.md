@@ -1,6 +1,6 @@
 ---
 title: Slice 026 Deploy p2panda Command Surface Plan
-status: active
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md
@@ -38,18 +38,19 @@ Future deploy-like commands should not have to re-learn how to write deploy
 decision, serving commit, and cleanup-done facts into the preferred p2panda
 fact substrate.
 
-This slice should extract the p2panda deploy command surface into `mvp-deploy`
-without changing the deploy semantics. The E2E should keep participant fakes,
-serving/projection proof, metrics, and crash/restart choreography. It should
-stop owning the deploy p2panda fact-writing glue.
+This slice should extract the p2panda deploy command surface into a dedicated
+`mvp-deploy-p2panda` adapter crate without changing the deploy semantics. The
+E2E should keep participant fakes, serving/projection proof, metrics, and
+crash/restart choreography. It should stop owning the deploy p2panda
+fact-writing glue.
 
 ## Single Proof Target
 
-`mvp-deploy` exposes reusable p2panda-backed deploy and serving fact writers.
-`deploy-restart-recovery-contract` uses those writers and deletes its local
-deploy writer, serving writer, and p2panda outcome mapping. The E2E keeps
-operation export/import orchestration because that is substrate proof plumbing,
-not deploy command surface. The behavior preserved is:
+`mvp-deploy-p2panda` exposes reusable p2panda-backed deploy and serving fact
+writers. `deploy-restart-recovery-contract` uses those writers and deletes its
+local deploy writer, serving writer, and p2panda outcome mapping. The E2E
+keeps operation export/import orchestration because that is substrate proof
+plumbing, not deploy command surface. The behavior preserved is:
 
 - deploy decision fact before participant mutation,
 - serving commit fact as the drain gate,
@@ -105,20 +106,20 @@ Decision:
 
 - Do not add a workflow/state-machine/builder dependency in this slice.
 - Keep the existing explicit deploy state machine and traits.
-- Add only a narrow p2panda adapter in `mvp-deploy`, behind a concrete
-  `p2panda` feature so pure bus-backed deploy users do not pull in p2panda.
+- Add only a narrow p2panda adapter in `mvp-deploy-p2panda` so pure
+  bus-backed deploy users and core deploy code do not pull in p2panda.
 
 ## Scope
 
 In scope:
 
 - Add p2panda-backed deploy fact writer and serving fact writer support in
-  `MVP/deploy`.
+  `MVP/deploy-p2panda` while keeping `MVP/deploy` core-only.
 - Delete duplicated p2panda deploy writer code from
   `MVP/e2e/src/deploy_restart_recovery_contract.rs`.
-- Keep `SharedPandaFacts`-style operation export/import and `FactSource`
-  wrapping in E2E or `mvp-p2panda-facts`; that is harness/substrate proof
-  plumbing, not deploy command surface.
+- Keep trusted-author setup and operation import choreography in E2E. The
+  shared store wrapper and `FactSource` implementation can move to
+  `mvp-deploy-p2panda` because they are the deploy recovery read boundary.
 - Keep p2panda details out of core deploy domain structs and out of the
   coordinator generic logic.
 - Preserve the bus-backed deploy writer path for existing tests and canaries.
@@ -139,9 +140,10 @@ Out of scope:
 
 ### Keep p2panda At The Adapter Edge
 
-`mvp-deploy` can depend on `mvp-p2panda-facts` for an optional adapter, but
-p2panda types must not leak into `DeployManifest`, `DeployStateMachine`,
-participant wire payloads, or command results. The core deploy API remains:
+`mvp-deploy-p2panda` can depend on both `mvp-deploy` and
+`mvp-p2panda-facts`, but p2panda types must not leak into `DeployManifest`,
+`DeployStateMachine`, participant wire payloads, or command results. The core
+deploy API remains:
 
 - `DeployFactWriter`,
 - `ServingFactWriter`,
@@ -160,10 +162,11 @@ E2E-local adapter already proved:
 - write cleanup-done facts,
 - write serving commit facts.
 
-Do not add deploy-specific sync, network, operation-copy, fact-store handle, or
-process-role abstractions yet. Operation export/import stays with
-`mvp-p2panda-facts` and E2E restart choreography until a substrate slice proves
-it belongs somewhere else.
+Do not add deploy-specific sync, network, process-role, or operation-copy
+abstractions yet. The adapter may expose a shared fact-store wrapper because
+deploy recovery and projection both need the same `FactSource` boundary, but
+operation import/trust choreography stays in the E2E until a substrate slice
+proves it belongs somewhere else.
 
 ### Preserve Projection Catch-Up As A Visible Gate
 
@@ -203,9 +206,8 @@ Work:
   `PandaDeployFactWriter`, `PandaServingFactWriter`,
   `coordinator_with_panda_facts`, and fact outcome mapping.
 - Identify which pieces are test harness and should remain in E2E:
-  `SharedPandaFacts`, trusted-author setup, operation export/import,
-  participant state, metric timings, process/serving choreography, and manifest
-  fixtures.
+  trusted-author setup, operation import choreography, participant state,
+  metric timings, process/serving choreography, and manifest fixtures.
 - Do not add p2panda adapter tests in this unit. The feature and adapter do not
   exist yet, so p2panda-specific write-outcome tests belong to Unit 2.
 
@@ -222,32 +224,25 @@ Verification:
 
 Files:
 
-- `MVP/deploy/Cargo.toml`
-- `MVP/deploy/src/lib.rs`
-- `MVP/deploy/src/p2panda.rs`
-- `MVP/deploy/src/tests.rs`
+- `MVP/Cargo.toml`
+- `MVP/deploy-p2panda/Cargo.toml`
+- `MVP/deploy-p2panda/src/lib.rs`
 
 Work:
 
-- Add `[features] default = []` and `p2panda = ["dep:mvp-p2panda-facts"]` to
-  `mvp-deploy`.
-- Mark `mvp-p2panda-facts` as an optional normal dependency.
-- Gate the new adapter module and re-exports with `#[cfg(feature = "p2panda")]`.
+- Add a dedicated `mvp-deploy-p2panda` crate that depends on `mvp-deploy` and
+  `mvp-p2panda-facts`.
+- Keep `mvp-deploy` free of p2panda dependencies and feature gates.
 - Implement `DeployFactWriter` and `ServingFactWriter` for p2panda-backed
   writers.
 - The public adapter shape should be concrete and narrow:
-  `PandaDeployFactWriter<F>` and `PandaServingFactWriter<F>` hold a cloneable
-  sink `F` plus explicit `BusSession` and `PandaFactAuthor` values.
-- `PandaDeployFactSink` has one async write method taking `(session, author,
-  key, payload)` and returning `PandaFactWriteOutcome`. It does not expose raw
-  store access, export/import, trusted-author setup, or `FactSource` reads.
-  Shape it like the existing writer traits: `fn write_fact<'a>(&'a self, ...)
-  -> Pin<Box<dyn Future<Output = Result<PandaFactWriteOutcome, DeployError>>
-  + Send + 'a>>`. This avoids adding `async-trait` and lets the E2E sink own
-  its `Arc<AsyncMutex<PandaFactStore>>` without changing coordinator traits.
-- `mvp-deploy` provides trait implementations and outcome mapping. The E2E
-  provides the concrete sink backed by `SharedPandaFacts` for this slice.
-  Writers must not invent trusted author keys or authority.
+  `PandaDeployFactStore`, `PandaDeployFactWriter`, and
+  `PandaServingFactWriter`.
+- `PandaDeployFactStore` wraps `PandaFactStore`, implements `FactSource`, and
+  exposes operation export for restart proof choreography. It does not invent
+  trusted author keys or authority.
+- `mvp-deploy-p2panda` provides trait implementations and outcome mapping. The
+  E2E provides trusted-author setup and import choreography for this slice.
 - Preserve write outcome distinctions:
   - inserted,
   - already present,
@@ -264,15 +259,13 @@ Test scenarios:
 - Conflicting deploy decision returns `DeployFactConflict` with key, principal,
   and content hash.
 - Conflicting serving commit returns `ServingFactConflict`.
-- Writer construction for the bus-backed deploy path does not require p2panda
-  when the feature is disabled.
-- Adapter exports are gated with `#[cfg(feature = "p2panda")]`. The automated
-  gate for this slice is no-feature compilation plus review of the module and
-  re-export gates; do not add a compile-fail test solely for this.
+- Core `mvp-deploy` construction does not require p2panda because the adapter
+  is a separate crate.
 
 Verification:
 
-- `cargo test --manifest-path MVP/Cargo.toml -p mvp-deploy --features p2panda`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-deploy-p2panda`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-deploy`
 - `cargo check --manifest-path MVP/Cargo.toml -p mvp-deploy --no-default-features`
 
 ### Unit 3: Replace E2E-Local Deploy p2panda Glue
@@ -286,13 +279,13 @@ Files:
 
 Work:
 
-- Enable the new deploy `p2panda` feature from `mvp-e2e`.
-- Replace local p2panda deploy/serving writers with the `mvp-deploy` adapter.
+- Add the new `mvp-deploy-p2panda` crate to the MVP workspace and depend on it from `mvp-e2e`.
+- Replace local p2panda deploy/serving writers with the `mvp-deploy-p2panda` adapter.
 - Delete E2E-local fact outcome mapping.
-- Keep E2E-local `SharedPandaFacts`, trusted-author setup, operation
-  export/import, and `FactSource` implementation unless a separate
-  `mvp-p2panda-facts` helper already exists and removes code without making
-  deploy own operation-copy semantics.
+- Keep E2E-local trusted-author setup and operation import choreography. The
+  shared p2panda store wrapper and `FactSource` implementation move to
+  `mvp-deploy-p2panda` so restart recovery and projection read from the same
+  boundary used for writes.
 - Keep E2E-local timing measurement as a wrapper/decorator around the reusable
   writer. Timing is scenario reporting, not part of the deploy adapter API.
 - Keep participant simulation and serving/projection checks in E2E.
@@ -326,7 +319,7 @@ Files:
 
 Work:
 
-- Record what moved from E2E to `mvp-deploy`.
+- Record what moved from E2E to `mvp-deploy-p2panda`.
 - Compare LOC/shape before and after:
   - E2E-local p2panda deploy glue removed,
   - reusable deploy adapter added,
@@ -343,11 +336,11 @@ Verification:
 
 ## Review Risks
 
-- The adapter could make `mvp-deploy` depend too directly on p2panda and blur
-  the domain/substrate boundary.
+- The adapter crate could blur the domain/substrate boundary by growing beyond
+  deploy fact writer and `FactSource` adaptation.
 - A shared async store wrapper could hide writer lock failures or accidentally
   make sync `FactSource` reads block. This slice should avoid introducing that
-  wrapper in `mvp-deploy`.
+  wrapper in core `mvp-deploy`.
 - Moving outcome mapping could lose conflict detail.
 - A convenience helper could hide projection catch-up or drain sequencing.
 - The slice could overreach into `PhasedCommand` or deploy coordinator
@@ -361,12 +354,13 @@ reliability/failure behavior, and authorization/fact-boundary checks.
 Targeted:
 
 ```bash
-cargo test --manifest-path MVP/Cargo.toml -p mvp-deploy --features p2panda
+cargo test --manifest-path MVP/Cargo.toml -p mvp-deploy-p2panda
+cargo test --manifest-path MVP/Cargo.toml -p mvp-deploy
 cargo check --manifest-path MVP/Cargo.toml -p mvp-deploy --no-default-features
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-restart-recovery-contract
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-commit-drain-contract
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-candidate-cleanup-contract
-cargo clippy --manifest-path MVP/Cargo.toml -p mvp-deploy -p mvp-e2e --all-targets -- -D warnings
+cargo clippy --manifest-path MVP/Cargo.toml -p mvp-deploy -p mvp-deploy-p2panda -p mvp-e2e --all-targets -- -D warnings
 ```
 
 Closeout:
@@ -380,8 +374,8 @@ git diff --check
 
 - `deploy-restart-recovery-contract` no longer defines p2panda deploy fact
   writers or p2panda deploy outcome mapping.
-- p2panda deploy/serving fact writers live in `mvp-deploy` behind a narrow
-  adapter surface.
+- p2panda deploy/serving fact writers live in `mvp-deploy-p2panda` behind a narrow
+  adapter surface, and `mvp-deploy` remains core-only.
 - Existing deploy commit/drain, restart recovery, and candidate cleanup proofs
   still pass.
 - No p2panda types leak into core deploy domain structs or coordinator command

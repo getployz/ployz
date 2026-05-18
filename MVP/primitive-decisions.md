@@ -15,6 +15,17 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
+- Slice 026 extracts deploy p2panda fact-writing glue from
+  `deploy-restart-recovery-contract` into `mvp-deploy-p2panda`. Core
+  `mvp-deploy` stays free of p2panda dependencies; the adapter crate owns
+  `DeployFactWriter`, `ServingFactWriter`, and `FactSource` implementations
+  for p2panda-backed deploy recovery.
+- Slice 026 also adds an explicit semantic-leverage accounting rule. Raw LOC is
+  not proof by itself: feature slices should report business/domain LOC,
+  adapter/backend LOC, shared foundation LOC, test LOC, and docs LOC. The
+  critical trend is shared foundation LOC added per completed product
+  primitive; that number should fall toward zero as bus/fact/projection
+  primitives are reused.
 - Slice 025 consolidates git p2panda-net usage behind
   `mvp-p2panda-transport`. E2E product canaries no longer import git p2panda
   network/store/sync APIs directly; they move stable Ployz fact envelopes
