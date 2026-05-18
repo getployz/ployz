@@ -55,7 +55,8 @@ before destructive cleanup.
   recommends adopting `p2panda-core`, `p2panda-store`, and `p2panda-stream`
   behind `FactSource`. Add that p2panda-backed fact substrate before
   implementing this deploy recovery plan, then revise this plan around that
-  boundary.
+  boundary. The substrate plan is
+  `MVP/slice-018b-p2panda-fact-substrate-plan.md`.
 - This plan assumes `mvp-routing` remains the owner of serving commit facts and
   projection catch-up proof.
 - The deploy recovery slice should start from a clean committed Slice 017
