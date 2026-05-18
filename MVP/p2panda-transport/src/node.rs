@@ -318,7 +318,6 @@ pub(crate) struct PandaNetReplayCache {
     order: VecDeque<Hash>,
     set: HashSet<Hash>,
     capacity: usize,
-    skipped: u64,
 }
 
 impl PandaNetReplayCache {
@@ -327,7 +326,6 @@ impl PandaNetReplayCache {
             order: VecDeque::new(),
             set: HashSet::new(),
             capacity,
-            skipped: 0,
         }
     }
 
@@ -348,20 +346,11 @@ impl PandaNetReplayCache {
         }
     }
 
-    fn record_replay(&mut self) {
-        self.skipped = self.skipped.saturating_add(1);
-    }
-
     pub(crate) fn check_seen(&mut self, hash: Hash) -> PandaNetReplayStatus {
         if self.contains(hash) {
-            self.record_replay();
             return PandaNetReplayStatus::Replayed;
         }
         PandaNetReplayStatus::Fresh
-    }
-
-    pub(crate) fn skipped(&self) -> u64 {
-        self.skipped
     }
 }
 
