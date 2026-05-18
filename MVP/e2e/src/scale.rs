@@ -10,8 +10,9 @@ use mvp_bus::{
     PrincipalId, RequestManyPolicy, RequestTarget, ServiceImport, StreamImport, Subject,
     SubjectTransform, harness::InMemoryBus,
 };
+use mvp_identity::NodeId;
 use mvp_projection::{
-    BackendEndpoint, BusFactSource, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeId,
+    BackendEndpoint, BusFactSource, DnsCommitFact, DnsRecordFact, GatewayCommitFact,
     NodeJoinedFact, ProjectionActorHandle, ProjectionFactPayload, RouteCommitFact, RouteId,
     ServiceName, ServiceRegistrationFact, SqliteProjectionStore,
 };

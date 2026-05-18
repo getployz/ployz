@@ -1,20 +1,7 @@
 use mvp_acme::{AcmeHttp01ClearedFact, AcmeHttp01PresentedFact};
+use mvp_identity::NodeId;
 use mvp_lease::{LeaseClaimed, LeaseReleased, LeaseRenewed};
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct NodeId(String);
-
-impl NodeId {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ServiceName(String);

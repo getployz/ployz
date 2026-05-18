@@ -1,10 +1,10 @@
-use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
 use std::net::Ipv6Addr;
 
 use mvp_bus::IslandId;
-use mvp_projection::{NodeId, NodeProjection};
-use serde::{Deserialize, Serialize};
+use mvp_identity::NodeId;
+use mvp_projection::NodeProjection;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{MeshError, MeshResult};
 
@@ -63,14 +63,62 @@ impl WireGuardOverlayIp {
     }
 
     #[must_use]
-    pub fn allowed_ip_cidr(self) -> String {
-        format!("{}/128", self.0)
+    pub fn allowed_ip_cidr(self) -> WireGuardOverlayCidr {
+        WireGuardOverlayCidr::host(self)
     }
 }
 
 impl Display for WireGuardOverlayIp {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         Display::fmt(&self.0, f)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WireGuardOverlayCidr(WireGuardOverlayIp);
+
+impl WireGuardOverlayCidr {
+    #[must_use]
+    pub fn host(ip: WireGuardOverlayIp) -> Self {
+        Self(ip)
+    }
+}
+
+impl Display for WireGuardOverlayCidr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/128", self.0)
+    }
+}
+
+impl Serialize for WireGuardOverlayCidr {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for WireGuardOverlayCidr {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let Some((address, prefix)) = value.rsplit_once('/') else {
+            return Err(serde::de::Error::custom(
+                "wireguard overlay CIDR must include a /128 prefix",
+            ));
+        };
+        if prefix != "128" {
+            return Err(serde::de::Error::custom(
+                "wireguard overlay CIDR only supports /128 host routes",
+            ));
+        }
+        let address = address.parse::<Ipv6Addr>().map_err(|source| {
+            serde::de::Error::custom(format!("invalid wireguard overlay address: {source}"))
+        })?;
+        Ok(Self::host(WireGuardOverlayIp::new(address)))
     }
 }
 
@@ -131,31 +179,6 @@ impl MachineInvite {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VisibleNodes(BTreeSet<NodeId>);
-
-impl VisibleNodes {
-    #[must_use]
-    pub fn new(nodes: impl IntoIterator<Item = NodeId>) -> Self {
-        Self(nodes.into_iter().collect())
-    }
-
-    #[must_use]
-    pub fn as_set(&self) -> &BTreeSet<NodeId> {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
 #[must_use]
 pub fn derive_overlay_ip(island: &IslandId, node_id: &NodeId) -> WireGuardOverlayIp {
     let input = format!("{}:{}", island.as_str(), node_id.as_str());
@@ -169,9 +192,10 @@ pub fn derive_overlay_ip(island: &IslandId, node_id: &NodeId) -> WireGuardOverla
 
 #[cfg(test)]
 mod tests {
-    use super::{MeshNode, derive_overlay_ip};
+    use super::{MeshNode, WireGuardOverlayCidr, WireGuardOverlayIp, derive_overlay_ip};
     use mvp_bus::IslandId;
-    use mvp_projection::{NodeId, NodeProjection};
+    use mvp_identity::NodeId;
+    use mvp_projection::NodeProjection;
 
     #[test]
     fn overlay_derivation_is_stable_and_island_scoped() {
@@ -200,6 +224,19 @@ mod tests {
         let mesh = MeshNode::from_projection(&node).expect("mesh node validates");
 
         assert_eq!(mesh.node_id, NodeId::new("node-1"));
-        assert_eq!(mesh.overlay_ip.allowed_ip_cidr(), "fd00::1/128");
+        assert_eq!(mesh.overlay_ip.allowed_ip_cidr().to_string(), "fd00::1/128");
+    }
+
+    #[test]
+    fn overlay_cidr_json_round_trips_as_cidr_string() {
+        let cidr = WireGuardOverlayIp::new("fd00::1".parse().expect("test ip")).allowed_ip_cidr();
+
+        let json = serde_json::to_string(&cidr).expect("cidr serializes");
+
+        assert_eq!(json, r#""fd00::1/128""#);
+        let decoded: WireGuardOverlayCidr = serde_json::from_str(&json).expect("cidr deserializes");
+        assert_eq!(decoded, cidr);
+        assert!(serde_json::from_str::<WireGuardOverlayCidr>(r#""fd00::1""#).is_err());
+        assert!(serde_json::from_str::<WireGuardOverlayCidr>(r#""fd00::1/64""#).is_err());
     }
 }

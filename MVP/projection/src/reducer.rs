@@ -11,8 +11,8 @@ use mvp_lease::{
 };
 
 use crate::facts::{
-    DnsCommitFact, GatewayCommitFact, NodeId, NodeTombstonedFact, ProjectionFactPayload,
-    RouteCommitFact, ServiceName, ServingCommitFact,
+    DnsCommitFact, GatewayCommitFact, NodeTombstonedFact, ProjectionFactPayload, RouteCommitFact,
+    ServiceName, ServingCommitFact,
 };
 use crate::model::{
     AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsProjection, DnsRecordProjection,
@@ -20,6 +20,7 @@ use crate::model::{
     ProjectionState, ProjectionStatus, ServiceProjection,
 };
 use crate::source::{CandidateStatus, FactCandidate, FactKind, is_reducible_conflict_kind};
+use mvp_identity::NodeId;
 
 pub fn reduce_facts(
     island: &IslandId,
@@ -1137,7 +1138,7 @@ fn rejection_reason(candidate: &FactCandidate) -> Option<ProjectionIgnoreReason>
 mod tests {
     use super::reduce_facts;
     use crate::facts::{
-        BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeId, NodeJoinedFact,
+        BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeJoinedFact,
         NodeTombstonedFact, ProjectionFactPayload, RouteCommitFact, RouteId, ServiceName,
         ServiceRegistrationFact, ServingCommitFact,
     };
@@ -1148,6 +1149,7 @@ mod tests {
         AcmeHttp01PresentedFact, AcmeKeyAuthorization,
     };
     use mvp_bus::{FactContentHash, FactKey, FactPayload, IslandId, PrincipalId};
+    use mvp_identity::NodeId;
     use mvp_lease::{
         LeaseClaimed, LeaseEpoch, LeaseFact, LeaseHolder, LeaseReleased, LeaseRenewed,
         LeaseResource, LeaseTimestamp,

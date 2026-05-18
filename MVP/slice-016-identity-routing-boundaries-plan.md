@@ -1,6 +1,6 @@
 ---
 title: Slice 016 Identity And Routing Boundaries Plan
-status: active
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md
@@ -25,7 +25,7 @@ The next product command should not build on top of competing identity shapes.
 Today the MVP still has several ways to say "node visible at decision time" and
 two ways to represent the same node identity:
 
-- `mvp_projection::NodeId`,
+- `mvp_identity::NodeId`,
 - `mvp_deploy::DeployNodeId`,
 - `mvp_lease::VisibleNode`,
 - `mvp_deploy::VisibleNode`,
@@ -73,10 +73,10 @@ wrong node type or add another visible-node wrapper.
 
 In scope:
 
-- Make `mvp_projection::NodeId` the single canonical MVP node identity.
+- Make `mvp_identity::NodeId` the single canonical MVP node identity.
 - Delete `mvp_deploy::DeployNodeId` and update deploy domain, coordinator,
   wire payloads, errors, tests, and E2E fixtures to use `NodeId`.
-- Expose one canonical `VisibleNodes` type from `mvp_projection`, backed by
+- Expose one canonical `VisibleNodes` type from `mvp_identity`, backed by
   `BTreeSet<NodeId>`.
 - Replace lease, deploy, and mesh visible-node wrappers with the canonical
   `VisibleNodes`.
@@ -140,13 +140,11 @@ Decision for this slice:
 
 ### Canonical Node Identity
 
-`mvp_projection::NodeId` becomes the only node id type in the MVP.
+`mvp_identity::NodeId` becomes the only node id type in the MVP.
 
-Projection owns the canonical type because membership facts, service facts,
-route backends, SQLite rows, serving snapshots, deploy placement, and mesh
-planning already meet at projection boundaries. A future `mvp-core` crate might
-own shared identities once the MVP graduates, but adding that crate now would be
-more churn than value.
+The identity crate owns the canonical type because lease and ACME command
+contexts need visible-node evidence while projection depends on lease and ACME
+fact payloads. Putting the type in projection creates a dependency cycle.
 
 `mvp_deploy::DeployNodeId` should be deleted, not type-aliased. A type alias
 would leave two names in the public surface and preserve the choice a future
@@ -158,13 +156,13 @@ Visible nodes are command decision evidence, not deploy-specific, lease-specific
 or mesh-specific state. The canonical type should be:
 
 ```text
-mvp_projection::VisibleNodes(BTreeSet<NodeId>)
+mvp_identity::VisibleNodes(BTreeSet<NodeId>)
 ```
 
 It should expose the same minimal surface the current wrappers need:
 
 - `new`,
-- `as_set`,
+- `iter`,
 - `len`,
 - `is_empty`.
 
@@ -209,7 +207,7 @@ Files:
 
 Work:
 
-- Add and export `VisibleNodes` from `mvp_projection`.
+- Add and export `VisibleNodes` from `mvp_identity`.
 - Replace `mvp_lease::VisibleNode` and `mvp_mesh::VisibleNodes` with the shared
   type.
 - Update lease and mesh tests to construct `VisibleNodes` from `NodeId`.
@@ -235,7 +233,7 @@ Files:
 
 Work:
 
-- Replace `DeployNodeId` with `mvp_projection::NodeId`.
+- Replace `DeployNodeId` with `mvp_identity::NodeId`.
 - Delete the `DeployNodeId` type and remove it from `mvp_deploy` exports.
 - Update subject construction to use `NodeId::as_str()`.
 - Keep deploy error variants structured; only the node-id type changes.
@@ -301,9 +299,9 @@ Tests:
 
 The slice is complete when:
 
-- There is exactly one MVP node identity type: `mvp_projection::NodeId`.
+- There is exactly one MVP node identity type: `mvp_identity::NodeId`.
 - There is exactly one visible-node evidence type:
-  `mvp_projection::VisibleNodes`.
+  `mvp_identity::VisibleNodes`.
 - Deploy, lease, mesh, and E2E code all use those shared types.
 - WireGuard applied snapshots no longer expose peer allowed IPs or endpoints as
   raw `String` fields.
@@ -320,7 +318,7 @@ rg "DeployNodeId|pub struct VisibleNode|pub struct VisibleNodes|allowed_ip: Stri
 ```
 
 After implementation, the only surviving visible-node definition should be the
-canonical exported one in `mvp_projection`, and the string routing fields should
+canonical exported one in `mvp_identity`, and the string routing fields should
 be gone.
 
 This is the leverage metric for this slice: future node-facing business logic

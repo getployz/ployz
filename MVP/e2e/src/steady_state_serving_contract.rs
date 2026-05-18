@@ -8,9 +8,9 @@ use mvp_deploy::{
     DnsCommitId, GatewayCommitId, RouteCommitId, ServingCommitId, ServingCommitPlan,
     write_serving_commit,
 };
+use mvp_identity::NodeId;
 use mvp_projection::{
-    BackendEndpoint, BusFactSource, DnsRecordFact, DnsSnapshotFile, NodeId, RouteId,
-    load_dns_snapshot,
+    BackendEndpoint, BusFactSource, DnsRecordFact, DnsSnapshotFile, RouteId, load_dns_snapshot,
 };
 use mvp_serving::{
     ServingActorHandle, ServingError, ServingFailureKind, ServingFreshness, ServingSnapshotKind,

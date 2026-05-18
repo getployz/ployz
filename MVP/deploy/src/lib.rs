@@ -8,10 +8,10 @@ mod wire;
 pub use coordinator::{DeployCoordinator, DeployTimeouts, PendingCleanup, ProjectedPendingCleanup};
 pub use domain::{
     CapacityRejectionReason, CapacityReply, CleanupFailureKind, CleanupPendingReason,
-    CleanupStatus, DeployCommandResult, DeployId, DeployManifest, DeployNodeId, DeployOutcome,
-    DnsCommitId, DrainStatus, GatewayCommitId, InstanceCapacityRequirement, InstanceId,
-    InstancePlan, PhaseId, PhasePlan, PhasePolicy, PhaseReversibility, ProjectionCatchUp,
-    RevisionId, RouteCommitId, ServingCommitId, ServingCommitPlan, ServingPublication, VisibleNode,
+    CleanupStatus, DeployCommandResult, DeployId, DeployManifest, DeployOutcome, DnsCommitId,
+    DrainStatus, GatewayCommitId, InstanceCapacityRequirement, InstanceId, InstancePlan, PhaseId,
+    PhasePlan, PhasePolicy, PhaseReversibility, ProjectionCatchUp, RevisionId, RouteCommitId,
+    ServingCommitId, ServingCommitPlan, ServingPublication,
 };
 pub use error::{DeployError, DeployResult};
 pub use serving_commit::{ServingCommitFacts, write_serving_commit};

@@ -7,9 +7,10 @@ use mvp_bus::{
     BusError, BusSession, FactContentHash, FactKeyPattern, FactWriteOutcome, Grant, IslandId,
     PrincipalId, harness::InMemoryBus,
 };
+use mvp_identity::NodeId;
 use mvp_projection::{
     BackendEndpoint, BusFactSource, CandidateStatus, DnsCommitFact, DnsRecordFact, FactCandidate,
-    FactKind, FactSource, FactSourceResult, GatewayCommitFact, NodeId, NodeJoinedFact,
+    FactKind, FactSource, FactSourceResult, GatewayCommitFact, NodeJoinedFact,
     ProjectionFactPayload, ProjectionIgnoreReason, RouteCommitFact, RouteId, ServiceName,
     ServiceRegistrationFact, SqliteProjectionStore, load_dns_snapshot, load_gateway_snapshot,
 };

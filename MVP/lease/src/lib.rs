@@ -1,10 +1,11 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
 use std::num::NonZeroU64;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use mvp_identity::{NodeId, VisibleNodes};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -57,40 +58,19 @@ impl Display for LeaseHolder {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct VisibleNode(String);
-
-impl VisibleNode {
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Display for VisibleNode {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseCommandContext {
-    visible_nodes: BTreeSet<VisibleNode>,
+    visible_nodes: VisibleNodes,
 }
 
 impl LeaseCommandContext {
     #[must_use]
-    pub fn new(visible_nodes: BTreeSet<VisibleNode>) -> Self {
+    pub fn new(visible_nodes: VisibleNodes) -> Self {
         Self { visible_nodes }
     }
 
     #[must_use]
-    pub fn visible_nodes(&self) -> &BTreeSet<VisibleNode> {
+    pub fn visible_nodes(&self) -> &VisibleNodes {
         &self.visible_nodes
     }
 }
@@ -719,12 +699,12 @@ impl LeaseSuperseded {
 #[derive(Debug)]
 pub struct LeaseAcquired {
     guard: LeaseGuard,
-    visible_nodes: BTreeSet<VisibleNode>,
+    visible_nodes: VisibleNodes,
 }
 
 impl LeaseAcquired {
     #[must_use]
-    pub fn into_parts(self) -> (LeaseGuard, BTreeSet<VisibleNode>) {
+    pub fn into_parts(self) -> (LeaseGuard, VisibleNodes) {
         (self.guard, self.visible_nodes)
     }
 
@@ -739,7 +719,7 @@ impl LeaseAcquired {
     }
 
     #[must_use]
-    pub fn visible_nodes(&self) -> &BTreeSet<VisibleNode> {
+    pub fn visible_nodes(&self) -> &VisibleNodes {
         &self.visible_nodes
     }
 }
@@ -769,7 +749,7 @@ pub struct LeaseConflict {
     conflicting_epoch: LeaseEpoch,
     conflicting_fact: LeaseContentHash,
     observed_at: LeaseTimestamp,
-    visible_nodes: BTreeSet<VisibleNode>,
+    visible_nodes: VisibleNodes,
 }
 
 impl LeaseConflict {
@@ -799,7 +779,7 @@ impl LeaseConflict {
     }
 
     #[must_use]
-    pub fn visible_nodes(&self) -> &BTreeSet<VisibleNode> {
+    pub fn visible_nodes(&self) -> &VisibleNodes {
         &self.visible_nodes
     }
 }
@@ -1335,13 +1315,11 @@ fn hex_digit(value: u8) -> char {
 }
 
 pub mod harness {
-    use std::collections::BTreeSet;
-
-    use super::VisibleNode;
+    use super::{NodeId, VisibleNodes};
 
     #[must_use]
-    pub fn visible_nodes<const N: usize>(nodes: [&str; N]) -> BTreeSet<VisibleNode> {
-        nodes.into_iter().map(VisibleNode::new).collect()
+    pub fn visible_nodes<const N: usize>(nodes: [&str; N]) -> VisibleNodes {
+        VisibleNodes::new(nodes.into_iter().map(NodeId::new))
     }
 }
 
@@ -1371,7 +1349,7 @@ mod tests {
     }
 
     fn local_context() -> LeaseCommandContext {
-        LeaseCommandContext::new(BTreeSet::new())
+        LeaseCommandContext::new(VisibleNodes::new(Vec::new()))
     }
 
     fn second_epoch() -> LeaseEpoch {

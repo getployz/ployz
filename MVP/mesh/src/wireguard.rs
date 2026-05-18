@@ -1,12 +1,13 @@
 use std::sync::{Arc, PoisonError, RwLock};
 
 use async_trait::async_trait;
-use mvp_projection::{NodeId, ProjectionState};
+use mvp_identity::NodeId;
+use mvp_projection::ProjectionState;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    MeshError, MeshNode, MeshResult, WireGuardAppliedSnapshot, WireGuardOverlayIp,
-    WireGuardPublicKey,
+    IrohEndpointId, MeshError, MeshNode, MeshResult, WireGuardAppliedSnapshot,
+    WireGuardOverlayCidr, WireGuardOverlayIp, WireGuardPublicKey,
 };
 
 pub const FULL_MESH_NODE_LIMIT: usize = 32;
@@ -15,8 +16,8 @@ pub const FULL_MESH_NODE_LIMIT: usize = 32;
 pub struct WireGuardPeer {
     pub node_id: NodeId,
     pub public_key: WireGuardPublicKey,
-    pub allowed_ip: String,
-    pub endpoint: String,
+    pub allowed_ip: WireGuardOverlayCidr,
+    pub endpoint: IrohEndpointId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,7 +58,7 @@ pub fn plan_full_mesh(
             node_id: mesh_node.node_id,
             public_key: mesh_node.wg_public_key,
             allowed_ip: mesh_node.overlay_ip.allowed_ip_cidr(),
-            endpoint: mesh_node.iroh_endpoint_id.to_string(),
+            endpoint: mesh_node.iroh_endpoint_id,
         });
     }
     peers.sort_by(|left, right| left.node_id.cmp(&right.node_id));
@@ -107,7 +108,8 @@ impl WireGuardBackend for MemoryWireGuardBackend {
 #[cfg(test)]
 mod tests {
     use mvp_bus::IslandId;
-    use mvp_projection::{NodeId, NodeProjection, ProjectionState};
+    use mvp_identity::NodeId;
+    use mvp_projection::{NodeProjection, ProjectionState};
 
     use crate::{WireGuardAppliedSnapshot, WireGuardBackend};
 
@@ -123,7 +125,7 @@ mod tests {
         assert_eq!(plan.peers.len(), 2);
         assert_eq!(plan.peers[0].node_id, NodeId::new("node-0"));
         assert_eq!(plan.peers[1].node_id, NodeId::new("node-2"));
-        assert_eq!(plan.peers[0].allowed_ip, "fd00::/128");
+        assert_eq!(plan.peers[0].allowed_ip.to_string(), "fd00::/128");
     }
 
     #[test]

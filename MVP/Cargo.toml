@@ -4,6 +4,7 @@ members = [
     "bus",
     "deploy",
     "e2e",
+    "identity",
     "iroh",
     "lease",
     "mesh",

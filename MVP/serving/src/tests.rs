@@ -6,10 +6,11 @@ use hickory_proto::op::{Message, Query, ResponseCode};
 use hickory_proto::rr::{Name, RData, RecordType};
 use mvp_acme::{AcmeChallengeToken, AcmeHostname, AcmeKeyAuthorization};
 use mvp_bus::IslandId;
+use mvp_identity::NodeId;
 use mvp_lease::{LeaseClaimed, LeaseEpoch, LeaseFact, LeaseHolder, LeaseResource, LeaseTimestamp};
 use mvp_projection::{
     AcmeHttp01ChallengeProjection, BackendEndpoint, DnsRecordProjection, DnsSnapshotFile,
-    GatewayRouteProjection, GatewaySnapshotFile, NodeId, RouteId,
+    GatewayRouteProjection, GatewaySnapshotFile, RouteId,
 };
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

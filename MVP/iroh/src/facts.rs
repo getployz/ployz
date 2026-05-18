@@ -782,9 +782,9 @@ mod tests {
         FactContentHash, FactKey, FactKeyPattern, Grant, IslandId, PrincipalId,
         harness::InMemoryBus,
     };
+    use mvp_identity::NodeId;
     use mvp_projection::{
-        CandidateStatus, FactCandidate, FactKind, FactSource, NodeId, NodeJoinedFact,
-        ProjectionFactPayload,
+        CandidateStatus, FactCandidate, FactKind, FactSource, NodeJoinedFact, ProjectionFactPayload,
     };
 
     use super::{

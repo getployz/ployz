@@ -167,7 +167,8 @@ mod tests {
 
     use async_trait::async_trait;
     use mvp_bus::IslandId;
-    use mvp_projection::{NodeId, NodeProjection, ProjectionState};
+    use mvp_identity::NodeId;
+    use mvp_projection::{NodeProjection, ProjectionState};
     use tokio::time::sleep;
 
     use crate::{

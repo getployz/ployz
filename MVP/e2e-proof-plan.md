@@ -457,6 +457,14 @@ Metrics:
 - review notes on whether business invariants are visible without reading
   transport/storage internals.
 
+Current proof status:
+
+- Slice 016 removes parallel node identity and visible-node evidence types
+  before the next node-facing product command. Deploy, lease/ACME, mesh, and
+  E2E fixtures now use one shared `NodeId`/`VisibleNodes` type, and WireGuard
+  peer snapshots use typed routing fields instead of raw strings. The proof is
+  existing behavior staying green with fewer representations to choose from.
+
 ## Required Test Artifacts
 
 Each slice should add or update:

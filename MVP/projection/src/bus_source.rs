@@ -84,12 +84,13 @@ fn fact_to_candidate(fact: Fact, status: CandidateStatus) -> FactCandidate {
 #[cfg(test)]
 mod tests {
     use super::BusFactSource;
-    use crate::facts::{NodeId, NodeJoinedFact, ProjectionFactPayload};
+    use crate::facts::{NodeJoinedFact, ProjectionFactPayload};
     use crate::source::{FactKind, FactSource};
     use mvp_bus::{
         BusAuthority, FactContentHash, FactKey, FactKeyPattern, Grant, IslandId, PrincipalId,
         harness::InMemoryBus,
     };
+    use mvp_identity::NodeId;
 
     fn island(value: &str) -> IslandId {
         IslandId::new(value)

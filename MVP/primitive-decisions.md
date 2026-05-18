@@ -141,6 +141,15 @@ the decision concrete.
   authorization is revalidated when presentation facts and serving snapshots
   load, so wire serving can answer from validated last-good state without
   reparsing on each request.
+- Slice 016 introduces a tiny `mvp-identity` crate for shared MVP identities.
+  `NodeId` and `VisibleNodes` are one real type across lease, ACME, projection,
+  deploy, mesh, and E2E code. This avoids a projection/lease dependency cycle
+  while removing `DeployNodeId` and the lease/deploy/mesh visible-node wrappers.
+- Slice 016 also makes WireGuard peer snapshots carry typed routing fields:
+  `WireGuardOverlayCidr` for allowed IPs and `IrohEndpointId` for peer
+  endpoints. `WireGuardOverlayCidr` is intentionally only a typed `/128` host
+  route for now; `ipnet` was reviewed and deferred because arbitrary CIDRs are
+  not a current MVP behavior.
 
 ## Documented Design Gaps
 
@@ -172,11 +181,6 @@ the metric or product proof that makes the extra primitive worthwhile.
   publishing would be worse than a late reply. If a hard wall-clock cap becomes
   required, the publish path needs cooperative cancellation instead of detached
   worker timeouts.
-- Identity cleanup remains scheduled. `mvp_projection::NodeId` should become
-  the single MVP node identity across deploy, mesh, lease visibility, and
-  future volume/membership commands. WireGuard peer endpoint/address fields
-  should also become typed routing identities before the next command slice
-  adds more node-facing APIs.
 
 ## Placeholder Versus Production Code
 
@@ -797,12 +801,17 @@ Decision:
   projections. They dominate later normal join/service facts until a future
   explicit reinvite/clear primitive exists.
 - Join and tombstone mutation authority use separate fact grants.
+- Node identity is shared through `mvp-identity::NodeId`. This crate exists
+  because `mvp_projection` depends on lease and ACME fact payloads, so
+  lower-level lease/ACME code cannot depend on projection without a cycle.
 - For `<= 32` live nodes, the MVP plans full-mesh peers from projection state.
   Malformed remote peer identities are skipped; malformed or missing local
   identity fails planning.
 - The E2E data-plane role loads a last-applied snapshot before serving and
   resolves outbound targets from that snapshot. A caller may name a peer, but
   cannot supply an arbitrary socket address.
+- Applied WireGuard peer snapshots carry `WireGuardOverlayCidr` instead of raw
+  allowed-IP strings and `IrohEndpointId` instead of raw endpoint strings.
 
 What it replaces:
 - Treating membership as implied liveness or freshness.
@@ -825,6 +834,9 @@ Crates:
 - `defguard_wireguard_rs`, `wireguard-control`, and `boringtun` were reviewed
   and deferred. `defguard_wireguard_rs` remains the likely production host
   adapter candidate once real interface mutation enters scope.
+- `ipnet` was reviewed for CIDR representation and deferred. The MVP currently
+  derives only `/128` host routes from overlay IPs, so a tiny typed wrapper is
+  simpler than a generic network-prefix dependency.
 
 Revisit if:
 - Product requirements need partial WireGuard graph selection beyond full mesh.

@@ -439,12 +439,13 @@ mod tests {
     use mvp_bus::IslandId;
 
     use crate::error::ProjectionError;
-    use crate::facts::{BackendEndpoint, DnsRecordFact, NodeId, RouteId};
+    use crate::facts::{BackendEndpoint, DnsRecordFact, RouteId};
     use crate::model::{
         DnsProjection, DnsRecordProjection, GatewayProjection, GatewayRouteProjection,
         ProjectionIgnoreReason, ProjectionState, ProjectionStatus,
     };
     use crate::snapshot::{load_dns_snapshot, load_gateway_snapshot, write_projection_snapshots};
+    use mvp_identity::NodeId;
 
     fn sample_state() -> ProjectionState {
         let mut state = ProjectionState::for_island(IslandId::new("prod"));

@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use mvp_bus::IslandId;
-use mvp_projection::NodeId;
+use mvp_identity::NodeId;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
@@ -124,7 +124,8 @@ mod tests {
     use std::fs;
 
     use mvp_bus::IslandId;
-    use mvp_projection::{NodeId, NodeProjection, ProjectionState};
+    use mvp_identity::NodeId;
+    use mvp_projection::{NodeProjection, ProjectionState};
     use tempfile::tempdir;
 
     use crate::{WireGuardAppliedSnapshot, WireGuardSnapshotPaths, plan_full_mesh};

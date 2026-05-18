@@ -1,7 +1,7 @@
 use std::net::AddrParseError;
 use std::time::Duration;
 
-use mvp_projection::NodeId;
+use mvp_identity::NodeId;
 use thiserror::Error;
 
 use crate::invite::InviteId;

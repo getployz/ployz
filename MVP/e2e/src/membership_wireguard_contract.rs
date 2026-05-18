@@ -4,13 +4,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mvp_bus::{Grant, IslandId, PrincipalId, harness::InMemoryBus};
+use mvp_identity::{NodeId, VisibleNodes};
 use mvp_iroh::{IrohDocsFactSource, IrohFactDoc, IrohFactError, IrohFactNode};
 use mvp_mesh::{
     InviteId, InviteSecret, IrohEndpointId, JoinCommand, JoinRequest, MachineInvite,
-    TombstoneCommand, VisibleNodes, WireGuardAppliedSnapshot, WireGuardPublicKey,
-    WireGuardSnapshotPaths, plan_full_mesh, write_applied_snapshot,
+    TombstoneCommand, WireGuardAppliedSnapshot, WireGuardPublicKey, WireGuardSnapshotPaths,
+    plan_full_mesh, write_applied_snapshot,
 };
-use mvp_projection::{FactSource, NodeId, ProjectionState, reduce_facts};
+use mvp_projection::{FactSource, ProjectionState, reduce_facts};
 use serde::Serialize;
 use tokio::time::sleep;
 
@@ -489,7 +490,7 @@ fn plan_with_peer_endpoint(
             peer_node_id.as_str()
         ));
     };
-    peer.endpoint = endpoint.to_string();
+    peer.endpoint = IrohEndpointId::new(endpoint.to_string());
     Ok(plan)
 }
 
