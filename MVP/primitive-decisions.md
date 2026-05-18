@@ -60,6 +60,20 @@ the decision concrete.
 - Slice 029 preserves two replay modes: direct author-key import for recovery
   paths that validate the original author, and trusted-replica import for
   replica rebuild paths. Do not hide these behind one generic sync helper.
+- Slice 029 adds machine-remove command facts under
+  `/facts/machine-remove/<node>/<removal_epoch>/...`. `MachineRemoveDecision`
+  records target, epochs, visible nodes, reason, and exact serving plan after
+  target probe and before the first durable/participant mutation. This is the
+  recoverable command context; projection state is not used as a substitute.
+- Slice 029 adds `MachineRemoveCleanupDone` as command completion proof. Raw
+  tombstone remains membership/projection truth only. Recovery returns complete
+  only when cleanup-done matches the decision and the expected tombstone fact
+  exists in the recovered `FactSource`.
+- Slice 029 proves machine-remove restart recovery after serving commit:
+  exported p2panda operations import into a fresh store through trusted replica
+  authority, a fresh coordinator reconstructs pending cleanup without replaying
+  probe/drain/serving writes, `ProjectionCatchUp` still gates stop, and a later
+  recovery observes cleanup-done without RPC.
 - Slice 027 adds `mvp-volume` as the first volume movement canary. Volume
   ownership authority is an immutable fact
   `/facts/volume/<namespace>/<volume>/ownership/<epoch>` with embedded transfer
