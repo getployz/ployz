@@ -15,13 +15,19 @@ use mvp_lease::{
 };
 use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactAuthorKey, PandaFactStore, PandaFactSyncError, PandaFactSyncScope,
-    PandaFactSyncSide, PandaSqliteOpenConfig, PandaTrustedAuthorKey, sync_panda_fact_stores,
+    PandaFactSyncSide, PandaFactWireEnvelope, PandaSqliteOpenConfig, PandaTrustedAuthorKey,
+    sync_panda_fact_stores,
+};
+use mvp_p2panda_transport::{
+    PandaNetBindConfig, PandaNetFactImportOutcome, PandaNetFactImportRejection, PandaNetNode,
+    PandaNetNodeConfig, PandaNetNodeInfo, import_fact_body, import_next_fact,
 };
 use mvp_projection::{
     CandidateStatus, DnsCommitFact, FactCandidate, FactKind, FactSource, ProjectionFactPayload,
     ProjectionIgnoreReason, SqliteProjectionStore,
 };
 use mvp_serving::{ServingActorHandle, ServingSnapshotPaths, WireServingState, spawn_http_gateway};
+use p2panda_core_git::{SigningKey, Topic};
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -61,12 +67,286 @@ struct P2pandaAcmeHttp01Report {
     elapsed_ms: u128,
 }
 
+#[derive(Debug, Serialize)]
+struct P2pandaNetAcmeHttp01Report {
+    scenario: &'static str,
+    visible_nodes_at_decision: usize,
+    key_authorization: String,
+    replayed_operations_before_clear: usize,
+    replayed_operations_after_clear: usize,
+    imported_before_clear: u64,
+    imported_after_clear: u64,
+    duplicate_after_clear: u64,
+    trusted_replica_required: bool,
+    projection_reload_ms: u128,
+    http_request_us: u128,
+    command_adapter_outage_serving_success_count: usize,
+    release_fact_recorded: bool,
+    sqlite_rebuild_after_delete: bool,
+    http_404_after_clear: bool,
+    elapsed_ms: u128,
+}
+
 pub(crate) fn run() -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("create tokio runtime for p2panda ACME: {error}"))?;
     runtime.block_on(run_async())
+}
+
+pub(crate) fn run_net() -> Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("create tokio runtime for p2panda-net ACME: {error}"))?;
+    runtime.block_on(run_net_async())
+}
+
+async fn run_net_async() -> Result<(), String> {
+    let started = Instant::now();
+    let root = scenario_dir("p2panda-net-acme-http01-contract");
+    reset_dir(&root)?;
+
+    let prod = IslandId::new("prod");
+    let challenge = AcmeChallengeId::new(
+        AcmeHostname::parse("example.test").map_err(|error| error.to_string())?,
+        AcmeChallengeToken::parse(ACME_TOKEN).map_err(|error| error.to_string())?,
+    );
+    let (bus, sessions) = acme_bus_sessions(&prod, &challenge)?;
+    let bus = Arc::new(bus);
+    let dns_author = PandaFactAuthor::new(sessions.dns_writer.principal().clone());
+    let visible_nodes = VisibleNodes::new([NodeId::new("node-a"), NodeId::new("node-b")]);
+    let mut adapter = AcmeP2pandaCommandAdapter::new(
+        sessions.issuer_a.clone(),
+        PandaFactAuthor::new(sessions.issuer_a.principal().clone()),
+        visible_nodes,
+    );
+    let trusted_authors = vec![
+        (
+            adapter.author().principal().clone(),
+            adapter.author().author_key(),
+        ),
+        (dns_author.principal().clone(), dns_author.author_key()),
+    ];
+
+    let mut left = open_store(
+        bus.clone(),
+        root.join("left-p2panda-net-facts.sqlite"),
+        &prod,
+        &trusted_authors,
+    )
+    .await?;
+    let mut right = open_store(
+        bus.clone(),
+        root.join("right-p2panda-facts.sqlite"),
+        &prod,
+        &trusted_authors,
+    )
+    .await?;
+    right.trust_replica_peer(&prod, sessions.right_replica.principal().clone());
+    let timeline = LeaseTimeline::fresh()?;
+
+    write_panda_projection_fact(
+        &mut left,
+        &sessions.dns_writer,
+        &dns_author,
+        "/facts/dns/dns-acme-p2panda-net",
+        ProjectionFactPayload::DnsCommit(DnsCommitFact {
+            dns_commit_id: "dns-acme-p2panda-net".to_string(),
+            epoch: 1,
+            records: Vec::new(),
+        }),
+    )
+    .await?;
+
+    let claim = adapter
+        .claim(
+            &mut left,
+            &challenge,
+            timeline.acquired_at,
+            timeline.expires_at,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    let present = adapter
+        .present(
+            &mut left,
+            &challenge,
+            &claim.lease,
+            "thumbprint-net",
+            timeline.published_at,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let Some(first_wire) = left
+        .export_operations()
+        .next()
+        .map(PandaFactWireEnvelope::encode)
+    else {
+        return Err("p2panda-net ACME source store had no operation to gate".to_string());
+    };
+    let unauthorized = import_fact_body(&first_wire, &mut right, &sessions.projection).await;
+    let trusted_replica_required = matches!(
+        unauthorized,
+        PandaNetFactImportOutcome::Rejected(
+            PandaNetFactImportRejection::UnauthorizedReplica { .. }
+        )
+    );
+    if !trusted_replica_required {
+        return Err(format!(
+            "p2panda-net ACME unauthorized replica produced {unauthorized:?}"
+        ));
+    }
+
+    let before_clear =
+        replay_all_exported_facts_via_net(&left, &mut right, &sessions.right_replica).await?;
+    if before_clear.imported < 3 {
+        return Err(format!(
+            "expected p2panda-net ACME to import lease, challenge, and DNS facts, got {}",
+            before_clear.imported
+        ));
+    }
+
+    let projection_reload_started = Instant::now();
+    let mut projection =
+        project_from_reopened_store(&root, bus.clone(), &prod, &trusted_authors, &sessions).await?;
+    let projection_reload_ms = projection_reload_started.elapsed().as_millis();
+    assert_eq_named(
+        "initial p2panda-net ACME projection count",
+        projection.state.acme_http01.len(),
+        1,
+    )?;
+    let key_authorization = projected_key_authorization(&projection)?;
+
+    let serving = ServingActorHandle::spawn(
+        prod.clone(),
+        ServingSnapshotPaths::new(root.join("gateway.snapshot"), root.join("dns.snapshot")),
+        Duration::from_secs(60),
+    )
+    .map_err(|error| format!("spawn p2panda-net ACME serving actor: {error}"))?;
+    let gateway = spawn_http_gateway(loopback_any(), WireServingState::new(serving.clone()))
+        .await
+        .map_err(|error| format!("spawn p2panda-net ACME HTTP gateway: {error}"))?;
+    let initial_http = timed_http_get(
+        gateway.listen_addr(),
+        "example.test",
+        &format!("/.well-known/acme-challenge/{ACME_TOKEN}"),
+    )
+    .await?;
+    if !initial_http.response.starts_with("HTTP/1.1 200 OK")
+        || !initial_http
+            .response
+            .ends_with(present.key_authorization.as_str())
+    {
+        return Err(format!(
+            "p2panda-net ACME HTTP response did not serve the challenge: {}",
+            initial_http.response
+        ));
+    }
+
+    let clear = adapter
+        .clear(&mut left, &challenge, &claim.lease, timeline.cleared_at)
+        .await
+        .map_err(|error| error.to_string())?;
+    drop(adapter);
+    let outage_http = timed_http_get(
+        gateway.listen_addr(),
+        "example.test",
+        &format!("/.well-known/acme-challenge/{ACME_TOKEN}"),
+    )
+    .await?;
+    if !outage_http.response.starts_with("HTTP/1.1 200 OK")
+        || !outage_http.response.ends_with(&key_authorization)
+    {
+        return Err(format!(
+            "p2panda-net ACME serving did not preserve last-good before clear transport: {}",
+            outage_http.response
+        ));
+    }
+
+    let after_clear =
+        replay_all_exported_facts_via_net(&left, &mut right, &sessions.right_replica).await?;
+    projection =
+        project_from_reopened_store(&root, bus.clone(), &prod, &trusted_authors, &sessions).await?;
+    serving
+        .reload()
+        .await
+        .map_err(|error| format!("reload p2panda-net ACME after clear: {error}"))?;
+    assert_eq_named(
+        "p2panda-net ACME projection after clear",
+        projection.state.acme_http01.len(),
+        0,
+    )?;
+    let after_clear_http = timed_http_get(
+        gateway.listen_addr(),
+        "example.test",
+        &format!("/.well-known/acme-challenge/{ACME_TOKEN}"),
+    )
+    .await?;
+    let http_404_after_clear = after_clear_http
+        .response
+        .starts_with("HTTP/1.1 404 Not Found");
+    if !http_404_after_clear {
+        return Err(format!(
+            "p2panda-net ACME response after clear did not become 404: {}",
+            after_clear_http.response
+        ));
+    }
+
+    let sqlite_path = root.join("projections.sqlite");
+    std::fs::remove_file(&sqlite_path)
+        .map_err(|error| format!("delete p2panda-net ACME projection sqlite: {error}"))?;
+    let rebuilt =
+        project_from_reopened_store(&root, bus.clone(), &prod, &trusted_authors, &sessions).await?;
+    let sqlite = SqliteProjectionStore::new(sqlite_path);
+    let row_counts = sqlite
+        .row_counts()
+        .map_err(|error| format!("read rebuilt p2panda-net ACME sqlite rows: {error}"))?;
+    let sqlite_rebuild_after_delete =
+        rebuilt.state.acme_http01.is_empty() && row_counts.acme_http01_challenges == 0;
+
+    gateway
+        .shutdown()
+        .await
+        .map_err(|error| format!("shutdown p2panda-net ACME HTTP gateway: {error}"))?;
+
+    let report = P2pandaNetAcmeHttp01Report {
+        scenario: "p2panda-net-acme-http01-contract",
+        visible_nodes_at_decision: claim.visible_nodes.len(),
+        key_authorization,
+        replayed_operations_before_clear: before_clear.replayed,
+        replayed_operations_after_clear: after_clear.replayed,
+        imported_before_clear: before_clear.imported,
+        imported_after_clear: after_clear.imported,
+        duplicate_after_clear: after_clear.duplicate,
+        trusted_replica_required,
+        projection_reload_ms,
+        http_request_us: initial_http.elapsed_us,
+        command_adapter_outage_serving_success_count: 1,
+        release_fact_recorded: clear.release_recorded,
+        sqlite_rebuild_after_delete,
+        http_404_after_clear,
+        elapsed_ms: started.elapsed().as_millis(),
+    };
+    if report.visible_nodes_at_decision != 2 {
+        return Err(format!(
+            "expected visible nodes in p2panda-net ACME command result, got {}",
+            report.visible_nodes_at_decision
+        ));
+    }
+    if !report.sqlite_rebuild_after_delete {
+        return Err("p2panda-net ACME sqlite rebuild after delete failed".to_string());
+    }
+
+    let json = write_json(
+        &root.join("p2panda-net-acme-http01-contract-metrics.json"),
+        &report,
+    )?;
+    println!("{json}");
+    eprintln!("PASS p2panda-net-acme-http01-contract");
+    Ok(())
 }
 
 async fn run_async() -> Result<(), String> {
@@ -1075,6 +1355,130 @@ fn visible_candidate_count(
         .list_candidates(session.island(), &fact_pattern("/facts/>")?, session)
         .map(|candidates| candidates.len())
         .map_err(|error| AcmeAdapterError::Fact(error.to_string()))
+}
+
+#[derive(Debug)]
+struct NetTransportReport {
+    replayed: usize,
+    imported: u64,
+    duplicate: u64,
+}
+
+async fn replay_all_exported_facts_via_net(
+    source: &PandaFactStore,
+    target: &mut PandaFactStore,
+    replica_session: &BusSession,
+) -> Result<NetTransportReport, String> {
+    let wires = source
+        .export_operations()
+        .map(PandaFactWireEnvelope::encode)
+        .collect::<Vec<_>>();
+    let replayed = wires.len();
+    let mut net = AcmeNetHarness::spawn(wires).await?;
+    let mut imported = 0;
+    let mut duplicate = 0;
+    for _ in 0..replayed {
+        match import_next_fact(net.stream_mut(), target, replica_session)
+            .await
+            .map_err(|error| format!("import p2panda-net ACME fact: {error}"))?
+        {
+            PandaNetFactImportOutcome::Imported => {
+                imported += 1;
+            }
+            PandaNetFactImportOutcome::Duplicate => {
+                duplicate += 1;
+            }
+            PandaNetFactImportOutcome::Conflict => {
+                return Err("p2panda-net ACME canary received an unexpected conflict".to_string());
+            }
+            PandaNetFactImportOutcome::Rejected(rejection) => {
+                return Err(format!(
+                    "p2panda-net ACME transport rejected fact: {rejection:?}"
+                ));
+            }
+            PandaNetFactImportOutcome::Deferred(deferred) => {
+                return Err(format!(
+                    "p2panda-net ACME transport deferred fact: {deferred:?}"
+                ));
+            }
+            PandaNetFactImportOutcome::Failed(failure) => {
+                return Err(format!(
+                    "p2panda-net ACME transport failed locally: {failure:?}"
+                ));
+            }
+        }
+    }
+    Ok(NetTransportReport {
+        replayed,
+        imported,
+        duplicate,
+    })
+}
+
+struct AcmeNetHarness {
+    _receiver: PandaNetNode,
+    _sender: PandaNetNode,
+    _sender_stream: mvp_p2panda_transport::PandaNetStream,
+    receiver_stream: mvp_p2panda_transport::PandaNetStream,
+}
+
+impl AcmeNetHarness {
+    async fn spawn(wires: Vec<Vec<u8>>) -> Result<Self, String> {
+        let topic: Topic = [91; 32].into();
+        let receiver = PandaNetNode::spawn(acme_net_config([21; 32], free_port(), Vec::new()))
+            .await
+            .map_err(|error| format!("spawn p2panda-net ACME receiver: {error}"))?;
+        let receiver_info = receiver.node_info();
+        let receiver_stream = receiver
+            .open_stream(topic, true)
+            .await
+            .map_err(|error| format!("open p2panda-net ACME receiver stream: {error}"))?;
+        let mut sender =
+            PandaNetNode::spawn(acme_net_config([22; 32], free_port(), vec![receiver_info]))
+                .await
+                .map_err(|error| format!("spawn p2panda-net ACME sender: {error}"))?;
+        for wire in wires {
+            sender
+                .append_to_topic(&topic, &wire)
+                .await
+                .map_err(|error| format!("append p2panda-net ACME fact wire: {error}"))?;
+        }
+        let sender_stream = sender
+            .open_stream(topic, true)
+            .await
+            .map_err(|error| format!("open p2panda-net ACME sender stream: {error}"))?;
+        Ok(Self {
+            _receiver: receiver,
+            _sender: sender,
+            _sender_stream: sender_stream,
+            receiver_stream,
+        })
+    }
+
+    fn stream_mut(&mut self) -> &mut mvp_p2panda_transport::PandaNetStream {
+        &mut self.receiver_stream
+    }
+}
+
+fn acme_net_config(
+    seed: [u8; 32],
+    port: u16,
+    bootstrap_nodes: Vec<PandaNetNodeInfo>,
+) -> PandaNetNodeConfig {
+    PandaNetNodeConfig {
+        network_id: [91; 32],
+        signing_key: SigningKey::from_bytes(&seed),
+        bind: PandaNetBindConfig::localhost(port, free_port()),
+        bootstrap_nodes,
+    }
+}
+
+fn free_port() -> u16 {
+    std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("bind UDP port probe")
+        .local_addr()
+        .expect("read UDP port probe")
+        .port()
 }
 
 async fn open_store(

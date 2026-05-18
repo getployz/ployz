@@ -141,6 +141,10 @@ const SCENARIOS: &[Scenario] = &[
         "p2panda-acme-http01-contract",
         p2panda_acme_http01_contract::run,
     ),
+    Scenario::new(
+        "p2panda-net-acme-http01-contract",
+        p2panda_acme_http01_contract::run_net,
+    ),
     Scenario::new("p2panda-net-sync-contract", p2panda_net_sync_contract::run),
     Scenario::new(
         "p2panda-net-owned-node-contract",
