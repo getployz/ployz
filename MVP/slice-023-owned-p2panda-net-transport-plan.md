@@ -1,6 +1,6 @@
 ---
 title: Slice 023 Owned p2panda-net Transport Plan
-status: active
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md

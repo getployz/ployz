@@ -14,8 +14,9 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::NodeId;
-use mvp_p2panda_facts::{
-    PandaFactAuthor, PandaFactError, PandaFactStore, PandaFactWireEnvelope, PandaFactWriteOutcome,
+use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, PandaFactWireEnvelope};
+use mvp_p2panda_transport::{
+    PandaNetFactImportOutcome, PandaNetFactImportRejection, import_fact_body,
 };
 use mvp_projection::{CandidateStatus, FactSource, NodeJoinedFact, ProjectionFactPayload};
 
@@ -174,49 +175,43 @@ async fn run_async() -> Result<(), String> {
     let mut duplicate_operations = 0;
     let mut untrusted_rejected = false;
     let mut cross_island_rejected = false;
-    let transported = transported
-        .iter()
-        .map(|wire| {
-            PandaFactWireEnvelope::decode(wire)
-                .map_err(|error| format!("decode transported p2panda fact operation: {error}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let untrusted_replica_error = canonical
-        .import_replica_operation(&sessions.untrusted_replica, &transported[0])
-        .await
-        .expect_err("untrusted same-island replica cannot import network facts");
+    let untrusted_replica_error =
+        import_fact_body(&transported[0], &mut canonical, &sessions.untrusted_replica).await;
     let trusted_replica_required = matches!(
         untrusted_replica_error,
-        PandaFactError::UnauthorizedReplicaImport { .. }
+        PandaNetFactImportOutcome::Rejected(
+            PandaNetFactImportRejection::UnauthorizedReplica { .. }
+        )
     );
     if !trusted_replica_required {
         return Err(format!(
-            "untrusted replica import failed for wrong reason: {untrusted_replica_error}"
+            "untrusted replica import failed for wrong reason: {untrusted_replica_error:?}"
         ));
     }
 
-    for operation in transported {
-        match canonical
-            .import_replica_operation(&sessions.right_replica, &operation)
-            .await
-        {
-            Ok(PandaFactWriteOutcome::Inserted(_)) | Ok(PandaFactWriteOutcome::Conflict(_)) => {
+    for wire in transported {
+        match import_fact_body(&wire, &mut canonical, &sessions.right_replica).await {
+            PandaNetFactImportOutcome::Imported | PandaNetFactImportOutcome::Conflict => {
                 imported_operations += 1;
             }
-            Ok(PandaFactWriteOutcome::AlreadyPresent(_)) => {
+            PandaNetFactImportOutcome::Duplicate => {
                 duplicate_operations += 1;
             }
-            Err(PandaFactError::UntrustedAuthorKey { principal, .. })
-                if principal == *sessions.untrusted_writer.principal() =>
-            {
+            PandaNetFactImportOutcome::Rejected(PandaNetFactImportRejection::UntrustedAuthor {
+                principal,
+                ..
+            }) if principal == *sessions.untrusted_writer.principal() => {
                 untrusted_rejected = true;
             }
-            Err(PandaFactError::ImportIslandMismatch { operation, .. }) if operation == laptop => {
+            PandaNetFactImportOutcome::Rejected(PandaNetFactImportRejection::CrossIsland {
+                operation,
+                ..
+            }) if operation == laptop => {
                 cross_island_rejected = true;
             }
-            Err(error) => {
+            outcome => {
                 return Err(format!(
-                    "unexpected p2panda-net canonical import error: {error}"
+                    "unexpected p2panda-net canonical import outcome: {outcome:?}"
                 ));
             }
         }
