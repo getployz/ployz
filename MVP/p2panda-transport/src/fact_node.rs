@@ -534,11 +534,6 @@ impl PandaNetFactNode {
     }
 
     #[must_use]
-    pub fn replayed_operations_skipped(&self) -> u64 {
-        self.replay_cache.skipped()
-    }
-
-    #[must_use]
     pub fn stats(&self) -> PandaNetFactNodeStats {
         self.stats
     }
