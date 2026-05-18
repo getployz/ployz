@@ -264,18 +264,10 @@ impl ServingFactWriter for BusServingFactWriter {
     ) -> Pin<Box<dyn Future<Output = RoutingResult<WrittenServingFact>> + Send + 'a>> {
         Box::pin(async move {
             let key = serving_commit_fact_key(&commit.serving_commit_id)?;
-            let facts = write_serving_commit(&self.bus, &self.session, commit).await?;
-            match facts.serving {
-                FactWriteOutcome::Inserted(fact) => Ok(WrittenServingFact::inserted(
-                    key,
-                    fact.content_hash().clone(),
-                )),
-                FactWriteOutcome::AlreadyPresent(fact) => Ok(WrittenServingFact::already_present(
-                    key,
-                    fact.content_hash().clone(),
-                )),
-                FactWriteOutcome::Conflict(_) => Err(RoutingError::ServingFactConflict { key }),
-            }
+            let payload = serving_commit_fact_payload(commit)?;
+            let outcome =
+                write_projection_fact_raw(&self.bus, &self.session, key.clone(), payload).await?;
+            written_serving_fact_from_outcome(key, outcome)
         })
     }
 }
@@ -393,11 +385,37 @@ async fn write_projection_fact(
     key: FactKey,
     payload: FactPayload,
 ) -> RoutingResult<FactWriteOutcome> {
-    let outcome = bus
-        .write_fact_payload(session, key.clone(), payload)
-        .await?;
+    let outcome = write_projection_fact_raw(bus, session, key.clone(), payload).await?;
     match outcome {
         FactWriteOutcome::Inserted(_) | FactWriteOutcome::AlreadyPresent(_) => Ok(outcome),
+        FactWriteOutcome::Conflict(_) => Err(RoutingError::ServingFactConflict { key }),
+    }
+}
+
+async fn write_projection_fact_raw(
+    bus: &BusActorHandle,
+    session: &BusSession,
+    key: FactKey,
+    payload: FactPayload,
+) -> RoutingResult<FactWriteOutcome> {
+    bus.write_fact_payload(session, key, payload)
+        .await
+        .map_err(RoutingError::from)
+}
+
+fn written_serving_fact_from_outcome(
+    key: FactKey,
+    outcome: FactWriteOutcome,
+) -> RoutingResult<WrittenServingFact> {
+    match outcome {
+        FactWriteOutcome::Inserted(fact) => Ok(WrittenServingFact::inserted(
+            key,
+            fact.content_hash().clone(),
+        )),
+        FactWriteOutcome::AlreadyPresent(fact) => Ok(WrittenServingFact::already_present(
+            key,
+            fact.content_hash().clone(),
+        )),
         FactWriteOutcome::Conflict(_) => Err(RoutingError::ServingFactConflict { key }),
     }
 }

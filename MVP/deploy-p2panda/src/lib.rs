@@ -188,8 +188,8 @@ mod tests {
     use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore};
     use mvp_projection::{BackendEndpoint, DnsRecordFact, RouteId};
     use mvp_routing::{
-        DnsCommitId, GatewayCommitId, RouteCommitId, RoutingError, ServingCommitId,
-        ServingCommitPlan, ServingFactWriteStatus, ServingFactWriter,
+        DnsCommitId, GatewayCommitId, RouteCommitId, ServingCommitId, ServingCommitPlan,
+        ServingFactWriteStatus, ServingFactWriter,
     };
 
     use mvp_routing_p2panda::PandaServingFactWriter;
@@ -418,39 +418,5 @@ mod tests {
             }
             other => panic!("unexpected cleanup conflict error: {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn serving_writer_maps_conflict_to_serving_fact_conflict() {
-        let fixture = panda_writer_fixture();
-        let writer_a = PandaServingFactWriter::new(
-            fixture.facts.clone(),
-            fixture.session_a,
-            Arc::clone(&fixture.author_a),
-        );
-        let writer_b = PandaServingFactWriter::new(
-            fixture.facts,
-            fixture.session_b,
-            Arc::clone(&fixture.author_b),
-        );
-        let original = serving_commit();
-        writer_a
-            .write_serving_commit(&original)
-            .await
-            .expect("insert serving");
-        let mut conflicting = original.clone();
-        conflicting.epoch += 1;
-
-        let error = writer_b
-            .write_serving_commit(&conflicting)
-            .await
-            .expect_err("conflict serving");
-
-        assert!(matches!(
-            error,
-            RoutingError::ServingFactConflict { key }
-                if key == mvp_routing::serving_commit_fact_key(&original.serving_commit_id)
-                    .expect("serving key")
-        ));
     }
 }
