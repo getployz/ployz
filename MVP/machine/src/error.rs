@@ -1,6 +1,7 @@
 use mvp_bus::{
     BusError, FactContentHash, FactKey, FactKeyParseError, IslandId, PrincipalId, SubjectParseError,
 };
+use mvp_commands::CommandError;
 use mvp_identity::NodeId;
 use mvp_mesh::MeshError;
 use mvp_projection::FactSourceError;
@@ -57,6 +58,8 @@ pub enum MachineRemoveError {
     },
     #[error("machine remove command fact payload does not match its key or decision: {key}")]
     CommandFactMismatch { key: FactKey },
+    #[error("machine remove {remove_id:?} cannot resume because no command phase exists")]
+    CommandPhaseMissing { remove_id: crate::MachineRemoveId },
     #[error("principal {principal} is not allowed to write machine fact {key} in island {island}")]
     UnauthorizedFactWrite {
         island: IslandId,
@@ -89,6 +92,8 @@ pub enum MachineRemoveError {
         #[source]
         source: serde_json::Error,
     },
+    #[error(transparent)]
+    Command(#[from] CommandError),
     #[error(transparent)]
     Bus(#[from] BusError),
     #[error(transparent)]

@@ -3,6 +3,10 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use mvp_bus::{BusActorHandle, BusSession, FactKey, FactPayload, FactWriteOutcome, Subject};
+use mvp_commands::{
+    Command, CommandCompensationFuture, CommandContext, CommandName, CommandStepFuture, IntentId,
+    PhaseTransition, PhasedCommand, run_phased,
+};
 use mvp_identity::{NodeId, VisibleNodes};
 use mvp_mesh::{removal_started_fact_key, removal_started_fact_payload, tombstone_fact_key};
 use mvp_projection::{
@@ -26,6 +30,7 @@ use crate::wire::{
     encode,
 };
 use crate::{MachineRemoveError, MachineRemoveResult};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MachineRemoveTimeouts {
@@ -41,6 +46,24 @@ pub struct MachineRemoveRequest {
     pub visible_nodes: VisibleNodes,
     pub current_projection: ProjectionState,
     pub serving_commit: ServingCommitPlan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineRemoveCommandInput {
+    Start(Box<MachineRemoveRequest>),
+    Resume(MachineRemoveId),
+}
+
+impl MachineRemoveCommandInput {
+    #[must_use]
+    pub fn remove_id(&self) -> MachineRemoveId {
+        match self {
+            Self::Start(request) => {
+                MachineRemoveId::new(request.target_node_id.clone(), request.removal_epoch)
+            }
+            Self::Resume(remove_id) => remove_id.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,6 +247,23 @@ where
         })
     }
 
+    pub async fn execute_phased(
+        &self,
+        cx: &CommandContext,
+        input: MachineRemoveCommandInput,
+        projection: Option<ProjectionCatchUp>,
+    ) -> MachineRemoveResult<MachineRemoveCommandResult> {
+        run_phased(
+            cx,
+            &MachineRemovePhasedCommand {
+                owner: self,
+                input,
+                projection,
+            },
+        )
+        .await
+    }
+
     pub async fn finish_cleanup(
         &self,
         pending: PendingMachineRemove,
@@ -291,12 +331,60 @@ where
         }
     }
 
+    async fn prepare_remove_decision(
+        &self,
+        decision: &MachineRemoveDecisionFact,
+    ) -> MachineRemoveResult<()> {
+        let reply = self
+            .request_prepare_decision(decision, PrepareRemoveIntent::Drain)
+            .await?;
+        match reply.outcome {
+            PrepareRemoveOutcome::NoNewWorkAndDrained => Ok(()),
+            PrepareRemoveOutcome::ResponderReady | PrepareRemoveOutcome::NotDrained { .. } => {
+                Err(MachineRemoveError::PrepareRemoveRejected {
+                    node_id: decision.target_node_id.clone(),
+                    outcome: reply.outcome,
+                })
+            }
+        }
+    }
+
     async fn request_prepare(
         &self,
         request: &MachineRemoveRequest,
         intent: PrepareRemoveIntent,
     ) -> MachineRemoveResult<PrepareRemoveReply> {
-        let subject = prepare_remove_subject(&request.target_node_id)?;
+        self.request_prepare_parts(
+            &request.target_node_id,
+            &request.reason,
+            intent,
+            "prepare_remove",
+        )
+        .await
+    }
+
+    async fn request_prepare_decision(
+        &self,
+        decision: &MachineRemoveDecisionFact,
+        intent: PrepareRemoveIntent,
+    ) -> MachineRemoveResult<PrepareRemoveReply> {
+        self.request_prepare_parts(
+            &decision.target_node_id,
+            &decision.reason,
+            intent,
+            "prepare_remove",
+        )
+        .await
+    }
+
+    async fn request_prepare_parts(
+        &self,
+        target_node_id: &NodeId,
+        reason: &str,
+        intent: PrepareRemoveIntent,
+        operation: &'static str,
+    ) -> MachineRemoveResult<PrepareRemoveReply> {
+        let subject = prepare_remove_subject(target_node_id)?;
         let response = self
             .bus
             .request(
@@ -304,8 +392,8 @@ where
                 subject,
                 encode(
                     &PrepareRemoveRequest {
-                        target_node_id: request.target_node_id.clone(),
-                        reason: request.reason.clone(),
+                        target_node_id: target_node_id.clone(),
+                        reason: reason.to_string(),
                         intent,
                     },
                     "prepare remove request",
@@ -314,14 +402,22 @@ where
             )
             .await?;
         let reply: PrepareRemoveReply = decode(response.payload(), "prepare remove reply")?;
-        if reply.target_node_id != request.target_node_id {
+        if &reply.target_node_id != target_node_id {
             return Err(MachineRemoveError::ParticipantNodeMismatch {
-                operation: "prepare_remove",
-                expected_node_id: request.target_node_id.clone(),
+                operation,
+                expected_node_id: target_node_id.clone(),
                 actual_node_id: reply.target_node_id,
             });
         }
         Ok(reply)
+    }
+
+    async fn stop_removed_workloads_decision(
+        &self,
+        decision: &MachineRemoveDecisionFact,
+    ) -> MachineRemoveResult<()> {
+        let pending = pending_from_decision(decision.clone())?;
+        self.stop_removed_workloads(&pending).await
     }
 
     async fn stop_removed_workloads(
@@ -363,6 +459,188 @@ where
                 }))
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+enum MachineRemovePhase {
+    Start,
+    DecisionWritten(Box<MachineRemoveDecisionFact>),
+    RemovalStartedWritten(Box<MachineRemoveDecisionFact>),
+    Prepared(Box<MachineRemoveDecisionFact>),
+    ServingCommitWritten(Box<MachineRemoveDecisionFact>),
+    Stopped(Box<MachineRemoveDecisionFact>),
+    Tombstoned(Box<MachineRemoveDecisionFact>),
+    CleanupDone(Box<MachineRemoveDecisionFact>),
+}
+
+struct MachineRemovePhasedCommand<'a, W, S> {
+    owner: &'a MachineRemoveCoordinator<W, S>,
+    input: MachineRemoveCommandInput,
+    projection: Option<ProjectionCatchUp>,
+}
+
+impl<W, S> Command for MachineRemovePhasedCommand<'_, W, S>
+where
+    W: MachineFactWriter,
+    S: ServingFactWriter,
+{
+    type Output = MachineRemoveCommandResult;
+    type Error = MachineRemoveError;
+
+    fn name(&self) -> CommandName {
+        CommandName::parse("machine-remove").expect("static command name validates")
+    }
+
+    fn intent_id(&self) -> IntentId {
+        let remove_id = self.input.remove_id();
+        IntentId::parse(format!(
+            "{}-{}",
+            remove_id.target_node_id().as_str(),
+            remove_id.removal_epoch()
+        ))
+        .expect("node ids and epochs validate as command intents")
+    }
+}
+
+impl<W, S> PhasedCommand for MachineRemovePhasedCommand<'_, W, S>
+where
+    W: MachineFactWriter,
+    S: ServingFactWriter,
+{
+    type Phase = MachineRemovePhase;
+
+    fn initial_phase(&self) -> Self::Phase {
+        MachineRemovePhase::Start
+    }
+
+    fn step<'b>(
+        &'b self,
+        _cx: &'b CommandContext,
+        phase: Self::Phase,
+    ) -> CommandStepFuture<'b, Self::Phase, Self::Output, <Self as Command>::Error> {
+        Box::pin(async move {
+            match phase {
+                MachineRemovePhase::Start => {
+                    let MachineRemoveCommandInput::Start(request) = &self.input else {
+                        return Err(MachineRemoveError::CommandPhaseMissing {
+                            remove_id: self.input.remove_id(),
+                        });
+                    };
+                    validate_preconditions(request)?;
+                    self.owner.probe_prepare_responder(request).await?;
+                    let decision = decision_fact_from_request(request);
+                    self.owner
+                        .fact_writer
+                        .write_remove_decision(decision.clone())
+                        .await?;
+                    Ok(PhaseTransition::Continue(
+                        MachineRemovePhase::DecisionWritten(Box::new(decision)),
+                    ))
+                }
+                MachineRemovePhase::DecisionWritten(decision) => {
+                    self.owner
+                        .fact_writer
+                        .write_removal_started(NodeRemovalStartedFact {
+                            node_id: decision.target_node_id.clone(),
+                            epoch: decision.removal_epoch,
+                            reason: decision.reason.clone(),
+                        })
+                        .await?;
+                    Ok(PhaseTransition::Continue(
+                        MachineRemovePhase::RemovalStartedWritten(decision),
+                    ))
+                }
+                MachineRemovePhase::RemovalStartedWritten(decision) => {
+                    self.owner.prepare_remove_decision(&decision).await?;
+                    Ok(PhaseTransition::Continue(MachineRemovePhase::Prepared(
+                        decision,
+                    )))
+                }
+                MachineRemovePhase::Prepared(decision) => {
+                    self.owner
+                        .serving_writer
+                        .write_serving_commit(&decision.serving_commit)
+                        .await?;
+                    Ok(PhaseTransition::Continue(
+                        MachineRemovePhase::ServingCommitWritten(decision),
+                    ))
+                }
+                MachineRemovePhase::ServingCommitWritten(decision) => {
+                    let pending = pending_from_decision((*decision).clone())?;
+                    let Some(projection) = self.projection.clone() else {
+                        let serving_commit_id = decision.serving_commit.serving_commit_id.clone();
+                        return Ok(PhaseTransition::Done(pending.cleanup_pending(
+                            RemoveCleanupPendingReason::ProjectionCatchUpMissing {
+                                serving_commit_id,
+                            },
+                        )));
+                    };
+                    if projection.serving_commit_id() != &decision.serving_commit.serving_commit_id
+                    {
+                        let serving_commit_id = decision.serving_commit.serving_commit_id.clone();
+                        return Ok(PhaseTransition::Done(pending.cleanup_pending(
+                            RemoveCleanupPendingReason::ProjectionCatchUpMismatch {
+                                serving_commit_id,
+                            },
+                        )));
+                    }
+                    match self.owner.stop_removed_workloads_decision(&decision).await {
+                        Ok(()) => Ok(PhaseTransition::Continue(MachineRemovePhase::Stopped(
+                            decision,
+                        ))),
+                        Err(error) => {
+                            let node_id = decision.target_node_id.clone();
+                            let cause = cleanup_failure_kind(&error);
+                            Ok(PhaseTransition::Done(pending.cleanup_pending(
+                                RemoveCleanupPendingReason::StopUnavailable { node_id, cause },
+                            )))
+                        }
+                    }
+                }
+                MachineRemovePhase::Stopped(decision) => {
+                    self.owner
+                        .fact_writer
+                        .write_tombstone(NodeTombstonedFact {
+                            node_id: decision.target_node_id.clone(),
+                            epoch: decision.tombstone_epoch,
+                            reason: decision.reason.clone(),
+                        })
+                        .await?;
+                    Ok(PhaseTransition::Continue(MachineRemovePhase::Tombstoned(
+                        decision,
+                    )))
+                }
+                MachineRemovePhase::Tombstoned(decision) => {
+                    let tombstone_key =
+                        tombstone_fact_key(&decision.target_node_id, decision.tombstone_epoch)?;
+                    let cleanup_done = MachineRemoveCleanupDoneFact::new(&decision, tombstone_key)?;
+                    self.owner
+                        .fact_writer
+                        .write_cleanup_done(cleanup_done)
+                        .await?;
+                    Ok(PhaseTransition::Continue(MachineRemovePhase::CleanupDone(
+                        decision,
+                    )))
+                }
+                MachineRemovePhase::CleanupDone(decision) => {
+                    let pending = pending_from_decision(*decision)?;
+                    let tombstone_key = tombstone_fact_key(
+                        &pending.decision.target_node_id,
+                        pending.decision.tombstone_epoch,
+                    )?;
+                    Ok(PhaseTransition::Done(pending.removed(tombstone_key)))
+                }
+            }
+        })
+    }
+
+    fn compensate<'b>(
+        &'b self,
+        _cx: &'b CommandContext,
+        _phase: Self::Phase,
+    ) -> CommandCompensationFuture<'b, <Self as Command>::Error> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -462,6 +740,9 @@ pub enum RemoveCleanupStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoveCleanupPendingReason {
+    ProjectionCatchUpMissing {
+        serving_commit_id: ServingCommitId,
+    },
     ProjectionCatchUpMismatch {
         serving_commit_id: ServingCommitId,
     },
@@ -553,6 +834,17 @@ fn pending_remove_from_decision(
     }
 }
 
+fn pending_from_decision(
+    decision: MachineRemoveDecisionFact,
+) -> MachineRemoveResult<PendingMachineRemove> {
+    let removal_started_fact_key =
+        removal_started_fact_key(&decision.target_node_id, decision.removal_epoch)?;
+    Ok(pending_remove_from_decision(
+        decision,
+        removal_started_fact_key,
+    ))
+}
+
 fn removed_result_from_facts(
     decision: &MachineRemoveDecisionFact,
     cleanup_done: MachineRemoveCleanupDoneFact,
@@ -604,6 +896,7 @@ fn cleanup_failure_kind(error: &MachineRemoveError) -> CleanupFailureKind {
         | MachineRemoveError::CommandFactConflict { .. }
         | MachineRemoveError::CommandFactKindMismatch { .. }
         | MachineRemoveError::CommandFactMismatch { .. }
+        | MachineRemoveError::CommandPhaseMissing { .. }
         | MachineRemoveError::UnauthorizedFactWrite { .. }
         | MachineRemoveError::PrincipalMismatch { .. }
         | MachineRemoveError::UntrustedAuthorKey { .. }
@@ -613,6 +906,7 @@ fn cleanup_failure_kind(error: &MachineRemoveError) -> CleanupFailureKind {
         | MachineRemoveError::Mesh(_)
         | MachineRemoveError::Routing(_)
         | MachineRemoveError::FactSource(_)
+        | MachineRemoveError::Command(_)
         | MachineRemoveError::SubjectParse(_)
         | MachineRemoveError::FactKeyParse(_)
         | MachineRemoveError::Bus(mvp_bus::BusError::SubjectParse(_))
@@ -649,6 +943,7 @@ mod tests {
         BusActorHandle, BusSession, FactContentHash, FactKey, FactKeyPattern, FactPayload, Grant,
         IslandId, PrincipalId, SubjectPattern,
     };
+    use mvp_commands::{CommandContext, InMemoryCommandPhaseStore};
     use mvp_identity::NodeId;
     use mvp_projection::{
         BackendEndpoint, CandidateStatus, DnsRecordFact, FactCandidate, FactSource,
@@ -1225,6 +1520,80 @@ mod tests {
             result.tombstone_fact_key.expect("tombstone").as_str(),
             "/facts/node/node-old/tombstoned/3"
         );
+        assert_eq!(
+            writer.events(),
+            vec![
+                RecordedEvent::Probe,
+                RecordedEvent::Decision(NodeId::new("node-old")),
+                RecordedEvent::RemovalStarted(NodeId::new("node-old")),
+                RecordedEvent::PrepareDrain,
+                RecordedEvent::ServingCommit(ServingCommitId::new("serving-remove-1")),
+                RecordedEvent::Stop,
+                RecordedEvent::Tombstone(NodeId::new("node-old")),
+                RecordedEvent::CleanupDone(NodeId::new("node-old")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn phased_remove_resumes_after_serving_commit_without_precutover_replay() {
+        let (bus, session) = test_bus();
+        let writer = RecordingFactWriter::default();
+        register_prepare(
+            &bus,
+            &session,
+            writer.events.clone(),
+            PrepareRemoveOutcome::NoNewWorkAndDrained,
+        )
+        .await;
+        register_stop(&bus, &session, writer.events.clone()).await;
+        let coordinator = coordinator(bus, session, writer.clone());
+        let request = remove_request();
+        let remove_id = MachineRemoveId::new(request.target_node_id.clone(), request.removal_epoch);
+        let catch_up = ProjectionCatchUp::from_report(
+            &request.serving_commit,
+            &projection_report_for(&request.serving_commit),
+        )
+        .expect("catchup");
+        let cx = CommandContext::new(Arc::new(InMemoryCommandPhaseStore::empty()));
+
+        let pending = coordinator
+            .execute_phased(
+                &cx,
+                MachineRemoveCommandInput::Start(Box::new(request)),
+                None,
+            )
+            .await
+            .expect("pending after serving commit");
+
+        assert_eq!(pending.outcome, MachineRemoveOutcome::CleanupPending);
+        assert!(matches!(
+            pending.cleanup_status,
+            RemoveCleanupStatus::Pending {
+                reason: RemoveCleanupPendingReason::ProjectionCatchUpMissing { .. }
+            }
+        ));
+        assert_eq!(
+            writer.events(),
+            vec![
+                RecordedEvent::Probe,
+                RecordedEvent::Decision(NodeId::new("node-old")),
+                RecordedEvent::RemovalStarted(NodeId::new("node-old")),
+                RecordedEvent::PrepareDrain,
+                RecordedEvent::ServingCommit(ServingCommitId::new("serving-remove-1")),
+            ]
+        );
+
+        let result = coordinator
+            .execute_phased(
+                &cx,
+                MachineRemoveCommandInput::Resume(remove_id),
+                Some(catch_up),
+            )
+            .await
+            .expect("resumed remove");
+
+        assert_eq!(result.outcome, MachineRemoveOutcome::Removed);
         assert_eq!(
             writer.events(),
             vec![
